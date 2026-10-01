@@ -184,6 +184,25 @@ describe("caller-scoped model availability", () => {
     });
   });
 
+  test("server-funded caller rows obey the same tool qualification as model writes", async () => {
+    const result = await resolveCallerModelAvailability(
+      "human-1",
+      "openrouter:moonshotai/kimi-k2.6",
+      { purpose: "chat-tools", env: {} },
+      {
+        resolveFunding: async (input) => ({
+          kind: "server",
+          humanUserId: input.humanUserId,
+          modelId: input.modelId,
+          providerRoute: "openrouter",
+          workload: input.workload,
+        }),
+      },
+    );
+    expect(result.model.availability).toBe("unsupported-capability");
+    expect(result.selectableInThisRelease).toBe(false);
+  });
+
   test("fails closed on caller funding denial and does not widen signed catalog restrictions", async () => {
     const denied = await resolveCallerModelAvailability(
       "human-1",
@@ -236,7 +255,7 @@ describe("caller-scoped model availability", () => {
       unavailableReason: "Anthropic credential is not configured",
     };
     const { unavailableReason: _unavailableReason, ...candidateWithoutReason } = candidate;
-    const calls: Array<{ humanUserId: string; modelId: string }> = [];
+    const calls: Array<{ humanUserId: string; modelId: string; purpose: string | undefined }> = [];
     const app = Fastify({ logger: false });
     app.decorateRequest("sessionUserId", null);
     app.addHook("preHandler", async (request) => {
@@ -244,8 +263,8 @@ describe("caller-scoped model availability", () => {
     });
     configRoutes(app, {
       getEligibleModels: () => [candidate],
-      resolveCallerAvailability: async (humanUserId, resolvedModelId) => {
-        calls.push({ humanUserId, modelId: resolvedModelId });
+      resolveCallerAvailability: async (humanUserId, resolvedModelId, options) => {
+        calls.push({ humanUserId, modelId: resolvedModelId, purpose: options?.purpose });
         return {
           model: {
             ...candidateWithoutReason,
@@ -286,7 +305,7 @@ describe("caller-scoped model availability", () => {
       expect(body[0]?.capabilities).toMatchObject({ tools: false, vision: false, webSearch: false });
       expect(response.body).not.toContain("credential-1");
       expect(response.body).not.toContain("funding");
-      expect(calls).toEqual([{ humanUserId: "human-1", modelId }]);
+      expect(calls).toEqual([{ humanUserId: "human-1", modelId, purpose: "chat-tools" }]);
     } finally {
       await app.close();
     }

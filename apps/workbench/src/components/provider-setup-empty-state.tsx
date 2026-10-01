@@ -12,10 +12,8 @@ export type PersonalChatReadiness =
 /** A personal-only Human cannot use a configured server key as a chat fallback. */
 export function needsPersonalChatReadiness(
   canUsePersonalKeys: boolean,
-  canUseServerKeys: boolean,
-  serverHasChatModel: boolean,
 ): boolean {
-  return canUsePersonalKeys && (!canUseServerKeys || !serverHasChatModel);
+  return canUsePersonalKeys;
 }
 
 export function personalChatNeedsSetup(state: PersonalChatReadiness): boolean {

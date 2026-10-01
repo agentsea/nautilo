@@ -75,6 +75,18 @@ test("ordinary server-funded member keeps the existing Room path", () => {
   expect(view.getByTestId("conversation")).toBeTruthy();
 });
 
+test("a dual-capability member repairs a stale personal key before chat", async () => {
+  setupState = "ready";
+  hasLlm = true;
+  capabilities = new Set(["invoke_agents", "use_personal_provider_credentials", "use_server_provider_credentials"]);
+  credentials = [{ requiresReplacement: true }];
+  const view = render(<SlackShapeRoom roomId="room-one" members={ownGenie} />);
+  await waitFor(() => expect(view.getByTestId("personal-provider-setup-empty-state")).toBeTruthy());
+  expect(view.queryByTestId("conversation")).toBeNull();
+  expect(view.getByRole("link", { name: "Set up your key" }).getAttribute("href"))
+    .toBe("/settings#personal-provider-keys");
+});
+
 test("a Human-only Room remains usable without any model", () => {
   credentials = [];
   const view = render(<SlackShapeRoom roomId="room-one" members={humanOnly} />);

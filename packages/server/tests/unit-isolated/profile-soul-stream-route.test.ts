@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { SoulFileInput, SoulGenerationStreamEvent } from "@nautilo/agent";
+import { SoulGenerationRateLimitError } from "@nautilo/db";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 
 const generateSoulFileMock = mock(async (
@@ -34,6 +35,7 @@ describe("POST /api/profile/generate-soul/stream", () => {
   function makeApp(
     serverFunding = true,
     generator: typeof generateSoulFileMock = generateSoulFileMock,
+    options: { personalService?: boolean; quotaError?: boolean } = {},
   ): FastifyInstance {
     const app = Fastify({ logger: false });
     app.decorateRequest("sessionUserId", null);
@@ -47,6 +49,10 @@ describe("POST /api/profile/generate-soul/stream", () => {
         if (!serverFunding) {
           throw new ServerProviderCredentialsDeniedError(humanUserId, "soul_test");
         }
+      },
+      isPersonalSoulServiceCaller: async () => options.personalService ?? false,
+      consumePersonalSoulAttempt: async () => {
+        if (options.quotaError) throw new SoulGenerationRateLimitError();
       },
       generateSoulFile: generator,
       generateSoulFileStream: generateSoulFileStreamMock,
@@ -176,6 +182,17 @@ describe("POST /api/profile/generate-soul/stream", () => {
     expect((await first).statusCode).toBe(200);
     expect((await app.inject({ method: "POST", url: "/api/profile/generate-soul", payload: {} })).statusCode)
       .toBe(200);
+  });
+
+  test("the personal Soul quota rejects both routes before provider work", async () => {
+    const app = makeApp(true, generateSoulFileMock, { personalService: true, quotaError: true });
+    for (const url of ["/api/profile/generate-soul", "/api/profile/generate-soul/stream"]) {
+      const response = await app.inject({ method: "POST", url, payload: {} });
+      expect(response.statusCode).toBe(429);
+      expect(response.json()).toMatchObject({ error: "soul_generation_limit_reached" });
+    }
+    expect(generateSoulFileMock).not.toHaveBeenCalled();
+    expect(generateSoulFileStreamMock).not.toHaveBeenCalled();
   });
 
   test("response/socket close aborts provider work and cleanup detaches listeners", () => {

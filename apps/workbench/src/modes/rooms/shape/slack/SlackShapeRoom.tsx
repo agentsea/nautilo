@@ -44,11 +44,8 @@ export function SlackShapeRoom({
   const modelProviderMissing = status?.setupState === "server-needs-keys"
     || status?.providers?.hasLlm === false;
   const roomNeedsModel = members.length === 0 || members.some((member) => member.kind === "agent");
-  const checkPersonalReadiness = roomNeedsModel && canInvokeAgents && needsPersonalChatReadiness(
-    canUsePersonalKeys,
-    canUseServerKeys,
-    !modelProviderMissing,
-  );
+  const checkPersonalReadiness = roomNeedsModel && canInvokeAgents && needsPersonalChatReadiness(canUsePersonalKeys);
+  const serverFallbackAvailable = canUseServerKeys && !modelProviderMissing;
   const [readiness, setReadiness] = useState<{
     userId: string | null;
     state: PersonalChatReadiness;
@@ -75,11 +72,11 @@ export function SlackShapeRoom({
       const next = await readPersonalChatReadiness({
         listCredentials: () => apiClient.listProviderCredentials(),
         getCallerModels: () => apiClient.getCallerModels(),
-      });
+      }, { serverFallbackAvailable });
       if (!cancelled) setReadiness({ userId: viewer.sessionUserId, state: next });
     })();
     return () => { cancelled = true; };
-  }, [checkPersonalReadiness, viewer.sessionUserId, refreshGeneration]);
+  }, [checkPersonalReadiness, serverFallbackAvailable, viewer.sessionUserId, refreshGeneration]);
 
   const personalState = readiness.userId === viewer.sessionUserId
     ? readiness.state

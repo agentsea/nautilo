@@ -20,6 +20,10 @@ function collectSchemaTableNames(): string[] {
 }
 
 describe("backup restore target allowlists", () => {
+  test("restores Soul admission receipts after their Human", () => {
+    expect(DATA_TABLES.indexOf("public.users"))
+      .toBeLessThan(DATA_TABLES.indexOf("public.soul_generation_attempts"));
+  });
   test("restores moderation authority after its foreign-key parents", () => {
     const parents: Record<string, string[]> = {
       group_moderation_scopes: ["groups", "rooms"],

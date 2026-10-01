@@ -3,12 +3,16 @@ import {
   actors,
   agents,
   channelIdentities,
+  consumePersonalSoulAttempt,
   credentials,
   eq,
   groupMembers,
   groups,
   llmUsageEvents,
+  PERSONAL_SOUL_WINDOW_MS,
   profiles,
+  soulGenerationAttempts,
+  SoulGenerationRateLimitError,
   upsertServerProviderPolicy,
   users,
 } from "@nautilo/db";
@@ -239,6 +243,62 @@ describe.serial("personal-key own-Genie Soul setup service", () => {
       && event.metadata?.["agentId"] === community.agentId
       && event.metadata?.["service"] === "soul_generation"
     )).toBe(true);
+  });
+
+  test("a shared rolling limit counts sequential attempts across both routes but leaves server-authorized Humans unchanged", async () => {
+    const third = await authedInject(fx.app, {
+      method: "POST", url: "/api/profile/generate-soul", bearer: community.bearer,
+      payload: { name: "Vela" },
+    });
+    expect(third.statusCode).toBe(200);
+    const beforeRejection = providerRequests.length;
+    const fourth = await authedInject(fx.app, {
+      method: "POST", url: "/api/profile/generate-soul/stream", bearer: community.bearer,
+      payload: { name: "Vela" },
+    });
+    expect(fourth.statusCode).toBe(429);
+    expect(JSON.parse(fourth.body)).toMatchObject({ error: "soul_generation_limit_reached" });
+    expect(providerRequests).toHaveLength(beforeRejection);
+    const attempts = await fx.db.select({ id: soulGenerationAttempts.id })
+      .from(soulGenerationAttempts)
+      .where(eq(soulGenerationAttempts.humanUserId, community.userId));
+    expect(attempts).toHaveLength(3);
+
+    const ownerBearer = await fx.mintOwnerBearer();
+    for (let index = 0; index < 4; index++) {
+      const response = await authedInject(fx.app, {
+        method: "POST", url: "/api/profile/generate-soul", bearer: ownerBearer,
+        payload: { name: "Owner Genie" },
+      });
+      expect(response.statusCode).toBe(200);
+    }
+    const ownerAttempts = await fx.db.select({ id: soulGenerationAttempts.id })
+      .from(soulGenerationAttempts)
+      .where(eq(soulGenerationAttempts.humanUserId, fx.ownerId));
+    expect(ownerAttempts).toHaveLength(0);
+  });
+
+  test("parallel reservations on separate database transactions cannot exceed the limit", async () => {
+    const results = await Promise.allSettled(Array.from({ length: 6 }, () =>
+      consumePersonalSoulAttempt(guest.userId, fx.db)));
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(3);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(3);
+    expect(results.filter((result) => result.status === "rejected").every((result) =>
+      result.status === "rejected" && result.reason instanceof SoulGenerationRateLimitError)).toBe(true);
+    const attempts = await fx.db.select({ id: soulGenerationAttempts.id })
+      .from(soulGenerationAttempts)
+      .where(eq(soulGenerationAttempts.humanUserId, guest.userId));
+    expect(attempts).toHaveLength(3);
+
+    await consumePersonalSoulAttempt(
+      guest.userId,
+      fx.db,
+      new Date(Date.now() + PERSONAL_SOUL_WINDOW_MS + 1_000),
+    );
+    const afterWindow = await fx.db.select({ id: soulGenerationAttempts.id })
+      .from(soulGenerationAttempts)
+      .where(eq(soulGenerationAttempts.humanUserId, guest.userId));
+    expect(afterWindow).toHaveLength(1);
   });
 
   test("fresh switch, capability, and exact ownership checks stop provider work", async () => {

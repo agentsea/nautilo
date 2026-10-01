@@ -16,7 +16,12 @@ import {
   type VoiceRef,
 } from "@nautilo/types";
 import { curatedVoiceDisplayNameForId } from "@nautilo/voice";
-import { renameAgentProfileIdentity, setAgentHandle } from "@nautilo/db";
+import {
+  consumePersonalSoulAttempt,
+  renameAgentProfileIdentity,
+  setAgentHandle,
+  SoulGenerationRateLimitError,
+} from "@nautilo/db";
 import {
   getProfile,
   getProfileByAgentId,
@@ -35,8 +40,10 @@ import {
 } from "@nautilo/agent";
 import {
   assertCanUseServerFundedOwnSoul,
+  CAP_USE_SERVER_PROVIDER_CREDENTIALS,
   findAgentById,
   findPersonalAgentsForUser,
+  getUserCapabilities,
   persistUserTimezoneIfChanged,
   ServerProviderCredentialsDeniedError,
   toActionCapabilityHttpDenial,
@@ -118,6 +125,8 @@ export function profileRoutes(
       policy: { enabled: boolean; chain: string[] },
     ) => Promise<{ fallbackEnabled: boolean; fallbackChain: string[] }>;
     assertCanUseServerFundedOwnSoul?: typeof assertCanUseServerFundedOwnSoul;
+    isPersonalSoulServiceCaller?: (humanUserId: string) => Promise<boolean>;
+    consumePersonalSoulAttempt?: typeof consumePersonalSoulAttempt;
     generateSoulFile?: typeof generateSoulFile;
     generateSoulFileStream?: typeof generateSoulFileStream;
     upsertSoulProfile?: (
@@ -132,8 +141,11 @@ export function profileRoutes(
   },
 ) {
   // Keep one server-paid personalization request active per Human in this
-  // process. A durable repeat-spend quota is required before public rollout.
+  // process; the durable attempt limit below coordinates across processes.
   const activeSoulGeneration = new Set<string>();
+  const isPersonalSoulServiceCaller = deps?.isPersonalSoulServiceCaller ?? (async (humanUserId: string) =>
+    !(await getUserCapabilities(humanUserId)).includes(CAP_USE_SERVER_PROVIDER_CREDENTIALS));
+  const consumeSoulAttempt = deps?.consumePersonalSoulAttempt ?? consumePersonalSoulAttempt;
   const resolveSubjectUserId = (request: FastifyRequest): string =>
     request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? deps?.ownerId ?? "";
   const resolveModelAvailability =
@@ -519,6 +531,9 @@ export function profileRoutes(
       }
       activeSoulGeneration.add(humanUserId);
       acquired = true;
+      if (await isPersonalSoulServiceCaller(humanUserId)) {
+        await consumeSoulAttempt(humanUserId);
+      }
       const soulFile = await (deps?.generateSoulFile ?? generateSoulFile)(request.body, undefined, {
         humanUserId,
         agentId,
@@ -530,6 +545,12 @@ export function profileRoutes(
       await (deps?.upsertSoulProfile ?? upsertProfile)(resolveSubjectUserId(request), agentId, { soulFile });
       return reply.send({ soulFile });
     } catch (e) {
+      if (e instanceof SoulGenerationRateLimitError) {
+        return reply.code(429).send({
+          error: "soul_generation_limit_reached",
+          message: "Soul personalization is available again after the rolling daily limit resets. Continue without it for now.",
+        });
+      }
       if (e instanceof ServerProviderCredentialsDeniedError) {
         return reply.code(403).send(toActionCapabilityHttpDenial(e));
       }
@@ -548,6 +569,7 @@ export function profileRoutes(
 
     const humanUserId = request.sessionUserId;
     let agentId: string;
+    let acquired = false;
     try {
       const resolvedAgentId = await resolveSubjectAgentId(request);
       if (!resolvedAgentId) {
@@ -564,7 +586,18 @@ export function profileRoutes(
         return reply.code(409).send({ error: "soul_generation_in_progress" });
       }
       activeSoulGeneration.add(humanUserId);
+      acquired = true;
+      if (await isPersonalSoulServiceCaller(humanUserId)) {
+        await consumeSoulAttempt(humanUserId);
+      }
     } catch (error) {
+      if (acquired) activeSoulGeneration.delete(humanUserId);
+      if (error instanceof SoulGenerationRateLimitError) {
+        return reply.code(429).send({
+          error: "soul_generation_limit_reached",
+          message: "Soul personalization is available again after the rolling daily limit resets. Continue without it for now.",
+        });
+      }
       if (error instanceof ServerProviderCredentialsDeniedError) {
         return reply.code(403).send(toActionCapabilityHttpDenial(error));
       }

@@ -23,6 +23,18 @@ test("missing or disaster-reset keys cannot be replaced by a server model", asyn
   expect(modelLookupCount).toBe(0);
 });
 
+test("a dual-capability caller uses server chat only when no personal row takes precedence", async () => {
+  const listCredentials = async () => ({ credentials: [] as { requiresReplacement: boolean }[] });
+  const getCallerModels = async () => [{ availability: "selectable" }];
+  expect(await readPersonalChatReadiness({ listCredentials, getCallerModels }, {
+    serverFallbackAvailable: true,
+  })).toBe("ready");
+  expect(await readPersonalChatReadiness({
+    listCredentials: async () => ({ credentials: [{ requiresReplacement: true }] }),
+    getCallerModels,
+  }, { serverFallbackAvailable: true })).toBe("missing-key");
+});
+
 test("a configured key without a caller-eligible model needs model repair", async () => {
   const result = await readPersonalChatReadiness({
     listCredentials: async () => ({ credentials: [{ requiresReplacement: false }] }),

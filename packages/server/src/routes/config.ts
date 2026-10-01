@@ -106,6 +106,21 @@ export async function resolveCallerModelAvailability(
       modelId,
       workload: "foreground_text_chat",
     });
+    if (funding.kind === "server" && options.purpose === "chat-tools"
+      && catalogModel.features.tools !== true) {
+      return {
+        model: {
+          ...base,
+          enabled: false,
+          availability: "unsupported-capability",
+          unavailableReason: catalogModel.features.tools === false
+            ? "model does not support tool/function calling"
+            : "tool/function calling capability is unverified",
+        },
+        funding: null,
+        selectableInThisRelease: false,
+      };
+    }
     // Existing server-funded selection still requires a tool-capable chat
     // model. Personal-funded selection is the narrower text-only surface.
     const selectedBase = funding.kind === "server" && options.purpose === "chat-tools"
@@ -237,7 +252,7 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
         (await resolveAvailability(
           humanUserId,
           candidate.id,
-          { purpose: "chat", allowChinaUpstream, env: {} },
+          { purpose: "chat-tools", allowChinaUpstream, env: {} },
         )).model,
       ),
     );

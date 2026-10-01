@@ -24,10 +24,8 @@ const human: RoomMemberDto = {
 };
 
 test("personal-only chat needs its own readiness even when the server has keys", () => {
-  expect(needsPersonalChatReadiness(true, false, true)).toBeTrue();
-  expect(needsPersonalChatReadiness(true, true, false)).toBeTrue();
-  expect(needsPersonalChatReadiness(true, true, true)).toBeFalse();
-  expect(needsPersonalChatReadiness(false, false, false)).toBeFalse();
+  expect(needsPersonalChatReadiness(true)).toBeTrue();
+  expect(needsPersonalChatReadiness(false)).toBeFalse();
   expect(personalChatNeedsSetup("ready")).toBeFalse();
   expect(personalChatNeedsSetup("checking")).toBeTrue();
   expect(personalChatNeedsSetup("disabled")).toBeTrue();

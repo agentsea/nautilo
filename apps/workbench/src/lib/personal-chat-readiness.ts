@@ -5,11 +5,14 @@ import type { PersonalChatReadiness } from "../components/provider-setup-empty-s
 export async function readPersonalChatReadiness(deps: {
   listCredentials: () => Promise<{ credentials: readonly { requiresReplacement: boolean }[] }>;
   getCallerModels: () => Promise<readonly { availability?: string }[]>;
-}): Promise<PersonalChatReadiness> {
+}, options: { serverFallbackAvailable?: boolean } = {}): Promise<PersonalChatReadiness> {
   try {
     const { credentials } = await deps.listCredentials();
-    if (credentials.length === 0 || credentials.every((credential) => credential.requiresReplacement)) {
+    if (credentials.some((credential) => credential.requiresReplacement)) {
       return "missing-key";
+    }
+    if (credentials.length === 0) {
+      return options.serverFallbackAvailable ? "ready" : "missing-key";
     }
     const models = await deps.getCallerModels();
     return models.some((model) => model.availability === "selectable")
@@ -18,7 +21,7 @@ export async function readPersonalChatReadiness(deps: {
   } catch (error) {
     return error instanceof ProviderCredentialApiError
       && error.error === "personal_credentials_disabled"
-      ? "disabled"
+      ? options.serverFallbackAvailable ? "ready" : "disabled"
       : "unavailable";
   }
 }
