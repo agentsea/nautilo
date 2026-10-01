@@ -31,19 +31,13 @@ test.each([false, true])("authenticated foreground chat uses the caller's key th
   const bearer = await fx.mintOwnerBearer();
   const priorFetch = globalThis.fetch;
   const priorDirect = process.env["OPENROUTER_API_KEY"];
-  const priorGateway = process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
-  const priorGatewayUrl = process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
   const requests: Array<{ authorization: string | null; url: string; body: string }> = [];
   let credentialRevision: number | null = null;
 
   if (serverKeysPresent) {
     process.env["OPENROUTER_API_KEY"] = SERVER_KEY;
-    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"d".repeat(43)}`;
-    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1";
   } else {
     delete process.env["OPENROUTER_API_KEY"];
-    delete process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
-    delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
   }
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -165,10 +159,6 @@ test.each([false, true])("authenticated foreground chat uses the caller's key th
     globalThis.fetch = priorFetch;
     if (priorDirect === undefined) delete process.env["OPENROUTER_API_KEY"];
     else process.env["OPENROUTER_API_KEY"] = priorDirect;
-    if (priorGateway === undefined) delete process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
-    else process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = priorGateway;
-    if (priorGatewayUrl === undefined) delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
-    else process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = priorGatewayUrl;
     if (credentialRevision !== null) {
       await authedInject(fx.app, {
         method: "DELETE", url: "/api/account/provider-credentials/openrouter",

@@ -35,7 +35,7 @@ const decision = {
 
 const envKeys = [
   "OPENROUTER_API_KEY", "TYPESAFE_API_KEY", "VENICE_API_KEY",
-  "NAUTILO_MANAGED_GATEWAY_API_KEY", "NAUTILO_MANAGED_GATEWAY_BASE_URL", "NAUTILO_SKIP_VENICE_REFRESH",
+  "NAUTILO_SKIP_VENICE_REFRESH",
   "NAUTILO_VENICE_MODELS_CACHE_PATH",
 ] as const;
 
@@ -65,8 +65,6 @@ describe("decision model availability", () => {
     delete process.env["OPENROUTER_API_KEY"];
     delete process.env["TYPESAFE_API_KEY"];
     delete process.env["VENICE_API_KEY"];
-    delete process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
-    delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
     process.env["NAUTILO_SKIP_VENICE_REFRESH"] = "1";
     directory = fs.mkdtempSync(path.join(os.tmpdir(), "decision-availability-"));
     process.env["NAUTILO_VENICE_MODELS_CACHE_PATH"] = path.join(directory, "venice.json");

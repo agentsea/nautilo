@@ -36,7 +36,7 @@ function harness() {
   const capabilities = new Map<string, string[]>();
   const reads: string[] = [];
   let enabled = true;
-  let serverRoute: string | null = "managed-gateway";
+  let serverRoute: string | null = "openrouter";
   const deps: ModelFundingDeps = {
     getPolicy: async () => ({ allowPersonalProviderKeys: enabled }),
     getCapabilities: async (userId) => capabilities.get(userId) ?? [],
@@ -76,7 +76,7 @@ describe("trusted model funding", () => {
     h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
     h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
     expect(await resolveModelFunding(request(ALICE), h.deps)).toMatchObject({
-      kind: "server", humanUserId: ALICE, providerRoute: "managed-gateway",
+      kind: "server", humanUserId: ALICE, providerRoute: "openrouter",
     });
     expect(h.reads).toEqual([]);
   });

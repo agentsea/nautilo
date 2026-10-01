@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { markManagedGatewayOutcomeUnknown } from "@nautilo/agent";
 import type { ProcessorTransformInput } from "@nautilo/lattice-crypto";
 import {
   encodeRoomEventPayloadV1,
@@ -153,13 +152,6 @@ describe("protected Stenographer compaction", () => {
 
   test.each([
     ["provider failure", new Error("provider detail"), "provider_failure"],
-    [
-      "uncertain managed Gateway outcome",
-      markManagedGatewayOutcomeUnknown(
-        Object.assign(new Error("Gateway failed"), { status: 502 }),
-      ),
-      "provider_outcome_unknown",
-    ],
   ] as const)("closes the one-run gate with an empty prefix on %s", async (
     _label,
     failure,

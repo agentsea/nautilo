@@ -2,7 +2,6 @@ import { log } from "@nautilo/logger";
 
 import {
   embedTextWithProvenance,
-  isManagedGatewayOutcomeUnknownError,
   markModelInvokeFailure,
   modelInvokeCooldownRemainingMs,
   type AuthoredMemorySemanticChange,
@@ -16,7 +15,6 @@ import {
 import {
   CANDIDATE_POLICY_V1,
   DurableSleepModelLaneUnavailableError,
-  DurableSleepProviderOutcomeUnknownError,
   DURABLE_SLEEP_MAX_WORK_ITEMS_PER_RUN,
   runDependencyLossRewrite,
   type DurableSleepRunBudget,
@@ -255,9 +253,6 @@ export function classifyReflectionModelInvocationFailure(
   error: unknown,
   modelId: string,
 ): unknown {
-  if (isManagedGatewayOutcomeUnknownError(error)) {
-    return new DurableSleepProviderOutcomeUnknownError();
-  }
   const failure = mapModelFailure(error);
   if (failure === "unknown") return error;
   if (modelInvokeCooldownRemainingMs(modelId) === 0) {
@@ -501,7 +496,7 @@ export async function createProductionReflectionMemoryRuntime(
         },
       })(prompt, signal);
     } catch (error) {
-      if (signal?.aborted && !isManagedGatewayOutcomeUnknownError(error)) throw error;
+      if (signal?.aborted) throw error;
       throw classifyReflectionModelInvocationFailure(error, modelId);
     }
   };

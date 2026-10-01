@@ -202,9 +202,6 @@ export function buildOpenRouterCreateModelOptions(
     modelId,
     apiKey: transport.apiKey,
     baseUrl: transport.baseUrl,
-    ...(transport.kind === "managed-gateway"
-      ? { maxRetries: 0, forbidRedirects: true }
-      : {}),
   };
   if (callbacks) options.callbacks = callbacks;
   const headers = transport.kind === "openrouter"
@@ -269,13 +266,12 @@ export function buildGatewayCreateModelOptions(
 export function withGatewayErrorLabel(
   model: ChatModel,
   label: string,
-  policy: Readonly<{ sanitize?: boolean }> = {},
 ): ChatModel {
   const invoke: ChatModel["invoke"] = async (messages, options) => {
     try {
       return await model.invoke(messages, options);
     } catch (error) {
-      throw labelGatewayError(error, label, policy.sanitize === true);
+      throw labelGatewayError(error, label);
     }
   };
   const stream: NonNullable<ChatModel["stream"]> = async function* (messages, options) {
@@ -288,14 +284,14 @@ export function withGatewayErrorLabel(
         yield chunk;
       }
     } catch (error) {
-      throw labelGatewayError(error, label, policy.sanitize === true);
+      throw labelGatewayError(error, label);
     }
   };
   const bindTools: NonNullable<ChatModel["bindTools"]> = (tools, options) => {
     if (!model.bindTools) {
       throw new Error(`${label} model does not support tool binding`);
     }
-    return withGatewayErrorLabel(model.bindTools(tools, options), label, policy);
+    return withGatewayErrorLabel(model.bindTools(tools, options), label);
   };
 
   // Preserve the concrete LangChain instance and all of its configuration
@@ -314,41 +310,15 @@ export function withGatewayErrorLabel(
   }) as ChatModel;
 }
 
-function managedGatewayFailureMessage(error: unknown): string {
-  const candidate = error as {
-    status?: unknown;
-    statusCode?: unknown;
-    name?: unknown;
-    code?: unknown;
-  } | null;
-  const status = typeof candidate?.status === "number"
-    ? candidate.status
-    : typeof candidate?.statusCode === "number"
-      ? candidate.statusCode
-      : undefined;
-  if (status === 401 || status === 403) return "The Gateway rejected the Nautilo credential.";
-  if (status === 402) return "The Gateway reports insufficient test capacity.";
-  if (status === 429) return "The Gateway rate-limited the request.";
-  if (status !== undefined && status >= 500) return "The Gateway is temporarily unavailable.";
-  if (
-    candidate?.name === "AbortError"
-    || candidate?.name === "ProviderTimeoutError"
-    || candidate?.code === "NAUTILO_PROVIDER_TIMEOUT"
-  ) {
-    return "The Gateway request was cancelled or timed out.";
-  }
-  return "The Gateway request failed.";
-}
-
-function labelGatewayError(error: unknown, label: string, sanitize = false): Error {
+function labelGatewayError(error: unknown, label: string): Error {
   if (error instanceof Error) {
-    if (!sanitize && error.message.startsWith(`${label}:`)) return error;
-    const wrapped = new Error(`${label}: ${sanitize ? managedGatewayFailureMessage(error) : error.message}`);
-    if (!sanitize) wrapped.cause = error;
+    if (error.message.startsWith(`${label}:`)) return error;
+    const wrapped = new Error(`${label}: ${error.message}`);
+    wrapped.cause = error;
     copyErrorStatus(error, wrapped);
     return wrapped;
   }
-  return new Error(`${label}: ${sanitize ? managedGatewayFailureMessage(error) : String(error)}`);
+  return new Error(`${label}: ${String(error)}`);
 }
 
 /**
@@ -541,20 +511,13 @@ async function createUniversalModelInternal(
         usageCallbacks,
         personalCredential,
       );
-      const openRouterTransport = resolveOpenRouterTransport({
-        ...(personalCredential
-          ? { personalApiKey: personalCredential.apiKey }
-          : { directApiKey: cleanOptions["apiKey"] }),
-      });
       if (resolvedMaxTokens !== undefined) orOpts.maxTokens = resolvedMaxTokens;
       if (resolvedTimeoutMs !== undefined) orOpts.timeoutMs = resolvedTimeoutMs;
       orOpts.reasoningOutput = reasoningOutput;
       if (factoryOpts.reasoningEffort) orOpts.reasoningEffort = factoryOpts.reasoningEffort;
-      const managedGateway = openRouterTransport?.kind === "managed-gateway";
       return withGatewayErrorLabel(
         await createOpenAI(orOpts),
-        managedGateway ? "Nautilo Gateway" : "OpenRouter",
-        { sanitize: managedGateway },
+        "OpenRouter",
       );
     }
     case "gateway": {
