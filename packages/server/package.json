@@ -21,7 +21,8 @@
     "test:integration:owner-claim-fresh": "bash scripts/run-integration.sh tests/fresh-instance-integration",
     "photo-library:backfill": "bun scripts/backfill-owned-photo-library.ts",
     "photo-library:gc": "bun scripts/gc-owned-photo-library.ts",
-    "photo-library:recover": "bun scripts/recover-owned-photo-library.ts"
+    "photo-library:recover": "bun scripts/recover-owned-photo-library.ts",
+    "photo-library:check-upgrade": "bun src/photo-library/check-protocol-upgrade.ts"
   },
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",

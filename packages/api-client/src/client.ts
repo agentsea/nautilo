@@ -8212,6 +8212,7 @@ export class NautiloApiClient {
     input: {
       readonly target: AgentPhotoSelectionTargetDto;
       readonly expectedSelectionRevision: string;
+      readonly replaceMissingCurrent?: boolean;
     },
     options: AgentPhotoLibraryMutationOptions,
   ): Promise<AgentPhotoLibrarySelectionResponse> {

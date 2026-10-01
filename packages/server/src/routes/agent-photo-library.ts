@@ -217,7 +217,7 @@ async function resolveAuthority(
   };
 }
 
-/** D487 canonical owned Agent-photo read and mutation surface. */
+/** Canonical owned Agent-photo read and mutation surface. */
 export function agentPhotoLibraryRoutes(app: FastifyInstance, deps: AgentPhotoLibraryRouteDeps = {}): void {
   const db = deps.db ?? getServerDirectDb();
   const now = deps.now ?? (() => new Date());
@@ -531,6 +531,9 @@ export function agentPhotoLibraryRoutes(app: FastifyInstance, deps: AgentPhotoLi
     if (!body || !operationId || typeof body["expectedSelectionRevision"] !== "string") {
       return reply.code(400).send(errorEnvelope("invalid_photo_request", "An idempotency key, selection revision, and target are required", false));
     }
+    if (body["replaceMissingCurrent"] !== undefined && typeof body["replaceMissingCurrent"] !== "boolean") {
+      return reply.code(400).send(errorEnvelope("invalid_photo_request", "Missing-current replacement must be a boolean", false));
+    }
     const target = objectBody(body["target"]);
     if (!target || (target["kind"] !== "clear" && target["kind"] !== "preset" && target["kind"] !== "entry")) {
       return reply.code(400).send(errorEnvelope("invalid_photo_request", "The photo selection target is invalid", false));
@@ -540,6 +543,7 @@ export function agentPhotoLibraryRoutes(app: FastifyInstance, deps: AgentPhotoLi
         authority: await authorityFor(request),
         operationId,
         expectedSelectionRevision: body["expectedSelectionRevision"],
+        replaceMissingCurrent: body["replaceMissingCurrent"] === true,
         origin: originFrom(request),
         target: target["kind"] === "clear"
           ? { kind: "clear" }

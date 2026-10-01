@@ -7,6 +7,12 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Imported full-size Agent photos remain available in the owned photo library.
+  An unindexed previous photo no longer blocks browsing or selecting a
+  replacement; undo still requires an owned, available previous photo.
+  Existing servers must complete the [photo protocol upgrade check](docs/agent-photo-library-upgrade.md)
+  before adopting the new creation hash contract; existing media IDs stay unchanged.
+
 - Document reads and authorization checks avoid resolving unrelated model
   metadata when checking decision-tool availability. Model credentials and
   document access are still checked against current state.
