@@ -23,6 +23,7 @@ import {
   sessions,
   users,
   inArray,
+  upsertServerProviderPolicy,
 } from "@nautilo/db";
 import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 import {
@@ -31,6 +32,7 @@ import {
   type AppFixture,
 } from "./helpers/app-fixture";
 import { authedInject } from "./helpers/request-helpers";
+import { openForegroundChatFundingSession } from "../../src/lib/foreground-chat-funding";
 
 const ROLE_MATRIX = [
   { role: "owner", groupType: "owners" },
@@ -415,6 +417,127 @@ describe.serial("exact Genie invocation role matrix", () => {
         expect(fundingChecks).toHaveLength(fundingChecksBefore + 1);
         expect(paidDispatches).toHaveLength(dispatchesBefore + 1);
       }
+    }
+  });
+
+  test("Community personal funding admits only its own text chat and rechecks the credential revision", async () => {
+    const community = await requireHuman("community");
+    const ownRoom = ownedRooms.get("community");
+    const foreignRoom = foreignRooms.get("community");
+    if (!ownRoom || !foreignRoom) throw new Error("missing Community Room fixtures");
+    const modelId = "openrouter:moonshotai/kimi-k2.6";
+    const firstKey = "synthetic-community-chat-key";
+    fundingMode = "production-server";
+    await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: true });
+    try {
+      const saved = await authedInject(fx.app, {
+        method: "PUT", url: "/api/account/provider-credentials/openrouter",
+        bearer: community.bearer, payload: { apiKey: firstKey },
+      });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.body).not.toContain(firstKey);
+
+      const models = await authedInject(fx.app, {
+        method: "GET", url: "/api/config/models/caller?includeUnavailable=true",
+        bearer: community.bearer,
+      });
+      expect(models.statusCode).toBe(200);
+      expect((JSON.parse(models.body) as Array<{ id: string; availability: string }>)
+        .find((model) => model.id === modelId)?.availability).toBe("selectable");
+      expect(models.body).not.toContain(firstKey);
+
+      const fundingChecksBefore = fundingChecks.length;
+      const dispatchesBefore = paidDispatches.length;
+      expect((await sendDirectMessage(community, ownRoom)).statusCode).toBe(202);
+      expect(paidDispatches).toHaveLength(dispatchesBefore + 1);
+      expect(fundingChecks).toHaveLength(fundingChecksBefore);
+
+      const session = await openForegroundChatFundingSession({
+        humanUserId: community.userId,
+        modelId,
+        roomId: ownRoom.roomId,
+        agentId: community.agentId,
+        entrypoint: "foreground.main",
+      });
+      expect(session?.kind).toBe("personal");
+      const attempt = await session!.runAttempt(modelId, async ({ personalCredential, usageFunding }) => ({
+        keyMatches: personalCredential?.apiKey === firstKey,
+        usageFunding,
+      }));
+      expect(attempt.keyMatches).toBe(true);
+      expect(attempt.usageFunding).toMatchObject({
+        kind: "personal", humanUserId: community.userId,
+        payerHumanId: community.userId, providerRoute: "openrouter",
+        credentialRevision: 1,
+      });
+
+      const foreignDispatchesBefore = paidDispatches.length;
+      const foreign = await sendDirectMessage(community, foreignRoom);
+      expect(foreign.statusCode).toBe(403);
+      expect(JSON.parse(foreign.body)).toMatchObject({ code: "invoke_other_agents_required" });
+      expect(paidDispatches).toHaveLength(foreignDispatchesBefore);
+
+      const replaced = await authedInject(fx.app, {
+        method: "PUT", url: "/api/account/provider-credentials/openrouter",
+        bearer: community.bearer,
+        payload: { apiKey: "synthetic-community-replacement", expectedRevision: 1 },
+      });
+      expect(replaced.statusCode).toBe(200);
+      expect(session!.runAttempt(modelId, async () => true)).rejects.toMatchObject({
+        code: "personal_credential_stale",
+      });
+
+      await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: false });
+      const offRead = await authedInject(fx.app, {
+        method: "GET", url: "/api/account/provider-credentials",
+        bearer: community.bearer,
+      });
+      expect(offRead.statusCode).toBe(404);
+      const offDispatchesBefore = paidDispatches.length;
+      expect((await sendDirectMessage(community, ownRoom)).statusCode).toBe(403);
+      expect(paidDispatches).toHaveLength(offDispatchesBefore);
+    } finally {
+      await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: true });
+      await authedInject(fx.app, {
+        method: "DELETE", url: "/api/account/provider-credentials/openrouter",
+        bearer: community.bearer, payload: { expectedRevision: 2 },
+      });
+      await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: false });
+    }
+  });
+
+  test("Contributor keeps server-funded foreign Genie admission after saving a personal key", async () => {
+    const contributor = await requireHuman("contributor");
+    const foreignRoom = foreignRooms.get("contributor");
+    if (!foreignRoom) throw new Error("missing Contributor foreign Room fixture");
+    fundingMode = "production-server";
+    await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: true });
+    try {
+      const saved = await authedInject(fx.app, {
+        method: "PUT", url: "/api/account/provider-credentials/openrouter",
+        bearer: contributor.bearer,
+        payload: { apiKey: "synthetic-contributor-personal-key" },
+      });
+      expect(saved.statusCode).toBe(200);
+      expect(await openForegroundChatFundingSession({
+        humanUserId: contributor.userId,
+        modelId: "openrouter:moonshotai/kimi-k2.6",
+        roomId: foreignRoom.roomId,
+        agentId: foreignRoom.targetAgentId,
+        entrypoint: "foreground.main",
+      })).toBeNull();
+      const fundingChecksBefore = fundingChecks.length;
+      const dispatchesBefore = paidDispatches.length;
+      expect((await sendDirectMessage(contributor, foreignRoom)).statusCode).toBe(202);
+      expect(fundingChecks).toHaveLength(fundingChecksBefore + 1);
+      await waitForPaidDispatchCount(dispatchesBefore + 1);
+      expect(paidDispatches).toHaveLength(dispatchesBefore + 1);
+    } finally {
+      await authedInject(fx.app, {
+        method: "DELETE", url: "/api/account/provider-credentials/openrouter",
+        bearer: contributor.bearer, payload: { expectedRevision: 1 },
+      });
+      await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: false });
     }
   });
 });

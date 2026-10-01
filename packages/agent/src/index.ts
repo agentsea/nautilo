@@ -164,6 +164,10 @@ export {
   runWithInitiatingClientSurface,
 } from "./runtime/initiating-client-surface-context";
 export { runWithTaskCausalHuman } from "./runtime/causal-human-context";
+export type {
+  ForegroundChatFundingAttempt,
+  ForegroundChatFundingSession,
+} from "./runtime/foreground-chat-funding";
 export {
   runScopeSubagentUntilPause,
   extractTaskProgressFromStreamEvent,

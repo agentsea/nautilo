@@ -571,6 +571,7 @@ export async function preModelNode(
   assignedVoicesPortForState: AssignedVoicesPortForState = getVoices,
   fullEncryptionOnly = false,
   ordinaryContentAccessForState?: OrdinaryContentAccessForState,
+  personalFunding = false,
 ): Promise<Partial<NautiloState>> {
   if (state.noProgressPendingStop) throw new NoProgressError(state.noProgressPendingStop);
   assertResearchDesktopAvailable(state);
@@ -736,13 +737,15 @@ export async function preModelNode(
   // Whenever its presence-only relay token is live, bind `terminal` on this
   // very model step even if the progressive intent pack was already applied.
   // Normal catalog eligibility still enforces actor policy + live PTY relay.
-  const activatedToolNames = !isGuest && relayCapabilities?.["hasPendingTerminalHandoff"] === true
-    ? mergeEligibleActivatedToolNames(
-        ordinaryActivatedToolNames,
-        ["terminal"],
-        eligibleToolNameSet,
-      )
-    : ordinaryActivatedToolNames;
+  const activatedToolNames = personalFunding
+    ? []
+    : !isGuest && relayCapabilities?.["hasPendingTerminalHandoff"] === true
+      ? mergeEligibleActivatedToolNames(
+          ordinaryActivatedToolNames,
+          ["terminal"],
+          eligibleToolNameSet,
+        )
+      : ordinaryActivatedToolNames;
   const applyPatchContext = buildApplyPatchToolContext({
     ownerId: state.userId,
     actorRole: state.actorRole,
@@ -813,7 +816,14 @@ export async function preModelNode(
   // stays; targetless skip is always valid and redirect eligibility is
   // enforced server-side.
   const consolidating = isResearchPreEvictionConsolidating(state);
-  const availableTools = withholdSkipForExplicitSelection(rawTools, state.explicitlySelected);
+  // Phase 3 personal funding is deliberately text-chat only. This projection
+  // removes both schemas and tool guidance while clearing any activation
+  // handles retained by a checkpoint from an earlier server-funded turn.
+  // Post-model and tools-node fences remain the execution authority for stale
+  // or directly injected calls.
+  const availableTools = personalFunding
+    ? []
+    : withholdSkipForExplicitSelection(rawTools, state.explicitlySelected);
   const tools = projectSecurityResearchConsolidationTools(availableTools, consolidating);
   const progressiveToolExposure = measureProgressiveToolExposure({
     registeredCatalogTools: catalog?.size ?? 0,

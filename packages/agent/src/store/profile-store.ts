@@ -172,6 +172,7 @@ export async function upsertProfile(
   userId: string,
   agentId: string,
   data: UpsertProfileInput,
+  validatedDefaultModelId?: string,
 ): Promise<NautiloProfile> {
   const now = new Date();
 
@@ -184,7 +185,10 @@ export async function upsertProfile(
         .map((entry) => entry.id),
     );
     assertProfileDefaultModelAllowed(coercedDefaultModel, catalogIds);
-    if (coercedDefaultModel !== null) {
+    // The authenticated server route can validate a personal-funded model for
+    // this Human before calling the store. Other callers retain the existing
+    // server-credential check; the model id must match the validated value.
+    if (coercedDefaultModel !== null && coercedDefaultModel !== validatedDefaultModelId) {
       assertModelRunnable(coercedDefaultModel, { purpose: "chat-tools" });
     }
   }

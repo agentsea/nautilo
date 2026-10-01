@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import Fastify from "fastify";
 import { z } from "zod";
+import type { EligibleModel } from "@nautilo/trust";
 import {
   configureRuntimeModelCatalog,
   hydrateRuntimeModelCatalog,
@@ -49,7 +50,13 @@ describe("GET /api/config/models D462 controls", () => {
     await hydrateRuntimeModelCatalog();
 
     const app = Fastify({ logger: false });
-    configRoutes(app);
+    let callerAvailabilityCalls = 0;
+    configRoutes(app, {
+      resolveCallerAvailability: async () => {
+        callerAvailabilityCalls += 1;
+        throw new Error("guest catalog must not resolve caller funding");
+      },
+    });
     try {
       const response = await app.inject({ method: "GET", url: "/api/config/models?includeUnavailable=true" });
       expect(response.statusCode).toBe(200);
@@ -71,6 +78,8 @@ describe("GET /api/config/models D462 controls", () => {
       });
       expect(JSON.stringify(kimi)).not.toContain("selector");
       expect(JSON.stringify(kimi)).not.toContain("provenance");
+      expect(JSON.stringify(models)).not.toContain("funding");
+      expect(callerAvailabilityCalls).toBe(0);
     } finally {
       await app.close();
     }
@@ -115,7 +124,7 @@ describe("caller-scoped model availability", () => {
     resetRuntimeModelCatalog();
   });
 
-  test("represents personal funding internally without enabling selection in this release", async () => {
+  test("admits personal funding for text chat without advertising unsupported paid features", async () => {
     const modelId = "anthropic:claude-sonnet-4-6";
     const result = await resolveCallerModelAvailability(
       "human-1",
@@ -147,7 +156,12 @@ describe("caller-scoped model availability", () => {
       credentialId: "credential-1",
       credentialRevision: 4,
     });
-    expect(result.selectableInThisRelease).toBe(false);
+    expect(result.selectableInThisRelease).toBe(true);
+    expect(result.model.capabilities).toMatchObject({
+      tools: false,
+      vision: false,
+      webSearch: false,
+    });
   });
 
   test("fails closed on caller funding denial and does not widen signed catalog restrictions", async () => {
@@ -186,5 +200,75 @@ describe("caller-scoped model availability", () => {
     expect(unknown.model.availability).toBe("unknown-model");
     expect(unknown.selectableInThisRelease).toBe(false);
     expect(fundingCalls).toBe(0);
+  });
+
+  test("authenticated caller catalogue uses personal availability without a server key", async () => {
+    const modelId = "anthropic:claude-sonnet-4-6";
+    const candidate: EligibleModel = {
+      id: modelId,
+      displayName: "Claude Sonnet 4.6",
+      provider: "anthropic",
+      priority: 1,
+      costCoefficient: 1,
+      enabled: false,
+      capabilities: { tools: true, vision: true, reasoning: true, e2ee: false, webSearch: true },
+      availability: "missing-key",
+      unavailableReason: "Anthropic credential is not configured",
+    };
+    const { unavailableReason: _unavailableReason, ...candidateWithoutReason } = candidate;
+    const calls: Array<{ humanUserId: string; modelId: string }> = [];
+    const app = Fastify({ logger: false });
+    app.decorateRequest("sessionUserId", null);
+    app.addHook("preHandler", async (request) => {
+      request.sessionUserId = request.headers["x-test-user"] === "human-1" ? "human-1" : null;
+    });
+    configRoutes(app, {
+      getEligibleModels: () => [candidate],
+      resolveCallerAvailability: async (humanUserId, resolvedModelId) => {
+        calls.push({ humanUserId, modelId: resolvedModelId });
+        return {
+          model: {
+            ...candidateWithoutReason,
+            enabled: true,
+            availability: "selectable",
+            capabilities: { ...candidate.capabilities, tools: false, vision: false, webSearch: false },
+          },
+          funding: {
+            kind: "personal",
+            humanUserId,
+            payerHumanId: humanUserId,
+            credentialId: "credential-1",
+            credentialRevision: 2,
+            modelId: resolvedModelId,
+            providerRoute: "anthropic",
+            workload: "foreground_text_chat",
+          },
+          selectableInThisRelease: true,
+        };
+      },
+    });
+    try {
+      const guest = await app.inject({ method: "GET", url: "/api/config/models/caller" });
+      expect(guest.statusCode).toBe(401);
+      expect(calls).toEqual([]);
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/config/models/caller",
+        headers: { "x-test-user": "human-1" },
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json<EligibleModel[]>();
+      expect(body).toHaveLength(1);
+      expect(body[0]?.id).toBe(modelId);
+      expect(body[0]?.enabled).toBe(true);
+      expect(body[0]?.availability).toBe("selectable");
+      expect(body[0]?.capabilities).toMatchObject({ tools: false, vision: false, webSearch: false });
+      expect(response.body).not.toContain("credential-1");
+      expect(response.body).not.toContain("funding");
+      expect(calls).toEqual([{ humanUserId: "human-1", modelId }]);
+    } finally {
+      await app.close();
+    }
   });
 });

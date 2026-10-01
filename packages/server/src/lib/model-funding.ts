@@ -188,7 +188,9 @@ export async function resolveModelFunding(
   }
   if (prior?.kind === "personal") throw new ModelFundingError("personal_credential_missing");
   if (!caps.includes("use_server_provider_credentials")) {
-    throw new ModelFundingError("server_credentials_forbidden");
+    throw new ModelFundingError(personalAllowed && provider && prior?.kind !== "server"
+      ? "personal_credential_missing"
+      : "server_credentials_forbidden");
   }
   const route = deps.serverRoute(input.modelId);
   if (!route) throw new ModelFundingError("provider_credentials_missing");
@@ -206,12 +208,13 @@ export async function withAdmittedPersonalProviderKey<T>(
   decision: Extract<ModelFundingDecision, { kind: "personal" }>,
   useKey: (apiKey: string) => Promise<T> | T,
   deps: ModelFundingDeps = DEFAULT_DEPS,
+  initialDecision: ModelFundingDecision = decision,
 ): Promise<T> {
   const current = await resolveModelFunding({
     humanUserId: decision.humanUserId,
     modelId: decision.modelId,
     workload: decision.workload,
-    priorDecision: decision,
+    priorDecision: initialDecision,
   }, deps);
   if (current.kind !== "personal" || current.credentialId !== decision.credentialId
     || current.credentialRevision !== decision.credentialRevision) {

@@ -20,6 +20,8 @@ import {
 export interface ConfigRouteDeps {
   readonly getDefaultImageModel?: typeof getDefaultImageModel;
   readonly resolveProviderKey?: typeof resolveProviderKey;
+  readonly getEligibleModels?: typeof getEligibleModels;
+  readonly resolveCallerAvailability?: typeof resolveCallerModelAvailability;
 }
 
 export interface CallerModelAvailability {
@@ -27,7 +29,7 @@ export interface CallerModelAvailability {
   readonly model: EligibleModel;
   /** Non-secret funding identity. Never serialize this from the guest catalog route. */
   readonly funding: ModelFundingDecision | null;
-  /** False for personal funding until foreground chat execution is wired in the next phase. */
+  /** True when the caller may select this model for the supported foreground text-chat path. */
   readonly selectableInThisRelease: boolean;
 }
 
@@ -60,8 +62,8 @@ function unavailableForCaller(model: EligibleModel, reason: string): EligibleMod
 /**
  * Internal caller-scoped projection for foreground text chat. It composes the
  * signed catalog/capability/routing result with the server-owned funding
- * resolver. Personal decisions are represented for the next execution phase,
- * but deliberately remain non-selectable in this release.
+ * resolver. Personal projections deliberately suppress capabilities whose
+ * paid execution paths are outside the supported personal text-chat slice.
  */
 export async function resolveCallerModelAvailability(
   humanUserId: string,
@@ -69,7 +71,7 @@ export async function resolveCallerModelAvailability(
   options: Omit<GetEligibleModelsOptions, "includeUnavailable"> = {},
   deps: CallerModelAvailabilityDeps = {},
 ): Promise<CallerModelAvailability> {
-  const base = resolveRetainedModels([modelId], options)[0]!;
+  const base = resolveRetainedModels([modelId], { ...options, purpose: "chat" })[0]!;
   if (base.availability !== "selectable" && base.availability !== "missing-key") {
     return { model: base, funding: null, selectableInThisRelease: false };
   }
@@ -80,16 +82,34 @@ export async function resolveCallerModelAvailability(
       modelId,
       workload: "foreground_text_chat",
     });
+    // Existing server-funded selection still requires a tool-capable chat
+    // model. Personal-funded selection is the narrower text-only surface.
+    const selectedBase = funding.kind === "server" && options.purpose === "chat-tools"
+      ? resolveRetainedModels([modelId], options)[0]!
+      : base;
+    if (selectedBase.availability !== "selectable" && selectedBase.availability !== "missing-key") {
+      return { model: selectedBase, funding: null, selectableInThisRelease: false };
+    }
     const model: EligibleModel = {
-      ...base,
+      ...selectedBase,
       enabled: true,
       availability: "selectable",
+      ...(funding.kind === "personal"
+        ? {
+            capabilities: {
+              ...selectedBase.capabilities,
+              tools: false,
+              vision: false,
+              webSearch: false,
+            },
+          }
+        : {}),
     };
     delete model.unavailableReason;
     return {
       model,
       funding,
-      selectableInThisRelease: funding.kind === "server",
+      selectableInThisRelease: true,
     };
   } catch (error) {
     const reason = error instanceof ModelFundingError
@@ -165,6 +185,43 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
     kickRuntimeModelCatalogRefresh();
     const models = getEligibleModels(eligibleModelsOptionsFromQuery(request.query as Record<string, unknown>));
     return reply.send(models);
+  });
+
+  /** Caller-funded foreground text-chat catalogue. Authentication is required
+   * because availability can reveal whether this Human has usable credentials. */
+  app.get("/api/config/models/caller", async (request, reply) => {
+    const humanUserId = request.sessionUserId;
+    if (!humanUserId) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    kickRuntimeModelCatalogRefresh();
+    const query = request.query as Record<string, unknown>;
+    const includeUnavailable = parseBoolQuery(query["includeUnavailable"]) ?? false;
+    const allowChinaUpstream = parseBoolQuery(query["allowChinaUpstream"]) ?? false;
+    const listModels = deps.getEligibleModels ?? getEligibleModels;
+    const resolveAvailability = deps.resolveCallerAvailability ?? resolveCallerModelAvailability;
+    const candidates = listModels({
+      includeUnavailable: true,
+      allowChinaUpstream,
+      purpose: "chat",
+      // Credential availability comes from the caller funding resolver below.
+      // The signed catalogue projection must not require a process-wide key.
+      env: {},
+    });
+    const resolved = await Promise.all(
+      candidates.map(async (candidate) =>
+        (await resolveAvailability(
+          humanUserId,
+          candidate.id,
+          { purpose: "chat", allowChinaUpstream, env: {} },
+        )).model,
+      ),
+    );
+    return reply.send(
+      includeUnavailable
+        ? resolved
+        : resolved.filter((model) => model.availability === "selectable"),
+    );
   });
 
   app.post("/api/config/models/resolve", async (request, reply) => {

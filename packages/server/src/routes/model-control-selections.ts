@@ -214,10 +214,7 @@ export function modelControlSelectionRoutes(
       if (!availability.selectableInThisRelease) {
         return reply.code(422).send({
           code: "model_unavailable",
-          error:
-            availability.funding?.kind === "personal"
-              ? "Personal-funded model selection is not available in this release."
-              : availability.model.unavailableReason ?? "selection model is unavailable",
+          error: availability.model.unavailableReason ?? "selection model is unavailable",
         });
       }
       return reply.send({

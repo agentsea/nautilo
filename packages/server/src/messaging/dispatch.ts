@@ -116,6 +116,10 @@ import {
 } from "./agent-mediated";
 import { resolveSubthreadRootAffinity } from "../lib/subthread-root-affinity";
 import {
+  callerHasConfiguredPersonalFunding,
+  callerMayUsePersonalChat,
+} from "../lib/foreground-chat-funding";
+import {
   clearPendingAgentRedirect,
   isRedirectAllowedForConductorWake,
   registerPendingAgentRedirect,
@@ -1237,38 +1241,25 @@ export async function dispatchRoomMessageSend(
       });
     }
 
-    // This release has no personal credential route. A Human without server
-    // funding authority may still post ordinary mixed-Room history, but no
-    // Conductor or Genie may spend the instance's provider credentials.
-    try {
-      await (opts.assertCanUseServerProviderCredentials ?? assertCanUseServerProviderCredentials)(
-        sessionUserId,
-        "room_message",
-      );
-    } catch (err) {
-      if (!(err instanceof ServerProviderCredentialsDeniedError)) throw err;
-      if ((isDm && !audienceOnlyDm) || hasExplicitAgentTarget) {
+    // An exact direct target is already known. Deny foreign-Genie invocation
+    // before consulting any funding source or starting auxiliary work.
+    if (isDm && agentMembers[0]?.agentId) {
+      try {
+        await (opts.assertCanInvokeAgent ?? assertCanInvokeAgent)({
+          humanUserId: sessionUserId,
+          origin: "room_message",
+          roomId: detail.id,
+          agentId: agentMembers[0].agentId,
+        });
+      } catch (err) {
+        if (!(err instanceof AgentInvocationDeniedError)) throw err;
         return reply.code(403).send(toActionCapabilityHttpDenial(err));
       }
-      return dispatchHumanOnlyRoomMessage(request, reply, {
-        detail,
-        chatDeps,
-        alias,
-        sessionUserId,
-        ...(content === undefined ? {} : { content }),
-        attachmentRefs,
-        mentionedHumanUserIds,
-        mentionEveryone,
-        workspaceArtifactExternalIds,
-        ...(canonicalRoomNamespaceId ? { canonicalRoomNamespaceId } : {}),
-        ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
-        liveShadow: opts.body.liveShadow,
-      });
     }
 
-    // Explicitly addressed Genies are known before persistence. Reject a
-    // foreign target here so the caller receives a small HTTP denial and no
-    // Human message is accepted as an Agent request that cannot run.
+    // Check explicitly addressed mixed-Room targets before the personal
+    // workload fence. A Community caller gets the precise foreign-Genie
+    // denial without any Conductor or provider work.
     if (!isDm) {
       const explicitTargets = agentMembers.filter((member) =>
         member.agentId && (
@@ -1292,6 +1283,59 @@ export async function dispatchRoomMessageSend(
           if (!(err instanceof AgentInvocationDeniedError)) throw err;
           return reply.code(403).send(toActionCapabilityHttpDenial(err));
         }
+      }
+    }
+
+    const ownPrivateDm = isDm && detail.kind === "private"
+      && detail.members.some((member) => member.kind === "user" && member.userId === sessionUserId)
+      && agentMembers[0]?.agentOwnerUserId === sessionUserId
+      && !mentionEveryoneRoutingHint;
+    const personalFundingConfigured = await callerHasConfiguredPersonalFunding(sessionUserId);
+    const personalChatCandidate = ownPrivateDm && personalFundingConfigured
+      && await callerMayUsePersonalChat(sessionUserId);
+    // A personal-only caller cannot fund group routing or another auxiliary
+    // branch. Members with server-funding permission keep those existing paths.
+    if (personalChatCandidate && (
+      voiceMode || fullPrepared || attachmentRefs.length > 0 || artifactRefs.length > 0
+      || focusedResources.length > 0 || activeMiniApp !== null || liveMiniAppSession !== null
+      || handledAgentSlash
+    )) {
+      return reply.code(422).send({
+        code: "unsupported_workload",
+        error: "Personal provider credentials support text chat only.",
+      });
+    }
+    if (!personalChatCandidate) {
+      try {
+        await (opts.assertCanUseServerProviderCredentials ?? assertCanUseServerProviderCredentials)(
+          sessionUserId,
+          "room_message",
+        );
+      } catch (err) {
+        if (!(err instanceof ServerProviderCredentialsDeniedError)) throw err;
+        if (personalFundingConfigured) {
+          return reply.code(422).send({
+            code: "unsupported_workload",
+            error: "Personal provider credentials support only text chat with your own Genie in a private Room.",
+          });
+        }
+        if ((isDm && !audienceOnlyDm) || hasExplicitAgentTarget) {
+          return reply.code(403).send(toActionCapabilityHttpDenial(err));
+        }
+        return dispatchHumanOnlyRoomMessage(request, reply, {
+          detail,
+          chatDeps,
+          alias,
+          sessionUserId,
+          ...(content === undefined ? {} : { content }),
+          attachmentRefs,
+          mentionedHumanUserIds,
+          mentionEveryone,
+          workspaceArtifactExternalIds,
+          ...(canonicalRoomNamespaceId ? { canonicalRoomNamespaceId } : {}),
+          ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
+          liveShadow: opts.body.liveShadow,
+        });
       }
     }
 

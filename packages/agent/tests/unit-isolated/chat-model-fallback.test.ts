@@ -14,6 +14,7 @@ import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { ChatModel } from "../../src/providers/types";
+import type { ForegroundChatFundingSession } from "../../src/runtime/foreground-chat-funding";
 import type { ResolvedFallbackPolicy } from "../../src/utils/resolve-fallback-policy";
 import { setAgentEventSink } from "../../src/runtime-hooks";
 import { getOrCreateAgentTurnContextByKey, turnContextKey, _resetAgentTurnContextsForTests } from "../../src/runtime/turn-context";
@@ -22,6 +23,7 @@ import { isManagedGatewayOutcomeUnknownError } from "../../src/providers/openrou
 import type { ModelCatalog, ModelFallbackEvent, ServerEvent } from "@nautilo/types";
 import { getCurrentTurnId, runWithTurn } from "@nautilo/logger";
 import { classifyModelStreamProgress, resolveModelAttemptPolicy } from "../../src/utils/model-attempt-policy";
+import { classifyError } from "../../src/utils/errors";
 import { runWithTaskCausalHuman } from "../../src/runtime/causal-human-context";
 import { getUsageContext } from "../../src/usage/usage-context";
 import {
@@ -155,6 +157,7 @@ let invokeChatModelWithFallback: (
   invocationConfig?: RunnableConfig,
   invokeOptions?: {
     fundingHumanUserId?: string;
+    fundingSession?: ForegroundChatFundingSession;
     serverFundedService?: "shared_memory_maintenance";
     reasoningOutput?: boolean;
     reasoningOverrides?: Record<string, boolean>;
@@ -2031,5 +2034,214 @@ describe("invokeChatModelWithFallback — foreground controls", () => {
     expect(thrown).toBeInstanceOf(Error);
     expect((thrown as Error).message).toContain(`Resolved foreground controls belong to "${B}"`);
     expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("invokeChatModelWithFallback — foreground funding session", () => {
+  const messages = [new HumanMessage("personally funded")];
+
+  beforeEach(() => {
+    Object.assign(process.env, TEST_PROVIDER_KEYS);
+    delete process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
+    delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
+    policyState = { enabled: false, chain: [] };
+    createUniversalModelMock.mockReset();
+    fundingAdmission.mockReset();
+    fundingAdmission.mockImplementation(async () => undefined);
+    markModelInvokeFailureMock.mockReset();
+    _resetAgentTurnContextsForTests();
+  });
+
+  test("keeps fallback personal, binds zero tools, and attributes each exact attempt", async () => {
+    delete process.env["ANTHROPIC_API_KEY"];
+    delete process.env["OPENAI_API_KEY"];
+    policyState = { enabled: true, chain: [A, B] };
+    const rechecks: string[] = [];
+    const attempts: string[] = [];
+    const boundToolCounts: number[] = [];
+    const observedFunding: unknown[] = [];
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt(modelId) { rechecks.push(modelId); },
+      async runAttempt(modelId, callback) {
+        attempts.push(modelId);
+        return callback({
+          personalCredential: { apiKey: `personal-${modelId}` },
+          usageFunding: {
+            kind: "personal",
+            humanUserId: "human-1",
+            payerHumanId: "human-1",
+            providerRoute: modelId.split(":", 1)[0]!,
+            credentialId: `credential-${modelId}`,
+            credentialRevision: 3,
+          },
+        });
+      },
+    };
+    createUniversalModelMock.mockImplementation(async (modelId, options): Promise<AuraModel> => ({
+      bindTools(boundTools) {
+        boundToolCounts.push(boundTools.length);
+        return {
+          invoke: async () => {
+            observedFunding.push(getUsageContext()?.funding);
+            if (modelId === A) {
+              throw Object.assign(new Error("provider unavailable"), { status: 503 });
+            }
+            return new AIMessage("personal success");
+          },
+        };
+      },
+      invoke: async () => new AIMessage(String(options?.["personalCredential"])),
+    }));
+    const fakeTool = { name: "paid_tool", description: "must not bind", schema: {} } as StructuredTool;
+
+    const result = await invokeChatModelWithFallback(
+      messages, [fakeTool], A, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session, sameModelRetryMode: "none" },
+    );
+
+    expect(result.modelUsed).toBe(B);
+    expect(attempts).toEqual([A, B]);
+    expect(rechecks).toEqual([B]);
+    expect(boundToolCounts).toEqual([0, 0]);
+    expect(modelOptionsFromCalls().map((options) => options?.["personalCredential"])).toEqual([
+      { apiKey: `personal-${A}` },
+      { apiKey: `personal-${B}` },
+    ]);
+    expect(observedFunding).toEqual([
+      expect.objectContaining({ kind: "personal", credentialId: `credential-${A}` }),
+      expect.objectContaining({ kind: "personal", credentialId: `credential-${B}` }),
+    ]);
+    expect(fundingAdmission).not.toHaveBeenCalled();
+    expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
+  });
+
+  test("rechecks the pinned session before a same-model short retry", async () => {
+    const rechecks: string[] = [];
+    let invokes = 0;
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt(modelId) { rechecks.push(modelId); },
+      async runAttempt(_modelId, callback) {
+        return callback({
+          personalCredential: { apiKey: "personal-key" },
+          usageFunding: {
+            kind: "personal", humanUserId: "human-1", payerHumanId: "human-1",
+            providerRoute: "anthropic", credentialId: "credential-1", credentialRevision: 1,
+          },
+        });
+      },
+    };
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          invokes += 1;
+          if (invokes === 1) {
+            throw Object.assign(new Error("retry me"), { status: 503 });
+          }
+          return new AIMessage("retried");
+        },
+      }),
+      invoke: async () => new AIMessage("unused"),
+    }));
+
+    const result = await invokeChatModelWithFallback(
+      messages, [], A, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session },
+    );
+
+    expect(result.modelUsed).toBe(A);
+    expect(invokes).toBe(2);
+    expect(rechecks).toEqual([A]);
+  });
+
+  test("does not classify an injected funding failure as a provider fallback", async () => {
+    policyState = { enabled: true, chain: [A, B] };
+    const fundingError = Object.assign(new Error("funding changed"), { status: 503 });
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt() {},
+      async runAttempt() { throw fundingError; },
+    };
+
+    const thrown = await invokeChatModelWithFallback(
+      messages, [], A, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session, sameModelRetryMode: "none" },
+    ).then(() => null, (error: unknown) => error);
+
+    expect(thrown).toBe(fundingError);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+    expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
+  });
+
+  test("sanitizes personal provider failures before they leave the attempt boundary", async () => {
+    const syntheticSecret = "sk-personal-secret-must-not-escape";
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt() {},
+      async runAttempt(_modelId, callback) {
+        return callback({
+          personalCredential: { apiKey: syntheticSecret },
+          usageFunding: {
+            kind: "personal", humanUserId: "human-1", payerHumanId: "human-1",
+            providerRoute: "anthropic", credentialId: "credential-1", credentialRevision: 1,
+          },
+        });
+      },
+    };
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          throw Object.assign(new Error(`invalid api key ${syntheticSecret}`), { status: 401 });
+        },
+      }),
+      invoke: async () => new AIMessage("unused"),
+    }));
+
+    const thrown = await invokeChatModelWithFallback(
+      messages, [], A, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session, sameModelRetryMode: "none" },
+    ).then(() => null, (error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(String((thrown as Error).message)).not.toContain(syntheticSecret);
+    expect((thrown as { code?: string }).code).toBe("AUTHENTICATION_ERROR");
+    expect(classifyError(thrown).category).toBe("AUTH_ERROR");
+  });
+
+  test("keeps personal OpenRouter isolated from managed-Gateway replay and health state", async () => {
+    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = "server-managed-gateway";
+    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.example.test/v1";
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt() {},
+      async runAttempt(_modelId, callback) {
+        return callback({
+          personalCredential: { apiKey: "personal-openrouter-key" },
+          usageFunding: {
+            kind: "personal", humanUserId: "human-1", payerHumanId: "human-1",
+            providerRoute: "openrouter", credentialId: "credential-or", credentialRevision: 4,
+          },
+        });
+      },
+    };
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          throw Object.assign(new Error("personal upstream failed"), { status: 502 });
+        },
+      }),
+      invoke: async () => new AIMessage("unused"),
+    }));
+
+    const thrown = await invokeChatModelWithFallback(
+      messages, [], T1, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session, sameModelRetryMode: "none" },
+    ).then(() => null, (error: unknown) => error);
+
+    expect(isManagedGatewayOutcomeUnknownError(thrown)).toBe(false);
+    expect(classifyError(thrown).category).toBe("SERVICE_ERROR");
+    expect(modelOptionsFromCalls()[0]?.["personalCredential"]).toEqual({ apiKey: "personal-openrouter-key" });
+    expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
   });
 });

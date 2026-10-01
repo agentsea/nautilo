@@ -29,7 +29,6 @@ import {
   generateSoulFile,
   generateSoulFileStream,
   SOUL_GENERATION_FAILED_MESSAGE,
-  resolveRetainedModels,
   type NautiloProfile,
   type UpsertProfileInput,
   type SoulFileInput,
@@ -44,6 +43,10 @@ import {
 } from "@nautilo/trust";
 import { validateIanaTimezone } from "../lib/timezone";
 import { eventBus } from "@nautilo/runtime";
+import {
+  resolveCallerModelAvailability,
+  type CallerModelAvailability,
+} from "./config";
 
 /** Never project a provider/catalog alias for a curated Nautilo voice. */
 export function canonicalizeProfileVoices(voices: ProfileVoices | undefined): ProfileVoices {
@@ -115,10 +118,18 @@ export function profileRoutes(
       policy: { enabled: boolean; chain: string[] },
     ) => Promise<{ fallbackEnabled: boolean; fallbackChain: string[] }>;
     assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+    resolveCallerAvailability?: (
+      humanUserId: string,
+      modelId: string,
+    ) => Promise<CallerModelAvailability>;
   },
 ) {
   const resolveSubjectUserId = (request: FastifyRequest): string =>
     request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? deps?.ownerId ?? "";
+  const resolveModelAvailability =
+    deps?.resolveCallerAvailability ??
+    ((humanUserId: string, modelId: string) =>
+      resolveCallerModelAvailability(humanUserId, modelId, { purpose: "chat-tools" }));
 
   // M132 — the Profile is agent-keyed. Profile writes resolve the
   // subject's personal Agent at the (full-priv) route layer and pass it
@@ -204,23 +215,25 @@ export function profileRoutes(
         code: "avatar_mutation_requires_library",
       });
     }
+    let validatedDefaultModelId: string | undefined;
     if (typeof request.body?.defaultModel === "string") {
-      const [model] = resolveRetainedModels([request.body.defaultModel], {
-        purpose: "chat-tools",
-      });
-      if (model?.availability !== "selectable") {
+      const availability = await resolveModelAvailability(
+        request.sessionUserId,
+        request.body.defaultModel,
+      );
+      if (!availability.selectableInThisRelease) {
+        const model = availability.model;
         return reply.code(422).send({
           code: "model_unavailable",
-          error: `Model "${request.body.defaultModel}" is unavailable: ${model?.unavailableReason ?? "not runnable now"}`,
-          model: model
-            ? {
-                modelId: model.id,
-                availability: model.availability,
-                reason: model.unavailableReason,
-              }
-            : undefined,
+          error: `Model "${request.body.defaultModel}" is unavailable: ${model.unavailableReason ?? "not runnable now"}`,
+          model: {
+            modelId: model.id,
+            availability: model.availability,
+            reason: model.unavailableReason,
+          },
         });
       }
+      validatedDefaultModelId = request.body.defaultModel;
     }
     try {
       const agentId = await resolveSubjectAgentId(request);
@@ -239,7 +252,7 @@ export function profileRoutes(
       if (nameProvided) {
         const { name: _name, timezone: _timezone, ...profilePatch } = request.body;
         if (Object.keys(profilePatch).length > 0) {
-          await upsertProfile(subjectUserId, agentId, profilePatch);
+          await upsertProfile(subjectUserId, agentId, profilePatch, validatedDefaultModelId);
         }
         await renameAgentProfileIdentity({
           ownerUserId: subjectUserId,
@@ -252,7 +265,12 @@ export function profileRoutes(
         }
         profile = refreshed;
       } else {
-        profile = await upsertProfile(subjectUserId, agentId, request.body);
+        profile = await upsertProfile(
+          subjectUserId,
+          agentId,
+          request.body,
+          validatedDefaultModelId,
+        );
       }
       // M087 — onboarding-captured timezone persists to `users.timezone`
       // (account-level), best-effort: a failure logs but never fails the
@@ -417,7 +435,8 @@ export function profileRoutes(
     "/api/profile/fallback",
     async (request, reply) => {
       // M128 D4-A: self-edit by construction (writes to subject = session user).
-      if (!request.sessionUserId) {
+      const humanUserId = request.sessionUserId;
+      if (!humanUserId) {
         return reply.code(401).send({ error: "Authentication required" });
       }
       const body = request.body ?? {};
@@ -429,8 +448,12 @@ export function profileRoutes(
       }
       const chain: string[] = body.chain;
       const enabled = body.enabled;
-      const resolved = resolveRetainedModels(chain, { purpose: "chat-tools" });
-      const unavailable = resolved.filter((model) => model.availability !== "selectable");
+      const resolved = await Promise.all(
+        chain.map((modelId) => resolveModelAvailability(humanUserId, modelId)),
+      );
+      const unavailable = resolved
+        .filter((availability) => !availability.selectableInThisRelease)
+        .map((availability) => availability.model);
       if (unavailable.length > 0) {
         return reply.code(422).send({
           code: "model_unavailable",

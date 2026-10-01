@@ -38,6 +38,9 @@ import {
   modelIdForCapabilityProjection,
   resolveModelRole,
 } from "../config/model-role-resolution";
+import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
+import { getModelById } from "../config/assistant-models";
+import { ModelUnavailableError } from "../config/eligible-models";
 import { hasStubModelForTests } from "../providers/stub-model-state";
 import { getCurrentInitiatingClientSurface } from "../runtime/initiating-client-surface-context";
 import { effectiveLiveMiniAppSessionForState } from "../runtime/live-mini-app-execution-context";
@@ -46,6 +49,28 @@ import {
   recallRecordsToolContextForState,
   type RecallRecordsPortForState,
 } from "../tools/memory/recall-records";
+import type { ForegroundChatFundingSession } from "../runtime/foreground-chat-funding";
+
+function signedCatalogEntrySupportsForegroundText(
+  entry: ReturnType<typeof getActiveModelCatalogSync>["catalog"]["entries"][number],
+): boolean {
+  const workload = "workload" in entry ? entry.workload : "chat";
+  return workload === "chat"
+    && (!entry.modalities?.output || entry.modalities.output.includes("text"));
+}
+
+function resolvePersonalForegroundModelId(configuredModelId: string | null | undefined): string {
+  const modelId = modelIdForCapabilityProjection("chat", configuredModelId);
+  const entry = getActiveModelCatalogSync().catalog.entries.find((candidate) => candidate.id === modelId);
+  if (!entry || !entry.defaultEnabled || !getModelById(modelId)) {
+    throw new ModelUnavailableError(modelId, entry ? "filtered" : "unknown-model",
+      entry ? "catalog row disabled" : "model is not present in the current signed catalog");
+  }
+  if (!signedCatalogEntrySupportsForegroundText(entry)) {
+    throw new ModelUnavailableError(modelId, "unsupported-capability", "model does not support foreground text chat");
+  }
+  return modelId;
+}
 
 export async function agentNode(
   state: NautiloState,
@@ -54,12 +79,15 @@ export async function agentNode(
   fullEncryptionOnly = false,
   optionalResearchDraft?: HumanMessage,
   ordinaryContentAccessForState?: OrdinaryContentAccessForState,
+  foregroundChatFundingSession?: ForegroundChatFundingSession,
 ): Promise<Partial<NautiloState>> {
   const config = fromRuntimeConfig();
   const configuredModelId = state.model || config.nautilo_model;
   const resolveModelOnlyRequestedModelId = () => hasStubModelForTests()
     ? modelIdForCapabilityProjection("chat", configuredModelId)
-    : resolveModelRole("chat", {
+    : foregroundChatFundingSession?.kind === "personal"
+      ? resolvePersonalForegroundModelId(configuredModelId)
+      : resolveModelRole("chat", {
         ...(configuredModelId ? { configuredId: configuredModelId } : {}),
       });
   const isForegroundTurn = (state.subagentDepth ?? 0) === 0;
@@ -75,7 +103,9 @@ export async function agentNode(
   // default must not veto an explicitly selected Room or Agent model.
   const requestedModelId = hasStubModelForTests()
     ? selectedModelId
-    : resolveModelRole("chat", { configuredId: selectedModelId });
+    : foregroundChatFundingSession?.kind === "personal"
+      ? resolvePersonalForegroundModelId(selectedModelId)
+      : resolveModelRole("chat", { configuredId: selectedModelId });
 
   const preparedMessages = state.preparedMessages;
   if (!preparedMessages.length) {
@@ -177,6 +207,10 @@ export async function agentNode(
   );
   const rawTools = progressiveResolution.tools;
   const tools = projectSecurityResearchConsolidationTools(withholdSkipForExplicitSelection(rawTools, state.explicitlySelected), isResearchPreEvictionConsolidating(state));
+  // Personal-funded foreground chat supports text generation only. Keeping the
+  // provider binding empty is an execution fence in addition to route/tool
+  // admission owned by the server and graph.
+  const invocationTools = foregroundChatFundingSession?.kind === "personal" ? [] : tools;
   // Recompute only the stable intent category here for telemetry parity with
   // pre_model; the persisted activation set remains the binding authority.
   const intentPackToolNames = state.actorRole === "guest"
@@ -192,7 +226,7 @@ export async function agentNode(
     activatedToolNames,
     activatedToolLeases: state.actorRole === "guest" ? [] : state.activatedToolLeases ?? [],
     intentPackToolNames,
-    tools,
+    tools: invocationTools,
   });
 
   // derive room-scoped lane key for `model.fallback` event
@@ -230,7 +264,7 @@ export async function agentNode(
   let actualPreparedMessages = preparedMessages;
   if (researchContinuity && optionalResearchDraft) {
     const candidate = [...preparedMessages, optionalResearchDraft];
-    const allowance = await resolvePreparedMessageBudget(requestedModelId, tools);
+    const allowance = await resolvePreparedMessageBudget(requestedModelId, invocationTools);
     const candidateTokens = estimateTokenCount(candidate);
     const included = candidateTokens <= allowance;
     if (included) actualPreparedMessages = candidate;
@@ -249,7 +283,7 @@ export async function agentNode(
     () =>
       invokeChatModelWithFallback(
         actualPreparedMessages,
-        tools,
+        invocationTools,
         requestedModelId,
         // thread user + agent so the resolver picks up the
         // right per-agent override (falling back to per-user default).
@@ -264,6 +298,9 @@ export async function agentNode(
           modelFallbackMode: state.modelFallbackMode ?? "agent_chain",
           preparedStableSystemPrefixLength: state.preparedStableSystemPrefixLength ?? 0,
           providerCacheRoomId: state.roomId ?? null,
+          ...(foregroundChatFundingSession === undefined
+            ? {}
+            : { fundingSession: foregroundChatFundingSession }),
           // Apply from the first scoped turn, before security_scan.start can
           // set researchWorkEnabled; the parent and optional helper are separate callers.
           ...(researchContinuity
@@ -311,7 +348,7 @@ export async function agentNode(
     // Protected dispatch persists this safe output. Use the actual responder's
     // window, including its tool-call response, rather than a larger requested
     // model's allowance after fallback.
-    taskReadPageBytes: taskReadResponseByteBudget(await resolvePreparedMessageBudget(modelUsed, tools),
+    taskReadPageBytes: taskReadResponseByteBudget(await resolvePreparedMessageBudget(modelUsed, invocationTools),
       [...actualPreparedMessages, response]),
     taskReadPendingPages: state.taskReadPendingPages ?? [],
   };

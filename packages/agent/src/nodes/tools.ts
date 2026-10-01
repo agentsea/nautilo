@@ -2,6 +2,7 @@ import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
 import { browserDecisionHandoffMessage, browserDecisionPlanError, browserObservationFromResult, interpretBrowserDecisionCall, settleBrowserDecision } from "../graph/browser-decision";
 import { randomUUID } from "node:crypto";
 import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
+import type { ToolCall } from "@langchain/core/messages/tool";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { task } from "@langchain/langgraph";
 import {
@@ -71,6 +72,25 @@ export type {
 } from "../tools/invocation-service";
 
 type ApprovedToolCall = NonNullable<NautiloState["approvedToolCalls"]>[number];
+
+export const PERSONAL_FUNDING_TOOL_UNSUPPORTED_RESULT = JSON.stringify({
+  error: "unsupported_workload",
+  message: "Personal funding supports foreground text chat only. No tool was executed.",
+  recovery: "continue_without_tools",
+});
+
+/** @internal Shared by the post-model and execution fences. */
+export function personalFundingToolDenialMessage(
+  call: Pick<ToolCall, "id" | "name">,
+): ToolMessage {
+  return new ToolMessage({
+    content: PERSONAL_FUNDING_TOOL_UNSUPPORTED_RESULT,
+    tool_call_id: call.id ?? `personal_funding_denied_${call.name}`,
+    name: call.name,
+    status: "error",
+    additional_kwargs: { nautilo_tool_status: "error" },
+  });
+}
 
 export interface LiveShadowToolBoundary {
   /** Protect/self-open the complete canonical assistant Message before invoke. */
@@ -142,6 +162,7 @@ export function normalizeAdmittedToolCalls(
 }
 
 type ProtectedToolComposition = Readonly<{
+  personalFunding?: boolean;
   ordinaryContentAccess?: OrdinaryContentAccessSelection;
   recallRecordsPort?: RecallRecordsPort;
   repository?: ProtectedAgentMemoryRepository;
@@ -217,6 +238,24 @@ async function executeToolsNode(
       requiredHostRelays: {},
       computerUseInvocationBindings: {},
       ordinaryContentAccessBindings: {},
+    };
+  }
+
+  // A stale checkpoint or a direct node call must not turn the personal text
+  // lane into tool funding. Refuse the whole saved batch before opening
+  // protected content, resolving live ports, or invoking any tool adapter.
+  if (protectedComposition.personalFunding === true) {
+    return {
+      messages: mergeMessagesPreservingInvariants(
+        state.messages,
+        toolCalls.map(personalFundingToolDenialMessage),
+      ),
+      approvedToolCalls: [],
+      requiredHostRelays: {},
+      computerUseInvocationBindings: {},
+      ordinaryContentAccessBindings: {},
+      pendingApproval: [],
+      approvalDenied: true,
     };
   }
 
@@ -566,6 +605,7 @@ export async function toolsNode(
  * already-bound capability into the existing admission session.
  */
 export function createToolsNode(input: Readonly<{
+  personalFunding?: boolean;
   ordinaryContentAccessForState?: OrdinaryContentAccessForState;
   recallRecordsPortForState?: RecallRecordsPortForState;
   liveShadowToolBoundaryForState?: LiveShadowToolBoundaryForState;
@@ -584,6 +624,9 @@ export function createToolsNode(input: Readonly<{
   fullEncryptionOnlyForState?: (state: NautiloState) => boolean;
 }> = {}): typeof toolsNode {
   return async (state, config) => {
+    if (input.personalFunding === true) {
+      return executeToolsNode(state, config, { personalFunding: true });
+    }
     const ordinaryContentAccess = await input.ordinaryContentAccessForState?.(state);
     const recallRecordsPort = input.recallRecordsPortForState?.(state);
     const liveShadowToolBoundary =

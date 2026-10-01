@@ -55,6 +55,10 @@ import {
   classifyModelStreamProgress,
   type ResolvedModelAttemptPolicy,
 } from "./model-attempt-policy";
+import type {
+  ForegroundChatFundingAttempt,
+  ForegroundChatFundingSession,
+} from "../runtime/foreground-chat-funding";
 
 /**
  * explicit fallback-mode representation threaded from Task
@@ -97,6 +101,51 @@ export function isStrictNoChain(mode: ModelFallbackMode | undefined): boolean {
 const COMPLETION_SAFETY_MARGIN_TOKENS = 4_096;
 const SAME_MODEL_RETRYABLE_ATTEMPTS = 2;
 type ModelFundingService = "shared_memory_maintenance";
+
+class ForegroundFundingRecheckError extends Error {
+  constructor(override readonly cause: unknown) {
+    super("Foreground funding recheck failed");
+    this.name = "ForegroundFundingRecheckError";
+  }
+}
+
+class ProviderAttemptError extends Error {
+  constructor(override readonly cause: unknown) {
+    super("Foreground provider attempt failed");
+    this.name = "ProviderAttemptError";
+  }
+}
+
+class PersonalProviderInvocationError extends Error {
+  readonly code: string;
+  readonly status?: number;
+
+  constructor(readonly category: ClassifiedError["category"]) {
+    super(category === "TIMEOUT"
+      ? "Personal provider request timed out."
+      : `Personal provider request failed (${mapCategory(category)}).`);
+    this.name = "PersonalProviderInvocationError";
+    this.code = category === "AUTH_ERROR" ? "AUTHENTICATION_ERROR"
+      : category === "RATE_LIMIT" ? "RATE_LIMIT_ERROR"
+        : category === "TOKEN_LIMIT" ? "CONTEXT_LENGTH_EXCEEDED"
+          : category === "NETWORK_ERROR" ? "ECONNRESET"
+            : "NAUTILO_PERSONAL_PROVIDER_FAILURE";
+    const status = category === "AUTH_ERROR" ? 401
+      : category === "RATE_LIMIT" ? 429
+        : category === "INVALID_REQUEST" ? 400
+          : category === "SERVICE_ERROR" ? 503
+            : undefined;
+    if (status !== undefined) this.status = status;
+  }
+}
+
+function signedCatalogEntrySupportsForegroundText(
+  entry: ReturnType<typeof getActiveModelCatalogSync>["catalog"]["entries"][number],
+): boolean {
+  const workload = "workload" in entry ? entry.workload : "chat";
+  return workload === "chat"
+    && (!entry.modalities?.output || entry.modalities.output.includes("text"));
+}
 
 async function assertModelFunding(humanUserId: string | undefined, service?: ModelFundingService): Promise<void> {
   if (service === "shared_memory_maintenance") return;
@@ -387,6 +436,7 @@ async function invokeOnceWithShortRetries(
   modelId: string,
   fundingHumanUserId: string,
   fundingService: ModelFundingService | undefined,
+  fundingSession: ForegroundChatFundingSession | undefined,
   agentId: string | null,
   attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean },
   maximumAttempts = SAME_MODEL_RETRYABLE_ATTEMPTS,
@@ -397,7 +447,21 @@ async function invokeOnceWithShortRetries(
         ? llmCallConfig.signal.reason
         : new Error("Model invocation cancelled by caller");
     }
-    if (attempt > 1) await assertModelFunding(fundingHumanUserId, fundingService);
+    if (attempt > 1) {
+      if (fundingSession) {
+        try {
+          await fundingSession.recheckAttempt(modelId);
+        } catch (error) {
+          throw new ForegroundFundingRecheckError(error);
+        }
+      } else {
+        try {
+          await assertModelFunding(fundingHumanUserId, fundingService);
+        } catch (error) {
+          throw new ForegroundFundingRecheckError(error);
+        }
+      }
+    }
     try {
       const attemptPolicy = resolveModelAttemptPolicy(modelId, {
         ...attemptPolicyOptions,
@@ -436,6 +500,7 @@ async function invokeForegroundAttemptWithUsageContext(
   modelId: string,
   fundingHumanUserId: string,
   fundingService: ModelFundingService | undefined,
+  fundingSession: ForegroundChatFundingSession | undefined,
   agentId: string | null,
   controls: ResolvedForegroundModelControls | undefined,
   serving: ResolvedFireworksKimiK3ServingProfile | undefined,
@@ -451,6 +516,7 @@ async function invokeForegroundAttemptWithUsageContext(
     modelId,
     fundingHumanUserId,
     fundingService,
+    fundingSession,
     agentId,
     attemptPolicyOptions,
     sameModelRetryMode === "none" ? 1 : SAME_MODEL_RETRYABLE_ATTEMPTS,
@@ -541,6 +607,7 @@ function nextInUserChain(
   requiresTools: boolean,
   initialModelId: string,
   strictNoChain: boolean,
+  personalFunding: boolean,
 ): string | undefined {
   // strict / no-chain mode suppresses EVERY cross-model hop
   // (vision-skip preflight, context-exceeded preflight, provider failure,
@@ -567,18 +634,26 @@ function nextInUserChain(
       log(`[nautilo/agent] Skipping chain entry equal to initial selected model: ${candidate}`);
       continue;
     }
-    if (!isModelHealthy(candidate)) {
+    if (!personalFunding && !isModelHealthy(candidate)) {
       log(`[nautilo/agent] Skipping unhealthy chain entry: ${candidate}`);
       continue;
     }
-    const availability = resolveRetainedModels([candidate], {
-      purpose: needsVision
-        ? requiresTools ? "vision-tools" : "vision"
-        : requiresTools ? "chat-tools" : "chat",
-    })[0]!;
-    if (availability.availability !== "selectable") {
-      log(`[nautilo/agent] Skipping unavailable chain entry: ${candidate}`);
-      continue;
+    if (personalFunding) {
+      const entry = getActiveModelCatalogSync().catalog.entries.find((row) => row.id === candidate);
+      if (!entry || !entry.defaultEnabled || !signedCatalogEntrySupportsForegroundText(entry)) {
+        log(`[nautilo/agent] Skipping unavailable personal-funded chain entry: ${candidate}`);
+        continue;
+      }
+    } else {
+      const availability = resolveRetainedModels([candidate], {
+        purpose: needsVision
+          ? requiresTools ? "vision-tools" : "vision"
+          : requiresTools ? "chat-tools" : "chat",
+      })[0]!;
+      if (availability.availability !== "selectable") {
+        log(`[nautilo/agent] Skipping unavailable chain entry: ${candidate}`);
+        continue;
+      }
     }
     if (needsVision && !modelSupportsInput(candidate, "image")) {
       log(`[nautilo/agent] Skipping text-only chain entry (thread has images): ${candidate}`);
@@ -621,6 +696,8 @@ export async function invokeChatModelWithFallback(
   invokeOptions?: {
     /** Exact initiating Human; separate from the Agent owner's model policy. */
     fundingHumanUserId?: string;
+    /** Trusted request-local authority for foreground funding and credential injection. */
+    fundingSession?: ForegroundChatFundingSession;
     /** Reserved for the server-owned Room-side shared-memory pipeline. */
     serverFundedService?: ModelFundingService;
     /** Global force: when false, reasoning output is off for every hop (e.g. conductor). */
@@ -668,6 +745,14 @@ export async function invokeChatModelWithFallback(
   }
   const policy = await resolveFallbackPolicy(userId, agentId);
   const strictNoChain = isStrictNoChain(invokeOptions?.modelFallbackMode);
+  const fundingSession = invokeOptions?.fundingSession;
+  const personalFunding = fundingSession?.kind === "personal";
+  if (personalFunding && messagesContainImageInputs(messages)) {
+    throw new ModelUnavailableError(initialModelId, "unsupported-capability", "personal funding supports foreground text chat only");
+  }
+  // Direct callers receive the same model-tool fence as agentNode. The
+  // server/legacy path preserves its existing tool binding unchanged.
+  tools = personalFunding ? [] : tools;
   let currentModelId = initialModelId;
   const attemptedModels: string[] = [];
   const needsVision = messagesContainImageInputs(messages);
@@ -682,6 +767,7 @@ export async function invokeChatModelWithFallback(
     return invokeOptions?.reasoningOutput ?? true;
   };
   let disableReasoningOutput = false;
+  let providerAttemptStarted = false;
   const assertNotCancelled = () => {
     if (invocationConfig?.signal?.aborted) throw invocationConfig.signal.reason instanceof Error
       ? invocationConfig.signal.reason : new Error("Model invocation cancelled by caller");
@@ -711,11 +797,21 @@ export async function invokeChatModelWithFallback(
   while (true) {
     assertNotCancelled();
     if (!hasStubModelForTests()) {
-      const availability = resolveRetainedModels([currentModelId], {
-        purpose: needsVision
-          ? requiresTools ? "vision-tools" : "vision"
-          : requiresTools ? "chat-tools" : "chat",
-      })[0]!;
+      const availability = personalFunding
+        ? (() => {
+            const entry = getActiveModelCatalogSync().catalog.entries.find((row) => row.id === currentModelId);
+            if (!entry) return { availability: "unknown-model" as const, unavailableReason: "model is not present in the current signed catalog" };
+            if (!entry.defaultEnabled) return { availability: "filtered" as const, unavailableReason: "catalog row disabled" };
+            if (!signedCatalogEntrySupportsForegroundText(entry)) {
+              return { availability: "unsupported-capability" as const, unavailableReason: "model does not support foreground text chat" };
+            }
+            return { availability: "selectable" as const, unavailableReason: undefined };
+          })()
+        : resolveRetainedModels([currentModelId], {
+            purpose: needsVision
+              ? requiresTools ? "vision-tools" : "vision"
+              : requiresTools ? "chat-tools" : "chat",
+          })[0]!;
       if (availability.availability !== "selectable") {
         const next = nextInUserChain(
           currentModelId,
@@ -724,6 +820,7 @@ export async function invokeChatModelWithFallback(
           requiresTools,
           initialModelId,
           strictNoChain,
+          personalFunding,
         );
         if (next) {
           emitFallbackHop(currentModelId, next, "bad_request", laneKey);
@@ -743,7 +840,7 @@ export async function invokeChatModelWithFallback(
     }
     if (needsVision && !modelSupportsInput(currentModelId, "image")) {
       log(`[nautilo/agent] Current model ${currentModelId} is text-only but thread has images; consulting user chain for vision-capable hop`);
-      const skipTo = nextInUserChain(currentModelId, policy, needsVision, requiresTools, initialModelId, strictNoChain);
+      const skipTo = nextInUserChain(currentModelId, policy, needsVision, requiresTools, initialModelId, strictNoChain, personalFunding);
       if (!skipTo) throw new Error(`No vision-capable models in fallback chain after ${currentModelId}`);
       // vision-incompatibility classifies as a capability
       // mismatch (FriendlyErrorCategory: bad_request), same posture
@@ -769,7 +866,7 @@ export async function invokeChatModelWithFallback(
         // immutable instructions themselves cannot fit.
         if (invokeOptions?.recoverContext) throw error;
         log(`[nautilo/agent] Model ${currentModelId} cannot fit prepared messages; consulting user chain for fallback`);
-        const next = nextInUserChain(currentModelId, policy, needsVision, requiresTools, initialModelId, strictNoChain);
+        const next = nextInUserChain(currentModelId, policy, needsVision, requiresTools, initialModelId, strictNoChain, personalFunding);
         if (!next) throw error;
         // preflight token budget rejection is the
         // context_exceeded user-visible category (same mapping as
@@ -781,23 +878,12 @@ export async function invokeChatModelWithFallback(
       throw error;
     }
 
-    const managedGatewayAttempt = modelRouteProvider(currentModelId) === "openrouter"
+    const managedGatewayAttempt = !personalFunding && modelRouteProvider(currentModelId) === "openrouter"
       && managedGatewayKeyIsPresent();
     let managedGatewayInvocationStarted = false;
     const recoveryVisibility = invokeOptions?.recoverContext ? contextRecoveryVisibilityFence() : null;
-    // Recheck the initiating Human at every provider attempt, including a
-    // fallback hop or a retry after context recovery. This is outside the
-    // provider-error catch so authorization denial can never select a new
-    // server-key model.
-    await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
     let hasSelectedReasoningEffort = false;
     try {
-      log(`[nautilo/agent] Attempting model: ${currentModelId}`);
-      const usageFunding = serverUsageFunding(
-        currentModelId,
-        invokeOptions?.fundingHumanUserId,
-        invokeOptions?.serverFundedService,
-      );
       const controls = invokeOptions?.resolveForegroundControls?.(currentModelId);
       if (controls && controls.canonicalModelId !== currentModelId) {
         throw new Error(`Resolved foreground controls belong to "${controls.canonicalModelId}", not attempted model "${currentModelId}".`);
@@ -818,23 +904,6 @@ export async function invokeChatModelWithFallback(
       const fireworksSessionAffinityId = attemptProvider === "fireworks"
         ? invokeOptions?.providerCacheRoomId ?? undefined
         : undefined;
-      const model = await createUniversalModel(currentModelId, {
-        maxTokens,
-        // Foreground attempts are supervised above. `null` deliberately
-        // suppresses the provider wrapper's unrelated 120s default; an
-        // explicit caller absolute remains owned by the supervisor.
-        timeoutMs: null,
-        reasoningOutput,
-        ...(requestedReasoningEffort === undefined ? {} : { reasoningEffort: requestedReasoningEffort }),
-        ...(serving === undefined ? {} : { servingProfileId: serving.profileId }),
-        ...(invokeOptions?.useOpenAIResponsesApi === true
-          ? { useOpenAIResponsesApi: true }
-          : {}),
-        ...(openAIExplicitPromptCache ? { openAIExplicitPromptCache: true } : {}),
-        ...(openRouterSessionId ? { openRouterSessionId } : {}),
-        ...(fireworksSessionAffinityId ? { fireworksSessionAffinityId } : {}),
-      });
-      const modelWithTools = model.bindTools!(tools);
       // project the stable cache breakpoint for the provider that is
       // actually running. Room controls and fallback can change the selected
       // provider after pre-model prepared this byte-identical prompt.
@@ -853,62 +922,131 @@ export async function invokeChatModelWithFallback(
           model_id: currentModelId,
         },
       };
-      managedGatewayInvocationStarted = managedGatewayAttempt;
-      const response = await invokeForegroundAttemptWithUsageContext(
-        modelWithTools,
-        attemptMessages,
-        llmCallConfig,
-        currentModelId,
-        invokeOptions?.fundingHumanUserId ?? "",
-        invokeOptions?.serverFundedService,
-        agentId,
-        controls,
-        serving,
-        usageFunding,
-        invokeOptions?.useOpenAIResponsesApi === true,
-        managedGatewayAttempt ? "none" : invokeOptions?.sameModelRetryMode ?? "short",
-        {
-          ...(callerProviderTimeoutMs === undefined ? {} : { providerTimeoutMs: callerProviderTimeoutMs }),
-          callerSuppliedProviderTimeout: callerProviderTimeoutMs !== undefined,
-          ...(callerFirstProgressTimeoutMs === undefined ? {} : { firstProgressTimeoutMs: callerFirstProgressTimeoutMs }),
-          ...(invokeOptions?.isolatedProgress ? { isolatedProgress: true } : {}),
-        },
-      );
+      const runProviderAttempt = async ({ usageFunding, personalCredential }: ForegroundChatFundingAttempt): Promise<AIMessage> => {
+        if (fundingSession?.kind === "personal"
+          && (usageFunding.kind !== "personal" || personalCredential === undefined)) {
+          throw new Error("Personal foreground funding session returned an invalid attempt binding.");
+        }
+        if (fundingSession?.kind === "server"
+          && (usageFunding.kind !== "server" || personalCredential !== undefined)) {
+          throw new Error("Server foreground funding session returned an invalid attempt binding.");
+        }
+        try {
+          log(`[nautilo/agent] Attempting model: ${currentModelId}`);
+          const model = await createUniversalModel(currentModelId, {
+            maxTokens,
+            // Foreground attempts are supervised above. `null` deliberately
+            // suppresses the provider wrapper's unrelated 120s default; an
+            // explicit caller absolute remains owned by the supervisor.
+            timeoutMs: null,
+            reasoningOutput,
+            ...(requestedReasoningEffort === undefined ? {} : { reasoningEffort: requestedReasoningEffort }),
+            ...(serving === undefined ? {} : { servingProfileId: serving.profileId }),
+            ...(invokeOptions?.useOpenAIResponsesApi === true
+              ? { useOpenAIResponsesApi: true }
+              : {}),
+            ...(openAIExplicitPromptCache ? { openAIExplicitPromptCache: true } : {}),
+            ...(openRouterSessionId ? { openRouterSessionId } : {}),
+            ...(fireworksSessionAffinityId ? { fireworksSessionAffinityId } : {}),
+            ...(personalCredential === undefined ? {} : { personalCredential }),
+          });
+          const modelWithTools = model.bindTools!(tools);
+          managedGatewayInvocationStarted = managedGatewayAttempt;
+          return await invokeForegroundAttemptWithUsageContext(
+            modelWithTools,
+            attemptMessages,
+            llmCallConfig,
+            currentModelId,
+            invokeOptions?.fundingHumanUserId ?? "",
+            invokeOptions?.serverFundedService,
+            fundingSession,
+            agentId,
+            controls,
+            serving,
+            usageFunding,
+            invokeOptions?.useOpenAIResponsesApi === true,
+            managedGatewayAttempt ? "none" : invokeOptions?.sameModelRetryMode ?? "short",
+            {
+              ...(callerProviderTimeoutMs === undefined ? {} : { providerTimeoutMs: callerProviderTimeoutMs }),
+              callerSuppliedProviderTimeout: callerProviderTimeoutMs !== undefined,
+              ...(callerFirstProgressTimeoutMs === undefined ? {} : { firstProgressTimeoutMs: callerFirstProgressTimeoutMs }),
+              ...(invokeOptions?.isolatedProgress ? { isolatedProgress: true } : {}),
+            },
+          );
+        } catch (error) {
+          if (error instanceof ForegroundFundingRecheckError) throw error.cause;
+          throw new ProviderAttemptError(error);
+        }
+      };
+      let response: AIMessage;
+      if (fundingSession) {
+        // Later same-model, context-recovery, reasoning, and fallback attempts
+        // recheck the live operation boundary before decrypting another key.
+        if (providerAttemptStarted) await fundingSession.recheckAttempt(currentModelId);
+        providerAttemptStarted = true;
+        response = await fundingSession.runAttempt(currentModelId, runProviderAttempt);
+      } else {
+        // Preserve the legacy server-funded path for all callers that do not
+        // opt into the request-local foreground session.
+        await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
+        providerAttemptStarted = true;
+        response = await runProviderAttempt({
+          usageFunding: serverUsageFunding(
+            currentModelId,
+            invokeOptions?.fundingHumanUserId,
+            invokeOptions?.serverFundedService,
+          ),
+        });
+      }
       if (attemptedModels.length > 1) log(`[nautilo/agent] Model ${currentModelId} succeeded after ${attemptedModels.length - 1} fallback(s)`);
       return { response, modelUsed: currentModelId };
     } catch (error) {
+      // Admission, policy, revision, custody, and credential decryption
+      // failures are session errors. They must never be classified as a
+      // provider failure or unlock another fallback/funding source.
+      if (!(error instanceof ProviderAttemptError)) throw error;
+      const providerError = error.cause;
       // The caller owns this cancellation. It must bypass error
       // classification, health cooldown, reasoning retries, and chain
       // fallback even if the provider surfaced a timeout-shaped AbortError.
       if (invocationConfig?.signal?.aborted) {
         if (managedGatewayInvocationStarted) {
-          throw markManagedGatewayOutcomeUnknown(error);
+          throw markManagedGatewayOutcomeUnknown(providerError);
         }
-        throw error;
+        throw personalFunding
+          ? invocationConfig.signal.reason ?? new Error("Model invocation cancelled by caller")
+          : providerError;
       }
       // A managed Gateway request may have been accepted and billed before a
       // timeout/502 became visible. Never replay it against the same model or
       // continue into an unrelated paid provider chain.
       if (managedGatewayInvocationStarted) {
-        throw markManagedGatewayOutcomeUnknown(error);
+        throw markManagedGatewayOutcomeUnknown(providerError);
       }
-      const classified = classifyError(error);
+      const classified = classifyError(providerError);
+      const terminalProviderError = personalFunding
+        ? new PersonalProviderInvocationError(classified.category)
+        : providerError;
       if (classified.category === "TOKEN_LIMIT" && invokeOptions?.recoverContext) {
         // Never retry after visible partial output, or echo a provider error
         // that could include the rejected source payload.
-        if (recoveryVisibility?.hasVisibleOutput() || hasAssistantVisibleOutputForCurrentTurn(agentId)) throw error;
+        if (recoveryVisibility?.hasVisibleOutput() || hasAssistantVisibleOutputForCurrentTurn(agentId)) throw terminalProviderError;
         if (await recoverContext("provider")) continue;
-        throw error;
+        throw terminalProviderError;
       }
-      log(
-        `[nautilo/agent] Model ${currentModelId} failed: ${error instanceof Error ? error.message : String(error)} ` +
-          `(${classified.category}, retryable=${classified.retryable})`,
-      );
-      log(
-        `[nautilo/agent] Model ${currentModelId} upstream details: ${formatProviderError(error)}`,
-      );
+      if (personalFunding) {
+        log(`[nautilo/agent] Personal-funded model ${currentModelId} failed (${classified.category}, retryable=${classified.retryable})`);
+      } else {
+        log(
+          `[nautilo/agent] Model ${currentModelId} failed: ${providerError instanceof Error ? providerError.message : String(providerError)} ` +
+            `(${classified.category}, retryable=${classified.retryable})`,
+        );
+        log(
+          `[nautilo/agent] Model ${currentModelId} upstream details: ${formatProviderError(providerError)}`,
+        );
+      }
 
-      if (shouldCooldownAfterFailure(classified)) {
+      if (!personalFunding && shouldCooldownAfterFailure(classified)) {
         markModelInvokeFailure(currentModelId, classified.message);
       }
 
@@ -926,21 +1064,21 @@ export async function invokeChatModelWithFallback(
       }
       disableReasoningOutput = false;
 
-      if (!shouldFallbackToNextModel(classified)) throw error;
+      if (!shouldFallbackToNextModel(classified)) throw terminalProviderError;
 
       if (hasAssistantVisibleOutputForCurrentTurn(agentId)) {
         log(
           `[nautilo/agent] Refusing fallback from ${currentModelId} after assistant-visible output this turn`,
         );
-        throw error;
+        throw terminalProviderError;
       }
 
-      const nextModelId = nextInUserChain(currentModelId, policy, needsVision, requiresTools, initialModelId, strictNoChain);
+      const nextModelId = nextInUserChain(currentModelId, policy, needsVision, requiresTools, initialModelId, strictNoChain, personalFunding);
       if (!nextModelId) {
         // No more chain entries (or policy disabled). Friendly-error
         // translator in runtime/job.ts picks up the throw and converts it to
         // the bracketed `[MDL00x]` chat message.
-        throw error;
+        throw terminalProviderError;
       }
       // surface the hop to the user via the room-scoped
       // `model.fallback` WS event so the workbench can render the

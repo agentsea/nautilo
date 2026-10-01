@@ -26,6 +26,7 @@ import { resolveArtifactFeedAuthor, resolveArtifactFeedPeople, resolveArtifactCr
   resolveArtifactFeedActorNames } from "./event-feed/artifact-identities";
 import { setWorkspaceArtifactCreatedSink } from "@nautilo/agent";
 import { createServerMemoryReviewRuntime } from "./lib/memory-review-runtime";
+import { openForegroundChatFundingSession } from "./lib/foreground-chat-funding";
 import { memoryStatusRoutes } from "./routes/memory-status";
 import {
   createForegroundMemoryEffectRecovery,
@@ -504,6 +505,8 @@ import {
   installForegroundRecordRecallPortFactory,
   uninstallForegroundRecordContextPortFactory,
   uninstallForegroundRecordRecallPortFactory,
+  installForegroundChatFundingPort,
+  uninstallForegroundChatFundingPort,
   resolveReflectionModelId,
   resolveStenographerModelId,
   type WorkstationAccessAuditEvent,
@@ -2068,6 +2071,10 @@ export async function createApp(options?: CreateAppOptions) {
   };
   const reflectionSleepController = new ReflectionSleepController({
     resolveWorker: async () => (await reflectionRuntime()).worker,
+  });
+  installForegroundChatFundingPort({ openSession: openForegroundChatFundingSession });
+  app.addHook("onClose", () => {
+    uninstallForegroundChatFundingPort();
   });
   installForegroundRecordRecallPortFactory((state) => {
     let bound: ReturnType<

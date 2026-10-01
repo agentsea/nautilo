@@ -44,6 +44,16 @@ export {
   type ForegroundTurnCandidate,
 } from "./foreground-turn-lifecycle";
 export {
+  installForegroundChatFundingPort,
+  uninstallForegroundChatFundingPort,
+  hasForegroundChatFundingPort,
+  ForegroundChatFundingAuthorityError,
+  ForegroundChatFundingUnsupportedWorkloadError,
+  type ForegroundChatFundingEntrypoint,
+  type ForegroundChatFundingOpenInput,
+  type ForegroundChatFundingPort,
+} from "./foreground-chat-funding-port";
+export {
   installDurableToolResultLifecycleObserver,
   notifyDurableToolResultLifecycle,
   _resetDurableToolResultLifecycleObserverForTests,

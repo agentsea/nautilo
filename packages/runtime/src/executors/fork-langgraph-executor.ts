@@ -95,6 +95,11 @@ import {
   protectLiveShadowAssistantToken,
   publishLiveShadowRuntimeMessages,
 } from "../conversation/live-shadow-agent-runtime-events";
+import { getCurrentAcceptedInvocationAuthority } from "../job-manager";
+import {
+  assertForegroundChatFundingWorkloadSupported,
+  openForegroundChatFundingSessionForInvocation,
+} from "../foreground-chat-funding-port";
 
 function parseStringArray(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
@@ -357,10 +362,27 @@ export async function* forkLanggraphExecutor(
   );
   const foregroundModelPlan = foregroundModelControlPlanFromSnapshot(foregroundModelControlSnapshot, () =>
     profile?.defaultModel
-      ? resolveModelRole("chat", { configuredId: profile.defaultModel })
+      ? profile.defaultModel
       : getDefaultModel().id,
   );
-  const modelId = resolveModelRole("chat", { configuredId: foregroundModelPlan.initialModelId });
+  const fundingSession = await openForegroundChatFundingSessionForInvocation({
+    authority: getCurrentAcceptedInvocationAuthority(),
+    jobInput: input,
+    causalHumanUserId,
+    entrypoint: foregroundActivationState.trustedExecutionEntrypoint === "foreground.fork"
+      ? foregroundActivationState.trustedExecutionEntrypoint
+      : null,
+    modelId: foregroundModelPlan.initialModelId,
+    roomId,
+    agentId,
+  });
+  const modelId = fundingSession?.kind === "personal"
+    ? foregroundModelPlan.initialModelId
+    : resolveModelRole("chat", { configuredId: foregroundModelPlan.initialModelId });
+  assertForegroundChatFundingWorkloadSupported(fundingSession, {
+    hasImages: multimodalImages.length > 0,
+    voiceRequested: input["voiceMode"] === true,
+  });
 
   // a fork rebuilds its history from the DB transcript (single source of
   // truth) at start, like the non-forked turn on this thread . The
@@ -648,7 +670,9 @@ export async function* forkLanggraphExecutor(
     graph = createNautiloGraph(
       checkpointSaver,
       policyResolver,
-      postModelDeps,
+      fundingSession === null
+        ? postModelDeps
+        : { ...postModelDeps, foregroundChatFundingSession: fundingSession },
     ) as CompiledNautiloGraph;
   } catch (error) {
     if (encryptedCheckpointSaver !== null) {
