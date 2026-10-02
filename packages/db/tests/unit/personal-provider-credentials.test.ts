@@ -41,14 +41,22 @@ function cloneClearDb(
 describe("personal provider credential database contract", () => {
   test("uses the reviewed direct-provider allowlist and treats the table as sensitive", () => {
     expect(PERSONAL_PROVIDER_IDS).toEqual([
+      "typesafe",
       "anthropic",
       "openai",
       "openrouter",
+      "nautilo-gateway",
+      "gateway",
       "google",
       "xai",
       "fireworks",
       "together",
       "venice",
+      "elevenlabs",
+      "groq",
+      "tavily",
+      "browser-use",
+      "cloudconvert",
     ]);
     expect(PERSONAL_PROVIDER_CREDENTIAL_VALIDATION_STATUSES).toEqual([
       "unverified",

@@ -39,6 +39,7 @@ export const APPLICATION_CATALOGUE_MANIFEST_V1 = [
   entry("memory", "route", "memory", "Memory", ["Memory"], "Review managed memory.", ["memory", "remembered information"]),
   entry("scheduled_tasks", "route", "scheduled-tasks", "Scheduled tasks", ["Scheduled tasks"], "Review scheduled task automation.", ["scheduled tasks", "schedule", "automation"]),
   entry("settings.profile", "settings", "profile", "Profile", ["Settings", "Profile"], "Manage your profile details.", ["profile", "account profile"]),
+  entry("settings.personal_api_keys", "settings", "personal-provider-keys", "Personal API keys", ["Settings", "Personal API keys"], "Manage your personal provider keys and review which capabilities they cover, or why personal keys are unavailable.", ["personal API keys", "my API keys", "bring your own key", "BYOK", "personal provider keys"]),
   entry("settings.my_agents", "settings", "my-agents", "My Agents", ["Settings", "My Agents"], "Manage your personal Agent profile, model, and fallback behavior.", ["my agents", "agents", "agent settings"]),
   entry("settings.this_mac", "settings", "this-mac", "This Mac", ["Settings", "This Mac"], "Manage settings owned by this Nautilo Desktop.", ["this mac", "desktop settings", "local settings"]),
   entry("settings.startup", "settings", "startup", "Ready at startup", ["Settings", "This Mac", "Ready at startup"], "Choose this Desktop's startup posture and review Ready to work status.", ["startup", "ready at startup", "ready to work", "desktop startup", "work mode"]),

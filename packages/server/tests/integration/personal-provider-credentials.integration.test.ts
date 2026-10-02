@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
+import { getAllKeyDefinitions } from "@nautilo/config-guard";
 import {
   createDirectDb,
   ensureDatabase,
@@ -68,6 +69,38 @@ afterAll(async () => {
 });
 
 describe("personal credential API with migrated database", () => {
+  test("every server-registry provider can store a private key without advertising unsupported capabilities", async () => {
+    const registry = getAllKeyDefinitions();
+    for (const provider of registry) {
+      const response = await app.inject({
+        method: "PUT", url: `/api/account/provider-credentials/${provider.id}`,
+        headers: auth(userB), payload: { apiKey: SENTINEL },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).not.toContain(SENTINEL);
+    }
+    const listed = await app.inject({
+      method: "GET", url: "/api/account/provider-credentials", headers: auth(userB),
+    });
+    const body = responseBody(listed);
+    const providers = body["providers"] as Array<{ id: string; personalCapabilities: string[] }>;
+    expect(providers.map((provider) => provider.id)).toEqual(registry.map((provider) => provider.id));
+    expect(providers.filter((provider) => provider.personalCapabilities.includes("chat"))
+      .map((provider) => provider.id).sort())
+      .toEqual(["anthropic", "fireworks", "google", "openai", "openrouter", "venice"]);
+    expect((body["credentials"] as unknown[]).length).toBe(registry.length);
+    expect(listed.body).not.toContain(SENTINEL);
+    expect(listed.body).not.toContain("ciphertextBase64");
+    // Remove this user's keys so the existing conflict tests start from their
+    // own revision instead of depending on another scenario's receipts.
+    for (const provider of registry) {
+      const response = await app.inject({
+        method: "DELETE", url: `/api/account/provider-credentials/${provider.id}`,
+        headers: auth(userB), payload: { expectedRevision: 1 },
+      });
+      expect(response.statusCode).toBe(200);
+    }
+  });
   test("persists one owner's encrypted key, safe metadata, revision status, and deletion", async () => {
     const created = await app.inject({
       method: "PUT", url: "/api/account/provider-credentials/openai",

@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { resolveNautiloRootDir } from "@nautilo/config";
+import { getAllKeyDefinitions } from "@nautilo/config-guard";
 import {
   PERSONAL_PROVIDER_IDS,
   createPersonalProviderCredentialIdentity,
@@ -22,6 +23,7 @@ import {
   type PersonalProviderCustody,
 } from "@nautilo/operator-secrets";
 import { getUserCapabilities } from "@nautilo/trust";
+import { PERSONAL_CHAT_PROVIDER_IDS } from "../lib/model-funding";
 import { readPersonalProviderCustody } from "../lib/personal-provider-custody";
 import { validatePersonalProviderCredential } from "../lib/personal-provider-validation";
 import { writeSecurityAuditEvent, type PersonalProviderCredentialAuditEvent } from "../lib/security-audit-log";
@@ -32,6 +34,17 @@ type ErrorCode =
   | "personal_credentials_unavailable" | "credential_custody_unavailable"
   | "credential_reenrollment_required" | "invalid_provider" | "invalid_credential_request"
   | "credential_conflict" | "credential_not_found";
+
+const personalChatProviderIds = new Set<string>(PERSONAL_CHAT_PROVIDER_IDS);
+const personalProviderCatalog = getAllKeyDefinitions().map((definition) => ({
+  id: definition.id,
+  name: definition.name,
+  purpose: definition.purpose,
+  ...(definition.signupUrl ? { signupUrl: definition.signupUrl } : {}),
+  ...(definition.formatHint ? { formatHint: definition.formatHint } : {}),
+  personalCapabilities: personalChatProviderIds.has(definition.id) ? ["chat"] : [],
+}));
+const canonicalPersonalProviderIds = new Set(personalProviderCatalog.map(({ id }) => id));
 
 function failure(
   error: ErrorCode,
@@ -198,7 +211,10 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
     if (!custody) return;
     try {
       const records = await deps.listCredentials(deps.getDb(), userId);
-      return reply.send({ credentials: records.map((record) => metadata(record, custodyState(record, custody))) });
+      return reply.send({
+        credentials: records.map((record) => metadata(record, custodyState(record, custody))),
+        providers: personalProviderCatalog,
+      });
     } catch (error) {
       return unavailableAfter(error, reply, "retry");
     }
@@ -234,6 +250,9 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
       }
       if (body.expectedRevision !== undefined) {
         return reply.code(409).send(failure("credential_conflict", false, false, "reread_metadata"));
+      }
+      if (!canonicalPersonalProviderIds.has(provider)) {
+        return reply.code(422).send(failure("invalid_provider"));
       }
       const identity = createPersonalProviderCredentialIdentity();
       const envelope = encryptPersonalProviderCredential(custody, body.apiKey, { userId, provider, ...identity });

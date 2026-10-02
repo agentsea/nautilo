@@ -70,6 +70,19 @@ async function code(promise: Promise<unknown>): Promise<string | undefined> {
 }
 
 describe("trusted model funding", () => {
+  test("stored service keys do not expand personal chat execution", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_personal_provider_credentials"]);
+    for (const provider of ["typesafe", "nautilo-gateway", "elevenlabs", "groq", "tavily", "browser-use", "cloudconvert"] as const) {
+      h.rows.set(`${ALICE}:${provider}`, row(ALICE, provider));
+      expect(await code(resolveModelFunding(request(ALICE, `${provider}:example`), h.deps)))
+        .toBe("unsupported_provider");
+    }
+    h.rows.set(`${ALICE}:gateway`, row(ALICE, "gateway"));
+    expect(await code(resolveModelFunding(request(ALICE, "gateway:example"), h.deps)))
+      .toBe("server_credentials_forbidden");
+    expect(h.reads).toEqual([]);
+  });
   test("off switch preserves server route without inspecting personal records", async () => {
     const h = harness();
     h.setEnabled(false);

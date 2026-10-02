@@ -27,6 +27,7 @@ import { useAuth } from "../../hooks/use-auth";
  */
 export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SectionId; label: string; catalogueTarget: UiTargetId }> = [
   { id: "profile", label: "Profile", catalogueTarget: "settings.profile" },
+  { id: "personal-provider-keys", label: "Personal API keys", catalogueTarget: "settings.personal_api_keys" },
   { id: "my-agents", label: "My Agents", catalogueTarget: "settings.my_agents" },
   { id: "this-mac", label: "This Mac", catalogueTarget: "settings.this_mac" },
   { id: "notifications", label: "Notifications", catalogueTarget: "settings.notifications" },
@@ -40,7 +41,6 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SectionId; label: string; ca
 
 const NESTED_SECTION_PARENT: Readonly<Record<string, SectionId>> = {
   members: "invite-people",
-  "personal-provider-keys": "profile",
   "profile-soul": "my-agents",
   model: "my-agents",
   fallback: "my-agents",
@@ -93,14 +93,9 @@ export function SettingsPage() {
   const auth = useAuth();
   const can = useCan();
   const canCreateInvites = can("create_invites");
-  const canUsePersonalProviderCredentials = can("use_personal_provider_credentials");
   const canManageServerProviderCredentials =
     can("manage_connection_providers") || can("manage_server_settings");
   const [managedByCloud, setManagedByCloud] = useState<boolean | null>(null);
-  const [personalProviderKeysVisible, setPersonalProviderKeysVisible] = useState(false);
-  useEffect(() => {
-    if (!canUsePersonalProviderCredentials) setPersonalProviderKeysVisible(false);
-  }, [canUsePersonalProviderCredentials]);
   useEffect(() => {
     let cancelled = false;
     void apiClient.getSetupStatus()
@@ -140,7 +135,7 @@ export function SettingsPage() {
       setActive(activeSection);
     }, 0);
     return () => clearTimeout(t);
-  }, [location.hash, personalProviderKeysVisible, visibleSections]);
+  }, [location.hash, visibleSections]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -222,13 +217,10 @@ export function SettingsPage() {
           <section id="profile" data-testid="settings-profile-panel" className="flex flex-col gap-6">
             <IdentitySection />
           </section>
-          {canUsePersonalProviderCredentials ? (
-            <PersonalProviderKeysSection
-              key={auth.viewerGeneration}
-              showServerAdminLink={canManageServerProviderCredentials}
-              onVisibilityChange={setPersonalProviderKeysVisible}
-            />
-          ) : null}
+          <PersonalProviderKeysSection
+            key={auth.viewerGeneration}
+            showServerAdminLink={canManageServerProviderCredentials && managedByCloud === false}
+          />
           <MyAgentsSection showProviderKeyStatus={managedByCloud === false} />
           <ThisMacSection />
           <NotificationsSection />

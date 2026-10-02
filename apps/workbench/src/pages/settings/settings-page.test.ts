@@ -32,8 +32,15 @@ test("Invite people is hidden without self-service invitation authority", () => 
   }).some((section) => section.id === "invite-people")).toBeFalse();
 });
 
-test("personal provider key deep links scroll through the profile-owned settings area", () => {
-  expect(activeSectionForHash("personal-provider-keys")).toBe("profile");
+test("personal API keys have a permanent Settings destination", () => {
+  expect(activeSectionForHash("personal-provider-keys")).toBe("personal-provider-keys");
+  for (const isDesktopShell of [false, true]) {
+    const sections = visibleSettingsSections({ isDesktopShell, canCreateInvites: false });
+    expect(sections.find((section) => section.id === "personal-provider-keys")?.label)
+      .toBe("Personal API keys");
+  }
+  expect(WORKBENCH_APPLICATION_TARGETS["settings.personal_api_keys"].href)
+    .toBe("/settings#personal-provider-keys");
 });
 
 test("self-service invitations expose only bounded ladder targets", () => {

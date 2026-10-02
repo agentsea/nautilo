@@ -1,0 +1,2 @@
+ALTER TABLE "personal_provider_credentials" DROP CONSTRAINT "personal_provider_credentials_provider_check";--> statement-breakpoint
+ALTER TABLE "personal_provider_credentials" ADD CONSTRAINT "personal_provider_credentials_provider_check" CHECK ("personal_provider_credentials"."provider" in ('typesafe', 'anthropic', 'openai', 'openrouter', 'nautilo-gateway', 'gateway', 'google', 'xai', 'fireworks', 'together', 'venice', 'elevenlabs', 'groq', 'tavily', 'browser-use', 'cloudconvert'));

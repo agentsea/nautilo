@@ -5,7 +5,6 @@ import {
 import {
   getPersonalProviderCredential,
   getServerProviderPolicy,
-  PERSONAL_PROVIDER_IDS,
   type PersonalProviderCredentialRecord,
   type PersonalProviderId,
 } from "@nautilo/db";
@@ -18,6 +17,11 @@ import { readPersonalProviderCustody } from "./personal-provider-custody";
 import { getServerDirectDb } from "./server-direct-db";
 
 export type ModelFundingWorkload = "foreground_text_chat";
+
+/** Runnable personal chat adapters; storing a service key never enables its paid path. */
+export const PERSONAL_CHAT_PROVIDER_IDS = [
+  "anthropic", "openai", "openrouter", "google", "xai", "fireworks", "together", "venice",
+] as const satisfies readonly PersonalProviderId[];
 
 interface FundingBase {
   readonly humanUserId: string;
@@ -98,7 +102,7 @@ function directProvider(modelId: string): PersonalProviderId | null {
   const colon = modelId.indexOf(":");
   if (colon <= 0 || colon === modelId.length - 1) return null;
   const prefix = modelId.slice(0, colon).toLowerCase();
-  return (PERSONAL_PROVIDER_IDS as readonly string[]).includes(prefix)
+  return (PERSONAL_CHAT_PROVIDER_IDS as readonly string[]).includes(prefix)
     ? prefix as PersonalProviderId
     : null;
 }

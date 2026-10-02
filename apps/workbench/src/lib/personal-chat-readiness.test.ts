@@ -10,6 +10,36 @@ test("a saved personal key and caller-selectable model make chat ready", async (
   expect(result).toBe("ready");
 });
 
+test("stored non-chat keys do not count as a personal chat setup", async () => {
+  const providers = [
+    { id: "openai", personalCapabilities: ["chat"] },
+    { id: "elevenlabs", personalCapabilities: [] },
+  ];
+  const getCallerModels = async () => [{ availability: "selectable" }];
+  const nonChat = { provider: "elevenlabs", requiresReplacement: true };
+  expect(await readPersonalChatReadiness({
+    listCredentials: async () => ({ credentials: [nonChat], providers }),
+    getCallerModels,
+  })).toBe("missing-key");
+  expect(await readPersonalChatReadiness({
+    listCredentials: async () => ({
+      credentials: [nonChat, { provider: "openai", requiresReplacement: false }], providers,
+    }),
+    getCallerModels,
+  })).toBe("ready");
+});
+
+test("retained chat keys and older servers defer readiness to the caller model catalogue", async () => {
+  for (const providers of [[], [{ id: "openai", personalCapabilities: ["chat"] }]]) {
+    expect(await readPersonalChatReadiness({
+      listCredentials: async () => ({
+        credentials: [{ provider: "xai", requiresReplacement: false }], providers,
+      }),
+      getCallerModels: async () => [{ availability: "selectable" }],
+    })).toBe("ready");
+  }
+});
+
 test("missing or disaster-reset keys cannot be replaced by a server model", async () => {
   let modelLookupCount = 0;
   const result = await readPersonalChatReadiness({

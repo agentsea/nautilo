@@ -2,25 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ProviderCredentialApiError,
   type CredentialMetadata,
+  type PersonalProviderCatalogEntry,
 } from "@nautilo/api-client/browser";
 import { apiClient } from "../../../lib/api";
+import { ProviderKeyCoverageTable } from "../../../components/provider-key-coverage-table";
 import { PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT } from "../../../lib/caller-model-availability";
 import { Button, FieldRow, SectionCard, StatusPill, TextInput } from "../ui";
 
 export { PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT };
 export const PERSONAL_PROVIDER_POLICY_CHANGED_EVENT =
   "nautilo:personal-provider-policy-changed";
-
-const PROVIDERS = [
-  { id: "anthropic", label: "Anthropic" },
-  { id: "openai", label: "OpenAI" },
-  { id: "openrouter", label: "OpenRouter" },
-  { id: "google", label: "Google" },
-  { id: "xai", label: "xAI" },
-  { id: "fireworks", label: "Fireworks" },
-  { id: "together", label: "Together AI" },
-  { id: "venice", label: "Venice" },
-] as const;
 
 type CredentialApi = Pick<
   typeof apiClient,
@@ -32,14 +23,21 @@ type CredentialApi = Pick<
 
 type LoadState =
   | { kind: "loading" }
-  | { kind: "hidden" }
+  | { kind: "disabled" }
+  | { kind: "forbidden" }
   | { kind: "error"; message: string }
-  | { kind: "ready"; credentials: CredentialMetadata[] };
+  | {
+    kind: "ready";
+    credentials: CredentialMetadata[];
+    providers: PersonalProviderCatalogEntry[];
+  };
 
 type RowAction =
   | { kind: "idle" }
   | { kind: "busy"; action: "save" | "validate" | "delete" }
   | { kind: "error"; message: string };
+
+type ProviderRow = PersonalProviderCatalogEntry & { catalogued: boolean };
 
 function readableTime(value: string | null): string | null {
   if (!value) return null;
@@ -92,13 +90,11 @@ function credentialChanged(): void {
 export interface PersonalProviderKeysSectionProps {
   credentialApi?: CredentialApi;
   showServerAdminLink?: boolean;
-  onVisibilityChange?: (visible: boolean) => void;
 }
 
 export function PersonalProviderKeysSection({
   credentialApi = apiClient,
   showServerAdminLink = false,
-  onVisibilityChange,
 }: PersonalProviderKeysSectionProps) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
@@ -107,6 +103,7 @@ export function PersonalProviderKeysSection({
   const [rowActions, setRowActions] = useState<Record<string, RowAction>>({});
   const [savedProvider, setSavedProvider] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  const loadGenerationRef = useRef(0);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -115,24 +112,36 @@ export function PersonalProviderKeysSection({
     };
   }, []);
 
-  useEffect(() => {
-    onVisibilityChange?.(state.kind === "ready" || state.kind === "error");
-  }, [onVisibilityChange, state.kind]);
-
   const load = useCallback(async (preserveMessage = false) => {
+    const generation = ++loadGenerationRef.current;
     if (!preserveMessage) setState({ kind: "loading" });
     try {
       const result = await credentialApi.listProviderCredentials();
-      if (mountedRef.current) setState({ kind: "ready", credentials: result.credentials });
+      if (!mountedRef.current || generation !== loadGenerationRef.current) return null;
+      setState({
+        kind: "ready",
+        credentials: result.credentials,
+        providers: result.providers,
+      });
       return "ready" as const;
     } catch (error) {
-      if (!mountedRef.current) return null;
-      if (
-        error instanceof ProviderCredentialApiError &&
-        (error.error === "personal_credentials_disabled" || error.error === "personal_credentials_forbidden")
-      ) {
-        setState({ kind: "hidden" });
-        return "hidden" as const;
+      if (!mountedRef.current || generation !== loadGenerationRef.current) return null;
+      if (error instanceof ProviderCredentialApiError && error.error === "personal_credentials_disabled") {
+        setSecret("");
+        setEditingProvider(null);
+        setConfirmDelete(null);
+        setSavedProvider(null);
+        setRowActions({});
+        setState({ kind: "disabled" });
+        return "disabled" as const;
+      } else if (error instanceof ProviderCredentialApiError && error.error === "personal_credentials_forbidden") {
+        setSecret("");
+        setEditingProvider(null);
+        setConfirmDelete(null);
+        setSavedProvider(null);
+        setRowActions({});
+        setState({ kind: "forbidden" });
+        return "forbidden" as const;
       } else {
         setState({ kind: "error", message: errorMessage(error, "load") });
         return "error" as const;
@@ -150,6 +159,7 @@ export function PersonalProviderKeysSection({
       setEditingProvider(null);
       setConfirmDelete(null);
       setSavedProvider(null);
+      setRowActions({});
       void load();
     };
     window.addEventListener(PERSONAL_PROVIDER_POLICY_CHANGED_EVENT, reload);
@@ -165,6 +175,49 @@ export function PersonalProviderKeysSection({
     [state],
   );
 
+  const personalChatProviders = useMemo(
+    () => state.kind === "ready"
+      ? state.providers
+        .filter((provider) => provider.personalCapabilities.includes("chat"))
+        .map((provider) => [provider.id, provider.name] as const)
+      : [],
+    [state],
+  );
+
+  const providerRows = useMemo<ProviderRow[]>(() => {
+    if (state.kind !== "ready") return [];
+    const cataloguedIds = new Set(state.providers.map((provider) => provider.id));
+    const uncataloguedIds = new Set(
+      state.credentials
+        .map((credential) => credential.provider)
+        .filter((provider) => !cataloguedIds.has(provider)),
+    );
+    return [
+      ...state.providers.map((provider) => ({ ...provider, catalogued: true })),
+      ...[...uncataloguedIds].map((provider) => ({
+        id: provider,
+        name: provider,
+        purpose: "This saved provider is outside the server’s current provider catalogue. You can replace, validate, or delete its key.",
+        personalCapabilities: [] as const,
+        catalogued: false,
+      })),
+    ];
+  }, [state]);
+
+  const configuredChatProviderIds = useMemo(
+    () => new Set(
+      state.kind === "ready"
+        ? state.credentials
+          .filter((credential) =>
+            !credential.requiresReplacement
+            && credential.validationStatus !== "rejected"
+            && personalChatProviders.some(([id]) => id === credential.provider))
+          .map((credential) => credential.provider)
+        : [],
+    ),
+    [personalChatProviders, state],
+  );
+
   const setRowAction = (provider: string, action: RowAction) => {
     setRowActions((current) => ({ ...current, [provider]: action }));
   };
@@ -176,7 +229,8 @@ export function PersonalProviderKeysSection({
       || error.error === "personal_credentials_forbidden"
     )) {
       const result = await load(true);
-      if (result === "hidden") {
+      if (result === null) return;
+      if (result === "disabled" || result === "forbidden") {
         setSecret("");
         setEditingProvider(null);
         setConfirmDelete(null);
@@ -201,7 +255,7 @@ export function PersonalProviderKeysSection({
       if (!mountedRef.current) return;
       setState((previous) => previous.kind === "ready"
         ? {
-          kind: "ready",
+          ...previous,
           credentials: [
             ...previous.credentials.filter((item) => item.provider !== provider),
             result.credential,
@@ -217,7 +271,12 @@ export function PersonalProviderKeysSection({
       setSecret("");
       setEditingProvider(null);
       const reloadResult = await load(true);
-      if (!mountedRef.current || reloadResult === "hidden") return;
+      if (
+        !mountedRef.current
+        || reloadResult === null
+        || reloadResult === "disabled"
+        || reloadResult === "forbidden"
+      ) return;
       if (reloadResult === "error") {
         setState({
           kind: "error",
@@ -243,7 +302,7 @@ export function PersonalProviderKeysSection({
       if (!mountedRef.current) return;
       setState((previous) => previous.kind === "ready"
         ? {
-          kind: "ready",
+          ...previous,
           credentials: previous.credentials.map((item) =>
             item.provider === provider ? result.credential : item),
         }
@@ -262,7 +321,7 @@ export function PersonalProviderKeysSection({
       if (!mountedRef.current) return;
       setState((previous) => previous.kind === "ready"
         ? {
-          kind: "ready",
+          ...previous,
           credentials: previous.credentials.filter((item) => item.provider !== provider),
         }
         : previous);
@@ -276,22 +335,56 @@ export function PersonalProviderKeysSection({
     }
   };
 
-  if (state.kind === "loading" || state.kind === "hidden") return null;
-
   return (
     <SectionCard
       id="personal-provider-keys"
-      title="Personal provider keys"
-      description="Use your own key for supported text chat. Keys belong to your account on this Server and are never shown again after saving."
+      title="Personal API keys"
+      description="Add your own provider keys to use supported models for personal chat. Keys belong to your account on this Server and are never shown again after saving."
     >
-      {state.kind === "error" ? (
+      {state.kind === "loading" ? (
+        <p className="text-sm text-foreground-muted">Loading…</p>
+      ) : state.kind === "disabled" ? (
+        <p role="status" className="text-sm text-foreground-muted">
+          Personal keys are disabled on this server.
+        </p>
+      ) : state.kind === "forbidden" ? (
+        <p role="status" className="text-sm text-foreground-muted">
+          You are not allowed to set up personal keys.
+        </p>
+      ) : state.kind === "error" ? (
         <div className="flex flex-col items-start gap-3">
           <p role="alert" className="text-sm text-error">{state.message}</p>
           <Button onClick={() => void load()}>Retry</Button>
         </div>
       ) : (
         <div>
-          {PROVIDERS.map((provider) => {
+          <section
+            className="mb-5 border-b border-border pb-5"
+            aria-labelledby="personal-provider-key-coverage-title"
+            data-testid="personal-provider-key-coverage"
+          >
+            <h3 id="personal-provider-key-coverage-title" className="text-sm font-semibold">
+              API key coverage
+            </h3>
+            <p className="mt-1 text-xs text-foreground-muted">
+              Shows saved personal API key coverage, not provider availability. Rejected keys and keys that require replacement do not count as coverage.
+            </p>
+            <p className="mt-1 text-xs text-foreground-muted">
+              Only text chat currently uses personal keys; other capabilities will be added later.
+            </p>
+            {state.providers.length > 0 ? (
+              <ProviderKeyCoverageTable
+                configuredProviderIds={configuredChatProviderIds}
+                rows={[{ functionality: "Chat", providers: personalChatProviders }]}
+              />
+            ) : null}
+          </section>
+          {state.providers.length === 0 ? (
+            <p className="mb-4 text-sm text-foreground-muted">
+              Provider choices are temporarily unavailable. Saved keys can still be managed below.
+            </p>
+          ) : null}
+          {providerRows.map((provider) => {
             const current = byProvider.get(provider.id);
             const action = rowActions[provider.id] ?? { kind: "idle" };
             const busy = action.kind === "busy";
@@ -301,9 +394,28 @@ export function PersonalProviderKeysSection({
             return (
               <FieldRow
                 key={provider.id}
-                label={provider.label}
+                label={provider.name}
                 htmlFor={`personal-provider-key-${provider.id}`}
-                hint={current ? `Saved${savedAt ? ` ${savedAt}` : ""} · revision ${current.revision}` : "No key saved"}
+                hint={(
+                  <span>
+                    {provider.purpose}
+                    {provider.signupUrl ? (
+                      <>
+                        {" · "}
+                        <a
+                          href={provider.signupUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline hover:text-foreground"
+                        >
+                          Get a key
+                        </a>
+                      </>
+                    ) : null}
+                    {" · "}
+                    {current ? `Saved${savedAt ? ` ${savedAt}` : ""} · revision ${current.revision}` : "No key saved"}
+                  </span>
+                )}
               >
                 <div className="flex flex-col gap-2">
                   {current ? (
@@ -327,7 +439,8 @@ export function PersonalProviderKeysSection({
                           setRowAction(provider.id, { kind: "idle" });
                         }}
                         autoComplete="new-password"
-                        ariaLabel={`${current ? "Replacement" : "New"} ${provider.label} API key`}
+                        ariaLabel={`${current ? "Replacement" : "New"} ${provider.name} API key`}
+                        placeholder={provider.formatHint}
                         disabled={busy}
                       />
                       <div className="flex flex-wrap gap-2">
@@ -359,7 +472,7 @@ export function PersonalProviderKeysSection({
                         setEditingProvider(provider.id);
                         setSecret("");
                         setSavedProvider(null);
-                      }} ariaLabel={`${current ? "Replace" : "Add"} ${provider.label} key`}>
+                      }} ariaLabel={`${current ? "Replace" : "Add"} ${provider.name} key`}>
                         {current ? "Replace" : "Add key"}
                       </Button>
                       {current ? (
@@ -367,7 +480,7 @@ export function PersonalProviderKeysSection({
                           <Button
                             loading={busy && action.action === "validate"}
                             disabled={busy}
-                            ariaLabel={`Validate ${provider.label} key`}
+                            ariaLabel={`Validate ${provider.name} key`}
                             onClick={() => void validate(provider.id, current)}
                           >
                             {current.validationStatus === "unavailable" ? "Retry validation" : "Validate"}
@@ -375,7 +488,7 @@ export function PersonalProviderKeysSection({
                           <Button
                             variant="ghost"
                             disabled={busy}
-                            ariaLabel={`Delete ${provider.label} key`}
+                            ariaLabel={`Delete ${provider.name} key`}
                             onClick={() => setConfirmDelete(provider.id)}
                           >Delete</Button>
                         </>
@@ -388,7 +501,21 @@ export function PersonalProviderKeysSection({
                   ) : null}
                   {savedProvider === provider.id ? (
                     <p role="status" className="text-xs text-foreground-muted">
-                      Key saved. <a className="text-primary hover:underline" href="/settings#model">Choose a model for your Genie.</a>
+                      Key saved.{" "}
+                      {provider.catalogued
+                        ? provider.personalCapabilities.includes("chat") ? (
+                          <a className="text-primary hover:underline" href="/settings#model">Choose a model for your Genie.</a>
+                        ) : (
+                          "Not used by personal chat in this release."
+                        )
+                        : null}
+                    </p>
+                  ) : null}
+                  {provider.catalogued
+                    && !provider.personalCapabilities.includes("chat")
+                    && savedProvider !== provider.id ? (
+                    <p className="text-xs text-foreground-muted">
+                      Not used by personal chat in this release.
                     </p>
                   ) : null}
                 </div>

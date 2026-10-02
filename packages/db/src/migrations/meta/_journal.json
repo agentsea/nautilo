@@ -2185,6 +2185,13 @@
       "when": 1790879971807,
       "tag": "0311_soul_generation_attempt_privileges",
       "breakpoints": true
+    },
+    {
+      "idx": 312,
+      "version": "7",
+      "when": 1790934619818,
+      "tag": "0312_salty_robin_chapel",
+      "breakpoints": true
     }
   ]
 }

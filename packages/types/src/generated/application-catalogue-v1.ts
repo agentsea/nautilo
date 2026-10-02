@@ -18,6 +18,7 @@ export const APPLICATION_CATALOGUE_TARGET_IDS_V1 = [
   "memory",
   "scheduled_tasks",
   "settings.profile",
+  "settings.personal_api_keys",
   "settings.my_agents",
   "settings.this_mac",
   "settings.startup",
@@ -245,6 +246,22 @@ const GENERATED_APPLICATION_CATALOGUE_METADATA_V1 = [
     "discoveryTerms": [
       "profile",
       "account profile"
+    ]
+  },
+  {
+    "target": "settings.personal_api_keys",
+    "label": "Personal API keys",
+    "menuPath": [
+      "Settings",
+      "Personal API keys"
+    ],
+    "description": "Manage your personal provider keys and review which capabilities they cover, or why personal keys are unavailable.",
+    "discoveryTerms": [
+      "personal API keys",
+      "my API keys",
+      "bring your own key",
+      "BYOK",
+      "personal provider keys"
     ]
   },
   {

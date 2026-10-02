@@ -2219,6 +2219,16 @@ export interface CredentialMetadata {
   readonly requiresReplacement: boolean;
 }
 
+/** Secret-free provider metadata available for personal credential enrollment. */
+export interface PersonalProviderCatalogEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly purpose: string;
+  readonly signupUrl?: string | undefined;
+  readonly formatHint?: string | undefined;
+  readonly personalCapabilities: readonly "chat"[];
+}
+
 export interface PutProviderCredentialInput {
   readonly apiKey: string;
   readonly expectedRevision?: number;
@@ -2254,8 +2264,19 @@ const credentialMetadataSchema: z.ZodType<CredentialMetadata> = z.object({
   requiresReplacement: z.boolean(),
 }).strict();
 
+const personalProviderCatalogEntrySchema: z.ZodType<PersonalProviderCatalogEntry> = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  purpose: z.string().min(1),
+  signupUrl: z.string().min(1).optional(),
+  formatHint: z.string().min(1).optional(),
+  personalCapabilities: z.array(z.literal("chat")),
+}).strict();
+
 const listProviderCredentialsResponseSchema = z.object({
   credentials: z.array(credentialMetadataSchema),
+  // During a rolling upgrade an older server may not project its registry yet.
+  providers: z.array(personalProviderCatalogEntrySchema).optional().default([]),
 }).strict();
 
 const putProviderCredentialResponseSchema = z.object({
@@ -5691,7 +5712,10 @@ export class NautiloApiClient {
     return { keys, hasLlm: computeHasLlmFromKeys(keys) };
   }
 
-  async listProviderCredentials(): Promise<{ credentials: CredentialMetadata[] }> {
+  async listProviderCredentials(): Promise<{
+    credentials: CredentialMetadata[];
+    providers: PersonalProviderCatalogEntry[];
+  }> {
     return this.request({
       path: "/api/account/provider-credentials",
       schema: listProviderCredentialsResponseSchema,

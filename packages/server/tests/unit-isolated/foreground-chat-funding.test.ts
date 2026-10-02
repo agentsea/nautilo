@@ -9,6 +9,7 @@ const FALLBACK = "openrouter:z-ai/glm-5.2";
 let switchOn = true;
 let capabilities = ["use_personal_provider_credentials"];
 let roomOwner = HUMAN;
+let personalProviders = ["openrouter"];
 const resolveFunding = mock(async (input: {
   humanUserId: string;
   modelId: string;
@@ -36,7 +37,10 @@ mock.module("@nautilo/agent", () => ({
 }));
 mock.module("@nautilo/db", () => ({
   getServerProviderPolicy: async () => ({ allowPersonalProviderKeys: switchOn }),
-  listPersonalProviderCredentials: async () => [{ id: "synthetic-credential" }],
+  listPersonalProviderCredentials: async () => personalProviders.map((provider) => ({
+    id: `synthetic-${provider}-credential`,
+    provider,
+  })),
 }));
 mock.module("@nautilo/trust", () => ({
   getUserCapabilities: async () => capabilities,
@@ -52,6 +56,9 @@ mock.module("@nautilo/trust", () => ({
 }));
 mock.module("../../src/lib/server-direct-db", () => ({ getServerDirectDb: () => ({}) }));
 mock.module("../../src/lib/model-funding", () => ({
+  PERSONAL_CHAT_PROVIDER_IDS: [
+    "anthropic", "openai", "openrouter", "google", "xai", "fireworks", "together", "venice",
+  ],
   ModelFundingError: class ModelFundingError extends Error {
     constructor(readonly code: string) { super(code); }
   },
@@ -59,7 +66,11 @@ mock.module("../../src/lib/model-funding", () => ({
   withAdmittedPersonalProviderKey: withKey,
 }));
 
-const { openForegroundChatFundingSession, isOwnPrivateGenieRoom } =
+const {
+  callerHasConfiguredPersonalFunding,
+  openForegroundChatFundingSession,
+  isOwnPrivateGenieRoom,
+} =
   await import("../../src/lib/foreground-chat-funding");
 
 const input = {
@@ -74,6 +85,7 @@ beforeEach(() => {
   switchOn = true;
   capabilities = ["use_personal_provider_credentials"];
   roomOwner = HUMAN;
+  personalProviders = ["openrouter"];
   resolveFunding.mockClear();
   withKey.mockClear();
   assertInvoke.mockClear();
@@ -82,6 +94,14 @@ beforeEach(() => {
 afterAll(() => mock.restore());
 
 describe("foreground chat funding admission", () => {
+  test("counts only runnable chat credentials as configured personal funding", async () => {
+    personalProviders = ["tavily", "elevenlabs"];
+    expect(await callerHasConfiguredPersonalFunding(HUMAN)).toBe(false);
+
+    personalProviders = ["tavily", "openai"];
+    expect(await callerHasConfiguredPersonalFunding(HUMAN)).toBe(true);
+  });
+
   test("pins the original Human and credential across a different fallback model", async () => {
     const session = await openForegroundChatFundingSession(input);
     expect(session?.kind).toBe("personal");
