@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { DirectDatabase } from "../../src/config/direct-database";
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { SQL } from "drizzle-orm";
 import {
   __setLlmUsageDbForTests,
   attachSurplusRequestReceipt,
   beginSurplusLlmAttempt,
   listPendingSurplusAttempts,
+  reconcileSurplusLlmAttemptCost,
   settleSurplusLlmAttempt,
   type SurplusPendingAttempt,
 } from "../../src/queries/llm-usage";
@@ -147,5 +150,39 @@ describe("Surplus durable LLM attempts", () => {
     }
     __setLlmUsageDbForTests({ select: () => builder } as unknown as DirectDatabase);
     expect(await listPendingSurplusAttempts({ limit: 1 })).toEqual([pending]);
+  });
+
+  test("late cost recovery preserves terminal outcomes and ignores concurrent state changes", async () => {
+    const fake = mutationDb({ returning: [] });
+    __setLlmUsageDbForTests(fake.handle);
+    expect(await reconcileSurplusLlmAttemptCost({
+      attemptId: ATTEMPT_ID, providerRequestId: "request-1",
+      expectedUpdatedAt: new Date(0), actualCostUsd: 0.000283,
+    })).toBe(false);
+    expect(fake.updated[0]).toMatchObject({ costState: "actual", actualCostUsd: "0.00028300" });
+    // Outcome is computed from the stored row rather than a stale caller's
+    // succeeded/cancelled classification.
+    expect(fake.updated[0]?.["attemptOutcome"]).not.toBe("succeeded");
+    expect(fake.updated[0]?.["attemptOutcome"]).not.toBe("cancelled");
+  });
+
+  test("terminal completion preserves recovered actual cost while retrying its observed request receipt", async () => {
+    const fake = mutationDb();
+    __setLlmUsageDbForTests(fake.handle);
+    await settleSurplusLlmAttempt({
+      attemptId: ATTEMPT_ID, providerRequestId: "request-1", outcome: "succeeded",
+      costState: "pending", inputTokens: 11, outputTokens: 17,
+    });
+    expect(fake.updated[0]).toMatchObject({
+      attemptOutcome: "succeeded", providerRequestId: "request-1", inputTokens: 11, outputTokens: 17,
+    });
+    const dialect = new PgDialect();
+    const cost = dialect.sqlToQuery(fake.updated[0]?.["actualCostUsd"] as SQL);
+    const state = dialect.sqlToQuery(fake.updated[0]?.["costState"] as SQL);
+    expect(cost.sql).toContain('else "llm_usage_events"."actual_cost_usd" end');
+    expect(state.sql).toContain('else "llm_usage_events"."cost_state" end');
+    expect(cost.params).toContain("pending");
+    expect(cost.params).toContain("unknown");
+    expect(cost.params).not.toContain("actual");
   });
 });

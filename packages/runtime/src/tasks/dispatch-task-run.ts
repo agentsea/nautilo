@@ -21,7 +21,7 @@ import {
   MAX_SUBAGENT_DEPTH,
   resolveTaskModel,
   ModelSelectionError,
-  assertExactTaskModelSelection,
+  resolveExactTaskModelId,
   getRelayRegistry,
   assertSecurityResearchResumeBinding,
 } from "@nautilo/agent";
@@ -510,22 +510,25 @@ export async function dispatchTaskRun(
     if (task.requestedModelId && task.requestedModelId !== resumableRun.modelId) {
       throw new Error("SECURITY_RESEARCH_RESUME_MODEL_CHANGED");
     }
-    if (!deliveryOnlyResume) assertExactTaskModelSelection({ requestedModelId: resumableRun.modelId,
-      toolsMode: task.toolsMode, toolsWhitelist: task.toolsWhitelist });
-    modelId = resumableRun.modelId;
+    modelId = deliveryOnlyResume
+      ? resumableRun.modelId
+      : resolveExactTaskModelId({
+        requestedModelId: resumableRun.modelId,
+        toolsMode: task.toolsMode,
+        toolsWhitelist: task.toolsWhitelist,
+      });
     exactModelSelection = true;
   } else if (task.requestedModelId !== null && task.requestedModelId !== undefined) {
-    // Revalidate the exact pin at dispatch time. `assertExactTaskModelSelection`
+    // Revalidate the exact pin at dispatch time. `resolveExactTaskModelId`
     // throws a stable, prefixed error the observer records verbatim (mirrors
     // the M152 `[task-model-selection]` contract). Curated-id membership,
     // credential/routing/disabled state, and strict tool-capability truth are
     // all checked here without a paid provider call.
-    assertExactTaskModelSelection({
+    modelId = resolveExactTaskModelId({
       requestedModelId: task.requestedModelId,
       toolsMode: task.toolsMode,
       toolsWhitelist: task.toolsWhitelist,
     });
-    modelId = task.requestedModelId;
     exactModelSelection = true;
   } else {
     try {

@@ -22,7 +22,10 @@ import { resetModelCapabilitiesCacheForTests } from "@nautilo/model-capabilities
 import {
   validateExactTaskModelSelection,
   assertExactTaskModelSelection,
+  resolveExactTaskModelId,
 } from "../../src/config/validate-exact-task-model";
+import type { QualifiedSurplusChatRoute } from "../../src/providers/surplus-route";
+import { validateTaskModelSelectionForCreate } from "../../src/tools/tasks/selection-validation";
 import { resetVeniceCatalogCacheModuleForTests } from "../../src/config/venice-catalog-cache";
 
 const FULL_ENV: NodeJS.ProcessEnv = {
@@ -38,6 +41,18 @@ const FULL_ENV: NodeJS.ProcessEnv = {
 
 const ANTHROPIC_ONLY: NodeJS.ProcessEnv = { ANTHROPIC_API_KEY: "x" };
 const NO_ENV: NodeJS.ProcessEnv = {};
+const SURPLUS_ONLY_MODEL = "google:gemini-2.5-pro";
+const QUALIFIED_SURPLUS_ROUTE: QualifiedSurplusChatRoute = {
+  catalogModelId: SURPLUS_ONLY_MODEL,
+  surplusModelId: "google/gemini-2.5-pro",
+  providerPin: "google",
+  supportsTools: false,
+  supportsVision: false,
+  supportsReasoning: false,
+  maxContextTokens: 1_000_000,
+  maxOutputTokens: 65_536,
+  qualifiedAt: "2026-10-02T00:00:00.000Z",
+};
 
 beforeEach(() => {
   resetVeniceCatalogCacheModuleForTests();
@@ -227,6 +242,179 @@ describe("validateExactTaskModelSelection (D429 Phase 3) — strict tool-capabil
         toolsMode: "auto",
       }),
     ).toBeNull();
+  });
+});
+
+describe("validateExactTaskModelSelection — qualified server-funded exact Tasks", () => {
+  test("admits a qualified tool-free exact pin without the original provider credential", () => {
+    expect(validateExactTaskModelSelection({
+      requestedModelId: SURPLUS_ONLY_MODEL,
+      env: NO_ENV,
+      toolsMode: "none",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+        routes: [QUALIFIED_SURPLUS_ROUTE],
+      },
+    })).toBeNull();
+    expect(resolveExactTaskModelId({
+      requestedModelId: `  ${SURPLUS_ONLY_MODEL}  `,
+      env: NO_ENV,
+      toolsMode: "none",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+        routes: [QUALIFIED_SURPLUS_ROUTE],
+      },
+    })).toBe(SURPLUS_ONLY_MODEL);
+    expect(validateTaskModelSelectionForCreate({
+      requestedModelId: SURPLUS_ONLY_MODEL,
+      env: NO_ENV,
+      toolsMode: "none",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+        routes: [QUALIFIED_SURPLUS_ROUTE],
+      },
+    })).toBeNull();
+  });
+
+  test.each([
+    ["policy off", false, true, [QUALIFIED_SURPLUS_ROUTE]],
+    ["Surplus key missing", true, false, [QUALIFIED_SURPLUS_ROUTE]],
+    ["model unqualified", true, true, []],
+  ] as const)("rejects a Surplus-only pin when %s", (_label, policyEnabled, keyConfigured, routes) => {
+    expect(validateExactTaskModelSelection({
+      requestedModelId: SURPLUS_ONLY_MODEL,
+      env: NO_ENV,
+      toolsMode: "none",
+      surplus: { policyEnabled, keyConfigured, routes },
+    })?.code).toBe("missing_credentials");
+  });
+
+  test("keeps a direct provider credential runnable when Surplus policy is off", () => {
+    expect(validateExactTaskModelSelection({
+      requestedModelId: SURPLUS_ONLY_MODEL,
+      env: { GOOGLE_API_KEY: "x" },
+      toolsMode: "none",
+      surplus: {
+        policyEnabled: false,
+        keyConfigured: false,
+        routes: [],
+      },
+    })).toBeNull();
+  });
+
+  test("rejects tool use outside the qualified route envelope", () => {
+    expect(validateExactTaskModelSelection({
+      requestedModelId: SURPLUS_ONLY_MODEL,
+      env: NO_ENV,
+      toolsMode: "auto",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+        routes: [QUALIFIED_SURPLUS_ROUTE],
+      },
+    })?.code).toBe("capability_mismatch");
+  });
+
+  test("rejects a route narrower than the signed Task output budget", () => {
+    expect(validateExactTaskModelSelection({
+      requestedModelId: SURPLUS_ONLY_MODEL,
+      env: NO_ENV,
+      toolsMode: "none",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+        routes: [{ ...QUALIFIED_SURPLUS_ROUTE, maxOutputTokens: 8_000 }],
+      },
+    })?.code).toBe("capability_mismatch");
+  });
+
+  test("rejects a reasoning-enabled Task model until that request shape is qualified", () => {
+    const reasoningModel = "anthropic:claude-sonnet-4-6";
+    expect(validateExactTaskModelSelection({
+      requestedModelId: reasoningModel,
+      env: NO_ENV,
+      toolsMode: "none",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+        routes: [{
+          ...QUALIFIED_SURPLUS_ROUTE,
+          catalogModelId: reasoningModel,
+          surplusModelId: "anthropic/claude-sonnet-4-6",
+          providerPin: "anthropic",
+          supportsReasoning: true,
+          maxOutputTokens: 128_000,
+        }],
+      },
+    })?.code).toBe("capability_mismatch");
+  });
+
+  test("admits a reasoning-capable model when the server explicitly disables reasoning output", () => {
+    const reasoningModel = "anthropic:claude-sonnet-4-6";
+    expect(validateExactTaskModelSelection({
+      requestedModelId: reasoningModel,
+      env: NO_ENV,
+      toolsMode: "none",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+        reasoningOutputEnabled: false,
+        routes: [{
+          ...QUALIFIED_SURPLUS_ROUTE,
+          catalogModelId: reasoningModel,
+          surplusModelId: "anthropic/claude-sonnet-4-6",
+          providerPin: "anthropic",
+          supportsReasoning: true,
+          maxOutputTokens: 128_000,
+        }],
+      },
+    })).toBeNull();
+  });
+
+  test("rejects OpenAI Task routes while Task invocation requires Responses", () => {
+    const openAIModel = "openai:gpt-5.5-2026-04-23";
+    expect(validateExactTaskModelSelection({
+      requestedModelId: openAIModel,
+      env: NO_ENV,
+      toolsMode: "none",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+        reasoningOutputEnabled: false,
+        routes: [{
+          ...QUALIFIED_SURPLUS_ROUTE,
+          catalogModelId: openAIModel,
+          surplusModelId: "openai/gpt-5.5",
+          providerPin: "openai",
+          supportsReasoning: true,
+          maxOutputTokens: 128_000,
+        }],
+      },
+    })?.code).toBe("capability_mismatch");
+  });
+
+  test("does not admit a default-off catalog row through an injected route", () => {
+    const disabledModel = "fireworks:accounts/fireworks/models/deepseek-v4-pro";
+    const failure = validateExactTaskModelSelection({
+      requestedModelId: disabledModel,
+      env: NO_ENV,
+      toolsMode: "none",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+        routes: [{
+          ...QUALIFIED_SURPLUS_ROUTE,
+          catalogModelId: disabledModel,
+          surplusModelId: "accounts/fireworks/models/deepseek-v4-pro",
+          providerPin: "fireworks",
+        }],
+      },
+    });
+    expect(failure).not.toBeNull();
+    expect(["unknown_model", "disabled"]).toContain(failure?.code ?? "");
   });
 });
 

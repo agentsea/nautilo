@@ -20,6 +20,33 @@ export interface QualifiedSurplusChatRoute {
 
 const QUALIFIED_CHAT_ROUTES: readonly QualifiedSurplusChatRoute[] = Object.freeze([]);
 
+export type SurplusChatServingStatus = "not-qualified" | "qualified-unavailable" | "available";
+
+export type SurplusChatServingAvailability =
+  | { readonly status: "not-qualified"; readonly route: null }
+  | { readonly status: "qualified-unavailable" | "available"; readonly route: QualifiedSurplusChatRoute };
+
+export interface ResolveSurplusChatServingAvailabilityInput {
+  /** Omit only for the aggregate administrator capability projection. */
+  readonly catalogModelId?: string;
+  readonly policyEnabled: boolean;
+  readonly keyConfigured: boolean;
+  readonly fundingKind?: "server" | "personal";
+  /** Pure injection seam for offline qualification tests. */
+  readonly routes?: readonly QualifiedSurplusChatRoute[];
+}
+
+export class SurplusDirectFallbackUnavailableError extends Error {
+  readonly code = "surplus_direct_fallback_unavailable" as const;
+
+  constructor(readonly reason: "surplus-unavailable" | "request-not-qualified" = "surplus-unavailable") {
+    super(reason === "request-not-qualified"
+      ? "This request is outside the selected model's qualified Surplus capability or token limits, and its original provider credential is not configured."
+      : "Surplus could not serve the selected model, and its original provider credential is not configured.");
+    this.name = "SurplusDirectFallbackUnavailableError";
+  }
+}
+
 /** Never synthesize a route from a provider prefix, alias, or public market. */
 export function resolveQualifiedSurplusChatRoute(
   catalogModelId: string,
@@ -32,11 +59,32 @@ export function resolveQualifiedSurplusChatRoute(
   if (workload !== "chat" || (output && !output.includes("text"))) return null;
   if (catalogModelId.includes(":e2ee-") || entry.routing === "china-anonymized") return null;
   const route = routes.find((candidate) => candidate.catalogModelId === catalogModelId);
-  if (!route || route.maxContextTokens < 1 || route.maxOutputTokens < 1) return null;
+  if (!route || !Number.isSafeInteger(route.maxContextTokens) || !Number.isSafeInteger(route.maxOutputTokens)
+    || route.maxContextTokens < 1 || route.maxOutputTokens < 1) return null;
   if (!route.surplusModelId.trim() || !route.qualifiedAt.trim()) return null;
   if (catalogModelId.split(":", 1)[0] !== route.providerPin) return null;
   // The qualified route may narrow signed limits, never broaden them.
   if (entry.limits?.contextTokens && route.maxContextTokens > entry.limits.contextTokens) return null;
   if (entry.limits?.outputTokens && route.maxOutputTokens > entry.limits.outputTokens) return null;
   return route;
+}
+
+/**
+ * One fail-closed projection for released Surplus chat capability. It does not
+ * infer mappings from provider names and never treats a key as qualification.
+ * Personal funding cannot use the server Surplus credential.
+ */
+export function resolveSurplusChatServingAvailability(
+  input: ResolveSurplusChatServingAvailabilityInput,
+): SurplusChatServingAvailability {
+  const routes = input.routes ?? QUALIFIED_CHAT_ROUTES;
+  const route = input.catalogModelId === undefined
+    ? routes.map((candidate) => resolveQualifiedSurplusChatRoute(candidate.catalogModelId, routes))
+      .find((candidate): candidate is QualifiedSurplusChatRoute => candidate !== null) ?? null
+    : resolveQualifiedSurplusChatRoute(input.catalogModelId, routes);
+  if (!route) return { status: "not-qualified", route: null };
+  if (input.fundingKind === "personal" || !input.policyEnabled || !input.keyConfigured) {
+    return { status: "qualified-unavailable", route };
+  }
+  return { status: "available", route };
 }

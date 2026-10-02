@@ -8,7 +8,11 @@ import {
 } from "@nautilo/model-capabilities";
 import type { ResolvedCatalogModel } from "@nautilo/trust";
 import { ASSISTANT_MODELS } from "../../src/config/assistant-models";
-import { resolveCatalogModel, listResolvedCatalogModels } from "../../src/config/resolved-catalog";
+import {
+  resolveCatalogModel,
+  resolveServerFundedForegroundCatalogModel,
+  listResolvedCatalogModels,
+} from "../../src/config/resolved-catalog";
 import { getEligibleModels } from "../../src/config/eligible-models";
 import { resetVeniceCatalogCacheModuleForTests } from "../../src/config/venice-catalog-cache";
 
@@ -26,6 +30,27 @@ describe("resolved-catalog (the current implementation)", () => {
     resetVeniceCatalogCacheModuleForTests();
     resetModelCapabilitiesCacheForTests();
     process.env["NAUTILO_SKIP_VENICE_REFRESH"] = "1";
+  });
+
+  test("qualified Surplus affects only the explicit server-funded foreground projection", () => {
+    const route = {
+      catalogModelId: "venice:openai-gpt-55",
+      surplusModelId: "gpt-5.5",
+      providerPin: "venice" as const,
+      supportsTools: true,
+      supportsVision: false,
+      supportsReasoning: false,
+      maxContextTokens: 100_000,
+      maxOutputTokens: 8_000,
+      qualifiedAt: "2026-10-01",
+    };
+    expect(resolveCatalogModel(route.catalogModelId, { env: {} }).availability).toBe("missing_credentials");
+    expect(resolveServerFundedForegroundCatalogModel(route.catalogModelId, {
+      policyEnabled: true, keyConfigured: true, routes: [route], options: { env: {} },
+    }).availability).toBe("selectable");
+    expect(resolveServerFundedForegroundCatalogModel(route.catalogModelId, {
+      policyEnabled: false, keyConfigured: true, routes: [route], options: { env: {} },
+    }).availability).toBe("missing_credentials");
   });
   afterEach(() => {
     delete process.env["NAUTILO_SKIP_VENICE_REFRESH"];

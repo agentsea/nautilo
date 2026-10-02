@@ -1,8 +1,12 @@
 import {
   modelHasRunnableCredentials,
+  resolveProviderKey,
   resolveOpenRouterTransport,
+  resolveSurplusChatServingAvailability,
+  type QualifiedSurplusChatRoute,
 } from "@nautilo/agent";
 import {
+  getCachedServerModelConfigRow,
   getPersonalProviderCredential,
   getServerProviderPolicy,
   PERSONAL_PROVIDER_IDS,
@@ -72,16 +76,35 @@ export interface ModelFundingDeps {
   decrypt: typeof decryptPersonalProviderCredential;
 }
 
-function serverRoute(modelId: string): string | null {
-  if (!modelHasRunnableCredentials(modelId, process.env, "chat")) return null;
-  if (modelId.toLowerCase().startsWith("openrouter:")) {
-    try {
-      return resolveOpenRouterTransport()?.kind ?? null;
-    } catch {
-      return null;
+export function resolveServerFundingRoute(
+  modelId: string,
+  input: {
+    readonly env?: NodeJS.ProcessEnv;
+    readonly preferSurplus?: boolean;
+    readonly surplusKeyConfigured?: boolean;
+    readonly routes?: readonly QualifiedSurplusChatRoute[];
+  } = {},
+): string | null {
+  const env = input.env ?? process.env;
+  if (modelHasRunnableCredentials(modelId, env, "chat")) {
+    if (modelId.toLowerCase().startsWith("openrouter:")) {
+      try {
+        return resolveOpenRouterTransport({ env })?.kind ?? null;
+      } catch {
+        return null;
+      }
     }
+    return modelId.slice(0, modelId.indexOf(":"));
   }
-  return modelId.slice(0, modelId.indexOf(":"));
+  const surplus = resolveSurplusChatServingAvailability({
+    catalogModelId: modelId,
+    policyEnabled: input.preferSurplus ?? getCachedServerModelConfigRow()?.preferSurplus === true,
+    keyConfigured: input.surplusKeyConfigured ?? (input.env === undefined
+      ? resolveProviderKey("surplus") !== null
+      : Boolean(env["SURPLUS_API_KEY"]?.trim())),
+    ...(input.routes === undefined ? {} : { routes: input.routes }),
+  });
+  return surplus.status === "available" ? "surplus" : null;
 }
 
 const DEFAULT_DEPS: ModelFundingDeps = {
@@ -89,7 +112,7 @@ const DEFAULT_DEPS: ModelFundingDeps = {
   getCapabilities: getUserCapabilities,
   getCredential: (humanUserId, provider) =>
     getPersonalProviderCredential(getServerDirectDb(), humanUserId, provider),
-  serverRoute,
+  serverRoute: resolveServerFundingRoute,
   readCustody: readPersonalProviderCustody,
   decrypt: decryptPersonalProviderCredential,
 };

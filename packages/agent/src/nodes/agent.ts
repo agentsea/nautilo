@@ -41,6 +41,11 @@ import {
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
 import { getModelById } from "../config/assistant-models";
 import { ModelUnavailableError } from "../config/eligible-models";
+import { resolveProviderKey } from "../resolve-provider-key";
+import {
+  resolveSurplusChatServingAvailability,
+  type QualifiedSurplusChatRoute,
+} from "../providers/surplus-route";
 import { hasStubModelForTests } from "../providers/stub-model-state";
 import { getCurrentInitiatingClientSurface } from "../runtime/initiating-client-surface-context";
 import { effectiveLiveMiniAppSessionForState } from "../runtime/live-mini-app-execution-context";
@@ -50,6 +55,7 @@ import {
   type RecallRecordsPortForState,
 } from "../tools/memory/recall-records";
 import type { ForegroundChatFundingSession } from "../runtime/foreground-chat-funding";
+import { resolveExactTaskModelId } from "../config/validate-exact-task-model";
 
 function signedCatalogEntrySupportsForegroundText(
   entry: ReturnType<typeof getActiveModelCatalogSync>["catalog"]["entries"][number],
@@ -72,6 +78,56 @@ function resolvePersonalForegroundModelId(configuredModelId: string | null | und
   return modelId;
 }
 
+/** Foreground-only admission; direct/background role resolution remains unchanged. */
+export function resolveForegroundAgentModelId(
+  configuredModelId: string | null | undefined,
+  input: {
+    readonly fundingKind: "server" | "personal";
+    readonly policyEnabled?: boolean;
+    readonly keyConfigured?: boolean;
+    readonly routes?: readonly QualifiedSurplusChatRoute[];
+    /** Pure test seam; production uses process.env. */
+    readonly env?: NodeJS.ProcessEnv;
+  },
+): string {
+  if (input.fundingKind === "personal") return resolvePersonalForegroundModelId(configuredModelId);
+  try {
+    return resolveModelRole("chat", {
+      ...(configuredModelId ? { configuredId: configuredModelId } : {}),
+      ...(input.env === undefined ? {} : { env: input.env }),
+    });
+  } catch (error) {
+    const modelId = configuredModelId?.trim();
+    if (!modelId || !(error instanceof ModelUnavailableError) || error.availability !== "missing-key") throw error;
+    const surplus = resolveSurplusChatServingAvailability({
+      catalogModelId: modelId,
+      policyEnabled: input.policyEnabled ?? getCachedServerModelConfigRow()?.preferSurplus === true,
+      keyConfigured: input.keyConfigured ?? resolveProviderKey("surplus") !== null,
+      fundingKind: "server",
+      ...(input.routes === undefined ? {} : { routes: input.routes }),
+    });
+    if (surplus.status !== "available" || !surplus.route.supportsTools) throw error;
+    return modelId;
+  }
+}
+
+/** Foreground executor fallback that honors the server default without widening background roles. */
+export function getDefaultForegroundAgentModelId(
+  input: {
+    readonly policyEnabled?: boolean;
+    readonly keyConfigured?: boolean;
+    readonly routes?: readonly QualifiedSurplusChatRoute[];
+    readonly env?: NodeJS.ProcessEnv;
+  } = {},
+): string {
+  kickServerModelConfigRefresh();
+  const env = input.env ?? process.env;
+  const configured = env["NAUTILO_MODEL"]?.trim()
+    || getCachedServerModelConfigRow()?.defaultChatModel?.trim()
+    || undefined;
+  return resolveForegroundAgentModelId(configured, { fundingKind: "server", ...input });
+}
+
 export async function agentNode(
   state: NautiloState,
   invocationConfig?: RunnableConfig,
@@ -83,14 +139,29 @@ export async function agentNode(
 ): Promise<Partial<NautiloState>> {
   const config = fromRuntimeConfig();
   const configuredModelId = state.model || config.nautilo_model;
+  const isForegroundTurn = (state.subagentDepth ?? 0) === 0;
+  const isExactTaskTurn = state.taskRun === true
+    && state.trustedExecutionEntrypoint === "background.task"
+    && state.modelFallbackMode === "none";
+  const resolveExactTaskModelForState = (modelId: string | null | undefined): string => {
+    const toolsWhitelist = state.toolWhitelist;
+    return resolveExactTaskModelId({
+      requestedModelId: modelId,
+      toolsMode: toolsWhitelist === undefined ? "auto" : "whitelist",
+      ...(toolsWhitelist === undefined ? {} : { toolsWhitelist }),
+    });
+  };
   const resolveModelOnlyRequestedModelId = () => hasStubModelForTests()
     ? modelIdForCapabilityProjection("chat", configuredModelId)
-    : foregroundChatFundingSession?.kind === "personal"
-      ? resolvePersonalForegroundModelId(configuredModelId)
-      : resolveModelRole("chat", {
-        ...(configuredModelId ? { configuredId: configuredModelId } : {}),
-      });
-  const isForegroundTurn = (state.subagentDepth ?? 0) === 0;
+    : isForegroundTurn
+      ? resolveForegroundAgentModelId(configuredModelId, {
+        fundingKind: foregroundChatFundingSession?.kind === "personal" ? "personal" : "server",
+      })
+      : isExactTaskTurn
+        ? resolveExactTaskModelForState(configuredModelId)
+        : resolveModelRole("chat", {
+          ...(configuredModelId ? { configuredId: configuredModelId } : {}),
+        });
   const foregroundSnapshot = isForegroundTurn && state.agentId
     ? state.foregroundModelControlSnapshot
       ?? await loadForegroundModelControlSnapshot(state.roomId ?? "", state.agentId)
@@ -103,9 +174,13 @@ export async function agentNode(
   // default must not veto an explicitly selected Room or Agent model.
   const requestedModelId = hasStubModelForTests()
     ? selectedModelId
-    : foregroundChatFundingSession?.kind === "personal"
-      ? resolvePersonalForegroundModelId(selectedModelId)
-      : resolveModelRole("chat", { configuredId: selectedModelId });
+    : isForegroundTurn
+      ? resolveForegroundAgentModelId(selectedModelId, {
+        fundingKind: foregroundChatFundingSession?.kind === "personal" ? "personal" : "server",
+      })
+      : isExactTaskTurn
+        ? resolveExactTaskModelForState(selectedModelId)
+        : resolveModelRole("chat", { configuredId: selectedModelId });
 
   const preparedMessages = state.preparedMessages;
   if (!preparedMessages.length) {

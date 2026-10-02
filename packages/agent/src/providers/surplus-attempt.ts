@@ -11,6 +11,7 @@ import { warn } from "@nautilo/logger";
 import { getUsageContext, normalizeUsageRoomId, type UsageFundingProvenance } from "../usage/usage-context";
 import { modelRouteProvider } from "./model-route";
 import type { QualifiedSurplusChatRoute } from "./surplus-route";
+import { surplusAttemptBinding, surplusReceiptTelemetry } from "./surplus-reconciliation";
 import {
   createSurplusChatModel,
   isSafeSurplusDirectFallback,
@@ -233,6 +234,7 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
     roomId: normalizeUsageRoomId(context?.roomId),
     ...(typeof context?.metadata?.["taskId"] === "string" ? { taskId: context.metadata["taskId"] } : {}),
     metadata: {
+      ...surplusAttemptBinding(input.route, input.apiKey),
       catalogModelId: input.route.catalogModelId,
       ...(typeof context?.metadata?.["agentId"] === "string" ? { agentId: context.metadata["agentId"] } : {}),
       ...(typeof context?.metadata?.["turnId"] === "string" ? { turnId: context.metadata["turnId"] } : {}),
@@ -257,6 +259,7 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
           attemptId,
           providerRequestId: next.requestId,
           ...(next.providerFamily ? { servingProvider: next.providerFamily } : {}),
+          metadata: surplusReceiptTelemetry(next),
         });
       } catch {
         warn("[nautilo/surplus] request receipt persistence failed", { failureCode: "request_receipt_failed" });
@@ -285,6 +288,8 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
     try {
       await settleSurplusLlmAttempt({
       attemptId,
+      ...(receipt?.requestId ? { providerRequestId: receipt.requestId } : {}),
+      ...(receipt ? { metadata: surplusReceiptTelemetry(receipt) } : {}),
       outcome: "succeeded",
       costState: costMicro === undefined ? "pending" : "actual",
       ...(costMicro === undefined ? {} : { actualCostUsd: costMicro / 1_000_000 }),
@@ -317,6 +322,8 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
     try {
       await settleSurplusLlmAttempt({
         attemptId,
+        ...(receipt?.requestId ? { providerRequestId: receipt.requestId } : {}),
+        ...(receipt ? { metadata: surplusReceiptTelemetry(receipt) } : {}),
         outcome: disposition.outcome,
         costState: disposition.costState,
         ...(disposition.actualCostUsd === undefined ? {} : { actualCostUsd: disposition.actualCostUsd }),

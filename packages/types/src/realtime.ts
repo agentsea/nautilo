@@ -14,6 +14,7 @@ import type {
   MaintenanceState,
   MessageAttachmentRef,
   MessageArtifactOpenRef,
+  ServingTransport,
 } from "./api";
 import type {
   CodexRequestEvent as CodexNativeRequestEvent,
@@ -75,6 +76,8 @@ export interface MessageNewEvent {
   /** `user` = persisted human row; `human` kept for back-compat. */
   role: "ai" | "human" | "system" | "user";
   content: string;
+  /** Actual serving path for this settled assistant answer. */
+  servingTransport?: ServingTransport;
   /** `sessions.owner_id` for `role === "user"` / `human` rows. */
   sourceUserId?: string;
   /**

@@ -1052,6 +1052,9 @@ export interface RoomHistoryTerminalExecutionSummary {
   classification: "cancelled" | "process_lost";
 }
 
+/** Non-secret serving path for a settled model answer. */
+export type ServingTransport = "surplus";
+
 /** D124 / D300 — row shape for `GET /api/rooms/:id/messages`. */
 export interface RoomMessageDto {
   id: string;
@@ -1078,6 +1081,8 @@ export interface RoomMessageDto {
   sourceUserId?: string;
   /** D300 — authoring agent for assistant/tool rows (`sessions.agent_id`). */
   authorAgentId?: string;
+  /** Actual serving path for this settled assistant answer. */
+  servingTransport?: ServingTransport;
   /** D391 — retained attachments linked to this human turn (images + audio). */
   attachments?: MessageAttachmentRef[];
   /**

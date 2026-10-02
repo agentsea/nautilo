@@ -51,6 +51,10 @@ import {
 } from "./model-selection";
 import { modelHasRunnableCredentials } from "../chat/model-runtime-credentials";
 import {
+  resolveSurplusChatServingAvailability,
+  type QualifiedSurplusChatRoute,
+} from "../providers/surplus-route";
+import {
   getDescriptiveModelContextTokens,
   getKnownModelMaxOutputTokens,
 } from "../providers/models";
@@ -516,6 +520,34 @@ export function resolveCatalogModel(
   }
 
   return row;
+}
+
+/**
+ * Foreground server-funded projection. Direct-only background owners continue
+ * to use {@link resolveCatalogModel} and therefore still require the original
+ * provider credential.
+ */
+export function resolveServerFundedForegroundCatalogModel(
+  id: string,
+  input: {
+    readonly policyEnabled: boolean;
+    readonly keyConfigured: boolean;
+    readonly routes?: readonly QualifiedSurplusChatRoute[];
+    readonly options?: ResolveCatalogModelOptions;
+  },
+): ResolvedCatalogModel {
+  const direct = resolveCatalogModel(id, input.options);
+  if (direct.availability !== "missing_credentials" || direct.workload !== "chat") return direct;
+  const surplus = resolveSurplusChatServingAvailability({
+    catalogModelId: id,
+    policyEnabled: input.policyEnabled,
+    keyConfigured: input.keyConfigured,
+    ...(input.routes === undefined ? {} : { routes: input.routes }),
+  });
+  if (surplus.status !== "available") return direct;
+  const selectable = { ...direct, availability: "selectable" as const };
+  delete selectable.unavailableReason;
+  return selectable;
 }
 
 /**

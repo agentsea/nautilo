@@ -14,6 +14,7 @@
  */
 
 import type { SelectionProfile, ComboSpec } from "./model-selection";
+import type { ServingTransport } from "./api";
 
 export type TaskScheduleKind = "now" | "one_shot" | "cron";
 
@@ -213,6 +214,8 @@ export interface TaskRunTranscriptMessage {
   toolName: string | null;
   /** M163 — parsed tool-call args; non-null only on assistant rows with tool calls. */
   toolCalls: TaskRunToolCall[] | null;
+  /** Actual serving path for this settled assistant answer. */
+  servingTransport?: ServingTransport;
   createdAt: string;
 }
 

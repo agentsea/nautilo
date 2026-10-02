@@ -23,4 +23,15 @@ describe("persist-messages reasoning sanitization", () => {
     expect(JSON.stringify(sanitized.content)).not.toContain("internal");
     expect(JSON.stringify(sanitized.content)).toContain("hello");
   });
+
+  test("retains settled producer metadata while removing reasoning", () => {
+    const sanitized = sanitizeMessageForTranscript(new AIMessage({
+      content: [
+        { type: "reasoning", text: "internal" },
+        { type: "text", text: "hello" },
+      ],
+      response_metadata: { serving_transport: "surplus" },
+    }));
+    expect(sanitized.response_metadata).toEqual({ serving_transport: "surplus" });
+  });
 });

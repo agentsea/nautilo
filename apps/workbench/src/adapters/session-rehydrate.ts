@@ -286,6 +286,8 @@ export interface StoredSessionMessageDto {
   sourceUserId?: string;
   /** D300 — authoring agent (`sessions.agent_id`) for assistant/tool rows. */
   authorAgentId?: string;
+  /** Actual serving path for this settled assistant answer. */
+  servingTransport?: "surplus";
   /** External harness that authored this Task result; `authorAgentId` is its delegator. */
   authorHarnessId?: string;
   /**
@@ -329,6 +331,7 @@ export function projectAuthenticatedRoomHistoryPayload(
     historyUnavailableReason: _historyUnavailableReason,
     authenticatedToolStatus: _authenticatedToolStatus,
     authenticatedToolCallId: _authenticatedToolCallId,
+    servingTransport: _servingTransport,
     // Ordinary blob references are not authenticated by the protected text payload.
     attachments: _attachments,
     ...availableRow
@@ -337,6 +340,9 @@ export function projectAuthenticatedRoomHistoryPayload(
     ...availableRow,
     content: payload.content,
     toolCalls: JSON.stringify(payload.toolCalls ?? []),
+    ...(payload.sensitiveMetadata?.["servingTransport"] === "surplus"
+      ? { servingTransport: "surplus" as const }
+      : {}),
   });
   if (payload.role === "tool") {
     const explicitStatus = payload.sensitiveMetadata?.["toolStatus"];
@@ -467,6 +473,7 @@ export function roomHistoryShadowOrdinarySibling(
       role: "assistant",
       content: message.content,
       ...(toolCalls.length === 0 ? {} : { toolCalls }),
+      ...(message.servingTransport === "surplus" ? { servingTransport: "surplus" as const } : {}),
     });
   } else if (message.role === "tool") {
     const toolName = message.toolName
@@ -549,8 +556,9 @@ export function reconcileRoomHistoryShadowPayloads(
   return messages.map((message) => {
     const key = `${message.id}\u0000${String(message.editRevision ?? 0)}`;
     if (withheld.has(key)) {
+      const { servingTransport: _servingTransport, ...safeMessage } = message;
       return Object.freeze({
-        ...message,
+        ...safeMessage,
         attachments: [],
         content: "Encrypted history is unavailable on this device.",
         historyUnavailable: true,
@@ -571,13 +579,16 @@ export function reconcileRoomHistoryShadowPayloads(
 export function withholdRoomHistoryShadowPayloads(
   messages: readonly StoredSessionMessageDto[],
 ): readonly StoredSessionMessageDto[] {
-  return messages.map((message) => Object.freeze({
-    ...message,
-    attachments: [],
-    content: "Encrypted history is unavailable on this device.",
-    historyUnavailable: true,
-    ...(message.role === "assistant" ? { toolCalls: "[]" } : {}),
-  }));
+  return messages.map((message) => {
+    const { servingTransport: _servingTransport, ...safeMessage } = message;
+    return Object.freeze({
+      ...safeMessage,
+      attachments: [],
+      content: "Encrypted history is unavailable on this device.",
+      historyUnavailable: true,
+      ...(message.role === "assistant" ? { toolCalls: "[]" } : {}),
+    });
+  });
 }
 
 function restoreToolResultContent(content: string, toolName: string): string {
@@ -697,6 +708,7 @@ export function restoreSessionMessages(
         if (typeof m.authorHarnessId === "string" && m.authorHarnessId.length > 0) {
           custom.authorHarnessId = m.authorHarnessId;
         }
+        if (m.servingTransport === "surplus") custom.servingTransport = "surplus";
         if (typeof m.editRevision === "number") custom.editRevision = m.editRevision;
         if (m.historyUnavailable === true) {
           custom.historyUnavailable = true;

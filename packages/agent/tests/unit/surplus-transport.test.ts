@@ -6,7 +6,10 @@ import {
   isSafeSurplusDirectFallback,
   readSurplusWireReceipt,
 } from "../../src/providers/surplus-transport";
-import { resolveQualifiedSurplusChatRoute } from "../../src/providers/surplus-route";
+import {
+  resolveQualifiedSurplusChatRoute,
+  resolveSurplusChatServingAvailability,
+} from "../../src/providers/surplus-route";
 import {
   assertCompleteSurplusResponse,
   assertSuccessfulSurplusProviderReceipt,
@@ -48,6 +51,7 @@ describe("Surplus wire boundary", () => {
     });
     expect(readSurplusWireReceipt(new Headers()).buyerCostMicro).toBeUndefined();
     expect(readSurplusWireReceipt(new Headers({ "x-si-buyer-cost-micro": "NaN" })).buyerCostMicro).toBeUndefined();
+    expect(readSurplusWireReceipt(new Headers({ "x-si-truncated": "unknown" })).truncated).toBe(true);
   });
 
   test("only calls the fixed HTTPS chat endpoint and refuses redirects", async () => {
@@ -405,6 +409,45 @@ describe("qualified Surplus route selection", () => {
     expect(resolveQualifiedSurplusChatRoute(candidate.catalogModelId, [candidate])).toEqual(candidate);
     expect(resolveQualifiedSurplusChatRoute(candidate.catalogModelId, [{ ...candidate, providerPin: "openrouter" }])).toBeNull();
     expect(resolveQualifiedSurplusChatRoute("openai:not-signed", [{ ...candidate, catalogModelId: "openai:not-signed", providerPin: "openai" }])).toBeNull();
+  });
+
+  test("projects qualification, policy, credentials, and funding without widening the release list", () => {
+    const routes = [VENICE_ROUTE];
+    expect(resolveSurplusChatServingAvailability({
+      policyEnabled: true, keyConfigured: true,
+    })).toEqual({ status: "not-qualified", route: null });
+    expect(resolveSurplusChatServingAvailability({
+      catalogModelId: VENICE_ROUTE.catalogModelId,
+      policyEnabled: false, keyConfigured: true, routes,
+    }).status).toBe("qualified-unavailable");
+    expect(resolveSurplusChatServingAvailability({
+      catalogModelId: VENICE_ROUTE.catalogModelId,
+      policyEnabled: true, keyConfigured: false, routes,
+    }).status).toBe("qualified-unavailable");
+    expect(resolveSurplusChatServingAvailability({
+      catalogModelId: VENICE_ROUTE.catalogModelId,
+      policyEnabled: true, keyConfigured: true, fundingKind: "personal", routes,
+    }).status).toBe("qualified-unavailable");
+    expect(resolveSurplusChatServingAvailability({
+      catalogModelId: VENICE_ROUTE.catalogModelId,
+      policyEnabled: true, keyConfigured: true, fundingKind: "server", routes,
+    })).toEqual({ status: "available", route: VENICE_ROUTE });
+    expect(resolveSurplusChatServingAvailability({
+      catalogModelId: "openai:not-signed",
+      policyEnabled: true, keyConfigured: true, routes,
+    })).toEqual({ status: "not-qualified", route: null });
+    expect(resolveSurplusChatServingAvailability({
+      catalogModelId: VENICE_ROUTE.catalogModelId,
+      policyEnabled: true, keyConfigured: true,
+      routes: [{ ...VENICE_ROUTE, maxOutputTokens: Number.MAX_SAFE_INTEGER }],
+    })).toEqual({ status: "not-qualified", route: null });
+    for (const invalidLimit of [Number.NaN, 1.5]) {
+      expect(resolveSurplusChatServingAvailability({
+        catalogModelId: VENICE_ROUTE.catalogModelId,
+        policyEnabled: true, keyConfigured: true,
+        routes: [{ ...VENICE_ROUTE, maxOutputTokens: invalidLimit }],
+      })).toEqual({ status: "not-qualified", route: null });
+    }
   });
 
   test("server-only admission cannot expand unproven feature or context limits", () => {

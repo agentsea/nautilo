@@ -302,7 +302,11 @@ export {
 
 // Nodes
 export { preModelNode } from "./nodes/pre-model";
-export { agentNode } from "./nodes/agent";
+export {
+  agentNode,
+  getDefaultForegroundAgentModelId,
+  resolveForegroundAgentModelId,
+} from "./nodes/agent";
 export {
   loadForegroundModelControlSnapshot,
   foregroundModelControlPlanFromSnapshot,
@@ -526,9 +530,17 @@ export {
 // resolved catalog projection (local/cache-backed, non-secret).
 export {
   resolveCatalogModel,
+  resolveServerFundedForegroundCatalogModel,
   listResolvedCatalogModels,
   getActiveModelCatalogProvenance,
 } from "./config/resolved-catalog";
+export {
+  resolveQualifiedSurplusChatRoute,
+  resolveSurplusChatServingAvailability,
+  type QualifiedSurplusChatRoute,
+  type SurplusChatServingAvailability,
+  type SurplusChatServingStatus,
+} from "./providers/surplus-route";
 // runtime remote model-catalog loader seam.
 export {
   OFFICIAL_MODEL_CATALOG_POINTER_URL,
@@ -964,6 +976,7 @@ export {
 export {
   validateExactTaskModelSelection,
   assertExactTaskModelSelection,
+  resolveExactTaskModelId,
   type ExactModelSelectionFailureCode,
   type ExactModelSelectionFailure,
   type ValidateExactTaskModelInput,
@@ -1135,6 +1148,7 @@ export {
   ensureSession,
   reserveMemoryReviewSources,
   appendTranscriptMessages,
+  settledServingTransportForMessage,
   searchSessions,
   getLatestSession,
   getLatestSubagentSession,
@@ -1405,3 +1419,4 @@ export { collapseWhitespaceShareApprovalSnippet } from "./post-model/share-appro
 export { OrdinaryContentAccessRetryRequiredError } from "./runtime/ordinary-content-access";
 
 export { listSpeechModels, getServerSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "./config/speech-models";
+export { surplusCredentialFingerprint, fetchSurplusSettlement } from "./providers/surplus-reconciliation";

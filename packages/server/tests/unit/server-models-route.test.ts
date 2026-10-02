@@ -14,6 +14,17 @@ import {
 
 const KNOWN_MODEL = "anthropic:claude-sonnet-4-6";
 const REPAIR_MODEL = "openai:gpt-5.6-terra";
+const QUALIFIED_SURPLUS_ROUTE = {
+  catalogModelId: "venice:openai-gpt-55",
+  surplusModelId: "gpt-5.5",
+  providerPin: "venice" as const,
+  supportsTools: true,
+  supportsVision: false,
+  supportsReasoning: false,
+  maxContextTokens: 100_000,
+  maxOutputTokens: 8_000,
+  qualifiedAt: "2026-10-01",
+};
 const MEDIA_MODELS = {
   image: [{ id: "venice:gpt-image-2", displayName: "GPT Image 2", provider: "venice", available: true }],
   music: [{ id: "venice:sonilo-v1-1-music", displayName: "Sonilo", provider: "venice", available: true }],
@@ -96,6 +107,30 @@ const modelConfig: ResolvedServerModelConfig = {
 };
 
 describe("server-models parseUpdateBody — reasoningOutput", () => {
+  test("Surplus-only admission is limited to foreground model settings", () => {
+    const previous = process.env["VENICE_API_KEY"];
+    try {
+      delete process.env["VENICE_API_KEY"];
+      const surplus = {
+        policyEnabled: true,
+        keyConfigured: true,
+        routes: [QUALIFIED_SURPLUS_ROUTE],
+      };
+      expect(parseUpdateBodyForTests({ defaultChatModel: QUALIFIED_SURPLUS_ROUTE.catalogModelId }, undefined, surplus))
+        .toEqual({ ok: true, patch: { defaultChatModel: QUALIFIED_SURPLUS_ROUTE.catalogModelId } });
+      expect(parseUpdateBodyForTests({ fallbackChain: [QUALIFIED_SURPLUS_ROUTE.catalogModelId] }, undefined, surplus))
+        .toEqual({ ok: true, patch: { fallbackChain: [QUALIFIED_SURPLUS_ROUTE.catalogModelId] } });
+      for (const field of ["conductorModel", "stenographerModel", "reflectionModel", "memoryReviewModel"] as const) {
+        const result = parseUpdateBodyForTests({ [field]: QUALIFIED_SURPLUS_ROUTE.catalogModelId }, undefined, surplus);
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error).toContain("credential");
+      }
+    } finally {
+      if (previous === undefined) delete process.env["VENICE_API_KEY"];
+      else process.env["VENICE_API_KEY"] = previous;
+    }
+  });
+
   test("accepts every server model-policy field in one patch", () => {
     expect(parseUpdateBodyForTests({
       defaultChatModel: KNOWN_MODEL,
@@ -308,6 +343,31 @@ describe("server-models route authorization, partial writes, and audit", () => {
         },
       },
     });
+  });
+
+  test("derives available capability and catalog readiness from an injected qualified route", async () => {
+    const call = routeHarness({
+      getCapabilities: async () => ["read_server_settings"],
+      getDb: () => ({}) as never,
+      getConfig: async () => ({ ...modelConfig, preferSurplus: true }),
+      refreshConfigCache: async () => null,
+      getEffectiveEmbeddingModel: () => null,
+      getActiveEmbeddingSelection: () => null,
+      listMediaModels,
+      getEffectiveMediaModel: () => null,
+      getSurplusKeyConfigured: () => true,
+      getQualifiedSurplusChatRoutes: () => [QUALIFIED_SURPLUS_ROUTE],
+    });
+
+    const response = await call("GET", { ...requestBase, sessionUserId: "viewer" });
+    expect(response.status).toBe(200);
+    const body = response.body as {
+      surplus: { chatStatus: string };
+      catalogModels: Array<{ id: string; availability: string }>;
+    };
+    expect(body.surplus.chatStatus).toBe("available");
+    expect(body.catalogModels.find((model) => model.id === QUALIFIED_SURPLUS_ROUTE.catalogModelId))
+      .toMatchObject({ availability: "selectable" });
   });
 
   test("catalog inventory includes decision models and live missing-credential reasons without admitting them for chat", async () => {

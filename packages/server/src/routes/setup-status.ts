@@ -11,10 +11,17 @@ import {
   reloadEnvAndStripRemovedRegistryKeys,
   resolveDotenvPath,
 } from "@nautilo/config-guard";
-import { getProfile } from "@nautilo/agent";
+import {
+  getActiveModelCatalogSync,
+  getProfile,
+  resolveProviderKey,
+  resolveSurplusChatServingAvailability,
+  type QualifiedSurplusChatRoute,
+} from "@nautilo/agent";
 import {
   db,
   eq,
+  getCachedServerModelConfigRow,
   getAccountSecurityRowByUserId,
   getServerProfile,
   deriveDefaultServerName,
@@ -44,6 +51,70 @@ export type RecommendedSetupSurfaceKind =
   | "workbench-admin"
   | "cli"
   | "ask-admin";
+
+export interface SetupStatusRouteDeps {
+  /** Pure offline seam; production uses the empty released route list. */
+  readonly getQualifiedSurplusChatRoutes?: () => readonly QualifiedSurplusChatRoute[];
+  readonly getPreferSurplus?: () => boolean;
+  readonly getReasoningOutput?: () => Readonly<Record<string, boolean>>;
+  readonly getSurplusKeyConfigured?: () => boolean;
+}
+
+interface SetupLlmReadinessInput {
+  readonly directProviderReady: boolean;
+  readonly authenticated: boolean;
+  readonly claimed: boolean;
+}
+
+/**
+ * Setup readiness describes a server-funded foreground agent path. A Surplus
+ * key is only credential presence; it becomes readiness when server policy is
+ * enabled and a released chat route passes the central serving resolver for
+ * the ordinary agent defaults: tools, signed maximum output, and default
+ * reasoning behavior. Request-specific context and vision gates still run at
+ * invocation time.
+ */
+export function computeSetupHasLlm(
+  input: SetupLlmReadinessInput,
+  deps: SetupStatusRouteDeps = {},
+): boolean {
+  if (input.directProviderReady) return true;
+  if (!input.authenticated || !input.claimed) return false;
+
+  const policyEnabled = (deps.getPreferSurplus
+    ?? (() => getCachedServerModelConfigRow()?.preferSurplus === true))();
+  const keyConfigured = (deps.getSurplusKeyConfigured
+    ?? (() => resolveProviderKey("surplus") !== null))();
+  const routes = deps.getQualifiedSurplusChatRoutes?.();
+  const reasoningOutput = (deps.getReasoningOutput
+    ?? (() => getCachedServerModelConfigRow()?.reasoningOutput ?? {}))();
+
+  // Resolve every signed model exactly. The aggregate resolver intentionally
+  // reports provider capability status, while setup readiness must keep
+  // looking past a qualified route that cannot run an ordinary agent request.
+  return getActiveModelCatalogSync().catalog.entries.some((entry) => {
+    const availability = resolveSurplusChatServingAvailability({
+      catalogModelId: entry.id,
+      policyEnabled,
+      keyConfigured,
+      fundingKind: "server",
+      ...(routes === undefined ? {} : { routes }),
+    });
+    if (availability.status !== "available" || !availability.route.supportsTools) return false;
+
+    const signedMaxOutputTokens = entry.limits?.outputTokens;
+    if (typeof signedMaxOutputTokens !== "number"
+      || !Number.isSafeInteger(signedMaxOutputTokens)
+      || signedMaxOutputTokens < 1) return false;
+    if (availability.route.maxOutputTokens < signedMaxOutputTokens) return false;
+    // Leave room for at least one prompt token at the signed default output.
+    if (availability.route.maxContextTokens <= signedMaxOutputTokens) return false;
+    // Current Surplus invocation refuses requested reasoning. Reasoning-capable
+    // catalogue models therefore need the administrator's explicit opt-out.
+    if (entry.features?.reasoning === true && reasoningOutput[entry.id] !== false) return false;
+    return true;
+  });
+}
 
 function managedByCloudFromInstance(): boolean {
   return resolveInstance().deploymentMode === "cloud-managed";
@@ -192,6 +263,7 @@ function buildRecommendedSetupSurface(
 
 async function deriveSetupStateCore(args: {
   sessionUserId: string | null;
+  deps?: SetupStatusRouteDeps;
 }): Promise<{
   setupState: SetupState;
   claimRequired: boolean;
@@ -220,11 +292,16 @@ async function deriveSetupStateCore(args: {
   // Guests never receive `providers`; `setupState` for them does not depend
   // on key material — skip `check()` to avoid env/vault work on every poll.
   if (args.sessionUserId) {
-    // `check()` has already derived these redacted capability booleans from
-    // the key report. Reuse that summary rather than exposing, re-scanning,
-    // or returning provider records (which carry masked-value metadata).
+    // `check()` has already derived the redacted direct-provider booleans from
+    // the key report. Keep that key-only projection independent of agent/DB
+    // policy, then compose server serving readiness here without exposing or
+    // returning provider records (which carry masked-value metadata).
     const { summary } = await check();
-    hasLlm = summary.hasLlm;
+    hasLlm = computeSetupHasLlm({
+      directProviderReady: summary.hasLlm,
+      authenticated: true,
+      claimed: hasA,
+    }, args.deps ?? {});
     hasVoice = summary.hasVoice;
     hasSearch = summary.hasSearch;
     hasConversion = summary.hasConversion;
@@ -255,11 +332,14 @@ async function deriveSetupStateCore(args: {
   };
 }
 
-export function setupStatusRoutes(app: FastifyInstance): void {
+export function setupStatusRoutes(
+  app: FastifyInstance,
+  deps: SetupStatusRouteDeps = {},
+): void {
   app.get("/api/setup/status", async (request, reply) => {
     const instance = resolveInstance();
     const sessionUserId = request.sessionUserId;
-    const core = await deriveSetupStateCore({ sessionUserId });
+    const core = await deriveSetupStateCore({ sessionUserId, deps });
     const deployConfigConsumedAt = readDeployConfigConsumedAt(resolveNautiloRootDir());
     const defaultName = deriveDefaultServerName({
       host: resolvePublicServerUrl(instance),

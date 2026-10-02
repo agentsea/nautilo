@@ -20,6 +20,7 @@ import {
   logicalMessageKey,
   type AdvancedVideoWorkcardContinuation,
   type MessageAttachmentRef,
+  type ServingTransport,
 } from "@nautilo/types";
 import {
   assertCanUseServerProviderCredentials,
@@ -281,9 +282,20 @@ export interface AppendTranscriptResult {
 
 /** Match live quiet-supervision presentation while retaining the exact tool audit. */
 export function transcriptMetadataForMessage(message: BaseMessage, options: AppendTranscriptOptions): Record<string, unknown> | null {
-  let metadata = options.internalToolMetadata && (
+  const sourceMetadata = options.internalToolMetadata && (
     message instanceof ToolMessage || (AIMessage.isInstance(message) && message.tool_calls?.length)
   ) ? options.internalToolMetadata : options.metadata ?? null;
+  const filteredSourceMetadata = sourceMetadata === null
+    ? null
+    : Object.fromEntries(Object.entries(sourceMetadata).filter(([key]) => key !== "servingTransport"));
+  const metadataWithoutServingTransport = filteredSourceMetadata !== null
+    && Object.keys(filteredSourceMetadata).length > 0
+    ? filteredSourceMetadata
+    : null;
+  const servingTransport = settledServingTransportForMessage(message);
+  let metadata = servingTransport === undefined
+    ? metadataWithoutServingTransport
+    : { ...(metadataWithoutServingTransport ?? {}), servingTransport };
   if (message instanceof ToolMessage
     && message.additional_kwargs["nautilo_browser_decision_observation"] === true) {
     metadata = {
@@ -292,6 +304,15 @@ export function transcriptMetadataForMessage(message: BaseMessage, options: Appe
     };
   }
   return withTranscriptToolPresentation(message, metadata);
+}
+
+/** Project only provider-authored transport metadata on a visible settled answer. */
+export function settledServingTransportForMessage(message: BaseMessage): ServingTransport | undefined {
+  if (!AIMessage.isInstance(message) || message.tool_calls?.length) return undefined;
+  if (visibleTranscriptContent(message).trim().length === 0) return undefined;
+  return message.response_metadata?.["serving_transport"] === "surplus"
+    ? "surplus"
+    : undefined;
 }
 
 export async function appendTranscriptMessages(
@@ -393,6 +414,8 @@ export interface SessionMessage {
   sourceUserId?: string;
   /** D300 — `sessions.agent_id` for assistant/tool rows in multi-agent rooms. */
   authorAgentId?: string;
+  /** Actual serving path for this settled assistant answer. */
+  servingTransport?: ServingTransport;
   /** External harness that authored this Task result; `authorAgentId` is its delegator. */
   authorHarnessId?: string;
   /** D391 — retained attachments linked to this human turn (by M134
@@ -463,6 +486,22 @@ function projectAuthorHarnessAttribution(
   return typeof harnessId === "string" && harnessId.length > 0 && harnessId.length <= 64
     ? { authorHarnessId: harnessId }
     : undefined;
+}
+
+function projectServingTransport(role: string, metadata: unknown): ServingTransport | undefined {
+  if (role !== "assistant") return undefined;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
+  return (metadata as Record<string, unknown>)["servingTransport"] === "surplus"
+    ? "surplus"
+    : undefined;
+}
+
+function projectServingTransportField(
+  role: string,
+  metadata: unknown,
+): Readonly<{ servingTransport: ServingTransport }> | Record<never, never> {
+  const servingTransport = projectServingTransport(role, metadata);
+  return servingTransport === undefined ? {} : { servingTransport };
 }
 
 export interface SessionInfo {
@@ -569,6 +608,8 @@ export interface RunAgentTranscriptMessage extends TranscriptToolPresentation {
    * assistant rows. The agent's own inputs — safe to surface.
    */
   toolCalls: RunAgentTranscriptToolCall[] | null;
+  /** Actual serving path for this settled assistant answer. */
+  servingTransport?: ServingTransport;
   createdAt: Date;
 }
 
@@ -679,7 +720,9 @@ export async function getRunAgentTranscriptSnapshot(
         if (row.content === null) throw new Error("Task transcript ordinary content is unavailable");
         messages.push({ id: row.id, role: row.role, content: row.content, toolName: row.toolName ?? null,
           ...(opts.includeToolPresentation && row.role === "tool" ? readTranscriptToolPresentation(row.metadata) : {}),
-          toolCalls: row.role === "tool" ? null : parseTranscriptToolCalls(row.toolCalls), createdAt: row.createdAt });
+          toolCalls: row.role === "tool" ? null : parseTranscriptToolCalls(row.toolCalls),
+          ...projectServingTransportField(row.role, row.metadata),
+          createdAt: row.createdAt });
       }
       if (rows.length < batchRows) break;
       const last = rows.at(-1)!;
@@ -816,6 +859,7 @@ export async function getSessionMessages(
       content: sessionMessages.content,
       toolCalls: sessionMessages.toolCalls,
       toolName: sessionMessages.toolName,
+      metadata: sessionMessages.metadata,
       createdAt: sessionMessages.createdAt,
       editedAt: sessionMessages.editedAt,
       editRevision: sessionMessages.editRevision,
@@ -839,6 +883,7 @@ export async function getSessionMessages(
     editedAt: r.editedAt,
     editRevision: r.editRevision,
     fingerprint: r.fingerprint,
+    ...projectServingTransportField(r.role, r.metadata),
     ...(attachmentsByFp.get(r.fingerprint ?? "") ? { attachments: attachmentsByFp.get(r.fingerprint!) } : {}),
   }));
 }
@@ -854,6 +899,7 @@ export async function getLatestSessionMessages(
       content: sessionMessages.content,
       toolCalls: sessionMessages.toolCalls,
       toolName: sessionMessages.toolName,
+      metadata: sessionMessages.metadata,
       createdAt: sessionMessages.createdAt,
       editedAt: sessionMessages.editedAt,
       editRevision: sessionMessages.editRevision,
@@ -876,6 +922,7 @@ export async function getLatestSessionMessages(
     editedAt: r.editedAt,
     editRevision: r.editRevision,
     fingerprint: r.fingerprint,
+    ...projectServingTransportField(r.role, r.metadata),
     ...(attachmentsByFp.get(r.fingerprint ?? "") ? { attachments: attachmentsByFp.get(r.fingerprint!) } : {}),
   }));
 }
@@ -942,6 +989,7 @@ export async function getRoomMessagesBeforeCursor(args: {
             : {}
           : {}),
         ...(projectAuthorHarnessAttribution(r.metadata) ?? {}),
+        ...projectServingTransportField(r.role, r.metadata),
         ...(projectAdvancedVideoWorkcardContinuation(r.metadata)
           ? { workcardContinuation: projectAdvancedVideoWorkcardContinuation(r.metadata) }
           : {}),
@@ -1099,6 +1147,9 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
       ...(args.contentRepresentation === "structural"
         ? {}
         : (projectAuthorHarnessAttribution(r.metadata) ?? {})),
+      ...(args.contentRepresentation === "structural"
+        ? {}
+        : projectServingTransportField(r.role, r.metadata)),
       ...(attachmentsByFp.get(r.fingerprint ?? "")
         ? { attachments: attachmentsByFp.get(r.fingerprint!) }
         : {}),
@@ -1327,7 +1378,11 @@ export function sanitizeMessageForTranscript(message: BaseMessage): BaseMessage 
   const filtered = message.content.filter((block) => !isReasoningContentBlock(block));
   if (filtered.length === message.content.length) return message;
   const content = filtered.length > 0 ? filtered : "";
-  const sanitized = new AIMessage({ content });
+  const sanitized = new AIMessage({
+    content,
+    additional_kwargs: message.additional_kwargs,
+    response_metadata: message.response_metadata,
+  });
   if (message.tool_calls?.length) {
     sanitized.tool_calls = message.tool_calls;
   }

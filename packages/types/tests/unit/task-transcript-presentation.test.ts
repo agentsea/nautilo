@@ -9,6 +9,15 @@ import type { TaskRunTranscriptMessage } from "../../src/task-api";
 const row = (partial: Partial<TaskRunTranscriptMessage> & Pick<TaskRunTranscriptMessage, "role">): TaskRunTranscriptMessage => ({ content: "", toolName: null, toolCalls: null, createdAt: "2026-08-21T00:00:00.000Z", ...partial });
 
 describe("D547 task transcript projection", () => {
+  test("preserves settled answer transport without inventing it for direct answers", () => {
+    const projected = taskRunTranscriptToPresentation([
+      row({ role: "assistant", content: "served", servingTransport: "surplus" }),
+      row({ role: "assistant", content: "direct" }),
+    ], "run-transport");
+    expect(projected[0]).toMatchObject({ servingTransport: "surplus" });
+    expect(projected[1]).not.toHaveProperty("servingTransport");
+  });
+
   test("pairs durable results and gives identified/null calls stable distinct keys", () => {
     const projected = taskRunTranscriptToPresentation([
       row({ role: "assistant", content: "before", toolCalls: [{ name: "read", id: "read-call", args: { token: "no" } }, { name: "write", id: "write-call", args: {} }, { name: "none", id: null, args: {} }] }),

@@ -101,6 +101,9 @@ export function projectLiveShadowMessageResult(input: Readonly<{
         role: "ai" as const,
         content: payload.content,
         authorAgentId: opened.authorAgentId,
+        ...(payload.sensitiveMetadata?.["servingTransport"] === "surplus"
+          ? { servingTransport: "surplus" as const }
+          : {}),
         ...(opened.assistantMessageKey === null
           ? {}
           : { assistantMessageKey: opened.assistantMessageKey }),

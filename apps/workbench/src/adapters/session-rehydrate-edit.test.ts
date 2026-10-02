@@ -6,6 +6,50 @@ import {
   withholdRoomHistoryShadowPayloads,
 } from "./session-rehydrate";
 describe("restoreSessionMessages M230 edit metadata", () => {
+  test("restores settled attribution and trusts the authenticated protected payload", () => {
+    const [ordinary] = restoreSessionMessages([{
+      id: "surplus-answer",
+      role: "assistant",
+      content: "settled",
+      servingTransport: "surplus",
+    }]);
+    expect(ordinary).toMatchObject({
+      metadata: { custom: { servingTransport: "surplus" } },
+    });
+
+    const [protectedSurplus] = restoreSessionMessages(reconcileRoomHistoryShadowPayloads([{
+      id: "protected-surplus-answer",
+      role: "assistant",
+      content: "ordinary fallback",
+      editRevision: 0,
+    }], [{
+      messageId: "protected-surplus-answer",
+      editRevision: 0,
+      status: "verified",
+      payload: {
+        role: "assistant",
+        content: "authenticated settled",
+        sensitiveMetadata: { servingTransport: "surplus" },
+      },
+    }], { strict: true, requireVerified: true }));
+    expect(protectedSurplus).toMatchObject({
+      metadata: { custom: { servingTransport: "surplus" } },
+    });
+
+    const reconciled = reconcileRoomHistoryShadowPayloads([{
+      id: "direct-answer",
+      role: "assistant",
+      content: "ordinary",
+      servingTransport: "surplus",
+      editRevision: 0,
+    }], [{
+      messageId: "direct-answer",
+      editRevision: 0,
+      status: "verified",
+      payload: { role: "assistant", content: "authenticated direct" },
+    }], { strict: true, requireVerified: true });
+    expect(reconciled[0]).not.toHaveProperty("servingTransport");
+  });
   test("preserves harness authorship separately from the delegating agent", () => {
     const [message] = restoreSessionMessages([{
       id: "harness-result-1",

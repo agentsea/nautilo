@@ -2,6 +2,7 @@ import { hasVisibleAssistantContent } from "./conversation-visible-content";
 import { UserText } from "./conversation-message-text";
 export { UserText } from "./conversation-message-text";
 import { MessageTimestamp } from "./message-timestamp";
+import { ServingTransportAttribution } from "./serving-transport-attribution";
 import {
   createContext,
   useContext,
@@ -4376,6 +4377,10 @@ function AssistantBubbleInner({
     const c = (state.metadata as { custom?: { authorHarnessId?: unknown } })?.custom;
     return typeof c?.authorHarnessId === "string" ? c.authorHarnessId : undefined;
   });
+  const servingTransport = useMessage((state) => {
+    const c = (state.metadata as { custom?: { servingTransport?: unknown } })?.custom;
+    return c?.servingTransport === "surplus" ? "surplus" : undefined;
+  });
   // ask_peer questions are assistant-authored messages, but their
   // document cards use the same server-authorized metadata lane as ordinary
   // human focus sends. Never infer an attachment from the assistant's prose.
@@ -4430,6 +4435,7 @@ function AssistantBubbleInner({
             </span>
           ) : null}
           <MessageTimestamp />
+          <ServingTransportAttribution transport={servingTransport} />
         </div>
         {replyParentId != null ? (
           <div className="mt-1 pl-2">

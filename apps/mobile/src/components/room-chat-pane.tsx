@@ -323,6 +323,7 @@ export function RoomChatPane({
           <MessageBubble
             role={item.role}
             sentAt={item.sentAt}
+            servingTransport={item.servingTransport}
             outgoing={senderChrome.outgoing}
             content={item.text}
             pending={item.status === "pending"}

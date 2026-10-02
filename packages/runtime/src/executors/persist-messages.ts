@@ -5,9 +5,10 @@ import {
   type AdvancedVideoWorkcardContinuation,
   type MessageAttachmentRef,
   type MessageArtifactOpenRef,
+  type ServingTransport,
   type ServerEvent,
 } from "@nautilo/types";
-import { appendTranscriptMessages, computeMessageFingerprint } from "@nautilo/agent";
+import { appendTranscriptMessages, computeMessageFingerprint, settledServingTransportForMessage } from "@nautilo/agent";
 import type { AppendNotificationContext } from "@nautilo/trust";
 import {
   type MemoryReviewAdmission,
@@ -39,7 +40,11 @@ export function sanitizeMessageForTranscript(message: BaseMessage): BaseMessage 
   const filtered = message.content.filter((block) => !isReasoningContentBlock(block));
   if (filtered.length === message.content.length) return message;
   const content = filtered.length > 0 ? filtered : "";
-  const sanitized = new AIMessage({ content });
+  const sanitized = new AIMessage({
+    content,
+    additional_kwargs: message.additional_kwargs,
+    response_metadata: message.response_metadata,
+  });
   if (message.tool_calls?.length) {
     sanitized.tool_calls = message.tool_calls;
   }
@@ -186,6 +191,13 @@ export async function persistMessages(
   }
 
   const transcriptMessages = newMessages.map(sanitizeMessageForTranscript);
+  const servingTransportByFingerprint = new Map<string, ServingTransport>();
+  for (const pair of newPairs) {
+    const servingTransport = settledServingTransportForMessage(pair.msg);
+    if (servingTransport !== undefined) {
+      servingTransportByFingerprint.set(pair.fp, servingTransport);
+    }
+  }
 
   if (process.env["NAUTILO_DEBUG_PERSIST"] === "1") {
     const roles = newMessages.map((m) => persistDebugRole(m)).join(",");
@@ -450,6 +462,9 @@ export async function persistMessages(
           typeof row.content === "string" &&
           row.content.trim().length > 0
         ) {
+          const servingTransport = row.fingerprint
+            ? servingTransportByFingerprint.get(row.fingerprint)
+            : undefined;
           options.eventBus.emit({
             type: "message.new",
             laneKey,
@@ -458,6 +473,7 @@ export async function persistMessages(
             role: "ai",
             content: row.content,
             ...(options.agentId ? { authorAgentId: options.agentId } : {}),
+            ...(servingTransport ? { servingTransport } : {}),
             ...(options.assistantMessageKey
               ? { assistantMessageKey: options.assistantMessageKey }
               : {}),

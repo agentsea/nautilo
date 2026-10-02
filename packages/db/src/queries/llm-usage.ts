@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import { llmUsageEvents } from "../schema/llm-usage";
 import { users } from "../schema/users";
 import { getSharedDirectDb } from "../config/direct-database";
@@ -71,10 +71,13 @@ export interface AttachSurplusRequestReceiptInput {
   providerRequestId: string;
   servingProvider?: string | null;
   endpoint?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface SettleSurplusLlmAttemptInput {
   attemptId: string;
+  providerRequestId?: string;
+  metadata?: Record<string, unknown>;
   outcome: Exclude<SurplusAttemptOutcome, "in_progress">;
   costState: SurplusCostState;
   inputTokens?: number;
@@ -92,6 +95,7 @@ export interface SettleSurplusLlmAttemptInput {
 export interface ListPendingSurplusAttemptsInput {
   limit?: number;
   updatedBefore?: Date;
+  after?: { updatedAt: Date; id: string };
 }
 
 export interface SurplusPendingAttempt {
@@ -110,6 +114,7 @@ export interface SurplusPendingAttempt {
   attemptOutcome: SurplusAttemptOutcome;
   costState: "pending" | "unknown";
   fundingKind: "server" | "service";
+  metadata?: Record<string, unknown> | null;
 }
 
 /** numeric(14,8) columns take strings in drizzle; keep 8 dp of precision. */
@@ -212,6 +217,9 @@ export async function attachSurplusRequestReceipt(
       ...(input.endpoint === undefined
         ? {}
         : { endpoint: assertNonEmpty(input.endpoint, "endpoint") }),
+      ...(input.metadata === undefined ? {} : {
+        metadata: sql`coalesce(${llmUsageEvents.metadata}, '{}'::jsonb) || ${JSON.stringify(input.metadata)}::jsonb`,
+      }),
       updatedAt: new Date(),
     })
     .where(and(
@@ -253,6 +261,8 @@ export async function settleSurplusLlmAttempt(
     : inputTokens !== undefined && outputTokens !== undefined
       ? inputTokens + outputTokens
       : undefined;
+  const requestId = input.providerRequestId === undefined
+    ? undefined : assertNonEmpty(input.providerRequestId, "providerRequestId");
   const mayReplaceCost = input.costState === "actual"
     ? undefined
     : input.costState === "estimated"
@@ -268,7 +278,16 @@ export async function settleSurplusLlmAttempt(
     .update(llmUsageEvents)
     .set({
       attemptOutcome: input.outcome,
-      costState: input.costState,
+      // A request-detail read may have already recovered the actual charge.
+      // Still record the local terminal result while keeping that stronger
+      // financial evidence; cost and answer outcome are independent.
+      costState: mayReplaceCost
+        ? sql`case when ${mayReplaceCost} then ${input.costState} else ${llmUsageEvents.costState} end`
+        : input.costState,
+      ...(requestId === undefined ? {} : { providerRequestId: requestId }),
+      ...(input.metadata === undefined ? {} : {
+        metadata: sql`coalesce(${llmUsageEvents.metadata}, '{}'::jsonb) || ${JSON.stringify(input.metadata)}::jsonb`,
+      }),
       ...(inputTokens === undefined ? {} : { inputTokens }),
       ...(outputTokens === undefined ? {} : { outputTokens }),
       ...(input.reasoningTokens === undefined
@@ -278,21 +297,27 @@ export async function settleSurplusLlmAttempt(
         ? {}
         : { cachedInputTokens: nonnegativeInteger(input.cachedInputTokens) }),
       ...(totalTokens === undefined ? {} : { totalTokens }),
-      ...(estimatedCostUsd === null ? {} : { estimatedCostUsd }),
-      actualCostUsd,
+      ...(estimatedCostUsd === null ? {} : { estimatedCostUsd: mayReplaceCost
+        ? sql`case when ${mayReplaceCost} then ${estimatedCostUsd}::numeric else ${llmUsageEvents.estimatedCostUsd} end`
+        : estimatedCostUsd }),
+      actualCostUsd: mayReplaceCost
+        ? sql`case when ${mayReplaceCost} then ${actualCostUsd}::numeric else ${llmUsageEvents.actualCostUsd} end`
+        : actualCostUsd,
       ...(input.servingProvider === undefined
         ? {}
         : { servingProvider: input.servingProvider?.trim() || null }),
       failureCode: input.failureCode?.trim() || null,
-      settledAt: input.costState === "actual" || input.costState === "estimated"
-        ? input.settledAt ?? new Date()
-        : null,
+      settledAt: mayReplaceCost
+        ? sql`case when ${mayReplaceCost} then ${input.costState === "estimated" ? (input.settledAt ?? new Date()).toISOString() : null}::timestamptz else ${llmUsageEvents.settledAt} end`
+        : input.settledAt ?? new Date(),
       updatedAt: new Date(),
     })
     .where(and(
       eq(llmUsageEvents.id, input.attemptId),
       eq(llmUsageEvents.providerRoute, "surplus"),
-      ...(mayReplaceCost ? [mayReplaceCost] : []),
+      ...(requestId === undefined ? [] : [or(
+        isNull(llmUsageEvents.providerRequestId), eq(llmUsageEvents.providerRequestId, requestId),
+      )]),
     ))
     .returning({ id: llmUsageEvents.id });
   if (rows.length !== 1) throw new Error("Surplus attempt settlement conflicts with durable state");
@@ -323,16 +348,45 @@ export async function listPendingSurplusAttempts(
       attemptOutcome: llmUsageEvents.attemptOutcome,
       costState: llmUsageEvents.costState,
       fundingKind: llmUsageEvents.fundingKind,
+      metadata: llmUsageEvents.metadata,
     })
     .from(llmUsageEvents)
     .where(and(
       eq(llmUsageEvents.providerRoute, "surplus"),
       inArray(llmUsageEvents.costState, ["pending", "unknown"]),
       ...(input.updatedBefore ? [lte(llmUsageEvents.updatedAt, input.updatedBefore)] : []),
+      ...(input.after ? [or(
+        gt(llmUsageEvents.updatedAt, input.after.updatedAt),
+        and(eq(llmUsageEvents.updatedAt, input.after.updatedAt), gt(llmUsageEvents.id, input.after.id)),
+      )] : []),
     ))
     .orderBy(asc(llmUsageEvents.updatedAt), asc(llmUsageEvents.id))
     .limit(limit);
   return rows as SurplusPendingAttempt[];
+}
+
+/** Conditional late financial settlement: never replace a newer local outcome or known cost. */
+export async function reconcileSurplusLlmAttemptCost(input: {
+  attemptId: string;
+  providerRequestId: string;
+  expectedUpdatedAt: Date;
+  actualCostUsd: number;
+}): Promise<boolean> {
+  const actualCostUsd = optionalUsd(input.actualCostUsd, "actualCostUsd");
+  const rows = await db().update(llmUsageEvents).set({
+    actualCostUsd,
+    costState: "actual",
+    attemptOutcome: sql`case when ${llmUsageEvents.attemptOutcome} = 'in_progress' then 'unknown' else ${llmUsageEvents.attemptOutcome} end`,
+    settledAt: new Date(),
+    updatedAt: new Date(),
+  }).where(and(
+    eq(llmUsageEvents.id, input.attemptId),
+    eq(llmUsageEvents.providerRoute, "surplus"),
+    eq(llmUsageEvents.providerRequestId, input.providerRequestId),
+    eq(llmUsageEvents.updatedAt, input.expectedUpdatedAt),
+    inArray(llmUsageEvents.costState, ["pending", "unknown"]),
+  )).returning({ id: llmUsageEvents.id });
+  return rows.length === 1;
 }
 
 // ---------------------------------------------------------------------------

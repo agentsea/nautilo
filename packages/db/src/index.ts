@@ -774,6 +774,7 @@ export {
   attachSurplusRequestReceipt,
   settleSurplusLlmAttempt,
   listPendingSurplusAttempts,
+  reconcileSurplusLlmAttemptCost,
   getCostsSummary,
   __setLlmUsageDbForTests,
   type InsertLlmUsageInput,

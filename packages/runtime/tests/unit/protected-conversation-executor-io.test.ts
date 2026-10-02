@@ -220,6 +220,25 @@ describe("protected conversation executor IO", () => {
     });
   });
 
+  test("attributes only the settled producer-marked answer", () => {
+    const surplusToolRound = new AIMessage({
+      content: "Searching.",
+      tool_calls: [{ id: "call-surplus", name: "search", args: {} }],
+      response_metadata: { serving_transport: "surplus" },
+    });
+    const directFinal = new AIMessage("Direct final answer.");
+    const surplusFinal = new AIMessage({
+      content: "Surplus final answer.",
+      response_metadata: { serving_transport: "surplus" },
+    });
+
+    expect(protectedAgentMessagePayload(surplusToolRound)).not.toHaveProperty("sensitiveMetadata.servingTransport");
+    expect(protectedAgentMessagePayload(directFinal)).not.toHaveProperty("sensitiveMetadata.servingTransport");
+    expect(protectedAgentMessagePayload(surplusFinal)).toMatchObject({
+      sensitiveMetadata: { servingTransport: "surplus" },
+    });
+  });
+
   test("rejects malformed confidential blocks instead of silently dropping them", () => {
     expect(() => protectedAgentMessagePayload(new AIMessage({
       content: [{ type: "text", text: 42 } as never],

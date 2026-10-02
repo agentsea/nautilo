@@ -210,6 +210,50 @@ describe("live Shadow Message UI projection", () => {
     });
   });
 
+  test("projects settled attribution only from authenticated durable payload", () => {
+    const durableEvent: LiveShadowMessageRealtimeEventV1 = {
+      wireVersion: 1,
+      type: "message.shadow_durable",
+      laneKey: frameEvent.laneKey,
+      operationId: "turn:surplus",
+      policyRevision: 1,
+      transcriptOrdinal: 4,
+      ordinaryPayloadBytesBase64url: "AA",
+      durableEventDigestBase64url: "A".repeat(43),
+      protectedMessage: {
+        dtoVersion: 2,
+        projection: {
+          messageId: "44",
+          sessionId: "10000000-0000-4000-8000-000000000282",
+          roomId: "20000000-0000-4000-8000-000000000282",
+          namespaceId: "30000000-0000-4000-8000-000000000282",
+          role: "assistant",
+          createdAt: "2027-01-15T08:00:00.000Z",
+          editRevision: 0,
+          authorAgentId: "40000000-0000-4000-8000-000000000282",
+        },
+        protectedPayload: { status: "pending", reason: "shadow_pending" },
+      },
+    };
+    expect(projectLiveShadowMessageResult({
+      event: durableEvent,
+      result: {
+        status: "durable_verified",
+        payload: {
+          role: "assistant",
+          content: "settled answer",
+          sensitiveMetadata: { servingTransport: "surplus" },
+        },
+        messageId: "44",
+        assistantMessageKey: "assistant:turn:surplus:0",
+        authorAgentId: "40000000-0000-4000-8000-000000000282",
+      },
+    })[0]).toMatchObject({
+      type: "message.new",
+      servingTransport: "surplus",
+    });
+  });
+
   test("never releases an ordinary sibling after an integrity failure", () => {
     expect(projectLiveShadowMessageResult({
       event: frameEvent,

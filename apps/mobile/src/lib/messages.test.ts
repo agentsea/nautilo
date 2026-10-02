@@ -51,6 +51,23 @@ describe("mobile human message authorship", () => {
 });
 
 describe("mobile chat item presentation identity", () => {
+  test("preserves only settled assistant Surplus attribution and clears it on a direct final", () => {
+    const [history] = fromHistoryMessages([{
+      id: "40", role: "assistant", content: "served", servingTransport: "surplus",
+      createdAt: "2026-09-22T00:00:00.000Z",
+    }]);
+    expect(history).toMatchObject({ servingTransport: "surplus" });
+
+    const direct = apply([history], {
+      type: "message.new",
+      laneKey: "room:00000000-0000-4000-8000-000000000001",
+      messageId: "40",
+      role: "ai",
+      content: "direct replacement",
+    });
+    expect(direct[0]).not.toHaveProperty("servingTransport");
+  });
+
   test("preserves multilingual content and its canonical Human source id", () => {
     const text = "こんにちは、你好 — transcript integrity";
     const [history] = fromHistoryMessages([{

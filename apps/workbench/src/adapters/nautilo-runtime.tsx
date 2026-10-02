@@ -4484,6 +4484,10 @@ export function NautiloRuntimeProvider({
               ...(artifacts !== undefined
                 ? { [MESSAGE_ARTIFACT_OPEN_REFS_METADATA_KEY]: artifacts }
                 : {}),
+              // Durable message.new is authoritative for the settled answer.
+              // An explicit undefined clears any stale client-side projection.
+              servingTransport:
+                event.servingTransport === "surplus" ? "surplus" : undefined,
             };
             // the runtime now emits `message.new` for the agent's visible
             // reply (to drive the unread dot). For the ACTIVE viewer that reply

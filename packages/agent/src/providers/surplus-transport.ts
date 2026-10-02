@@ -56,6 +56,7 @@ export function readSurplusWireReceipt(headers: Headers): SurplusWireReceipt {
   const marketplaceAttempts = nonnegativeInteger(headers.get("x-si-marketplace-attempts"));
   const buyerCostMicro = nonnegativeInteger(headers.get("x-si-buyer-cost-micro"));
   const adaptedParameters = nonEmpty(headers.get("x-si-adapted-params"));
+  const truncated = headers.get("x-si-truncated")?.trim();
   return {
     ...(requestId ? { requestId } : {}),
     ...(servedBy ? { servedBy } : {}),
@@ -63,7 +64,8 @@ export function readSurplusWireReceipt(headers: Headers): SurplusWireReceipt {
     ...(marketplaceAttempts !== undefined ? { marketplaceAttempts } : {}),
     ...(buyerCostMicro !== undefined ? { buyerCostMicro } : {}),
     ...(adaptedParameters ? { adaptedParameters } : {}),
-    truncated: headers.get("x-si-truncated") === "1",
+    // An unreadable truncation signal cannot certify a complete answer.
+    truncated: truncated !== undefined && truncated !== "0",
   };
 }
 

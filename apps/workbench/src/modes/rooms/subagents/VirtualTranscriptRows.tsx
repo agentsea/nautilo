@@ -4,6 +4,7 @@ import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 import { ToolCard } from "../../../components/tool-card/tool-card";
 import type { ToolActivityEvent } from "../../../adapters/runtime-contexts";
 import { isToolRow, type TranscriptMessageVM } from "./transcript-vm";
+import { ServingTransportAttribution } from "../../../components/serving-transport-attribution";
 
 /** Reuse the chat's measured window without competing with its scroll owner. */
 export function VirtualTranscriptRows({ messages, isRunning = false, handleRef }: {
@@ -79,8 +80,9 @@ export const TranscriptRow = memo(function TranscriptRow({
       className="rounded-lg border border-border bg-background-element px-3 py-2 text-sm"
       data-transcript-role={message.role}
     >
-      <div className="mb-1 text-[0.65rem] font-semibold uppercase tracking-wide text-foreground-dim">
-        {message.role}
+      <div className="mb-1 flex items-baseline gap-1.5 text-[0.65rem] font-semibold uppercase tracking-wide text-foreground-dim">
+        <span>{message.role}</span>
+        <ServingTransportAttribution transport={message.servingTransport} />
       </div>
       <p className="whitespace-pre-wrap break-words text-foreground">{message.content}</p>
     </div>
