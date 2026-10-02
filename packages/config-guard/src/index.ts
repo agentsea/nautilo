@@ -1,8 +1,5 @@
 import { checkKeysHealth } from "./health-checker";
-import {
-  computeHasLlmFromKeys,
-  managedGatewayIsConfigured,
-} from "./compute-has-llm";
+import { computeHasLlmFromKeys } from "./compute-has-llm";
 import { firstDoctorHint, getAllKeyDefinitions, getKeyDefinition, maskValue } from "./key-registry";
 import { MODE_REGISTRY } from "./mode-registry";
 import { parseCheckInput } from "./schemas";
@@ -38,14 +35,6 @@ export type {
   TransactionResult,
 } from "./types";
 export { ConfigGuardError } from "./types";
-export {
-  isManagedGatewayKey,
-  managedGatewayKeyUrl,
-  normalizeManagedGatewayBaseUrl,
-  MANAGED_GATEWAY_API_KEY_ENV_VAR,
-  MANAGED_GATEWAY_BASE_URL_ENV_VAR,
-} from "./managed-gateway";
-
 export {
   getAllKeyDefinitions,
   getKeyByEnvVar,
@@ -154,7 +143,6 @@ export type {
 
 function buildSummary(
   keys: KeyReport[],
-  env: NodeJS.ProcessEnv,
 ): CheckSummary {
   let configured = 0;
   let verified = 0;
@@ -179,10 +167,9 @@ function buildSummary(
     return r?.status === "verified" || r?.status === "present";
   };
 
-  const hasLlm = computeHasLlmFromKeys(keys, env);
+  const hasLlm = computeHasLlmFromKeys(keys);
   const hasEmbeddings = ok("openai")
     || ok("openrouter")
-    || managedGatewayIsConfigured(keys, env)
     || ok("venice");
   const hasVoice = ok("elevenlabs");
   const hasSearch = ok("tavily");
@@ -270,7 +257,7 @@ export async function check(input?: unknown): Promise<CheckResult> {
     }
   }
 
-  return { keys, summary: buildSummary(keys, env) };
+  return { keys, summary: buildSummary(keys) };
 }
 
 /**

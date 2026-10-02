@@ -32,8 +32,6 @@ function api(initialKeys: KeyReport[]) {
       summary: { total: initialKeys.length, valid: initialKeys.length, invalid: 0, unreachable: 0 },
     })),
     deleteServerProviderKey: mock(async () => ({ success: true })),
-    getNautiloGateway: mock(async () => ({ baseUrl: null })),
-    updateNautiloGateway: mock(async (baseUrl: string) => ({ baseUrl })),
   };
 }
 

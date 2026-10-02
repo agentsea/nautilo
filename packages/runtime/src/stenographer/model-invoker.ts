@@ -1,9 +1,6 @@
 import { HumanMessage, type BaseMessage } from "@langchain/core/messages";
 import {
-  isManagedGatewayOutcomeUnknownError,
   invokeChatModelWithFallback,
-  managedGatewayKeyIsPresent,
-  markManagedGatewayOutcomeUnknown,
   type UsageCallType,
 } from "@nautilo/agent";
 
@@ -32,26 +29,7 @@ import { runBackgroundModelInvocation } from "../background-processing/model-inv
 
 export function classifyRoomSideInvocationFailure(
   error: unknown,
-  input: Readonly<{
-    invocationStarted: boolean;
-    modelId: string;
-    env?: NodeJS.ProcessEnv;
-  }>,
 ): unknown {
-  const roomSideInterrupted = error instanceof Error
-    && (
-      error.message === "room_side_model_aborted"
-      || error.message === "room_side_model_deadline_exceeded"
-    );
-  if (
-    input.invocationStarted
-    && roomSideInterrupted
-    && input.modelId.startsWith("openrouter:")
-    && managedGatewayKeyIsPresent(input.env)
-    && !isManagedGatewayOutcomeUnknownError(error)
-  ) {
-    return markManagedGatewayOutcomeUnknown(error);
-  }
   return error;
 }
 
@@ -69,7 +47,6 @@ export function createRoomSideModelInvoker(opts: {
 }): (prompt: string, signal?: AbortSignal) => Promise<string> {
   return async (prompt, signal) => {
     if (signal?.aborted) throw new Error("room_side_model_aborted");
-    let invocationStarted = false;
     try {
       const { response } = await runBackgroundModelInvocation({
         usage: {
@@ -81,7 +58,6 @@ export function createRoomSideModelInvoker(opts: {
         ...(signal === undefined ? {} : { signal }),
         ...(opts.invocationPolicy === undefined ? {} : { maximumElapsedMs: opts.invocationPolicy.maximumElapsedMs }),
         invoke: (invocationSignal) => {
-          invocationStarted = true;
           return invokeChatModelWithFallback(
             [new HumanMessage(prompt)],
             [],
@@ -104,10 +80,7 @@ export function createRoomSideModelInvoker(opts: {
       });
       return extractText(response);
     } catch (error) {
-      throw classifyRoomSideInvocationFailure(error, {
-        invocationStarted,
-        modelId: opts.modelId,
-      });
+      throw classifyRoomSideInvocationFailure(error);
     }
   };
 }
@@ -115,9 +88,6 @@ export function createRoomSideModelInvoker(opts: {
 export function mapModelFailure(
   error: unknown,
 ): "provider" | "provider_outcome_unknown" | "timeout" | "unknown" {
-  if (isManagedGatewayOutcomeUnknownError(error)) {
-    return "provider_outcome_unknown";
-  }
   const text = error instanceof Error
     ? error.message.toLowerCase()
     : String(error).toLowerCase();

@@ -6,6 +6,8 @@ import {
   projectToolResultForEvent,
 } from "../../src/realtime";
 
+import { parseAuditionVoicesToolResult } from "../../src/voice-catalog";
+
 /** Mirrors `encodeStagedResult` — `JSON.stringify` with `staged` first. */
 function encodeStagedResult(env: {
   staged: true;
@@ -92,6 +94,45 @@ describe("projectToolResultForEvent", () => {
     expect(projected.truncated).toBe(true);
     expect(projected.result).toContain("bytes truncated");
     expect(projected.result.slice(0, TOOL_RESULT_MAX_BYTES)).toBe("x".repeat(TOOL_RESULT_MAX_BYTES));
+  });
+
+  test("preserves complete audition metadata and trailing sample text beyond the text-preview cap", () => {
+    const candidate = {
+      voiceId: "voice-catalog", name: "Catalog voice", language: "en",
+      languageLabel: "English", accent: "american", gender: "female",
+      age: "middle_aged", badge: "provider_verified" as const,
+      verifiedLanguages: Array.from({ length: 49 }, (_, index) => ({
+        language: "en", modelId: `model-${index}`, accent: "american",
+        locale: "en-US", previewUrl: `https://example.com/audio/${"x".repeat(240)}-${index}`,
+      })),
+      matchReason: "Requested voice",
+    };
+    for (const slate of [[candidate], Array.from({ length: 50 }, (_, index) => ({
+      ...candidate, voiceId: `voice-${index}`, verifiedLanguages: [],
+    }))]) {
+      const envelope = {
+        slate, consideredCount: slate.length, role: "default",
+        sampleText: "[confident] Read the exact requested sample.",
+      };
+      const source = JSON.stringify(envelope);
+      expect(source.length).toBeGreaterThan(TOOL_RESULT_MAX_BYTES);
+      const projected = projectToolResultForEvent("audition_voices", source);
+      expect(projected).toEqual({ result: source, truncated: false });
+      expect(parseAuditionVoicesToolResult(projected.result)).toEqual(envelope);
+    }
+  });
+
+  test("does not exempt malformed auditions or other tool results from text-preview truncation", () => {
+    for (const source of [
+      "x".repeat(TOOL_RESULT_MAX_BYTES + 1),
+      JSON.stringify({ slate: [{ voiceId: "incomplete" }], consideredCount: 1, sampleText: "x".repeat(TOOL_RESULT_MAX_BYTES) }),
+      JSON.stringify({ slate: [], consideredCount: "invalid", sampleText: "x".repeat(TOOL_RESULT_MAX_BYTES) }),
+    ]) {
+      expect(projectToolResultForEvent("audition_voices", source).truncated).toBe(true);
+    }
+    const source = JSON.stringify({ slate: [], consideredCount: 0, error: "x".repeat(TOOL_RESULT_MAX_BYTES) });
+    expect(projectToolResultForEvent("audition_voices", source).truncated).toBe(false);
+    expect(projectToolResultForEvent("other_tool", source).truncated).toBe(true);
   });
 
   test("admits only a bounded strict DesktopShellResult for run_shell", () => {

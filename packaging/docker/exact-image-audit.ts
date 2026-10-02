@@ -1,4 +1,5 @@
-/** D490 Task 0.3.2 — exact-image audit orchestration and report binding. */
+/** Exact-image audit orchestration and report binding. */
+import { collectSupportedPackageAvailability } from "./supported-package-availability.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -277,13 +278,18 @@ export async function runExactImageAudit(input: RunExactImageAuditInput): Promis
   await emit("vulnerabilities", "vulnerabilities.grype.json", grype);
   const trivy = await checkedRun(run, toolPaths.trivy, ["image", "--image-src", "remote", "--format", "json", "--scanners", "vuln,misconfig,secret,license", "--skip-db-update", "--skip-java-db-update", "--cache-dir", input.trivyCacheDirectory, input.manifest.image.reference], "Trivy audit");
   await emit("image-analysis", "image-analysis.trivy.json", trivy);
+  const requirements = input.vulnerabilityPolicy.exceptions.flatMap(e => e.unavailableFix?.architecture === input.manifest.architecture
+    ? [{packageName: e.packageName, installedVersion: e.installedVersion, unavailableFix: e.unavailableFix}] : []);
+  const supportedPackageAvailability = requirements.length > 0
+    ? await collectSupportedPackageAvailability(input.manifest, requirements, run) : undefined;
   const vulnerabilityPolicy = evaluateVulnerabilityPolicy({
+    ...(supportedPackageAvailability ? {supportedPackageAvailability} : {}),
     policy: input.vulnerabilityPolicy,
     manifest: input.manifest,
     databaseIdentity: input.databaseIdentity,
     grype: parseJson(grype, "vulnerabilities"),
     trivy: parseJson(trivy, "image-analysis"),
-    evaluatedAt: input.manifest.capturedAt,
+    evaluatedAt: supportedPackageAvailability?.checkedAt ?? input.manifest.capturedAt,
   });
   await emit("vulnerability-policy", "vulnerability-policy.json", JSON.stringify(vulnerabilityPolicy));
   const vulnerabilitySummary = renderVulnerabilityPolicyReportSummary(

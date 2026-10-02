@@ -228,19 +228,21 @@ describe("GET /api/setup/status viewer flags (D125)", () => {
     }
   });
 
-  test("managed Gateway makes setup ready only with a valid key and API root", async () => {
+  test("retired managed Gateway settings do not make setup ready", async () => {
     const { getAllKeyDefinitions } = await import("@nautilo/config-guard");
     const llmEnvVars = getAllKeyDefinitions()
       .filter(({ category }) => category === "llm" || category === "llm+embeddings")
       .map(({ envVar }) => envVar);
     const saved = new Map(llmEnvVars.map((envVar) => [envVar, process.env[envVar]]));
+    const keyEnvVar = "NAUTILO_MANAGED_GATEWAY_API_KEY";
+    const previousKey = process.env[keyEnvVar];
     const baseUrlEnvVar = "NAUTILO_MANAGED_GATEWAY_BASE_URL";
     const previousBaseUrl = process.env[baseUrlEnvVar];
     const gatewayKey = `ngw_${"a".repeat(43)}`;
 
     try {
       for (const envVar of llmEnvVars) delete process.env[envVar];
-      process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = gatewayKey;
+      process.env[keyEnvVar] = gatewayKey;
       delete process.env[baseUrlEnvVar];
 
       const app = await makeApp();
@@ -270,8 +272,8 @@ describe("GET /api/setup/status viewer flags (D125)", () => {
 
       process.env[baseUrlEnvVar] = "https://gateway.example/v1";
       expect(await requestSetupStatus()).toMatchObject({
-        setupState: "ready",
-        providers: { hasLlm: true },
+        setupState: "server-needs-keys",
+        providers: { hasLlm: false },
       });
     } finally {
       for (const [envVar, value] of saved) {
@@ -280,6 +282,8 @@ describe("GET /api/setup/status viewer flags (D125)", () => {
       }
       if (previousBaseUrl === undefined) delete process.env[baseUrlEnvVar];
       else process.env[baseUrlEnvVar] = previousBaseUrl;
+      if (previousKey === undefined) delete process.env[keyEnvVar];
+      else process.env[keyEnvVar] = previousKey;
     }
   });
 

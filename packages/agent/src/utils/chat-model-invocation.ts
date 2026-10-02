@@ -22,11 +22,7 @@ import { createUniversalModel } from "../providers/universal";
 import { DEFAULT_REASONING_EFFORT } from "../providers/factory";
 import { isDirectGpt6Model } from "../providers/openai-compat";
 import { modelRouteProvider } from "../providers/model-route";
-import {
-  managedGatewayKeyIsPresent,
-  markManagedGatewayOutcomeUnknown,
-  resolveOpenRouterTransport,
-} from "../providers/openrouter-transport";
+import { resolveOpenRouterTransport } from "../providers/openrouter-transport";
 import { hasStubModelForTests } from "../providers/stub-model-state";
 import type { ReasoningEffort } from "../providers/types";
 import { resolveFireworksKimiK3ServingProfile, type ResolvedFireworksKimiK3ServingProfile } from "../providers/serving-profile";
@@ -878,9 +874,6 @@ export async function invokeChatModelWithFallback(
       throw error;
     }
 
-    const managedGatewayAttempt = !personalFunding && modelRouteProvider(currentModelId) === "openrouter"
-      && managedGatewayKeyIsPresent();
-    let managedGatewayInvocationStarted = false;
     const recoveryVisibility = invokeOptions?.recoverContext ? contextRecoveryVisibilityFence() : null;
     let hasSelectedReasoningEffort = false;
     try {
@@ -951,7 +944,6 @@ export async function invokeChatModelWithFallback(
             ...(personalCredential === undefined ? {} : { personalCredential }),
           });
           const modelWithTools = model.bindTools!(tools);
-          managedGatewayInvocationStarted = managedGatewayAttempt;
           return await invokeForegroundAttemptWithUsageContext(
             modelWithTools,
             attemptMessages,
@@ -965,7 +957,7 @@ export async function invokeChatModelWithFallback(
             serving,
             usageFunding,
             invokeOptions?.useOpenAIResponsesApi === true,
-            managedGatewayAttempt ? "none" : invokeOptions?.sameModelRetryMode ?? "short",
+            invokeOptions?.sameModelRetryMode ?? "short",
             {
               ...(callerProviderTimeoutMs === undefined ? {} : { providerTimeoutMs: callerProviderTimeoutMs }),
               callerSuppliedProviderTimeout: callerProviderTimeoutMs !== undefined,
@@ -1010,18 +1002,9 @@ export async function invokeChatModelWithFallback(
       // classification, health cooldown, reasoning retries, and chain
       // fallback even if the provider surfaced a timeout-shaped AbortError.
       if (invocationConfig?.signal?.aborted) {
-        if (managedGatewayInvocationStarted) {
-          throw markManagedGatewayOutcomeUnknown(providerError);
-        }
         throw personalFunding
           ? invocationConfig.signal.reason ?? new Error("Model invocation cancelled by caller")
           : providerError;
-      }
-      // A managed Gateway request may have been accepted and billed before a
-      // timeout/502 became visible. Never replay it against the same model or
-      // continue into an unrelated paid provider chain.
-      if (managedGatewayInvocationStarted) {
-        throw markManagedGatewayOutcomeUnknown(providerError);
       }
       const classified = classifyError(providerError);
       const terminalProviderError = personalFunding

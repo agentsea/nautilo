@@ -200,6 +200,11 @@ jobs:
 
       - name: Provision FFmpeg test tool
         run: |
+          # Some runner images prefer the Azure mirror, whose package transfers
+          # can consume the test deadline. Keep Ubuntu's signed archive checks.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo -n sed -i 's/azure[.]archive[.]ubuntu[.]com/archive.ubuntu.com/g' /etc/apt/apt-mirrors.txt
+          fi
           sudo -n apt-get update
           sudo -n apt-get install --yes --no-install-recommends ffmpeg
           ffmpeg -version

@@ -1531,7 +1531,6 @@ const LLM_KEY_IDS = new Set<string>([
   "anthropic",
   "openai",
   "openrouter",
-  "nautilo-gateway",
   "gateway",
   "google",
   "fireworks",
@@ -1539,15 +1538,9 @@ const LLM_KEY_IDS = new Set<string>([
 ]);
 
 function computeHasLlmFromKeys(keys: KeyReport[]): boolean {
-  // A masked Gateway key report cannot prove that its separate API root is
-  // usable. Keep this browser-side projection conservative; authoritative
-  // setup readiness comes from config-guard's server-side summary.
-  return keys.some(
-    (k) =>
-      k.id !== "nautilo-gateway"
-      && LLM_KEY_IDS.has(k.id)
-      && (k.status === "present" || k.status === "verified"),
-  );
+  return keys.some((key) =>
+    LLM_KEY_IDS.has(key.id)
+    && (key.status === "present" || key.status === "verified"));
 }
 
 /**
@@ -5760,25 +5753,6 @@ export class NautiloApiClient {
     });
   }
 
-  /** Read the administrator-visible Nautilo Gateway API root. */
-  async getNautiloGateway(): Promise<{ baseUrl: string | null }> {
-    return this.request({
-      path: "/api/setup/nautilo-gateway",
-      defaultErrorPrefix: "GET /api/setup/nautilo-gateway",
-    });
-  }
-
-  /** Update the Nautilo Gateway API root. */
-  async updateNautiloGateway(baseUrl: string): Promise<{ baseUrl: string }> {
-    return this.request({
-      method: "PUT",
-      path: "/api/setup/nautilo-gateway",
-      auth: "session-fresh",
-      body: { baseUrl },
-      defaultErrorPrefix: "PUT /api/setup/nautilo-gateway",
-    });
-  }
-
   /** Read the bounded web-research policy. Requires `read_server_settings`. */
   async getResearchProvider(): Promise<{
     provider: "auto" | "duckduckgo_html";
@@ -8234,6 +8208,7 @@ export class NautiloApiClient {
     input: {
       readonly target: AgentPhotoSelectionTargetDto;
       readonly expectedSelectionRevision: string;
+      readonly replaceMissingCurrent?: boolean;
     },
     options: AgentPhotoLibraryMutationOptions,
   ): Promise<AgentPhotoLibrarySelectionResponse> {
