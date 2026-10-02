@@ -119,6 +119,8 @@ import {
   callerHasConfiguredPersonalFunding,
   callerMayUsePersonalChat,
 } from "../lib/foreground-chat-funding";
+import { resolveForegroundChatPreflightFunding } from "../lib/foreground-chat-preflight";
+import { ModelFundingError } from "../lib/model-funding";
 import {
   clearPendingAgentRedirect,
   isRedirectAllowedForConductorWake,
@@ -1291,7 +1293,7 @@ export async function dispatchRoomMessageSend(
       && agentMembers[0]?.agentOwnerUserId === sessionUserId
       && !mentionEveryoneRoutingHint;
     const personalFundingConfigured = await callerHasConfiguredPersonalFunding(sessionUserId);
-    const personalChatCandidate = ownPrivateDm && personalFundingConfigured
+    let personalChatCandidate = ownPrivateDm && personalFundingConfigured
       && await callerMayUsePersonalChat(sessionUserId);
     // A personal-only caller cannot fund group routing or another auxiliary
     // branch. Members with server-funding permission keep those existing paths.
@@ -1300,10 +1302,22 @@ export async function dispatchRoomMessageSend(
       || focusedResources.length > 0 || activeMiniApp !== null || liveMiniAppSession !== null
       || handledAgentSlash
     )) {
-      return reply.code(422).send({
-        code: "unsupported_workload",
-        error: "Personal provider credentials support text chat only.",
-      });
+      try {
+        const funding = await resolveForegroundChatPreflightFunding({
+          humanUserId: sessionUserId, roomId: detail.id,
+          agentId: agentMembers[0]!.agentId!, turnModelId: model,
+        });
+        if (funding.kind === "personal") {
+          return reply.code(422).send({
+            code: "unsupported_workload",
+            error: "Personal provider credentials support text chat only.",
+          });
+        }
+        personalChatCandidate = false;
+      } catch (error) {
+        if (!(error instanceof ModelFundingError)) throw error;
+        return reply.code(422).send({ code: error.code, error: "The selected model cannot be funded." });
+      }
     }
     if (!personalChatCandidate) {
       try {

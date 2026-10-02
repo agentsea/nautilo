@@ -410,6 +410,7 @@ export {
   upsertServerProviderPolicy,
   type ResolvedServerProviderPolicy,
   type ServerProviderPolicyChange,
+  type ServerProviderPolicyUpdate,
   type ServerProviderPolicyDb,
 } from "./utils/server-provider-policy-queries";
 export {

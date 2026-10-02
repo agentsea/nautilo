@@ -64,6 +64,8 @@ let manageRoomsCapabilityEnabled = true;
 let personalChatEnabled = false;
 let personalCredentialConfigured = false;
 let serverFundingAllowed = true;
+let preflightFundingKind: "personal" | "server" = "personal";
+const preflightFunding = mock(async (_input: { humanUserId: string; roomId: string; agentId: string; turnModelId: string | null }) => ({ kind: preflightFundingKind }));
 const serverFundingAdmission = mock(async (humanUserId: string) => {
   if (!serverFundingAllowed) {
     throw new actualTrust.ServerProviderCredentialsDeniedError(humanUserId, "room_message");
@@ -73,6 +75,9 @@ const serverFundingAdmission = mock(async (humanUserId: string) => {
 mock.module("../../src/lib/foreground-chat-funding", () => ({
   callerMayUsePersonalChat: async () => personalChatEnabled,
   callerHasConfiguredPersonalFunding: async () => personalCredentialConfigured,
+}));
+mock.module("../../src/lib/foreground-chat-preflight", () => ({
+  resolveForegroundChatPreflightFunding: preflightFunding,
 }));
 
 mock.module("@nautilo/trust", () => ({
@@ -2499,6 +2504,56 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
       personalChatEnabled = false;
       personalCredentialConfigured = false;
       serverFundingAllowed = true;
+      await app.close();
+    }
+  });
+
+  test.each(["personal", "server"] as const)("own-Genie voice preflight follows %s funding rather than key presence", async (kind) => {
+    personalChatEnabled = true;
+    personalCredentialConfigured = true;
+    preflightFundingKind = kind;
+    preflightFunding.mockClear();
+    serverFundingAdmission.mockClear();
+    const mocks = makeTestMocks();
+    mocks.getRoomDetailForMember.mockImplementation(async (roomId) => {
+      if (roomId !== R1_ID) return null;
+      const detail = r1Detail();
+      return {
+        ...detail,
+        members: detail.members.map((member) => member.kind === "agent"
+          ? { ...member, agentOwnerUserId: SENDER_USER_ID }
+          : member),
+      };
+    });
+    const app = await makeMessagingApp(
+      mocks,
+      { ownerId: SENDER_USER_ID, agentId: CUSTOM_AGENT_ID, roomId: R1_ID },
+      { actorRole: "contributor", laneKey: `room:${R1_ID}`, graphThreadId: `room:${R1_ID}` },
+    );
+    try {
+      const res = await app.inject({
+        method: "POST", url: `/api/rooms/${R1_ID}/messages`,
+        payload: { content: "hello via selected model", voiceMode: true, model: "openrouter:example/model" },
+      });
+      expect(preflightFunding).toHaveBeenCalledTimes(1);
+      expect(preflightFunding.mock.calls[0]).toEqual([{
+        humanUserId: SENDER_USER_ID, roomId: R1_ID, agentId: CUSTOM_AGENT_ID,
+        turnModelId: "openrouter:example/model",
+      }]);
+      if (kind === "personal") {
+        expect(res.statusCode).toBe(422);
+        expect(JSON.parse(res.body)).toMatchObject({ code: "unsupported_workload" });
+        expect(mocks.createForegroundJob).not.toHaveBeenCalled();
+        expect(serverFundingAdmission).not.toHaveBeenCalled();
+      } else {
+        expect(res.statusCode).toBe(202);
+        expect(mocks.createForegroundJob).toHaveBeenCalledTimes(1);
+        expect(serverFundingAdmission).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      personalChatEnabled = false;
+      personalCredentialConfigured = false;
+      preflightFundingKind = "personal";
       await app.close();
     }
   });

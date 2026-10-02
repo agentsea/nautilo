@@ -137,8 +137,17 @@ mock.module("../../../lib/api", () => ({
     updateResearchProvider: updateResearchProviderMock,
     admin: {
       serverProviderPolicy: {
-        get: async () => ({ allowPersonalProviderKeys: false }),
-        set: async (input: { allowPersonalProviderKeys: boolean }) => input,
+        get: async () => ({
+          allowPersonalProviderKeys: false,
+          fundingPreference: "personal_first" as const,
+        }),
+        set: async (input: {
+          allowPersonalProviderKeys?: boolean;
+          fundingPreference?: "personal_first" | "server_first";
+        }) => ({
+          allowPersonalProviderKeys: input.allowPersonalProviderKeys ?? false,
+          fundingPreference: input.fundingPreference ?? "personal_first" as const,
+        }),
       },
       serverContext: {
         get: async () => ({

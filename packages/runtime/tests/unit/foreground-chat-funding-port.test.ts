@@ -121,6 +121,37 @@ describe("foreground chat funding port", () => {
     expect(calls).toBe(0);
   });
 
+  test.each(["foreground.main", "foreground.fork"] as const)(
+    "rechecks unsupported payloads after a policy change at %s execution", async (entrypoint) => {
+      let source: "server" | "personal" = "server";
+      installForegroundChatFundingPort({
+        openSession: async () => ({ ...personalSession, kind: source }),
+      });
+      const invoke = (jobInput: Record<string, unknown>, protectedTurn = false) =>
+        openForegroundChatFundingSessionForInvocation({
+          authority: createAcceptedInvocationAuthority("human-1"),
+          jobInput: { ...baseJobInput, ...jobInput }, causalHumanUserId: "human-1",
+          entrypoint, modelId: "openai:test-model", roomId: "room-1", agentId: "agent-1",
+          protectedTurn,
+        });
+      const shapes = [
+        { voiceMode: true }, { multimodalImages: ["image"] },
+        { attachmentTextBlocks: ["text"] }, { retainedAttachmentIds: ["attachment"] },
+        { artifactRefs: [{ id: "artifact" }] }, { focusedResources: [{ id: "resource" }] },
+        { activeMiniApp: {} }, { liveMiniAppSession: {} },
+      ];
+      for (const shape of shapes) expect((await invoke(shape))?.kind).toBe("server");
+      expect((await invoke({}, true))?.kind).toBe("server");
+      // A dispatch projection never authorizes a later personal-paid shape.
+      source = "personal";
+      for (const shape of shapes) {
+        expect(invoke(shape)).rejects.toBeInstanceOf(ForegroundChatFundingUnsupportedWorkloadError);
+      }
+      expect(invoke({}, true)).rejects.toBeInstanceOf(ForegroundChatFundingUnsupportedWorkloadError);
+      expect((await invoke({ attachmentTextBlocks: [], artifactRefs: [], activeMiniApp: null }))?.kind).toBe("personal");
+    },
+  );
+
   test("personal sessions refuse image and voice work with a safe error", () => {
     for (const workload of [
       { hasImages: true, voiceRequested: false },

@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import type { ServerProviderPolicy, ServerProviderFundingPreference } from "@nautilo/api-client";
 import { apiClient } from "../../../lib/api";
 import { useCan } from "../../../hooks/use-can";
 import { Button } from "../../settings/ui";
-
-type ServerProviderPolicy = Readonly<{ allowPersonalProviderKeys: boolean }>;
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error
@@ -17,6 +16,8 @@ export function ServerProviderPolicyCard() {
   const canRead = can("read_server_settings") || canManage;
   const [persisted, setPersisted] = useState<ServerProviderPolicy | null>(null);
   const [draftEnabled, setDraftEnabled] = useState(false);
+  const [draftFundingPreference, setDraftFundingPreference] =
+    useState<ServerProviderFundingPreference>("personal_first");
   const [loading, setLoading] = useState(canRead);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -31,6 +32,7 @@ export function ServerProviderPolicyCard() {
       const policy = await apiClient.admin.serverProviderPolicy.get();
       setPersisted(policy);
       setDraftEnabled(policy.allowPersonalProviderKeys);
+      setDraftFundingPreference(policy.fundingPreference);
     } catch (cause) {
       setLoadError(errorMessage(cause));
     } finally {
@@ -50,19 +52,23 @@ export function ServerProviderPolicyCard() {
     setSaveError(null);
     setSaveSuccess(null);
     try {
-      const policy = await apiClient.admin.serverProviderPolicy.set({
-        allowPersonalProviderKeys: draftEnabled,
-      });
+      const patch = {
+        ...(draftEnabled !== persisted.allowPersonalProviderKeys
+          ? { allowPersonalProviderKeys: draftEnabled }
+          : {}),
+        ...(draftFundingPreference !== persisted.fundingPreference
+          ? { fundingPreference: draftFundingPreference }
+          : {}),
+      };
+      const policy = await apiClient.admin.serverProviderPolicy.set(patch);
       setPersisted(policy);
       setDraftEnabled(policy.allowPersonalProviderKeys);
+      setDraftFundingPreference(policy.fundingPreference);
       window.dispatchEvent(new Event("nautilo:personal-provider-policy-changed"));
-      setSaveSuccess(
-        policy.allowPersonalProviderKeys
-          ? "Personal provider keys are allowed by server policy."
-          : "Personal provider keys are disabled by server policy.",
-      );
+      setSaveSuccess("Personal provider policy saved.");
     } catch (cause) {
       setDraftEnabled(persisted.allowPersonalProviderKeys);
+      setDraftFundingPreference(persisted.fundingPreference);
       setSaveError(errorMessage(cause));
     } finally {
       setSaving(false);
@@ -70,7 +76,8 @@ export function ServerProviderPolicyCard() {
   };
 
   const changed = persisted !== null
-    && draftEnabled !== persisted.allowPersonalProviderKeys;
+    && (draftEnabled !== persisted.allowPersonalProviderKeys
+      || draftFundingPreference !== persisted.fundingPreference);
 
   return (
     <div
@@ -130,6 +137,53 @@ export function ServerProviderPolicyCard() {
           </div>
         ) : null}
       </div>
+
+      {persisted !== null ? (
+        <fieldset className="mt-4" disabled={!canManage || saving}>
+          <legend className="text-sm font-semibold text-foreground">Funding priority</legend>
+          <p className="mt-1 text-xs text-foreground-muted">
+            When both keys are available and allowed for a model, use this source first.
+            Members can still choose models available through either permitted source.
+          </p>
+          {!persisted.allowPersonalProviderKeys ? (
+            <p className="mt-1 text-xs font-medium text-foreground-muted">
+              This preference has no effect until personal keys are enabled for an eligible member.
+            </p>
+          ) : null}
+          <div className="mt-3 flex flex-wrap gap-3">
+            {([
+              ["personal_first", "Personal keys first"],
+              ["server_first", "Server keys first"],
+            ] as const).map(([value, label]) => (
+              <label
+                key={value}
+                className="flex min-h-10 items-center gap-2 rounded-md border border-border px-3 py-2 text-sm text-foreground"
+              >
+                <input
+                  type="radio"
+                  name="server-provider-funding-preference"
+                  value={value}
+                  checked={draftFundingPreference === value}
+                  onChange={() => {
+                    setDraftFundingPreference(value);
+                    setSaveError(null);
+                    setSaveSuccess(null);
+                  }}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+          <p
+            className="mt-2 text-xs font-medium text-foreground"
+            data-testid="server-provider-policy-funding-persisted"
+          >
+            Current saved priority: {persisted.fundingPreference === "personal_first"
+              ? "Personal keys first"
+              : "Server keys first"}
+          </p>
+        </fieldset>
+      ) : null}
 
       {loadError ? (
         <div className="mt-3 flex flex-wrap items-center gap-2">

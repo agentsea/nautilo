@@ -49,7 +49,7 @@ beforeAll(async () => {
   });
   personalProviderCredentialRoutes(app, {
     getDb: () => db,
-    getPolicy: async () => ({ allowPersonalProviderKeys: true }),
+    getPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference: "personal_first" }),
     getCapabilities: async () => ["use_personal_provider_credentials"],
     readCustody: async () => custody,
     validate: async () => ({ status: "accepted" }),
