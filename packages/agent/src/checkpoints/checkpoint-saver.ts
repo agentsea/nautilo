@@ -100,6 +100,7 @@ import {
   runCompaction,
   compactionLockKey,
   serializeCompaction,
+  serializeCheckpointPersistence,
   type CompactionClient,
 } from "./checkpoint-compaction.js";
 
@@ -117,7 +118,7 @@ import {
  * This predicate is the LAST line of defense, not the first: the call sites
  * (`fork-langgraph-executor`, `task-run-executor`) already gate on the
  * terminal-state contract (no pending interrupt, no abort, no awaiting /
- * approval / PIN / identity / D422-unknown). This guard ensures a misrouted
+ * approval / PIN / identity / unknown-tool). This guard ensures a misrouted
  * cleanup — a canonical foreground room thread (`room:<roomId>:bot:<agentId>`)
  * or any unrecognized shape — can never wipe a live room's resumable state.
  */
@@ -244,7 +245,7 @@ function wrapWithResilience(saver: PostgresSaver): void {
   const originalPut = saver.put.bind(saver);
   const originalPutWrites = saver.putWrites.bind(saver);
 
-  saver.put = async function resilientPut(...args) {
+  const resilientPut: typeof saver.put = async (...args) => {
     let result;
     let succeeded = false;
     try {
@@ -282,6 +283,22 @@ function wrapWithResilience(saver: PostgresSaver): void {
       // Never let compaction turn a successful put into an agent failure.
       if (succeeded) void triggerCheckpointCompaction(saver, result);
     }
+  };
+
+  saver.put = async (...args) => {
+    const [config, checkpoint, metadata] = args;
+    // Another live graph may still hold a snapshot whose unchanged channel
+    // blobs were reclaimed by a competing turn. Persist the complete snapshot
+    // so every committed checkpoint has all of its referenced values again.
+    const versions = checkpoint.channel_versions ?? args[3];
+    const coordinate = config.configurable;
+    const key = compactionLockKey(
+      String(coordinate?.["thread_id"] ?? ""),
+      String(coordinate?.["checkpoint_ns"] ?? ""),
+    );
+    return serializeCheckpointPersistence(key, () =>
+      resilientPut(config, checkpoint, metadata, versions),
+    );
   };
 
   saver.putWrites = async function resilientPutWrites(...args) {
