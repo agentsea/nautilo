@@ -7,7 +7,7 @@ import { resolveRailwayProviderConfig } from "../../src/lib/host-provider-config
 import { KEY_REGISTRY } from "@nautilo/config-guard";
 import { HOSTING_PROVIDER_ENV_VARS, resolveProviderCapabilities } from "@nautilo/hosting";
 
-const HOSTING_KEY_REGISTRY = KEY_REGISTRY.filter((key) => key.id !== "nautilo-gateway");
+const HOSTING_KEY_REGISTRY = KEY_REGISTRY;
 
 let root: string;
 
@@ -42,7 +42,7 @@ describe("Railway provider-only TOML", () => {
     expect(HOSTING_PROVIDER_ENV_VARS).not.toHaveProperty("nautilo-gateway");
   });
 
-  test("local-only Nautilo Gateway configuration is rejected by hosted provider adoption", async () => {
+  test("a retired provider name is rejected by hosted provider adoption", async () => {
     const config = join(root, "providers.toml");
     await writeProviderConfig(config, [
       "schemaVersion = 1",

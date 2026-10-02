@@ -70,7 +70,7 @@ describe("model funding with migrated personal credential and usage tables", () 
       getPolicy: async () => ({ allowPersonalProviderKeys: true }),
       getCapabilities: async () => ["use_personal_provider_credentials", "use_server_provider_credentials"],
       getCredential: (userId, provider) => getPersonalProviderCredential(db, userId, provider),
-      serverRoute: () => "managed-gateway",
+      serverRoute: () => "openrouter",
       readCustody: async () => custody,
       decrypt: decryptPersonalProviderCredential,
     };

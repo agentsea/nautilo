@@ -63,8 +63,8 @@ describe("ProviderKeyCoverage", () => {
       rows.map((row) => within(row).getAllByRole("cell")[0]?.textContent),
     ).toEqual([
       "TypeSafeOpenRouterVenice",
-      "VeniceOpenRouterOpenAIAnthropicGoogleFireworksOpenAI-compatible GatewayNautilo Gateway",
-      "VeniceOpenRouterOpenAINautilo Gateway",
+      "VeniceOpenRouterOpenAIAnthropicGoogleFireworksOpenAI-compatible Gateway",
+      "VeniceOpenRouterOpenAI",
       "ElevenLabs",
       "ElevenLabsGroq",
       "VeniceOpenRouterOpenAIGoogle",
