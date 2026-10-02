@@ -187,7 +187,7 @@ describe("server prerequisite admission", () => {
     const result = await createPostModelNode(
       makeMockResolver({ run_deep_research: { type: "allow" } }),
       NO_MATCH,
-)(makeState([new AIMessage({ content: "", tool_calls: [call] })]));
+    )(makeState([new AIMessage({ content: "", tool_calls: [call] })]));
 
     expect(result.approvedToolCalls).toEqual([]);
     const refusal = result.messages?.at(-1) as ToolMessage;
@@ -202,7 +202,7 @@ describe("server prerequisite admission", () => {
     const result = await createPostModelNode(
       makeMockResolver({ run_deep_research: { type: "forbidden", reason: "actor denied" } }),
       NO_MATCH,
-)(makeState([new AIMessage({ content: "", tool_calls: [call] })]));
+    )(makeState([new AIMessage({ content: "", tool_calls: [call] })]));
 
     const refusal = result.messages?.at(-1) as ToolMessage;
     expect(refusal.content).toContain("do not have permission");
@@ -218,7 +218,7 @@ describe("server prerequisite admission", () => {
     const result = await createPostModelNode(
       makeMockResolver({ run_deep_research: { type: "allow" } }),
       NO_MATCH,
-)(state);
+    )(state);
 
     const refusal = result.messages?.at(-1) as ToolMessage;
     expect(refusal.content).toContain("do not have permission");
@@ -856,7 +856,7 @@ describe("postModelNode (with resolver)", () => {
     expect(result.pendingApproval).toHaveLength(0);
   });
 
-  test("matching standing approval bypasses the ask interrupt ", async () => {
+  test("matching standing approval bypasses the ask interrupt", async () => {
     // Benign medium-severity command — verb would be "ask" normally. With
     // a matching standing approval (DB matcher returns a row), it
     // auto-approves without firing the dialog.
@@ -1488,7 +1488,7 @@ describe("postModelNode (semantic computer-use admission)", () => {
     expect(result.approvalDenied).toBe(true);
     const refusal = result.messages?.find((message) =>
       ToolMessage.isInstance(message) && message.tool_call_id === "computer-call-1",
-);
+    );
     expect(refusal).toBeInstanceOf(ToolMessage);
     expect((refusal as ToolMessage).content).toContain("provider route is no longer current");
     expect((refusal as ToolMessage).content).toContain("Do not retry");
@@ -1512,11 +1512,11 @@ describe("postModelNode (semantic computer-use admission)", () => {
     expect(result.approvalDenied).toBe(true);
     const refusal = result.messages?.find((message) =>
       ToolMessage.isInstance(message) && message.tool_call_id === "computer-call-1",
-);
+    );
     expect(refusal).toBeInstanceOf(ToolMessage);
     expect((refusal as ToolMessage).content).toBe(
       "Desktop automation needs a new Human-originated foreground Genie run before this action can continue.",
-);
+    );
     expect((refusal as ToolMessage).additional_kwargs).toEqual({
       computer_use: {
         status: "needs_user",

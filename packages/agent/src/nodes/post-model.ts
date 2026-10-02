@@ -113,7 +113,7 @@ import { personalFundingToolDenialMessage } from "./tools";
 // Interrupt payloads
 // ---------------------------------------------------------------------------
 
-/** Existing prove_it payload . Unchanged. */
+/** Existing prove_it payload. */
 interface ProveItInterruptPayload {
   type: "prove_it_challenge";
   tools: ProveItToolInfo[];
@@ -161,7 +161,7 @@ export interface PostModelDeps {
   ordinaryContentAccessForState?: OrdinaryContentAccessForState;
   protectedMemoryAccessPortForState?: (
     state: NautiloState,
-) => ProtectedAgentMemoryAccessPort | undefined;
+  ) => ProtectedAgentMemoryAccessPort | undefined;
   /** Current server policy gate; never inferred from checkpointed state. */
   fullEncryptionOnlyForState?: (state: NautiloState) => boolean;
   /**
@@ -256,7 +256,7 @@ async function isRedundantScheduledSelfContact(state: NautiloState, call: ToolCa
     || (args["artifact_ids"] !== undefined
       && (!Array.isArray(args["artifact_ids"]) || args["artifact_ids"].length > 0))
     || (args["include_focused_artifacts"] !== undefined && args["include_focused_artifacts"] !== false)
-) return false;
+  ) return false;
 
   try {
     const { db } = getTaskToolRuntime();
@@ -274,7 +274,7 @@ async function isRedundantScheduledSelfContact(state: NautiloState, call: ToolCa
       eq(taskRuns.id, state.currentTaskRunId),
       eq(taskRuns.taskId, scheduledTask.id),
       eq(taskRuns.graphThreadId, state.langgraphThreadId),
-)).limit(1);
+    )).limit(1);
     if (!run) return false;
     // Replacing a private DM with the saved return route is safe only when
     // that route has exactly the same Human and Agent audience.
@@ -476,7 +476,7 @@ export function createPostModelNode(
     const rejectedProjectionCallIds = new Set([...(state.projectionRejectedToolCallIds ?? []), ...(state.modelRejectedToolCallIds ?? []), ...(state.ordinaryContentAccessRejectedToolCallIds ?? [])]);
     const toolCalls: ToolCall[] = lastMessage.tool_calls.filter(
       (tc) => !rejectedProjectionCallIds.has(tc.id ?? ""),
-);
+    );
 
     // Personal funding in this phase admits foreground text generation only.
     // Refuse every still-live model-originated call before catalog resolution,
@@ -489,7 +489,7 @@ export function createPostModelNode(
               messages: mergeMessagesPreservingInvariants(
                 state.messages,
                 toolCalls.map(personalFundingToolDenialMessage),
-),
+              ),
             }
           : {}),
         approvedToolCalls: [],
@@ -533,18 +533,18 @@ export function createPostModelNode(
     const requestedModelId = modelIdForCapabilityProjection(
       "chat",
       state.model || runtimeConfig.nautilo_model,
-);
+    );
     const activeModelCapabilities = (["image", "file"] as const).filter(
       (capability) => modelSupportsInput(requestedModelId, capability),
-);
+    );
     const activatedToolNames = selectedActivatedToolNamesForActor(
       state.actorRole,
       state.activatedToolNames,
-);
+    );
     const recallRecordsContext = recallRecordsToolContextForState(
       state,
       deps?.recallRecordsPortForState?.(state),
-);
+    );
     const exposureOptions = {
       context: {
         ...recallRecordsContext,
@@ -571,10 +571,10 @@ export function createPostModelNode(
             catalog,
             runtimeConfig.nautilo_tool_exposure_mode,
             exposureOptions,
-)
+          )
             .snapshot.entries
             .map((entry) => entry.name),
-)
+        )
       : null;
     let approved: ToolCall[] = [];
     let pending: ToolCall[] = [];
@@ -674,7 +674,7 @@ export function createPostModelNode(
             ordinaryApprovalByCall.set(tc, strongerShareApproval(
               resolveApprovalForToolCall(tc, runtimeConfig.nautilo_security_level),
               resolveApprovalForToolCall(shareCall, runtimeConfig.nautilo_security_level),
-));
+            ));
           }
         }
       }
@@ -708,7 +708,7 @@ export function createPostModelNode(
               !snapshot
               || projectionSnapshotExpiresAt(snapshot) <= Date.now()
               || roomKind === null
-) {
+            ) {
               forbidden.push({ tc, reason: "missing or expired trusted projection snapshot" });
             } else if (roomKind === "open") {
               pending.push(tc);
@@ -726,7 +726,7 @@ export function createPostModelNode(
               !snapshot
               || projectionSnapshotExpiresAt(snapshot) <= Date.now()
               || projectionSnapshotRoomKind(snapshot) === null
-) {
+            ) {
               forbidden.push({ tc, reason: "missing or expired trusted projection snapshot" });
             } else {
               pending.push(tc);
@@ -753,7 +753,7 @@ export function createPostModelNode(
       forbidden.push(
         ...approved.map((tc) => ({ tc, reason: "computer tool catalog is unavailable" })),
         ...pending.map((tc) => ({ tc, reason: "computer tool catalog is unavailable" })),
-);
+      );
       approved = [];
       pending = [];
     } else if (catalog) {
@@ -826,7 +826,7 @@ export function createPostModelNode(
               !decision ||
               decision.choiceId !== resolution.choiceId ||
               typeof decision.selector !== "string"
-) {
+            ) {
               forbidden.push({ tc, reason: "paired computer choice was not completed" });
               continue;
             }
@@ -867,7 +867,7 @@ export function createPostModelNode(
     const resolveComputerCandidates = async (
       candidates: ToolCall[],
       moveAdmittedToApproved: boolean,
-): Promise<ToolCall[]> => {
+    ): Promise<ToolCall[]> => {
       const retained: ToolCall[] = [];
       for (const tc of candidates) {
         if (!isComputerUseToolName(tc.name)) {
@@ -899,7 +899,7 @@ export function createPostModelNode(
           warn(
             `[post_model] computer-use admission resolver threw for ${tc.name}: ` +
               `${err instanceof Error ? err.message : String(err)}; denying semantic computer call`,
-);
+          );
           forbidden.push({ tc, reason: "desktop automation is unavailable for this run" });
           continue;
         }
@@ -969,7 +969,7 @@ export function createPostModelNode(
       if (
         projectionSnapshot !== null
         && projectionSnapshotRoomKind(projectionSnapshot) === "open"
-) {
+      ) {
         proveItBatch.push(tc);
         continue;
       }
@@ -981,7 +981,7 @@ export function createPostModelNode(
         const forced = resolveApproval(
           { toolImpact: "destructive", toolName: tc.name },
           level,
-);
+        );
         askBatch.push({
           tc,
           approval: {
@@ -1000,7 +1000,7 @@ export function createPostModelNode(
         const forced = resolveApproval(
           { toolImpact: "destructive", toolName: tc.name },
           level,
-);
+        );
         askBatch.push({
           tc,
           approval: {
@@ -1024,7 +1024,7 @@ export function createPostModelNode(
         const forced = resolveApproval(
           { toolImpact: "destructive", toolName: tc.name },
           level,
-);
+        );
         askBatch.push({
           tc,
           approval: {
@@ -1061,7 +1061,7 @@ export function createPostModelNode(
         approval.verb !== "block" &&
         !preservesCapabilitylessPinFloor &&
         state.userId
-) {
+      ) {
         let overrideDecision: WorkstationAdmissionDecision | null = null;
         try {
           overrideDecision = await overrideResolver({
@@ -1080,14 +1080,14 @@ export function createPostModelNode(
           warn(
             `[post_model] workstation override resolver threw for ${tc.name}: ` +
               `${err instanceof Error ? err.message : String(err)}; leaving normal approval intact`,
-);
+          );
           overrideDecision = null;
         }
         if (overrideDecision?.override === "auto") {
           log(
             `[post_model] workstation_admission_auto_approved ${tc.name} ` +
               `(override=auto, executionClass=${overrideDecision.executionClass}); suppressing ${approval.verb} prompt`,
-);
+          );
           approved.push(tc);
           continue;
         }
@@ -1129,8 +1129,8 @@ export function createPostModelNode(
               matchCommandFn: matchFn,
             })
           : Promise.resolve(null),
-),
-);
+      ),
+    );
 
     for (let i = 0; i < matchCandidates.length; i++) {
       const cand = matchCandidates[i]!;
@@ -1139,14 +1139,14 @@ export function createPostModelNode(
         log(
           `[post_model] approval_auto_approved ${cand.tc.name} scope=${matched.scope} standingApprovalId=${matched.id}` +
             (matched.viaCapability ? ` capability=${matched.capabilitySlug}` : ""),
-);
+        );
         if (deps?.recordAutoApproval && userIdForMatch) {
           const signatureKey = matched.viaCapability && matched.capabilitySlug
             ? capabilitySignatureKey(matched.capabilitySlug)
             : classifyCall(
                 cand.tc.name,
                 (cand.tc.args ?? {}) as Record<string, unknown>,
-).signatureKey;
+              ).signatureKey;
           deps.recordAutoApproval({
             userId: userIdForMatch,
             scope: matched.scope,
@@ -1161,7 +1161,7 @@ export function createPostModelNode(
       if (cand.isAutoAnomaly) {
         warn(
           `[post_model] Verb-map / trust disagreement for ${cand.tc.name}: trust=require_approval, verbMap=auto, severity=${cand.approval.severity}. Escalating to ask.`,
-);
+        );
       }
       askBatch.push({
         tc: cand.tc,
@@ -1174,7 +1174,7 @@ export function createPostModelNode(
     log(
       `[post_model] Trust pass: approved=${approved.length} pending=${pending.length} forbidden=${forbidden.length}. ` +
       `Verb pass: ask=${askBatch.length} prove_it=${proveItBatch.length} blocked=${blockedBatch.length}`,
-);
+    );
 
     const enrollmentReplayIds = [...(state.identityEnrollmentToolCallIds ?? [])]
       .sort();
@@ -1196,7 +1196,7 @@ export function createPostModelNode(
     if (
       enrollmentReplayIds.length > 0
       && (!exactEnrollmentReplay && !legacyEnrollmentReplay)
-) {
+    ) {
       throw new Error("Identity enrollment tool batch changed before prove-it");
     }
     const replayingEnrollment = enrollmentReplayIds.length > 0 || proveItBatch.some((call) =>
@@ -1230,8 +1230,8 @@ export function createPostModelNode(
               denialMessage(
                 removed.tc,
                 "Local MCP installation must be requested as one explicit action. Nothing was installed.",
-),
-);
+              ),
+            );
           }
         }
       } else {
@@ -1242,7 +1242,7 @@ export function createPostModelNode(
           askBatch.length = 0;
           denialMessages.push(
             denialMessage(entry.tc, "Local MCP install request is invalid or cannot be bound to this approval."),
-);
+          );
         } else {
           try {
             const runtime = getLocalMcpToolRuntime();
@@ -1264,15 +1264,15 @@ export function createPostModelNode(
                 toolCallId: entry.tc.id,
                 checkpointKey,
               },
-);
+            );
             if (!prepared.ok) {
               askBatch.length = 0;
               denialMessages.push(
                 denialMessage(
                   entry.tc,
                   `Local MCP install cannot be approved: ${prepared.result.failure?.recovery ?? "review the request and try again."}`,
-),
-);
+                ),
+              );
             } else {
               const trustedCall: ToolCall = {
                 ...entry.tc,
@@ -1304,7 +1304,7 @@ export function createPostModelNode(
             warn("[post_model] local MCP prepare failed");
             denialMessages.push(
               denialMessage(entry.tc, "Local MCP install could not be prepared safely. Nothing was installed."),
-);
+            );
           }
         }
       }
@@ -1321,14 +1321,14 @@ export function createPostModelNode(
       if (
         mediaEntries.length !== 1 || askBatch.length !== 1 ||
         !causalHumanForExecution(state.causalHumanUserId) || !state.roomId || !state.agentId
-) {
+      ) {
         for (let i = askBatch.length - 1; i >= 0; i--) {
           if (isMediaGenerationToolCall(askBatch[i]!.tc)) {
             const removed = askBatch.splice(i, 1)[0]!;
             denialMessages.push(denialMessage(
               removed.tc,
               "Paid media generation must be requested as one explicit action. No generation was started.",
-));
+            ));
           }
         }
       } else {
@@ -1340,7 +1340,7 @@ export function createPostModelNode(
           denialMessages.push(denialMessage(
             entry.tc,
             "The paid media request could not be bound safely. No generation was started.",
-));
+          ));
         } else {
           try {
             const result = await prepareMediaGenerationApproval({
@@ -1359,7 +1359,7 @@ export function createPostModelNode(
               denialMessages.push(denialMessage(
                 entry.tc,
                 result.recovery,
-));
+              ));
             } else {
               const prepared = result.prepared;
               const trustedCall: ToolCall = {
@@ -1384,7 +1384,7 @@ export function createPostModelNode(
             denialMessages.push(denialMessage(
               entry.tc,
               "The exact media quote is unavailable right now. Try again later. No generation was started.",
-));
+            ));
           }
         }
       }
@@ -1405,7 +1405,7 @@ export function createPostModelNode(
           status: "error",
           additional_kwargs: { nautilo_tool_status: "error" },
         }),
-);
+      );
     }
 
     // a detached/foreign semantic computer call is neither an
@@ -1429,7 +1429,7 @@ export function createPostModelNode(
             },
           },
         }),
-);
+      );
     }
 
     for (const b of blockedBatch) {
@@ -1441,7 +1441,7 @@ export function createPostModelNode(
           status: "error",
           additional_kwargs: { nautilo_tool_status: "error" },
         }),
-);
+      );
     }
 
     // -----------------------------------------------------------------
@@ -1484,7 +1484,7 @@ export function createPostModelNode(
       if (
         deps?.isPinEnrolled &&
         state.userId
-) {
+      ) {
         const enrolled = await deps.isPinEnrolled(state.userId);
         if (!enrolled || replayingEnrollment) {
           const protectedMemoryTools: NonNullable<
@@ -1506,7 +1506,7 @@ export function createPostModelNode(
           }
           protectedMemoryTools.sort((left, right) =>
             left.toolCallId.localeCompare(right.toolCallId)
-);
+          );
           const enrollPayload: IdentityChallengeEnrollPinPayload = {
             type: "identity_challenge",
             mode: "enrollPin",
@@ -1518,7 +1518,7 @@ export function createPostModelNode(
           };
           log(
             `[post_model] Logto user ${state.userId} has no PIN; interrupting for enrollPin before prove_it (${proveItBatch.length} tool(s) pending)`,
-);
+          );
           // Resume value is unused here — the route's resumeGraphWith-
           // Identity passes `{ verified: true, ... }` and we just
           // continue. If the user dismisses without enrolling, the
@@ -1575,11 +1575,11 @@ export function createPostModelNode(
         localMcpInstallApprovalKey,
         mediaGenerationApproval,
         mediaGenerationApprovalKey,
-);
+      );
       payload.tools = await Promise.all(
         askBatch.map(async ({ tc }) => ordinaryPreviewByCall.get(tc) ?? protectedMemoryEntries.get(tc)
           ?? interruptToolEntry(tc, state, protectedMemoryAccessPort)),
-);
+      );
       log(`[post_model] Interrupting for approval_ask: ${askBatch.map(({ tc }) => tc.name).join(", ")} (${payload.reason})`);
       const decision: ResumeDecision | undefined = interrupt(payload);
       const verb: ApprovalReplyVerb = decision?.verb ?? "deny";
@@ -1621,7 +1621,7 @@ export function createPostModelNode(
           digest: localMcpInstallApproval.digest,
           verb,
         })
-) {
+      ) {
         log("[post_model] local MCP approval stale or non-explicit; refusing execution");
         for (const a of askBatch) {
           denialMessages.push(denialMessage(a.tc, "Local MCP approval is stale. Nothing was installed."));
@@ -1652,13 +1652,13 @@ export function createPostModelNode(
           revision: mediaGenerationApproval.revision,
           verb,
         })
-) {
+      ) {
         log("[post_model] media generation approval stale or non-explicit; refusing submission");
         for (const a of askBatch) {
           denialMessages.push(denialMessage(
             a.tc,
             "This media quote is stale or no longer matches the request. Request a fresh quote. No generation was started.",
-));
+          ));
         }
         return {
           messages: mergeMessagesPreservingInvariants(state.messages, denialMessages),
@@ -1681,7 +1681,7 @@ export function createPostModelNode(
             if (scope === null) {
               warn(
                 `[post_model] verb=room for ${tc.name} but no roomId on state (background job?) — refusing to persist standing approval.`,
-);
+              );
             } else if (capabilitySlug) {
               await createCapabilityFn({
                 userId: state.userId,
@@ -1694,7 +1694,7 @@ export function createPostModelNode(
               const classified = classifyCall(
                 tc.name,
                 (tc.args ?? {}) as Record<string, unknown>,
-);
+              );
               await createFn({
                 userId: state.userId,
                 scope,
@@ -1708,7 +1708,7 @@ export function createPostModelNode(
           } else {
             warn(
               `[post_model] verb=${verb} for ${tc.name} but no userId on state — cannot persist standing approval.`,
-);
+            );
           }
           maybeWidenSandboxForApproval(laneKey, tc, state);
           // Map the DB scope onto the lane-keyed network/sandbox store's
@@ -1719,7 +1719,7 @@ export function createPostModelNode(
             laneKey,
             tc,
             standingApprovalScopeForVerb(verb, state.roomId) === null ? "once" : verb === "room" ? "session" : "always",
-);
+          );
         } else if (verb === "once") {
           maybeWidenNetworkForApproval(laneKey, tc, "once");
         }
@@ -2036,7 +2036,7 @@ function resolveLaneKey(state: NautiloState): string {
   throw new Error(
     "[post_model] resolveLaneKey: cannot derive a lane key — neither langgraphThreadId nor a positive numeric threadId present on state. " +
     "Session approvals refuse to write under an unknown lane because orphan requests would otherwise collide into a single shared bucket.",
-);
+  );
 }
 
 function isManageLocalMcpInstall(tc: ToolCall): boolean {
@@ -2189,7 +2189,7 @@ function maybeWidenSandboxForApproval(
   log(
     `[sandbox] writablePaths widened for lane ${laneKey}: ${approvedPath} ` +
       `(approved for ${tc.name})`,
-);
+  );
 }
 
 function maybeWidenNetworkForApproval(
@@ -2268,7 +2268,7 @@ export function resolveApprovalForToolCall(tc: ToolCall, level: SecurityLevel): 
   return applyCapabilitylessCatalogApprovalFloor(
     resolveImpactApprovalForToolCall(tc, level, policy),
     policy,
-);
+  );
 }
 
 function resolveImpactApprovalForToolCall(
@@ -2292,7 +2292,7 @@ function resolveImpactApprovalForToolCall(
   const askPeerIncludesArtifacts = tc.name === "ask_peer" && (
     args?.["include_focused_artifacts"] === true ||
     (Array.isArray(args?.["artifact_ids"]) && args["artifact_ids"].length > 0)
-);
+  );
   // ordinary ask_peer keeps its established one-confirmation static
   // behavior. Only its exact Artifact handoff branch uses hybrid sensitivity,
   // so adding the optional composition cannot make every legacy peer message
@@ -2300,7 +2300,7 @@ function resolveImpactApprovalForToolCall(
   if (policy?.approvalMode === "hybrid" && (tc.name !== "ask_peer" || askPeerIncludesArtifacts)) {
     const sensitivity = readHybridSensitivity(
       args,
-);
+    );
     return resolveApproval(
       {
         toolImpact: baseImpact,
@@ -2309,7 +2309,7 @@ function resolveImpactApprovalForToolCall(
         hybridSensitivityWasInvalid: sensitivity.wasInvalid,
       },
       level,
-);
+    );
   }
 
   if (tc.name === "run_shell") {
@@ -2323,7 +2323,7 @@ function resolveImpactApprovalForToolCall(
         toolName: tc.name,
       },
       level,
-);
+    );
   }
 
   // the unified `file` tool dispatches on a
@@ -2351,7 +2351,7 @@ function resolveImpactApprovalForToolCall(
     return resolveApproval(
       { toolImpact: effectiveImpact, toolName: tc.name },
       level,
-);
+    );
   }
 
   // the `officecli` tool dispatches on a `command` arg and
@@ -2366,7 +2366,7 @@ function resolveImpactApprovalForToolCall(
     return resolveApproval(
       { toolImpact: effectiveImpact, toolName: tc.name },
       level,
-);
+    );
   }
 
   // local-backend `convert` calls are auto-approved upstream in
@@ -2377,7 +2377,7 @@ function resolveImpactApprovalForToolCall(
     return resolveApproval(
       { toolImpact: "destructive", toolName: tc.name },
       level,
-);
+    );
   }
 
   // install is forced to an explicit ask by the main post-model
@@ -2389,7 +2389,7 @@ function resolveImpactApprovalForToolCall(
       const resolved = resolveApproval(
         { toolImpact: "destructive", toolName: tc.name },
         level,
-);
+      );
       return action === "install" || action === "remove"
         ? {
             ...resolved,
