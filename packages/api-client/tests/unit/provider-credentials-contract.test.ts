@@ -14,6 +14,7 @@ const credential = {
   validationStatus: "accepted" as const,
   validatedAt: "2026-09-28T10:01:00.000Z",
   requiresReplacement: false,
+  masked: "sk-proj-...",
 };
 const providers = [{
   id: "openai",
@@ -130,6 +131,17 @@ describe("personal provider credentials client contract", () => {
       credentials: [credential],
       providers: [],
     });
+  });
+
+  test("defaults a missing masked preview from an older server to null", async () => {
+    const { masked: _masked, ...olderCredential } = credential;
+    globalThis.fetch = (async () => json(200, {
+      credentials: [olderCredential],
+      providers,
+    })) as unknown as typeof fetch;
+
+    const client = new NautiloApiClient(BASE);
+    expect((await client.listProviderCredentials()).credentials[0]?.masked).toBeNull();
   });
 
   test("rejects a success response that contains secret material", async () => {

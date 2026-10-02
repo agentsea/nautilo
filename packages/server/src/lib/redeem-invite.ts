@@ -31,8 +31,6 @@ import {
   rooms,
   roomMembers,
   groups,
-  groupRoles,
-  roles,
   eq,
   ne,
   and,
@@ -655,15 +653,6 @@ export async function redeemInviteAtomically(
         if (locked.kind === "server") {
           if (!locked.targetGroupId) {
             throw new Error("invite_target_invariant");
-          }
-          const targetRoles = await tx
-            .select({ groupType: groups.type, roleSlug: roles.slug })
-            .from(groups)
-            .leftJoin(groupRoles, eq(groupRoles.groupId, groups.id))
-            .leftJoin(roles, eq(roles.id, groupRoles.roleId))
-            .where(eq(groups.id, locked.targetGroupId));
-          if (targetRoles.some((row) => row.groupType === "communities" || row.roleSlug === "community")) {
-            throw new RedeemAbort(409, "community_enrollment_unavailable");
           }
           await tx
             .insert(groupMembers)
@@ -1465,18 +1454,13 @@ export async function completeInviteProfile(
         if (!locked.targetGroupId) {
           throw new RedeemAbort(409, "invite_target_unavailable");
         }
-        const targetRoles = await tx
-          .select({ id: groups.id, groupType: groups.type, roleSlug: roles.slug })
+        const [targetGroup] = await tx
+          .select({ id: groups.id })
           .from(groups)
-          .leftJoin(groupRoles, eq(groupRoles.groupId, groups.id))
-          .leftJoin(roles, eq(roles.id, groupRoles.roleId))
-          .where(eq(groups.id, locked.targetGroupId));
-        const targetGroup = targetRoles[0];
+          .where(eq(groups.id, locked.targetGroupId))
+          .limit(1);
         if (!targetGroup) {
           throw new RedeemAbort(409, "invite_target_unavailable");
-        }
-        if (targetRoles.some((row) => row.groupType === "communities" || row.roleSlug === "community")) {
-          throw new RedeemAbort(409, "community_enrollment_unavailable");
         }
 
         await tx

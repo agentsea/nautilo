@@ -587,7 +587,7 @@ describe("signed member lifecycle", () => {
       "members", "provision",
       "--handle", "newperson",
       "--display-name", "New Person",
-      "--role", "member",
+      "--role", "community",
       "--handoff-file", "/safe/provision.json",
       "--format", "json",
     ], {
@@ -606,7 +606,7 @@ describe("signed member lifecycle", () => {
     expect(provisionMember).toHaveBeenCalledWith({
       handle: "newperson",
       displayName: "New Person",
-      roleSlug: "member",
+      roleSlug: "community",
     }, "generated-provision-key");
     expect(handoff).toMatchObject({
       kind: "nautilo.provisioned-member-handoff",

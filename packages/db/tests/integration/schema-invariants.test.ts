@@ -758,7 +758,7 @@ describe("D418 — groups.is_system + groups_system_owner_check (live Postgres)"
     await db.delete(users).where(eq(users.id, u));
   });
 
-  test("the six canonical ladder Groups are system-managed (is_system=true, owner_id NULL)", async () => {
+  test("the seven canonical ladder Groups are system-managed (is_system=true, owner_id NULL)", async () => {
     const rows = await db
       .select({ type: groups.type, isSystem: groups.isSystem, ownerId: groups.ownerId })
       .from(groups)
@@ -769,10 +769,11 @@ describe("D418 — groups.is_system + groups_system_owner_check (live Postgres)"
           "superusers",
           "members",
           "contributors",
+          "communities",
           "guests",
         ]),
       );
-    expect(rows.length).toBe(6);
+    expect(rows.length).toBe(7);
     for (const r of rows) {
       expect(r.isSystem).toBe(true);
       expect(r.ownerId).toBeNull();

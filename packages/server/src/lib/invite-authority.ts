@@ -3,6 +3,7 @@ import { CAP_CREATE_INVITES, type ServerRoleSlug } from "@nautilo/trust";
 const SELF_SERVICE_TARGET_ROLES = new Set<ServerRoleSlug>([
   "member",
   "contributor",
+  "community",
   "guest",
 ]);
 
@@ -26,10 +27,8 @@ export function inviteRoleAllowed(
   authority: InviteAuthority,
   role: ServerRoleSlug,
 ): boolean {
-  return role !== "community" && (
-    authority.canManageAll
-    || (authority.canCreateOwn && SELF_SERVICE_TARGET_ROLES.has(role))
-  );
+  return authority.canManageAll
+    || (authority.canCreateOwn && SELF_SERVICE_TARGET_ROLES.has(role));
 }
 
 export function inviteRoomAllowed(

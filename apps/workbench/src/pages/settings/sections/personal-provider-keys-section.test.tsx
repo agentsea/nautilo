@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import {
   ProviderCredentialApiError,
   type CredentialMetadata,
@@ -21,6 +22,7 @@ const saved: CredentialMetadata = {
   validationStatus: "unverified",
   validatedAt: null,
   requiresReplacement: false,
+  masked: "sk-…alue",
 };
 
 const providers: PersonalProviderCatalogEntry[] = [
@@ -48,6 +50,18 @@ const providers: PersonalProviderCatalogEntry[] = [
     formatHint: "tvly-...",
     personalCapabilities: [],
   },
+  {
+    id: "gateway",
+    name: "Gateway",
+    purpose: "Custom gateway",
+    personalCapabilities: ["chat"],
+  },
+  {
+    id: "nautilo-gateway",
+    name: "Nautilo Gateway",
+    purpose: "Nautilo relay gateway",
+    personalCapabilities: ["chat"],
+  },
 ];
 
 function listResponse(credentials: CredentialMetadata[] = []) {
@@ -68,6 +82,11 @@ function api(overrides: Record<string, unknown> = {}) {
     deleteProviderCredential: mock(async () => ({ deleted: true as const, committed: true as const })),
     ...overrides,
   };
+}
+
+async function enterSecret(input: HTMLElement, value: string): Promise<void> {
+  const user = userEvent.setup({ document: globalThis.document });
+  await user.type(input, value);
 }
 
 beforeEach(() => {
@@ -179,8 +198,8 @@ describe("PersonalProviderKeysSection", () => {
     await view.findByRole("button", { name: "Add Anthropic key" });
     const providerButtons = view.getAllByRole("button", { name: /^Add .* key$/ });
     expect(providerButtons.map((button) => button.getAttribute("aria-label"))).toEqual([
-      "Add Anthropic key",
       "Add OpenAI key",
+      "Add Anthropic key",
       "Add Tavily key",
     ]);
     const coverage = view.getByTestId("personal-provider-key-coverage");
@@ -189,14 +208,40 @@ describe("PersonalProviderKeysSection", () => {
     expect(coverage.textContent).toContain("Anthropic");
     expect(coverage.textContent).toContain("OpenAI");
     expect(coverage.textContent).not.toContain("Tavily");
+    expect(coverage.textContent).not.toContain("Gateway");
     expect(coverage.textContent).toContain(
       "Only text chat currently uses personal keys; other capabilities will be added later.",
     );
     expect(view.getByLabelText("OpenAI: API key not configured")).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Add Gateway key" })).toBeNull();
+    expect(view.queryByRole("button", { name: "Add Nautilo Gateway key" })).toBeNull();
     fireEvent.click(view.getByRole("button", { name: "Add Anthropic key" }));
     expect(view.getByPlaceholderText("sk-ant-api03-...")).toBeTruthy();
-    expect(view.getAllByRole("link", { name: "Get a key", exact: true })[0]?.getAttribute("href"))
+    expect(view.getAllByRole("link", { name: "Get a key", exact: true })[1]?.getAttribute("href"))
       .toBe("https://platform.claude.com/settings/keys");
+  });
+
+  test("shows only a masked preview and retains saved gateway keys as management-only rows", async () => {
+    const gateway = { ...saved, provider: "gateway", id: "credential-gateway", masked: "gw-…7890" };
+    const nautiloGateway = {
+      ...saved,
+      provider: "nautilo-gateway",
+      id: "credential-nautilo-gateway",
+      masked: "ngw-…1234",
+    };
+    const view = render(<PersonalProviderKeysSection credentialApi={api({
+      listProviderCredentials: mock(async () => listResponse([gateway, nautiloGateway])),
+    })} />);
+
+    expect(await view.findByText("gw-…7890")).toBeTruthy();
+    expect(view.getByText("ngw-…1234")).toBeTruthy();
+    expect(view.getByRole("button", { name: "Replace Gateway key" })).toBeTruthy();
+    expect(view.getByRole("button", { name: "Validate Gateway key" })).toBeTruthy();
+    expect(view.getByRole("button", { name: "Delete Gateway key" })).toBeTruthy();
+    expect(view.getByRole("button", { name: "Replace Nautilo Gateway key" })).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Add Gateway key" })).toBeNull();
+    expect(view.queryByRole("button", { name: "Add Nautilo Gateway key" })).toBeNull();
+    expect(view.container.textContent).not.toContain("sk-private-value");
   });
 
   test("derives personal coverage only from usable saved account credentials", async () => {
@@ -243,9 +288,7 @@ describe("PersonalProviderKeysSection", () => {
     );
 
     fireEvent.click(xaiButton);
-    fireEvent.change(view.getByLabelText("Replacement xai API key"), {
-      target: { value: "legacy-replacement" },
-    });
+    await enterSecret(view.getByLabelText("Replacement xai API key"), "legacy-replacement");
     fireEvent.click(view.getByRole("button", { name: "Replace key" }));
     await waitFor(() => expect(view.getByRole("status").textContent?.trim()).toBe("Key saved."));
     expect(view.getByRole("status").closest(".grid")?.textContent).not.toContain(
@@ -277,7 +320,7 @@ describe("PersonalProviderKeysSection", () => {
     await view.findByRole("heading", { name: "Personal API keys" });
     fireEvent.click(view.getByRole("button", { name: "Add Anthropic key" }));
     const input = view.getByLabelText("New Anthropic API key") as HTMLInputElement;
-    fireEvent.change(input, { target: { value: "sk-private-value" } });
+    await enterSecret(input, "sk-private-value");
     fireEvent.click(view.getByRole("button", { name: "Save key" }));
 
     await waitFor(() => expect(credentialApi.putProviderCredential).toHaveBeenCalledWith(
@@ -299,9 +342,7 @@ describe("PersonalProviderKeysSection", () => {
 
     await view.findByRole("button", { name: "Add Tavily key" });
     fireEvent.click(view.getByRole("button", { name: "Add Tavily key" }));
-    fireEvent.change(view.getByLabelText("New Tavily API key"), {
-      target: { value: "tvly-personal" },
-    });
+    await enterSecret(view.getByLabelText("New Tavily API key"), "tvly-personal");
     fireEvent.click(view.getByRole("button", { name: "Save key" }));
 
     await waitFor(() => expect(credentialApi.putProviderCredential).toHaveBeenCalledWith(
@@ -324,9 +365,7 @@ describe("PersonalProviderKeysSection", () => {
 
     await view.findByText("Not validated");
     fireEvent.click(view.getByRole("button", { name: "Replace OpenAI key" }));
-    fireEvent.change(view.getByLabelText("Replacement OpenAI API key"), {
-      target: { value: "replacement-secret" },
-    });
+    await enterSecret(view.getByLabelText("Replacement OpenAI API key"), "replacement-secret");
     fireEvent.click(view.getByRole("button", { name: "Replace key" }));
     await waitFor(() => expect(credentialApi.putProviderCredential).toHaveBeenCalledWith(
       "openai",
@@ -407,9 +446,7 @@ describe("PersonalProviderKeysSection", () => {
 
     await view.findByRole("heading", { name: "Personal API keys" });
     fireEvent.click(view.getByRole("button", { name: "Add Anthropic key" }));
-    fireEvent.change(view.getByLabelText("New Anthropic API key"), {
-      target: { value: "discard-after-request" },
-    });
+    await enterSecret(view.getByLabelText("New Anthropic API key"), "discard-after-request");
     fireEvent.click(view.getByRole("button", { name: "Save key" }));
 
     expect((await view.findByRole("alert")).textContent).toContain("could not confirm whether the key was saved");
@@ -439,9 +476,7 @@ describe("PersonalProviderKeysSection", () => {
 
     await view.findByText("Not validated");
     fireEvent.click(view.getByRole("button", { name: "Replace OpenAI key" }));
-    fireEvent.change(view.getByLabelText("Replacement OpenAI API key"), {
-      target: { value: "do-not-retain" },
-    });
+    await enterSecret(view.getByLabelText("Replacement OpenAI API key"), "do-not-retain");
     fireEvent.click(view.getByRole("button", { name: "Replace key" }));
 
     expect((await view.findByRole("alert")).textContent).toContain("changed in another tab");

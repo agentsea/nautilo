@@ -113,4 +113,5 @@ export const MUST_NOT_BYPASS_TRUST_ROUTES: readonly string[] = [
   "/api/health/keys",
   "/api/health/keys/validate",
   "/api/setup/keys",
+  "/api/setup/keys/:provider",
 ];

@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import {
   canManageGroupMembership,
   groupCapabilityBundle,
-  isCommunityEnrollmentTarget,
   missingGroupMembershipCapabilities,
 } from "./group-membership-authority";
 
@@ -40,16 +39,4 @@ test("membership authority includes every Capability in the target Group bundle"
     group,
     ["manage_members", "create_rooms", "invoke_agents", "manage_billing"],
   )).toBeTrue();
-});
-
-test("recognizes canonical and custom Community enrollment targets", () => {
-  expect(isCommunityEnrollmentTarget({
-    id: "communities", type: "communities", label: "Communities", isSystem: true,
-    ownerId: null, roleSlugs: ["community"], memberCount: 0,
-  })).toBeTrue();
-  expect(isCommunityEnrollmentTarget({
-    id: "custom", type: "custom:community", label: "Community helpers", isSystem: false,
-    ownerId: "owner", roleSlugs: ["community", "billing"], memberCount: 0,
-  })).toBeTrue();
-  expect(isCommunityEnrollmentTarget(group)).toBeFalse();
 });

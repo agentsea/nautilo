@@ -67,6 +67,7 @@ const apiStub = {
     keys: [keyReport],
     summary: { total: 1, ok: 0, warnings: 0, errors: 1 },
   })),
+  deleteServerProviderKey: mock(async (): Promise<SetupKeysResult> => ({ success: true })),
   getNautiloGateway: mock(async () => ({ baseUrl: null as string | null })),
   updateNautiloGateway: mock(async (baseUrl: string) => ({ baseUrl })),
 };
@@ -80,6 +81,7 @@ beforeEach(() => {
   apiStub.getKeySummary.mockReset();
   apiStub.setupKeys.mockReset();
   apiStub.validateKeys.mockReset();
+  apiStub.deleteServerProviderKey.mockReset();
   apiStub.getNautiloGateway.mockReset();
   apiStub.updateNautiloGateway.mockReset();
   apiStub.getKeySummary.mockImplementation(async () => ({
@@ -338,7 +340,7 @@ describe("KeysSection provider recovery", () => {
     }));
     const view = await renderGatewayEditor();
     await act(async () => {
-      view.getByRole("button", { name: "Add key" }).click();
+      view.getByRole("button", { name: "Add Nautilo Gateway key" }).click();
     });
     const input = view.getByLabelText(
       `New value for ${MANAGED_GATEWAY_API_KEY_ENV_VAR}`,

@@ -397,7 +397,7 @@ describe("UsersSection", () => {
     });
   });
 
-  test("shows Community in the ladder but disables enrollment", async () => {
+  test("adds Community membership through the normal membership action", async () => {
     const view = render(<UsersSection />);
     await waitFor(() => expect(view.getByTestId("user-row-user-local")).toBeTruthy());
     fireEvent.click(view.getByTestId("user-row-user-local"));
@@ -405,9 +405,10 @@ describe("UsersSection", () => {
     await waitFor(() => {
       const communityToggle = view.getByTestId("group-toggle-communities") as HTMLButtonElement;
       expect(communityToggle.textContent).toBe("Add");
-      expect(communityToggle.disabled).toBeTrue();
-      expect(communityToggle.title).toContain("Community enrollment is unavailable");
+      expect(communityToggle.disabled).toBeFalse();
+      fireEvent.click(communityToggle);
     });
+    await waitFor(() => expect(addGroupMemberMock).toHaveBeenCalledWith("g-communities", "user-local"));
   });
 
   test("warns when a membership change applied without an audit record", async () => {

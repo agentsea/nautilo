@@ -146,9 +146,9 @@ export const roleCapabilities = pgTable(
 // `agent_id` column (added in M042D for `type='agent_ownership'`
 // back-pointer to agents) is dropped in migration 0062; permissions
 // ride with the Human, not the (Human, Agent) pair. The `type`
-// column now holds one of the six canonical ladder slugs (`owners`
+// column now holds one of the seven canonical ladder slugs (`owners`
 // | `admins` | `superusers` | `members` | `contributors` |
-// `guests`); a server has at most one row per slug, enforced by
+// `communities` | `guests`); a server has at most one row per slug, enforced by
 // `uq_groups_type`.
 //
 // D418 Wave 2 / Stack 193 — system-managed discriminator. Canonical
@@ -180,7 +180,7 @@ export const groups = pgTable(
     trustPreset: text("trust_preset").notNull().default("personal"),
     // M131: the 1:1 `role_id` column is gone. A Group now carries one or
     // more Roles via the `group_roles` junction (below). Canonical seeds
-    // still map each of the six Groups to exactly one ladder Role, so a
+    // still map each of the seven Groups to exactly one ladder Role, so a
     // fresh server behaves identically to the pre-M131 1:1 shape.
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },

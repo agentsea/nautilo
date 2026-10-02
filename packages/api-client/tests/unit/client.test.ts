@@ -418,6 +418,26 @@ describe("NautiloApiClient provider-key auth contract (D445)", () => {
     }
   });
 
+  test("validateKeys sends an exact optional provider selector", async () => {
+    const originalFetch = globalThis.fetch;
+    let requestBody: unknown;
+    const c = new NautiloApiClient("http://127.0.0.1:3001");
+    c.setToken("session-bearer-d445");
+    globalThis.fetch = (async (_url, init) => {
+      requestBody = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+      return new Response(JSON.stringify({ keys: [], summary: { hasLlm: false } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      await c.validateKeys("openai");
+      expect(requestBody).toEqual({ providerId: "openai" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("reads and updates the bounded web-research provider with session authority", async () => {
     const originalFetch = globalThis.fetch;
     const calls: Array<{ method: string; authorization: string; body: string }> = [];
@@ -463,6 +483,41 @@ describe("NautiloApiClient provider-key auth contract (D445)", () => {
       expect(headersSeen).toEqual(["Bearer session-bearer-d445"]);
       // The secret is sent to the server in the request body (write-only)...
       expect(bodiesSeen[0]).toContain("sk-ant-do-not-echo");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("deleteServerProviderKey uses the per-provider authenticated route", async () => {
+    const originalFetch = globalThis.fetch;
+    let observed: { url: string; method: string; authorization: string | null } | undefined;
+    const c = new NautiloApiClient("http://127.0.0.1:3001");
+    c.setToken("session-bearer-delete");
+    globalThis.fetch = (async (input, init) => {
+      observed = {
+        url: input instanceof Request
+          ? input.url
+          : input instanceof URL
+            ? input.href
+            : input,
+        method: init?.method ?? "GET",
+        authorization: new Headers(init?.headers).get("authorization"),
+      };
+      return new Response(JSON.stringify({ success: true, applied: 1 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      expect(await c.deleteServerProviderKey("openai/custom")).toEqual({
+        success: true,
+        applied: 1,
+      });
+      expect(observed).toEqual({
+        url: "http://127.0.0.1:3001/api/setup/keys/openai%2Fcustom",
+        method: "DELETE",
+        authorization: "Bearer session-bearer-delete",
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }

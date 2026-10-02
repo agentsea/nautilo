@@ -661,25 +661,6 @@ export async function seedTrustPersonal(
       });
     }
 
-    // Community is installed as a dormant rung. No startup reconciliation may
-    // convert or otherwise enroll a Human before the complete journey ships.
-    const [communityGroup] = await db
-      .select({ id: groups.id })
-      .from(groups)
-      .where(eq(groups.type, "communities"))
-      .limit(1);
-    if (communityGroup) {
-      const [communityMemberCount] = await db
-        .select({ total: count() })
-        .from(groupMembers)
-        .where(eq(groupMembers.groupId, communityGroup.id));
-      if ((communityMemberCount?.total ?? 0) > 0) {
-        throw new Error(
-          "Community enrollment is unavailable while the role is dormant",
-        );
-      }
-    }
-
     // 4c. Seed bootstrap claimer into the `owners` Group on a fresh
     //     server. Idempotent via the (group_id, user_id) PK on
     //     group_members. ownerId is the bootstrap user passed into

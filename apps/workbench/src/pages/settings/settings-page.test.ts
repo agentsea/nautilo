@@ -44,13 +44,14 @@ test("personal API keys have a permanent Settings destination", () => {
 });
 
 test("self-service invitations expose only bounded ladder targets", () => {
-  expect(inviteRoleOptions(false)).toEqual(["member", "contributor", "guest"]);
+  expect(inviteRoleOptions(false)).toEqual(["member", "contributor", "community", "guest"]);
   expect(inviteRoleOptions(true)).toEqual([
     "owner",
     "admin",
     "superuser",
     "member",
     "contributor",
+    "community",
     "guest",
   ]);
 });

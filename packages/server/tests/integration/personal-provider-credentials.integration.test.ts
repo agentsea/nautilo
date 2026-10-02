@@ -69,8 +69,17 @@ afterAll(async () => {
 });
 
 describe("personal credential API with migrated database", () => {
-  test("every server-registry provider can store a private key without advertising unsupported capabilities", async () => {
-    const registry = getAllKeyDefinitions();
+  test("personal providers follow the server registry without its server-owned gateways", async () => {
+    const registry = getAllKeyDefinitions().filter((provider) =>
+      provider.id !== "gateway" && provider.id !== "nautilo-gateway");
+    for (const provider of ["gateway", "nautilo-gateway"] as const) {
+      const response = await app.inject({
+        method: "PUT", url: `/api/account/provider-credentials/${provider}`,
+        headers: auth(userB), payload: { apiKey: SENTINEL },
+      });
+      expect(response.statusCode).toBe(422);
+      expect(await getPersonalProviderCredential(db, userB, provider)).toBeNull();
+    }
     for (const provider of registry) {
       const response = await app.inject({
         method: "PUT", url: `/api/account/provider-credentials/${provider.id}`,
@@ -109,6 +118,7 @@ describe("personal credential API with migrated database", () => {
     expect(created.statusCode).toBe(200);
     const createdBody = responseBody(created);
     expect(createdBody["committed"]).toBe(true);
+    expect((createdBody["credential"] as { masked: string }).masked).toBe("personal...");
     expect(created.body).not.toContain(SENTINEL);
     const row = await getPersonalProviderCredential(db, userA, "openai");
     expect(row).not.toBeNull();
@@ -122,6 +132,8 @@ describe("personal credential API with migrated database", () => {
     expect(listed.body).not.toContain(SENTINEL);
     expect(listed.body).not.toContain("ciphertextBase64");
     expect((responseBody(listed)["credentials"] as unknown[]).length).toBe(1);
+    expect((responseBody(listed)["credentials"] as { masked: string }[])[0]?.masked)
+      .toBe("personal...");
 
     const validated = await app.inject({
       method: "POST", url: "/api/account/provider-credentials/openai/validate",
@@ -129,6 +141,7 @@ describe("personal credential API with migrated database", () => {
     });
     expect(validated.statusCode).toBe(200);
     expect(validated.body).toContain('"validationStatus":"accepted"');
+    expect((responseBody(validated)["credential"] as { masked: string }).masked).toBe("personal...");
 
     const replaced = await app.inject({
       method: "PUT", url: "/api/account/provider-credentials/openai",
@@ -137,6 +150,7 @@ describe("personal credential API with migrated database", () => {
     expect(replaced.statusCode).toBe(200);
     expect(replaced.body).toContain('"validationStatus":"unverified"');
     expect(replaced.body).toContain('"revision":2');
+    expect((responseBody(replaced)["credential"] as { masked: string }).masked).toBe("replacem...");
     expect((await getPersonalProviderCredential(db, userA, "openai"))?.validatedAt).toBeNull();
 
     const deleted = await app.inject({

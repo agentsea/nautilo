@@ -1446,11 +1446,7 @@ export type CanonicalServerRoleSlug =
   | "contributor"
   | "community"
   | "guest";
-/** Community is installed but remains closed to enrollment in this phase. */
-export type EnrollableServerRoleSlug = Exclude<
-  CanonicalServerRoleSlug,
-  "community"
->;
+export type EnrollableServerRoleSlug = CanonicalServerRoleSlug;
 export interface AdminProvisionMemberInput {
   handle: string;
   displayName: string;
@@ -1920,8 +1916,7 @@ export interface CreateInviteInput {
   kind: "server";
   /**
    * Required. The canonical Group rung the invitee joins on redeem.
-   * One of the currently enrollable ladder slugs. Community is canonical but
-   * remains unavailable as an invitation target in this phase.
+   * One of the currently enrollable ladder slugs.
    */
   targetGroupRoleSlug: EnrollableServerRoleSlug;
   /**
@@ -2217,6 +2212,7 @@ export interface CredentialMetadata {
   readonly validationStatus: CredentialValidationStatus;
   readonly validatedAt: string | null;
   readonly requiresReplacement: boolean;
+  readonly masked: string | null;
 }
 
 /** Secret-free provider metadata available for personal credential enrollment. */
@@ -2253,7 +2249,7 @@ export interface DeleteProviderCredentialResponse {
   readonly committed: true;
 }
 
-const credentialMetadataSchema: z.ZodType<CredentialMetadata> = z.object({
+const credentialMetadataSchema = z.object({
   provider: z.string().min(1),
   id: z.string().min(1),
   revision: z.number().int().nonnegative(),
@@ -2262,6 +2258,8 @@ const credentialMetadataSchema: z.ZodType<CredentialMetadata> = z.object({
   validationStatus: z.enum(["unverified", "accepted", "rejected", "unavailable"]),
   validatedAt: z.string().min(1).nullable(),
   requiresReplacement: z.boolean(),
+  // Older servers do not project a preview during a rolling upgrade.
+  masked: z.string().min(1).nullable().optional().default(null),
 }).strict();
 
 const personalProviderCatalogEntrySchema: z.ZodType<PersonalProviderCatalogEntry> = z.object({
@@ -11018,10 +11016,11 @@ export class NautiloApiClient {
     });
   }
 
-  async validateKeys(): Promise<{ keys: KeyReport[]; summary: CheckSummary }> {
+  async validateKeys(providerId?: string): Promise<{ keys: KeyReport[]; summary: CheckSummary }> {
     return this.request<{ keys: KeyReport[]; summary: CheckSummary }>({
       method: "POST",
       path: "/api/health/keys/validate",
+      ...(providerId === undefined ? {} : { body: { providerId } }),
       defaultErrorPrefix: "POST /api/health/keys/validate",
     });
   }
@@ -11040,6 +11039,14 @@ export class NautiloApiClient {
       path: "/api/setup/keys",
       body: { keys, overwrite },
       defaultErrorPrefix: "POST /api/setup/keys",
+    });
+  }
+
+  async deleteServerProviderKey(providerId: string): Promise<SetupKeysResult> {
+    return this.request<SetupKeysResult>({
+      method: "DELETE",
+      path: `/api/setup/keys/${encodeURIComponent(providerId)}`,
+      defaultErrorPrefix: "DELETE /api/setup/keys/:provider",
     });
   }
 

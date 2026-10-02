@@ -190,8 +190,8 @@ function failureCodes(res: ReturnType<typeof evalOp>): string[] {
   return res.failures.map((f) => f.code);
 }
 
-describe("Community enrollment is unavailable until personal-funded chat is ready", () => {
-  test("rejects direct membership in the canonical Group", () => {
+describe("Community uses ordinary Group membership authorization", () => {
+  test("authorizes direct membership in the canonical Group when the actor controls its bundle", () => {
     const base = makeState();
     const state = makeState({
       groups: [
@@ -203,7 +203,7 @@ describe("Community enrollment is unavailable until personal-funded chat is read
           isSystem: true,
           ownerId: null,
           roleSlugs: ["community"],
-          capabilities: ["invoke_agents", "use_personal_provider_credentials"],
+          capabilities: ["control_browser"],
           members: [],
           memberCount: 0,
           approvalChallengeCount: 0,
@@ -211,10 +211,10 @@ describe("Community enrollment is unavailable until personal-funded chat is read
       ],
     });
     const result = evalOp({ kind: "membership.add", groupId: "g-communities", userId: "u-new" }, { state });
-    expect(failureCodes(result)).toContain("community_enrollment_unavailable");
+    expect(result.ok).toBe(true);
   });
 
-  test("rejects enrollment through a legacy custom Group carrying Community", () => {
+  test("authorizes enrollment through a legacy custom Group carrying Community", () => {
     const base = makeState();
     const state = makeState({
       groups: base.groups.map((group) => group.id === "g-mobile"
@@ -222,18 +222,50 @@ describe("Community enrollment is unavailable until personal-funded chat is read
         : group),
     });
     const result = evalOp({ kind: "membership.add", groupId: "g-mobile", userId: "u-new" }, { state });
-    expect(failureCodes(result)).toContain("community_enrollment_unavailable");
+    expect(result.ok).toBe(true);
   });
 
-  test("rejects applying Community to an occupied Group", () => {
+  test("still denies Community membership when the actor lacks authority over its bundle", () => {
     const base = makeState();
     const state = makeState({
+      groups: [
+        ...base.groups,
+        {
+          id: "g-communities",
+          type: "communities",
+          label: "Communities",
+          isSystem: true,
+          ownerId: null,
+          roleSlugs: ["community"],
+          capabilities: ["control_browser"],
+          members: [],
+          memberCount: 0,
+          approvalChallengeCount: 0,
+        },
+      ],
+    });
+    const result = evalOp(
+      { kind: "membership.add", groupId: "g-communities", userId: "u-new" },
+      { state, actorCaps: ["manage_members"] },
+    );
+    expect(result.ok).toBe(false);
+    expect(failureCodes(result)).toContain("insufficient_authority");
+  });
+
+  test("keeps the ordinary canonical-role guard when editing a custom Group", () => {
+    const base = makeState();
+    const state = makeState({
+      roles: [
+        ...base.roles,
+        { id: "r-community", slug: "community", label: "Community", isSystem: true, capabilities: ["control_browser"] },
+      ],
       groups: base.groups.map((group) => group.id === "g-mobile"
         ? { ...group, roleSlugs: ["mobile-dev"], members: ["u-ada"], memberCount: 1 }
         : group),
     });
     const result = evalOp({ kind: "group.set_roles", groupId: "g-mobile", roleSlugs: ["community"] }, { state });
-    expect(failureCodes(result)).toContain("community_enrollment_unavailable");
+    expect(result.ok).toBe(false);
+    expect(failureCodes(result)).toContain("protected_definition");
   });
 });
 
@@ -734,7 +766,7 @@ describe("Stack 195 W3.2 — computeFingerprint", () => {
 });
 
 describe("Stack 195 W3.2 — canonical sets", () => {
-  test("six canonical role slugs and group types", () => {
+  test("seven canonical role slugs and group types", () => {
     expect([...CANONICAL_ROLE_SLUGS]).toEqual(["owner", "admin", "superuser", "member", "contributor", "community", "guest"]);
     expect([...CANONICAL_GROUP_TYPES]).toEqual(["owners", "admins", "superusers", "members", "contributors", "communities", "guests"]);
   });

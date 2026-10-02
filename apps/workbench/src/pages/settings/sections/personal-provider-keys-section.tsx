@@ -7,6 +7,7 @@ import {
 import { apiClient } from "../../../lib/api";
 import { ProviderKeyCoverageTable } from "../../../components/provider-key-coverage-table";
 import { PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT } from "../../../lib/caller-model-availability";
+import { orderProviderKeys } from "../../../lib/provider-key-display";
 import { Button, FieldRow, SectionCard, StatusPill, TextInput } from "../ui";
 
 export { PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT };
@@ -38,6 +39,8 @@ type RowAction =
   | { kind: "error"; message: string };
 
 type ProviderRow = PersonalProviderCatalogEntry & { catalogued: boolean };
+
+const SERVER_ONLY_GATEWAY_PROVIDER_IDS = new Set(["gateway", "nautilo-gateway"]);
 
 function readableTime(value: string | null): string | null {
   if (!value) return null;
@@ -177,7 +180,8 @@ export function PersonalProviderKeysSection({
 
   const personalChatProviders = useMemo(
     () => state.kind === "ready"
-      ? state.providers
+      ? orderProviderKeys(state.providers)
+        .filter((provider) => !SERVER_ONLY_GATEWAY_PROVIDER_IDS.has(provider.id))
         .filter((provider) => provider.personalCapabilities.includes("chat"))
         .map((provider) => [provider.id, provider.name] as const)
       : [],
@@ -192,8 +196,11 @@ export function PersonalProviderKeysSection({
         .map((credential) => credential.provider)
         .filter((provider) => !cataloguedIds.has(provider)),
     );
-    return [
-      ...state.providers.map((provider) => ({ ...provider, catalogued: true })),
+    return orderProviderKeys([
+      ...state.providers
+        .filter((provider) =>
+          !SERVER_ONLY_GATEWAY_PROVIDER_IDS.has(provider.id) || byProvider.has(provider.id))
+        .map((provider) => ({ ...provider, catalogued: true })),
       ...[...uncataloguedIds].map((provider) => ({
         id: provider,
         name: provider,
@@ -201,8 +208,8 @@ export function PersonalProviderKeysSection({
         personalCapabilities: [] as const,
         catalogued: false,
       })),
-    ];
-  }, [state]);
+    ]);
+  }, [byProvider, state]);
 
   const configuredChatProviderIds = useMemo(
     () => new Set(
@@ -339,7 +346,7 @@ export function PersonalProviderKeysSection({
     <SectionCard
       id="personal-provider-keys"
       title="Personal API keys"
-      description="Add your own provider keys to use supported models for personal chat. Keys belong to your account on this Server and are never shown again after saving."
+      description="Add your own provider keys to use supported models for personal chat. Keys belong to your account on this Server; after saving, only a masked preview is shown."
     >
       {state.kind === "loading" ? (
         <p className="text-sm text-foreground-muted">Loading…</p>
@@ -421,6 +428,11 @@ export function PersonalProviderKeysSection({
                   {current ? (
                     <div className="flex flex-wrap items-center gap-2 text-xs text-foreground-muted">
                       {statusPill(current.validationStatus)}
+                      {current.masked ? (
+                        <code className="rounded bg-background-element px-1.5 py-0.5 text-[11px] text-foreground-dim">
+                          {current.masked}
+                        </code>
+                      ) : null}
                       {validatedAt ? <span>Validated {validatedAt}</span> : null}
                       {current.requiresReplacement ? (
                         <span className="font-medium text-error">Replacement required</span>

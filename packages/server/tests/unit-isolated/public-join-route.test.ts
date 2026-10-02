@@ -28,7 +28,7 @@ describe("public community join route", () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.headers["content-type"]).toContain("text/html");
-    expect(response.body).toContain("Community enrollment is unavailable");
+    expect(response.body).toContain("Invitation unavailable");
     expect(response.body).not.toContain("not-an-invite");
     await app.close();
   });

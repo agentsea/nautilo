@@ -16,8 +16,8 @@ import {
 } from "@nautilo/db";
 
 /**
- * The six canonical ladder Group types (owners > admins > superusers >
- * members > contributors > guests). D418 Wave 2 makes these
+ * The seven canonical ladder Group types (owners > admins > superusers >
+ * members > contributors > communities > guests). D418 Wave 2 makes these
  * system-managed (`is_system=true`, `owner_id=NULL`) so hard-deleting the
  * bootstrap owner cannot cascade them away.
  */
@@ -27,6 +27,7 @@ const CANONICAL_LADDER_GROUP_TYPES = [
   "superusers",
   "members",
   "contributors",
+  "communities",
   "guests",
 ] as const;
 import { setupOwnerAppFixture, seatPeerUser } from "./helpers/app-fixture";
@@ -428,7 +429,7 @@ describe("admin users hard delete (D220 Stack 66)", () => {
 
 describe("admin users hard delete — D418 system-managed Group safety", () => {
   test(
-    "hard-deleting the bootstrap owner does not cascade the six canonical ladder Groups or other canonical members",
+    "hard-deleting the bootstrap owner does not cascade the seven canonical ladder Groups or other canonical members",
     async () => {
     const fx = await setupOwnerAppFixture({ suiteName: "d418del" });
     let peerOwnerId: string | null = null;
@@ -449,14 +450,14 @@ describe("admin users hard delete — D418 system-managed Group safety", () => {
       // Snapshot the canonical state BEFORE the hard-delete: the six
       // canonical ladder Groups are system-managed (is_system=true,
       // owner_id NULL). Query by canonical type (not a blanket
-      // is_system count) so the assertion is precise against the six
+      // is_system count) so the assertion is precise against the seven
       // ladder Groups the policy protects, and immune to any orphan
       // rows left on already-migrated scratch DBs.
       const canonicalBefore = await fx.db
         .select({ type: groups.type, isSystem: groups.isSystem, ownerId: groups.ownerId })
         .from(groups)
         .where(inArray(groups.type, [...CANONICAL_LADDER_GROUP_TYPES]));
-      expect(canonicalBefore.length).toBe(6);
+      expect(canonicalBefore.length).toBe(7);
 
       // Hard-delete the bootstrap owner (allowed: peerOwner is also an owner).
       const deleted = await authedInject(fx.app, {
@@ -471,16 +472,16 @@ describe("admin users hard delete — D418 system-managed Group safety", () => {
       const ownerLeft = await fx.db.select({ id: users.id }).from(users).where(eq(users.id, fx.ownerId));
       expect(ownerLeft.length).toBe(0);
 
-      // All six canonical ladder Groups survive (no cascade) and remain
+      // All seven canonical ladder Groups survive (no cascade) and remain
       // is_system=true / owner_id NULL. Queried by canonical type so the
-      // proof is about the six ladder Groups, not a blanket is_system
+      // proof is about the seven ladder Groups, not a blanket is_system
       // count that would also sweep any orphan rows on an
       // already-migrated scratch DB.
       const canonicalAfter = await fx.db
         .select({ type: groups.type, isSystem: groups.isSystem, ownerId: groups.ownerId })
         .from(groups)
         .where(inArray(groups.type, [...CANONICAL_LADDER_GROUP_TYPES]));
-      expect(canonicalAfter.length).toBe(6);
+      expect(canonicalAfter.length).toBe(7);
       for (const g of canonicalAfter) {
         expect(g.isSystem).toBe(true);
         expect(g.ownerId).toBeNull();

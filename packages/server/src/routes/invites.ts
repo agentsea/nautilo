@@ -1051,7 +1051,7 @@ export function invitesRoutes(app: FastifyInstance, opts: InvitesRoutesOpts): vo
       // `targetGroupId` (the canonical Group the invitee joins) and
       // optionally `targetRoomId` (when the invitee should also be added
       // to a specific Room). The wire-level field is `targetGroupRoleSlug`
-      // (one of the six ladder slugs), mapped to the canonical Group via
+      // (one of the seven ladder slugs), mapped to the canonical Group via
       // SERVER_ROLE_TO_GROUP_TYPE. `targetAgentId` is no longer accepted;
       // older clients that still emit it get an error.
       const roleSlug = body["targetGroupRoleSlug"] as
