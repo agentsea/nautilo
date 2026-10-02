@@ -49,6 +49,15 @@ export class SurplusProviderRouteMismatchError extends Error {
   }
 }
 
+export class SurplusAdaptedParametersError extends Error {
+  readonly code = "surplus_adapted_parameters" as const;
+
+  constructor() {
+    super("The Surplus response changed qualified request parameters.");
+    this.name = "SurplusAdaptedParametersError";
+  }
+}
+
 export class SurplusIncompleteResponseError extends Error {
   readonly code = "surplus_incomplete_response" as const;
 
@@ -65,6 +74,7 @@ export interface SurplusFailedAttemptDisposition {
   readonly failureCode:
     | "cancelled"
     | "no_sellers_for_model"
+    | "adapted_parameters"
     | "provider_route_mismatch"
     | "truncated_response"
     | "incomplete_response"
@@ -104,6 +114,9 @@ export function assertSuccessfulSurplusProviderReceipt(
   responseStatus: number,
 ): void {
   if (responseStatus < 200 || responseStatus >= 300) return;
+  if (receipt.adaptedParameters?.trim()) {
+    throw new SurplusAdaptedParametersError();
+  }
   if (receipt.providerFamily?.trim().toLowerCase() !== route.providerPin) {
     throw new SurplusProviderRouteMismatchError();
   }
@@ -138,6 +151,8 @@ export function classifySurplusFailedAttempt(input: {
 }): SurplusFailedAttemptDisposition {
   const safe = !input.cancelled
     && input.receipt?.truncated !== true
+    && !input.receipt?.adaptedParameters?.trim()
+    && !(input.error instanceof SurplusAdaptedParametersError)
     && !(input.error instanceof SurplusProviderRouteMismatchError)
     && !(input.error instanceof SurplusIncompleteResponseError)
     && isSafeSurplusDirectFallback(input.error, input.responseStatus, input.receipt, false);
@@ -151,13 +166,15 @@ export function classifySurplusFailedAttempt(input: {
     ? "cancelled" as const
     : input.receipt?.truncated === true
       ? "truncated_response" as const
-      : input.error instanceof SurplusProviderRouteMismatchError
-        ? "provider_route_mismatch" as const
-        : input.error instanceof SurplusIncompleteResponseError
-          ? "incomplete_response" as const
-        : safe
-          ? "no_sellers_for_model" as const
-          : "outcome_unknown" as const;
+      : input.receipt?.adaptedParameters?.trim() || input.error instanceof SurplusAdaptedParametersError
+        ? "adapted_parameters" as const
+        : input.error instanceof SurplusProviderRouteMismatchError
+          ? "provider_route_mismatch" as const
+          : input.error instanceof SurplusIncompleteResponseError
+            ? "incomplete_response" as const
+            : safe
+              ? "no_sellers_for_model" as const
+              : "outcome_unknown" as const;
   return {
     outcome: input.cancelled
       ? "cancelled"

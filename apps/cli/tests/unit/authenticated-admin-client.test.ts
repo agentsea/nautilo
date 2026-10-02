@@ -15,6 +15,7 @@ import {
   type AuthenticatedWhoami,
 } from "../../src/lib/authenticated-admin-client.ts";
 import type { ResolvedServer } from "../../src/lib/profile-aware-server.ts";
+import * as profileAwareServer from "../../src/lib/profile-aware-server.ts";
 
 const transport: ResolvedServer = {
   baseUrl: "https://server.example",
@@ -478,10 +479,15 @@ describe("createAuthenticatedAdminClient", () => {
   });
 
   test("rejects a cleartext non-loopback Human endpoint", async () => {
-    await expectCode(resolveHumanServer({ serverFlag: "http://server.example" }), "target_mismatch");
-    await expectCode(resolveHumanServer({ serverFlag: "https://server.example/path" }), "target_mismatch");
-    await expectCode(resolveHumanServer({ serverFlag: "https://user:pass@server.example" }), "target_mismatch");
-    await expectCode(resolveHumanServer({ serverFlag: "https://server.example?query=1" }), "target_mismatch");
+    const activeProfileSpy = spyOn(profileAwareServer, "readActiveProfileName").mockReturnValue(undefined);
+    try {
+      await expectCode(resolveHumanServer({ serverFlag: "http://server.example" }), "target_mismatch");
+      await expectCode(resolveHumanServer({ serverFlag: "https://server.example/path" }), "target_mismatch");
+      await expectCode(resolveHumanServer({ serverFlag: "https://user:pass@server.example" }), "target_mismatch");
+      await expectCode(resolveHumanServer({ serverFlag: "https://server.example?query=1" }), "target_mismatch");
+    } finally {
+      activeProfileSpy.mockRestore();
+    }
   });
 
   test("validates an active profile identifier before resolving an override endpoint", async () => {

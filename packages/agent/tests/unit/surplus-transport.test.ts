@@ -16,6 +16,7 @@ import {
   canUseQualifiedSurplusChatRoute,
   classifySurplusFailedAttempt,
   readSurplusResponseUsage,
+  SurplusAdaptedParametersError,
   SurplusIncompleteResponseError,
   SurplusProviderRouteMismatchError,
 } from "../../src/providers/surplus-attempt";
@@ -74,6 +75,58 @@ describe("Surplus wire boundary", () => {
     expect(observed("https://other.example/v1/chat/completions")).rejects.toThrow("outside the qualified chat endpoint");
     expect(observed("https://api.surplusintelligence.ai/v1/images/generations")).rejects.toThrow("outside the qualified chat endpoint");
     expect(seen).toHaveLength(1);
+  });
+
+  test("cancels an unread response while preserving a receipt rejection", async () => {
+    const rejection = new Error("receipt rejected");
+    let fetchCalls = 0;
+    let cancelCalls = 0;
+    let bodyReads = 0;
+    const response = {
+      status: 200,
+      headers: new Headers({ "x-request-id": "request-rejected" }),
+      body: {
+        cancel: async () => {
+          cancelCalls += 1;
+          throw new Error("cancel failed");
+        },
+        getReader: () => {
+          bodyReads += 1;
+          throw new Error("body must remain unread");
+        },
+      },
+      text: async () => {
+        bodyReads += 1;
+        return "must remain unread";
+      },
+      json: async () => {
+        bodyReads += 1;
+        return { content: "must remain unread" };
+      },
+      arrayBuffer: async () => {
+        bodyReads += 1;
+        return new ArrayBuffer(0);
+      },
+    } as unknown as Response;
+    const observed = createSurplusObservedFetch(
+      () => { throw rejection; },
+      (async () => {
+        fetchCalls += 1;
+        return response;
+      }) as unknown as typeof fetch,
+    );
+
+    let caught: unknown;
+    try {
+      await observed("https://api.surplusintelligence.ai/v1/chat/completions");
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(rejection);
+    expect(fetchCalls).toBe(1);
+    expect(cancelCalls).toBe(1);
+    expect(bodyReads).toBe(0);
   });
 
   test("same-model direct fallback needs an unserved zero-cost refusal", () => {
@@ -208,9 +261,60 @@ describe("Surplus wire boundary", () => {
     )).toThrow(SurplusProviderRouteMismatchError);
     expect(() => assertSuccessfulSurplusProviderReceipt(
       VENICE_ROUTE,
+      {
+        providerFamily: "Venice",
+        adaptedParameters: "max_completion_tokens",
+        truncated: false,
+      },
+      200,
+    )).toThrow(SurplusAdaptedParametersError);
+    expect(() => assertSuccessfulSurplusProviderReceipt(
+      VENICE_ROUTE,
       { truncated: false },
       404,
     )).not.toThrow();
+  });
+
+  test("rejects a successful adapted response before the SDK can assemble its output", async () => {
+    const chunk = {
+      id: "chatcmpl-surplus-adapted",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "gpt-5.5",
+      choices: [{ index: 0, delta: { role: "assistant", content: "must not escape" }, finish_reason: "stop" }],
+    };
+    let observedReceipt: Parameters<typeof assertSuccessfulSurplusProviderReceipt>[1] | undefined;
+    const model = createSurplusChatModel({
+      route: VENICE_ROUTE,
+      apiKey: "test-key",
+      maxOutputTokens: 100,
+      onResponse: (receipt, status) => {
+        observedReceipt = receipt;
+        assertSuccessfulSurplusProviderReceipt(VENICE_ROUTE, receipt, status);
+      },
+      fetchImpl: (async () => new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-request-id": "request-adapted",
+          "x-si-provider-family": "Venice",
+          "x-si-adapted-params": "max_completion_tokens",
+        },
+      })) as unknown as typeof fetch,
+    });
+
+    let invokeError: unknown;
+    try {
+      await model.invoke([new HumanMessage("Reply")]);
+    } catch (error) {
+      invokeError = error;
+    }
+
+    expect(invokeError).toBeInstanceOf(Error);
+    expect(observedReceipt).toMatchObject({
+      requestId: "request-adapted",
+      adaptedParameters: "max_completion_tokens",
+    });
   });
 
   test("deadline-truncated responses cannot become successful answers", () => {
@@ -385,6 +489,61 @@ describe("Surplus wire boundary", () => {
       actualCostUsd: 0,
       failureCode: "no_sellers_for_model",
       directFallback: true,
+    });
+  });
+
+  test("adapted responses preserve charge state and can never replay", () => {
+    expect(classifySurplusFailedAttempt({
+      error: new SurplusAdaptedParametersError(),
+      cancelled: false,
+      responseStatus: 200,
+      receipt: {
+        requestId: "request-adapted-cost",
+        providerFamily: "venice",
+        adaptedParameters: "max_completion_tokens",
+        buyerCostMicro: 268,
+        truncated: false,
+      },
+    })).toEqual({
+      outcome: "unknown",
+      costState: "actual",
+      actualCostUsd: 0.000268,
+      failureCode: "adapted_parameters",
+      directFallback: false,
+    });
+    expect(classifySurplusFailedAttempt({
+      error: new SurplusAdaptedParametersError(),
+      cancelled: false,
+      responseStatus: 200,
+      receipt: {
+        requestId: "request-adapted-pending",
+        providerFamily: "venice",
+        adaptedParameters: "max_completion_tokens",
+        truncated: false,
+      },
+    })).toEqual({
+      outcome: "unknown",
+      costState: "pending",
+      failureCode: "adapted_parameters",
+      directFallback: false,
+    });
+    expect(classifySurplusFailedAttempt({
+      error: { code: "no_sellers_for_model" },
+      cancelled: false,
+      responseStatus: 404,
+      receipt: {
+        requestId: "request-adapted-contradictory",
+        marketplaceAttempts: 0,
+        adaptedParameters: "max_completion_tokens",
+        buyerCostMicro: 0,
+        truncated: false,
+      },
+    })).toEqual({
+      outcome: "unknown",
+      costState: "actual",
+      actualCostUsd: 0,
+      failureCode: "adapted_parameters",
+      directFallback: false,
     });
   });
 });

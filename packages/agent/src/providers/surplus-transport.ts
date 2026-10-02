@@ -85,7 +85,18 @@ export function createSurplusObservedFetch(
       throw new Error("Surplus request target is outside the qualified chat endpoint.");
     }
     const response = await fetchImpl(input, { ...init, redirect: "error" });
-    await onResponse(readSurplusWireReceipt(response.headers), response.status);
+    try {
+      await onResponse(readSurplusWireReceipt(response.headers), response.status);
+    } catch (error) {
+      // Stop an unread stream when its receipt fails validation. Cancellation
+      // cannot prove that the upstream stopped or that the request was free.
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Preserve the receipt failure even if the connection already closed.
+      }
+      throw error;
+    }
     return response;
   }) as typeof fetch;
 }
