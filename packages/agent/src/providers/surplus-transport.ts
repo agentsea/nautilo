@@ -1,7 +1,10 @@
 import { ChatOpenAI } from "@langchain/openai";
 import type { ChatModel } from "./types";
 import type { QualifiedSurplusChatRoute } from "./surplus-route";
-import { wrapVeniceModelForToolSchemas } from "./venice-compat";
+import {
+  VeniceChatOpenAICompletions,
+  wrapVeniceModelForToolSchemas,
+} from "./venice-compat";
 
 const SURPLUS_API_ROOT = "https://api.surplusintelligence.ai/v1";
 const SURPLUS_CHAT_PATH = "/v1/chat/completions";
@@ -119,20 +122,32 @@ export function createSurplusChatModel(input: CreateSurplusChatModelInput): Chat
   if (input.maxOutputTokens > input.route.maxOutputTokens) {
     throw new Error("Surplus output budget exceeds the qualified route limit.");
   }
-  const model = new ChatOpenAI({
+  const isVenice = input.route.providerPin === "venice";
+  const base = {
     model: input.route.surplusModelId,
     apiKey,
     maxTokens: input.maxOutputTokens,
     maxRetries: 0,
     streaming: true,
     streamUsage: true,
-    modelKwargs: { provider: input.route.providerPin },
+    modelKwargs: {
+      provider: input.route.providerPin,
+      ...(isVenice
+        ? { venice_parameters: { include_venice_system_prompt: false } }
+        : {}),
+    },
     configuration: {
       baseURL: SURPLUS_API_ROOT,
       fetch: createSurplusObservedFetch(input.onResponse, input.fetchImpl),
     },
+  };
+  const model = new ChatOpenAI({
+    ...base,
+    ...(isVenice
+      ? { completions: new VeniceChatOpenAICompletions(base) }
+      : {}),
   }) as unknown as ChatModel;
-  return input.route.providerPin === "venice"
+  return isVenice
     ? wrapVeniceModelForToolSchemas(model)
     : model;
 }

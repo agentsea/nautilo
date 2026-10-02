@@ -165,28 +165,40 @@ describe("Surplus wire boundary", () => {
     expect(tools?.[0]?.function?.parameters).not.toHaveProperty("anyOf");
   });
 
-  test("streamed SDK invoke assembles text and retains Surplus terminal usage", async () => {
+  test("Venice SDK request preserves safety options and assembles a roleless streamed answer", async () => {
     const chunks = [
       {
         id: "chatcmpl-surplus-test",
         object: "chat.completion.chunk",
         created: 1,
         model: "gpt-5.5",
-        choices: [{ index: 0, delta: { role: "assistant", content: "O" }, finish_reason: null }],
+        choices: [{ index: 0, delta: { content: "O" }, finish_reason: null }],
       },
       {
         id: "chatcmpl-surplus-test",
         object: "chat.completion.chunk",
         created: 1,
         model: "gpt-5.5",
-        choices: [{ index: 0, delta: { content: "K" }, finish_reason: null }],
+        choices: [{
+          index: 0,
+          delta: {
+            content: "K",
+            tool_calls: [{
+              index: 0,
+              id: "call-status",
+              type: "function",
+              function: { name: "status", arguments: "{}" },
+            }],
+          },
+          finish_reason: null,
+        }],
       },
       {
         id: "chatcmpl-surplus-test",
         object: "chat.completion.chunk",
         created: 1,
         model: "gpt-5.5",
-        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
       },
       {
         id: "chatcmpl-surplus-test",
@@ -229,10 +241,21 @@ describe("Surplus wire boundary", () => {
 
     const response = await model.invoke([new HumanMessage("Reply OK")]) as AIMessage;
 
+    expect(AIMessage.isInstance(response)).toBe(true);
     expect(response.content).toBe("OK");
-    expect(response.response_metadata["finish_reason"]).toBe("stop");
+    expect(response.tool_calls).toEqual([{
+      id: "call-status",
+      name: "status",
+      args: {},
+      type: "tool_call",
+    }]);
+    expect(response.response_metadata["finish_reason"]).toBe("tool_calls");
     expect(requestBody?.["stream"]).toBe(true);
     expect(requestBody?.["stream_options"]).toEqual({ include_usage: true });
+    expect(requestBody?.["max_completion_tokens"]).toBe(100);
+    expect(requestBody?.["venice_parameters"]).toEqual({
+      include_venice_system_prompt: false,
+    });
     expect(receipts).toEqual(["request-stream"]);
     expect(readSurplusResponseUsage(response)).toEqual({
       inputTokens: 11,
@@ -241,6 +264,46 @@ describe("Surplus wire boundary", () => {
       reasoningTokens: 10,
       buyerCostMicro: 283,
     });
+  });
+
+  test("non-Venice SDK requests omit Venice-only options", async () => {
+    const openAIRoute = {
+      ...VENICE_ROUTE,
+      catalogModelId: "openai:gpt-5.5",
+      providerPin: "openai" as const,
+    };
+    let requestBody: Record<string, unknown> | undefined;
+    const model = createSurplusChatModel({
+      route: openAIRoute,
+      apiKey: "test-key",
+      maxOutputTokens: 100,
+      onResponse: () => {},
+      fetchImpl: (async (request: string | URL | Request, init?: RequestInit) => {
+        const rawBody = init?.body ?? (request instanceof Request ? await request.clone().text() : undefined);
+        requestBody = typeof rawBody === "string" ? JSON.parse(rawBody) as Record<string, unknown> : undefined;
+        const chunk = {
+          id: "chatcmpl-surplus-openai",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "gpt-5.5",
+          choices: [{ index: 0, delta: { role: "assistant", content: "OK" }, finish_reason: "stop" }],
+        };
+        return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "x-request-id": "request-openai",
+            "x-si-provider-family": "openai",
+          },
+        });
+      }) as typeof fetch,
+    });
+
+    const response = await model.invoke([new HumanMessage("Reply OK")]) as AIMessage;
+
+    expect(response.content).toBe("OK");
+    expect(requestBody?.["provider"]).toBe("openai");
+    expect(requestBody).not.toHaveProperty("venice_parameters");
   });
 
   test("successful receipts must confirm the exact qualified provider family", () => {
