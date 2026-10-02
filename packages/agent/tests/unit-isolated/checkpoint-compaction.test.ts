@@ -31,6 +31,7 @@ import {
   buildCompactionQueries,
   runCompaction,
   serializeCompaction,
+  serializeCheckpointPersistence,
 } from "../../src/checkpoints/checkpoint-compaction";
 import type pg from "pg";
 import { __resetPoolShutdownRegistryForTests } from "@nautilo/db";
@@ -66,6 +67,7 @@ let putShouldThrowTransient: boolean;
 let putErrors: Array<Error | undefined>;
 let putReturnConfig: PutConfig | undefined;
 let putCallCount: number;
+let recordedPutArgs: unknown[][];
 let putWritesErrors: Array<Error | undefined>;
 let putWritesCallCount: number;
 let deleteThreadCalls: string[];
@@ -101,6 +103,7 @@ beforeAll(() => {
       this.setup = mock(async () => {});
       this.put = mock(async (..._args: unknown[]) => {
         putCallCount += 1;
+        recordedPutArgs.push(_args);
         const scriptedError = putErrors.shift();
         if (scriptedError !== undefined) throw scriptedError;
         if (putShouldThrowNonTransient) {
@@ -133,7 +136,7 @@ beforeAll(async () => {
   process.env["DB_DIRECT_CONNECTION"] =
     "postgresql://postgres:postgres@localhost:55432/nautilo?sslmode=require";
   process.env["DB_CONNECTION_STRING"] =
-    "postgresql://nautilo:app-pw@db.localtest.me:5432/nautilo";
+    "postgresql://nautilo:app-pw@localhost:5432/nautilo";
   process.env["DB_AGENT_DIRECT_CONNECTION"] =
     "postgresql://nautilo_agent:agent-pw@localhost:55432/nautilo";
   checkpointSaverModule = await import("../../src/checkpoints/checkpoint-saver");
@@ -159,6 +162,7 @@ beforeEach(() => {
   putErrors = [];
   putReturnConfig = undefined;
   putCallCount = 0;
+  recordedPutArgs = [];
   putWritesErrors = [];
   putWritesCallCount = 0;
   deleteThreadCalls = [];
@@ -298,6 +302,38 @@ describe("runCompaction — best-effort transaction", () => {
 });
 
 describe("serializeCompaction — per-thread serialization", () => {
+  it("queues a write behind cleanup and preserves write failures", async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const cleanup = serializeCompaction("shared-coordinate", async () => {
+      order.push("cleanup-start");
+      await gate;
+      order.push("cleanup-end");
+    });
+    const write = serializeCheckpointPersistence("shared-coordinate", async () => {
+      order.push("write");
+      return "saved";
+    });
+    await Promise.resolve();
+    expect(order).toEqual(["cleanup-start"]);
+    release();
+    await cleanup;
+    expect(await write).toBe("saved");
+    expect(order).toEqual(["cleanup-start", "cleanup-end", "write"]);
+    let failure: unknown;
+    try {
+      await serializeCheckpointPersistence("shared-coordinate", async () => {
+        throw new Error("write failed");
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("write failed");
+    expect(await serializeCheckpointPersistence("shared-coordinate", async () => "retry")).toBe("retry");
+  });
+
   it("serializes runs with the same key (no overlap)", async () => {
     let active = 0;
     let maxActive = 0;
@@ -353,6 +389,26 @@ describe("serializeCompaction — per-thread serialization", () => {
 });
 
 describe("triggerCompaction via wrapped put — integration", () => {
+  it("repersists unchanged Human and tool context from an in-flight snapshot", async () => {
+    const saver = checkpointSaverModule.createCheckpointSaver();
+    const checkpoint = {
+      v: 4, id: "cp-resumed", ts: "",
+      channel_values: {
+        causalHumanUserId: "example-human", agentId: "example-agent",
+        autoApprove: true, messages: ["resumed tool call"],
+      },
+      channel_versions: { causalHumanUserId: 7, agentId: 7, autoApprove: 7, messages: 9 },
+      versions_seen: {},
+    };
+    await saver.put(
+      { configurable: { thread_id: "room:example", checkpoint_ns: "" } },
+      checkpoint as never, {} as never, { messages: 9 },
+    );
+    // A competing graph can compact version 7 while this snapshot is live.
+    // Passing only messages would commit a checkpoint with missing identity.
+    expect(recordedPutArgs[0]?.[3]).toEqual(checkpoint.channel_versions);
+  });
+
   it("fires compaction after a successful put with the just-put checkpoint id", async () => {
     putReturnConfig = {
       configurable: { thread_id: "t1", checkpoint_ns: "", checkpoint_id: "cp-latest" },

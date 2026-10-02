@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Approval replies retain the initiating Human and tool context when another
+  message arrives during an interrupted turn. Checkpoint cleanup preserves the
+  complete resumable snapshot, and approval prompts no longer describe a
+  required review as already auto-approved.
+
 - Voice auditions preserve their complete playable slate and sample text in live
   chat and reopened history, including voices with large language/model catalogs.
 

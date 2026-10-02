@@ -92,43 +92,37 @@ export async function runCompaction(
   }
 }
 
-/**
- * Per-(thread_id, checkpoint_ns) serialization for compaction within this
- * process. Compaction reads the surviving checkpoints and deletes older
- * rows; overlapping compactions for the same thread/ns could otherwise race
- * (one deleting a row the other still expects). The lock is keyed with a NUL
- * separator so a thread id containing `|` cannot collide with a namespace.
- */
+/** Writes and cleanup share one queue per thread and checkpoint namespace. */
 const compactionLocks = new Map<string, Promise<void>>();
 
 export function compactionLockKey(threadId: string, checkpointNs: string): string {
   return `${threadId}\u0000${checkpointNs}`;
 }
 
-/**
- * Serialize a compaction run per thread/namespace. `run` is expected to
- * swallow its own errors (see `runCompaction`); this serializer additionally
- * guards the chain so a rejected predecessor still lets the next run proceed.
- * Exported for concurrency testing.
- */
+/** Preserve write results and failures while keeping cleanup on the same queue. */
+export function serializeCheckpointPersistence<T>(
+  key: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const prev = compactionLocks.get(key) ?? Promise.resolve();
+  const result = prev.then(run, run);
+  const settled = result.then(() => undefined, () => undefined);
+  compactionLocks.set(key, settled);
+  void settled.finally(() => {
+    if (compactionLocks.get(key) === settled) compactionLocks.delete(key);
+  });
+  return result;
+}
+
+/** Best-effort cleanup must not reject or block subsequent writes after failure. */
 export function serializeCompaction(
   key: string,
   run: () => Promise<void>,
 ): Promise<void> {
-  const prev = compactionLocks.get(key) ?? Promise.resolve();
-  // `run` is expected to swallow its own errors (see `runCompaction`); the
-  // trailing `.then(_, _)` guarantees the chain — and the cleanup `finally` —
-  // never surfaces an unhandled rejection even if a caller passes a rejecting
-  // run. Compaction is best-effort; it must never reject.
-  const next = prev.then(run, run).then(
+  return serializeCheckpointPersistence(key, run).then(
     () => undefined,
     () => undefined,
   );
-  compactionLocks.set(key, next);
-  void next.finally(() => {
-    if (compactionLocks.get(key) === next) compactionLocks.delete(key);
-  });
-  return next;
 }
 
 /** Reset the in-process compaction lock map (tests only). */
