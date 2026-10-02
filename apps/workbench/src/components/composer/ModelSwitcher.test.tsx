@@ -10,7 +10,7 @@ let container: HTMLDivElement;
 let root: Root;
 const priorGlobals: Record<string, unknown> = {};
 
-const getModels = mock(async () => [
+const getCallerModels = mock(async () => [
   {
     id: "openai:gpt-next",
     displayName: "GPT Next",
@@ -95,8 +95,7 @@ const getModels = mock(async () => [
 ]);
 let retainedModelRows: AssistantModelSummary[] = [];
 const resolveRetainedModels = mock(async (ids: readonly string[]) => {
-  const ordinary = (await getModels()).filter((model) => ids.includes(model.id));
-  return [...ordinary, ...retainedModelRows.filter((model) => ids.includes(model.id))];
+  return retainedModelRows.filter((model) => ids.includes(model.id));
 });
 const updateProfile = mock(async () => {});
 let persistedRoomSelection: {
@@ -138,7 +137,7 @@ beforeAll(async () => {
 
   mock.module("../../lib/api", () => ({
     apiClient: {
-      getModels,
+      getCallerModels,
       resolveRetainedModels,
       updateProfile,
       getRoomModelControlSelection,
@@ -152,7 +151,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  getModels.mockClear();
+  getCallerModels.mockClear();
   resolveRetainedModels.mockClear();
   updateProfile.mockClear();
   getRoomModelControlSelection.mockClear();
@@ -247,8 +246,24 @@ describe("ModelSwitcher", () => {
 
     searchModels("accounts/fireworks/models/kimi");
     expect(optionNames()).toEqual(["Kimi K3"]);
-    expect(getModels).toHaveBeenCalledTimes(2);
-    expect(resolveRetainedModels).toHaveBeenCalledTimes(1);
+    expect(getCallerModels).toHaveBeenCalledTimes(1);
+    expect(resolveRetainedModels).not.toHaveBeenCalled();
+  });
+
+  test("refreshes caller eligibility after personal provider credentials change", async () => {
+    renderSwitcher();
+    await act(flush);
+    const callsBeforeRefresh = getCallerModels.mock.calls.length;
+    expect(callsBeforeRefresh).toBeGreaterThan(0);
+
+    act(() => {
+      window.dispatchEvent(
+        new happyWindow.Event("nautilo:personal-provider-credentials-changed"),
+      );
+    });
+    await act(flush);
+
+    expect(getCallerModels.mock.calls.length).toBeGreaterThan(callsBeforeRefresh);
   });
 
   test("shows no-match copy and resets the query after closing", async () => {

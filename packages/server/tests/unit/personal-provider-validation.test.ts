@@ -113,10 +113,22 @@ describe("validatePersonalProviderCredential", () => {
       return new Response(null, { status: 200 });
     }) as unknown as typeof fetch;
 
-    expect(await validatePersonalProviderCredential("fireworks", "private-fireworks-key"))
-      .toEqual({ status: "unverified" });
-    expect(await validatePersonalProviderCredential("together", "private-together-key"))
-      .toEqual({ status: "unverified" });
+    const providers = [
+      "typesafe",
+      "nautilo-gateway",
+      "gateway",
+      "fireworks",
+      "together",
+      "elevenlabs",
+      "groq",
+      "tavily",
+      "browser-use",
+      "cloudconvert",
+    ] as const satisfies readonly PersonalProviderId[];
+    for (const provider of providers) {
+      expect(await validatePersonalProviderCredential(provider, `private-${provider}-key`))
+        .toEqual({ status: "unverified" });
+    }
     expect(fetchCalls).toBe(0);
   });
 

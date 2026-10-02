@@ -60,11 +60,15 @@ describe("ManageAccessDrawer", () => {
     expect(view.getByText(/Requires the target Group bundle: control_home/)).toBeTruthy();
   });
 
-  test("shows Community but disables adding a non-member", () => {
+  test("reviews Community membership with the same authority checks as other Groups", () => {
     reapplyHappyDomGlobals();
-    const view = render(<ManageAccessDrawer access={access} catalogue={catalogue} viewerCapabilities={["manage_members"]} canCreateSharedAccessExisting={false} canCreateSharedAccessNew={false} onClose={() => undefined} onReview={() => undefined} onCreateSharedAccess={() => undefined} />);
+    const review = mock(() => undefined);
+    const view = render(<ManageAccessDrawer access={access} catalogue={catalogue} viewerCapabilities={["manage_members"]} canCreateSharedAccessExisting={false} canCreateSharedAccessNew={false} onClose={() => undefined} onReview={review} onCreateSharedAccess={() => undefined} />);
     const communities = view.getByText("Communities").closest("label");
-    expect((communities?.querySelector("input") as HTMLInputElement).disabled).toBeTrue();
-    expect(view.getByText(/Community enrollment is unavailable/)).toBeTruthy();
+    const input = communities?.querySelector("input") as HTMLInputElement;
+    expect(input.disabled).toBeFalse();
+    fireEvent.click(input);
+    fireEvent.click(view.getByRole("button", { name: "Review change" }));
+    expect(review).toHaveBeenCalledWith({ kind: "membership.add", groupId: "communities", userId: "ada" });
   });
 });

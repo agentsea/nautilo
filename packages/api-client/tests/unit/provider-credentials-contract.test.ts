@@ -14,7 +14,23 @@ const credential = {
   validationStatus: "accepted" as const,
   validatedAt: "2026-09-28T10:01:00.000Z",
   requiresReplacement: false,
+  masked: "sk-proj-...",
 };
+const providers = [{
+  id: "openai",
+  name: "OpenAI",
+  purpose: "GPT models + embeddings",
+  signupUrl: "https://platform.openai.com/api-keys",
+  formatHint: "sk-proj-...",
+  personalCapabilities: ["chat" as const],
+}, {
+  id: "tavily",
+  name: "Tavily",
+  purpose: "Web search — enables internet access",
+  signupUrl: "https://app.tavily.com/home",
+  formatHint: "tvly-...",
+  personalCapabilities: [],
+}];
 
 function requestUrl(input: Parameters<typeof fetch>[0]): string {
   return typeof input === "string" ? input : (input as URL).toString();
@@ -54,7 +70,7 @@ describe("personal provider credentials client contract", () => {
         authorization: new Headers(init?.headers).get("authorization"),
         body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
       });
-      if (method === "GET") return json(200, { credentials: [credential] });
+      if (method === "GET") return json(200, { credentials: [credential], providers });
       if (method === "PUT") return json(200, { credential, committed: true });
       if (url.endsWith("/validate")) {
         return json(200, { credential, committed: false });
@@ -65,7 +81,7 @@ describe("personal provider credentials client contract", () => {
     const client = new NautiloApiClient(BASE);
     client.setToken("human-session");
 
-    expect(await client.listProviderCredentials()).toEqual({ credentials: [credential] });
+    expect(await client.listProviderCredentials()).toEqual({ credentials: [credential], providers });
     expect(await client.putProviderCredential("openai/custom", {
       apiKey: "sk-request-only",
       expectedRevision: 1,
@@ -105,9 +121,43 @@ describe("personal provider credentials client contract", () => {
     ]);
   });
 
+  test("defaults a missing provider catalogue during rolling server upgrades", async () => {
+    globalThis.fetch = (async () => json(200, {
+      credentials: [credential],
+    })) as unknown as typeof fetch;
+
+    const client = new NautiloApiClient(BASE);
+    expect(await client.listProviderCredentials()).toEqual({
+      credentials: [credential],
+      providers: [],
+    });
+  });
+
+  test("defaults a missing masked preview from an older server to null", async () => {
+    const { masked: _masked, ...olderCredential } = credential;
+    globalThis.fetch = (async () => json(200, {
+      credentials: [olderCredential],
+      providers,
+    })) as unknown as typeof fetch;
+
+    const client = new NautiloApiClient(BASE);
+    expect((await client.listProviderCredentials()).credentials[0]?.masked).toBeNull();
+  });
+
   test("rejects a success response that contains secret material", async () => {
     globalThis.fetch = (async () => json(200, {
       credentials: [{ ...credential, apiKey: "must-never-cross-the-boundary" }],
+      providers,
+    })) as unknown as typeof fetch;
+
+    const client = new NautiloApiClient(BASE);
+    expect(client.listProviderCredentials()).rejects.toThrow();
+  });
+
+  test("rejects provider catalogue fields outside the sanitized contract", async () => {
+    globalThis.fetch = (async () => json(200, {
+      credentials: [],
+      providers: [{ ...providers[0], envVar: "OPENAI_API_KEY" }],
     })) as unknown as typeof fetch;
 
     const client = new NautiloApiClient(BASE);

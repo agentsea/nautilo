@@ -10,11 +10,13 @@ import { AboutSection } from "./sections/about-section";
 import { YourAccessSection } from "./sections/your-access-section";
 import { NotificationsSection } from "./sections/notifications-section";
 import { ThisMacSection } from "./sections/this-mac-section";
+import { PersonalProviderKeysSection } from "./sections/personal-provider-keys-section";
 import type { SectionId } from "./ui";
 import type { UiTargetId } from "@nautilo/types";
 import { apiClient } from "../../lib/api";
 import { isDesktop } from "../../lib/desktop";
 import { useCan } from "../../hooks/use-can";
+import { useAuth } from "../../hooks/use-auth";
 
 /**
  * Settings nav items — all in-page scroll anchors. Connections is NOT here:
@@ -25,6 +27,7 @@ import { useCan } from "../../hooks/use-can";
  */
 export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SectionId; label: string; catalogueTarget: UiTargetId }> = [
   { id: "profile", label: "Profile", catalogueTarget: "settings.profile" },
+  { id: "personal-provider-keys", label: "Personal API keys", catalogueTarget: "settings.personal_api_keys" },
   { id: "my-agents", label: "My Agents", catalogueTarget: "settings.my_agents" },
   { id: "this-mac", label: "This Mac", catalogueTarget: "settings.this_mac" },
   { id: "notifications", label: "Notifications", catalogueTarget: "settings.notifications" },
@@ -87,8 +90,11 @@ export function visibleSettingsSections({
  * a failure in one doesn't block the others.
  */
 export function SettingsPage() {
+  const auth = useAuth();
   const can = useCan();
   const canCreateInvites = can("create_invites");
+  const canManageServerProviderCredentials =
+    can("manage_connection_providers") || can("manage_server_settings");
   const [managedByCloud, setManagedByCloud] = useState<boolean | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -211,6 +217,10 @@ export function SettingsPage() {
           <section id="profile" data-testid="settings-profile-panel" className="flex flex-col gap-6">
             <IdentitySection />
           </section>
+          <PersonalProviderKeysSection
+            key={auth.viewerGeneration}
+            showServerAdminLink={canManageServerProviderCredentials && managedByCloud === false}
+          />
           <MyAgentsSection showProviderKeyStatus={managedByCloud === false} />
           <ThisMacSection />
           <NotificationsSection />

@@ -110,14 +110,15 @@ describe("MembersSection invite presentation", () => {
     expect(view.getByRole("button", { name: "New invite" })).toBeTruthy();
   });
 
-  test("shows Community as unavailable for enrollment", async () => {
+  test("creates a Community invitation through the normal role selector", async () => {
     const view = render(<InvitePeopleSection />);
     fireEvent.click(await view.findByRole("button", { name: "New invite" }));
 
-    const option = view.getByRole("option", {
-      name: "Community — unavailable until personal-key chat launches",
-    }) as HTMLOptionElement;
-    expect(option.disabled).toBeTrue();
+    fireEvent.change(view.getByLabelText("Server Group role"), { target: { value: "community" } });
+    fireEvent.click(view.getByRole("button", { name: "Create invite" }));
+    await waitFor(() => expect(createInvite).toHaveBeenCalledWith(expect.objectContaining({
+      targetGroupRoleSlug: "community",
+    })));
   });
 
   test("shows one create response's exact code and server-issued URL", async () => {

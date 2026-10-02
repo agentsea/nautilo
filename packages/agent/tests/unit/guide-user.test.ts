@@ -291,6 +291,12 @@ test("Memory health discovery resolves the operational card without replacing re
   expect(discoverGuideUserTargets("remembered information")[0]?.target).toBe("memory");
 });
 
+test("personal API key discovery opens the permanent account Settings destination", () => {
+  for (const query of ["personal API keys", "my API keys", "bring your own key", "BYOK"]) {
+    expect(discoverGuideUserTargets(query)[0]?.target).toBe("settings.personal_api_keys");
+  }
+});
+
 test("community moderation and joining review discover the installed admin destination", () => {
   for (const query of ["ban member", "pause joins", "joining requests", "enrollment approval"]) {
     expect(discoverGuideUserTargets(query)[0]?.target).toBe("admin.moderation");

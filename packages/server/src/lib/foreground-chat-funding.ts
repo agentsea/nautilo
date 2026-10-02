@@ -8,6 +8,7 @@ import {
 } from "@nautilo/trust";
 import {
   ModelFundingError,
+  PERSONAL_CHAT_PROVIDER_IDS,
   resolveModelFunding,
   withAdmittedPersonalProviderKey,
   type ModelFundingDecision,
@@ -70,7 +71,8 @@ export async function callerHasConfiguredPersonalFunding(humanUserId: string): P
   const db = getServerDirectDb();
   const policy = await getServerProviderPolicy(db);
   if (!policy.allowPersonalProviderKeys) return false;
-  return (await listPersonalProviderCredentials(db, humanUserId)).length > 0;
+  return (await listPersonalProviderCredentials(db, humanUserId)).some((credential) =>
+    (PERSONAL_CHAT_PROVIDER_IDS as readonly string[]).includes(credential.provider));
 }
 
 export async function callerMayUsePersonalChat(humanUserId: string): Promise<boolean> {

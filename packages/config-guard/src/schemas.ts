@@ -18,7 +18,8 @@ export const TransactionInputSchema = z.object({
 
 export const CheckInputSchema = z.object({
   validate: z.boolean().optional(),
-});
+  providerId: z.string().min(1).optional(),
+}).strict();
 
 function formatZodError(error: z.ZodError): string {
   return error.issues.map((i) => `${i.path.join(".") || "root"}: ${i.message}`).join("; ");

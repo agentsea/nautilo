@@ -55,6 +55,7 @@ export function ServerProviderPolicyCard() {
       });
       setPersisted(policy);
       setDraftEnabled(policy.allowPersonalProviderKeys);
+      window.dispatchEvent(new Event("nautilo:personal-provider-policy-changed"));
       setSaveSuccess(
         policy.allowPersonalProviderKeys
           ? "Personal provider keys are allowed by server policy."
@@ -81,7 +82,9 @@ export function ServerProviderPolicyCard() {
           <h3 className="text-sm font-semibold text-foreground">Personal provider keys</h3>
           <p className="mt-1 text-xs text-foreground-muted">
             Controls whether eligible members may use their own provider credentials.
-            Personal-key setup and chat are not available in this release.
+            When enabled, eligible members can add personal keys in Settings and
+            use supported private text chat. Other paid work is being added in
+            later stages.
           </p>
           {persisted !== null ? (
             <p className="mt-2 text-xs font-medium text-foreground" data-testid="server-provider-policy-persisted">

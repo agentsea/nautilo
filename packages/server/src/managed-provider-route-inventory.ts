@@ -8,6 +8,7 @@ export const MANAGED_PROVIDER_CREDENTIAL_ROUTE_DECISIONS = {
   "/api/health/keys": "blocked-provider-key-status",
   "/api/health/keys/validate": "blocked-provider-key-validation",
   "/api/setup/keys": "blocked-provider-key-mutation",
+  "/api/setup/keys/:provider": "blocked-provider-key-mutation",
   "/api/setup/research-provider": "redacted-provider-status",
   "/api/relay/electron-origin-credential": "unrelated-device-credential",
 } as const;

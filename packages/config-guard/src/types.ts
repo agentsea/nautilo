@@ -104,6 +104,7 @@ export interface SnapshotMeta {
 
 export interface CheckInput {
   validate?: boolean | undefined;
+  providerId?: string | undefined;
 }
 
 export interface CheckSummary {

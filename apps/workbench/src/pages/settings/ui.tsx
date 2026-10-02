@@ -2,6 +2,7 @@ import type { HTMLAttributes, ReactNode } from "react";
 
 export type SectionId =
   | "profile"
+  | "personal-provider-keys"
   | "this-mac"
   | "startup"
   | "my-agents"

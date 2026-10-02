@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyReport } from "@nautilo/config-guard";
 import { ApiError } from "@nautilo/api-client/browser";
 import { apiClient } from "../../../lib/api";
+import { orderProviderKeys } from "../../../lib/provider-key-display";
 import { useAuth } from "../../../hooks/use-auth";
 import { useCan } from "../../../hooks/use-can";
 import {
@@ -21,23 +22,14 @@ type LoadState =
   | { kind: "error"; message: string }
   | { kind: "forbidden" };
 
-type RowSave = "idle" | "saving" | "saved" | { error: string };
-
-const KEY_DISPLAY_ORDER = [
-  "venice", "openrouter", "elevenlabs", "openai", "anthropic", "google", "fireworks", "groq",
-];
-
-function displayOrder(key: KeyReport): number {
-  if (key.id === "gateway") return KEY_DISPLAY_ORDER.length + 1;
-  const index = KEY_DISPLAY_ORDER.indexOf(key.id);
-  return index === -1 ? KEY_DISPLAY_ORDER.length : index;
-}
+type RowAction = "idle" | "saving" | "saved" | "validating" | "deleting" | { error: string };
 
 type ProviderCredentialsApi = Pick<
   typeof apiClient,
   | "getKeySummary"
   | "setupKeys"
   | "validateKeys"
+  | "deleteServerProviderKey"
 >;
 
 export interface ProviderCredentialsEditorProps {
@@ -90,8 +82,9 @@ export function ProviderCredentialsEditor({
   const [validating, setValidating] = useState(false);
   const [validateError, setValidateError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Record<string, string>>({});
-  const [saveState, setSaveState] = useState<Record<string, RowSave>>({});
-  const savingRowsRef = useRef(new Set<string>());
+  const [rowActions, setRowActions] = useState<Record<string, RowAction>>({});
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const mutatingRowsRef = useRef(new Set<string>());
 
   const load = useCallback(async () => {
     try {
@@ -114,8 +107,8 @@ export function ProviderCredentialsEditor({
     void load();
   }, [enabled, load]);
 
-  const setRowState = (id: string, next: RowSave) => {
-    setSaveState((prev) => ({ ...prev, [id]: next }));
+  const setRowState = (id: string, next: RowAction) => {
+    setRowActions((prev) => ({ ...prev, [id]: next }));
   };
 
   const saveRow = async (report: KeyReport) => {
@@ -124,8 +117,8 @@ export function ProviderCredentialsEditor({
       setRowState(report.id, { error: "Value required" });
       return;
     }
-    if (savingRowsRef.current.has(report.id)) return;
-    savingRowsRef.current.add(report.id);
+    if (mutatingRowsRef.current.has(report.id)) return;
+    mutatingRowsRef.current.add(report.id);
     setRowState(report.id, "saving");
     try {
       const result = await keyApi.setupKeys(
@@ -168,7 +161,57 @@ export function ProviderCredentialsEditor({
         });
       }
     } finally {
-      savingRowsRef.current.delete(report.id);
+      mutatingRowsRef.current.delete(report.id);
+    }
+  };
+
+  const validateRow = async (report: KeyReport) => {
+    if (mutatingRowsRef.current.has(report.id)) return;
+    mutatingRowsRef.current.add(report.id);
+    setRowState(report.id, "validating");
+    try {
+      const { keys } = await keyApi.validateKeys(report.id);
+      setState({ kind: "ready", keys });
+      setRowState(report.id, "idle");
+    } catch (e) {
+      setRowState(report.id, {
+        error: e instanceof Error ? e.message : "Validation failed",
+      });
+    } finally {
+      mutatingRowsRef.current.delete(report.id);
+    }
+  };
+
+  const deleteRow = async (report: KeyReport) => {
+    if (mutatingRowsRef.current.has(report.id)) return;
+    mutatingRowsRef.current.add(report.id);
+    setRowState(report.id, "deleting");
+    try {
+      const result = await keyApi.deleteServerProviderKey(report.id);
+      if (!result.success) {
+        setRowState(report.id, { error: result.error ?? "Delete failed" });
+        return;
+      }
+      setConfirmDelete(null);
+      setRowState(report.id, "idle");
+      setState((previous) => previous.kind === "ready"
+        ? {
+          kind: "ready",
+          keys: previous.keys.map((key) => key.id === report.id
+            ? { ...key, status: "missing", masked: null, hint: null }
+            : key),
+        }
+        : previous);
+      window.dispatchEvent(new Event("nautilo:provider-keys-saved"));
+    } catch (e) {
+      setConfirmDelete(null);
+      setRowState(report.id, {
+        error: e instanceof ApiError && e.status === 403
+          ? "You do not have permission to delete provider keys."
+          : e instanceof Error ? e.message : "Delete failed",
+      });
+    } finally {
+      mutatingRowsRef.current.delete(report.id);
     }
   };
 
@@ -225,7 +268,7 @@ export function ProviderCredentialsEditor({
     <SectionCard
       id="provider-credentials"
       title="API Keys"
-      description="Add or change API keys for this server. Values are stored by the server and are never shown again. Deployment and identity settings remain platform-controlled."
+      description="Add or change API keys for this server. Values are stored by the server; after saving, only a masked preview is shown. Deployment and identity settings remain platform-controlled."
       actions={validateButton}
     >
       {state.kind === "loading" ? (
@@ -246,10 +289,12 @@ export function ProviderCredentialsEditor({
             </p>
           ) : null}
           <ProviderKeyCoverage keys={state.keys} />
-          {[...state.keys].sort((a, b) => displayOrder(a) - displayOrder(b)).map((k) => {
+          {orderProviderKeys(state.keys).map((k) => {
             const editingValue = editing[k.id];
             const isEditing = editingValue !== undefined;
-            const row = saveState[k.id] ?? "idle";
+            const row = rowActions[k.id] ?? "idle";
+            const rowBusy = row === "saving" || row === "validating" || row === "deleting";
+            const hasKey = k.status !== "missing";
             return (
               <FieldRow
                 key={k.id}
@@ -342,15 +387,54 @@ export function ProviderCredentialsEditor({
                         </p>
                       ) : null}
                     </div>
+                  ) : confirmDelete === k.id && hasKey ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs text-foreground-muted">Delete this server key?</span>
+                      <Button
+                        loading={row === "deleting"}
+                        onClick={() => void deleteRow(k)}
+                      >
+                        Delete key
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        disabled={rowBusy}
+                        onClick={() => setConfirmDelete(null)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
                   ) : (
                     <div className="flex items-center gap-2">
                       <Button
+                        disabled={rowBusy}
+                        ariaLabel={`${hasKey ? "Replace" : "Add"} ${k.name} key`}
                         onClick={() =>
                           setEditing((p) => ({ ...p, [k.id]: "" }))
                         }
                       >
-                        {k.status === "missing" ? "Add key" : "Change"}
+                        {hasKey ? "Replace" : "Add key"}
                       </Button>
+                      {hasKey ? (
+                        <>
+                          <Button
+                            loading={row === "validating"}
+                            disabled={rowBusy || validating}
+                            ariaLabel={`Validate ${k.name} key`}
+                            onClick={() => void validateRow(k)}
+                          >
+                            Validate
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            disabled={rowBusy}
+                            ariaLabel={`Delete ${k.name} key`}
+                            onClick={() => setConfirmDelete(k.id)}
+                          >
+                            Delete
+                          </Button>
+                        </>
+                      ) : null}
                       {row === "saved" ? (
                         <StatusPill tone="ok">Saved</StatusPill>
                       ) : typeof row === "object" ? (

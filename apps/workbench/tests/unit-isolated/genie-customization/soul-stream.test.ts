@@ -62,4 +62,10 @@ describe("Genie soul stream", () => {
     expect(soulFile).toBe("# fallback");
     expect(events).toEqual(["error"]);
   });
+
+  test("explains the server-funded generation limit without exposing a provider response", async () => {
+    await expect(readSoulGenerationStream(new Response("upstream-sensitive-data", { status: 429 }), {
+      onEvent: () => {},
+    })).rejects.toThrow("Continue without a generated Soul");
+  });
 });

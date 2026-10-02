@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { WORKBENCH_APPLICATION_TARGETS } from "../../lib/genie-application-targets";
-import { visibleSettingsSections } from "./settings-page";
+import { activeSectionForHash, visibleSettingsSections } from "./settings-page";
 import { inviteRoleOptions } from "./sections/members-section";
 
 test("Desktop-only settings are reachable only in the Desktop shell", () => {
@@ -32,14 +32,26 @@ test("Invite people is hidden without self-service invitation authority", () => 
   }).some((section) => section.id === "invite-people")).toBeFalse();
 });
 
+test("personal API keys have a permanent Settings destination", () => {
+  expect(activeSectionForHash("personal-provider-keys")).toBe("personal-provider-keys");
+  for (const isDesktopShell of [false, true]) {
+    const sections = visibleSettingsSections({ isDesktopShell, canCreateInvites: false });
+    expect(sections.find((section) => section.id === "personal-provider-keys")?.label)
+      .toBe("Personal API keys");
+  }
+  expect(WORKBENCH_APPLICATION_TARGETS["settings.personal_api_keys"].href)
+    .toBe("/settings#personal-provider-keys");
+});
+
 test("self-service invitations expose only bounded ladder targets", () => {
-  expect(inviteRoleOptions(false)).toEqual(["member", "contributor", "guest"]);
+  expect(inviteRoleOptions(false)).toEqual(["member", "contributor", "community", "guest"]);
   expect(inviteRoleOptions(true)).toEqual([
     "owner",
     "admin",
     "superuser",
     "member",
     "contributor",
+    "community",
     "guest",
   ]);
 });

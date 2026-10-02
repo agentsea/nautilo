@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { readFileSync } from "node:fs";
 import type { MaintenanceState } from "@nautilo/types";
-import { check, getModeReport } from "@nautilo/config-guard";
+import { check, getKeyDefinition, getModeReport } from "@nautilo/config-guard";
 import { inspectPersonalProviderCustody, isPersonalProviderCustodyConfigured } from "../lib/personal-provider-custody";
 import { getPasswordRecoveryDriver, resolveInstance } from "@nautilo/config";
 import { requestAllowsLoopbackTrust, requestAllowsOwnerOrLoopback } from "../lib/request-trust";
@@ -60,6 +60,22 @@ async function viewerCanManageProviderKeys(userId: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function parseProviderValidationBody(body: unknown):
+  | { readonly ok: true; readonly providerId?: string }
+  | { readonly ok: false } {
+  if (body === undefined || body === null) return { ok: true };
+  if (typeof body !== "object" || Array.isArray(body)) return { ok: false };
+  const record = body as Record<string, unknown>;
+  if (Object.keys(record).length === 0) return { ok: true };
+  if (Object.keys(record).length !== 1 || typeof record["providerId"] !== "string") {
+    return { ok: false };
+  }
+  const providerId = record["providerId"].trim();
+  return providerId.length > 0 && getKeyDefinition(providerId)
+    ? { ok: true, providerId }
+    : { ok: false };
 }
 
 /**
@@ -321,7 +337,12 @@ export function healthRoutes(app: FastifyInstance, deps?: HealthRouteDeps) {
     // An unauthenticated loopback/Unix-socket call is the existing local
     // operator authority. Once a Human session is present, its RBAC and
     // funding authority take precedence even when the transport is loopback.
-    const result = await check({ validate: true });
+    const parsed = parseProviderValidationBody(request.body);
+    if (!parsed.ok) return reply.code(400).send({ error: "invalid_provider" });
+    const result = await check({
+      validate: true,
+      ...(parsed.providerId === undefined ? {} : { providerId: parsed.providerId }),
+    });
     return reply.send({
       keys: result.keys,
       summary: result.summary,

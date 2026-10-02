@@ -39,6 +39,7 @@ export {
 
 export type {
   CredentialMetadata,
+  PersonalProviderCatalogEntry,
   PutProviderCredentialInput,
   ProviderCredentialRevisionInput,
   PutProviderCredentialResponse,

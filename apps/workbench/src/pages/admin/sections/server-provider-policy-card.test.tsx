@@ -61,6 +61,9 @@ describe("ServerProviderPolicyCard", () => {
 
   test("saves off to on and reports the persisted result", async () => {
     capabilities.add("manage_server_settings");
+    let policyEvents = 0;
+    const onPolicyChanged = () => { policyEvents++; };
+    window.addEventListener("nautilo:personal-provider-policy-changed", onPolicyChanged);
     const view = render(<ServerProviderPolicyCard />);
     const toggle = await waitFor(() => view.getByRole("switch"));
 
@@ -74,6 +77,10 @@ describe("ServerProviderPolicyCard", () => {
       expect(view.getByTestId("server-provider-policy-persisted").textContent).toContain("On");
       expect(view.getByRole("status").textContent).toContain("allowed");
     });
+    expect(policyEvents).toBe(1);
+    expect(view.getByText(/supported private text chat/u)).toBeTruthy();
+    expect(view.queryByText(/not available in this release/u)).toBeNull();
+    window.removeEventListener("nautilo:personal-provider-policy-changed", onPolicyChanged);
   });
 
   test("saves on to off", async () => {

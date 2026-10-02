@@ -182,6 +182,8 @@ export const DATA_TABLES = [
   "public.logto_account_security",
   "public.nautilo_instance_identity",
   "public.credentials",
+  // Preserve recent server-funded Soul admissions across an instance move.
+  "public.soul_generation_attempts",
   "public.recovery_codes",
   "public.channel_identities",
   // M233 — Human-owned notification default. References users only.

@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { PERSONAL_PROVIDER_IDS } from "../../src";
 
 const migrationPath = join(
   import.meta.dir,
   "../../src/migrations/0305_personal_provider_credentials.sql",
+);
+const providerExpansionMigrationPath = join(
+  import.meta.dir,
+  "../../src/migrations/0312_salty_robin_chapel.sql",
 );
 
 describe("personal provider credential migration", () => {
@@ -39,5 +44,15 @@ describe("personal provider credential migration", () => {
     );
     expect(migration).toContain('TO "nautilo"');
     expect(migration).not.toMatch(/GRANT[^;]+TO\s+(?:PUBLIC|"nautilo_agent"|"nautilo_crypto")/i);
+  });
+
+  test("expands the provider check for every canonical server key and retained chat provider", async () => {
+    const migration = await readFile(providerExpansionMigrationPath, "utf8");
+    expect(migration).toContain(
+      'DROP CONSTRAINT "personal_provider_credentials_provider_check"',
+    );
+    for (const provider of PERSONAL_PROVIDER_IDS) {
+      expect(migration).toContain(`'${provider}'`);
+    }
   });
 });

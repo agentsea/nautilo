@@ -33,6 +33,7 @@ export {
 } from "./client";
 export type {
   CredentialMetadata,
+  PersonalProviderCatalogEntry,
   PutProviderCredentialInput,
   ProviderCredentialRevisionInput,
   PutProviderCredentialResponse,

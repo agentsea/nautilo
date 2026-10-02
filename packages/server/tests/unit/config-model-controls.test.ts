@@ -124,6 +124,26 @@ describe("caller-scoped model availability", () => {
     resetRuntimeModelCatalog();
   });
 
+  test("a personal key cannot make an image-output model selectable for chat", async () => {
+    let fundingCalls = 0;
+    const result = await resolveCallerModelAvailability(
+      "human-1",
+      "openrouter:openai/gpt-5.4-image-2",
+      { purpose: "chat", env: {} },
+      {
+        resolveFunding: async () => {
+          fundingCalls += 1;
+          throw new Error("image-only model must not ask for chat funding");
+        },
+      },
+    );
+    expect(result.model.availability).toBe("unsupported-capability");
+    expect(result.model.enabled).toBe(false);
+    expect(result.model.unavailableReason).toBe("model does not produce text");
+    expect(result.selectableInThisRelease).toBe(false);
+    expect(fundingCalls).toBe(0);
+  });
+
   test("admits personal funding for text chat without advertising unsupported paid features", async () => {
     const modelId = "anthropic:claude-sonnet-4-6";
     const result = await resolveCallerModelAvailability(
@@ -162,6 +182,25 @@ describe("caller-scoped model availability", () => {
       vision: false,
       webSearch: false,
     });
+  });
+
+  test("server-funded caller rows obey the same tool qualification as model writes", async () => {
+    const result = await resolveCallerModelAvailability(
+      "human-1",
+      "openrouter:moonshotai/kimi-k2.6",
+      { purpose: "chat-tools", env: {} },
+      {
+        resolveFunding: async (input) => ({
+          kind: "server",
+          humanUserId: input.humanUserId,
+          modelId: input.modelId,
+          providerRoute: "openrouter",
+          workload: input.workload,
+        }),
+      },
+    );
+    expect(result.model.availability).toBe("unsupported-capability");
+    expect(result.selectableInThisRelease).toBe(false);
   });
 
   test("fails closed on caller funding denial and does not widen signed catalog restrictions", async () => {
@@ -216,7 +255,7 @@ describe("caller-scoped model availability", () => {
       unavailableReason: "Anthropic credential is not configured",
     };
     const { unavailableReason: _unavailableReason, ...candidateWithoutReason } = candidate;
-    const calls: Array<{ humanUserId: string; modelId: string }> = [];
+    const calls: Array<{ humanUserId: string; modelId: string; purpose: string | undefined }> = [];
     const app = Fastify({ logger: false });
     app.decorateRequest("sessionUserId", null);
     app.addHook("preHandler", async (request) => {
@@ -224,8 +263,8 @@ describe("caller-scoped model availability", () => {
     });
     configRoutes(app, {
       getEligibleModels: () => [candidate],
-      resolveCallerAvailability: async (humanUserId, resolvedModelId) => {
-        calls.push({ humanUserId, modelId: resolvedModelId });
+      resolveCallerAvailability: async (humanUserId, resolvedModelId, options) => {
+        calls.push({ humanUserId, modelId: resolvedModelId, purpose: options?.purpose });
         return {
           model: {
             ...candidateWithoutReason,
@@ -266,7 +305,7 @@ describe("caller-scoped model availability", () => {
       expect(body[0]?.capabilities).toMatchObject({ tools: false, vision: false, webSearch: false });
       expect(response.body).not.toContain("credential-1");
       expect(response.body).not.toContain("funding");
-      expect(calls).toEqual([{ humanUserId: "human-1", modelId }]);
+      expect(calls).toEqual([{ humanUserId: "human-1", modelId, purpose: "chat-tools" }]);
     } finally {
       await app.close();
     }

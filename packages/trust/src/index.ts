@@ -468,6 +468,7 @@ export {
 // M246/M254 — shared action-Capability admission and accepted-work authority.
 export {
   assertCanInvokeAgent,
+  assertCanUseServerFundedOwnSoul,
   assertCanUseServerProviderCredentials,
   assertCanWriteArtifacts,
   createAcceptedInvocationAuthority,
@@ -489,6 +490,8 @@ export {
   type ArtifactWriteAdmissionInput,
   type ActionCapabilityAdmissionDeps,
   type ServerProviderCredentialOrigin,
+  type ServerFundedOwnSoulAdmissionInput,
+  type ServerFundedOwnSoulAdmissionDeps,
   type ActionCapabilityDenialCode,
   type ActionCapabilityHttpDenial,
   type ActionCapabilityDenialDiagnostic,

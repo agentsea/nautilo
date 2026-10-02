@@ -1446,11 +1446,7 @@ export type CanonicalServerRoleSlug =
   | "contributor"
   | "community"
   | "guest";
-/** Community is installed but remains closed to enrollment in this phase. */
-export type EnrollableServerRoleSlug = Exclude<
-  CanonicalServerRoleSlug,
-  "community"
->;
+export type EnrollableServerRoleSlug = CanonicalServerRoleSlug;
 export interface AdminProvisionMemberInput {
   handle: string;
   displayName: string;
@@ -1913,8 +1909,7 @@ export interface CreateInviteInput {
   kind: "server";
   /**
    * Required. The canonical Group rung the invitee joins on redeem.
-   * One of the currently enrollable ladder slugs. Community is canonical but
-   * remains unavailable as an invitation target in this phase.
+   * One of the currently enrollable ladder slugs.
    */
   targetGroupRoleSlug: EnrollableServerRoleSlug;
   /**
@@ -2210,6 +2205,17 @@ export interface CredentialMetadata {
   readonly validationStatus: CredentialValidationStatus;
   readonly validatedAt: string | null;
   readonly requiresReplacement: boolean;
+  readonly masked: string | null;
+}
+
+/** Secret-free provider metadata available for personal credential enrollment. */
+export interface PersonalProviderCatalogEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly purpose: string;
+  readonly signupUrl?: string | undefined;
+  readonly formatHint?: string | undefined;
+  readonly personalCapabilities: readonly "chat"[];
 }
 
 export interface PutProviderCredentialInput {
@@ -2236,7 +2242,7 @@ export interface DeleteProviderCredentialResponse {
   readonly committed: true;
 }
 
-const credentialMetadataSchema: z.ZodType<CredentialMetadata> = z.object({
+const credentialMetadataSchema = z.object({
   provider: z.string().min(1),
   id: z.string().min(1),
   revision: z.number().int().nonnegative(),
@@ -2245,10 +2251,23 @@ const credentialMetadataSchema: z.ZodType<CredentialMetadata> = z.object({
   validationStatus: z.enum(["unverified", "accepted", "rejected", "unavailable"]),
   validatedAt: z.string().min(1).nullable(),
   requiresReplacement: z.boolean(),
+  // Older servers do not project a preview during a rolling upgrade.
+  masked: z.string().min(1).nullable().optional().default(null),
+}).strict();
+
+const personalProviderCatalogEntrySchema: z.ZodType<PersonalProviderCatalogEntry> = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  purpose: z.string().min(1),
+  signupUrl: z.string().min(1).optional(),
+  formatHint: z.string().min(1).optional(),
+  personalCapabilities: z.array(z.literal("chat")),
 }).strict();
 
 const listProviderCredentialsResponseSchema = z.object({
   credentials: z.array(credentialMetadataSchema),
+  // During a rolling upgrade an older server may not project its registry yet.
+  providers: z.array(personalProviderCatalogEntrySchema).optional().default([]),
 }).strict();
 
 const putProviderCredentialResponseSchema = z.object({
@@ -5684,7 +5703,10 @@ export class NautiloApiClient {
     return { keys, hasLlm: computeHasLlmFromKeys(keys) };
   }
 
-  async listProviderCredentials(): Promise<{ credentials: CredentialMetadata[] }> {
+  async listProviderCredentials(): Promise<{
+    credentials: CredentialMetadata[];
+    providers: PersonalProviderCatalogEntry[];
+  }> {
     return this.request({
       path: "/api/account/provider-credentials",
       schema: listProviderCredentialsResponseSchema,
@@ -10849,6 +10871,26 @@ export class NautiloApiClient {
     return z.array(assistantModelSummarySchema).parse(models);
   }
 
+  /**
+   * List text-chat models using the authenticated Human's server-resolved
+   * funding availability. The response contains display metadata only; route
+   * and credential authority remain on the server.
+   */
+  async getCallerModels(
+    query?: Pick<GetEligibleModelsQuery, "includeUnavailable" | "allowChinaUpstream">,
+  ): Promise<AssistantModelSummary[]> {
+    const params = new URLSearchParams();
+    if (query?.includeUnavailable === true) params.set("includeUnavailable", "true");
+    if (query?.allowChinaUpstream === true) params.set("allowChinaUpstream", "true");
+    const qs = params.toString();
+    const models = await this.request<unknown>({
+      path: `/api/config/models/caller${qs ? `?${qs}` : ""}`,
+      auth: "session-fresh",
+      defaultErrorPrefix: "GET /api/config/models/caller",
+    });
+    return z.array(assistantModelSummarySchema).parse(models);
+  }
+
   async resolveRetainedModels(
     ids: readonly string[],
     query?: Omit<GetEligibleModelsQuery, "includeUnavailable">,
@@ -10949,10 +10991,11 @@ export class NautiloApiClient {
     });
   }
 
-  async validateKeys(): Promise<{ keys: KeyReport[]; summary: CheckSummary }> {
+  async validateKeys(providerId?: string): Promise<{ keys: KeyReport[]; summary: CheckSummary }> {
     return this.request<{ keys: KeyReport[]; summary: CheckSummary }>({
       method: "POST",
       path: "/api/health/keys/validate",
+      ...(providerId === undefined ? {} : { body: { providerId } }),
       defaultErrorPrefix: "POST /api/health/keys/validate",
     });
   }
@@ -10971,6 +11014,14 @@ export class NautiloApiClient {
       path: "/api/setup/keys",
       body: { keys, overwrite },
       defaultErrorPrefix: "POST /api/setup/keys",
+    });
+  }
+
+  async deleteServerProviderKey(providerId: string): Promise<SetupKeysResult> {
+    return this.request<SetupKeysResult>({
+      method: "DELETE",
+      path: `/api/setup/keys/${encodeURIComponent(providerId)}`,
+      defaultErrorPrefix: "DELETE /api/setup/keys/:provider",
     });
   }
 

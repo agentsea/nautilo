@@ -57,6 +57,7 @@ const apiStub = {
     keys: [keyReport],
     summary: { total: 1, ok: 0, warnings: 0, errors: 1 },
   })),
+  deleteServerProviderKey: mock(async (): Promise<SetupKeysResult> => ({ success: true })),
 };
 
 beforeAll(() => {
@@ -68,6 +69,7 @@ beforeEach(() => {
   apiStub.getKeySummary.mockReset();
   apiStub.setupKeys.mockReset();
   apiStub.validateKeys.mockReset();
+  apiStub.deleteServerProviderKey.mockReset();
   apiStub.getKeySummary.mockImplementation(async () => ({
     keys: [keyReport],
     hasLlm: false,

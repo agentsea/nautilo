@@ -1,6 +1,6 @@
 import { checkKeysHealth } from "./health-checker";
 import { computeHasLlmFromKeys } from "./compute-has-llm";
-import { firstDoctorHint, getAllKeyDefinitions, maskValue } from "./key-registry";
+import { firstDoctorHint, getAllKeyDefinitions, getKeyDefinition, maskValue } from "./key-registry";
 import { MODE_REGISTRY } from "./mode-registry";
 import { parseCheckInput } from "./schemas";
 import { isCloudMode } from "@nautilo/config";
@@ -12,6 +12,7 @@ import type {
   ModeReport,
   ModeReportEntry,
 } from "./types";
+import { ConfigGuardError } from "./types";
 
 export type {
   AuditActor,
@@ -189,7 +190,10 @@ function buildSummary(
 }
 
 export async function check(input?: unknown): Promise<CheckResult> {
-  const { validate } = parseCheckInput(input);
+  const { validate, providerId } = parseCheckInput(input);
+  if (providerId !== undefined && !getKeyDefinition(providerId)) {
+    throw new ConfigGuardError("VALIDATION", "Unknown provider");
+  }
   const validateKeys = validate ?? false;
   const env = process.env;
   const keys: KeyReport[] = [];
@@ -231,7 +235,7 @@ export async function check(input?: unknown): Promise<CheckResult> {
   if (validateKeys) {
     const health = await checkKeysHealth(
       env,
-      getAllKeyDefinitions().map((k) => k.id),
+      providerId === undefined ? getAllKeyDefinitions().map((k) => k.id) : [providerId],
     );
     for (const k of keys) {
       if (k.status !== "present") {

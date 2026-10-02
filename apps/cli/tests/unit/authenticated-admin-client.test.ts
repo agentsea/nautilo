@@ -15,6 +15,7 @@ import {
   type AuthenticatedWhoami,
 } from "../../src/lib/authenticated-admin-client.ts";
 import type { ResolvedServer } from "../../src/lib/profile-aware-server.ts";
+import * as profileAwareServer from "../../src/lib/profile-aware-server.ts";
 
 const transport: ResolvedServer = {
   baseUrl: "https://server.example",
@@ -478,18 +479,14 @@ describe("createAuthenticatedAdminClient", () => {
   });
 
   test("rejects a cleartext non-loopback Human endpoint", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "nautilo-auth-endpoint-"));
-    const previousHome = process.env["HOME"];
+    const profileSpy = spyOn(profileAwareServer, "readActiveProfileName").mockReturnValue(undefined);
     try {
-      process.env["HOME"] = dir;
       await expectCode(resolveHumanServer({ serverFlag: "http://server.example" }), "target_mismatch");
       await expectCode(resolveHumanServer({ serverFlag: "https://server.example/path" }), "target_mismatch");
       await expectCode(resolveHumanServer({ serverFlag: "https://user:pass@server.example" }), "target_mismatch");
       await expectCode(resolveHumanServer({ serverFlag: "https://server.example?query=1" }), "target_mismatch");
     } finally {
-      if (previousHome === undefined) delete process.env["HOME"];
-      else process.env["HOME"] = previousHome;
-      rmSync(dir, { recursive: true, force: true });
+      profileSpy.mockRestore();
     }
   });
 

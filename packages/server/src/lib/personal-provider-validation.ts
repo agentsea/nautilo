@@ -100,6 +100,8 @@ function validationRequest(
       // account-independent check that establishes authentication without a
       // paid request or extra caller-supplied account identity.
       return null;
+    default:
+      return null;
   }
 }
 

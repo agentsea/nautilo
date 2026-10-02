@@ -30,20 +30,19 @@ type LadderRoleSlug =
   | "contributor"
   | "community"
   | "guest";
-type EnrollableLadderRoleSlug = Exclude<LadderRoleSlug, "community">;
+type EnrollableLadderRoleSlug = LadderRoleSlug;
 
 const ROLE_OPTIONS: ReadonlyArray<{
   slug: LadderRoleSlug;
   label: string;
-  enrollmentAvailable: boolean;
 }> = [
-  { slug: "owner", label: "Owner", enrollmentAvailable: true },
-  { slug: "admin", label: "Admin", enrollmentAvailable: true },
-  { slug: "superuser", label: "Superuser", enrollmentAvailable: true },
-  { slug: "member", label: "Member", enrollmentAvailable: true },
-  { slug: "contributor", label: "Contributor", enrollmentAvailable: true },
-  { slug: "community", label: "Community", enrollmentAvailable: false },
-  { slug: "guest", label: "Guest", enrollmentAvailable: true },
+  { slug: "owner", label: "Owner" },
+  { slug: "admin", label: "Admin" },
+  { slug: "superuser", label: "Superuser" },
+  { slug: "member", label: "Member" },
+  { slug: "contributor", label: "Contributor" },
+  { slug: "community", label: "Community" },
+  { slug: "guest", label: "Guest" },
 ];
 
 export function inviteRoleOptions(adminSurface: boolean): ReadonlyArray<EnrollableLadderRoleSlug> {
@@ -52,10 +51,10 @@ export function inviteRoleOptions(adminSurface: boolean): ReadonlyArray<Enrollab
     : ROLE_OPTIONS.filter(
         (role) => role.slug === "member"
           || role.slug === "contributor"
+          || role.slug === "community"
           || role.slug === "guest",
       )
-  ).filter((role) => role.enrollmentAvailable)
-    .map((role) => role.slug as EnrollableLadderRoleSlug);
+  ).map((role) => role.slug);
 }
 
 // localStorage key — keeps the freshly-minted invite code around so the
@@ -279,12 +278,7 @@ function NewInviteForm({
   const selectClass =
     "w-full rounded-md border border-border bg-background-element px-3 py-2 text-sm text-foreground focus:border-border-interactive focus:outline-none";
   const allowedRoles = new Set(inviteRoleOptions(adminSurface));
-  const roleOptions = ROLE_OPTIONS.filter((role) =>
-    allowedRoles.has(role.slug as EnrollableLadderRoleSlug) || role.slug === "community"
-  ).filter((role) =>
-    adminSurface || role.slug === "member" || role.slug === "contributor" ||
-    role.slug === "community" || role.slug === "guest"
-  );
+  const roleOptions = ROLE_OPTIONS.filter((role) => allowedRoles.has(role.slug));
 
   return (
     <form
@@ -310,11 +304,7 @@ function NewInviteForm({
           }
           className={selectClass}
         >
-          {roleOptions.map((r) => (
-            <option key={r.slug} value={r.slug} disabled={!r.enrollmentAvailable}>
-              {r.label}{r.enrollmentAvailable ? "" : " — unavailable until personal-key chat launches"}
-            </option>
-          ))}
+          {roleOptions.map((r) => <option key={r.slug} value={r.slug}>{r.label}</option>)}
         </select>
       </FieldRow>
       {form.role === "owner" ? (
@@ -701,7 +691,7 @@ export function InvitePeopleSection() {
     <SectionCard
       id="invite-people"
       title="Invite people"
-      description="Create and manage invitations. Community is visible for planning but remains unavailable until personal-key chat launches."
+      description="Create and manage invitations."
     >
       <InviteManagement adminSurface={false} />
     </SectionCard>

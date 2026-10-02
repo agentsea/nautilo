@@ -23,6 +23,7 @@ export * from "./conversation-shadow-turn-operations";
 export * from "./conversation-human-peer-shadow-operations";
 export * from "./conversation-shared-agent-shadow-operations";
 export * from "./llm-usage";
+export * from "./soul-generation-attempts";
 export * from "./provider-costs";
 export * from "./session-message-recipient-state";
 export * from "./notification-intelligence";
