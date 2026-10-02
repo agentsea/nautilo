@@ -24,7 +24,7 @@ type LoadState =
 type RowSave = "idle" | "saving" | "saved" | { error: string };
 
 const KEY_DISPLAY_ORDER = [
-  "venice", "openrouter", "elevenlabs", "openai", "anthropic", "google", "fireworks", "groq",
+  "venice", "openrouter", "surplus", "elevenlabs", "openai", "anthropic", "google", "fireworks", "groq",
 ];
 
 function displayOrder(key: KeyReport): number {

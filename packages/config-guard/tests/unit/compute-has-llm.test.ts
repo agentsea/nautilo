@@ -11,6 +11,7 @@ describe("computeHasLlmFromKeys", () => {
     expect(computeHasLlmFromKeys([key("slack", "present")])).toBe(false);
     expect(computeHasLlmFromKeys([key("typesafe", "verified")])).toBe(false);
     expect(computeHasLlmFromKeys([key("openai", "missing")])).toBe(false);
+    expect(computeHasLlmFromKeys([key("surplus", "verified")])).toBe(false);
   });
 
   test("true when any known LLM id is present or verified", () => {

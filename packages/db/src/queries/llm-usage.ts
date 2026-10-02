@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import { llmUsageEvents } from "../schema/llm-usage";
 import { users } from "../schema/users";
 import { getSharedDirectDb } from "../config/direct-database";
@@ -37,6 +37,79 @@ export interface InsertLlmUsageInput {
   credentialId?: string | null;
   credentialRevision?: number | null;
   metadata?: Record<string, unknown> | null;
+}
+
+export type SurplusAttemptOutcome =
+  | "in_progress"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "interrupted"
+  | "unknown";
+
+export type SurplusCostState = "actual" | "estimated" | "pending" | "unknown";
+
+export interface BeginSurplusLlmAttemptInput {
+  /** Caller-generated UUID; retrying the same begin is idempotent. */
+  id: string;
+  occurredAt?: Date;
+  userId?: string | null;
+  roomId?: string | null;
+  taskId?: string | null;
+  callType: string;
+  /** Canonical Nautilo catalogue provider, never the marketplace seller. */
+  provider: string;
+  /** Canonical Nautilo catalogue model id. */
+  model: string;
+  endpoint: string;
+  fundingKind: "server" | "service";
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface AttachSurplusRequestReceiptInput {
+  attemptId: string;
+  providerRequestId: string;
+  servingProvider?: string | null;
+  endpoint?: string;
+}
+
+export interface SettleSurplusLlmAttemptInput {
+  attemptId: string;
+  outcome: Exclude<SurplusAttemptOutcome, "in_progress">;
+  costState: SurplusCostState;
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  cachedInputTokens?: number;
+  totalTokens?: number;
+  estimatedCostUsd?: number;
+  actualCostUsd?: number | null;
+  servingProvider?: string | null;
+  failureCode?: string | null;
+  settledAt?: Date;
+}
+
+export interface ListPendingSurplusAttemptsInput {
+  limit?: number;
+  updatedBefore?: Date;
+}
+
+export interface SurplusPendingAttempt {
+  id: string;
+  occurredAt: Date;
+  updatedAt: Date;
+  userId: string | null;
+  roomId: string | null;
+  taskId: string | null;
+  callType: string;
+  provider: string;
+  model: string;
+  providerRequestId: string | null;
+  endpoint: string;
+  servingProvider: string | null;
+  attemptOutcome: SurplusAttemptOutcome;
+  costState: "pending" | "unknown";
+  fundingKind: "server" | "service";
 }
 
 /** numeric(14,8) columns take strings in drizzle; keep 8 dp of precision. */
@@ -81,6 +154,187 @@ export async function insertLlmUsageEvent(input: InsertLlmUsageInput): Promise<v
     });
 }
 
+function assertNonEmpty(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`${label} is required`);
+  return normalized;
+}
+
+function nonnegativeInteger(value: number | undefined): number {
+  return Math.max(0, Math.round(value ?? 0));
+}
+
+function optionalUsd(value: number | null | undefined, label: string): string | null {
+  if (value === null || value === undefined) return null;
+  if (!Number.isFinite(value) || value < 0) throw new Error(`${label} must be nonnegative`);
+  return toNumeric(value);
+}
+
+/** Persist the attempt before any Surplus wire request is sent. */
+export async function beginSurplusLlmAttempt(
+  input: BeginSurplusLlmAttemptInput,
+): Promise<void> {
+  await db()
+    .insert(llmUsageEvents)
+    .values({
+      id: input.id,
+      ...(input.occurredAt ? { occurredAt: input.occurredAt } : {}),
+      userId: input.userId ?? null,
+      roomId: input.roomId ?? null,
+      taskId: input.taskId ?? null,
+      callType: assertNonEmpty(input.callType, "callType"),
+      provider: assertNonEmpty(input.provider, "provider"),
+      model: assertNonEmpty(input.model, "model"),
+      endpoint: assertNonEmpty(input.endpoint, "endpoint"),
+      providerRoute: "surplus",
+      fundingKind: input.fundingKind,
+      attemptOutcome: "in_progress",
+      costState: "pending",
+      estimatedCostUsd: "0.00000000",
+      actualCostUsd: null,
+      metadata: input.metadata ?? null,
+    })
+    .onConflictDoNothing({ target: llmUsageEvents.id });
+}
+
+/** Bind the provider request receipt to the already-durable local attempt. */
+export async function attachSurplusRequestReceipt(
+  input: AttachSurplusRequestReceiptInput,
+): Promise<void> {
+  const requestId = assertNonEmpty(input.providerRequestId, "providerRequestId");
+  const rows = await db()
+    .update(llmUsageEvents)
+    .set({
+      providerRequestId: requestId,
+      ...(input.servingProvider === undefined
+        ? {}
+        : { servingProvider: input.servingProvider?.trim() || null }),
+      ...(input.endpoint === undefined
+        ? {}
+        : { endpoint: assertNonEmpty(input.endpoint, "endpoint") }),
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(llmUsageEvents.id, input.attemptId),
+      eq(llmUsageEvents.providerRoute, "surplus"),
+      or(
+        isNull(llmUsageEvents.providerRequestId),
+        eq(llmUsageEvents.providerRequestId, requestId),
+      ),
+    ))
+    .returning({ id: llmUsageEvents.id });
+  if (rows.length !== 1) throw new Error("Surplus attempt receipt conflicts with durable state");
+}
+
+/** Settle or classify one durable attempt without creating another cost row. */
+export async function settleSurplusLlmAttempt(
+  input: SettleSurplusLlmAttemptInput,
+): Promise<void> {
+  const actualCostUsd = optionalUsd(input.actualCostUsd, "actualCostUsd");
+  const estimatedCostUsd = optionalUsd(input.estimatedCostUsd, "estimatedCostUsd");
+  if (input.costState === "actual" && actualCostUsd === null) {
+    throw new Error("actual costState requires actualCostUsd, including explicit zero");
+  }
+  if (input.costState !== "actual" && actualCostUsd !== null) {
+    throw new Error("actualCostUsd requires actual costState");
+  }
+  if (input.costState === "estimated" && estimatedCostUsd === null) {
+    throw new Error("estimated costState requires estimatedCostUsd");
+  }
+
+  const inputTokens = input.inputTokens === undefined
+    ? undefined
+    : nonnegativeInteger(input.inputTokens);
+  const outputTokens = input.outputTokens === undefined
+    ? undefined
+    : nonnegativeInteger(input.outputTokens);
+  const totalTokens = input.totalTokens !== undefined
+    ? nonnegativeInteger(input.totalTokens)
+    : inputTokens !== undefined && outputTokens !== undefined
+      ? inputTokens + outputTokens
+      : undefined;
+  const mayReplaceCost = input.costState === "actual"
+    ? undefined
+    : input.costState === "estimated"
+      ? or(
+          isNull(llmUsageEvents.costState),
+          inArray(llmUsageEvents.costState, ["pending", "unknown", "estimated"]),
+        )
+      : or(
+          isNull(llmUsageEvents.costState),
+          inArray(llmUsageEvents.costState, ["pending", "unknown"]),
+        );
+  const rows = await db()
+    .update(llmUsageEvents)
+    .set({
+      attemptOutcome: input.outcome,
+      costState: input.costState,
+      ...(inputTokens === undefined ? {} : { inputTokens }),
+      ...(outputTokens === undefined ? {} : { outputTokens }),
+      ...(input.reasoningTokens === undefined
+        ? {}
+        : { reasoningTokens: nonnegativeInteger(input.reasoningTokens) }),
+      ...(input.cachedInputTokens === undefined
+        ? {}
+        : { cachedInputTokens: nonnegativeInteger(input.cachedInputTokens) }),
+      ...(totalTokens === undefined ? {} : { totalTokens }),
+      ...(estimatedCostUsd === null ? {} : { estimatedCostUsd }),
+      actualCostUsd,
+      ...(input.servingProvider === undefined
+        ? {}
+        : { servingProvider: input.servingProvider?.trim() || null }),
+      failureCode: input.failureCode?.trim() || null,
+      settledAt: input.costState === "actual" || input.costState === "estimated"
+        ? input.settledAt ?? new Date()
+        : null,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(llmUsageEvents.id, input.attemptId),
+      eq(llmUsageEvents.providerRoute, "surplus"),
+      ...(mayReplaceCost ? [mayReplaceCost] : []),
+    ))
+    .returning({ id: llmUsageEvents.id });
+  if (rows.length !== 1) throw new Error("Surplus attempt settlement conflicts with durable state");
+}
+
+/** Content-free queue view for restart-safe settlement reconciliation. */
+export async function listPendingSurplusAttempts(
+  input: ListPendingSurplusAttemptsInput = {},
+): Promise<SurplusPendingAttempt[]> {
+  const limit = input.limit === undefined ? 100 : input.limit;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+    throw new RangeError("limit must be an integer between 1 and 1000");
+  }
+  const rows = await db()
+    .select({
+      id: llmUsageEvents.id,
+      occurredAt: llmUsageEvents.occurredAt,
+      updatedAt: llmUsageEvents.updatedAt,
+      userId: llmUsageEvents.userId,
+      roomId: llmUsageEvents.roomId,
+      taskId: llmUsageEvents.taskId,
+      callType: llmUsageEvents.callType,
+      provider: llmUsageEvents.provider,
+      model: llmUsageEvents.model,
+      providerRequestId: llmUsageEvents.providerRequestId,
+      endpoint: llmUsageEvents.endpoint,
+      servingProvider: llmUsageEvents.servingProvider,
+      attemptOutcome: llmUsageEvents.attemptOutcome,
+      costState: llmUsageEvents.costState,
+      fundingKind: llmUsageEvents.fundingKind,
+    })
+    .from(llmUsageEvents)
+    .where(and(
+      eq(llmUsageEvents.providerRoute, "surplus"),
+      inArray(llmUsageEvents.costState, ["pending", "unknown"]),
+      ...(input.updatedBefore ? [lte(llmUsageEvents.updatedAt, input.updatedBefore)] : []),
+    ))
+    .orderBy(asc(llmUsageEvents.updatedAt), asc(llmUsageEvents.id))
+    .limit(limit);
+  return rows as SurplusPendingAttempt[];
+}
+
 // ---------------------------------------------------------------------------
 // Costs dashboard aggregations (D405)
 // ---------------------------------------------------------------------------
@@ -97,6 +351,10 @@ export interface CostsTotals {
   providerOperations: number;
   /** Provider operations with no actual or frozen estimated amount. */
   unknownProviderOperations: number;
+  /** Surplus attempts whose provider charge remains unresolved. */
+  pendingModelAttempts: number;
+  /** Surplus attempts that ended without a currently reconcilable charge. */
+  unknownModelAttempts: number;
   inputTokens: number;
   /** Cache-read input tokens (subset of inputTokens). 0 when caching is off. */
   cachedInputTokens: number;
@@ -126,6 +384,8 @@ export interface CostsByModelRow {
    * Legacy rows without `metadata.usagePricingSource` do not set this.
    */
   hasFallbackEstimate: boolean;
+  pendingAttempts: number;
+  unknownAttempts: number;
 }
 
 export interface CostsByCallTypeRow {
@@ -189,9 +449,19 @@ function s(v: unknown): string | null {
  * `actual where known, else estimated` cost expression, per row. This is the
  * "total spend" convention used everywhere in the dashboard.
  */
-const EFFECTIVE_COST = sql`COALESCE(${llmUsageEvents.actualCostUsd}, ${llmUsageEvents.estimatedCostUsd})`;
+const COST_IS_UNRESOLVED = sql`${llmUsageEvents.costState} IN ('pending', 'unknown')`;
+const KNOWN_ESTIMATED_COST = sql`CASE
+  WHEN ${COST_IS_UNRESOLVED} THEN 0
+  ELSE ${llmUsageEvents.estimatedCostUsd}
+END`;
+const EFFECTIVE_COST = sql`CASE
+  WHEN ${COST_IS_UNRESOLVED} THEN 0
+  WHEN ${llmUsageEvents.costState} = 'actual' THEN COALESCE(${llmUsageEvents.actualCostUsd}, 0)
+  WHEN ${llmUsageEvents.costState} = 'estimated' THEN ${llmUsageEvents.estimatedCostUsd}
+  ELSE COALESCE(${llmUsageEvents.actualCostUsd}, ${llmUsageEvents.estimatedCostUsd})
+END`;
 
-/** Stored metadata sources written by ISSUE-M217 forward-only metering. */
+/** Stored metadata sources written by forward-only usage metering. */
 const FALLBACK_PRICING_SOURCES = sql.raw(
   "'catalog_coefficient', 'baseline_default', 'image_default'",
 );
@@ -202,6 +472,8 @@ const FALLBACK_PRICING_SOURCES = sql.raw(
  * estimate used coefficient/default pricing — never the current catalog.
  */
 const ROW_HAS_FALLBACK_ESTIMATE = sql`
+  NOT COALESCE(${COST_IS_UNRESOLVED}, FALSE)
+  AND
   ${llmUsageEvents.actualCostUsd} IS NULL
   AND (${llmUsageEvents.metadata}->>'usagePricingSource') IN (${FALLBACK_PRICING_SOURCES})
 `;
@@ -223,6 +495,10 @@ export function buildCostsSummaryQueries(
   const totals = handle
     .select({
       calls: sql<number>`COUNT(*)::int`,
+      pending_model_attempts:
+        sql<number>`COUNT(*) FILTER (WHERE ${llmUsageEvents.costState} = 'pending')::int`,
+      unknown_model_attempts:
+        sql<number>`COUNT(*) FILTER (WHERE ${llmUsageEvents.costState} = 'unknown')::int`,
       input_tokens:
         sql<number>`COALESCE(SUM(${llmUsageEvents.inputTokens}), 0)::bigint`,
       cached_input_tokens:
@@ -232,7 +508,7 @@ export function buildCostsSummaryQueries(
       total_tokens:
         sql<number>`COALESCE(SUM(${llmUsageEvents.totalTokens}), 0)::bigint`,
       estimated_cost:
-        sql<string>`COALESCE(SUM(${llmUsageEvents.estimatedCostUsd}), 0)`,
+        sql<string>`COALESCE(SUM(${KNOWN_ESTIMATED_COST}), 0)`,
       actual_cost:
         sql<string>`COALESCE(SUM(${llmUsageEvents.actualCostUsd}), 0)`,
       total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`,
@@ -245,12 +521,16 @@ export function buildCostsSummaryQueries(
       model: llmUsageEvents.model,
       provider: llmUsageEvents.provider,
       calls: sql<number>`COUNT(*)::int`,
+      pending_attempts:
+        sql<number>`COUNT(*) FILTER (WHERE ${llmUsageEvents.costState} = 'pending')::int`,
+      unknown_attempts:
+        sql<number>`COUNT(*) FILTER (WHERE ${llmUsageEvents.costState} = 'unknown')::int`,
       input_tokens:
         sql<number>`COALESCE(SUM(${llmUsageEvents.inputTokens}), 0)::bigint`,
       output_tokens:
         sql<number>`COALESCE(SUM(${llmUsageEvents.outputTokens}), 0)::bigint`,
       estimated_cost:
-        sql<string>`COALESCE(SUM(${llmUsageEvents.estimatedCostUsd}), 0)`,
+        sql<string>`COALESCE(SUM(${KNOWN_ESTIMATED_COST}), 0)`,
       actual_cost:
         sql<string>`COALESCE(SUM(${llmUsageEvents.actualCostUsd}), 0)`,
       total_cost:
@@ -290,7 +570,7 @@ export function buildCostsSummaryQueries(
           "total_tokens",
         ),
       estimated_cost:
-        sql<string>`COALESCE(SUM(${llmUsageEvents.estimatedCostUsd}), 0)`.as(
+        sql<string>`COALESCE(SUM(${KNOWN_ESTIMATED_COST}), 0)`.as(
           "estimated_cost",
         ),
       actual_cost:
@@ -328,7 +608,7 @@ export function buildCostsSummaryQueries(
     .select({
       day,
       estimated_cost:
-        sql<string>`COALESCE(SUM(${llmUsageEvents.estimatedCostUsd}), 0)`,
+        sql<string>`COALESCE(SUM(${KNOWN_ESTIMATED_COST}), 0)`,
       actual_cost:
         sql<string>`COALESCE(SUM(${llmUsageEvents.actualCostUsd}), 0)`,
       total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`,
@@ -421,6 +701,8 @@ export async function getCostsSummary(range: CostsRange): Promise<CostsSummary> 
       calls: n(totalsRow?.["calls"]),
       providerOperations,
       unknownProviderOperations: n(providerTotalsRow?.["unknown_operations"]),
+      pendingModelAttempts: n(totalsRow?.["pending_model_attempts"]),
+      unknownModelAttempts: n(totalsRow?.["unknown_model_attempts"]),
       inputTokens: n(totalsRow?.["input_tokens"]),
       cachedInputTokens: n(totalsRow?.["cached_input_tokens"]),
       outputTokens: n(totalsRow?.["output_tokens"]),
@@ -440,6 +722,8 @@ export async function getCostsSummary(range: CostsRange): Promise<CostsSummary> 
       totalCostUsd: n(r["total_cost"]),
       hasActual: r["has_actual"] === true,
       hasFallbackEstimate: r["has_fallback_estimate"] === true,
+      pendingAttempts: n(r["pending_attempts"]),
+      unknownAttempts: n(r["unknown_attempts"]),
     })),
     byCallType: byCallType.map((r) => ({
       callType: String(r["call_type"]),

@@ -160,6 +160,9 @@ class UsageCallbackHandler extends BaseCallbackHandler {
   override handleLLMEnd(output: LLMResult, runId?: string): void {
     const usage = extractUsageFromLLMResult(output);
     const ctx = getUsageContext();
+    // Surplus has a durable pre-wire attempt row and exact buyer receipt.
+    // Recording a second callback row would double-count this invocation.
+    if (ctx?.funding?.providerRoute === "surplus") return;
     const nativeSearchRequests = extractNativeWebSearchRequests(output);
     const nativeSearchProvider = this.modelId.startsWith("openai:")
       ? "openai"

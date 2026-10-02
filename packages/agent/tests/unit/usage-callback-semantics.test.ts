@@ -76,6 +76,16 @@ describe("usage callback handler semantics (ISSUE-M217 phase 3)", () => {
     expect(calls[0]?.outputTokens).toBe(3);
   });
 
+  it("leaves Surplus completions to the durable attempt ledger", () => {
+    const calls: RecordUsageInput[] = [];
+    __setUsageRecorderForTests((input) => { calls.push(input); });
+    runWithUsageContext({
+      callType: "chat",
+      funding: { kind: "server", humanUserId: "user-1", providerRoute: "surplus" },
+    }, () => invokeHandlerEnd(createUsageCallbackHandler("venice:openai-gpt-55"), metadataResult()));
+    expect(calls).toHaveLength(0);
+  });
+
   it("records two rows for two sequential completions in one ambient turn", () => {
     const calls: RecordUsageInput[] = [];
     __setUsageRecorderForTests((input) => {

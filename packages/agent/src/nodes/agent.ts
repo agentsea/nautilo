@@ -278,6 +278,7 @@ export async function agentNode(
       metadata: {
         ...(state.agentId ? { agentId: state.agentId } : {}),
         ...(state.turnId ? { turnId: state.turnId } : {}),
+        ...(state.currentTaskId ? { taskId: state.currentTaskId } : {}),
       },
     },
     () =>

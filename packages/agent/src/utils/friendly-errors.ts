@@ -45,6 +45,7 @@ import {
   type NoProgressOutcome,
 } from "../graph/no-progress";
 import { isEmptyTerminalResponseError } from "../graph/empty-terminal-response";
+import { SurplusOutcomeUnknownError } from "../providers/surplus-transport";
 
 /**
  * User-visible error categories. Deliberately a thinner re-grouping
@@ -301,6 +302,14 @@ function isProviderToolSchemaRejectionMessage(message: string): boolean {
  * return it`) here — do NOT silently re-classify.
  */
 export function toFriendlyError(error: unknown): FriendlyError {
+  if (error instanceof SurplusOutcomeUnknownError) {
+    return {
+      message: "The model request may have been processed. Check Costs before trying again, or ask your server administrator to review the Surplus request.",
+      category: "unknown",
+      code: "MDL007",
+      detailsForLog: "surplus_outcome_unknown",
+    };
+  }
   if (error instanceof Error && error.name === "OrdinaryContentAccessRetryRequiredError") {
     return {
       message: "The sharing outcome needs verification. Check the original operation before requesting another share; repeating the request could create a different access change.",

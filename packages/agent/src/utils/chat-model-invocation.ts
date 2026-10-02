@@ -7,6 +7,7 @@ import { isInteropZodSchema } from "@langchain/core/utils/types";
 import { toJsonSchema } from "@langchain/core/utils/json_schema";
 import { log, getCurrentTurnId } from "@nautilo/logger";
 import { ServerProviderCredentialsDeniedError, assertCanUseServerProviderCredentials } from "@nautilo/trust";
+import { getCachedServerModelConfigRow, kickServerModelConfigRefresh } from "@nautilo/db";
 import { causalHumanForExecution } from "../runtime/causal-human-context";
 import {
   bindModelAttemptProgressSinkByKey,
@@ -19,6 +20,10 @@ import { getModelById } from "../config/assistant-models";
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
 import { ModelUnavailableError, resolveRetainedModels } from "../config/eligible-models";
 import { createUniversalModel } from "../providers/universal";
+import { resolveProviderKey } from "../resolve-provider-key";
+import { resolveQualifiedSurplusChatRoute } from "../providers/surplus-route";
+import { canUseQualifiedSurplusChatRoute, invokeSurplusChatAttempt } from "../providers/surplus-attempt";
+import { SurplusOutcomeUnknownError } from "../providers/surplus-transport";
 import { DEFAULT_REASONING_EFFORT } from "../providers/factory";
 import { isDirectGpt6Model } from "../providers/openai-compat";
 import { modelRouteProvider } from "../providers/model-route";
@@ -932,6 +937,77 @@ export async function invokeChatModelWithFallback(
           throw new Error("Server foreground funding session returned an invalid attempt binding.");
         }
         try {
+          // This is a server-wide serving preference, never a personal-key
+          // transport or another catalogue model. The released qualification
+          // map remains empty until the exact route has live evidence.
+          if (usageFunding.kind !== "personal") {
+            kickServerModelConfigRefresh();
+            const route = resolveQualifiedSurplusChatRoute(currentModelId);
+            const surplusKey = resolveProviderKey("surplus");
+            const catalogEntry = getActiveModelCatalogSync().catalog.entries.find((entry) => entry.id === currentModelId);
+            if (route && surplusKey && canUseQualifiedSurplusChatRoute({
+              route,
+              funding: usageFunding,
+              prefersSurplus: getCachedServerModelConfigRow()?.preferSurplus === true,
+              hasSurplusCredential: surplusKey !== null,
+              needsVision,
+              requiresTools,
+              reasoningRequested: requestedReasoningEffort !== undefined
+                || (catalogEntry?.features?.reasoning === true && reasoningOutput),
+              usesResponsesApi: attemptProvider === "openai" && invokeOptions?.useOpenAIResponsesApi === true,
+              hasServingProfile: serving !== undefined,
+              estimatedInputTokens: estimateTokenCount(attemptMessages) + estimateBoundToolTokens(tools),
+              maxOutputTokens: maxTokens,
+            })) {
+              const surplusFunding = { ...usageFunding, providerRoute: "surplus" };
+              const result = await invokeSurplusChatAttempt({
+                route,
+                apiKey: surplusKey,
+                messages: attemptMessages,
+                tools,
+                config: llmCallConfig,
+                maxOutputTokens: maxTokens,
+                funding: surplusFunding,
+                invokeModel: (model, selectedMessages, selectedConfig) => invokeForegroundAttemptWithUsageContext(
+                  model,
+                  selectedMessages,
+                  selectedConfig,
+                  currentModelId,
+                  invokeOptions?.fundingHumanUserId ?? "",
+                  invokeOptions?.serverFundedService,
+                  fundingSession,
+                  agentId,
+                  controls,
+                  undefined,
+                  surplusFunding,
+                  false,
+                  "none",
+                  {
+                    ...(callerProviderTimeoutMs === undefined ? {} : { providerTimeoutMs: callerProviderTimeoutMs }),
+                    callerSuppliedProviderTimeout: callerProviderTimeoutMs !== undefined,
+                    ...(callerFirstProgressTimeoutMs === undefined ? {} : { firstProgressTimeoutMs: callerFirstProgressTimeoutMs }),
+                    ...(invokeOptions?.isolatedProgress ? { isolatedProgress: true } : {}),
+                  },
+                ),
+              });
+              if (result.kind === "served") {
+                result.response.response_metadata = {
+                  ...result.response.response_metadata,
+                  serving_transport: "surplus",
+                };
+                return result.response;
+              }
+              // A definitive unserved, uncharged refusal is the only same-
+              // model transport hop. Recheck live server funding before the
+              // direct provider receives this prompt.
+              try {
+                if (fundingSession) await fundingSession.recheckAttempt(currentModelId);
+                else await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
+              } catch (error) {
+                throw new ForegroundFundingRecheckError(error);
+              }
+            }
+          }
           log(`[nautilo/agent] Attempting model: ${currentModelId}`);
           const model = await createUniversalModel(currentModelId, {
             maxTokens,
@@ -1006,6 +1082,7 @@ export async function invokeChatModelWithFallback(
       // provider failure or unlock another fallback/funding source.
       if (!(error instanceof ProviderAttemptError)) throw error;
       const providerError = error.cause;
+      if (providerError instanceof SurplusOutcomeUnknownError) throw providerError;
       // The caller owns this cancellation. It must bypass error
       // classification, health cooldown, reasoning retries, and chain
       // fallback even if the provider surfaced a timeout-shaped AbortError.

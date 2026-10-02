@@ -12,7 +12,8 @@ const stored = (patch: Partial<ServerModelConfigRow> = {}): ServerModelConfigRow
   id: "server", defaultChatModel: null, conductorModel: null, stenographerModel: null,
   reflectionModel: null, memoryReviewModel: null, embeddingModel: null,
   imageModel: null, musicModel: null, videoModel: null, speechModel: null,
-  fallbackChain: null, reasoningOutput: null, reasoningPolicy: null, updatedAt: new Date(), ...patch,
+  fallbackChain: null, reasoningOutput: null, reasoningPolicy: null, preferSurplus: false,
+  updatedAt: new Date(), ...patch,
 });
 beforeEach(() => {
   process.env["NAUTILO_SKIP_VENICE_REFRESH"] = "1";

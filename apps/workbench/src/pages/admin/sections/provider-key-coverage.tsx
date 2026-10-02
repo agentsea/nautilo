@@ -22,6 +22,10 @@ const COVERAGE_ROWS = [
     ],
   },
   {
+    functionality: "Surplus marketplace key",
+    providers: [["surplus", "Surplus Intelligence"]],
+  },
+  {
     functionality: "Embeddings",
     providers: [
       ["venice", "Venice"],

@@ -5,8 +5,14 @@ export type CostsModelBarInput = CostsByModelRow;
 
 export const MODEL_BADGE_ACTUAL = "actual" as const;
 export const MODEL_BADGE_FALLBACK_ESTIMATE = "fallback estimate" as const;
+export const MODEL_BADGE_PENDING = "pending cost" as const;
+export const MODEL_BADGE_UNKNOWN = "unknown cost" as const;
 
-export type ModelCostBadge = typeof MODEL_BADGE_ACTUAL | typeof MODEL_BADGE_FALLBACK_ESTIMATE;
+export type ModelCostBadge =
+  | typeof MODEL_BADGE_ACTUAL
+  | typeof MODEL_BADGE_FALLBACK_ESTIMATE
+  | typeof MODEL_BADGE_PENDING
+  | typeof MODEL_BADGE_UNKNOWN;
 
 export interface ModelCostBarRow {
   key: string;
@@ -22,11 +28,14 @@ export interface ModelCostBarRow {
  * appears even when some calls on the same model also reported actual cost.
  */
 export function modelRowBadges(
-  row: Pick<CostsModelBarInput, "hasActual" | "hasFallbackEstimate">,
+  row: Pick<CostsModelBarInput, "hasActual" | "hasFallbackEstimate"> &
+    Partial<Pick<CostsModelBarInput, "pendingAttempts" | "unknownAttempts">>,
 ): ModelCostBadge[] {
   const badges: ModelCostBadge[] = [];
   if (row.hasActual) badges.push(MODEL_BADGE_ACTUAL);
   if (row.hasFallbackEstimate) badges.push(MODEL_BADGE_FALLBACK_ESTIMATE);
+  if ((row.pendingAttempts ?? 0) > 0) badges.push(MODEL_BADGE_PENDING);
+  if ((row.unknownAttempts ?? 0) > 0) badges.push(MODEL_BADGE_UNKNOWN);
   return badges;
 }
 

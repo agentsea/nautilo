@@ -15,8 +15,17 @@ describe("key-registry", () => {
     expect(getKeyByEnvVar("NAUTILO_GATEWAY_API_KEY")?.signupUrl).toBe("");
   });
 
-  test("registry has fourteen keys", () => {
-    expect(KEY_REGISTRY.length).toBe(14);
+  test("registry has fifteen keys", () => {
+    expect(KEY_REGISTRY.length).toBe(15);
+  });
+
+  test("Surplus accepts an opaque single-line buyer key without a Bearer prefix", () => {
+    const key = getKeyByEnvVar("SURPLUS_API_KEY");
+    expect(key).toMatchObject({ id: "surplus", category: "llm" });
+    expect(key?.formatCheck("inf_12345678901234567890")).toBe(true);
+    expect(key?.formatCheck("short")).toBe(false);
+    expect(key?.formatCheck("Bearer inf_12345678901234567890")).toBe(false);
+    expect(key?.formatCheck("inf_12345678901234567890\n")).toBe(false);
   });
 
   test("getKeyByEnvVar resolves Venice", () => {

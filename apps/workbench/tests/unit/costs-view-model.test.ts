@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   MODEL_BADGE_ACTUAL,
   MODEL_BADGE_FALLBACK_ESTIMATE,
+  MODEL_BADGE_PENDING,
+  MODEL_BADGE_UNKNOWN,
   buildModelBarRows,
   modelRowBadges,
   modelRowTitle,
@@ -22,6 +24,8 @@ function modelRow(
     totalCostUsd: 0.01,
     hasActual: false,
     hasFallbackEstimate: false,
+    pendingAttempts: 0,
+    unknownAttempts: 0,
     ...overrides,
   };
 }
@@ -48,6 +52,15 @@ describe("M217 — costs view-model badges", () => {
       MODEL_BADGE_ACTUAL,
       MODEL_BADGE_FALLBACK_ESTIMATE,
     ]);
+  });
+
+  test("unresolved marketplace attempts remain visible", () => {
+    expect(modelRowBadges({
+      hasActual: false,
+      hasFallbackEstimate: false,
+      pendingAttempts: 2,
+      unknownAttempts: 1,
+    })).toEqual([MODEL_BADGE_PENDING, MODEL_BADGE_UNKNOWN]);
   });
 
   test("modelRowTitle preserves raw model id for diagnosis", () => {

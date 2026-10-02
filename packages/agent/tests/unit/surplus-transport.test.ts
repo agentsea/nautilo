@@ -1,0 +1,452 @@
+import { describe, expect, test } from "bun:test";
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import {
+  createSurplusChatModel,
+  createSurplusObservedFetch,
+  isSafeSurplusDirectFallback,
+  readSurplusWireReceipt,
+} from "../../src/providers/surplus-transport";
+import { resolveQualifiedSurplusChatRoute } from "../../src/providers/surplus-route";
+import {
+  assertCompleteSurplusResponse,
+  assertSuccessfulSurplusProviderReceipt,
+  canUseQualifiedSurplusChatRoute,
+  classifySurplusFailedAttempt,
+  readSurplusResponseUsage,
+  SurplusIncompleteResponseError,
+  SurplusProviderRouteMismatchError,
+} from "../../src/providers/surplus-attempt";
+import { createManageConnectedWebOperationTool } from "../../src/tools/connected-web-accounts/manage-connected-web-operation";
+
+const VENICE_ROUTE = {
+  catalogModelId: "venice:openai-gpt-55",
+  surplusModelId: "gpt-5.5",
+  providerPin: "venice" as const,
+  supportsTools: true,
+  supportsVision: false,
+  supportsReasoning: false,
+  maxContextTokens: 100_000,
+  maxOutputTokens: 8_000,
+  qualifiedAt: "2026-10-01",
+};
+
+describe("Surplus wire boundary", () => {
+  test("retains real zero cost and omits absent cost", () => {
+    const withZero = readSurplusWireReceipt(new Headers({
+      "x-request-id": "request-1",
+      "x-si-buyer-cost-micro": "0",
+      "x-si-marketplace-attempts": "0",
+      "x-si-provider-family": "venice",
+      "x-si-truncated": "1",
+    }));
+    expect(withZero).toEqual({
+      requestId: "request-1",
+      buyerCostMicro: 0,
+      marketplaceAttempts: 0,
+      providerFamily: "venice",
+      truncated: true,
+    });
+    expect(readSurplusWireReceipt(new Headers()).buyerCostMicro).toBeUndefined();
+    expect(readSurplusWireReceipt(new Headers({ "x-si-buyer-cost-micro": "NaN" })).buyerCostMicro).toBeUndefined();
+  });
+
+  test("only calls the fixed HTTPS chat endpoint and refuses redirects", async () => {
+    const seen: Array<{ url: string; redirect?: string }> = [];
+    const fakeFetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input;
+      seen.push({ url, ...(init?.redirect ? { redirect: init.redirect } : {}) });
+      return new Response("{}", { headers: { "x-request-id": "request-2" } });
+    }) as typeof fetch;
+    const receipts: string[] = [];
+    const observed = createSurplusObservedFetch((receipt) => {
+      if (receipt.requestId) receipts.push(receipt.requestId);
+    }, fakeFetch);
+    await observed("https://api.surplusintelligence.ai/v1/chat/completions");
+    expect(seen).toEqual([{
+      url: "https://api.surplusintelligence.ai/v1/chat/completions",
+      redirect: "error",
+    }]);
+    expect(receipts).toEqual(["request-2"]);
+    expect(observed("https://other.example/v1/chat/completions")).rejects.toThrow("outside the qualified chat endpoint");
+    expect(observed("https://api.surplusintelligence.ai/v1/images/generations")).rejects.toThrow("outside the qualified chat endpoint");
+    expect(seen).toHaveLength(1);
+  });
+
+  test("same-model direct fallback needs an unserved zero-cost refusal", () => {
+    const refusal = { code: "no_sellers_for_model" };
+    const receipt = { marketplaceAttempts: 0, buyerCostMicro: 0, truncated: false };
+    expect(isSafeSurplusDirectFallback(refusal, 404, receipt, false)).toBe(true);
+    expect(isSafeSurplusDirectFallback(refusal, 404, receipt, true)).toBe(false);
+    expect(isSafeSurplusDirectFallback(refusal, 404, { ...receipt, marketplaceAttempts: 1 }, false)).toBe(false);
+    expect(isSafeSurplusDirectFallback(refusal, 404, { marketplaceAttempts: 0, truncated: false }, false)).toBe(false);
+    expect(isSafeSurplusDirectFallback(refusal, 503, receipt, false)).toBe(false);
+    expect(isSafeSurplusDirectFallback({ code: "other" }, 404, receipt, false)).toBe(false);
+  });
+
+  test("refuses an output budget above the qualified ceiling instead of clipping it", () => {
+    expect(() => createSurplusChatModel({
+      route: VENICE_ROUTE,
+      apiKey: "test-key",
+      maxOutputTokens: VENICE_ROUTE.maxOutputTokens + 1,
+      onResponse: () => {},
+    })).toThrow("exceeds the qualified route limit");
+  });
+
+  test("reuses the canonical Venice object-root tool normalization for Venice pins", () => {
+    const model = createSurplusChatModel({
+      route: VENICE_ROUTE,
+      apiKey: "test-key",
+      maxOutputTokens: 100,
+      onResponse: () => {},
+    });
+    const bound = model.bindTools!([createManageConnectedWebOperationTool()]);
+    const tools = (bound as unknown as {
+      defaultOptions?: { tools?: Array<{ function?: { parameters?: Record<string, unknown> } }> };
+    }).defaultOptions?.tools;
+    expect(tools).toHaveLength(1);
+    expect(tools?.[0]?.function?.parameters?.["type"]).toBe("object");
+    expect(tools?.[0]?.function?.parameters).not.toHaveProperty("anyOf");
+  });
+
+  test("streamed SDK invoke assembles text and retains Surplus terminal usage", async () => {
+    const chunks = [
+      {
+        id: "chatcmpl-surplus-test",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "gpt-5.5",
+        choices: [{ index: 0, delta: { role: "assistant", content: "O" }, finish_reason: null }],
+      },
+      {
+        id: "chatcmpl-surplus-test",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "gpt-5.5",
+        choices: [{ index: 0, delta: { content: "K" }, finish_reason: null }],
+      },
+      {
+        id: "chatcmpl-surplus-test",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "gpt-5.5",
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      },
+      {
+        id: "chatcmpl-surplus-test",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "gpt-5.5",
+        choices: [],
+        usage: {
+          prompt_tokens: 11,
+          completion_tokens: 17,
+          total_tokens: 28,
+          completion_tokens_details: { reasoning_tokens: 10 },
+          buyer_cost_micro: 283,
+        },
+      },
+    ];
+    let requestBody: Record<string, unknown> | undefined;
+    const fetchImpl = (async (request: string | URL | Request, init?: RequestInit) => {
+      const rawBody = init?.body ?? (request instanceof Request ? await request.clone().text() : undefined);
+      requestBody = typeof rawBody === "string" ? JSON.parse(rawBody) as Record<string, unknown> : undefined;
+      return new Response(`${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`, {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-request-id": "request-stream",
+          "x-si-provider-family": "Venice",
+        },
+      });
+    }) as typeof fetch;
+    const receipts: string[] = [];
+    const model = createSurplusChatModel({
+      route: VENICE_ROUTE,
+      apiKey: "test-key",
+      maxOutputTokens: 100,
+      onResponse: (receipt) => {
+        if (receipt.requestId) receipts.push(receipt.requestId);
+      },
+      fetchImpl,
+    });
+
+    const response = await model.invoke([new HumanMessage("Reply OK")]) as AIMessage;
+
+    expect(response.content).toBe("OK");
+    expect(response.response_metadata["finish_reason"]).toBe("stop");
+    expect(requestBody?.["stream"]).toBe(true);
+    expect(requestBody?.["stream_options"]).toEqual({ include_usage: true });
+    expect(receipts).toEqual(["request-stream"]);
+    expect(readSurplusResponseUsage(response)).toEqual({
+      inputTokens: 11,
+      outputTokens: 17,
+      totalTokens: 28,
+      reasoningTokens: 10,
+      buyerCostMicro: 283,
+    });
+  });
+
+  test("successful receipts must confirm the exact qualified provider family", () => {
+    expect(() => assertSuccessfulSurplusProviderReceipt(
+      VENICE_ROUTE,
+      { providerFamily: "Venice", truncated: false },
+      200,
+    )).not.toThrow();
+    expect(() => assertSuccessfulSurplusProviderReceipt(
+      VENICE_ROUTE,
+      { providerFamily: "openai", truncated: false },
+      200,
+    )).toThrow(SurplusProviderRouteMismatchError);
+    expect(() => assertSuccessfulSurplusProviderReceipt(
+      VENICE_ROUTE,
+      { truncated: false },
+      200,
+    )).toThrow(SurplusProviderRouteMismatchError);
+    expect(() => assertSuccessfulSurplusProviderReceipt(
+      VENICE_ROUTE,
+      { truncated: false },
+      404,
+    )).not.toThrow();
+  });
+
+  test("deadline-truncated responses cannot become successful answers", () => {
+    expect(() => assertCompleteSurplusResponse({
+      requestId: "request-truncated",
+      providerFamily: "venice",
+      truncated: true,
+    }, new AIMessage({ content: "partial", response_metadata: { finish_reason: "stop" } })))
+      .toThrow(SurplusIncompleteResponseError);
+    expect(() => assertCompleteSurplusResponse({
+      requestId: "request-complete",
+      providerFamily: "venice",
+      truncated: false,
+    }, new AIMessage({ content: "done", response_metadata: { finish_reason: "stop" } }))).not.toThrow();
+    for (const finishReason of ["tool_calls", "length"] as const) {
+      expect(() => assertCompleteSurplusResponse(
+        { requestId: `request-${finishReason}`, providerFamily: "venice", truncated: false },
+        new AIMessage({ content: "done", response_metadata: { finish_reason: finishReason } }),
+      )).not.toThrow();
+    }
+  });
+
+  test("SDK stream without terminal completion metadata is interrupted and cannot replay", async () => {
+    const chunks = [
+      {
+        id: "chatcmpl-surplus-incomplete",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "gpt-5.5",
+        choices: [{ index: 0, delta: { role: "assistant", content: "partial" }, finish_reason: null }],
+      },
+      {
+        id: "chatcmpl-surplus-incomplete",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "gpt-5.5",
+        choices: [],
+        usage: {
+          prompt_tokens: 11,
+          completion_tokens: 7,
+          total_tokens: 18,
+          buyer_cost_micro: 283,
+        },
+      },
+    ];
+    let receipt: Parameters<typeof assertCompleteSurplusResponse>[0];
+    const model = createSurplusChatModel({
+      route: VENICE_ROUTE,
+      apiKey: "test-key",
+      maxOutputTokens: 100,
+      onResponse: (next) => { receipt = next; },
+      fetchImpl: (async (_request: string | URL | Request, _init?: RequestInit) => new Response(
+        `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`,
+        {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "x-request-id": "request-incomplete",
+            "x-si-provider-family": "Venice",
+          },
+        },
+      )) as typeof fetch,
+    });
+
+    const response = await model.invoke([new HumanMessage("Reply completely")]) as AIMessage;
+    let completionError: unknown;
+    try {
+      assertCompleteSurplusResponse(receipt, response);
+    } catch (error) {
+      completionError = error;
+    }
+
+    expect(response.content).toBe("partial");
+    expect(response.response_metadata["finish_reason"] ?? null).toBeNull();
+    expect(completionError).toBeInstanceOf(SurplusIncompleteResponseError);
+    expect(classifySurplusFailedAttempt({
+      error: completionError,
+      cancelled: false,
+      responseStatus: 200,
+      receipt,
+      terminalUsage: readSurplusResponseUsage(response),
+    })).toEqual({
+      outcome: "interrupted",
+      costState: "actual",
+      actualCostUsd: 0.000283,
+      failureCode: "incomplete_response",
+      directFallback: false,
+    });
+  });
+
+  test("failure classification preserves known header cost and fences truncation and route mismatch", () => {
+    expect(classifySurplusFailedAttempt({
+      error: new Error("deadline"),
+      cancelled: false,
+      responseStatus: 200,
+      receipt: {
+        requestId: "request-truncated",
+        providerFamily: "venice",
+        buyerCostMicro: 268,
+        truncated: true,
+      },
+    })).toEqual({
+      outcome: "interrupted",
+      costState: "actual",
+      actualCostUsd: 0.000268,
+      failureCode: "truncated_response",
+      directFallback: false,
+    });
+    expect(classifySurplusFailedAttempt({
+      error: new Error("deadline"),
+      cancelled: false,
+      responseStatus: 200,
+      receipt: { requestId: "request-truncated", providerFamily: "venice", truncated: true },
+    })).toEqual({
+      outcome: "interrupted",
+      costState: "pending",
+      failureCode: "truncated_response",
+      directFallback: false,
+    });
+    expect(classifySurplusFailedAttempt({
+      error: new Error("deadline"),
+      cancelled: false,
+      responseStatus: 200,
+      receipt: { requestId: "request-truncated", providerFamily: "venice", truncated: true },
+      terminalUsage: {
+        inputTokens: 11,
+        outputTokens: 17,
+        totalTokens: 28,
+        reasoningTokens: 10,
+        buyerCostMicro: 283,
+      },
+    })).toEqual({
+      outcome: "interrupted",
+      costState: "actual",
+      actualCostUsd: 0.000283,
+      failureCode: "truncated_response",
+      directFallback: false,
+    });
+    expect(classifySurplusFailedAttempt({
+      error: new Error("deadline"),
+      cancelled: false,
+      responseStatus: 200,
+      receipt: { requestId: "request-truncated-zero", providerFamily: "venice", truncated: true },
+      terminalUsage: { buyerCostMicro: 0 },
+    })).toEqual({
+      outcome: "interrupted",
+      costState: "actual",
+      actualCostUsd: 0,
+      failureCode: "truncated_response",
+      directFallback: false,
+    });
+    expect(classifySurplusFailedAttempt({
+      error: new SurplusProviderRouteMismatchError(),
+      cancelled: false,
+      responseStatus: 200,
+      receipt: { buyerCostMicro: 0, providerFamily: "openai", truncated: false },
+    })).toEqual({
+      outcome: "unknown",
+      costState: "actual",
+      actualCostUsd: 0,
+      failureCode: "provider_route_mismatch",
+      directFallback: false,
+    });
+    expect(classifySurplusFailedAttempt({
+      error: { code: "no_sellers_for_model" },
+      cancelled: false,
+      responseStatus: 404,
+      receipt: { marketplaceAttempts: 0, buyerCostMicro: 0, truncated: false },
+    })).toEqual({
+      outcome: "failed",
+      costState: "actual",
+      actualCostUsd: 0,
+      failureCode: "no_sellers_for_model",
+      directFallback: true,
+    });
+  });
+});
+
+describe("qualified Surplus route selection", () => {
+  test("public model similarity never grants a production route", () => {
+    expect(resolveQualifiedSurplusChatRoute("venice:openai-gpt-55")).toBeNull();
+  });
+
+  test("requires signed chat membership and an exact provider pin", () => {
+    const candidate = {
+      catalogModelId: "venice:openai-gpt-55",
+      surplusModelId: "gpt-5.5",
+      providerPin: "venice" as const,
+      supportsTools: true,
+      supportsVision: false,
+      supportsReasoning: false,
+      maxContextTokens: 100_000,
+      maxOutputTokens: 8_000,
+      qualifiedAt: "2026-10-01",
+    };
+    expect(resolveQualifiedSurplusChatRoute(candidate.catalogModelId, [candidate])).toEqual(candidate);
+    expect(resolveQualifiedSurplusChatRoute(candidate.catalogModelId, [{ ...candidate, providerPin: "openrouter" }])).toBeNull();
+    expect(resolveQualifiedSurplusChatRoute("openai:not-signed", [{ ...candidate, catalogModelId: "openai:not-signed", providerPin: "openai" }])).toBeNull();
+  });
+
+  test("server-only admission cannot expand unproven feature or context limits", () => {
+    const route = VENICE_ROUTE;
+    const base = {
+      route,
+      funding: { kind: "server" as const, providerRoute: "venice", humanUserId: "user-1" },
+      prefersSurplus: true,
+      hasSurplusCredential: true,
+      needsVision: false,
+      requiresTools: true,
+      reasoningRequested: false,
+      usesResponsesApi: false,
+      hasServingProfile: false,
+      estimatedInputTokens: 1_000,
+      maxOutputTokens: 2_000,
+    };
+    expect(canUseQualifiedSurplusChatRoute(base)).toBe(true);
+    expect(canUseQualifiedSurplusChatRoute({ ...base, funding: {
+      kind: "personal", humanUserId: "user-1", payerHumanId: "user-1", providerRoute: "venice",
+      credentialId: "credential", credentialRevision: 1,
+    } })).toBe(false);
+    expect(canUseQualifiedSurplusChatRoute({ ...base, needsVision: true })).toBe(false);
+    expect(canUseQualifiedSurplusChatRoute({ ...base, reasoningRequested: true })).toBe(false);
+    expect(canUseQualifiedSurplusChatRoute({ ...base, estimatedInputTokens: 99_000 })).toBe(false);
+    expect(canUseQualifiedSurplusChatRoute({ ...base, maxOutputTokens: 8_001 })).toBe(false);
+  });
+});
+
+describe("Surplus usage receipt", () => {
+  test("parses terminal streamed cost including zero", () => {
+    const message = {
+      content: "done",
+      response_metadata: { usage: {
+        prompt_tokens: 8,
+        completion_tokens: 5,
+        buyer_cost_micro: 0,
+      } },
+      usage_metadata: { input_tokens: 8, output_tokens: 5, total_tokens: 13 },
+    } as unknown as AIMessage;
+    expect(readSurplusResponseUsage(message)).toEqual({
+      inputTokens: 8, outputTokens: 5, totalTokens: 13, buyerCostMicro: 0,
+    });
+  });
+});

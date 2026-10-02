@@ -43,6 +43,8 @@ export interface ResolvedServerModelConfig {
   reasoningOutput: Record<string, boolean>;
   /** one server default plus sparse model-specific reasoning-effort overrides. */
   reasoningPolicy: ServerReasoningPolicy;
+  /** Defaults off for both absent legacy rows and fresh instances. */
+  preferSurplus: boolean;
 }
 
 export type ServerModelConfigPatch = Partial<
@@ -61,6 +63,7 @@ export type ServerModelConfigPatch = Partial<
     | "fallbackChain"
     | "reasoningOutput"
     | "reasoningPolicy"
+    | "preferSurplus"
   >
 >;
 
@@ -92,6 +95,7 @@ export function resolveServerModelConfig(
           .map(([modelId]) => [modelId, "off"]),
       ),
     },
+    preferSurplus: row?.preferSurplus ?? false,
   };
 }
 
@@ -137,6 +141,7 @@ export async function upsertServerModelConfig(
   if (patch.fallbackChain !== undefined) set.fallbackChain = patch.fallbackChain;
   if (patch.reasoningOutput !== undefined) set.reasoningOutput = patch.reasoningOutput;
   if (patch.reasoningPolicy !== undefined) set.reasoningPolicy = patch.reasoningPolicy;
+  if (patch.preferSurplus !== undefined) set.preferSurplus = patch.preferSurplus;
 
   const [row] = await db
     .insert(serverModelConfig)

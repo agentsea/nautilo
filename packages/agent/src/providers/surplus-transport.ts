@@ -1,0 +1,125 @@
+import { ChatOpenAI } from "@langchain/openai";
+import type { ChatModel } from "./types";
+import type { QualifiedSurplusChatRoute } from "./surplus-route";
+import { wrapVeniceModelForToolSchemas } from "./venice-compat";
+
+const SURPLUS_API_ROOT = "https://api.surplusintelligence.ai/v1";
+const SURPLUS_CHAT_PATH = "/v1/chat/completions";
+
+export interface SurplusWireReceipt {
+  readonly requestId?: string;
+  readonly servedBy?: string;
+  readonly providerFamily?: string;
+  readonly marketplaceAttempts?: number;
+  readonly buyerCostMicro?: number;
+  readonly adaptedParameters?: string;
+  readonly truncated: boolean;
+}
+
+export class SurplusOutcomeUnknownError extends Error {
+  readonly code = "surplus_outcome_unknown" as const;
+
+  constructor() {
+    super("The Surplus request may have been processed or billed. Check its request status before trying again.");
+    this.name = "SurplusOutcomeUnknownError";
+  }
+}
+
+/** Only a proven, unserved and uncharged refusal may switch transports. */
+export function isSafeSurplusDirectFallback(
+  error: unknown,
+  responseStatus: number | undefined,
+  receipt: SurplusWireReceipt | undefined,
+  visibleOutput: boolean,
+): boolean {
+  if (visibleOutput || responseStatus !== 404) return false;
+  if (receipt?.marketplaceAttempts !== 0 || receipt.buyerCostMicro !== 0) return false;
+  const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  return code === "no_sellers_for_model";
+}
+
+function nonEmpty(value: string | null): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function nonnegativeInteger(value: string | null): number | undefined {
+  if (value === null || !/^(0|[1-9]\d*)$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+export function readSurplusWireReceipt(headers: Headers): SurplusWireReceipt {
+  const requestId = nonEmpty(headers.get("x-request-id"));
+  const servedBy = nonEmpty(headers.get("x-si-served-by"));
+  const providerFamily = nonEmpty(headers.get("x-si-provider-family"));
+  const marketplaceAttempts = nonnegativeInteger(headers.get("x-si-marketplace-attempts"));
+  const buyerCostMicro = nonnegativeInteger(headers.get("x-si-buyer-cost-micro"));
+  const adaptedParameters = nonEmpty(headers.get("x-si-adapted-params"));
+  return {
+    ...(requestId ? { requestId } : {}),
+    ...(servedBy ? { servedBy } : {}),
+    ...(providerFamily ? { providerFamily } : {}),
+    ...(marketplaceAttempts !== undefined ? { marketplaceAttempts } : {}),
+    ...(buyerCostMicro !== undefined ? { buyerCostMicro } : {}),
+    ...(adaptedParameters ? { adaptedParameters } : {}),
+    truncated: headers.get("x-si-truncated") === "1",
+  };
+}
+
+/**
+ * The SDK's HTTP hook sees headers before it begins consuming a stream.
+ * Fail closed on redirects or a changed target: no Surplus credential may be
+ * forwarded to another origin or endpoint.
+ */
+export function createSurplusObservedFetch(
+  onResponse: (receipt: SurplusWireReceipt, status: number) => Promise<void> | void,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): typeof fetch {
+  return (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const target = input instanceof Request ? input.url : String(input);
+    const url = new URL(target);
+    if (url.origin !== "https://api.surplusintelligence.ai" || url.pathname !== SURPLUS_CHAT_PATH) {
+      throw new Error("Surplus request target is outside the qualified chat endpoint.");
+    }
+    const response = await fetchImpl(input, { ...init, redirect: "error" });
+    await onResponse(readSurplusWireReceipt(response.headers), response.status);
+    return response;
+  }) as typeof fetch;
+}
+
+export interface CreateSurplusChatModelInput {
+  readonly route: QualifiedSurplusChatRoute;
+  readonly apiKey: string;
+  readonly maxOutputTokens: number;
+  readonly onResponse: (receipt: SurplusWireReceipt, status: number) => Promise<void> | void;
+  readonly fetchImpl?: typeof fetch;
+}
+
+/** Server-funded, pinned text-chat wire. Caller owns attempt persistence. */
+export function createSurplusChatModel(input: CreateSurplusChatModelInput): ChatModel {
+  const apiKey = input.apiKey.trim();
+  if (!apiKey) throw new Error("Surplus credential is not configured.");
+  if (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens < 1) {
+    throw new Error("Invalid Surplus output budget.");
+  }
+  if (input.maxOutputTokens > input.route.maxOutputTokens) {
+    throw new Error("Surplus output budget exceeds the qualified route limit.");
+  }
+  const model = new ChatOpenAI({
+    model: input.route.surplusModelId,
+    apiKey,
+    maxTokens: input.maxOutputTokens,
+    maxRetries: 0,
+    streaming: true,
+    streamUsage: true,
+    modelKwargs: { provider: input.route.providerPin },
+    configuration: {
+      baseURL: SURPLUS_API_ROOT,
+      fetch: createSurplusObservedFetch(input.onResponse, input.fetchImpl),
+    },
+  }) as unknown as ChatModel;
+  return input.route.providerPin === "venice"
+    ? wrapVeniceModelForToolSchemas(model)
+    : model;
+}

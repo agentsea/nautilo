@@ -1,4 +1,4 @@
-type ProviderName = "openai" | "openrouter" | "anthropic" | "google" | "venice" | "typesafe";
+type ProviderName = "openai" | "openrouter" | "anthropic" | "google" | "venice" | "typesafe" | "surplus";
 
 interface TenantContext {
   tenantId?: string;
@@ -12,6 +12,7 @@ const ENV_BY_PROVIDER: Record<ProviderName, string> = {
   google: "GOOGLE_API_KEY",
   venice: "VENICE_API_KEY",
   typesafe: "TYPESAFE_API_KEY",
+  surplus: "SURPLUS_API_KEY",
 };
 
 /**

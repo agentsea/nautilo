@@ -43,6 +43,9 @@ export function computeHasLlmFromKeys(
   return keys.some(
     (k) =>
       k.id !== "nautilo-gateway"
+      // A Surplus key is only a marketplace credential. Until a released,
+      // qualified chat route exists it cannot make setup inference-ready.
+      && k.id !== "surplus"
       && LLM_KEY_IDS.has(k.id)
       && keyIsConfigured(k),
   ) || managedGatewayIsConfigured(keys, env);

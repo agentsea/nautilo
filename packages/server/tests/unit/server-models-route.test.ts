@@ -92,6 +92,7 @@ const modelConfig: ResolvedServerModelConfig = {
   fallbackChain: ["openai:gpt-5.4-mini"],
   reasoningOutput: { [KNOWN_MODEL]: true },
   reasoningPolicy: { defaultEffort: null, overrides: {} },
+  preferSurplus: false,
 };
 
 describe("server-models parseUpdateBody — reasoningOutput", () => {
@@ -109,6 +110,7 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
       fallbackChain: [KNOWN_MODEL],
       reasoningOutput: { [KNOWN_MODEL]: false },
       reasoningPolicy: { defaultEffort: null, overrides: {} },
+      preferSurplus: true,
     })).toEqual({
       ok: true,
       patch: {
@@ -124,6 +126,7 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
         fallbackChain: [KNOWN_MODEL],
         reasoningOutput: { [KNOWN_MODEL]: false },
         reasoningPolicy: { defaultEffort: null, overrides: {} },
+        preferSurplus: true,
       },
     });
   });
@@ -192,6 +195,17 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
       error: "no recognized fields to update",
     });
   });
+
+  test("accepts only a boolean Surplus preference", () => {
+    expect(parseUpdateBodyForTests({ preferSurplus: true })).toEqual({
+      ok: true,
+      patch: { preferSurplus: true },
+    });
+    expect(parseUpdateBodyForTests({ preferSurplus: "true" })).toEqual({
+      ok: false,
+      error: "preferSurplus must be a boolean",
+    });
+  });
 });
 
 describe("server-models toWire", () => {
@@ -209,6 +223,7 @@ describe("server-models toWire", () => {
       fallbackChain: [],
       reasoningOutput: { [KNOWN_MODEL]: false },
       reasoningPolicy: { defaultEffort: null, overrides: { [KNOWN_MODEL]: "off" } },
+      preferSurplus: true,
     };
     expect(toWire(config)).toEqual({
       defaultChatModel: KNOWN_MODEL,
@@ -223,6 +238,7 @@ describe("server-models toWire", () => {
       fallbackChain: [],
       reasoningOutput: { [KNOWN_MODEL]: false },
       reasoningPolicy: { defaultEffort: null, overrides: { [KNOWN_MODEL]: "off" } },
+      preferSurplus: true,
     });
   });
 
@@ -266,6 +282,32 @@ describe("server-models route authorization, partial writes, and audit", () => {
     expect(await call("GET", requestBase)).toEqual({ status: 401, body: { error: "Authentication required" } });
     expect(await call("GET", { ...requestBase, sessionUserId: "viewer" }))
       .toEqual({ status: 403, body: { error: "admin only" } });
+  });
+
+  test("reports a configured key but keeps chat unqualified when policy is enabled", async () => {
+    const call = routeHarness({
+      getCapabilities: async () => ["read_server_settings"],
+      getDb: () => ({}) as never,
+      getConfig: async () => ({ ...modelConfig, preferSurplus: true }),
+      refreshConfigCache: async () => null,
+      getEffectiveEmbeddingModel: () => null,
+      getActiveEmbeddingSelection: () => null,
+      listMediaModels,
+      getEffectiveMediaModel: () => null,
+      getSurplusKeyConfigured: () => true,
+    });
+
+    expect(await call("GET", { ...requestBase, sessionUserId: "viewer" })).toMatchObject({
+      status: 200,
+      body: {
+        preferSurplus: true,
+        surplus: {
+          keyConfigured: true,
+          policyEnabled: true,
+          chatStatus: "not-qualified",
+        },
+      },
+    });
   });
 
   test("catalog inventory includes decision models and live missing-credential reasons without admitting them for chat", async () => {
@@ -357,6 +399,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
           fallbackChain: patch.fallbackChain ?? modelConfig.fallbackChain,
           reasoningOutput: patch.reasoningOutput ?? modelConfig.reasoningOutput,
           reasoningPolicy: patch.reasoningPolicy ?? modelConfig.reasoningPolicy,
+          preferSurplus: patch.preferSurplus ?? modelConfig.preferSurplus,
         };
       },
       refreshConfigCache: async (force) => {
@@ -418,6 +461,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
         fallbackChain: null,
         reasoningOutput: null,
         reasoningPolicy: null,
+        preferSurplus: false,
         updatedAt: new Date(),
       });
       const seenDefaults: unknown[] = [];
@@ -516,6 +560,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
         fallbackChain: null,
         reasoningOutput: null,
         reasoningPolicy: null,
+        preferSurplus: false,
         updatedAt: new Date(),
       });
       const writes: unknown[] = [];

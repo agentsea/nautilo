@@ -19,6 +19,7 @@ type CostsApiResponse = {
     unavailable: string[];
   };
   byModel: Array<{ displayName: string; hasFallbackEstimate?: boolean }>;
+  totals: CostsSummary["totals"];
   byProvider: CostsSummary["byProvider"];
   byUser: Array<{ label: string }>;
 };
@@ -30,6 +31,8 @@ function fakeSummary(): CostsSummary {
       calls: 3,
       providerOperations: 1,
       unknownProviderOperations: 0,
+      pendingModelAttempts: 1,
+      unknownModelAttempts: 1,
       inputTokens: 1000,
       cachedInputTokens: 0,
       outputTokens: 500,
@@ -50,6 +53,8 @@ function fakeSummary(): CostsSummary {
         totalCostUsd: 0.015,
         hasActual: false,
         hasFallbackEstimate: true,
+        pendingAttempts: 1,
+        unknownAttempts: 1,
       },
     ],
     byCallType: [{ callType: "chat", calls: 3, totalCostUsd: 0.021 }],
@@ -145,6 +150,8 @@ describe("/api/costs auth gating (D405)", () => {
     expect(body.providerCoverage.accounted).toContainEqual({ provider: "cloudconvert", operation: "conversion" });
     expect(body.providerCoverage.unavailable).toEqual(["dynamic_mcp_billing", "external_harness_billing"]);
     expect(body.byProvider).toEqual(fakeSummary().byProvider);
+    expect(body.totals.pendingModelAttempts).toBe(1);
+    expect(body.totals.unknownModelAttempts).toBe(1);
 
     // byModel enriched with a catalog display name.
     expect(body.byModel[0]?.displayName).toContain("Claude Sonnet 4.6");

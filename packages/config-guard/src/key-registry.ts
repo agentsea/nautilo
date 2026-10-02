@@ -239,6 +239,36 @@ export const KEY_REGISTRY: KeyDefinition[] = [
     ],
   },
   {
+    id: "surplus",
+    name: "Surplus Intelligence",
+    envVar: "SURPLUS_API_KEY",
+    category: "llm",
+    purpose: "Marketplace serving for qualified server-funded model routes",
+    required: false,
+    signupUrl: "https://www.surplusintelligence.ai/",
+    formatHint: "raw Surplus buyer API key",
+    formatCheck: (value) => (
+      value.length >= 16
+      && value.trim() === value
+      && !/^Bearer\s/i.test(value)
+      && isSinglePrintableAsciiLine(value)
+    ),
+    doctorHints: [
+      {
+        condition: (value) => value.trim() !== value,
+        message: "Key has leading/trailing whitespace",
+      },
+      {
+        condition: (value) => /^Bearer\s/i.test(value.trimStart()),
+        message: "Paste the raw Surplus key only — do not include a 'Bearer ' prefix",
+      },
+      {
+        condition: (value) => value.trim().length > 0 && value.trim().length < 16,
+        message: "Key appears truncated",
+      },
+    ],
+  },
+  {
     id: "elevenlabs",
     name: "ElevenLabs",
     envVar: "ELEVENLABS_API_KEY",

@@ -57,6 +57,10 @@ function mergeProviderAvailability(
     videoModels: refreshed.videoModels,
     speechModels: refreshed.speechModels,
     effectiveSpeechModel: refreshed.effectiveSpeechModel,
+    surplus: {
+      ...refreshed.surplus,
+      policyEnabled: current.preferSurplus,
+    },
   };
 }
 
@@ -340,6 +344,7 @@ export function ModelsSection() {
       config.musicModel !== draft.musicModel ||
       config.videoModel !== draft.videoModel ||
       config.speechModel !== draft.speechModel ||
+      config.preferSurplus !== draft.preferSurplus ||
       config.fallbackChain.join(",") !== draft.fallbackChain.join(",") ||
       JSON.stringify(config.reasoningPolicy) !== JSON.stringify(draft.reasoningPolicy));
 
@@ -385,6 +390,7 @@ export function ModelsSection() {
     setSave("saving");
     try {
       const saved = await apiClient.admin.serverModels.set({
+        preferSurplus: draft.preferSurplus,
         defaultChatModel: draft.defaultChatModel,
         conductorModel: draft.conductorModel,
         stenographerModel: draft.stenographerModel,
@@ -444,6 +450,36 @@ export function ModelsSection() {
                 these values.
               </p>
             ) : null}
+
+            <div className="rounded-md border border-border/60 bg-background-element/30 p-3">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <label htmlFor="server-prefer-surplus" className="text-xs font-semibold text-foreground">
+                    Prefer Surplus
+                  </label>
+                  <p className="mt-1 text-[11px] text-foreground-muted">
+                    For qualified server-funded model calls, prefer Surplus Intelligence before the model&apos;s direct route. Surplus and its selected seller receive request content, and actual pricing varies by offer.
+                  </p>
+                </div>
+                <input
+                  id="server-prefer-surplus"
+                  type="checkbox"
+                  checked={draft.preferSurplus}
+                  disabled={!canManage}
+                  onChange={(event) => patch({ preferSurplus: event.target.checked })}
+                  className="mt-0.5 size-4 shrink-0"
+                />
+              </div>
+              <p className="mt-2 text-[11px] text-foreground-muted" data-testid="surplus-capability-status">
+                Surplus key: {draft.surplus.keyConfigured ? "Configured" : "Not configured"} · Chat serving: {
+                  draft.surplus.chatStatus === "available"
+                    ? "Available on this server"
+                    : draft.surplus.chatStatus === "qualified-unavailable"
+                      ? "Qualified but unavailable"
+                      : "Not qualified"
+                }
+              </p>
+            </div>
 
             {/* Default chat model */}
             <div className="space-y-1.5">

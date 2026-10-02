@@ -30,6 +30,12 @@ const catalogModels: NonNullable<ServerModelConfig["catalogModels"]> = [
   },
 ];
 const initialConfig = {
+  preferSurplus: false,
+  surplus: {
+    keyConfigured: false,
+    policyEnabled: false,
+    chatStatus: "not-qualified" as const,
+  },
   catalogModels: catalogModels as ServerModelConfig["catalogModels"],
   defaultChatModel: "anthropic:claude-sonnet-4-6",
   conductorModel: "",
@@ -400,6 +406,7 @@ describe("ModelsSection Stenographer model", () => {
 
     await waitFor(() => {
       expect(setServerModelsMock).toHaveBeenCalledWith({
+        preferSurplus: false,
         defaultChatModel: "anthropic:claude-sonnet-4-6",
         conductorModel: "",
         stenographerModel: "openai:gpt-5.4-mini",
@@ -424,6 +431,7 @@ describe("ModelsSection Stenographer model", () => {
       fireEvent.click(view.getByRole("button", { name: "Save changes" }));
     });
     await waitFor(() => expect(setServerModelsMock).toHaveBeenCalledWith({
+      preferSurplus: false,
       defaultChatModel: "anthropic:claude-sonnet-4-6",
       conductorModel: "",
       stenographerModel: "",
@@ -448,6 +456,7 @@ describe("ModelsSection Stenographer model", () => {
 
     await waitFor(() => {
       expect(setServerModelsMock).toHaveBeenCalledWith({
+        preferSurplus: false,
         defaultChatModel: "anthropic:claude-sonnet-4-6",
         conductorModel: "",
         stenographerModel: "",
@@ -467,7 +476,27 @@ describe("ModelsSection Stenographer model", () => {
     expect((scope as HTMLSelectElement).disabled).toBe(true);
     expect((view.getByTestId("server-stenographer-model") as HTMLSelectElement).disabled)
       .toBe(true);
+    expect((view.getByRole("checkbox", { name: "Prefer Surplus" }) as HTMLInputElement).disabled)
+      .toBe(true);
     expect(view.getByText("manage_server_operations", { selector: "code" })).toBeTruthy();
+  });
+
+  test("shows unqualified Surplus separately and persists the default-off preference", async () => {
+    savedConfig.surplus = {
+      keyConfigured: true,
+      policyEnabled: false,
+      chatStatus: "not-qualified",
+    };
+    const view = render(<ModelsSection />);
+    const toggle = await view.findByRole("checkbox", { name: "Prefer Surplus" });
+
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    expect(view.getByTestId("surplus-capability-status").textContent)
+      .toContain("Surplus key: Configured · Chat serving: Not qualified");
+
+    await act(async () => fireEvent.click(toggle));
+    await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
+    await waitFor(() => expect(setServerModelsMock.mock.calls[0]?.[0].preferSurplus).toBe(true));
   });
 
   test("retains unavailable values in all five Admin roles with reasons and recovery actions", async () => {

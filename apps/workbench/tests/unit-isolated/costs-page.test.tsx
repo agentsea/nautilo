@@ -36,6 +36,8 @@ function modelRow(
     totalCostUsd: overrides.totalCostUsd ?? 0.01 * (12 - index),
     hasActual: false,
     hasFallbackEstimate: false,
+    pendingAttempts: 0,
+    unknownAttempts: 0,
     ...overrides,
   };
 }
@@ -62,6 +64,8 @@ function buildSummary(modelCount: number): CostsSummary {
       calls: modelCount,
       providerOperations: 2,
       unknownProviderOperations: 1,
+      pendingModelAttempts: 0,
+      unknownModelAttempts: 0,
       inputTokens: 1000,
       cachedInputTokens: 0,
       outputTokens: 500,
@@ -211,6 +215,19 @@ describe("CostsPage (M217)", () => {
   test("shows fallback estimate badge copy for flagged models", async () => {
     const { text } = await renderCostsPage();
     expect(text).toContain(MODEL_BADGE_FALLBACK_ESTIMATE);
+  });
+
+  test("shows unresolved model attempts without adding them to known spend", async () => {
+    const summary = buildSummary(11);
+    summary.totals.pendingModelAttempts = 2;
+    summary.totals.unknownModelAttempts = 1;
+    summary.byModel[0].pendingAttempts = 2;
+    summary.byModel[0].unknownAttempts = 1;
+    summaryRef.current = summary;
+    const { text } = await renderCostsPage();
+    expect(text).toContain("3 unresolved model attempts");
+    expect(text).toContain("pending cost");
+    expect(text).toContain("unknown cost");
   });
 
   test("model row titles include raw model ids for diagnosis", async () => {

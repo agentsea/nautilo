@@ -2171,6 +2171,13 @@
       "when": 1790697329442,
       "tag": "0309_fearless_salo",
       "breakpoints": true
+    },
+    {
+      "idx": 310,
+      "version": "7",
+      "when": 1790875916677,
+      "tag": "0310_bouncy_shaman",
+      "breakpoints": true
     }
   ]
 }

@@ -33,6 +33,7 @@ import { writeSecurityAuditEvent, type SecurityAuditEvent } from "../lib/securit
 import { getServerDirectDb } from "../lib/server-direct-db";
 
 const REASONING_EFFORTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const SURPLUS_CHAT_STATUS = "not-qualified" as const;
 
 /** Read-only display projection of the same live catalog used by execution. */
 function catalogModels() {
@@ -347,6 +348,14 @@ function parseUpdateBody(
     };
   }
 
+  if ("preferSurplus" in raw) {
+    const value = raw["preferSurplus"];
+    if (typeof value !== "boolean") {
+      return { ok: false, error: "preferSurplus must be a boolean" };
+    }
+    patch.preferSurplus = value;
+  }
+
   if (
     patch.defaultChatModel === undefined &&
     patch.conductorModel === undefined &&
@@ -361,6 +370,7 @@ function parseUpdateBody(
     patch.fallbackChain === undefined &&
     patch.reasoningOutput === undefined
     && patch.reasoningPolicy === undefined
+    && patch.preferSurplus === undefined
   ) {
     return { ok: false, error: "no recognized fields to update" };
   }
@@ -382,6 +392,7 @@ export function toWire(config: ResolvedServerModelConfig) {
     fallbackChain: config.fallbackChain,
     reasoningOutput: config.reasoningOutput,
     reasoningPolicy: config.reasoningPolicy,
+    preferSurplus: config.preferSurplus,
   };
 }
 
@@ -425,6 +436,7 @@ export interface ServerModelsRouteDeps {
   listMediaModels?: typeof mediaGenerationModels;
   getEffectiveMediaModel?: typeof effectiveMediaGenerationModel;
   getEffectiveSpeechModel?: () => string | null;
+  getSurplusKeyConfigured?: () => boolean;
 }
 
 export function serverModelsRoutes(
@@ -443,6 +455,14 @@ export function serverModelsRoutes(
   const listMediaModels = overrides.listMediaModels ?? mediaGenerationModels;
   const getEffectiveMediaModel = overrides.getEffectiveMediaModel ?? effectiveMediaGenerationModel;
   const wire = (config: ResolvedServerModelConfig) => ({ ...toWire(config),
+    surplus: {
+      keyConfigured: (overrides.getSurplusKeyConfigured
+        ?? (() => resolveProviderKey("surplus") !== null))(),
+      policyEnabled: config.preferSurplus,
+      // No released route mappings have completed qualification yet. A key or
+      // enabled preference must never promote catalogue availability by itself.
+      chatStatus: SURPLUS_CHAT_STATUS,
+    },
     catalogModels: catalogModels(),
     effectiveEmbeddingModel: (overrides.getEffectiveEmbeddingModel ?? effectiveEmbeddingModel)(),
     embeddingSelectionPending: activeEmbeddingSelection() !== config.embeddingModel,

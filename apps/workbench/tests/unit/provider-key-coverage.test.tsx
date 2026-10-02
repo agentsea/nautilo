@@ -49,6 +49,7 @@ describe("ProviderKeyCoverage", () => {
     expect(rows.map((row) => within(row).getByRole("rowheader").textContent)).toEqual([
       "Classification and scoring",
       "Chat",
+      "Surplus marketplace key",
       "Embeddings",
       "Text-to-speech",
       "Speech-to-text",
@@ -64,6 +65,7 @@ describe("ProviderKeyCoverage", () => {
     ).toEqual([
       "TypeSafeOpenRouterVenice",
       "VeniceOpenRouterOpenAIAnthropicGoogleFireworksOpenAI-compatible GatewayNautilo Gateway",
+      "Surplus Intelligence",
       "VeniceOpenRouterOpenAINautilo Gateway",
       "ElevenLabs",
       "ElevenLabsGroq",
@@ -75,8 +77,8 @@ describe("ProviderKeyCoverage", () => {
       "CloudConvert",
     ]);
 
-    expect(within(rows[4]).queryByLabelText(/^OpenAI:/u)).toBeNull();
-    expect(view.getAllByLabelText(/no supporting API key configured$/u)).toHaveLength(11);
+    expect(within(rows[5]).queryByLabelText(/^OpenAI:/u)).toBeNull();
+    expect(view.getAllByLabelText(/no supporting API key configured$/u)).toHaveLength(12);
   });
 
   test("TypeSafe covers classification and scoring without claiming chat", () => {
