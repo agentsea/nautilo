@@ -478,10 +478,19 @@ describe("createAuthenticatedAdminClient", () => {
   });
 
   test("rejects a cleartext non-loopback Human endpoint", async () => {
-    await expectCode(resolveHumanServer({ serverFlag: "http://server.example" }), "target_mismatch");
-    await expectCode(resolveHumanServer({ serverFlag: "https://server.example/path" }), "target_mismatch");
-    await expectCode(resolveHumanServer({ serverFlag: "https://user:pass@server.example" }), "target_mismatch");
-    await expectCode(resolveHumanServer({ serverFlag: "https://server.example?query=1" }), "target_mismatch");
+    const dir = mkdtempSync(join(tmpdir(), "nautilo-auth-endpoint-"));
+    const previousHome = process.env["HOME"];
+    try {
+      process.env["HOME"] = dir;
+      await expectCode(resolveHumanServer({ serverFlag: "http://server.example" }), "target_mismatch");
+      await expectCode(resolveHumanServer({ serverFlag: "https://server.example/path" }), "target_mismatch");
+      await expectCode(resolveHumanServer({ serverFlag: "https://user:pass@server.example" }), "target_mismatch");
+      await expectCode(resolveHumanServer({ serverFlag: "https://server.example?query=1" }), "target_mismatch");
+    } finally {
+      if (previousHome === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = previousHome;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("validates an active profile identifier before resolving an override endpoint", async () => {

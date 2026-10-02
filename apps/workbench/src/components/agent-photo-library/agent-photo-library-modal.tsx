@@ -123,6 +123,7 @@ export function AgentPhotoLibraryModal({ open, onClose, onChanged }: {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [currentWarning, setCurrentWarning] = useState<string | null>(null);
   const [retry, setRetry] = useState<Retry | null>(null);
   const [prompt, setPrompt] = useState("");
   const [generationCount, setGenerationCount] = useState<1 | 2 | 3 | 4>(1);
@@ -165,11 +166,28 @@ export function AgentPhotoLibraryModal({ open, onClose, onChanged }: {
         setNextCursor(result.nextCursor);
         return;
       }
-      const current = await apiClient.getAgentPhotoLibraryCurrent(expected
+      setCurrentWarning(null);
+      const readOptions = expected
         ? { signal: controller.signal, fence: makeFence(expected, generation) }
-        : { signal: controller.signal });
+        : { signal: controller.signal };
+      let current: Awaited<ReturnType<typeof apiClient.getAgentPhotoLibraryCurrent>> | null = null;
+      let currentScope: AgentPhotoLibraryScopeDto;
+      try {
+        current = await apiClient.getAgentPhotoLibraryCurrent(readOptions);
+        currentScope = current.scope;
+        if (generation !== requestGeneration.current) return;
+        setCurrentWarning(null);
+      } catch (cause) {
+        if (!(cause instanceof AgentPhotoLibraryApiError) || cause.code !== "photo_not_found") throw cause;
+        if (controller.signal.aborted || generation !== requestGeneration.current) return;
+        // The catalogue still supplies an authorized scope when the legacy
+        // current pointer has no owned row. Keep replacement tabs usable.
+        const catalogue = await apiClient.listAgentPhotoLibrary({ projection: "recent", limit: 24, ...readOptions });
+        currentScope = catalogue.scope;
+        if (generation !== requestGeneration.current) return;
+        setCurrentWarning("Your current photo is not in the library. Choose a saved photo, preset, upload, or generate a replacement.");
+      }
       if (generation !== requestGeneration.current) return;
-      const currentScope = current.scope;
       const fence = makeFence(currentScope, generation);
       setScope(currentScope);
       scopeRef.current = currentScope;
@@ -179,9 +197,9 @@ export function AgentPhotoLibraryModal({ open, onClose, onChanged }: {
         && pendingGenerated.scope.viewerUserId === currentScope.viewerUserId
         && pendingGenerated.scope.agentId === currentScope.agentId;
       if (pendingGenerated && !pendingMatchesScope) pendingGeneratedRef.current = null;
-      setCurrentEntryId(current.current.entryId);
-      setCurrentPresetId(current.current.avatarRef?.kind === "preset" ? current.current.avatarRef.id : null);
-      setUndoRevisionId(current.current.lastUndoableRevisionId);
+      setCurrentEntryId(current?.current.entryId ?? null);
+      setCurrentPresetId(current?.current.avatarRef?.kind === "preset" ? current.current.avatarRef.id : null);
+      setUndoRevisionId(current?.current.lastUndoableRevisionId ?? null);
       if (tab === "presets") {
         const result = await apiClient.listAgentPhotoLibraryPresets({ signal: controller.signal, fence });
         if (generation !== requestGeneration.current || !scopesEqual(result.scope, currentScope)) return;
@@ -344,7 +362,7 @@ export function AgentPhotoLibraryModal({ open, onClose, onChanged }: {
     runMutation({
       operationId: crypto.randomUUID(), label: "photo change",
       work: async (options) => {
-        const result = await apiClient.selectAgentPhotoLibraryEntry({ target, expectedSelectionRevision }, options);
+        const result = await apiClient.selectAgentPhotoLibraryEntry({ target, expectedSelectionRevision, ...(currentWarning ? { replaceMissingCurrent: true } : {}) }, options);
         setCurrentEntryId(result.currentEntryId);
         setCurrentPresetId(result.currentAvatarRef?.kind === "preset" ? result.currentAvatarRef.id : null);
         setUndoRevisionId(result.changed ? result.revisionId : null);
@@ -448,6 +466,7 @@ export function AgentPhotoLibraryModal({ open, onClose, onChanged }: {
         <div className="border-b border-border px-4 py-2"><button type="button" disabled={busy} onClick={() => changeTab("deleted")} aria-current={tab === "deleted" ? "page" : undefined} className="rounded px-3 py-1.5 text-sm font-medium text-foreground-muted disabled:opacity-50">Recently deleted</button></div>
         <main className="min-h-0 flex-1 overflow-y-auto p-5">
           {error ? <div role="alert" className="mb-4 rounded border border-tool-error/40 bg-tool-error/10 p-3 text-sm text-tool-error">{error}{retry ? <button type="button" onClick={retry.run} disabled={busy} className="ml-2 underline">{retry.label}</button> : null}</div> : null}
+          {currentWarning ? <div role="status" className="mb-4 rounded border border-border bg-background-element p-3 text-sm">{currentWarning}</div> : null}
           {notice ? <div role="status" aria-live="polite" className="mb-4 flex items-center justify-between rounded border border-border bg-background-element p-3 text-sm"><span>{notice}</span>{undoRevisionId ? <button type="button" onClick={undo} disabled={busy} className="font-medium underline">Undo</button> : null}</div> : undoRevisionId ? <div role="status" className="mb-4 flex items-center justify-between rounded border border-border bg-background-element p-3 text-sm"><span>Previous photo available.</span><button type="button" onClick={undo} disabled={busy} className="font-medium underline">Undo</button></div> : null}
           {tab === "upload" ? <div className="rounded-lg border border-dashed border-border p-8 text-center"><p className="mb-4 text-sm text-foreground-muted">PNG, JPEG, or WebP, up to 5 MB. Uploading adds the photo to your library; it does not select it.</p><input type="file" accept="image/png,image/jpeg,image/webp" onChange={upload} disabled={busy} aria-label="Choose Agent photo to upload" /></div> : null}
           {tab === "generate" ? <div className="space-y-3"><label className="block text-sm font-medium" htmlFor="agent-photo-prompt">Describe the Agent photo</label><textarea id="agent-photo-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={500} rows={4} disabled={busy} className="w-full rounded-lg border border-border bg-background px-3 py-2" /><fieldset disabled={busy}><legend className="mb-2 text-sm font-medium">Number of photos</legend><div className="flex flex-wrap gap-2">{([1, 2, 3, 4] as const).map((count) => <button key={count} type="button" role="radio" aria-checked={generationCount === count} onClick={() => setGenerationCount(count)} className={`min-h-10 min-w-10 rounded-full border px-3 text-sm font-medium ${generationCount === count ? "border-accent bg-background-element text-accent" : "border-border text-foreground"}`}>{count}</button>)}</div></fieldset><button type="button" disabled={busy || !prompt.trim()} onClick={generate} className="rounded bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50">Generate {generationCount} photo{generationCount === 1 ? "" : "s"}</button><p className="text-xs text-foreground-muted">Generated photos are added first. You choose which one becomes current.</p></div> : null}

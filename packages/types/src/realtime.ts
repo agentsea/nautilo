@@ -7,6 +7,7 @@
  * See architecture-overall-v4.md Section 10.3 for the full event catalog.
  */
 
+import { parseAuditionVoicesToolResult } from "./voice-catalog";
 import type { DocumentPatchEvent } from "./document-patches";
 import type { DocumentMutationCommittedEvent } from "./document-mutations";
 import type {
@@ -1048,6 +1049,14 @@ export function projectToolResultForEvent(
   toolName: string,
   result: string,
 ): ToolResultEventProjection {
+  // The audition card needs the complete slate, language/model references,
+  // and sample text. These are structured UI data, not a text preview: slicing
+  // them produces invalid JSON and removes the playable card. Use the same
+  // parser as the renderer so both live delivery and history replay retain
+  // every candidate and the exact requested sample, without a second cutoff.
+  if (toolName === "audition_voices" && parseAuditionVoicesToolResult(result) !== null) {
+    return { result, truncated: false };
+  }
   if (toolName === "apply_patch") {
     const projected = projectApplyPatchResultForEvent(result);
     if (projected !== null) return projected;

@@ -73,7 +73,7 @@ export interface ModelFundingDeps {
 }
 
 function serverRoute(modelId: string): string | null {
-  if (!modelHasRunnableCredentials(modelId, process.env, "chat")) return null;
+  if (!modelHasRunnableCredentials(modelId, process.env)) return null;
   if (modelId.toLowerCase().startsWith("openrouter:")) {
     try {
       return resolveOpenRouterTransport()?.kind ?? null;

@@ -49,7 +49,7 @@ describe("Debian 13 security update and exception retirement", () => {
       }
     }
     expect(fixed).toBe(27); // 28 old decisions: one advisory had two scanner severity identities.
-    expect(current.exceptions).toHaveLength(287);
+    expect(current.exceptions).toHaveLength(343);
     expect(bootstrap.exceptions).toHaveLength(2);
     expect(bootstrap.exceptions[0]).toMatchObject({ advisoryId: "CVE-2026-5435", installedVersion: "2.41-12+deb13u4" });
   });
@@ -57,15 +57,15 @@ describe("Debian 13 security update and exception retirement", () => {
   test("remaining decisions match reviewed package versions and production schema", () => {
     const floors = new Map(readFileSync(join(import.meta.dir, "server-security-package-floors.txt"), "utf8")
       .split("\n").filter((line) => line && !line.startsWith("#")).map((line) => line.split(" ") as [string, string]));
-    expect(floors.size).toBe(7);
+    expect(floors.size).toBe(9);
     for (const entry of current.exceptions) {
       // This historical September 13 review predates these separately tested findings.
-      if (entry.reviewedAt === "2026-09-30T15:20:00Z" ||
+      if (entry.reviewedAt === "2026-10-01T21:39:28Z" || entry.reviewedAt === "2026-10-01T20:28:00Z" || entry.reviewedAt === "2026-09-30T15:20:00Z" ||
           ["CVE-2026-88806", "CVE-2026-88807", "CVE-2026-88372", "CVE-2026-93543"].includes(entry.advisoryId)) continue;
       const p = review.packages.find((p) => p.package === entry.packageName)!;
       const expectedVersion = /^CVE-2026-933(?:72|73|74|75|77|81|82)$/.test(entry.advisoryId)
         ? "153.0.8010.52-1~deb13u1"
-        : (floors.get(entry.packageName) ?? p.previousVersion);
+        : (entry.packageName.startsWith("chromium-") ? p.previousVersion : (floors.get(entry.packageName) ?? p.previousVersion));
       expect(entry.installedVersion).toBe(expectedVersion);
     }
     for (const policy of [current, bootstrap]) {

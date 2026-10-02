@@ -22,7 +22,7 @@ afterEach(() => {
   setOrdinaryHostResolver(null);
 });
 
-// M037 — unit tests must never touch Postgres. These stubs replace the
+// unit tests must never touch Postgres. These stubs replace the
 // real DB command-approval engine. `NO_MATCH` makes every `ask`/`auto`
 // candidate fall through to the interrupt; `ALWAYS_MATCH` simulates a
 // standing rule matching every call.
@@ -227,7 +227,7 @@ describe("server prerequisite admission", () => {
   });
 });
 
-describe("D563 run_shell long-wait approval intent", () => {
+describe("run_shell long-wait approval intent", () => {
   test("rejects an invalid timeout reason before a prove_it interrupt", async () => {
     const resolver = makeMockResolver({
       run_shell: {
@@ -359,7 +359,7 @@ describe("postModelNode (with resolver)", () => {
     expect(result.pendingApproval).toHaveLength(0);
   });
 
-  test("D476: open-Room projection proves identity even when policy and workstation override allow it", async () => {
+  test("open-Room projection proves identity even when policy and workstation override allow it", async () => {
     const catalog = new ToolCatalog();
     registerAllTools(catalog);
     initToolCatalog(catalog);
@@ -386,7 +386,7 @@ describe("postModelNode (with resolver)", () => {
       }],
     });
     const state = makeState([aiMsg]);
-    state.langgraphThreadId = "d476-open";
+    state.langgraphThreadId = "example-open-projection";
     state.activatedToolNames = ["share_memory"];
     state.projectionSnapshots = [{
       toolCallId: "project-open",
@@ -416,7 +416,7 @@ describe("postModelNode (with resolver)", () => {
     expect(workstationCalls).toBe(0);
   });
 
-  test("D476: preflight rejection ToolMessages do not strand a valid projection sibling", async () => {
+  test("preflight rejection ToolMessages do not strand a valid projection sibling", async () => {
     const node = createPostModelNode(makeMockResolver({ share_memory: { type: "allow" } }), NO_MATCH);
     const aiMsg = new AIMessage({
       content: "",
@@ -463,7 +463,7 @@ describe("postModelNode (with resolver)", () => {
 
   test("require_approval with high-severity command → prove_it interrupt (throws outside graph)", async () => {
     // `sudo apt update` is classified high-severity by the command scanner,
-    // which maps to prove_it at `standard` level (D061 verb matrix).
+    // which maps to prove_it at `standard` level (verb matrix).
     const resolver = makeMockResolver({
       run_shell: {
         type: "require_approval",
@@ -479,7 +479,7 @@ describe("postModelNode (with resolver)", () => {
 
     const state = makeState([aiMsg]);
     state.actorRole = "owner";
-    state.threadId = 51; // M-1: resolveLaneKey fails closed without it
+    state.threadId = 51; // resolveLaneKey fails closed without it
     let threw = false;
     try { await node(state); } catch { threw = true; }
     expect(threw).toBe(true);
@@ -527,11 +527,10 @@ describe("postModelNode (with resolver)", () => {
     expect(content).toContain("not available");
   });
 
-  test("require_approval with critical command → BLOCK (no interrupt, D061 behavior change)", async () => {
+  test("require_approval with critical command → BLOCK without an interrupt", async () => {
     // `rm -rf /` is critical severity → verb map returns "block".
     // Critical patterns must not prompt for approval — they emit a
-    // denial ToolMessage directly. This is a deliberate D061 semantics
-    // change from the prior "any require_approval → interrupt" flow.
+    // denial ToolMessage directly. Critical commands must remain blocked even when the policy requires approval.
     const resolver = makeMockResolver({
       run_shell: {
         type: "require_approval",
@@ -547,7 +546,7 @@ describe("postModelNode (with resolver)", () => {
 
     const state = makeState([aiMsg]);
     state.actorRole = "owner";
-    state.threadId = 50; // resolveLaneKey fails closed without one (M-1)
+    state.threadId = 50; // resolveLaneKey fails closed without one
     const result = await node(state);
 
     expect(result.approvedToolCalls).toHaveLength(0);
@@ -579,7 +578,7 @@ describe("postModelNode (with resolver)", () => {
 
     const state = makeState([aiMsg]);
     state.actorRole = "owner";
-    state.threadId = 52; // M-1: resolveLaneKey fails closed without it
+    state.threadId = 52; // resolveLaneKey fails closed without it
     let threw = false;
     try { await node(state); } catch { threw = true; }
     expect(threw).toBe(true);
@@ -765,7 +764,7 @@ describe("postModelNode (with resolver)", () => {
 
     const state = makeState([aiMsg]);
     state.actorRole = "owner";
-    state.threadId = 53; // M-1: resolveLaneKey fails closed without it
+    state.threadId = 53; // resolveLaneKey fails closed without it
     let threw = false;
     try { await node(state); } catch { threw = true; }
     expect(threw).toBe(true);
@@ -813,7 +812,7 @@ describe("postModelNode (with resolver)", () => {
     });
 
     const state = makeState([aiMsg]);
-    state.threadId = 54; // M-1: resolveLaneKey fails closed without it
+    state.threadId = 54; // resolveLaneKey fails closed without it
     let threw = false;
     try { await node(state); } catch { threw = true; }
     expect(threw).toBe(true);
@@ -857,7 +856,7 @@ describe("postModelNode (with resolver)", () => {
     expect(result.pendingApproval).toHaveLength(0);
   });
 
-  test("matching standing approval bypasses the ask interrupt (M037)", async () => {
+  test("matching standing approval bypasses the ask interrupt", async () => {
     // Benign medium-severity command — verb would be "ask" normally. With
     // a matching standing approval (DB matcher returns a row), it
     // auto-approves without firing the dialog.
@@ -883,7 +882,7 @@ describe("postModelNode (with resolver)", () => {
     expect(result.approvalDenied).toBe(false);
   });
 
-  test("M037 records an auto-approval callback on match", async () => {
+  test("records an auto-approval callback on match", async () => {
     const calls: Array<{ scope: string; toolName: string }> = [];
     const deps: PostModelDeps = {
       matchCommandApproval: async () => ({ id: "rule-x", scope: "room" as const }),
@@ -1019,14 +1018,14 @@ describe("postModelNode (with resolver)", () => {
   });
 
   // ===========================================================================
-  // M-1 (PR #58 follow-up): resolveLaneKey fails closed on missing threadId
+  // resolveLaneKey fails closed on missing threadId
   // ===========================================================================
 
-  test("M-1: pending-approval call with no threadId THROWS (fail-closed)", async () => {
+  test("pending-approval call with no threadId THROWS (fail-closed)", async () => {
     // Previously, a state missing both langgraphThreadId and a positive
     // numeric threadId would resolve to the sentinel string "lane-unknown".
     // All orphan-lane approvals would collide into one shared bucket —
-    // a silent cross-user privilege escalation. M-1 replaces the sentinel
+    // a silent cross-user privilege escalation. This replaces the sentinel
     // with a fail-closed throw.
     const resolver = makeMockResolver({
       run_shell: {
@@ -1056,7 +1055,7 @@ describe("postModelNode (with resolver)", () => {
     expect(caught!.message).toContain("lane key");
   });
 
-  test("M-1: read-only-only tool calls do NOT throw even without threadId", async () => {
+  test("read-only-only tool calls do NOT throw even without threadId", async () => {
     // If nothing goes to the `pending` bucket (all tools are allow /
     // read_only), the lane key is never needed. The node must not
     // throw just because threadId happens to be absent on a read-only
@@ -1085,10 +1084,40 @@ describe("postModelNode (with resolver)", () => {
   });
 
   // ===========================================================================
-  // M-5 (PR #58 follow-up): session-store bypass works in the `auto` anomaly branch
+  // session-store bypass works in the `auto` anomaly branch
   // ===========================================================================
 
-  test("M037: standing rule bypasses ask even in the auto-anomaly branch", async () => {
+  test("required approval never claims the invocation was auto-approved", async () => {
+    const catalog = new ToolCatalog();
+    catalog.register({
+      name: "transcribe_audio",
+      factory: () => new DynamicStructuredTool({
+        name: "transcribe_audio", description: "Transcribe an example artifact",
+        schema: z.object({ path: z.string() }), func: async () => "example transcript",
+      }),
+      category: "media", trustTier: "standard", impact: "high", exposure: "core",
+      tags: [], requiresApproval: true, resultScanPolicy: "never",
+    });
+    initToolCatalog(catalog);
+    const resolver = makeMockResolver({
+      transcribe_audio: { type: "require_approval", route: { type: "prove_it", approvers: ["example-human"] } },
+    });
+    const graph = new StateGraph(NautiloStateAnnotation)
+      .addNode("post_model", createPostModelNode(resolver, NO_MATCH))
+      .addEdge(START, "post_model").addEdge("post_model", END)
+      .compile({ checkpointer: new MemorySaver() });
+    const state = makeState([new AIMessage({ content: "", tool_calls: [
+      { id: "example-transcription", name: "transcribe_audio", args: { path: "example.m4a" } },
+    ] })]);
+    state.threadId = 55;
+    const parked = await graph.invoke(state, { configurable: { thread_id: "example-approval" } });
+    expect(parked).toMatchObject({ __interrupt__: [{ value: {
+      type: "approval_ask", reason: "This tool needs approval",
+    } }] });
+    expect(parked.approvedToolCalls).toHaveLength(0);
+  });
+
+  test("standing rule bypasses ask even in the auto-anomaly branch", async () => {
     // Scenario: trust says require_approval (forced via mock), verb map
     // says auto (low-impact tool at standard). The anomaly branch consults
     // the DB matcher; a matching standing rule short-circuits to
@@ -1144,7 +1173,7 @@ describe("postModelNode (with resolver)", () => {
     expect(result.approvalDenied).toBe(false);
   });
 
-  test("M-1: langgraphThreadId alone is sufficient (happy path)", async () => {
+  test("langgraphThreadId alone is sufficient (happy path)", async () => {
     const resolver = makeMockResolver({
       run_shell: {
         type: "require_approval",
@@ -1171,13 +1200,13 @@ describe("postModelNode (with resolver)", () => {
       caught = e as Error;
     }
     expect(caught).not.toBeNull();
-    // If this message were about resolveLaneKey, M-1 regressed.
+    // If this message were about resolveLaneKey, the lane-key check regressed.
     expect(caught!.message).not.toContain("resolveLaneKey");
   });
 });
 
 // ===========================================================================
-// D418 task 3.2.5 — Full Workstation approval override seam (Pass 2)
+// Full Workstation approval override seam (Pass 2)
 //
 // The post-model consults an injected `resolveWorkstationApprovalOverride`
 // dep for each `ask` / `prove_it` / `auto`-anomaly candidate BEFORE batching.
@@ -1186,7 +1215,7 @@ describe("postModelNode (with resolver)", () => {
 // a resolver throw is swallowed + treated as `none`.
 // ===========================================================================
 
-describe("postModelNode (D418 Full Workstation override seam)", () => {
+describe("postModelNode (Full Workstation override seam)", () => {
   // Medium-severity shell command → verb map "ask" at standard level.
   const ASK_COMMAND = "npm install -g typescript";
   // High-severity shell command → verb map "prove_it" at standard level.
@@ -1385,12 +1414,12 @@ describe("postModelNode (D418 Full Workstation override seam)", () => {
 });
 
 // ===========================================================================
-// D516 — semantic computer-use admission is outside generic approval.
+// semantic computer-use admission is outside generic approval.
 // These tools intentionally remain unregistered until the catalog cutover,
 // while the exact Electron-enforced binding carrier is tested here.
 // ===========================================================================
 
-describe("postModelNode (D516 semantic computer-use admission)", () => {
+describe("postModelNode (semantic computer-use admission)", () => {
   function installTestCatalog(_toolName: string) {
     const catalog = new ToolCatalog();
     registerAllTools(catalog, { officeCliAvailable: () => true, mediaGenerationAvailable: () => true });
@@ -1554,7 +1583,7 @@ describe("postModelNode (D516 semantic computer-use admission)", () => {
 
 });
 
-describe("D458 verified ordinary-origin host resolution precedes approval", () => {
+describe("verified ordinary-origin host resolution precedes approval", () => {
   function pairedState() {
     const catalog = new ToolCatalog();
     registerAllTools(catalog);
