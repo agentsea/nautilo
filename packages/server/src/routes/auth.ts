@@ -5,6 +5,7 @@ import {
   db,
   eq,
   getAccountSecurityRowByUserId,
+  inviteTokenCondition,
   invites,
   rooms,
 } from "@nautilo/db";
@@ -323,7 +324,7 @@ async function loadInviteBindAuditContext(
         targetRoomId: invites.targetRoomId,
       })
       .from(invites)
-      .where(eq(invites.tokenHash, tokenHash))
+      .where(inviteTokenCondition(inviteToken))
       .limit(1);
 
     return {
@@ -332,8 +333,8 @@ async function loadInviteBindAuditContext(
       targetGroupId: row?.targetGroupId ?? null,
       targetRoomId: row?.targetRoomId ?? null,
     };
-  } catch (err) {
-    warn(`[bind-logto-user] invite audit context lookup failed: ${String(err)}`);
+  } catch {
+    warn("[bind-logto-user] invite audit context lookup failed");
     return {
       tokenHash,
       inviteKind: "unknown",

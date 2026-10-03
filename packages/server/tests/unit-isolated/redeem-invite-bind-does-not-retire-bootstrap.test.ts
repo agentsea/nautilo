@@ -125,6 +125,7 @@ function getSharedDirectDb() {
 beforeAll(() => {
   mock.module("@nautilo/db", () => ({
     getSharedDirectDb,
+    inviteTokenCondition: () => ({}),
     serverAdmission: { userId: "userId" },
     moderationAccessAllowedSql: () => ({}),
     sql: () => ({}),

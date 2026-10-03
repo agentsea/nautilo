@@ -7,6 +7,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- New ordinary invitation links can be copied again from the server after a
+  page reload or device change. Existing links continue to redeem, while older
+  hash-only codes that were lost must be replaced. The invite browser cache is
+  removed. Server admins can choose or clear the Community `/join` invitation
+  in Settings. Existing members who open `/join` go straight into the app;
+  visitors need an active selected invite to join.
+
 - Members can manage personal provider keys in Settings, select a compatible
   chat model, and chat with their own Genie when personal keys are enabled by
   the server. Personal and server key controls share masked previews and
