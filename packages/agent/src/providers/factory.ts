@@ -32,6 +32,13 @@ export const DEFAULT_REASONING_EFFORT = "medium" as const;
 
 const OPAQUE_ROOM_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export function openRouterSessionModelKwargs(sessionId?: string): Record<string, unknown> {
+  const normalized = sessionId?.trim();
+  return normalized && OPAQUE_ROOM_UUID_PATTERN.test(normalized)
+    ? { session_id: normalized }
+    : {};
+}
+
 function fireworksAffinityHeaders(options: CreateModelOptions): Record<string, string> | undefined {
   const affinityId = options.fireworksSessionAffinityId?.trim();
   if (!affinityId || !OPAQUE_ROOM_UUID_PATTERN.test(affinityId)) return undefined;
@@ -144,7 +151,7 @@ export function shouldUseOpenAIResponsesApi(
   return isDirectGpt6Model(options.modelId) || reasoningRequested(options, maxTokens);
 }
 
-function openAICompatibleReasoningModelKwargs(
+export function openAICompatibleReasoningModelKwargs(
   options: CreateModelOptions,
   maxTokens: number,
 ): Record<string, unknown> {

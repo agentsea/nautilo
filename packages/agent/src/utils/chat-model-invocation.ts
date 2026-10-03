@@ -991,6 +991,9 @@ export async function invokeChatModelWithFallback(
                 tools,
                 config: llmCallConfig,
                 maxOutputTokens: maxTokens,
+                ...(requestedReasoningEffort === undefined ? {} : { reasoningEffort: requestedReasoningEffort }),
+                reasoningOutput,
+                ...(openRouterSessionId === undefined ? {} : { openrouterSessionId: openRouterSessionId }),
                 funding: surplusFunding,
                 invokeModel: (model, selectedMessages, selectedConfig) => invokeForegroundAttemptWithUsageContext(
                   model,

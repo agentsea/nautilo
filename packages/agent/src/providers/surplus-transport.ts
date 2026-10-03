@@ -1,6 +1,8 @@
 import { ChatOpenAI } from "@langchain/openai";
-import type { ChatModel } from "./types";
+import type { ChatModel, ReasoningEffort } from "./types";
 import type { QualifiedSurplusChatRoute } from "./surplus-route";
+import { OpenRouterReasoningCompletions } from "./openrouter-reasoning";
+import { openAICompatibleReasoningModelKwargs, openRouterSessionModelKwargs } from "./factory";
 import {
   VeniceChatOpenAICompletions,
   wrapVeniceModelForToolSchemas,
@@ -108,8 +110,58 @@ export interface CreateSurplusChatModelInput {
   readonly route: QualifiedSurplusChatRoute;
   readonly apiKey: string;
   readonly maxOutputTokens: number;
+  readonly reasoningEffort?: ReasoningEffort;
+  readonly reasoningOutput?: boolean;
+  readonly openrouterSessionId?: string;
   readonly onResponse: (receipt: SurplusWireReceipt, status: number) => Promise<void> | void;
   readonly fetchImpl?: typeof fetch;
+}
+
+/** Surplus may repeat the terminal choice when attaching its final usage receipt. */
+class SurplusOpenRouterCompletions extends OpenRouterReasoningCompletions {
+  override invocationParams(
+    ...args: Parameters<OpenRouterReasoningCompletions["invocationParams"]>
+  ) {
+    const params = super.invocationParams(...args);
+    // Surplus documents max_tokens as the canonical budget field and
+    // max_completion_tokens as its equivalent alias. Preserve the value.
+    if (params.max_completion_tokens !== undefined) {
+      params.max_tokens = params.max_completion_tokens;
+      delete params.max_completion_tokens;
+    }
+    return params;
+  }
+
+  override async *_streamResponseChunks(
+    ...args: Parameters<OpenRouterReasoningCompletions["_streamResponseChunks"]>
+  ) {
+    // State belongs to this stream, so concurrent invocations cannot share a
+    // terminal marker. Keep the SDK's final usage chunk and all reasoning.
+    let terminalReason: string | undefined;
+    let terminalModel: unknown;
+    for await (const chunk of super._streamResponseChunks(...args)) {
+      const reason: unknown = chunk.generationInfo?.["finish_reason"];
+      if (typeof reason === "string") {
+        if (terminalReason !== undefined) {
+          const hasToolDelta = "tool_call_chunks" in chunk.message
+            && Array.isArray(chunk.message.tool_call_chunks) && chunk.message.tool_call_chunks.length > 0;
+          // LangChain concatenates string metadata, so a repeated terminal
+          // marker would otherwise become `tool_callstool_calls`.
+          if (reason === terminalReason && chunk.generationInfo?.["model_name"] === terminalModel
+            && chunk.text === "" && !hasToolDelta) {
+            delete chunk.generationInfo?.["finish_reason"];
+            delete chunk.generationInfo?.["model_name"];
+          }
+          // Keep conflicting markers intact for the completion validator.
+          // Finishing the stream first retains its final charge receipt.
+        } else {
+          terminalReason = reason;
+          terminalModel = chunk.generationInfo?.["model_name"];
+        }
+      }
+      yield chunk;
+    }
+  }
 }
 
 /** Server-funded, pinned text-chat wire. Caller owns attempt persistence. */
@@ -132,6 +184,14 @@ export function createSurplusChatModel(input: CreateSurplusChatModelInput): Chat
     streamUsage: true,
     modelKwargs: {
       provider: input.route.providerPin,
+      ...openAICompatibleReasoningModelKwargs({
+        modelId: input.route.catalogModelId,
+        ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
+        ...(input.reasoningOutput === undefined ? {} : { reasoningOutput: input.reasoningOutput }),
+      }, input.maxOutputTokens),
+      ...(input.route.providerPin === "openrouter"
+        ? openRouterSessionModelKwargs(input.openrouterSessionId)
+        : {}),
       ...(isVenice
         ? { venice_parameters: { include_venice_system_prompt: false } }
         : {}),
@@ -145,7 +205,9 @@ export function createSurplusChatModel(input: CreateSurplusChatModelInput): Chat
     ...base,
     ...(isVenice
       ? { completions: new VeniceChatOpenAICompletions(base) }
-      : {}),
+      : input.route.providerPin === "openrouter"
+        ? { completions: new SurplusOpenRouterCompletions(base) }
+        : {}),
   }) as unknown as ChatModel;
   return isVenice
     ? wrapVeniceModelForToolSchemas(model)

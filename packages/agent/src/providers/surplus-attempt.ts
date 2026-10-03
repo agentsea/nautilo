@@ -11,6 +11,7 @@ import { warn } from "@nautilo/logger";
 import { getUsageContext, normalizeUsageRoomId, type UsageFundingProvenance } from "../usage/usage-context";
 import { modelRouteProvider } from "./model-route";
 import type { QualifiedSurplusChatRoute } from "./surplus-route";
+import type { ReasoningEffort } from "./types";
 import { surplusAttemptBinding, surplusReceiptTelemetry } from "./surplus-reconciliation";
 import {
   createSurplusChatModel,
@@ -32,6 +33,9 @@ export interface SurplusChatAttemptInput {
   readonly tools: readonly StructuredTool[];
   readonly config: RunnableConfig;
   readonly maxOutputTokens: number;
+  readonly reasoningEffort?: ReasoningEffort;
+  readonly reasoningOutput?: boolean;
+  readonly openrouterSessionId?: string;
   readonly funding: Extract<UsageFundingProvenance, { kind: "server" | "service" }>;
   readonly invokeModel: InvokeModel;
 }
@@ -100,9 +104,7 @@ export function canUseQualifiedSurplusChatRoute(input: {
   if (input.funding.kind === "personal" || input.usesResponsesApi || input.hasServingProfile) return false;
   if (input.needsVision && !route.supportsVision) return false;
   if (input.requiresTools && !route.supportsTools) return false;
-  // A separate qualified wire mapping must preserve the selected effort/off
-  // semantics before reasoning-bearing attempts can use the marketplace.
-  if (input.reasoningRequested) return false;
+  if (input.reasoningRequested && !route.supportsReasoning) return false;
   if (input.maxOutputTokens > route.maxOutputTokens) return false;
   return input.estimatedInputTokens + input.maxOutputTokens <= route.maxContextTokens;
 }
@@ -289,6 +291,9 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
       route: input.route,
       apiKey: input.apiKey,
       maxOutputTokens: input.maxOutputTokens,
+      ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
+      ...(input.reasoningOutput === undefined ? {} : { reasoningOutput: input.reasoningOutput }),
+      ...(input.openrouterSessionId === undefined ? {} : { openrouterSessionId: input.openrouterSessionId }),
       onResponse,
     });
     const bound = input.tools.length > 0 ? model.bindTools?.([...input.tools]) : model;

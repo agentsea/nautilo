@@ -306,6 +306,67 @@ describe("Surplus wire boundary", () => {
     expect(requestBody).not.toHaveProperty("venice_parameters");
   });
 
+  test("OpenRouter repeated terminal usage preserves one finish signal and actual charge", async () => {
+    const route = {
+      ...VENICE_ROUTE,
+      catalogModelId: "openrouter:openai/gpt-5.6-sol",
+      surplusModelId: "gpt-5.6-sol",
+      providerPin: "openrouter" as const,
+      supportsReasoning: true,
+    };
+    const frames = [
+      { choices: [{ index: 0, delta: { role: "assistant", reasoning: "synthetic progress" }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "call-probe", type: "function", function: { name: "record_probe", arguments: '{"value":"ok"}' } }] }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: "tool_calls" }] },
+      { choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 72, completion_tokens: 18, total_tokens: 90, buyer_cost_micro: 162, cost: 0.000648 } },
+    ];
+    let requestBody: Record<string, unknown> | undefined;
+    const fetchImpl = (async (_input: unknown, init?: RequestInit) => {
+      if (typeof init?.body !== "string") throw new Error("Missing SDK request body");
+      requestBody = JSON.parse(init.body) as Record<string, unknown>;
+      return new Response(
+      `${frames.map((frame) => `data: ${JSON.stringify({ id: "synthetic", object: "chat.completion.chunk", model: route.surplusModelId, created: 1, ...frame })}\n\n`).join("")}data: [DONE]\n\n`,
+      { headers: { "content-type": "text/event-stream" } },
+    );
+    }) as unknown as typeof fetch;
+    const model = createSurplusChatModel({ route, apiKey: "test-key", maxOutputTokens: 256, reasoningEffort: "medium", reasoningOutput: true, openrouterSessionId: "22222222-2222-4222-8222-222222222222", onResponse: () => {}, fetchImpl });
+    const response = await model.invoke([new HumanMessage("Synthetic tool test")]) as AIMessage;
+
+    expect(requestBody?.["max_tokens"]).toBe(256);
+    expect(requestBody).not.toHaveProperty("max_completion_tokens");
+    expect(requestBody?.["reasoning"]).toEqual({ effort: "medium", exclude: false });
+    expect(requestBody?.["session_id"]).toBe("22222222-2222-4222-8222-222222222222");
+    expect(response.tool_calls).toEqual([{ id: "call-probe", name: "record_probe", args: { value: "ok" }, type: "tool_call" }]);
+    expect(response.additional_kwargs["reasoning"]).toBe("synthetic progress");
+    expect(response.response_metadata["finish_reason"]).toBe("tool_calls");
+    expect(response.response_metadata["model_name"]).toBe("gpt-5.6-sol");
+    expect(readSurplusResponseUsage(response)).toMatchObject({ inputTokens: 72, outputTokens: 18, totalTokens: 90, buyerCostMicro: 162 });
+    expect(() => assertCompleteSurplusResponse({ truncated: false }, response)).not.toThrow();
+  });
+
+  test("OpenRouter conflicting terminal signals retain actual cost without permitting replay", async () => {
+    let requests = 0;
+    const route = { ...VENICE_ROUTE, catalogModelId: "openrouter:openai/gpt-5.6-sol", surplusModelId: "openai/gpt-5.6-sol", providerPin: "openrouter" as const };
+    const fetchImpl = (async () => {
+      requests += 1;
+      const frames = ["tool_calls", "stop"].map((finishReason, index) => ({ id: "synthetic", object: "chat.completion.chunk", model: route.surplusModelId, created: 1, choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: finishReason }], ...(index === 1 ? { usage: { prompt_tokens: 72, completion_tokens: 18, total_tokens: 90, buyer_cost_micro: 162 } } : {}) }));
+      return new Response(`${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")}data: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+    const model = createSurplusChatModel({ route, apiKey: "test-key", maxOutputTokens: 256, onResponse: () => {}, fetchImpl });
+    const response = await model.invoke([new HumanMessage("Synthetic test")]) as AIMessage;
+    const receipt = { providerFamily: "openrouter", marketplaceAttempts: 1, truncated: false };
+    expect(response.response_metadata["finish_reason"]).toBe("tool_callsstop");
+    expect(() => assertCompleteSurplusResponse(receipt, response)).toThrow(SurplusIncompleteResponseError);
+    expect(classifySurplusFailedAttempt({
+      error: new SurplusIncompleteResponseError(),
+      cancelled: false,
+      responseStatus: 200,
+      receipt,
+      terminalUsage: readSurplusResponseUsage(response),
+    })).toMatchObject({ outcome: "interrupted", costState: "actual", actualCostUsd: 0.000162, directFallback: false });
+    expect(requests).toBe(1);
+  });
+
   test("successful receipts must confirm the exact qualified provider family", () => {
     expect(() => assertSuccessfulSurplusProviderReceipt(
       VENICE_ROUTE,
