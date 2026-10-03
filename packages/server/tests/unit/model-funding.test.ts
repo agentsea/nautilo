@@ -36,9 +36,10 @@ function harness() {
   const capabilities = new Map<string, string[]>();
   const reads: string[] = [];
   let enabled = true;
+  let fundingPreference: "personal_first" | "server_first" = "personal_first";
   let serverRoute: string | null = "openrouter";
   const deps: ModelFundingDeps = {
-    getPolicy: async () => ({ allowPersonalProviderKeys: enabled }),
+    getPolicy: async () => ({ allowPersonalProviderKeys: enabled, fundingPreference }),
     getCapabilities: async (userId) => capabilities.get(userId) ?? [],
     getCredential: async (userId, provider) => {
       reads.push(`${userId}:${provider}`);
@@ -51,6 +52,7 @@ function harness() {
   return {
     deps, rows, capabilities, reads,
     setEnabled(value: boolean) { enabled = value; },
+    setFundingPreference(value: "personal_first" | "server_first") { fundingPreference = value; },
     setServerRoute(value: string | null) { serverRoute = value; },
   };
 }
@@ -106,6 +108,129 @@ describe("trusted model funding", () => {
     if (decision.kind !== "personal") throw new Error("Expected personal funding");
     expect(await withAdmittedPersonalProviderKey(decision, async (key) => key, h.deps))
       .toBe(`private-${ALICE}`);
+  });
+
+  test("fresh overlap follows funding priority and server-first avoids personal lookup", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
+
+    expect(await resolveModelFunding(request(ALICE), h.deps)).toMatchObject({
+      kind: "personal",
+      providerRoute: "openrouter",
+      credentialRevision: 1,
+    });
+    expect(h.reads).toEqual([`${ALICE}:openrouter`]);
+
+    h.reads.length = 0;
+    h.setFundingPreference("server_first");
+    expect(await resolveModelFunding(request(ALICE), h.deps)).toMatchObject({
+      kind: "server",
+      providerRoute: "openrouter",
+    });
+    expect(h.reads).toEqual([]);
+  });
+
+  test.each(["personal_first", "server_first"] as const)(
+    "%s keeps each sole funding source usable and denies a route with neither source",
+    async (preference) => {
+      const personalOnly = harness();
+      personalOnly.setFundingPreference(preference);
+      personalOnly.setServerRoute(null);
+      personalOnly.capabilities.set(ALICE, ["use_personal_provider_credentials"]);
+      personalOnly.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
+      expect((await resolveModelFunding(request(ALICE), personalOnly.deps)).kind).toBe("personal");
+
+      const serverOnly = harness();
+      serverOnly.setFundingPreference(preference);
+      serverOnly.capabilities.set(ALICE, ["use_server_provider_credentials"]);
+      expect((await resolveModelFunding(request(ALICE), serverOnly.deps)).kind).toBe("server");
+
+      const neither = harness();
+      neither.setFundingPreference(preference);
+      neither.setServerRoute(null);
+      neither.capabilities.set(ALICE, [
+        "use_personal_provider_credentials",
+        "use_server_provider_credentials",
+      ]);
+      expect(await code(resolveModelFunding(request(ALICE), neither.deps)))
+        .toBe("provider_credentials_missing");
+    },
+  );
+
+  test("fresh admissions observe policy changes while admitted sources remain pinned", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
+
+    const personal = await resolveModelFunding(request(ALICE), h.deps);
+    expect(personal.kind).toBe("personal");
+    h.setFundingPreference("server_first");
+    expect((await resolveModelFunding(request(ALICE), h.deps)).kind).toBe("server");
+    expect((await resolveModelFunding({ ...request(ALICE), priorDecision: personal }, h.deps)).kind)
+      .toBe("personal");
+
+    const server = await resolveModelFunding(request(ALICE), h.deps);
+    expect(server.kind).toBe("server");
+    h.setFundingPreference("personal_first");
+    expect((await resolveModelFunding(request(ALICE), h.deps)).kind).toBe("personal");
+    expect((await resolveModelFunding({ ...request(ALICE), priorDecision: server }, h.deps)).kind)
+      .toBe("server");
+  });
+
+  test("a server admission cannot cross to a personal-only fallback after priority or authority changes", async () => {
+    const h = harness();
+    h.setFundingPreference("server_first");
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
+    h.rows.set(`${ALICE}:openai`, row(ALICE, "openai"));
+    const admitted = await resolveModelFunding(request(ALICE), h.deps);
+    expect(admitted.kind).toBe("server");
+
+    h.setFundingPreference("personal_first");
+    h.setServerRoute(null);
+    expect(await code(resolveModelFunding({
+      ...request(ALICE, "openai:synthetic/fallback"),
+      priorDecision: admitted,
+    }, h.deps))).toBe("provider_credentials_missing");
+    expect(h.reads).toEqual([]);
+
+    h.setServerRoute("openai");
+    h.capabilities.set(ALICE, ["use_personal_provider_credentials"]);
+    expect(await code(resolveModelFunding({
+      ...request(ALICE, "openai:synthetic/fallback"),
+      priorDecision: admitted,
+    }, h.deps))).toBe("server_credentials_forbidden");
+  });
+
+  test("a personal admission cannot cross to a server-only mixed-provider fallback", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
+    const admitted = await resolveModelFunding(request(ALICE), h.deps);
+    expect(admitted.kind).toBe("personal");
+
+    h.setFundingPreference("server_first");
+    expect(await code(resolveModelFunding({
+      ...request(ALICE, "openai:synthetic/server-only-fallback"),
+      priorDecision: admitted,
+    }, h.deps))).toBe("personal_credential_missing");
+  });
+
+  test("personal custody failure cannot unlock an eligible server route", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
+    const personal = await resolveModelFunding(request(ALICE), h.deps);
+    if (personal.kind !== "personal") throw new Error("Expected personal funding");
+    h.deps.readCustody = async () => {
+      throw new Error("synthetic custody failure");
+    };
+
+    expect(await code(withAdmittedPersonalProviderKey(personal, () => {
+      throw new Error("Provider must not be reached");
+    }, h.deps))).toBe("personal_credential_unavailable");
+    expect(h.reads).toEqual([`${ALICE}:openrouter`, `${ALICE}:openrouter`, `${ALICE}:openrouter`]);
   });
 
   test("missing personal key falls back only for a server-authorized Human", async () => {

@@ -14,6 +14,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   in Settings. Existing members who open `/join` go straight into the app;
   visitors need an active selected invite to join.
 
+- Admins can choose server or personal provider keys first for eligible chat.
+  Members retain both permitted model catalogues; existing servers keep personal
+  keys first unless an admin changes the preference.
+
 - Members can manage personal provider keys in Settings, select a compatible
   chat model, and chat with their own Genie when personal keys are enabled by
   the server. Personal and server key controls share masked previews and

@@ -7,6 +7,7 @@ import {
   getServerProviderPolicy,
   type PersonalProviderCredentialRecord,
   type PersonalProviderId,
+  type ServerProviderFundingPreference,
 } from "@nautilo/db";
 import {
   decryptPersonalProviderCredential,
@@ -68,7 +69,10 @@ export interface ResolveModelFundingInput {
 }
 
 export interface ModelFundingDeps {
-  getPolicy: () => Promise<{ allowPersonalProviderKeys: boolean }>;
+  getPolicy: () => Promise<{
+    allowPersonalProviderKeys: boolean;
+    fundingPreference?: ServerProviderFundingPreference;
+  }>;
   getCapabilities: (humanUserId: string) => Promise<readonly string[]>;
   getCredential: (humanUserId: string, provider: PersonalProviderId) => Promise<PersonalProviderCredentialRecord | null>;
   serverRoute: (modelId: string) => string | null;
@@ -130,8 +134,8 @@ function verifyPrior(input: ResolveModelFundingInput, provider: PersonalProvider
 
 /**
  * Resolve a single paid model attempt from live policy and the causal Human.
- * A present personal row always wins for a fresh operation, regardless of its
- * validation observation. An admitted source never changes on later attempts.
+ * Fresh operations follow the saved source priority for this model's route.
+ * Validation remains an observation. An admitted source never changes later.
  */
 export async function resolveModelFunding(
   input: ResolveModelFundingInput,
@@ -155,6 +159,19 @@ export async function resolveModelFunding(
   }
   if (prior?.kind === "personal" && !personalAllowed) {
     throw new ModelFundingError("personal_credentials_forbidden");
+  }
+
+  // Priority applies only to fresh admissions. An eligible server-first route
+  // needs neither a personal row lookup nor access to personal key custody.
+  if (!prior && policy.fundingPreference === "server_first"
+    && caps.includes("use_server_provider_credentials")) {
+    const route = deps.serverRoute(input.modelId);
+    if (route) {
+      return {
+        kind: "server", humanUserId: input.humanUserId,
+        modelId: input.modelId, providerRoute: route, workload: input.workload,
+      };
+    }
   }
 
   // A fallback to a different provider must still honor the originally

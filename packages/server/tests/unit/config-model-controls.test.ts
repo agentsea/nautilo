@@ -3,6 +3,12 @@ import { readFile } from "node:fs/promises";
 import Fastify from "fastify";
 import { z } from "zod";
 import type { EligibleModel } from "@nautilo/trust";
+import type { PersonalProviderCredentialRecord, PersonalProviderId } from "@nautilo/db";
+import {
+  createPersonalProviderCustody,
+  decryptPersonalProviderCredential,
+  encryptPersonalProviderCredential,
+} from "@nautilo/operator-secrets";
 import {
   configureRuntimeModelCatalog,
   hydrateRuntimeModelCatalog,
@@ -13,7 +19,11 @@ import {
   configRoutes,
   resolveCallerModelAvailability,
 } from "../../src/routes/config";
-import { ModelFundingError } from "../../src/lib/model-funding";
+import {
+  ModelFundingError,
+  resolveModelFunding,
+  type ModelFundingDeps,
+} from "../../src/lib/model-funding";
 
 describe("GET /api/config/models D462 controls", () => {
   afterEach(() => {
@@ -310,4 +320,103 @@ describe("caller-scoped model availability", () => {
       await app.close();
     }
   });
+
+  test.each(["personal_first", "server_first"] as const)(
+    "caller catalogue keeps the server-only, personal-only, and overlap union under %s",
+    async (fundingPreference) => {
+      const humanUserId = "human-union";
+      const custody = createPersonalProviderCustody();
+      const rows = new Map<PersonalProviderId, PersonalProviderCredentialRecord>();
+      const addRow = (provider: PersonalProviderId, id: string) => {
+        const record: PersonalProviderCredentialRecord = {
+          id,
+          userId: humanUserId,
+          provider,
+          revision: 1,
+          validationStatus: "unverified",
+          validatedAt: null,
+          envelope: encryptPersonalProviderCredential(custody, `synthetic-${provider}`, {
+            id,
+            userId: humanUserId,
+            provider,
+            revision: 1,
+          }),
+          createdAt: new Date(0),
+          updatedAt: new Date(0),
+        };
+        rows.set(provider, record);
+      };
+      addRow("anthropic", "credential-anthropic");
+      addRow("openrouter", "credential-openrouter");
+
+      const personalOnly = "anthropic:claude-sonnet-4-6";
+      const overlap = "openrouter:moonshotai/kimi-k3";
+      const serverOnly = "fireworks:accounts/fireworks/models/kimi-k3";
+      const modelIds = [personalOnly, overlap, serverOnly];
+      const decisions = new Map<string, "personal" | "server">();
+      const fundingDeps: ModelFundingDeps = {
+        getPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference }),
+        getCapabilities: async () => [
+          "use_personal_provider_credentials",
+          "use_server_provider_credentials",
+        ],
+        getCredential: async (_userId, provider) => rows.get(provider) ?? null,
+        serverRoute: (modelId) => modelId === overlap
+          ? "openrouter"
+          : modelId === serverOnly ? "fireworks" : null,
+        readCustody: async () => custody,
+        decrypt: decryptPersonalProviderCredential,
+      };
+      const candidates: EligibleModel[] = modelIds.map((id, priority) => ({
+        id,
+        displayName: id,
+        provider: id.slice(0, id.indexOf(":")),
+        priority,
+        costCoefficient: 1,
+        enabled: false,
+        capabilities: {
+          tools: true,
+          vision: false,
+          reasoning: true,
+          e2ee: false,
+          webSearch: false,
+        },
+        availability: "missing-key",
+        unavailableReason: "No process-wide key",
+      }));
+      const app = Fastify({ logger: false });
+      app.decorateRequest("sessionUserId", null);
+      app.addHook("preHandler", async (request) => {
+        request.sessionUserId = humanUserId;
+      });
+      configRoutes(app, {
+        getEligibleModels: () => candidates,
+        resolveCallerAvailability: async (userId, modelId, options) => {
+          const result = await resolveCallerModelAvailability(userId, modelId, options, {
+            resolveFunding: async (input) => {
+              const decision = await resolveModelFunding(input, fundingDeps);
+              decisions.set(modelId, decision.kind);
+              return decision;
+            },
+          });
+          return result;
+        },
+      });
+      try {
+        const response = await app.inject({ method: "GET", url: "/api/config/models/caller" });
+        expect(response.statusCode).toBe(200);
+        expect(response.json<EligibleModel[]>().map(({ id }) => id)).toEqual(modelIds);
+        expect(decisions).toEqual(new Map([
+          [personalOnly, "personal"],
+          [overlap, fundingPreference === "personal_first" ? "personal" : "server"],
+          [serverOnly, "server"],
+        ]));
+        expect(response.body).not.toContain("synthetic-anthropic");
+        expect(response.body).not.toContain("synthetic-openrouter");
+        expect(response.body).not.toContain("funding");
+      } finally {
+        await app.close();
+      }
+    },
+  );
 });

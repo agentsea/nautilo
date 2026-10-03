@@ -1,6 +1,6 @@
 {
-  "id": "2cf572f6-fc1e-496b-9339-c1cbd91716c7",
-  "prevId": "c643122a-5a65-402f-82f6-9c2a92a03715",
+  "id": "3c1feea5-34d0-4388-8907-abf0b365af60",
+  "prevId": "2cf572f6-fc1e-496b-9339-c1cbd91716c7",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -13663,7 +13663,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },
@@ -18854,11 +18854,17 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
+        "token": {
+          "name": "token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "token_hash": {
           "name": "token_hash",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "kind": {
           "name": "kind",
@@ -18936,6 +18942,21 @@
         }
       },
       "indexes": {
+        "uq_invites_token": {
+          "name": "uq_invites_token",
+          "columns": [
+            {
+              "expression": "token",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "uq_invites_token_hash": {
           "name": "uq_invites_token_hash",
           "columns": [
@@ -19024,7 +19045,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "invites_token_present": {
+          "name": "invites_token_present",
+          "value": "\"invites\".\"token\" IS NOT NULL OR \"invites\".\"token_hash\" IS NOT NULL"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.artifacts": {
@@ -43508,6 +43534,88 @@
       },
       "checkConstraints": {},
       "isRLSEnabled": true
+    },
+    "public.server_public_join": {
+      "name": "server_public_join",
+      "schema": "",
+      "columns": {
+        "singleton": {
+          "name": "singleton",
+          "type": "boolean",
+          "primaryKey": true,
+          "notNull": true,
+          "default": true
+        },
+        "invite_id": {
+          "name": "invite_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "server_public_join_invite_id_invites_id_fk": {
+          "name": "server_public_join_invite_id_invites_id_fk",
+          "tableFrom": "server_public_join",
+          "tableTo": "invites",
+          "columnsFrom": [
+            "invite_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "server_public_join_updated_by_users_id_fk": {
+          "name": "server_public_join_updated_by_users_id_fk",
+          "tableFrom": "server_public_join",
+          "tableTo": "users",
+          "columnsFrom": [
+            "updated_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "server_public_join_singleton": {
+          "name": "server_public_join_singleton",
+          "value": "\"server_public_join\".\"singleton\""
+        },
+        "server_public_join_revision": {
+          "name": "server_public_join_revision",
+          "value": "\"server_public_join\".\"revision\" > 0"
+        }
+      },
+      "isRLSEnabled": false
     }
   },
   "enums": {

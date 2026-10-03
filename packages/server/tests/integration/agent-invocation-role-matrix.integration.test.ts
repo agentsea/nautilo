@@ -169,7 +169,7 @@ async function createDirectRoom(
   };
 }
 
-async function sendDirectMessage(human: SeatedHuman, room: DirectRoom) {
+async function sendDirectMessage(human: SeatedHuman, room: DirectRoom, model?: string) {
   return authedInject(fx.app, {
     method: "POST",
     url: "/api/chat",
@@ -179,6 +179,7 @@ async function sendDirectMessage(human: SeatedHuman, room: DirectRoom) {
         ? `@${room.targetAgentHandle} role matrix ${human.role} foreign Genie`
         : `role matrix ${human.role} own Genie`,
       roomId: room.roomId,
+      ...(model ? { model } : {}),
     },
   });
 }
@@ -448,6 +449,18 @@ describe.serial("exact Genie invocation role matrix", () => {
 
       const fundingChecksBefore = fundingChecks.length;
       const dispatchesBefore = paidDispatches.length;
+      const unfunded = await sendDirectMessage(community, ownRoom, "anthropic:claude-sonnet-4-6");
+      expect(unfunded.statusCode).toBe(422);
+      expect(unfunded.json()).toMatchObject({ code: "personal_credential_missing" });
+      expect(paidDispatches).toHaveLength(dispatchesBefore);
+      expect(fundingChecks).toHaveLength(fundingChecksBefore);
+
+      const selected = await authedInject(fx.app, {
+        method: "PUT", url: "/api/profile", bearer: community.bearer,
+        payload: { defaultModel: modelId },
+      });
+      expect(selected.statusCode, selected.body).toBe(200);
+      expect(selected.json<{ agent: { defaultModel: string } }>().agent.defaultModel).toBe(modelId);
       expect((await sendDirectMessage(community, ownRoom)).statusCode).toBe(202);
       expect(paidDispatches).toHaveLength(dispatchesBefore + 1);
       expect(fundingChecks).toHaveLength(fundingChecksBefore);

@@ -4,6 +4,7 @@ import { resolveNautiloRootDir } from "@nautilo/config";
 import {
   getServerProviderPolicy,
   upsertServerProviderPolicy,
+  type ServerProviderPolicyUpdate,
 } from "@nautilo/db";
 import { warn } from "@nautilo/logger";
 import { getUserCapabilities } from "@nautilo/trust";
@@ -37,7 +38,7 @@ function audit(request: FastifyRequest, event: Record<string, unknown>): void {
 }
 
 type ParseResult =
-  | { ok: true; allowPersonalProviderKeys: boolean }
+  | { ok: true; patch: ServerProviderPolicyUpdate }
   | { ok: false; error: string };
 
 function parseUpdateBody(body: unknown): ParseResult {
@@ -46,16 +47,40 @@ function parseUpdateBody(body: unknown): ParseResult {
   }
   const record = body as Record<string, unknown>;
   const keys = Object.keys(record);
-  if (keys.length !== 1 || keys[0] !== "allowPersonalProviderKeys") {
-    return { ok: false, error: "only allowPersonalProviderKeys is writable" };
+  const knownKeys = new Set(["allowPersonalProviderKeys", "fundingPreference"]);
+  if (keys.length === 0 || keys.some((key) => !knownKeys.has(key))) {
+    return {
+      ok: false,
+      error: "only allowPersonalProviderKeys and fundingPreference are writable",
+    };
   }
-  if (typeof record["allowPersonalProviderKeys"] !== "boolean") {
+  if (
+    "allowPersonalProviderKeys" in record
+    && typeof record["allowPersonalProviderKeys"] !== "boolean"
+  ) {
     return { ok: false, error: "allowPersonalProviderKeys must be a boolean" };
   }
-  return {
-    ok: true,
-    allowPersonalProviderKeys: record["allowPersonalProviderKeys"],
-  };
+  if (
+    "fundingPreference" in record
+    && record["fundingPreference"] !== "personal_first"
+    && record["fundingPreference"] !== "server_first"
+  ) {
+    return {
+      ok: false,
+      error: "fundingPreference must be personal_first or server_first",
+    };
+  }
+  const patch: ServerProviderPolicyUpdate = {};
+  if (typeof record["allowPersonalProviderKeys"] === "boolean") {
+    patch.allowPersonalProviderKeys = record["allowPersonalProviderKeys"];
+  }
+  if (
+    record["fundingPreference"] === "personal_first"
+    || record["fundingPreference"] === "server_first"
+  ) {
+    patch.fundingPreference = record["fundingPreference"];
+  }
+  return { ok: true, patch };
 }
 
 /** @internal Exported for deterministic unit coverage. */
@@ -110,9 +135,7 @@ export function serverProviderPolicyRoutes(
 
     const persisted = await (async () => {
       try {
-        return await upsertPolicy(getDb(), {
-          allowPersonalProviderKeys: parsed.allowPersonalProviderKeys,
-        });
+        return await upsertPolicy(getDb(), parsed.patch);
       } catch {
         warn("[server-provider-policy] policy storage unavailable");
         return null;
@@ -127,6 +150,8 @@ export function serverProviderPolicyRoutes(
         actorId: userId,
         previous: persisted.previous.allowPersonalProviderKeys,
         effective: persisted.effective.allowPersonalProviderKeys,
+        previousFundingPreference: persisted.previous.fundingPreference,
+        effectiveFundingPreference: persisted.effective.fundingPreference,
       });
     } catch (error) {
       warn(`[server-provider-policy] audit write failed: ${String(error)}`);

@@ -745,6 +745,7 @@ export async function* langgraphExecutor(
     modelId: foregroundModelPlan.initialModelId,
     roomId,
     agentId,
+    protectedTurn: protectedTurn !== undefined,
   });
   const modelId = fundingSession?.kind === "personal"
     ? foregroundModelPlan.initialModelId
