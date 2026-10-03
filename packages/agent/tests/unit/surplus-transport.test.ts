@@ -34,6 +34,18 @@ const VENICE_ROUTE = {
   qualifiedAt: "2026-10-01",
 };
 
+const QUALIFIED_OPENROUTER_ROUTE = {
+  catalogModelId: "openrouter:openai/gpt-5.6-sol",
+  surplusModelId: "gpt-5.6-sol",
+  providerPin: "openrouter" as const,
+  supportsTools: true,
+  supportsVision: false,
+  supportsReasoning: true,
+  maxContextTokens: 1_050_000,
+  maxOutputTokens: 128_000,
+  qualifiedAt: "2026-10-03",
+};
+
 describe("Surplus wire boundary", () => {
   test("retains real zero cost and omits absent cost", () => {
     const withZero = readSurplusWireReceipt(new Headers({
@@ -307,13 +319,7 @@ describe("Surplus wire boundary", () => {
   });
 
   test("OpenRouter repeated terminal usage preserves one finish signal and actual charge", async () => {
-    const route = {
-      ...VENICE_ROUTE,
-      catalogModelId: "openrouter:openai/gpt-5.6-sol",
-      surplusModelId: "gpt-5.6-sol",
-      providerPin: "openrouter" as const,
-      supportsReasoning: true,
-    };
+    const route = QUALIFIED_OPENROUTER_ROUTE;
     const frames = [
       { choices: [{ index: 0, delta: { role: "assistant", reasoning: "synthetic progress" }, finish_reason: null }] },
       { choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "call-probe", type: "function", function: { name: "record_probe", arguments: '{"value":"ok"}' } }] }, finish_reason: null }] },
@@ -346,7 +352,7 @@ describe("Surplus wire boundary", () => {
 
   test("OpenRouter conflicting terminal signals retain actual cost without permitting replay", async () => {
     let requests = 0;
-    const route = { ...VENICE_ROUTE, catalogModelId: "openrouter:openai/gpt-5.6-sol", surplusModelId: "openai/gpt-5.6-sol", providerPin: "openrouter" as const };
+    const route = QUALIFIED_OPENROUTER_ROUTE;
     const fetchImpl = (async () => {
       requests += 1;
       const frames = ["tool_calls", "stop"].map((finishReason, index) => ({ id: "synthetic", object: "chat.completion.chunk", model: route.surplusModelId, created: 1, choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: finishReason }], ...(index === 1 ? { usage: { prompt_tokens: 72, completion_tokens: 18, total_tokens: 90, buyer_cost_micro: 162 } } : {}) }));
@@ -673,8 +679,12 @@ describe("Surplus wire boundary", () => {
 });
 
 describe("qualified Surplus route selection", () => {
-  test("public model similarity never grants a production route", () => {
+  test("releases only the exact signed OpenRouter GPT-5.6 Sol route", () => {
+    expect(resolveQualifiedSurplusChatRoute(QUALIFIED_OPENROUTER_ROUTE.catalogModelId))
+      .toEqual(QUALIFIED_OPENROUTER_ROUTE);
     expect(resolveQualifiedSurplusChatRoute("venice:openai-gpt-55")).toBeNull();
+    expect(resolveQualifiedSurplusChatRoute("openrouter:openai/gpt-5.6-terra")).toBeNull();
+    expect(resolveQualifiedSurplusChatRoute("openai:gpt-5.6-sol")).toBeNull();
   });
 
   test("requires signed chat membership and an exact provider pin", () => {
@@ -698,7 +708,13 @@ describe("qualified Surplus route selection", () => {
     const routes = [VENICE_ROUTE];
     expect(resolveSurplusChatServingAvailability({
       policyEnabled: true, keyConfigured: true,
-    })).toEqual({ status: "not-qualified", route: null });
+    })).toEqual({ status: "available", route: QUALIFIED_OPENROUTER_ROUTE });
+    expect(resolveSurplusChatServingAvailability({
+      policyEnabled: false, keyConfigured: true,
+    })).toEqual({ status: "qualified-unavailable", route: QUALIFIED_OPENROUTER_ROUTE });
+    expect(resolveSurplusChatServingAvailability({
+      policyEnabled: true, keyConfigured: false,
+    })).toEqual({ status: "qualified-unavailable", route: QUALIFIED_OPENROUTER_ROUTE });
     expect(resolveSurplusChatServingAvailability({
       catalogModelId: VENICE_ROUTE.catalogModelId,
       policyEnabled: false, keyConfigured: true, routes,

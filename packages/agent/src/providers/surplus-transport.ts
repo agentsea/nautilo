@@ -138,7 +138,6 @@ class SurplusOpenRouterCompletions extends OpenRouterReasoningCompletions {
     // State belongs to this stream, so concurrent invocations cannot share a
     // terminal marker. Keep the SDK's final usage chunk and all reasoning.
     let terminalReason: string | undefined;
-    let terminalModel: unknown;
     for await (const chunk of super._streamResponseChunks(...args)) {
       const reason: unknown = chunk.generationInfo?.["finish_reason"];
       if (typeof reason === "string") {
@@ -147,8 +146,7 @@ class SurplusOpenRouterCompletions extends OpenRouterReasoningCompletions {
             && Array.isArray(chunk.message.tool_call_chunks) && chunk.message.tool_call_chunks.length > 0;
           // LangChain concatenates string metadata, so a repeated terminal
           // marker would otherwise become `tool_callstool_calls`.
-          if (reason === terminalReason && chunk.generationInfo?.["model_name"] === terminalModel
-            && chunk.text === "" && !hasToolDelta) {
+          if (reason === terminalReason && chunk.text === "" && !hasToolDelta) {
             delete chunk.generationInfo?.["finish_reason"];
             delete chunk.generationInfo?.["model_name"];
           }
@@ -156,9 +154,16 @@ class SurplusOpenRouterCompletions extends OpenRouterReasoningCompletions {
           // Finishing the stream first retains its final charge receipt.
         } else {
           terminalReason = reason;
-          terminalModel = chunk.generationInfo?.["model_name"];
         }
       }
+      // LangChain's callback-preferred streaming invoke path concatenates
+      // generation chunks directly and does not project generationInfo onto
+      // message metadata. Room streaming uses that path, while plain invoke
+      // uses the SDK's normal projection. Keep both paths semantically equal.
+      chunk.message.response_metadata = {
+        ...chunk.generationInfo,
+        ...chunk.message.response_metadata,
+      };
       yield chunk;
     }
   }

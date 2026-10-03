@@ -319,30 +319,52 @@ describe("server-models route authorization, partial writes, and audit", () => {
       .toEqual({ status: 403, body: { error: "admin only" } });
   });
 
-  test("reports a configured key but keeps chat unqualified when policy is enabled", async () => {
-    const call = routeHarness({
-      getCapabilities: async () => ["read_server_settings"],
-      getDb: () => ({}) as never,
-      getConfig: async () => ({ ...modelConfig, preferSurplus: true }),
-      refreshConfigCache: async () => null,
-      getEffectiveEmbeddingModel: () => null,
-      getActiveEmbeddingSelection: () => null,
-      listMediaModels,
-      getEffectiveMediaModel: () => null,
-      getSurplusKeyConfigured: () => true,
-    });
+  test("reports only the released Surplus model as available when policy and key are enabled", async () => {
+    const previous = process.env["OPENROUTER_API_KEY"];
+    delete process.env["OPENROUTER_API_KEY"];
+    try {
+      const read = async (preferSurplus: boolean) => {
+        const call = routeHarness({
+          getCapabilities: async () => ["read_server_settings"],
+          getDb: () => ({}) as never,
+          getConfig: async () => ({ ...modelConfig, preferSurplus }),
+          refreshConfigCache: async () => null,
+          getEffectiveEmbeddingModel: () => null,
+          getActiveEmbeddingSelection: () => null,
+          listMediaModels,
+          getEffectiveMediaModel: () => null,
+          getSurplusKeyConfigured: () => true,
+        });
+        const response = await call("GET", { ...requestBase, sessionUserId: "viewer" });
+        expect(response.status).toBe(200);
+        return response.body as {
+          preferSurplus: boolean;
+          surplus: { keyConfigured: boolean; policyEnabled: boolean; chatStatus: string };
+          catalogModels: Array<{ id: string; availability: string }>;
+        };
+      };
 
-    expect(await call("GET", { ...requestBase, sessionUserId: "viewer" })).toMatchObject({
-      status: 200,
-      body: {
+      const enabled = await read(true);
+      expect(enabled).toMatchObject({
         preferSurplus: true,
-        surplus: {
-          keyConfigured: true,
-          policyEnabled: true,
-          chatStatus: "not-qualified",
-        },
-      },
-    });
+        surplus: { keyConfigured: true, policyEnabled: true, chatStatus: "available" },
+      });
+      expect(enabled.catalogModels.find((model) => model.id === "openrouter:openai/gpt-5.6-sol"))
+        .toMatchObject({ availability: "selectable" });
+      expect(enabled.catalogModels.find((model) => model.id === "openrouter:openai/gpt-6-sol"))
+        .toMatchObject({ availability: "missing_credentials" });
+
+      const disabled = await read(false);
+      expect(disabled).toMatchObject({
+        preferSurplus: false,
+        surplus: { keyConfigured: true, policyEnabled: false, chatStatus: "qualified-unavailable" },
+      });
+      expect(disabled.catalogModels.find((model) => model.id === "openrouter:openai/gpt-5.6-sol"))
+        .toMatchObject({ availability: "missing_credentials" });
+    } finally {
+      if (previous === undefined) delete process.env["OPENROUTER_API_KEY"];
+      else process.env["OPENROUTER_API_KEY"] = previous;
+    }
   });
 
   test("derives available capability and catalog readiness from an injected qualified route", async () => {

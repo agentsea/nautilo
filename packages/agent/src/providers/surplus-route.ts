@@ -3,8 +3,7 @@ import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catal
 /**
  * A serving mapping is a release decision, not a match from `/v1/models`.
  * Each row must be backed by an exact-model, pinned-provider, feature, and
- * settlement qualification before it is added here. An empty release list is
- * intentional while funded qualification is pending.
+ * settlement qualification before it is added here.
  */
 export interface QualifiedSurplusChatRoute {
   readonly catalogModelId: string;
@@ -18,7 +17,19 @@ export interface QualifiedSurplusChatRoute {
   readonly qualifiedAt: string;
 }
 
-const QUALIFIED_CHAT_ROUTES: readonly QualifiedSurplusChatRoute[] = Object.freeze([]);
+const QUALIFIED_CHAT_ROUTES: readonly QualifiedSurplusChatRoute[] = Object.freeze([
+  Object.freeze({
+    catalogModelId: "openrouter:openai/gpt-5.6-sol",
+    surplusModelId: "gpt-5.6-sol",
+    providerPin: "openrouter",
+    supportsTools: true,
+    supportsVision: false,
+    supportsReasoning: true,
+    maxContextTokens: 1_050_000,
+    maxOutputTokens: 128_000,
+    qualifiedAt: "2026-10-03",
+  }),
+]);
 
 export type SurplusChatServingStatus = "not-qualified" | "qualified-unavailable" | "available";
 

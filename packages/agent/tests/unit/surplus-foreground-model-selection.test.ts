@@ -3,39 +3,38 @@ import { buildForegroundModelControlPlan } from "../../src/config/foreground-mod
 import { resolveModelRole } from "../../src/config/model-role-resolution";
 import { resolveForegroundAgentModelId } from "../../src/nodes/agent";
 
-const MODEL_ID = "venice:openai-gpt-55";
+const MODEL_ID = "openrouter:openai/gpt-5.6-sol";
 const ROUTE = {
   catalogModelId: MODEL_ID,
-  surplusModelId: "gpt-5.5",
-  providerPin: "venice" as const,
+  surplusModelId: "gpt-5.6-sol",
+  providerPin: "openrouter" as const,
   supportsTools: true,
   supportsVision: false,
-  supportsReasoning: false,
-  maxContextTokens: 100_000,
-  maxOutputTokens: 8_000,
-  qualifiedAt: "2026-10-01",
+  supportsReasoning: true,
+  maxContextTokens: 1_050_000,
+  maxOutputTokens: 128_000,
+  qualifiedAt: "2026-10-03",
 };
 
 const surplusOnly = {
   fundingKind: "server" as const,
   policyEnabled: true,
   keyConfigured: true,
-  routes: [ROUTE],
   env: {},
 };
 
 describe("foreground agent model selection", () => {
-  test("a selected Room model reaches the agent node selection without a direct credential", () => {
+  test("a selected foreground model reaches the agent node without a direct credential", () => {
     const plan = buildForegroundModelControlPlan(
       { modelId: MODEL_ID },
       null,
-      () => { throw new Error("Room selection must avoid the default resolver"); },
+      () => { throw new Error("Foreground selection must avoid the default resolver"); },
       new Map([[MODEL_ID, { id: MODEL_ID }]]),
     );
     expect(resolveForegroundAgentModelId(plan.initialModelId, surplusOnly)).toBe(MODEL_ID);
   });
 
-  test("an unselected Room fallback can use the same foreground-only admission", () => {
+  test("an unselected foreground fallback can use the same admission", () => {
     const plan = buildForegroundModelControlPlan(
       null,
       null,
@@ -64,6 +63,14 @@ describe("foreground agent model selection", () => {
       ...surplusOnly,
       routes: [{ ...ROUTE, supportsTools: false }],
     })).toThrow(/credential/i);
+  });
+
+  test("disabled Surplus policy leaves the direct OpenRouter path available", () => {
+    expect(resolveForegroundAgentModelId(MODEL_ID, {
+      ...surplusOnly,
+      policyEnabled: false,
+      env: { OPENROUTER_API_KEY: "synthetic-direct-key" },
+    })).toBe(MODEL_ID);
   });
 
   test("personal funding preserves its request-local signed-catalog projection", () => {

@@ -957,8 +957,8 @@ export async function invokeChatModelWithFallback(
         }
         try {
           // This is a server-wide serving preference, never a personal-key
-          // transport or another catalogue model. The released qualification
-          // map remains empty until the exact route has live evidence.
+          // transport or another catalogue model. Only an exact route in the
+          // released qualification map may use this path.
           if (usageFunding.kind !== "personal") {
             kickServerModelConfigRefresh();
             const surplusKey = resolveProviderKey("surplus");
