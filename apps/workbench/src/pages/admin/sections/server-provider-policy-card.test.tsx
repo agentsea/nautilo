@@ -16,10 +16,23 @@ let persisted: Policy = {
   fundingPreference: "personal_first",
 };
 let failNextSave = false;
+let commitThenFailNextSave = false;
+let failNextGet = false;
 let pendingSave: Promise<Policy> | null = null;
-const getPolicy = mock(async () => ({ ...persisted }));
+const getPolicy = mock(async () => {
+  if (failNextGet) {
+    failNextGet = false;
+    throw new Error("Policy refresh failed");
+  }
+  return { ...persisted };
+});
 const setPolicy = mock(async (input: PolicyPatch) => {
   if (pendingSave !== null) return pendingSave;
+  if (commitThenFailNextSave) {
+    commitThenFailNextSave = false;
+    persisted = { ...persisted, ...input };
+    throw new Error("Policy save response was lost");
+  }
   if (failNextSave) {
     failNextSave = false;
     throw new Error("Policy save failed");
@@ -54,6 +67,8 @@ beforeEach(() => {
     fundingPreference: "personal_first",
   };
   failNextSave = false;
+  commitThenFailNextSave = false;
+  failNextGet = false;
   pendingSave = null;
   getPolicy.mockClear();
   setPolicy.mockClear();
@@ -167,7 +182,7 @@ describe("ServerProviderPolicyCard", () => {
     });
   });
 
-  test("retains persisted state after failure and supports a retry", async () => {
+  test("retains the confirmed server state after a rejected save and supports a retry", async () => {
     capabilities.add("manage_server_settings");
     failNextSave = true;
     const view = render(<ServerProviderPolicyCard />);
@@ -178,9 +193,11 @@ describe("ServerProviderPolicyCard", () => {
 
     await waitFor(() => {
       expect(view.getByRole("alert").textContent).toContain("Policy save failed");
+      expect(view.getByRole("alert").textContent).toContain("current server policy was refreshed");
       expect(toggle.getAttribute("aria-checked")).toBe("false");
       expect(view.getByTestId("server-provider-policy-persisted").textContent).toContain("Off");
     });
+    expect(getPolicy).toHaveBeenCalledTimes(2);
 
     fireEvent.click(toggle);
     fireEvent.click(view.getByRole("button", { name: "Save personal provider policy" }));
@@ -188,6 +205,78 @@ describe("ServerProviderPolicyCard", () => {
       expect(setPolicy).toHaveBeenCalledTimes(2);
       expect(view.getByTestId("server-provider-policy-persisted").textContent).toContain("On");
     });
+  });
+
+  test("reconciles a committed save whose response was lost and dispatches the policy event", async () => {
+    capabilities.add("manage_server_settings");
+    commitThenFailNextSave = true;
+    let policyEvents = 0;
+    const onPolicyChanged = () => { policyEvents++; };
+    window.addEventListener("nautilo:personal-provider-policy-changed", onPolicyChanged);
+    const view = render(<ServerProviderPolicyCard />);
+    const serverFirst = await waitFor(() =>
+      view.getByRole("radio", { name: "Server keys first" }),
+    );
+
+    fireEvent.click(serverFirst);
+    fireEvent.click(view.getByRole("button", { name: "Save personal provider policy" }));
+
+    await waitFor(() => {
+      expect(getPolicy).toHaveBeenCalledTimes(2);
+      expect(view.getByRole("alert").textContent).toContain("save response was lost");
+      expect(view.getByRole("alert").textContent).toContain("current server policy was refreshed");
+      expect(view.getByTestId("server-provider-policy-funding-persisted").textContent)
+        .toContain("Server keys first");
+      expect((serverFirst as HTMLInputElement).checked).toBe(true);
+    });
+    expect(policyEvents).toBe(1);
+    expect(view.queryByText("Unsaved selection")).toBeNull();
+    window.removeEventListener("nautilo:personal-provider-policy-changed", onPolicyChanged);
+  });
+
+  test("marks policy state unknown after a committed save and failed reconciliation, then recovers by refresh", async () => {
+    capabilities.add("manage_server_settings");
+    commitThenFailNextSave = true;
+    let policyEvents = 0;
+    const onPolicyChanged = () => { policyEvents++; };
+    window.addEventListener("nautilo:personal-provider-policy-changed", onPolicyChanged);
+    const view = render(<ServerProviderPolicyCard />);
+    const serverFirst = await waitFor(() =>
+      view.getByRole("radio", { name: "Server keys first" }),
+    );
+    failNextGet = true;
+
+    fireEvent.click(serverFirst);
+    fireEvent.click(view.getByRole("button", { name: "Save personal provider policy" }));
+
+    const refresh = await waitFor(() => view.getByRole("button", { name: "Refresh server policy" }));
+    expect(view.getByRole("alert").textContent).toContain("Policy refresh failed");
+    expect(view.getByRole("alert").textContent).toContain("before editing or saving again");
+    expect(view.getByTestId("server-provider-policy-funding-persisted").textContent)
+      .toContain("Last confirmed priority");
+    expect(view.getByTestId("server-provider-policy-persisted").textContent)
+      .toContain("Last confirmed server policy");
+    expect(view.queryByText(/Current saved priority/u)).toBeNull();
+    expect(view.queryByText("Unsaved selection")).toBeNull();
+    expect(view.queryByText(/has no effect until personal keys are enabled/u)).toBeNull();
+    expect(view.getByRole("group", { name: "Funding priority" }).hasAttribute("disabled"))
+      .toBe(true);
+    expect(view.queryByRole("button", { name: "Save personal provider policy" })).toBeNull();
+    expect(policyEvents).toBe(0);
+
+    fireEvent.click(refresh);
+    await waitFor(() => {
+      expect(getPolicy).toHaveBeenCalledTimes(3);
+      expect(view.getByTestId("server-provider-policy-funding-persisted").textContent)
+        .toContain("Current saved priority: Server keys first");
+      expect(view.queryByRole("button", { name: "Refresh server policy" })).toBeNull();
+      expect(view.queryByRole("alert")).toBeNull();
+    });
+    expect(setPolicy).toHaveBeenCalledTimes(1);
+    expect(policyEvents).toBe(1);
+    expect(view.getByRole("group", { name: "Funding priority" }).hasAttribute("disabled"))
+      .toBe(false);
+    window.removeEventListener("nautilo:personal-provider-policy-changed", onPolicyChanged);
   });
 
   test("reverts a failed priority save to the current server value", async () => {

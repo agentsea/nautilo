@@ -20,6 +20,7 @@ export function ServerProviderPolicyCard() {
     useState<ServerProviderFundingPreference>("personal_first");
   const [loading, setLoading] = useState(canRead);
   const [saving, setSaving] = useState(false);
+  const [policyStateKnown, setPolicyStateKnown] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
@@ -33,6 +34,8 @@ export function ServerProviderPolicyCard() {
       setPersisted(policy);
       setDraftEnabled(policy.allowPersonalProviderKeys);
       setDraftFundingPreference(policy.fundingPreference);
+      setPolicyStateKnown(true);
+      setSaveError(null);
     } catch (cause) {
       setLoadError(errorMessage(cause));
     } finally {
@@ -45,6 +48,30 @@ export function ServerProviderPolicyCard() {
   }, [load]);
 
   if (!canRead) return null;
+
+  const recoverUnknownPolicy = async () => {
+    if (persisted === null) return;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const policy = await apiClient.admin.serverProviderPolicy.get();
+      const effectivePolicyChanged =
+        policy.allowPersonalProviderKeys !== persisted.allowPersonalProviderKeys
+        || policy.fundingPreference !== persisted.fundingPreference;
+      setPersisted(policy);
+      setDraftEnabled(policy.allowPersonalProviderKeys);
+      setDraftFundingPreference(policy.fundingPreference);
+      setPolicyStateKnown(true);
+      setSaveError(null);
+      if (effectivePolicyChanged) {
+        window.dispatchEvent(new Event("nautilo:personal-provider-policy-changed"));
+      }
+    } catch (cause) {
+      setLoadError(errorMessage(cause));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const save = async () => {
     if (!canManage || persisted === null) return;
@@ -67,9 +94,28 @@ export function ServerProviderPolicyCard() {
       window.dispatchEvent(new Event("nautilo:personal-provider-policy-changed"));
       setSaveSuccess("Personal provider policy saved.");
     } catch (cause) {
-      setDraftEnabled(persisted.allowPersonalProviderKeys);
-      setDraftFundingPreference(persisted.fundingPreference);
-      setSaveError(errorMessage(cause));
+      const saveFailure = errorMessage(cause);
+      try {
+        const policy = await apiClient.admin.serverProviderPolicy.get();
+        const effectivePolicyChanged =
+          policy.allowPersonalProviderKeys !== persisted.allowPersonalProviderKeys
+          || policy.fundingPreference !== persisted.fundingPreference;
+        setPersisted(policy);
+        setDraftEnabled(policy.allowPersonalProviderKeys);
+        setDraftFundingPreference(policy.fundingPreference);
+        setPolicyStateKnown(true);
+        if (effectivePolicyChanged) {
+          window.dispatchEvent(new Event("nautilo:personal-provider-policy-changed"));
+        }
+        setSaveError(
+          `${saveFailure} The save response could not be confirmed, so the current server policy was refreshed.`,
+        );
+      } catch (refreshCause) {
+        setPolicyStateKnown(false);
+        setSaveError(
+          `${saveFailure} The save response could not be confirmed, and refreshing the server policy also failed: ${errorMessage(refreshCause)} Refresh the server policy before editing or saving again.`,
+        );
+      }
     } finally {
       setSaving(false);
     }
@@ -95,7 +141,7 @@ export function ServerProviderPolicyCard() {
           </p>
           {persisted !== null ? (
             <p className="mt-2 text-xs font-medium text-foreground" data-testid="server-provider-policy-persisted">
-              Current server policy: {persisted.allowPersonalProviderKeys ? "On" : "Off"}
+              {policyStateKnown ? "Current server policy" : "Last confirmed server policy"}: {persisted.allowPersonalProviderKeys ? "On" : "Off"}
             </p>
           ) : null}
           {!canManage && persisted !== null ? (
@@ -114,7 +160,7 @@ export function ServerProviderPolicyCard() {
               role="switch"
               aria-label="Allow personal provider keys"
               aria-checked={draftEnabled}
-              disabled={!canManage || saving}
+              disabled={!canManage || saving || !policyStateKnown}
               onClick={() => {
                 setDraftEnabled((enabled) => !enabled);
                 setSaveError(null);
@@ -139,13 +185,13 @@ export function ServerProviderPolicyCard() {
       </div>
 
       {persisted !== null ? (
-        <fieldset className="mt-4" disabled={!canManage || saving}>
+        <fieldset className="mt-4" disabled={!canManage || saving || !policyStateKnown}>
           <legend className="text-sm font-semibold text-foreground">Funding priority</legend>
           <p className="mt-1 text-xs text-foreground-muted">
             When both keys are available and allowed for a model, use this source first.
             Members can still choose models available through either permitted source.
           </p>
-          {!persisted.allowPersonalProviderKeys ? (
+          {policyStateKnown && !persisted.allowPersonalProviderKeys ? (
             <p className="mt-1 text-xs font-medium text-foreground-muted">
               This preference has no effect until personal keys are enabled for an eligible member.
             </p>
@@ -178,7 +224,7 @@ export function ServerProviderPolicyCard() {
             className="mt-2 text-xs font-medium text-foreground"
             data-testid="server-provider-policy-funding-persisted"
           >
-            Current saved priority: {persisted.fundingPreference === "personal_first"
+            {policyStateKnown ? "Current saved priority" : "Last confirmed priority"}: {persisted.fundingPreference === "personal_first"
               ? "Personal keys first"
               : "Server keys first"}
           </p>
@@ -188,13 +234,17 @@ export function ServerProviderPolicyCard() {
       {loadError ? (
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <p className="text-sm text-error" role="alert">{loadError}</p>
-          <button type="button" className="text-sm font-medium text-primary" onClick={() => void load()}>
+          <button
+            type="button"
+            className="text-sm font-medium text-primary"
+            onClick={() => void (policyStateKnown ? load() : recoverUnknownPolicy())}
+          >
             Try again
           </button>
         </div>
       ) : null}
 
-      {canManage && persisted !== null ? (
+      {canManage && persisted !== null && policyStateKnown ? (
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <Button
             type="button"
@@ -212,6 +262,16 @@ export function ServerProviderPolicyCard() {
       ) : null}
 
       {saveError ? <p className="mt-3 text-sm text-error" role="alert">{saveError}</p> : null}
+      {!policyStateKnown ? (
+        <button
+          type="button"
+          className="mt-3 text-sm font-medium text-primary"
+          disabled={loading || saving}
+          onClick={() => void recoverUnknownPolicy()}
+        >
+          Refresh server policy
+        </button>
+      ) : null}
       {saveSuccess ? (
         <p className="mt-3 text-sm text-foreground-muted" role="status">{saveSuccess}</p>
       ) : null}

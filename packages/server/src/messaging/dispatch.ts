@@ -1292,32 +1292,30 @@ export async function dispatchRoomMessageSend(
       && detail.members.some((member) => member.kind === "user" && member.userId === sessionUserId)
       && agentMembers[0]?.agentOwnerUserId === sessionUserId
       && !mentionEveryoneRoutingHint;
-    const personalFundingConfigured = await callerHasConfiguredPersonalFunding(sessionUserId);
-    let personalChatCandidate = ownPrivateDm && personalFundingConfigured
+    const hasAuxiliaryWorkload = voiceMode || fullPrepared || attachmentRefs.length > 0
+      || artifactRefs.length > 0 || focusedResources.length > 0 || activeMiniApp !== null
+      || liveMiniAppSession !== null || handledAgentSlash;
+    let personalChatCandidate = ownPrivateDm
       && await callerMayUsePersonalChat(sessionUserId);
-    // A personal-only caller cannot fund group routing or another auxiliary
-    // branch. Members with server-funding permission keep those existing paths.
-    if (personalChatCandidate && (
-      voiceMode || fullPrepared || attachmentRefs.length > 0 || artifactRefs.length > 0
-      || focusedResources.length > 0 || activeMiniApp !== null || liveMiniAppSession !== null
-      || handledAgentSlash
-    )) {
+    if (personalChatCandidate) {
       try {
         const funding = await resolveForegroundChatPreflightFunding({
           humanUserId: sessionUserId, roomId: detail.id,
           agentId: agentMembers[0]!.agentId!, turnModelId: model,
         });
-        if (funding.kind === "personal") {
-          return reply.code(422).send({
-            code: "unsupported_workload",
-            error: "Personal provider credentials support text chat only.",
-          });
-        }
-        personalChatCandidate = false;
+        personalChatCandidate = funding.kind === "personal";
       } catch (error) {
         if (!(error instanceof ModelFundingError)) throw error;
         return reply.code(422).send({ code: error.code, error: "The selected model cannot be funded." });
       }
+    }
+    // A personal-only caller cannot fund group routing or another auxiliary
+    // branch. Members with server-funding permission keep those existing paths.
+    if (personalChatCandidate && hasAuxiliaryWorkload) {
+      return reply.code(422).send({
+        code: "unsupported_workload",
+        error: "Personal provider credentials support text chat only.",
+      });
     }
     if (!personalChatCandidate) {
       try {
@@ -1327,6 +1325,7 @@ export async function dispatchRoomMessageSend(
         );
       } catch (err) {
         if (!(err instanceof ServerProviderCredentialsDeniedError)) throw err;
+        const personalFundingConfigured = await callerHasConfiguredPersonalFunding(sessionUserId);
         if (personalFundingConfigured) {
           return reply.code(422).send({
             code: "unsupported_workload",
