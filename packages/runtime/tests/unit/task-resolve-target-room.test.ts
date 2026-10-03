@@ -31,6 +31,16 @@ const explodingDb = {
 } as unknown as DirectDatabase;
 
 describe("M142 — resolveTargetRoom", () => {
+  test("caller-funded namespace work stays in the originating private chat without searching shared Rooms", async () => {
+    const task = baseTask({ fundingMode: "caller", targetChat: "last_in_namespace",
+      callingRoomId: "55555555-5555-5555-5555-555555555555" });
+    const result = await resolveTargetRoom(task, { db: explodingDb });
+    expect(result.roomId).toBe(task.callingRoomId!);
+    expect(result.graphThreadId).toBe(`room:${task.callingRoomId}:bot:${task.agentId}`);
+    return expect(resolveTargetRoom({ ...task, targetRoomId: "44444444-4444-4444-4444-444444444444" },
+      { db: explodingDb })).rejects.toThrow("does not match its private chat");
+  });
+
   test("orphan memoizes targetRoomId — reuses existing room, no new room", async () => {
     const task = baseTask({
       targetChat: "orphan",

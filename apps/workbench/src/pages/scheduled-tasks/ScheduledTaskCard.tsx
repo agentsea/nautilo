@@ -41,6 +41,9 @@ export function ScheduledTaskCard({
   const fundingRecovery = task.fundingFailure
     ? taskFundingRecovery(task.fundingFailure)
     : null;
+  const uncertainCronOccurrence = task.scheduleKind === "cron"
+    && task.fundingFailure === "funding_interrupted_uncertain";
+  const resumeBlocked = fundingRecovery?.requiresFreshTask === true && !uncertainCronOccurrence;
 
   return (
     <li
@@ -67,12 +70,12 @@ export function ScheduledTaskCard({
             <input
               type="checkbox"
               checked={enabled}
-              disabled={busy || fundingRecovery?.requiresFreshTask === true}
+              disabled={busy || (!enabled && resumeBlocked)}
               onChange={() => (enabled ? onDisable(task.id) : onEnable(task.id))}
               className="h-3.5 w-3.5 cursor-pointer disabled:cursor-wait disabled:opacity-40"
               aria-label={enabled ? "Disable schedule" : "Enable schedule"}
               data-testid="scheduled-task-toggle"
-              title={fundingRecovery?.requiresFreshTask
+              title={!enabled && resumeBlocked
                 ? "This schedule cannot resume; create a fresh task."
                 : undefined}
             />
@@ -121,7 +124,11 @@ export function ScheduledTaskCard({
         {task.prompt || "(no description)"}
       </p>
 
-      {task.fundingFailure ? (
+      {uncertainCronOccurrence ? (
+        <p role="status" className="text-xs text-foreground-muted">
+          The previous occurrence was interrupted and will not be replayed. Future occurrences use a fresh funding check; you can turn this schedule off or on.
+        </p>
+      ) : task.fundingFailure ? (
         <TaskFundingRecoveryNotice code={task.fundingFailure} />
       ) : null}
 

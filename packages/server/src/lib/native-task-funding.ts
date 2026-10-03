@@ -3,7 +3,7 @@ import {
   validateExactTaskModelSelection, resolveRetainedModels, resolveCatalogModel,
   type ForegroundChatFundingSession,
 } from "@nautilo/agent";
-import { and, eq, rooms, namespaces, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type Task, type TaskRun } from "@nautilo/db";
+import { and, eq, isNull, rooms, namespaces, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type Task, type TaskRun } from "@nautilo/db";
 import { assertCanInvokeAgent, getUserCapabilities } from "@nautilo/trust";
 import { TaskFundingError, taskFundingFailureCode, type TaskFundingPort, type TaskFundingAdmission } from "@nautilo/runtime";
 import { parseTaskFundingBinding, type TaskFundingBinding, type TaskFundingFailureCode } from "@nautilo/types";
@@ -31,12 +31,22 @@ async function assertOwnShape(task: Candidate): Promise<void> {
     || !await isOwnPrivateGenieRoom(task.requestorId, task.callingRoomId, task.agentId)) {
     throw new TaskFundingError("unsupported_workload");
   }
+  if (task.targetChat === "last_in_namespace" && task.targetRoomId
+    && task.targetRoomId !== task.callingRoomId) {
+    throw new TaskFundingError("unsupported_workload");
+  }
+  const [callingRoom] = await getServerDirectDb().select({ id: rooms.id })
+    .from(rooms).innerJoin(namespaces, eq(rooms.namespaceId, namespaces.id))
+    .where(and(eq(rooms.id, task.callingRoomId), eq(rooms.ownerId, task.requestorId),
+      eq(rooms.type, "private"), eq(namespaces.scope, "private"), isNull(rooms.archivedAt))).limit(1);
+  if (!callingRoom) throw new TaskFundingError("unsupported_workload");
   if (task.targetChat === "orphan" && task.targetRoomId) {
     const [room] = await getServerDirectDb().select({
       ownerId: rooms.ownerId, type: rooms.type, kind: rooms.kind,
       humanActorIds: rooms.humanActorIds, scope: namespaces.scope, label: namespaces.label,
     }).from(rooms).innerJoin(namespaces, eq(rooms.namespaceId, namespaces.id))
-      .where(and(eq(rooms.id, task.targetRoomId), eq(rooms.ownerId, task.requestorId))).limit(1);
+      .where(and(eq(rooms.id, task.targetRoomId), eq(rooms.ownerId, task.requestorId),
+        isNull(rooms.archivedAt))).limit(1);
     if (!room || room.type !== "private" || room.kind !== "task"
       || room.humanActorIds.length !== 0 || room.scope !== "private"
       || room.label !== `task:${task.id}`) throw new TaskFundingError("unsupported_workload");

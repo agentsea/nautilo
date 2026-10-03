@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { Window } from "happy-dom";
 import type { TaskSummary } from "@nautilo/types";
 import { ScheduledTaskCard } from "./ScheduledTaskCard";
@@ -42,6 +42,31 @@ function task(fundingFailure: TaskSummary["fundingFailure"]): TaskSummary {
 }
 
 describe("ScheduledTaskCard funding recovery", () => {
+  test("an uncertain prior cron occurrence never blocks disabling an active future schedule", () => {
+    const onDisable = mock(() => undefined);
+    const row = { ...task("funding_interrupted_uncertain"), status: "pending",
+      nextFireAt: "2035-01-01T00:00:00.000Z" };
+    const view = render(<ScheduledTaskCard task={row} onEnable={() => undefined}
+      onDisable={onDisable} onRemove={() => undefined} />);
+    const toggle = view.getByLabelText("Disable schedule");
+    expect(toggle.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(toggle);
+    expect(onDisable).toHaveBeenCalledWith(row.id);
+    expect(view.getByRole("status").textContent).toContain("will not be replayed");
+  });
+
+  test("an uncertain prior cron occurrence permits fresh schedule rearm while one-shot replay stays blocked", () => {
+    const onEnable = mock(() => undefined);
+    const row = task("funding_interrupted_uncertain");
+    const view = render(<ScheduledTaskCard task={row} onEnable={onEnable}
+      onDisable={() => undefined} onRemove={() => undefined} />);
+    fireEvent.click(view.getByLabelText("Enable schedule"));
+    expect(onEnable).toHaveBeenCalledWith(row.id);
+    view.rerender(<ScheduledTaskCard task={{ ...row, scheduleKind: "one_shot", cron: null }}
+      onEnable={onEnable} onDisable={() => undefined} onRemove={() => undefined} />);
+    expect(view.getByLabelText("Enable schedule").hasAttribute("disabled")).toBe(true);
+  });
+
   test("keeps repairable schedules resumable and removable", () => {
     const view = render(<ScheduledTaskCard task={task("personal_credential_missing")}
       onEnable={() => undefined} onDisable={() => undefined} onRemove={() => undefined} />);

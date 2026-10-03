@@ -169,7 +169,7 @@ function isPersonalTaskMutationTarget(task: Task, ctx: TaskDispatchContext): boo
     && task.targetUserIds[0] === ctx.causalHumanUserId
     && (task.targetChat === "orphan" || task.targetChat === "last_in_namespace")
     && task.targetChatHandle === null
-    && (task.targetRoomId === null || task.targetRoomId === task.callingRoomId)
+    && (task.targetChat === "orphan" || task.targetRoomId === null || task.targetRoomId === task.callingRoomId)
     && taskExternalHarnessId(task.metadata) === null;
 }
 

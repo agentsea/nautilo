@@ -642,6 +642,7 @@ export {
   pauseClaimedTaskForAuthorizationDenial,
   pauseClaimedTaskForFundingDenial,
   pauseTaskRunForFundingDenial,
+  getCallerFundedRunningTaskRunRestartBoundary,
   listCallerFundedRunningTaskRunsForRestart,
   reconcileCallerFundedTaskRunAfterRestart,
   startClaimedCallerTaskRun,

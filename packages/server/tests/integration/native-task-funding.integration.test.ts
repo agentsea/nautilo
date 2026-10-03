@@ -4,6 +4,7 @@ import { HumanMessage } from "@langchain/core/messages";
 import { ChatOpenAICompletions } from "@langchain/openai";
 import {
   and,
+  actors,
   eq,
   getServerProviderPolicy,
   getTaskById,
@@ -13,12 +14,17 @@ import {
   llmUsageEvents,
   markTaskRunStatus,
   tasks,
+  users,
+  rooms,
+  roomMembers,
+  namespaces,
+  updateTask,
   upsertServerProviderPolicy,
 } from "@nautilo/db";
 import { invokeChatModelWithFallback, runWithUsageContext, registerAllTools } from "@nautilo/agent";
-import { taskFundingFailureCode, createHumanApiTaskCreationProvenance } from "@nautilo/runtime";
+import { taskFundingFailureCode, createHumanApiTaskCreationProvenance, resolveTargetRoom } from "@nautilo/runtime";
 import { ToolCatalog, clearToolCatalog, getToolCatalog, initToolCatalog } from "@nautilo/catalog";
-import { initPolicyResolver, getPolicyResolver, PersonalPolicyResolver } from "@nautilo/trust";
+import { initPolicyResolver, getPolicyResolver, PersonalPolicyResolver, createRoomFromMembers } from "@nautilo/trust";
 import { nativeTaskFundingPort } from "../../src/lib/native-task-funding";
 import { setupOwnerAppFixture, type AppFixture } from "./helpers/app-fixture";
 import { authedInject } from "./helpers/request-helpers";
@@ -72,6 +78,9 @@ describe.serial("native Task funding", () => {
     const usageIds: string[] = [];
     let legacyTaskId: string | undefined;
     let executionTaskId: string | undefined;
+    let peerUserId: string | undefined;
+    let sharedRoomId: string | undefined;
+    let sharedNamespaceId: string | undefined;
 
     delete process.env["OPENROUTER_API_KEY"];
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -187,6 +196,24 @@ describe.serial("native Task funding", () => {
         targetRoomId: fx.defaultRoomId }).then(() => null,
           (error: unknown) => (error as { code?: unknown }).code)).toBe("unsupported_workload");
 
+      const [peer] = await fx.db.insert(users).values({ name: "Task audience peer",
+        handle: `taskaudience${randomUUID().replaceAll("-", "")}`, server: null }).returning();
+      if (!peer) throw new Error("Task audience peer missing");
+      peerUserId = peer.id;
+      await fx.db.insert(actors).values({ ownerId: peer.id, kind: "user",
+        displayName: "Task audience peer", trustState: "verified" });
+      const sharedRoom = await createRoomFromMembers({ ownerUserId: fx.ownerId,
+        ownerActorId: fx.ownerActorId, label: "Newer shared Task destination",
+        members: [{ kind: "user", id: fx.ownerId }, { kind: "user", id: peer.id },
+          { kind: "agent", id: defaultAgentId }] });
+      sharedRoomId = sharedRoom.id;
+      if (!sharedRoom.namespaceId) throw new Error("Shared Room Namespace missing");
+      sharedNamespaceId = sharedRoom.namespaceId;
+      expect(sharedRoom.members.filter((member) => member.kind === "user")).toHaveLength(2);
+      expect((await resolveTargetRoom(task, { db: fx.db })).roomId).toBe(fx.defaultRoomId);
+      expect(await nativeTaskFundingPort.admit({ ...task, targetRoomId: sharedRoom.id })
+        .then(() => null, taskFundingFailureCode)).toBe("unsupported_workload");
+
       const admitted = await nativeTaskFundingPort.admit(task);
       expect(admitted).toMatchObject({
         modelId: MODEL_ID,
@@ -248,6 +275,30 @@ describe.serial("native Task funding", () => {
         credentialRevision,
       });
       expect(JSON.stringify({ task, run, usage })).not.toContain(personalKey);
+
+      // Both worker admission and every retry must reject a changed execution
+      // audience; an archived or membership-revoked private destination cannot spend.
+      let forbiddenAttempts = 0;
+      const forbiddenAttempt = () => session.runAttempt(MODEL_ID, async () => { forbiddenAttempts += 1; })
+        .then(() => null, taskFundingFailureCode);
+      await updateTask(fx.db, taskId, { targetRoomId: sharedRoom.id });
+      expect(await forbiddenAttempt()).toBe("unsupported_workload");
+      expect(await nativeTaskFundingPort.openSession({ ...task, targetRoomId: sharedRoom.id }, run,
+        MODEL_ID, false).then(() => null, taskFundingFailureCode)).toBe("unsupported_workload");
+      await updateTask(fx.db, taskId, { targetRoomId: fx.defaultRoomId });
+      await fx.db.update(rooms).set({ archivedAt: new Date() }).where(eq(rooms.id, fx.defaultRoomId));
+      try { expect(await forbiddenAttempt()).toBe("unsupported_workload"); }
+      finally { await fx.db.update(rooms).set({ archivedAt: null }).where(eq(rooms.id, fx.defaultRoomId)); }
+      const [agentMembership] = await fx.db.select().from(roomMembers).innerJoin(actors,
+        eq(roomMembers.actorId, actors.id)).where(and(eq(roomMembers.roomId, fx.defaultRoomId),
+        eq(actors.agentId, defaultAgentId)));
+      if (!agentMembership) throw new Error("Task Genie membership missing");
+      await fx.db.delete(roomMembers).where(and(eq(roomMembers.roomId, fx.defaultRoomId),
+        eq(roomMembers.actorId, agentMembership.room_members.actorId)));
+      try { expect(await forbiddenAttempt()).toBe("unsupported_workload"); }
+      finally { await fx.db.insert(roomMembers).values(agentMembership.room_members); }
+      expect(forbiddenAttempts).toBe(0);
+      expect(providerRequests).toHaveLength(1);
 
       const immediate = await authedInject(fx.app, {
         method: "POST", url: "/api/tasks", bearer,
@@ -602,6 +653,15 @@ describe.serial("native Task funding", () => {
         await fx.db.delete(llmUsageEvents).where(eq(llmUsageEvents.userId, fx.ownerId));
         if (legacyTaskId) await fx.db.delete(tasks).where(eq(tasks.id, legacyTaskId));
         if (taskId) await fx.db.delete(tasks).where(eq(tasks.id, taskId));
+        if (sharedRoomId) {
+          await fx.db.delete(roomMembers).where(eq(roomMembers.roomId, sharedRoomId));
+          await fx.db.delete(rooms).where(eq(rooms.id, sharedRoomId));
+        }
+        if (sharedNamespaceId) await fx.db.delete(namespaces).where(eq(namespaces.id, sharedNamespaceId));
+        if (peerUserId) {
+          await fx.db.delete(actors).where(eq(actors.ownerId, peerUserId));
+          await fx.db.delete(users).where(eq(users.id, peerUserId));
+        }
         if (bearer && credentialRevision !== undefined) {
           await authedInject(fx.app, {
             method: "DELETE",

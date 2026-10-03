@@ -519,4 +519,28 @@ describe("personal-funded Task controls", () => {
     await dispatchTaskCommand({ command: "stop", taskId: "task-1" }, CONTEXT);
     expect(order).toEqual(["admit:unpause", "unpause", "stop"]);
   });
+
+  test("personal controls can update and unpause a memoized orphan only after trusted funding validation", async () => {
+    const task = personalTask({ targetRoomId: "hidden-task-room" });
+    const getTask = spyOn(db, "getTaskById").mockResolvedValue(task as never);
+    const update = spyOn(db, "updateTask").mockResolvedValue(task as never);
+    restores.push(() => getTask.mockRestore(), () => update.mockRestore());
+    const order: string[] = [];
+    installRuntime({
+      assertMutationFunding: async ({ operation }) => { order.push(`admit:${operation}`); },
+      unpauseTask: async () => {
+        order.push("unpause");
+        return { ok: true, status: "pending", message: "" };
+      },
+    });
+    await dispatchTaskCommand({ command: "update", taskId: task.id, prompt: "updated text" }, CONTEXT);
+    expect(update).toHaveBeenCalledTimes(1);
+    await dispatchTaskCommand({ command: "unpause", taskId: task.id }, CONTEXT);
+    expect(order).toEqual(["admit:update", "admit:unpause", "unpause"]);
+
+    installRuntime({ assertMutationFunding: async () => { throw new Error("hidden Room validation denied"); } });
+    expect(await dispatchTaskCommand({ command: "unpause", taskId: task.id }, CONTEXT))
+      .toContain("hidden Room validation denied");
+    expect(order).toHaveLength(3);
+  });
 });

@@ -83,16 +83,41 @@ test("research Resume is an explicit owner enrichment, never model metadata", ()
 });
 
 test("Task summary exposes only recognized funding recovery codes", () => {
-  expect(toTaskSummary({
+  const fundingFailure = {
     ...source({ parentTaskId: null, depth: 0 }),
-    status: "paused",
+    status: "paused" as const,
     lastError: "personal_credential_missing",
-  }).fundingFailure).toBe("personal_credential_missing");
+  };
+  expect(toTaskSummary(fundingFailure).fundingFailure).toBeUndefined();
+  expect(toTaskSummary(fundingFailure, { includeFunding: true }).fundingFailure)
+    .toBe("personal_credential_missing");
   expect(toTaskSummary({
     ...source({ parentTaskId: null, depth: 0 }),
     status: "paused",
     lastError: "provider returned private diagnostic text",
-  }).fundingFailure).toBeUndefined();
+  }, { includeFunding: true }).fundingFailure).toBeUndefined();
+});
+
+test("current Task content summary keeps funding outside the prior wire by default", () => {
+  const ordinaryTask = {
+    ...source({ parentTaskId: null, depth: 0 }),
+    status: "paused",
+    lastError: "personal_credential_missing",
+    expectedOutput: null,
+    contentRevision: 0,
+    agentId: "91000000-0000-4000-8000-000000000003",
+    targetRoomId: null,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    requestedModelId: null,
+  } as unknown as Task;
+  const enrichment = { agentName: "Genie", lastModelId: null };
+  expect(toTaskContentSummaryV1(ordinaryTask, enrichment).fundingFailure).toBeUndefined();
+  expect(toTaskContentSummaryV1(
+    ordinaryTask,
+    enrichment,
+    { includeFunding: true },
+  ).fundingFailure).toBe("personal_credential_missing");
 });
 
 test("Task run funding projection exposes only payer class and safe failures", () => {

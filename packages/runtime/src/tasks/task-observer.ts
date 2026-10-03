@@ -17,11 +17,13 @@ import {
   listAwaitingWriterReviewTasks,
   listPendingWriterReviewVerificationTasks,
   listRunningWriterReviewVerificationTasks,
+  getCallerFundedRunningTaskRunRestartBoundary,
   listCallerFundedRunningTaskRunsForRestart,
   reconcileCallerFundedTaskRunAfterRestart,
   rescheduleCron,
   updateTask,
   type DirectDatabase,
+  type CallerFundedRunningTaskRunCursor,
   type Task,
   type TaskRun,
 } from "@nautilo/db";
@@ -255,6 +257,16 @@ export class TaskObserver implements Observer {
   private readonly onMaintenance: (() => void | Promise<void>) | undefined;
   private readonly protectedOccurrencePort: ProtectedTaskOccurrencePort | undefined;
   private protectedRecoveryAfter: { taskRunId: string } | undefined;
+  /**
+   * Frozen process-start boundary for caller-funded runs which lost their
+   * process-local funding authority. The cursor advances only after an exact
+   * candidate reconciles, so a transient failure is retried before this
+   * process may claim any new work.
+   */
+  private callerFundingRestartRecovery: {
+    through?: CallerFundedRunningTaskRunCursor;
+    after?: CallerFundedRunningTaskRunCursor;
+  } | null = null;
 
   private interval: ReturnType<typeof setInterval> | null = null;
   private kickTimer: ReturnType<typeof setTimeout> | null = null;
@@ -282,12 +294,56 @@ export class TaskObserver implements Observer {
     return this.maintenanceGate ?? getMaintenanceGate();
   }
 
+  private async reconcileCallerFundingInterruptedByRestart(): Promise<boolean> {
+    const recovery = this.callerFundingRestartRecovery;
+    if (!recovery) return true;
+    try {
+      if (!recovery.through) {
+        const through = await getCallerFundedRunningTaskRunRestartBoundary(this.db);
+        if (!through) {
+          this.callerFundingRestartRecovery = null;
+          return true;
+        }
+        recovery.through = through;
+      }
+      for (;;) {
+        const interrupted = await listCallerFundedRunningTaskRunsForRestart(
+          this.db,
+          {
+            limit: this.batch,
+            through: recovery.through,
+            ...(recovery.after ? { after: recovery.after } : {}),
+          },
+        );
+        if (interrupted.length === 0) {
+          this.callerFundingRestartRecovery = null;
+          return true;
+        }
+        for (const { task, run, cursor } of interrupted) {
+          await reconcileCallerFundedTaskRunAfterRestart(this.db, {
+            taskId: task.id,
+            taskRunId: run.id,
+          });
+          recovery.after = cursor;
+        }
+      }
+    } catch (err) {
+      log(
+        `[task-observer] caller-funded restart reconciliation failed; retrying before claims: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return false;
+    }
+  }
+
   async start(): Promise<void> {
     eventBus.off(this.onProgress);
     eventBus.on(this.onProgress);
     // The executor (invoked by JobManager, outside this call graph) reads the
     // db handle from the module singleton.
     setTaskRunDb(this.db);
+    this.callerFundingRestartRecovery = {};
 
     // Stale-lock recovery + the first tick must never crash server boot — a
     // transient DB hiccup is logged and retried on the next interval. (Server
@@ -299,25 +355,10 @@ export class TaskObserver implements Observer {
       if (cleared > 0) {
         log(`[task-observer] cleared ${cleared} stale fire-lock(s) on start`);
       }
-      // Caller-funded provider authority is process-local. A running run left
-      // by this process cannot be replayed truthfully after restart, so settle
-      // exact latest candidates before any due Task can be claimed again.
-      let fundingAfter: { startedAt: Date; runId: string } | undefined;
-      for (;;) {
-        const interrupted = await listCallerFundedRunningTaskRunsForRestart(
-          this.db,
-          { limit: this.batch, ...(fundingAfter ? { after: fundingAfter } : {}) },
-        );
-        if (interrupted.length === 0) break;
-        for (const { task, run } of interrupted) {
-          await reconcileCallerFundedTaskRunAfterRestart(this.db, {
-            taskId: task.id,
-            taskRunId: run.id,
-          });
-        }
-        const last = interrupted.at(-1)!;
-        fundingAfter = { startedAt: last.run.startedAt, runId: last.run.id };
-      }
+      // Caller-funded provider authority is process-local. Reconcile the
+      // frozen pre-start candidate set. A failure remains pending and is
+      // retried by runTickOnce before this observer can claim fresh work.
+      await this.reconcileCallerFundingInterruptedByRestart();
       // A live session capability never survives process restart. Reconcile
       // only exact Writer-review markers, in bounded SQL-filtered pages; do
       // not scan arbitrary `awaiting` Tasks and infer authority in JS.
@@ -490,6 +531,8 @@ export class TaskObserver implements Observer {
 
   private async runTickOnce(): Promise<void> {
     const now = this.now();
+
+    if (!await this.reconcileCallerFundingInterruptedByRestart()) return;
 
     if (this.onMaintenance) {
       try {

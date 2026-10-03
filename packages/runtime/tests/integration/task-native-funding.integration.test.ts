@@ -15,12 +15,17 @@ import {
 import { randomUUID } from "node:crypto";
 
 import {
+  claimCallerTaskRunJob,
   createTask,
   eq,
+  getCallerFundedRunningTaskRunRestartBoundary,
   getTaskById,
   getTaskRuns,
   insertTaskRun,
+  jobs,
+  listCallerFundedRunningTaskRunsForRestart,
   markTaskRunStatus,
+  pauseTaskRunForFundingDenial,
   tasks,
   updateTask,
   type DirectDatabase,
@@ -42,7 +47,7 @@ import {
   type DispatchTaskRunDeps,
   type TaskJobManager,
 } from "../../src/tasks/dispatch-task-run";
-import { unpauseTask } from "../../src/tasks/lifecycle";
+import { pauseTask, unpauseTask } from "../../src/tasks/lifecycle";
 import { TaskObserver } from "../../src/tasks/task-observer";
 import {
   cleanupTestUser,
@@ -226,6 +231,142 @@ describe("native Task funding storage and dispatch", () => {
     expect(admissionCalls.map((call) => call.priorRunId)).toEqual([null, null]);
   });
 
+  test("an older recurring occurrence claims and settles without changing its newer schedule", async () => {
+    const future = new Date(Date.now() + 60 * 60 * 1_000);
+    const task = await insertDefinition({
+      preset: "schedule",
+      scheduleKind: "cron",
+      cron: "0 * * * *",
+      status: "pending",
+      nextFireAt: future,
+      fireLockId: null,
+      fireLockedAt: null,
+    });
+    const startedAt = Date.now();
+    const olderRun = await insertTaskRun(db, {
+      taskId: task.id,
+      graphThreadId: `subagent:task:${task.id}:${randomUUID()}`,
+      status: "running",
+      modelId: "openai:gpt-6-sol",
+      fundingBinding: personalBinding(1),
+      startedAt: new Date(startedAt - 2_000),
+    });
+    const newerRun = await insertTaskRun(db, {
+      taskId: task.id,
+      graphThreadId: `subagent:task:${task.id}:${randomUUID()}`,
+      status: "running",
+      modelId: "openai:gpt-6-sol",
+      fundingBinding: personalBinding(2),
+      startedAt: new Date(startedAt - 1_000),
+    });
+    const [job] = await db.insert(jobs).values({
+      ownerId: userId,
+      requestorId: userId,
+      laneKey: `task:${task.id}`,
+      type: "foreground",
+      status: "queued",
+      input: { taskId: task.id, taskRunId: olderRun.id },
+    }).returning({ id: jobs.id });
+    if (!job) throw new Error("older recurring occurrence fixture did not persist its Job");
+
+    expect(await claimCallerTaskRunJob(db, {
+      taskId: task.id,
+      taskRunId: olderRun.id,
+      requestorId: userId,
+      graphThreadId: olderRun.graphThreadId,
+      jobId: job.id,
+    })).toBe(true);
+    expect(await pauseTaskRunForFundingDenial(db, {
+      taskId: task.id,
+      taskRunId: olderRun.id,
+      requestorId: userId,
+      reason: "personal_credential_unavailable",
+    })).toMatchObject({ transitioned: true, task: undefined });
+
+    const runs = await getTaskRuns(db, task.id);
+    const settledOlderRun = runs.find((run) => run.id === olderRun.id);
+    expect(settledOlderRun).toMatchObject({
+      status: "errored",
+      jobId: job.id,
+      lastError: "personal_credential_unavailable",
+    });
+    expect(settledOlderRun?.completedAt).toBeInstanceOf(Date);
+    expect(runs.find((run) => run.id === newerRun.id)).toMatchObject({
+      status: "running",
+      lastError: null,
+    });
+    expect(await getTaskById(db, task.id)).toMatchObject({
+      status: "pending",
+      nextFireAt: future,
+      lastError: null,
+    });
+  });
+
+  test("a database-timestamped latest occurrence parks with its definition on funding denial", async () => {
+    const task = await insertDefinition({
+      status: "running",
+      nextFireAt: null,
+      fireLockId: null,
+      fireLockedAt: null,
+    });
+    const run = await insertTaskRun(db, {
+      taskId: task.id,
+      graphThreadId: `subagent:task:${task.id}:${randomUUID()}`,
+      status: "running",
+      modelId: "openai:gpt-6-sol",
+      fundingBinding: personalBinding(1),
+    });
+
+    expect(await pauseTaskRunForFundingDenial(db, {
+      taskId: task.id,
+      taskRunId: run.id,
+      requestorId: userId,
+      reason: "personal_credential_unavailable",
+    })).toMatchObject({ transitioned: true });
+    expect(await getTaskById(db, task.id)).toMatchObject({
+      status: "paused",
+      lastError: "personal_credential_unavailable",
+    });
+    expect((await getTaskRuns(db, task.id)).find((candidate) => candidate.id === run.id))
+      .toMatchObject({ status: "paused", lastError: "personal_credential_unavailable" });
+  });
+
+  test("a frozen restart boundary excludes a run inserted afterward", async () => {
+    const task = await insertDefinition({
+      preset: "schedule",
+      scheduleKind: "cron",
+      cron: "0 * * * *",
+      status: "pending",
+      nextFireAt: new Date(Date.now() + 60 * 60 * 1_000),
+      fireLockId: null,
+      fireLockedAt: null,
+    });
+    const interrupted = await insertTaskRun(db, {
+      taskId: task.id,
+      graphThreadId: `subagent:task:${task.id}:${randomUUID()}`,
+      status: "running",
+      modelId: "openai:gpt-6-sol",
+      fundingBinding: personalBinding(1),
+    });
+    const boundary = await getCallerFundedRunningTaskRunRestartBoundary(db);
+    if (!boundary) throw new Error("restart boundary fixture found no candidate");
+    const freshRun = await insertTaskRun(db, {
+      taskId: task.id,
+      graphThreadId: `subagent:task:${task.id}:${randomUUID()}`,
+      status: "running",
+      modelId: "openai:gpt-6-sol",
+      fundingBinding: personalBinding(2),
+      startedAt: new Date(Date.now() + 1_000),
+    });
+
+    const candidates = await listCallerFundedRunningTaskRunsForRestart(db, {
+      limit: 10,
+      through: boundary,
+    });
+    expect(candidates.some(({ run }) => run.id === interrupted.id)).toBe(true);
+    expect(candidates.some(({ run }) => run.id === freshRun.id)).toBe(false);
+  });
+
   test("a safe funding denial pauses the exact claimed definition before a run", async () => {
     admit = async () => {
       throw new TaskFundingError("personal_credential_missing");
@@ -288,7 +429,7 @@ describe("native Task funding storage and dispatch", () => {
       modelId: "openai:gpt-6-sol",
       fundingBinding: personalBinding(3),
     });
-    const future = new Date("2026-10-10T10:00:00.000Z");
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000);
     const recurring = await insertDefinition({
       preset: "schedule",
       scheduleKind: "cron",
@@ -296,12 +437,22 @@ describe("native Task funding storage and dispatch", () => {
       status: "pending",
       nextFireAt: future,
     });
-    const recurringRun = await insertTaskRun(db, {
+    const recurringNow = Date.now();
+    const olderRecurringRun = await insertTaskRun(db, {
       taskId: recurring.id,
       graphThreadId: `subagent:task:${recurring.id}:${randomUUID()}`,
       status: "running",
       modelId: "openai:gpt-6-sol",
       fundingBinding: personalBinding(4),
+      startedAt: new Date(recurringNow - 2_000),
+    });
+    const recurringRun = await insertTaskRun(db, {
+      taskId: recurring.id,
+      graphThreadId: `subagent:task:${recurring.id}:${randomUUID()}`,
+      status: "running",
+      modelId: "openai:gpt-6-sol",
+      fundingBinding: personalBinding(5),
+      startedAt: new Date(recurringNow - 1_000),
     });
     const legacy = await insertDefinition({
       fundingMode: "legacy_server",
@@ -317,8 +468,28 @@ describe("native Task funding storage and dispatch", () => {
     });
     const pendingWithoutRun = await insertDefinition({ nextFireAt: future });
 
+    let failedRestartTransaction = false;
+    let restartTransactionAttempts = 0;
+    const failOnceDb = new Proxy<DirectDatabase>(db, {
+      get(target, property, receiver) {
+        if (property === "transaction") {
+          return (...args: Parameters<DirectDatabase["transaction"]>) => {
+            restartTransactionAttempts += 1;
+            if (!failedRestartTransaction) {
+              failedRestartTransaction = true;
+              throw new Error("synthetic transient restart transaction failure");
+            }
+            return target.transaction(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function"
+          ? (...args: unknown[]): unknown => Reflect.apply(value, target, args) as unknown
+          : value;
+      },
+    });
     const observer = new TaskObserver({
-      db,
+      db: failOnceDb,
       jobManager: { ...jobManager, abortJob: () => false },
       maintenanceGate: {
         isAcceptingWork: async () => false,
@@ -329,6 +500,9 @@ describe("native Task funding storage and dispatch", () => {
     });
     await observer.start();
     await observer.stop();
+
+    expect(failedRestartTransaction).toBe(true);
+    expect(restartTransactionAttempts).toBeGreaterThan(1);
 
     expect(await getTaskById(db, interrupted.id)).toMatchObject({
       status: "paused",
@@ -343,6 +517,8 @@ describe("native Task funding storage and dispatch", () => {
     });
     expect((await getTaskRuns(db, recurring.id)).find((run) => run.id === recurringRun.id))
       .toMatchObject({ status: "errored", lastError: "funding_interrupted_uncertain" });
+    expect((await getTaskRuns(db, recurring.id)).find((run) => run.id === olderRecurringRun.id))
+      .toMatchObject({ status: "errored", lastError: "funding_interrupted_uncertain" });
     expect(await getTaskById(db, legacy.id)).toMatchObject({ status: "running", lastError: null });
     expect((await getTaskRuns(db, legacy.id)).find((run) => run.id === legacyRun.id))
       .toMatchObject({ status: "running", lastError: null });
@@ -351,5 +527,12 @@ describe("native Task funding storage and dispatch", () => {
       nextFireAt: future,
       lastError: null,
     });
+
+    const lifecycle = { db, jobManager: { abortJob: () => false }, observer: null };
+    expect(await pauseTask(lifecycle, recurring.id)).toMatchObject({ ok: true, status: "paused" });
+    expect(await unpauseTask(lifecycle, recurring.id)).toMatchObject({ ok: true, status: "pending" });
+    const rearmed = await getTaskById(db, recurring.id);
+    expect(rearmed).toMatchObject({ status: "pending", lastError: null });
+    expect(rearmed?.nextFireAt?.getTime()).toBeGreaterThan(Date.now());
   });
 });

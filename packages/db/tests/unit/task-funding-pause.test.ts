@@ -4,6 +4,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
   claimCallerTaskRunJob,
+  getCallerFundedRunningTaskRunRestartBoundary,
   listCallerFundedRunningTaskRunsForRestart,
   pauseClaimedTaskForFundingDenial,
   pauseTaskRunForFundingDenial,
@@ -32,6 +33,7 @@ const run = {
   modelId: "openai:gpt-6-sol",
   fundingBinding: { kind: "server", providerRoute: "openai" },
   fundingPredecessorRunId: null,
+  startedAt: new Date("2026-10-03T12:00:00.000Z"),
   resultText: null,
   lastError: null,
 } as TaskRun;
@@ -225,28 +227,66 @@ describe("funding-denied Task claim pause", () => {
   });
 
   test("pages only bounded caller-funded running restart candidates", async () => {
-    const rows = [{ task, run }];
+    const cursorStartedAt = "2026-10-03 12:00:00.123456+00";
+    const rawRows = [{ task, run, cursorStartedAt }];
+    const expectedRows = [{
+      task,
+      run,
+      cursor: { startedAt: cursorStartedAt, runId: run.id },
+    }];
     let limit: number | undefined;
     let whereSql: Parameters<PgDialect["sqlToQuery"]>[0] | undefined;
     const query = {
       innerJoin: () => query,
       where: (condition: Parameters<PgDialect["sqlToQuery"]>[0]) => { whereSql = condition; return query; },
       orderBy: () => query,
-      limit: (value: number) => { limit = value; return Promise.resolve(rows); },
+      limit: (value: number) => { limit = value; return Promise.resolve(rawRows); },
     };
     const db = { select: () => ({ from: () => query }) } as unknown as DirectDatabase;
     expect(await listCallerFundedRunningTaskRunsForRestart(db, {
       limit: 7,
-      after: { startedAt: new Date("2026-09-01T00:00:00.000Z"), runId: run.id },
-    })).toBe(rows);
+      through: {
+        startedAt: "2026-10-03 13:00:00.654321+00",
+        runId: "f0000000-0000-4000-8000-00000000000f",
+      },
+      after: { startedAt: cursorStartedAt, runId: run.id },
+    })).toEqual(expectedRows);
     expect(limit).toBe(7);
     const rendered = new PgDialect().sqlToQuery(whereSql!);
     expect(rendered.sql).toContain('"tasks"."funding_mode" =');
     expect(rendered.sql).toContain('"task_runs"."status" =');
     expect(rendered.sql).toContain('"task_runs"."started_at" >');
+    expect(rendered.sql).toContain('"task_runs"."started_at" <');
+    expect(rendered.sql).toContain('"task_runs"."id" <=');
     expect(rendered.params).toContain("caller");
     expect(rendered.params).toContain("running");
-    expect(await listCallerFundedRunningTaskRunsForRestart(db, { limit: 0 })).toEqual([]);
+    expect(await listCallerFundedRunningTaskRunsForRestart(db, {
+      limit: 0,
+      through: { startedAt: cursorStartedAt, runId: run.id },
+    })).toEqual([]);
+  });
+
+  test("freezes the newest restart candidate using database-authored ordering", async () => {
+    const boundary = {
+      startedAt: "2026-10-03 12:00:00.123456+00",
+      runId: run.id,
+    };
+    let whereSql: Parameters<PgDialect["sqlToQuery"]>[0] | undefined;
+    const query = {
+      innerJoin: () => query,
+      where: (condition: Parameters<PgDialect["sqlToQuery"]>[0]) => {
+        whereSql = condition;
+        return query;
+      },
+      orderBy: () => query,
+      limit: async () => [boundary],
+    };
+    const db = { select: () => ({ from: () => query }) } as unknown as DirectDatabase;
+
+    expect(await getCallerFundedRunningTaskRunRestartBoundary(db)).toEqual(boundary);
+    const rendered = new PgDialect().sqlToQuery(whereSql!);
+    expect(rendered.params).toContain("caller");
+    expect(rendered.params).toContain("running");
   });
 
   test("terminalizes a latest interrupted run and parks a non-recurring Task", async () => {
@@ -286,6 +326,58 @@ describe("funding-denied Task claim pause", () => {
     expect(patch).not.toHaveProperty("nextFireAt");
   });
 
+  test("terminalizes an older denied occurrence without pausing the newer run or definition", async () => {
+    const newerRunId = "60000000-0000-4000-8000-000000000006";
+    const cronTask = {
+      ...task,
+      status: "pending",
+      scheduleKind: "cron",
+      nextFireAt: new Date("2026-10-04T09:00:00.000Z"),
+    } as Task;
+    const harness = aggregateHarness({ task: cronTask, run, latestRunId: newerRunId });
+    const result = await pauseTaskRunForFundingDenial(harness.db, {
+      taskId: task.id,
+      taskRunId: run.id,
+      requestorId: task.requestorId,
+      reason: "personal_credential_unavailable",
+    });
+
+    expect(result).toMatchObject({ transitioned: true, task: undefined });
+    expect(harness.writes).toHaveLength(1);
+    expect(harness.writes[0]?.table).toBe(taskRuns);
+    expect(harness.writes[0]?.patch).toMatchObject({
+      status: "errored",
+      lastError: "personal_credential_unavailable",
+    });
+    expect(harness.writes[0]?.patch["completedAt"]).toBeInstanceOf(Date);
+  });
+
+  test("restart settles an older interrupted occurrence without changing its newer schedule", async () => {
+    const cronTask = {
+      ...task,
+      status: "pending",
+      scheduleKind: "cron",
+      nextFireAt: new Date("2026-10-04T09:00:00.000Z"),
+    } as Task;
+    const harness = aggregateHarness({
+      task: cronTask,
+      run,
+      latestRunId: "60000000-0000-4000-8000-000000000006",
+    });
+    const result = await reconcileCallerFundedTaskRunAfterRestart(harness.db, {
+      taskId: task.id,
+      taskRunId: run.id,
+    });
+
+    expect(result.transitioned).toBe(true);
+    expect(harness.writes).toHaveLength(1);
+    expect(harness.writes[0]?.table).toBe(taskRuns);
+    expect(harness.writes[0]?.patch).toMatchObject({
+      status: "errored",
+      lastError: "funding_interrupted_uncertain",
+    });
+  });
+
   test("restart reconciliation rejects legacy, paused, terminal, and superseded work", async () => {
     for (const candidate of [
       { task: { ...task, fundingMode: "legacy_server" } as Task, run },
@@ -302,7 +394,7 @@ describe("funding-denied Task claim pause", () => {
     }
   });
 
-  test("claims only the latest live caller-funded run and accepts an exact retry", async () => {
+  test("claims an exact live caller-funded run and accepts an exact retry", async () => {
     const harness = aggregateHarness({ task, run });
     const input = {
       taskId: task.id,
@@ -317,6 +409,55 @@ describe("funding-denied Task claim pause", () => {
     const retried = aggregateHarness({ task, run: { ...run, jobId: input.jobId } });
     expect(await claimCallerTaskRunJob(retried.db, input)).toBe(true);
     expect(retried.writes).toEqual([]);
+  });
+
+  test("claims an exact older occurrence while its recurring definition is pending", async () => {
+    const pendingCron = {
+      ...task,
+      status: "pending",
+      scheduleKind: "cron",
+      nextFireAt: new Date("2026-10-04T09:00:00.000Z"),
+    } as Task;
+    const harness = aggregateHarness({ task: pendingCron, run });
+    const input = {
+      taskId: task.id,
+      taskRunId: run.id,
+      requestorId: task.requestorId,
+      graphThreadId: run.graphThreadId,
+      jobId: "50000000-0000-4000-8000-000000000005",
+    };
+
+    expect(await claimCallerTaskRunJob(harness.db, input)).toBe(true);
+    expect(harness.writes).toEqual([{ table: taskRuns, patch: { jobId: input.jobId } }]);
+  });
+
+  test("an idempotent delayed claim follows a paused or stopped aggregate", async () => {
+    const jobId = "50000000-0000-4000-8000-000000000005";
+    const input = {
+      taskId: task.id,
+      taskRunId: run.id,
+      requestorId: task.requestorId,
+      graphThreadId: run.graphThreadId,
+      jobId,
+    };
+    const paused = aggregateHarness({
+      task: { ...task, status: "paused", lastError: "personal_credential_stale" } as Task,
+      run: { ...run, jobId } as TaskRun,
+    });
+    expect(await claimCallerTaskRunJob(paused.db, input)).toBe(false);
+    expect(paused.writes).toEqual([{
+      table: taskRuns,
+      patch: { status: "paused", lastError: "personal_credential_stale" },
+    }]);
+
+    const stopped = aggregateHarness({
+      task: { ...task, status: "cancelled" } as Task,
+      run: { ...run, jobId } as TaskRun,
+    });
+    expect(await claimCallerTaskRunJob(stopped.db, input)).toBe(false);
+    expect(stopped.writes).toHaveLength(1);
+    expect(stopped.writes[0]?.patch).toMatchObject({ status: "cancelled" });
+    expect(stopped.writes[0]?.patch["completedAt"]).toBeInstanceOf(Date);
   });
 
   test("rejects a stale run, terminal run, or job claimed by another executor", async () => {

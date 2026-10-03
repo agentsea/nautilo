@@ -100,7 +100,7 @@ describe("opt-in Task content API methods", () => {
       });
       if (method === "POST") return response({ taskId: TASK_ID, status: "pending", nextFireAt: null });
       if (method === "PATCH") return response(protectedSummary);
-      if (url.endsWith(`/${TASK_ID}/content-v1`)) {
+      if (url.endsWith(`/${TASK_ID}/content-v1?includeFunding=true`)) {
         const { content: definition, ...task } = protectedSummary;
         return response({
           task: {
@@ -159,8 +159,8 @@ describe("opt-in Task content API methods", () => {
     expect((await client.updateDualPreparedTaskV1(TASK_ID, dualUpdate)).content.status)
       .toBe("protected");
     expect(calls).toEqual([
-      { url: "https://nautilo.test/api/tasks/content-v1?includeTerminal=true", method: "GET" },
-      { url: `https://nautilo.test/api/tasks/${TASK_ID}/content-v1`, method: "GET" },
+      { url: "https://nautilo.test/api/tasks/content-v1?includeTerminal=true&includeFunding=true", method: "GET" },
+      { url: `https://nautilo.test/api/tasks/${TASK_ID}/content-v1?includeFunding=true`, method: "GET" },
       { url: "https://nautilo.test/api/protected/tasks", method: "GET" },
       { url: "https://nautilo.test/api/protected/tasks/publication-plan", method: "POST" },
       { url: `https://nautilo.test/api/protected/tasks/${TASK_ID}/publication-plan`, method: "POST" },

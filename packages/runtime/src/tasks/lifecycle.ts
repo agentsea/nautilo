@@ -205,10 +205,6 @@ export async function unpauseTask(
       message: `Cannot resume a ${task.status} task (only paused tasks resume).`,
     };
   }
-  if (task.fundingMode === "caller" && task.lastError === "funding_interrupted_uncertain") {
-    return { ok: false, status: "paused",
-      message: "The previous provider outcome is uncertain. Review its saved result and start a fresh Task." };
-  }
   // Defensive compatibility fence: a legacy caller must not turn an
   // externally-reviewed run into a fresh provider dispatch merely because it
   // managed to write `paused` before this lifecycle was installed.
@@ -228,10 +224,14 @@ export async function unpauseTask(
   if (task.fundingMode === "caller" && (!fundingSnapshot || fundingSnapshot.status !== "paused")) {
     return { ok: false, status: fundingSnapshot?.status ?? "not_found", message: "Task changed before resume. Reload and try again." };
   }
-  if (fundingSnapshot?.lastError === "funding_interrupted_uncertain") {
-    return { ok: false, status: "paused", message: "The previous provider outcome is uncertain. Start a fresh Task." };
-  }
   const resumableRun = await getLatestResumableTaskRun(db, taskId);
+  if (
+    fundingSnapshot?.lastError === "funding_interrupted_uncertain"
+    && (resumableRun || fundingSnapshot.scheduleKind !== "cron")
+  ) {
+    return { ok: false, status: "paused",
+      message: "The previous provider outcome is uncertain. Review its saved result and start a fresh Task." };
+  }
   await assertTaskFundingAdmission(fundingSnapshot ?? task, resumableRun);
   const { nextFireAt, mode: resumeMode } = computeResumeFireAt(
     fundingSnapshot ?? task,

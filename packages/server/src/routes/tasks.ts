@@ -230,7 +230,20 @@ type TaskSummarySourceWithTiming = TaskSummarySource & {
   updatedAt?: Task["updatedAt"];
 };
 
-export function toTaskSummary(task: TaskSummarySourceWithTiming): TaskSummary {
+type TaskFundingProjectionOptions = Readonly<{ includeFunding?: boolean }>;
+
+type ListTasksWithFundingQuery = ListTasksQuery & Readonly<{
+  includeFunding?: string;
+}>;
+
+function includesTaskFunding(query: ListTasksWithFundingQuery): boolean {
+  return query.includeFunding === "true";
+}
+
+export function toTaskSummary(
+  task: TaskSummarySourceWithTiming,
+  projection: TaskFundingProjectionOptions = {},
+): TaskSummary {
   if (task.contentRepresentation === "protected") {
     throw new TypeError("Protected Task content requires the current client projection");
   }
@@ -248,7 +261,7 @@ export function toTaskSummary(task: TaskSummarySourceWithTiming): TaskSummary {
     nextFireAt: toIso(task.nextFireAt),
     callingRoomId: task.callingRoomId,
     lastError: task.lastError,
-    ...(taskFundingFailure(task.lastError)
+    ...(projection.includeFunding === true && taskFundingFailure(task.lastError)
       ? { fundingFailure: taskFundingFailure(task.lastError) }
       : {}),
     ...(task.updatedAt !== undefined ? { updatedAt: task.updatedAt.toISOString() } : {}),
@@ -341,9 +354,10 @@ export function callerTargetChatChangeConflictsWithResume(
 export function toOwnerVisibleTaskSummary(
   task: TaskSummarySourceWithTiming & Pick<Task, "agentId" | "targetRoomId" | "createdAt" | "requestedModelId">,
   enrichment: { readonly agentName: string | null; readonly lastModelId: string | null; readonly canResumeResearch?: boolean },
+  projection: TaskFundingProjectionOptions = {},
 ): TaskSummary {
   return {
-    ...toTaskSummary(task),
+    ...toTaskSummary(task, projection),
     ...(enrichment.canResumeResearch === true ? { canResumeResearch: true } : {}),
     agentId: task.agentId,
     agentName: enrichment.agentName,
@@ -430,6 +444,7 @@ export function toTaskContentSummaryV1(
     readonly canResumeResearch?: boolean;
     readonly pendingDefinitionReason?: PendingTaskDefinitionReason;
   },
+  projection: TaskFundingProjectionOptions = {},
 ): TaskContentSummaryV1 {
   const definition = taskDefinitionContentV1(task, enrichment.pendingDefinitionReason);
   const preparation = definition.status === "ordinary"
@@ -449,7 +464,7 @@ export function toTaskContentSummaryV1(
     cron: task.cron,
     nextFireAt: toIso(task.nextFireAt),
     callingRoomId: task.callingRoomId,
-    ...(taskFundingFailure(task.lastError)
+    ...(projection.includeFunding === true && taskFundingFailure(task.lastError)
       ? { fundingFailure: taskFundingFailure(task.lastError) }
       : {}),
     agentId: task.agentId,
@@ -663,7 +678,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     });
   });
 
-  app.get<{ Querystring: ListTasksQuery }>("/api/tasks", async (request, reply) => {
+  app.get<{ Querystring: ListTasksWithFundingQuery }>("/api/tasks", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     reply.header("Vary", "Authorization");
     const ownerId =
@@ -675,6 +690,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     // Push status to the store (exact-status filter, precedence over
     // includeTerminal). Terminal history remains bounded.
     const opts = listTaskOptions(request.query);
+    const includeFunding = includesTaskFunding(request.query);
     return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {
     const db = getServerDirectDb();
     const tasks = await listTasksForOwner(db, ownerId, opts);
@@ -694,11 +710,11 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         agentName: agentNames.get(t.agentId) ?? null,
         lastModelId: lastModels.get(t.id) ?? null,
         canResumeResearch: await canResumeSecurityResearchContextFailure(db, t),
-      }))) };
+      }, { includeFunding }))) };
     });
   });
 
-  app.get<{ Querystring: ListTasksQuery }>("/api/tasks/content-v1", async (request, reply) => {
+  app.get<{ Querystring: ListTasksWithFundingQuery }>("/api/tasks/content-v1", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     reply.header("Vary", "Authorization");
     const ownerId = request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
@@ -706,6 +722,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {
 
     const opts = listTaskOptions(request.query);
+    const includeFunding = includesTaskFunding(request.query);
     const db = getServerDirectDb();
     const tasks = await listTasksForOwner(db, ownerId, opts);
     const pendingDefinitions = await pendingInitialTaskDefinitions(db, ownerId, tasks);
@@ -722,15 +739,16 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         ...(pendingDefinitions.has(task.id)
           ? { pendingDefinitionReason: pendingDefinitions.get(task.id)! }
           : {}),
-      })
+      }, { includeFunding })
     )) };
     });
   });
 
-  app.get<{ Params: { id: string } }>("/api/tasks/:id/content-v1", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: ListTasksWithFundingQuery }>("/api/tasks/:id/content-v1", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     reply.header("Vary", "Authorization");
     const ownerId = request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
+    const includeFunding = includesTaskFunding(request.query);
     if (!ownerId) return reply.status(401).send({ error: "Authentication required" });
     if (!isUuidString(request.params.id)) {
       return reply.status(404).send({ error: "Task not found" });
@@ -755,7 +773,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       ...(pendingDefinitions.has(task.id)
         ? { pendingDefinitionReason: pendingDefinitions.get(task.id)! }
         : {}),
-    });
+    }, { includeFunding });
     const runSummaries: TaskRunSummaryV1[] = await Promise.all(runs.map(async (run) => {
       const ordinary = content.status === "ordinary"
         && run.resultRepresentation === "ordinary";
@@ -771,7 +789,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         id: run.id,
         status: run.status,
         modelId: run.modelId,
-        ...taskRunFundingProjection(task, run),
+        ...(includeFunding ? taskRunFundingProjection(task, run) : {}),
         startedAt: toIso(run.startedAt),
         completedAt: toIso(run.completedAt),
         content: ordinary ? {
@@ -883,11 +901,12 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     return sendAvatar(request, reply, profile?.avatarRef ?? SHELL_AVATAR_REF);
   });
 
-  app.get<{ Params: { id: string } }>("/api/tasks/:id", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: ListTasksWithFundingQuery }>("/api/tasks/:id", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     reply.header("Vary", "Authorization");
     const ownerId =
       request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
+    const includeFunding = includesTaskFunding(request.query);
     if (!ownerId) {
       return reply.status(401).send({ error: "Authentication required" });
     }
@@ -921,7 +940,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
           modelId: run.modelId,
           resultText: run.resultText,
           lastError: run.lastError,
-          ...taskRunFundingProjection(task, run),
+          ...(includeFunding ? taskRunFundingProjection(task, run) : {}),
           startedAt: toIso(run.startedAt),
           completedAt: toIso(run.completedAt),
         };
@@ -957,7 +976,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
           agentName: agentNames.get(task.agentId) ?? null,
           lastModelId: runs.at(-1)?.modelId ?? null,
           canResumeResearch: await canResumeSecurityResearchContextFailure(db, task),
-        }),
+        }, { includeFunding }),
         expectedOutput: task.expectedOutput,
         cron: task.cron,
         runAt: toIso(task.runAt),
