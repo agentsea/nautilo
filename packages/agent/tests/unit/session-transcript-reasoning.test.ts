@@ -28,40 +28,15 @@ describe("session transcript reasoning sanitization", () => {
     expect((sanitized.content as Array<{ type?: string; text?: string }>)[0]?.type).toBe("text");
   });
 
-  test("persists Surplus attribution only on the producer-marked settled answer", () => {
-    const settled = new AIMessage({
-      content: "Settled answer",
-      response_metadata: { serving_transport: "surplus" },
-    });
-    const toolRound = new AIMessage({
-      content: "Looking it up",
-      tool_calls: [{ id: "tc-surplus", name: "search", args: {} }],
-      response_metadata: { serving_transport: "surplus" },
-    });
-    const directFinal = new AIMessage("Direct final answer");
-
-    expect(transcriptMetadataForMessage(settled, {})).toEqual({
-      servingTransport: "surplus",
-    });
-    expect(transcriptMetadataForMessage(toolRound, {})).toBeNull();
-    expect(transcriptMetadataForMessage(directFinal, {})).toBeNull();
-    expect(transcriptMetadataForMessage(directFinal, {
-      metadata: { servingTransport: "surplus" },
-    })).toBeNull();
-    expect(transcriptMetadataForMessage(new HumanMessage("browser-authored"), {
-      metadata: { servingTransport: "surplus" },
-    })).toBeNull();
-  });
-
-  test("keeps producer metadata while stripping reasoning blocks", () => {
+  test("keeps response metadata while stripping reasoning blocks", () => {
     const sanitized = sanitizeMessageForTranscript(new AIMessage({
       content: [
         { type: "reasoning", text: "hidden" },
         { type: "text", text: "visible" },
       ],
-      response_metadata: { serving_transport: "surplus" },
+      response_metadata: { request_id: "request-1" },
     }));
-    expect(sanitized.response_metadata).toEqual({ serving_transport: "surplus" });
+    expect(sanitized.response_metadata).toEqual({ request_id: "request-1" });
   });
 
   test("persists only a compact marker for delegated browser observations", () => {

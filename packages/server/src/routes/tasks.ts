@@ -656,7 +656,6 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
             toolCalls: message.toolCalls,
             ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
             ...(message.toolStatus ? { toolStatus: message.toolStatus } : {}),
-            ...(message.servingTransport ? { servingTransport: message.servingTransport } : {}),
             createdAt: toIso(message.createdAt) ?? new Date(0).toISOString(),
           })),
         } : { dtoVersion: 1, status: "unavailable", reason: "unsupported_client" },
@@ -815,7 +814,6 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
             toolCalls: m.toolCalls,
             ...(m.toolCallId ? { toolCallId: m.toolCallId } : {}),
             ...(m.toolStatus ? { toolStatus: m.toolStatus } : {}),
-            ...(m.servingTransport ? { servingTransport: m.servingTransport } : {}),
             createdAt: toIso(m.createdAt) ?? new Date(0).toISOString(),
           })),
         };

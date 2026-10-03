@@ -1148,7 +1148,6 @@ export {
   ensureSession,
   reserveMemoryReviewSources,
   appendTranscriptMessages,
-  settledServingTransportForMessage,
   searchSessions,
   getLatestSession,
   getLatestSubagentSession,

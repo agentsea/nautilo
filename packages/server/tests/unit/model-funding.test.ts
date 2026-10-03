@@ -81,7 +81,6 @@ describe("trusted model funding", () => {
       supportsReasoning: false,
       maxContextTokens: 100_000,
       maxOutputTokens: 8_000,
-      qualifiedAt: "2026-10-01",
     };
     const input = { env: {}, preferSurplus: true, surplusKeyConfigured: true, routes: [route] };
     expect(resolveServerFundingRoute(route.catalogModelId, input)).toBe("surplus");

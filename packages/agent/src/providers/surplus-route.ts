@@ -5,7 +5,6 @@ export type SurplusProviderPin =
   | "anthropic"
   | "openai"
   | "google-ai-studio"
-  | "google"
   | "fireworks"
   | "openrouter"
   | "together"
@@ -21,8 +20,6 @@ export interface QualifiedSurplusChatRoute {
   readonly supportsReasoning: boolean;
   readonly maxContextTokens: number;
   readonly maxOutputTokens: number;
-  /** Compatibility metadata for injected historical qualification fixtures. */
-  readonly qualifiedAt?: string;
 }
 
 const SURPLUS_PROVIDER_PINS = Object.freeze({
@@ -70,22 +67,16 @@ function deriveRoute(entry: ModelCatalogEntry): QualifiedSurplusChatRoute | null
   });
 }
 
-function injectedProviderPinMatches(entry: ModelCatalogEntry, pin: SurplusProviderPin): boolean {
-  const expected = providerPinForCatalogEntry(entry);
-  // Keep the former Google pin usable by narrow injected fixtures while all
-  // catalog-derived production routes use Surplus's google-ai-studio family.
-  return pin === expected || (entry.provider === "google" && pin === "google");
-}
-
 function validateInjectedRoute(
   entry: ModelCatalogEntry,
   route: QualifiedSurplusChatRoute,
 ): QualifiedSurplusChatRoute | null {
-  if (!isEligibleSignedChatEntry(entry) || !providerPinForCatalogEntry(entry)) return null;
-  if (!injectedProviderPinMatches(entry, route.providerPin)) return null;
+  const expectedProviderPin = providerPinForCatalogEntry(entry);
+  if (!isEligibleSignedChatEntry(entry) || !expectedProviderPin) return null;
+  if (route.providerPin !== expectedProviderPin) return null;
   if (!Number.isSafeInteger(route.maxContextTokens) || !Number.isSafeInteger(route.maxOutputTokens)
     || route.maxContextTokens < 1 || route.maxOutputTokens < 1) return null;
-  if (!route.surplusModelId.trim() || (route.qualifiedAt !== undefined && !route.qualifiedAt.trim())) return null;
+  if (!route.surplusModelId.trim()) return null;
   if (entry.limits?.contextTokens && route.maxContextTokens > entry.limits.contextTokens) return null;
   if (entry.limits?.outputTokens && route.maxOutputTokens > entry.limits.outputTokens) return null;
   return route;

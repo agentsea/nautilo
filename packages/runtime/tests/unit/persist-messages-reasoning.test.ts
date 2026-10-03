@@ -24,14 +24,14 @@ describe("persist-messages reasoning sanitization", () => {
     expect(JSON.stringify(sanitized.content)).toContain("hello");
   });
 
-  test("retains settled producer metadata while removing reasoning", () => {
+  test("retains response metadata while removing reasoning", () => {
     const sanitized = sanitizeMessageForTranscript(new AIMessage({
       content: [
         { type: "reasoning", text: "internal" },
         { type: "text", text: "hello" },
       ],
-      response_metadata: { serving_transport: "surplus" },
+      response_metadata: { request_id: "request-1" },
     }));
-    expect(sanitized.response_metadata).toEqual({ serving_transport: "surplus" });
+    expect(sanitized.response_metadata).toEqual({ request_id: "request-1" });
   });
 });

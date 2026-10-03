@@ -182,8 +182,8 @@ export function ModelsSection() {
     }
     try {
       const [rawModels, rawUtilityModels, cfg] = await Promise.all([
-        apiClient.getModels(),
-        apiClient.getModels({ purpose: "chat" }),
+        apiClient.getModels({ includeUnavailable: true }),
+        apiClient.getModels({ purpose: "chat", includeUnavailable: true }),
         apiClient.admin.serverModels.get(),
       ]);
       if (loadGenerationRef.current !== generation) return;
@@ -215,9 +215,15 @@ export function ModelsSection() {
         void loadRef.current(true);
         return;
       }
-      setModels(mergeModelRows(rawModels.filter(isSelectableModel), retainedChat));
+      const serverFunded = (rows: AssistantModelSummary[]) => rows.map((row) => {
+        const serverRow = cfg.catalogModels?.find((model) => model.id === row.id);
+        if (row.availability !== "missing-key" || serverRow?.availability !== "selectable") return row;
+        const { unavailableReason: _unavailableReason, ...available } = row;
+        return { ...available, availability: "selectable" as const };
+      });
+      setModels(mergeModelRows(serverFunded(rawModels).filter(isSelectableModel), serverFunded(retainedChat)));
       setUtilityModels(
-        mergeModelRows(rawUtilityModels.filter(isSelectableModel), retainedUtility),
+        mergeModelRows(serverFunded(rawUtilityModels).filter(isSelectableModel), serverFunded(retainedUtility)),
       );
       if (preserveDraft) {
         setConfig((current) => current ? mergeProviderAvailability(current, cfg) : cfg);
@@ -287,11 +293,20 @@ export function ModelsSection() {
     [utilityModels],
   );
 
-  const conductorOptions = useMemo(() => {
-    const recommended = selectableUtilityModels.filter((m) => RECOMMENDED_CONDUCTOR_IDS.has(m.id));
-    const rest = selectableUtilityModels.filter((m) => !RECOMMENDED_CONDUCTOR_IDS.has(m.id));
+  const directCatalog = useMemo(
+    () => new Map(config?.catalogModels?.map((model) => [model.id, model]) ?? []),
+    [config?.catalogModels],
+  );
+  const isDirectlyAvailable = (model: AssistantModelSummary) =>
+    isSelectableModel(model) && (directCatalog.get(model.id)?.directAvailability ?? "selectable") === "selectable";
+  const backgroundUtilityModels = selectableUtilityModels.filter(isDirectlyAvailable);
+  const memoryReviewModels = selectableModels.filter(isDirectlyAvailable);
+
+  const conductorOptions = (() => {
+    const recommended = backgroundUtilityModels.filter((m) => RECOMMENDED_CONDUCTOR_IDS.has(m.id));
+    const rest = backgroundUtilityModels.filter((m) => !RECOMMENDED_CONDUCTOR_IDS.has(m.id));
     return { recommended, rest };
-  }, [selectableUtilityModels]);
+  })();
 
   const reasoningModels = useMemo(
     () => selectableUtilityModels.filter(modelHasReasoningCapability),
@@ -324,12 +339,17 @@ export function ModelsSection() {
   );
   const modelsForPurpose = (purpose: "chat-tools" | "chat") =>
     purpose === "chat-tools" ? models : utilityModels;
-  const unavailableRow = (id: string, purpose: "chat-tools" | "chat" = "chat-tools") => {
+  const unavailableRow = (id: string, purpose: "chat-tools" | "chat" = "chat-tools", background = false) => {
     const row = modelsForPurpose(purpose).find((model) => model.id === id);
-    return row && !isSelectableModel(row) ? row : null;
+    if (!row) return null;
+    if (!isSelectableModel(row)) return row;
+    const direct = directCatalog.get(id);
+    return background && direct?.directAvailability && direct.directAvailability !== "selectable"
+      ? { ...row, unavailableReason: direct.directUnavailableReason ?? "The original provider is not configured for this background role." }
+      : null;
   };
-  const unavailableReason = (id: string, purpose: "chat-tools" | "chat" = "chat-tools") =>
-    unavailableRow(id, purpose)?.unavailableReason ?? "This model is not runnable now.";
+  const unavailableReason = (id: string, purpose: "chat-tools" | "chat" = "chat-tools", background = false) =>
+    unavailableRow(id, purpose, background)?.unavailableReason ?? "This model is not runnable now.";
 
   const dirty =
     config !== null &&
@@ -390,19 +410,19 @@ export function ModelsSection() {
     setSave("saving");
     try {
       const saved = await apiClient.admin.serverModels.set({
-        preferSurplus: draft.preferSurplus,
-        defaultChatModel: draft.defaultChatModel,
-        conductorModel: draft.conductorModel,
-        stenographerModel: draft.stenographerModel,
-        reflectionModel: draft.reflectionModel,
-        memoryReviewModel: draft.memoryReviewModel,
-        embeddingModel: draft.embeddingModel,
+        ...(draft.preferSurplus === config?.preferSurplus ? {} : { preferSurplus: draft.preferSurplus }),
+        ...(draft.defaultChatModel === config?.defaultChatModel ? {} : { defaultChatModel: draft.defaultChatModel }),
+        ...(draft.conductorModel === config?.conductorModel ? {} : { conductorModel: draft.conductorModel }),
+        ...(draft.stenographerModel === config?.stenographerModel ? {} : { stenographerModel: draft.stenographerModel }),
+        ...(draft.reflectionModel === config?.reflectionModel ? {} : { reflectionModel: draft.reflectionModel }),
+        ...(draft.memoryReviewModel === config?.memoryReviewModel ? {} : { memoryReviewModel: draft.memoryReviewModel }),
+        ...(draft.embeddingModel === config?.embeddingModel ? {} : { embeddingModel: draft.embeddingModel }),
         ...(draft.imageModel === config?.imageModel ? {} : { imageModel: draft.imageModel }),
         ...(draft.musicModel === config?.musicModel ? {} : { musicModel: draft.musicModel }),
         ...(draft.videoModel === config?.videoModel ? {} : { videoModel: draft.videoModel }),
         ...(draft.speechModel === config?.speechModel ? {} : { speechModel: draft.speechModel }),
-        fallbackChain: draft.fallbackChain,
-        reasoningPolicy: draft.reasoningPolicy,
+        ...(JSON.stringify(draft.fallbackChain) === JSON.stringify(config?.fallbackChain) ? {} : { fallbackChain: draft.fallbackChain }),
+        ...(JSON.stringify(draft.reasoningPolicy) === JSON.stringify(config?.reasoningPolicy) ? {} : { reasoningPolicy: draft.reasoningPolicy }),
       });
       setConfig(saved);
       setDraft(saved);
@@ -537,7 +557,7 @@ export function ModelsSection() {
                 onChange={(e) => patch({ conductorModel: e.target.value })}
               >
                 <option value="">— Automatic auxiliary model —</option>
-                {unavailableRow(draft.conductorModel, "chat") ? (
+                {unavailableRow(draft.conductorModel, "chat", true) ? (
                   <option value={draft.conductorModel} disabled>
                     {modelLabel(utilityModels, draft.conductorModel)} (Unavailable)
                   </option>
@@ -559,9 +579,9 @@ export function ModelsSection() {
                   ))}
                 </optgroup>
               </select>
-              {unavailableRow(draft.conductorModel, "chat") ? (
+              {unavailableRow(draft.conductorModel, "chat", true) ? (
                 <p className="text-[11px] text-[var(--warning)]">
-                  {unavailableReason(draft.conductorModel, "chat")}
+                  {unavailableReason(draft.conductorModel, "chat", true)}
                 </p>
               ) : null}
             </div>
@@ -578,16 +598,16 @@ export function ModelsSection() {
                 value={draft.memoryReviewModel ?? ""} disabled={!canManage}
                 onChange={(e) => patch({ memoryReviewModel: e.target.value || null })}>
                 <option value="">— Inherit Conductor model —</option>
-                {unavailableRow(draft.memoryReviewModel ?? "", "chat-tools") ? (
+                {unavailableRow(draft.memoryReviewModel ?? "", "chat-tools", true) ? (
                   <option value={draft.memoryReviewModel ?? ""} disabled>
                     {modelLabel(models, draft.memoryReviewModel ?? "")} (Unavailable)
                   </option>
                 ) : null}
-                {selectableModels.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
+                {memoryReviewModels.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
               </select>
-              {unavailableRow(draft.memoryReviewModel ?? "", "chat-tools") ? (
+              {unavailableRow(draft.memoryReviewModel ?? "", "chat-tools", true) ? (
                 <p className="text-[11px] text-[var(--warning)]">
-                  {unavailableReason(draft.memoryReviewModel ?? "", "chat-tools")}
+                  {unavailableReason(draft.memoryReviewModel ?? "", "chat-tools", true)}
                 </p>
               ) : null}
             </div>
@@ -662,20 +682,20 @@ export function ModelsSection() {
                 onChange={(e) => patch({ stenographerModel: e.target.value })}
               >
                 <option value="">— Inherit Conductor model —</option>
-                {unavailableRow(draft.stenographerModel, "chat") ? (
+                {unavailableRow(draft.stenographerModel, "chat", true) ? (
                   <option value={draft.stenographerModel} disabled>
                     {modelLabel(utilityModels, draft.stenographerModel)} (Unavailable)
                   </option>
                 ) : null}
-                {selectableUtilityModels.map((m) => (
+                {backgroundUtilityModels.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.displayName}
                   </option>
                 ))}
               </select>
-              {unavailableRow(draft.stenographerModel, "chat") ? (
+              {unavailableRow(draft.stenographerModel, "chat", true) ? (
                 <p className="text-[11px] text-[var(--warning)]">
-                  {unavailableReason(draft.stenographerModel, "chat")}
+                  {unavailableReason(draft.stenographerModel, "chat", true)}
                 </p>
               ) : null}
             </div>
@@ -701,20 +721,20 @@ export function ModelsSection() {
                 onChange={(e) => patch({ reflectionModel: e.target.value })}
               >
                 <option value="">— Inherit Stenographer model —</option>
-                {unavailableRow(draft.reflectionModel, "chat") ? (
+                {unavailableRow(draft.reflectionModel, "chat", true) ? (
                   <option value={draft.reflectionModel} disabled>
                     {modelLabel(utilityModels, draft.reflectionModel)} (Unavailable)
                   </option>
                 ) : null}
-                {selectableUtilityModels.map((m) => (
+                {backgroundUtilityModels.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.displayName}
                   </option>
                 ))}
               </select>
-              {unavailableRow(draft.reflectionModel, "chat") ? (
+              {unavailableRow(draft.reflectionModel, "chat", true) ? (
                 <p className="text-[11px] text-[var(--warning)]">
-                  {unavailableReason(draft.reflectionModel, "chat")}
+                  {unavailableReason(draft.reflectionModel, "chat", true)}
                 </p>
               ) : null}
             </div>

@@ -13,10 +13,7 @@ import {
   type MessagePayloadV2,
   type ProtectedAgentRuntimeForegroundEntrypointId,
 } from "@nautilo/lattice-bridge";
-import {
-  computeMessageFingerprint,
-  settledServingTransportForMessage,
-} from "@nautilo/agent";
+import { computeMessageFingerprint } from "@nautilo/agent";
 
 import type {
   ActiveConversationRepository,
@@ -211,14 +208,10 @@ export function protectedAgentMessagePayload(
   let payload: MessagePayloadV2;
   if (AIMessage.isInstance(message)) {
     const toolCalls = canonicalToolCalls(message);
-    const servingTransport = settledServingTransportForMessage(message);
     payload = {
       role: "assistant",
       content,
       ...(toolCalls.length === 0 ? {} : { toolCalls }),
-      ...(servingTransport === undefined
-        ? {}
-        : { sensitiveMetadata: { servingTransport } }),
     };
   } else if (ToolMessage.isInstance(message)) {
     payload = {

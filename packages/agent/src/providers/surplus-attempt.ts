@@ -6,6 +6,7 @@ import {
   attachSurplusRequestReceipt,
   beginSurplusLlmAttempt,
   settleSurplusLlmAttempt,
+  type SettleSurplusLlmAttemptInput,
 } from "@nautilo/db";
 import { warn } from "@nautilo/logger";
 import { getUsageContext, normalizeUsageRoomId, type UsageFundingProvenance } from "../usage/usage-context";
@@ -95,14 +96,13 @@ export function canUseQualifiedSurplusChatRoute(input: {
   needsVision: boolean;
   requiresTools: boolean;
   reasoningRequested: boolean;
-  usesResponsesApi: boolean;
-  hasServingProfile: boolean;
+  hasRequestChangingServingProfile: boolean;
   estimatedInputTokens: number;
   maxOutputTokens: number;
 }): input is typeof input & { route: QualifiedSurplusChatRoute } {
   const route = input.route;
   if (!route || !input.prefersSurplus || !input.hasSurplusCredential) return false;
-  if (input.funding.kind === "personal" || input.hasServingProfile) return false;
+  if (input.funding.kind === "personal" || input.hasRequestChangingServingProfile) return false;
   if (input.needsVision && !route.supportsVision) return false;
   if (input.requiresTools && !route.supportsTools) return false;
   if (input.reasoningRequested && !route.supportsReasoning) return false;
@@ -239,6 +239,19 @@ export function readSurplusResponseUsage(message: AIMessage): {
   };
 }
 
+/** Retry one idempotent row settlement without replaying provider work. */
+async function settleSurplusAttemptWithRetry(input: SettleSurplusLlmAttemptInput): Promise<void> {
+  const settlement = Object.freeze(input);
+  try {
+    await settleSurplusLlmAttempt(settlement);
+  } catch {
+    // The first write may have committed before its result was lost. Reusing
+    // the same immutable update makes either case safe and preserves every
+    // terminal usage count still available in this process.
+    await settleSurplusLlmAttempt(settlement);
+  }
+}
+
 /** One marketplace wire attempt and its durable, content-free cost receipt. */
 export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): Promise<SurplusChatAttemptResult> {
   const attemptId = randomUUID();
@@ -311,19 +324,19 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
     const usage = terminalUsage;
     const costMicro = usage.buyerCostMicro ?? receipt?.buyerCostMicro;
     try {
-      await settleSurplusLlmAttempt({
-      attemptId,
-      ...(receipt?.requestId ? { providerRequestId: receipt.requestId } : {}),
-      ...(receipt ? { metadata: surplusReceiptTelemetry(receipt) } : {}),
-      outcome: "succeeded",
-      costState: costMicro === undefined ? "pending" : "actual",
-      ...(costMicro === undefined ? {} : { actualCostUsd: costMicro / 1_000_000 }),
-      ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
-      ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
-      ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
-      ...(usage.reasoningTokens === undefined ? {} : { reasoningTokens: usage.reasoningTokens }),
-      ...(usage.cachedInputTokens === undefined ? {} : { cachedInputTokens: usage.cachedInputTokens }),
-      ...(receipt?.providerFamily ? { servingProvider: receipt.providerFamily } : {}),
+      await settleSurplusAttemptWithRetry({
+        attemptId,
+        ...(receipt?.requestId ? { providerRequestId: receipt.requestId } : {}),
+        ...(receipt ? { metadata: surplusReceiptTelemetry(receipt) } : {}),
+        outcome: "succeeded",
+        costState: costMicro === undefined ? (receipt?.requestId ? "pending" : "unknown") : "actual",
+        ...(costMicro === undefined ? {} : { actualCostUsd: costMicro / 1_000_000 }),
+        ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
+        ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
+        ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
+        ...(usage.reasoningTokens === undefined ? {} : { reasoningTokens: usage.reasoningTokens }),
+        ...(usage.cachedInputTokens === undefined ? {} : { cachedInputTokens: usage.cachedInputTokens }),
+        ...(receipt?.providerFamily ? { servingProvider: receipt.providerFamily } : {}),
       });
     } catch {
       // The pre-inserted attempt remains pending for reconciliation. A
@@ -345,7 +358,7 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
       ...(terminalUsage === undefined ? {} : { terminalUsage }),
     });
     try {
-      await settleSurplusLlmAttempt({
+      await settleSurplusAttemptWithRetry({
         attemptId,
         ...(receipt?.requestId ? { providerRequestId: receipt.requestId } : {}),
         ...(receipt ? { metadata: surplusReceiptTelemetry(receipt) } : {}),

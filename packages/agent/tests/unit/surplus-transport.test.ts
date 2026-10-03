@@ -31,7 +31,6 @@ const VENICE_ROUTE = {
   supportsReasoning: false,
   maxContextTokens: 100_000,
   maxOutputTokens: 8_000,
-  qualifiedAt: "2026-10-01",
 };
 
 const QUALIFIED_OPENROUTER_ROUTE = {
@@ -43,7 +42,6 @@ const QUALIFIED_OPENROUTER_ROUTE = {
   supportsReasoning: true,
   maxContextTokens: 1_050_000,
   maxOutputTokens: 128_000,
-  qualifiedAt: "2026-10-03",
 };
 
 describe("Surplus wire boundary", () => {
@@ -701,7 +699,6 @@ describe("qualified Surplus route selection", () => {
       supportsReasoning: false,
       maxContextTokens: 100_000,
       maxOutputTokens: 8_000,
-      qualifiedAt: "2026-10-01",
     };
     expect(resolveQualifiedSurplusChatRoute(candidate.catalogModelId, [candidate])).toEqual(candidate);
     expect(resolveQualifiedSurplusChatRoute(candidate.catalogModelId, [{ ...candidate, providerPin: "openrouter" }])).toBeNull();
@@ -763,8 +760,7 @@ describe("qualified Surplus route selection", () => {
       needsVision: false,
       requiresTools: true,
       reasoningRequested: false,
-      usesResponsesApi: false,
-      hasServingProfile: false,
+      hasRequestChangingServingProfile: false,
       estimatedInputTokens: 1_000,
       maxOutputTokens: 2_000,
     };

@@ -42,7 +42,6 @@ describe("resolved-catalog (the current implementation)", () => {
       supportsReasoning: false,
       maxContextTokens: 100_000,
       maxOutputTokens: 8_000,
-      qualifiedAt: "2026-10-01",
     };
     expect(resolveCatalogModel(route.catalogModelId, { env: {} }).availability).toBe("missing_credentials");
     expect(resolveServerFundedForegroundCatalogModel(route.catalogModelId, {

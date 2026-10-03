@@ -13,7 +13,6 @@ const ROUTE = {
   supportsReasoning: true,
   maxContextTokens: 1_050_000,
   maxOutputTokens: 128_000,
-  qualifiedAt: "2026-10-03",
 };
 
 const surplusOnly = {

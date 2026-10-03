@@ -35,7 +35,6 @@ import {
   isProtectedMessageRealtimeEventV2,
   type MessageArtifactOpenRef,
   type ServerEvent,
-  type ServingTransport,
 } from "@nautilo/types";
 
 export type ChatRole = "user" | "assistant" | "system";
@@ -83,8 +82,6 @@ export type ChatItem =
       presentationKey?: string;
       /** D300 stable assistant author id (multi-agent rooms). */
       authorAgentId?: string;
-      /** Settled answer transport, authored by the server-side model producer. */
-      servingTransport?: ServingTransport;
       /** D124 — human author id for multi-human rooms. */
       sourceUserId?: string;
       /** M230 — stable identity shared by every projection of one Human turn. */
@@ -150,7 +147,6 @@ export type HistoryMessageDto = {
   editedAt?: string | null;
   editRevision?: number;
   authorAgentId?: string;
-  servingTransport?: ServingTransport;
   /** D124 — human author id for multi-human rooms. */
   sourceUserId?: string;
   /** D391 — retained attachments linked to this turn (images now). */
@@ -293,9 +289,6 @@ export function fromHistoryMessages(
     };
     if (role === "user" && text !== d.content) msg.editContent = d.content;
     if (d.authorAgentId) msg.authorAgentId = d.authorAgentId;
-    if (role === "assistant" && d.servingTransport === "surplus") {
-      msg.servingTransport = "surplus";
-    }
     if (d.sourceUserId) msg.sourceUserId = d.sourceUserId;
     if (role === "user") {
       if (typeof d.logicalMessageKey === "string") {
@@ -848,11 +841,6 @@ export function applyStreamEvent(
         if (role === "assistant" && typeof event.authorAgentId === "string") {
           replacement.authorAgentId = event.authorAgentId;
         }
-        if (role === "assistant" && event.servingTransport === "surplus") {
-          replacement.servingTransport = "surplus";
-        } else {
-          delete replacement.servingTransport;
-        }
         if (typeof event.replyToMessageId === "number") {
           replacement.replyToMessageId = event.replyToMessageId;
         }
@@ -959,11 +947,6 @@ export function applyStreamEvent(
           applyMessageNewEditMetadata(replacement, event, false);
           if (event.authorAgentId)
             replacement.authorAgentId = event.authorAgentId;
-          if (event.servingTransport === "surplus") {
-            replacement.servingTransport = "surplus";
-          } else {
-            delete replacement.servingTransport;
-          }
           if (typeof event.replyToMessageId === "number") {
             replacement.replyToMessageId = event.replyToMessageId;
           }
@@ -983,9 +966,6 @@ export function applyStreamEvent(
         };
         applyMessageNewEditMetadata(fresh, event, false);
         if (event.authorAgentId) fresh.authorAgentId = event.authorAgentId;
-        if (event.servingTransport === "surplus") {
-          fresh.servingTransport = "surplus";
-        }
         if (typeof event.replyToMessageId === "number") {
           fresh.replyToMessageId = event.replyToMessageId;
         }

@@ -57,6 +57,8 @@ function catalogModels(input?: {
       provider: model.provider,
       workload: model.workload,
       availability: model.availability,
+      directAvailability: directModel.availability,
+      ...(directModel.unavailableReason ? { directUnavailableReason: directModel.unavailableReason } : {}),
       ...(model.unavailableReason ? { unavailableReason: model.unavailableReason } : {}),
       input: model.input,
       output: model.output,
@@ -185,6 +187,7 @@ function parseUpdateBody(
     readonly keyConfigured: boolean;
     readonly routes?: readonly QualifiedSurplusChatRoute[];
   },
+  retained?: ResolvedServerModelConfig,
 ): ParseResult {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, error: "invalid body" };
@@ -263,7 +266,7 @@ function parseUpdateBody(
     if (typeof v !== "string") return { ok: false, error: "defaultChatModel must be a string" };
     if (v.trim() !== "") {
       const reason = unavailableReason(v, "chat-tools", true);
-      if (reason) return { ok: false, error: `model unavailable: ${v} (${reason})` };
+      if (reason && v !== retained?.defaultChatModel) return { ok: false, error: `model unavailable: ${v} (${reason})` };
     }
     patch.defaultChatModel = v.trim() === "" ? null : v;
   }
@@ -274,7 +277,7 @@ function parseUpdateBody(
     // Empty string ⇒ inherit the default chat model (stored as null).
     if (v.trim() !== "") {
       const reason = unavailableReason(v, "chat", false);
-      if (reason) return { ok: false, error: `model unavailable: ${v} (${reason})` };
+      if (reason && v !== retained?.conductorModel) return { ok: false, error: `model unavailable: ${v} (${reason})` };
     }
     patch.conductorModel = v.trim() === "" ? null : v;
   }
@@ -286,7 +289,7 @@ function parseUpdateBody(
     }
     if (v.trim() !== "") {
       const reason = unavailableReason(v, "chat", false);
-      if (reason) return { ok: false, error: `model unavailable: ${v} (${reason})` };
+      if (reason && v !== retained?.stenographerModel) return { ok: false, error: `model unavailable: ${v} (${reason})` };
     }
     patch.stenographerModel = v.trim() === "" ? null : v;
   }
@@ -298,7 +301,7 @@ function parseUpdateBody(
     }
     if (v.trim() !== "") {
       const reason = unavailableReason(v, "chat", false);
-      if (reason) return { ok: false, error: `model unavailable: ${v} (${reason})` };
+      if (reason && v !== retained?.reflectionModel) return { ok: false, error: `model unavailable: ${v} (${reason})` };
     }
     patch.reflectionModel = v.trim() === "" ? null : v;
   }
@@ -310,7 +313,7 @@ function parseUpdateBody(
     }
     if (value?.trim()) {
       const reason = unavailableReason(value, "chat-tools", false);
-      if (reason) return { ok: false, error: `model unavailable: ${value} (${reason})` };
+      if (reason && value !== retained?.memoryReviewModel) return { ok: false, error: `model unavailable: ${value} (${reason})` };
     }
     patch.memoryReviewModel = value?.trim() ? value : null;
   }
@@ -322,7 +325,7 @@ function parseUpdateBody(
     }
     for (const id of v) {
       const reason = unavailableReason(id, "chat-tools", true);
-      if (reason) {
+      if (reason && JSON.stringify(v) !== JSON.stringify(retained?.fallbackChain)) {
         return { ok: false, error: `model unavailable in fallbackChain: ${id} (${reason})` };
       }
     }
@@ -467,7 +470,7 @@ export interface ServerModelsRouteDeps {
   getEffectiveMediaModel?: typeof effectiveMediaGenerationModel;
   getEffectiveSpeechModel?: () => string | null;
   getSurplusKeyConfigured?: () => boolean;
-  /** Pure offline seam; production uses the empty released route list. */
+  /** Pure offline seam; production derives routes from the signed catalogue. */
   getQualifiedSurplusChatRoutes?: () => readonly QualifiedSurplusChatRoute[];
 }
 
@@ -550,7 +553,7 @@ export function serverModelsRoutes(
       policyEnabled: requestedPolicy,
       keyConfigured,
       ...(routes === undefined ? {} : { routes }),
-    });
+    }, before);
     if (!parsed.ok) return reply.code(422).send({ error: parsed.error });
 
     const after = await upsertConfig(db, parsed.patch, defaults);

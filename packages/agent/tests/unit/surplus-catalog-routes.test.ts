@@ -63,10 +63,15 @@ describe("catalog-derived Surplus chat routes", () => {
   });
 
   test("Google catalog rows pin google-ai-studio while preserving the exact model suffix", () => {
-    expect(resolveQualifiedSurplusChatRoute("google:gemini-3.1-pro-preview")).toMatchObject({
+    const googleRoute = resolveQualifiedSurplusChatRoute("google:gemini-3.1-pro-preview");
+    expect(googleRoute).toMatchObject({
       surplusModelId: "gemini-3.1-pro-preview",
       providerPin: "google-ai-studio",
     });
+    expect(resolveQualifiedSurplusChatRoute("google:gemini-3.1-pro-preview", [{
+      ...googleRoute!,
+      providerPin: "google" as never,
+    }])).toBeNull();
     expect(resolveQualifiedSurplusChatRoute("fireworks:accounts/fireworks/models/kimi-k3")).toMatchObject({
       surplusModelId: "accounts/fireworks/models/kimi-k3",
       providerPin: "fireworks",

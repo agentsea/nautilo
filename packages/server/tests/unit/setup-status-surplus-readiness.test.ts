@@ -11,19 +11,17 @@ const QUALIFIED_TOOL_ROUTE: QualifiedSurplusChatRoute = {
   supportsReasoning: false,
   maxContextTokens: 100_000,
   maxOutputTokens: 8_000,
-  qualifiedAt: "2026-10-01",
 };
 
 const NON_REASONING_TOOL_ROUTE: QualifiedSurplusChatRoute = {
   catalogModelId: "google:gemini-2.5-pro",
   surplusModelId: "gemini-2.5-pro",
-  providerPin: "google",
+  providerPin: "google-ai-studio",
   supportsTools: true,
   supportsVision: false,
   supportsReasoning: false,
   maxContextTokens: 1_000_000,
   maxOutputTokens: 65_536,
-  qualifiedAt: "2026-10-01",
 };
 
 const FULL_BUDGET_REASONING_ROUTE: QualifiedSurplusChatRoute = {
@@ -40,11 +38,11 @@ const CLAIMED_AUTHENTICATED = {
 } as const;
 
 describe("Surplus setup readiness", () => {
-  test("keeps the released empty qualification ledger unavailable", () => {
+  test("accepts a derived signed route when Surplus policy and credentials are ready", () => {
     expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, {
       getPreferSurplus: () => true,
       getSurplusKeyConfigured: () => true,
-    })).toBe(false);
+    })).toBe(true);
   });
 
   test("requires enabled policy and a configured server credential", () => {
@@ -89,19 +87,13 @@ describe("Surplus setup readiness", () => {
     })).toBe(true);
   });
 
-  test("requires an explicit reasoning-output opt-out for reasoning models", () => {
+  test("accepts a reasoning-capable route without a separate output opt-out", () => {
     const deps = {
       getPreferSurplus: () => true,
       getSurplusKeyConfigured: () => true,
       getQualifiedSurplusChatRoutes: () => [FULL_BUDGET_REASONING_ROUTE],
     };
-    expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, deps)).toBe(false);
-    expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, {
-      ...deps,
-      getReasoningOutput: () => ({
-        [FULL_BUDGET_REASONING_ROUTE.catalogModelId]: false,
-      }),
-    })).toBe(true);
+    expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, deps)).toBe(true);
   });
 
   test("rejects a tool-unsupported route even when its budget fits", () => {

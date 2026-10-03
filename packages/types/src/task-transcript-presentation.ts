@@ -194,7 +194,6 @@ export interface TaskTranscriptMessageVM {
   readonly resultText?: string;
   readonly toolCallId?: string;
   readonly toolStatus?: "success" | "error";
-  readonly servingTransport?: TaskRunTranscriptMessage["servingTransport"];
   readonly createdAt: string;
 }
 
@@ -252,7 +251,7 @@ export function taskRunTranscriptToPresentation(messages: readonly TaskRunTransc
     if (!row) continue;
     if (row.role === "assistant") {
       if (row.content.length > 0) rows.push({ key: `${runId}:source:${index}:assistant`, role: "assistant", content: row.content,
-        ...(row.servingTransport ? { servingTransport: row.servingTransport } : {}), createdAt: row.createdAt });
+        createdAt: row.createdAt });
       for (const [callIndex, call] of (row.toolCalls ?? []).entries()) {
         const pairedIndex = findPairedToolIndex(index, callIndex, call.name, call.id);
         const paired = pairedIndex === null ? undefined : messages[pairedIndex];

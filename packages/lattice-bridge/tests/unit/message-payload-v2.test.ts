@@ -30,7 +30,6 @@ function completePayload(): MessagePayloadV2 {
     toolName: "write_report",
     sensitiveMetadata: {
       provider: "private-provider",
-      servingTransport: "surplus",
       nested: { attempts: 2, nullable: null },
     },
     attachmentRefs: [
@@ -89,7 +88,6 @@ describe("MessagePayloadV2 canonical codec", () => {
       sensitiveMetadata: {
         nested: { nullable: null, attempts: 2 },
         provider: "private-provider",
-        servingTransport: "surplus",
       },
       attachmentRefs: left.attachmentRefs!,
       toolName: left.toolName!,

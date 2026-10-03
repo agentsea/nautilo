@@ -979,8 +979,8 @@ export async function invokeChatModelWithFallback(
                 requiresTools,
                 reasoningRequested: requestedReasoningEffort !== undefined
                   || (catalogEntry?.features?.reasoning === true && reasoningOutput),
-                usesResponsesApi: attemptProvider === "openai" && invokeOptions?.useOpenAIResponsesApi === true,
-                hasServingProfile: serving !== undefined,
+                hasRequestChangingServingProfile: serving !== undefined
+                  && (serving.effectiveModelId !== serving.canonicalModelId || serving.requestModelKwargs !== undefined),
                 estimatedInputTokens: estimateTokenCount(attemptMessages) + estimateBoundToolTokens(tools),
                 maxOutputTokens: maxTokens,
               })) {
@@ -1020,10 +1020,6 @@ export async function invokeChatModelWithFallback(
                 ),
               });
               if (result.kind === "served") {
-                result.response.response_metadata = {
-                  ...result.response.response_metadata,
-                  serving_transport: "surplus",
-                };
                 return result.response;
               }
               // A definitive pre-service refusal can switch transports.

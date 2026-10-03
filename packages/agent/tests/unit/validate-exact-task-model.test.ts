@@ -45,13 +45,12 @@ const SURPLUS_ONLY_MODEL = "google:gemini-2.5-pro";
 const QUALIFIED_SURPLUS_ROUTE: QualifiedSurplusChatRoute = {
   catalogModelId: SURPLUS_ONLY_MODEL,
   surplusModelId: "google/gemini-2.5-pro",
-  providerPin: "google",
+  providerPin: "google-ai-studio",
   supportsTools: false,
   supportsVision: false,
   supportsReasoning: false,
   maxContextTokens: 1_000_000,
   maxOutputTokens: 65_536,
-  qualifiedAt: "2026-10-02T00:00:00.000Z",
 };
 
 beforeEach(() => {
@@ -246,6 +245,18 @@ describe("validateExactTaskModelSelection (D429 Phase 3) — strict tool-capabil
 });
 
 describe("validateExactTaskModelSelection — qualified server-funded exact Tasks", () => {
+  test("admits a signed tool-capable default route without an injected route allowlist", () => {
+    expect(validateExactTaskModelSelection({
+      requestedModelId: "anthropic:claude-sonnet-4-6",
+      env: NO_ENV,
+      toolsMode: "auto",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+      },
+    })).toBeNull();
+  });
+
   test("admits a qualified tool-free exact pin without the original provider credential", () => {
     expect(validateExactTaskModelSelection({
       requestedModelId: SURPLUS_ONLY_MODEL,
@@ -331,69 +342,19 @@ describe("validateExactTaskModelSelection — qualified server-funded exact Task
     })?.code).toBe("capability_mismatch");
   });
 
-  test("rejects a reasoning-enabled Task model until that request shape is qualified", () => {
-    const reasoningModel = "anthropic:claude-sonnet-4-6";
+  test.each([
+    ["reasoning-capable Anthropic", "anthropic:claude-sonnet-4-6"],
+    ["OpenAI", "openai:gpt-5.5-2026-04-23"],
+  ] as const)("admits the derived signed %s route without transport-shape vetoes", (_label, modelId) => {
     expect(validateExactTaskModelSelection({
-      requestedModelId: reasoningModel,
+      requestedModelId: modelId,
       env: NO_ENV,
       toolsMode: "none",
       surplus: {
         policyEnabled: true,
         keyConfigured: true,
-        routes: [{
-          ...QUALIFIED_SURPLUS_ROUTE,
-          catalogModelId: reasoningModel,
-          surplusModelId: "anthropic/claude-sonnet-4-6",
-          providerPin: "anthropic",
-          supportsReasoning: true,
-          maxOutputTokens: 128_000,
-        }],
-      },
-    })?.code).toBe("capability_mismatch");
-  });
-
-  test("admits a reasoning-capable model when the server explicitly disables reasoning output", () => {
-    const reasoningModel = "anthropic:claude-sonnet-4-6";
-    expect(validateExactTaskModelSelection({
-      requestedModelId: reasoningModel,
-      env: NO_ENV,
-      toolsMode: "none",
-      surplus: {
-        policyEnabled: true,
-        keyConfigured: true,
-        reasoningOutputEnabled: false,
-        routes: [{
-          ...QUALIFIED_SURPLUS_ROUTE,
-          catalogModelId: reasoningModel,
-          surplusModelId: "anthropic/claude-sonnet-4-6",
-          providerPin: "anthropic",
-          supportsReasoning: true,
-          maxOutputTokens: 128_000,
-        }],
       },
     })).toBeNull();
-  });
-
-  test("rejects OpenAI Task routes while Task invocation requires Responses", () => {
-    const openAIModel = "openai:gpt-5.5-2026-04-23";
-    expect(validateExactTaskModelSelection({
-      requestedModelId: openAIModel,
-      env: NO_ENV,
-      toolsMode: "none",
-      surplus: {
-        policyEnabled: true,
-        keyConfigured: true,
-        reasoningOutputEnabled: false,
-        routes: [{
-          ...QUALIFIED_SURPLUS_ROUTE,
-          catalogModelId: openAIModel,
-          surplusModelId: "openai/gpt-5.5",
-          providerPin: "openai",
-          supportsReasoning: true,
-          maxOutputTokens: 128_000,
-        }],
-      },
-    })?.code).toBe("capability_mismatch");
   });
 
   test("does not admit a default-off catalog row through an injected route", () => {

@@ -315,25 +315,6 @@ describe("reconcileAssistantDurableMessage", () => {
     });
   });
 
-  test("clears stale transport when the durable final answer is direct", () => {
-    const messages = [{
-      id: "assistant-stream",
-      role: "assistant",
-      content: [{ type: "text", text: "Direct final answer" }],
-      metadata: { custom: { servingTransport: "surplus" } },
-    }] as ThreadMessageLike[];
-
-    const reconciled = reconcileAssistantDurableMessage({
-      messages,
-      index: 0,
-      messageId: "28085",
-      custom: { servingTransport: undefined },
-    });
-
-    expect((reconciled[0]?.metadata as { custom?: Record<string, unknown> })
-      .custom?.["servingTransport"]).toBeUndefined();
-  });
-
   test("preserves the server-authored document pointers on a live assistant question", () => {
     const messages = [{
       id: "assistant-stream",

@@ -7,8 +7,9 @@ import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 const createModelInputs: Record<string, unknown>[] = [];
+let observedResponse: ((receipt: { requestId: string; providerFamily: string; truncated: boolean }, status: number) => Promise<void>) | undefined;
 const beginAttempt = mock(async () => {});
-const settleAttempt = mock(async () => {});
+const settleAttempt = mock(async (_input: Record<string, unknown>) => {});
 
 mock.module("@nautilo/db", () => ({
   attachSurplusRequestReceipt: mock(async () => {}),
@@ -21,6 +22,7 @@ class MockSurplusOutcomeUnknownError extends Error {}
 mock.module("../../src/providers/surplus-transport", () => ({
   createSurplusChatModel: (input: Record<string, unknown>) => {
     createModelInputs.push(input);
+    observedResponse = input["onResponse"] as typeof observedResponse;
     return { invoke: async () => new AIMessage("unused") };
   },
   isSafeSurplusDirectFallback: () => false,
@@ -47,13 +49,13 @@ const ROUTE = {
   supportsReasoning: true,
   maxContextTokens: 1_050_000,
   maxOutputTokens: 128_000,
-  qualifiedAt: "2026-10-03",
 };
 
 beforeEach(() => {
   createModelInputs.length = 0;
   beginAttempt.mockClear();
   settleAttempt.mockClear();
+  settleAttempt.mockImplementation(async () => {});
 });
 
 describe("Surplus reasoning parity", () => {
@@ -131,8 +133,7 @@ describe("Surplus reasoning parity", () => {
       needsVision: false,
       requiresTools: true,
       reasoningRequested: true,
-      usesResponsesApi: false,
-      hasServingProfile: false,
+      hasRequestChangingServingProfile: false,
       estimatedInputTokens: 1_000,
       maxOutputTokens: 2_000,
     };
@@ -141,7 +142,6 @@ describe("Surplus reasoning parity", () => {
       ...base,
       route: { ...ROUTE, supportsReasoning: false },
     })).toBe(false);
-    expect(canUseQualifiedSurplusChatRoute({ ...base, usesResponsesApi: true })).toBe(true);
     expect(canUseQualifiedSurplusChatRoute({
       ...base,
       funding: {
@@ -153,6 +153,144 @@ describe("Surplus reasoning parity", () => {
         credentialRevision: 1,
       },
     })).toBe(false);
+  });
+
+  test("keeps a missing charge pending when its receipt has a recoverable request ID", async () => {
+    const response = new AIMessage({ content: "ok", response_metadata: { finish_reason: "stop" } });
+    await invokeSurplusChatAttempt({
+      route: ROUTE, apiKey: "synthetic-surplus-key", messages: [new HumanMessage("test")], tools: [],
+      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+      invokeModel: async () => {
+        await observedResponse!({ requestId: "recoverable-request", providerFamily: "openrouter", truncated: false }, 200);
+        return response;
+      },
+    });
+    expect(settleAttempt.mock.calls[0]?.[0]).toMatchObject({
+      outcome: "succeeded", costState: "pending", providerRequestId: "recoverable-request",
+    });
+  });
+
+  test("retries the same frozen settlement and preserves all terminal usage counts", async () => {
+    settleAttempt.mockImplementationOnce(async () => {
+      throw new Error("temporary database failure");
+    });
+    settleAttempt.mockImplementationOnce(async () => {});
+    let inferenceCalls = 0;
+    const response = new AIMessage({
+      content: "ok",
+      response_metadata: {
+        finish_reason: "stop",
+        usage: {
+          prompt_tokens: 11,
+          completion_tokens: 16,
+          total_tokens: 27,
+          completion_tokens_details: { reasoning_tokens: 10 },
+          prompt_tokens_details: { cached_tokens: 3 },
+          buyer_cost_micro: 283,
+        },
+      },
+    });
+    const result = await invokeSurplusChatAttempt({
+      route: ROUTE, apiKey: "synthetic-surplus-key", messages: [new HumanMessage("test")], tools: [],
+      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+      invokeModel: async () => {
+        inferenceCalls++;
+        await observedResponse!({ requestId: "retry-request", providerFamily: "openrouter", truncated: false }, 200);
+        return response;
+      },
+    });
+
+    expect(result).toEqual({ kind: "served", response, requestId: "retry-request" });
+    expect(inferenceCalls).toBe(1);
+    expect(beginAttempt).toHaveBeenCalledTimes(1);
+    expect(settleAttempt).toHaveBeenCalledTimes(2);
+    const firstSettlement = settleAttempt.mock.calls[0]?.[0];
+    expect(Object.isFrozen(firstSettlement)).toBe(true);
+    expect(settleAttempt.mock.calls[1]?.[0]).toBe(firstSettlement);
+    expect(firstSettlement).toMatchObject({
+      outcome: "succeeded",
+      costState: "actual",
+      actualCostUsd: 0.000283,
+      inputTokens: 11,
+      outputTokens: 16,
+      totalTokens: 27,
+      reasoningTokens: 10,
+      cachedInputTokens: 3,
+    });
+  });
+
+  test("an uncertain committed settlement retry remains one attempt", async () => {
+    const settledAttemptIds = new Set<string>();
+    let settlementCalls = 0;
+    settleAttempt.mockImplementation(async (input) => {
+      settledAttemptIds.add(String(input["attemptId"]));
+      settlementCalls++;
+      if (settlementCalls === 1) throw new Error("database result lost after commit");
+    });
+    let inferenceCalls = 0;
+    const response = new AIMessage({
+      content: "ok",
+      response_metadata: { finish_reason: "stop", usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 } },
+    });
+    await invokeSurplusChatAttempt({
+      route: ROUTE, apiKey: "synthetic-surplus-key", messages: [new HumanMessage("test")], tools: [],
+      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+      invokeModel: async () => {
+        inferenceCalls++;
+        await observedResponse!({ requestId: "uncertain-request", providerFamily: "openrouter", truncated: false }, 200);
+        return response;
+      },
+    });
+
+    expect(inferenceCalls).toBe(1);
+    expect(beginAttempt).toHaveBeenCalledTimes(1);
+    expect(settleAttempt).toHaveBeenCalledTimes(2);
+    expect(settleAttempt.mock.calls[1]?.[0]).toBe(settleAttempt.mock.calls[0]?.[0]);
+    expect(settledAttemptIds.size).toBe(1);
+  });
+
+  test("permanent failed-response settlement failure never replays inference", async () => {
+    settleAttempt.mockImplementation(async () => {
+      throw new Error("database unavailable");
+    });
+    let inferenceCalls = 0;
+    const incompleteResponse = new AIMessage({
+      content: "partial",
+      response_metadata: {
+        usage: { prompt_tokens: 7, completion_tokens: 5, total_tokens: 12 },
+      },
+    });
+    const attempt = invokeSurplusChatAttempt({
+      route: ROUTE, apiKey: "synthetic-surplus-key", messages: [new HumanMessage("test")], tools: [],
+      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+      invokeModel: async () => {
+        inferenceCalls++;
+        await observedResponse!({ requestId: "permanent-failure-request", providerFamily: "openrouter", truncated: false }, 200);
+        return incompleteResponse;
+      },
+    });
+
+    let failure: unknown;
+    try {
+      await attempt;
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(MockSurplusOutcomeUnknownError);
+    expect(inferenceCalls).toBe(1);
+    expect(beginAttempt).toHaveBeenCalledTimes(1);
+    expect(settleAttempt).toHaveBeenCalledTimes(2);
+    const firstSettlement = settleAttempt.mock.calls[0]?.[0];
+    expect(Object.isFrozen(firstSettlement)).toBe(true);
+    expect(settleAttempt.mock.calls[1]?.[0]).toBe(firstSettlement);
+    expect(firstSettlement).toMatchObject({
+      outcome: "interrupted",
+      costState: "pending",
+      inputTokens: 7,
+      outputTokens: 5,
+      totalTokens: 12,
+      failureCode: "incomplete_response",
+    });
   });
 
   test("threads selected reasoning and OpenRouter cache settings into the shared transport", async () => {
@@ -185,5 +323,6 @@ describe("Surplus reasoning parity", () => {
     });
     expect(beginAttempt).toHaveBeenCalledTimes(1);
     expect(settleAttempt).toHaveBeenCalledTimes(1);
+    expect(settleAttempt.mock.calls[0]?.[0]).toMatchObject({ outcome: "succeeded", costState: "unknown" });
   });
 });

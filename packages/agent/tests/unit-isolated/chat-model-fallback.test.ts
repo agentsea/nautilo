@@ -1395,7 +1395,26 @@ describe("invokeChatModelWithFallback — Surplus serving order", () => {
     const result = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null);
 
     expect(result).toMatchObject({ modelUsed: A, response: { content: "surplus success" } });
-    expect(result.response.response_metadata).toMatchObject({ serving_transport: "surplus" });
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+
+  test("tries Surplus with Kimi K3's catalogue-default standard profile", async () => {
+    const id = "fireworks:accounts/fireworks/models/kimi-k3";
+    const { getActiveModelCatalogSync } = await import("../../src/config/model-catalog/runtime-catalog");
+    const { resolveModelControlSelection } = await import("../../src/config/model-control-selection");
+    const entry = getActiveModelCatalogSync().catalog.entries.find((row) => row.id === id)!;
+    const selection = resolveModelControlSelection({ catalogByModelId: new Map([[id, entry]]), catalogDefaultModelId: id });
+    expect(selection.status).toBe("resolved");
+    if (selection.status !== "resolved") throw new Error("Kimi controls did not resolve");
+    const servingProfileId = selection.effective.servingProfileId;
+    if (servingProfileId !== "standard") throw new Error("Kimi standard profile missing");
+    delete process.env["FIREWORKS_API_KEY"];
+    invokeSurplusChatAttemptMock.mockResolvedValue({ kind: "served", response: new AIMessage("surplus kimi") });
+    const result = await invokeChatModelWithFallback(messages, tools, id, "user-1", "agent-1", null, {}, {
+      resolveForegroundControls: () => ({ canonicalModelId: id, servingProfileId }),
+    });
+    expect(result).toMatchObject({ modelUsed: id, response: { content: "surplus kimi" } });
     expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
     expect(createUniversalModelMock).not.toHaveBeenCalled();
   });

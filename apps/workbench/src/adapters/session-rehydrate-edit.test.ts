@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { decodeMessagePayloadV2, encodeMessagePayloadV2 } from "@nautilo/lattice-bridge";
 import {
   reconcileRoomHistoryShadowPayloads,
   restoreSessionMessages,
@@ -6,50 +7,6 @@ import {
   withholdRoomHistoryShadowPayloads,
 } from "./session-rehydrate";
 describe("restoreSessionMessages M230 edit metadata", () => {
-  test("restores settled attribution and trusts the authenticated protected payload", () => {
-    const [ordinary] = restoreSessionMessages([{
-      id: "surplus-answer",
-      role: "assistant",
-      content: "settled",
-      servingTransport: "surplus",
-    }]);
-    expect(ordinary).toMatchObject({
-      metadata: { custom: { servingTransport: "surplus" } },
-    });
-
-    const [protectedSurplus] = restoreSessionMessages(reconcileRoomHistoryShadowPayloads([{
-      id: "protected-surplus-answer",
-      role: "assistant",
-      content: "ordinary fallback",
-      editRevision: 0,
-    }], [{
-      messageId: "protected-surplus-answer",
-      editRevision: 0,
-      status: "verified",
-      payload: {
-        role: "assistant",
-        content: "authenticated settled",
-        sensitiveMetadata: { servingTransport: "surplus" },
-      },
-    }], { strict: true, requireVerified: true }));
-    expect(protectedSurplus).toMatchObject({
-      metadata: { custom: { servingTransport: "surplus" } },
-    });
-
-    const reconciled = reconcileRoomHistoryShadowPayloads([{
-      id: "direct-answer",
-      role: "assistant",
-      content: "ordinary",
-      servingTransport: "surplus",
-      editRevision: 0,
-    }], [{
-      messageId: "direct-answer",
-      editRevision: 0,
-      status: "verified",
-      payload: { role: "assistant", content: "authenticated direct" },
-    }], { strict: true, requireVerified: true });
-    expect(reconciled[0]).not.toHaveProperty("servingTransport");
-  });
   test("preserves harness authorship separately from the delegating agent", () => {
     const [message] = restoreSessionMessages([{
       id: "harness-result-1",
@@ -259,8 +216,8 @@ describe("restoreSessionMessages M230 edit metadata", () => {
     expect(message?.metadata).toBeUndefined();
   });
 
-  test("derives assistant parity input from the actual ordinary row", () => {
-    expect(roomHistoryShadowOrdinarySibling({
+  test("derives strict-codec assistant parity input from the actual ordinary row", () => {
+    const sibling = roomHistoryShadowOrdinarySibling({
       id: "45",
       logicalMessageKey: "logical:45",
       role: "assistant",
@@ -273,7 +230,8 @@ describe("restoreSessionMessages M230 edit metadata", () => {
           arguments: JSON.stringify({ pageSize: 25, cursor: "page:2" }),
         },
       }]),
-    })).toEqual({
+    });
+    expect(sibling).toEqual({
       logicalMessageKey: "logical:45",
       payload: {
         role: "assistant",
@@ -285,6 +243,7 @@ describe("restoreSessionMessages M230 edit metadata", () => {
         }],
       },
     });
+    expect(decodeMessagePayloadV2(encodeMessagePayloadV2(sibling!.payload))).toEqual(sibling!.payload);
   });
 
   test("applies verified protected payloads before one ordinary restore pass", () => {

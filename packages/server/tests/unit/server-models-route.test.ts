@@ -23,7 +23,6 @@ const QUALIFIED_SURPLUS_ROUTE = {
   supportsReasoning: false,
   maxContextTokens: 100_000,
   maxOutputTokens: 8_000,
-  qualifiedAt: "2026-10-01",
 };
 const MEDIA_MODELS = {
   image: [{ id: "venice:gpt-image-2", displayName: "GPT Image 2", provider: "venice", available: true }],
@@ -125,6 +124,34 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
         expect(result.ok).toBe(false);
         if (!result.ok) expect(result.error).toContain("credential");
       }
+    } finally {
+      if (previous === undefined) delete process.env["VENICE_API_KEY"];
+      else process.env["VENICE_API_KEY"] = previous;
+    }
+  });
+
+  test("can disable Surplus with retained defaults and chain when the original key is absent", async () => {
+    const previous = process.env["VENICE_API_KEY"];
+    try {
+      delete process.env["VENICE_API_KEY"];
+      const id = QUALIFIED_SURPLUS_ROUTE.catalogModelId;
+      const before = { ...modelConfig, preferSurplus: true, defaultChatModel: id, fallbackChain: [id] };
+      const writes: unknown[] = [];
+      const call = routeHarness({
+        getCapabilities: async () => ["manage_server_operations"], getDb: () => ({}) as never,
+        getDefaults: () => ({ defaultChatModel: id, fallbackChain: [id] }), getConfig: async () => before,
+        getSurplusKeyConfigured: () => true,
+        upsertConfig: async (_db, patch) => { writes.push(patch); return { ...before, preferSurplus: patch.preferSurplus ?? before.preferSurplus, defaultChatModel: patch.defaultChatModel ?? before.defaultChatModel, fallbackChain: patch.fallbackChain ?? before.fallbackChain }; },
+        refreshConfigCache: async () => null, auditEvent: () => undefined,
+        listMediaModels, getEffectiveMediaModel: () => null, getEffectiveEmbeddingModel: () => null,
+      });
+      expect(await call("POST", { ...requestBase, sessionUserId: "admin", body: {
+        preferSurplus: false, defaultChatModel: id, fallbackChain: [id],
+      } })).toMatchObject({ status: 200, body: { preferSurplus: false, defaultChatModel: id, fallbackChain: [id] } });
+      expect(writes).toEqual([{ preferSurplus: false, defaultChatModel: id, fallbackChain: [id] }]);
+      expect(await call("POST", { ...requestBase, sessionUserId: "admin", body: {
+        preferSurplus: false, defaultChatModel: "venice:minimax-m3-preview",
+      } })).toMatchObject({ status: 422 });
     } finally {
       if (previous === undefined) delete process.env["VENICE_API_KEY"];
       else process.env["VENICE_API_KEY"] = previous;
@@ -477,7 +504,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
       });
       expect(Object.keys(decision!).sort()).toEqual([
         "id", "displayName", "provider", "workload", "availability", "unavailableReason",
-        "input", "output", "features", "decision",
+        "input", "output", "features", "decision", "directAvailability", "directUnavailableReason",
       ].sort());
       const grounded = listResolvedCatalogModels({ includeUnavailable: true }).find((row) => row.features.visualGrounding === true);
       expect(grounded).toBeDefined();

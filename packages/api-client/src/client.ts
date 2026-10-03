@@ -1239,6 +1239,8 @@ export const serverModelConfigSchema = z.object({
     provider: z.string(),
     workload: z.string(),
     availability: z.string(),
+    directAvailability: z.string().optional(),
+    directUnavailableReason: z.string().optional(),
     unavailableReason: z.string().optional(),
     input: z.array(z.string()),
     output: z.array(z.string()),

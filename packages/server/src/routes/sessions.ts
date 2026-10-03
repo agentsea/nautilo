@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { AdvancedVideoWorkcardContinuation, MessageArtifactOpenRef, ServingTransport } from "@nautilo/types";
+import type { AdvancedVideoWorkcardContinuation, MessageArtifactOpenRef } from "@nautilo/types";
 import type {
   ChatSearchPage,
   RoomMessageSearchCursor,
@@ -223,7 +223,6 @@ type AroundDisplayMessage = {
   sourceUserId?: string;
   authorAgentId?: string;
   authorHarnessId?: string;
-  servingTransport?: ServingTransport;
   workcardContinuation?: AdvancedVideoWorkcardContinuation | undefined;
 };
 
@@ -256,7 +255,6 @@ function serializeRoomMessageForAround(message: AroundDisplayMessage) {
     ...(typeof message.authorHarnessId === "string" && message.authorHarnessId.length > 0
       ? { authorHarnessId: message.authorHarnessId }
       : {}),
-    ...(message.servingTransport ? { servingTransport: message.servingTransport } : {}),
     ...(message.workcardContinuation ? { workcardContinuation: message.workcardContinuation } : {}),
   };
 }
@@ -392,7 +390,6 @@ export function sessionRoutes(
         ...(typeof m.authorHarnessId === "string" && m.authorHarnessId.length > 0
           ? { authorHarnessId: m.authorHarnessId }
           : {}),
-        ...(m.servingTransport ? { servingTransport: m.servingTransport } : {}),
         ...(m.workcardContinuation ? { workcardContinuation: m.workcardContinuation } : {}),
         ...(() => {
           const reactions = reactionsByMessage.get(Number(m.id));
@@ -589,7 +586,6 @@ export function sessionRoutes(
         ...(typeof m.authorHarnessId === "string" && m.authorHarnessId.length > 0
           ? { authorHarnessId: m.authorHarnessId }
           : {}),
-        ...(m.servingTransport ? { servingTransport: m.servingTransport } : {}),
         ...(m.workcardContinuation ? { workcardContinuation: m.workcardContinuation } : {}),
         ...(() => {
           const reactions = reactionsByMessage.get(Number(m.id));

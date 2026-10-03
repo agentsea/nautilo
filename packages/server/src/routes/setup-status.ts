@@ -53,10 +53,9 @@ export type RecommendedSetupSurfaceKind =
   | "ask-admin";
 
 export interface SetupStatusRouteDeps {
-  /** Pure offline seam; production uses the empty released route list. */
+  /** Pure offline seam for narrowed route-envelope tests. */
   readonly getQualifiedSurplusChatRoutes?: () => readonly QualifiedSurplusChatRoute[];
   readonly getPreferSurplus?: () => boolean;
-  readonly getReasoningOutput?: () => Readonly<Record<string, boolean>>;
   readonly getSurplusKeyConfigured?: () => boolean;
 }
 
@@ -70,9 +69,8 @@ interface SetupLlmReadinessInput {
  * Setup readiness describes a server-funded foreground agent path. A Surplus
  * key is only credential presence; it becomes readiness when server policy is
  * enabled and a released chat route passes the central serving resolver for
- * the ordinary agent defaults: tools, signed maximum output, and default
- * reasoning behavior. Request-specific context and vision gates still run at
- * invocation time.
+ * the ordinary agent defaults: tools and the signed maximum output.
+ * Request-specific context and vision gates still run at invocation time.
  */
 export function computeSetupHasLlm(
   input: SetupLlmReadinessInput,
@@ -86,8 +84,6 @@ export function computeSetupHasLlm(
   const keyConfigured = (deps.getSurplusKeyConfigured
     ?? (() => resolveProviderKey("surplus") !== null))();
   const routes = deps.getQualifiedSurplusChatRoutes?.();
-  const reasoningOutput = (deps.getReasoningOutput
-    ?? (() => getCachedServerModelConfigRow()?.reasoningOutput ?? {}))();
 
   // Resolve every signed model exactly. The aggregate resolver intentionally
   // reports provider capability status, while setup readiness must keep
@@ -109,9 +105,6 @@ export function computeSetupHasLlm(
     if (availability.route.maxOutputTokens < signedMaxOutputTokens) return false;
     // Leave room for at least one prompt token at the signed default output.
     if (availability.route.maxContextTokens <= signedMaxOutputTokens) return false;
-    // Current Surplus invocation refuses requested reasoning. Reasoning-capable
-    // catalogue models therefore need the administrator's explicit opt-out.
-    if (entry.features?.reasoning === true && reasoningOutput[entry.id] !== false) return false;
     return true;
   });
 }

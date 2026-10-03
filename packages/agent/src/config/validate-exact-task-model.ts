@@ -76,8 +76,6 @@ export interface ValidateExactTaskModelInput {
     readonly policyEnabled: boolean;
     readonly keyConfigured: boolean;
     readonly routes?: readonly QualifiedSurplusChatRoute[];
-    /** Effective server reasoning-output setting for this exact model. */
-    readonly reasoningOutputEnabled?: boolean;
   } | undefined;
 }
 
@@ -153,32 +151,11 @@ export function validateExactTaskModelSelection(
     : null;
   const taskUsesTools = taskRequiresTools(input.toolsMode, input.toolsWhitelist);
   if (surplus?.status === "available") {
-    // Agent Task execution currently enables the OpenAI Responses path, while
-    // the qualified Surplus adapter is chat-completions only.
-    if (surplus.route.providerPin === "openai") {
-      return {
-        code: "capability_mismatch",
-        modelId: requestedModelId,
-        message: `Model "${requestedModelId}" uses an OpenAI Responses request shape for Tasks, which is not yet qualified through Surplus. Configure OpenAI directly or pick another exact model.`,
-      };
-    }
     if (taskUsesTools && !surplus.route.supportsTools) {
       return {
         code: "capability_mismatch",
         modelId: requestedModelId,
         message: `Model "${requestedModelId}" is not qualified for tool-using Tasks through Surplus. Pick a directly configured model or a qualified tool-capable route.`,
-      };
-    }
-    // Current Surplus invocation rejects reasoning-bearing requests rather
-    // than changing their semantics. Exact Task admission must match that wire.
-    const reasoningOutputEnabled = input.surplus?.reasoningOutputEnabled
-      ?? serverModelConfig?.reasoningOutput?.[requestedModelId]
-      ?? true;
-    if (row.features.reasoning === true && reasoningOutputEnabled) {
-      return {
-        code: "capability_mismatch",
-        modelId: requestedModelId,
-        message: `Model "${requestedModelId}" has reasoning enabled for Tasks, which is not yet qualified through Surplus. Configure its original provider or pick another exact model.`,
       };
     }
     if (row.maxOutputTokens !== null && surplus.route.maxOutputTokens < row.maxOutputTokens) {

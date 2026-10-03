@@ -210,7 +210,7 @@ describe("live Shadow Message UI projection", () => {
     });
   });
 
-  test("projects settled attribution only from authenticated durable payload", () => {
+  test("projects an authenticated durable assistant payload", () => {
     const durableEvent: LiveShadowMessageRealtimeEventV1 = {
       wireVersion: 1,
       type: "message.shadow_durable",
@@ -242,15 +242,14 @@ describe("live Shadow Message UI projection", () => {
         payload: {
           role: "assistant",
           content: "settled answer",
-          sensitiveMetadata: { servingTransport: "surplus" },
         },
         messageId: "44",
-        assistantMessageKey: "assistant:turn:surplus:0",
+        assistantMessageKey: "assistant:turn:durable:0",
         authorAgentId: "40000000-0000-4000-8000-000000000282",
       },
     })[0]).toMatchObject({
       type: "message.new",
-      servingTransport: "surplus",
+      content: "settled answer",
     });
   });
 

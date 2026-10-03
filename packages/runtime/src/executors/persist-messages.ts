@@ -5,10 +5,9 @@ import {
   type AdvancedVideoWorkcardContinuation,
   type MessageAttachmentRef,
   type MessageArtifactOpenRef,
-  type ServingTransport,
   type ServerEvent,
 } from "@nautilo/types";
-import { appendTranscriptMessages, computeMessageFingerprint, settledServingTransportForMessage } from "@nautilo/agent";
+import { appendTranscriptMessages, computeMessageFingerprint } from "@nautilo/agent";
 import type { AppendNotificationContext } from "@nautilo/trust";
 import {
   type MemoryReviewAdmission,
@@ -191,13 +190,6 @@ export async function persistMessages(
   }
 
   const transcriptMessages = newMessages.map(sanitizeMessageForTranscript);
-  const servingTransportByFingerprint = new Map<string, ServingTransport>();
-  for (const pair of newPairs) {
-    const servingTransport = settledServingTransportForMessage(pair.msg);
-    if (servingTransport !== undefined) {
-      servingTransportByFingerprint.set(pair.fp, servingTransport);
-    }
-  }
 
   if (process.env["NAUTILO_DEBUG_PERSIST"] === "1") {
     const roles = newMessages.map((m) => persistDebugRole(m)).join(",");
@@ -462,9 +454,6 @@ export async function persistMessages(
           typeof row.content === "string" &&
           row.content.trim().length > 0
         ) {
-          const servingTransport = row.fingerprint
-            ? servingTransportByFingerprint.get(row.fingerprint)
-            : undefined;
           options.eventBus.emit({
             type: "message.new",
             laneKey,
@@ -473,7 +462,6 @@ export async function persistMessages(
             role: "ai",
             content: row.content,
             ...(options.agentId ? { authorAgentId: options.agentId } : {}),
-            ...(servingTransport ? { servingTransport } : {}),
             ...(options.assistantMessageKey
               ? { assistantMessageKey: options.assistantMessageKey }
               : {}),
