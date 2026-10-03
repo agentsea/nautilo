@@ -407,6 +407,7 @@ export function ModelsSection() {
 
   const handleSave = async () => {
     if (!draft || !dirty) return;
+    const surplusPolicyChanged = draft.preferSurplus !== config?.preferSurplus;
     setSave("saving");
     try {
       const saved = await apiClient.admin.serverModels.set({
@@ -426,7 +427,9 @@ export function ModelsSection() {
       });
       setConfig(saved);
       setDraft(saved);
+      draftRef.current = saved;
       setSave("saved");
+      if (surplusPolicyChanged) await load(true);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Save failed";
       setSave({ error: message });

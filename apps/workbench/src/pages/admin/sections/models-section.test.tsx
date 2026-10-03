@@ -14,6 +14,7 @@ import userEvent from "@testing-library/user-event";
 let canManage = true;
 let openRouterAvailable = true;
 let anthropicDirectAvailable = true;
+let gateVeniceBySurplusPolicy = false;
 let modelLoadGate: Promise<void> | null = null;
 let retainedLoadGate: Promise<void> | null = null;
 const catalogModels: NonNullable<ServerModelConfig["catalogModels"]> = [
@@ -126,6 +127,7 @@ mock.module("../../../lib/api", () => ({
   apiClient: {
     getModels: async (query?: { includeUnavailable?: boolean }) => {
       const openRouterWasAvailable = openRouterAvailable;
+      const surplusPolicyWasEnabled = savedConfig.preferSurplus;
       await modelLoadGate;
       return [
         {
@@ -155,6 +157,7 @@ mock.module("../../../lib/api", () => ({
           capabilities: { reasoning: true },
         },
       ].filter((model) => (openRouterWasAvailable || model.provider !== "openrouter")
+        && (!gateVeniceBySurplusPolicy || surplusPolicyWasEnabled || model.provider !== "venice")
         && (query?.includeUnavailable || model.availability === "selectable"));
     },
     resolveRetainedModels: resolveRetainedModelsMock,
@@ -188,6 +191,7 @@ beforeEach(() => {
   canManage = true;
   openRouterAvailable = true;
   anthropicDirectAvailable = true;
+  gateVeniceBySurplusPolicy = false;
   modelLoadGate = null;
   retainedLoadGate = null;
   Object.assign(savedConfig, initialConfig);
@@ -474,6 +478,41 @@ describe("ModelsSection Stenographer model", () => {
     await act(async () => fireEvent.click(toggle));
     await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
     await waitFor(() => expect(setServerModelsMock.mock.calls[0]?.[0].preferSurplus).toBe(true));
+  });
+
+  test("refreshes foreground and fallback choices after enabling Surplus while keeping backgrounds direct-only", async () => {
+    gateVeniceBySurplusPolicy = true;
+    savedConfig.catalogModels = [...catalogModels, {
+      id: "venice:minimax-m3-preview", displayName: "MiniMax M3 (Venice)", provider: "venice",
+      workload: "chat", availability: "selectable", directAvailability: "missing_credentials",
+      directUnavailableReason: "Venice credential is not configured", input: ["text"], output: ["text"],
+      features: { tools: true, structuredOutputs: true, reasoning: true, visualGrounding: null, webSearch: false, e2ee: false },
+      decision: null,
+    }];
+    setServerModelsMock.mockImplementationOnce(async (patch: typeof savedConfig) => {
+      Object.assign(savedConfig, patch, {
+        surplus: { keyConfigured: true, policyEnabled: true, chatStatus: "available" },
+      });
+      return { ...savedConfig };
+    });
+
+    const view = render(<ModelsSection />);
+    const defaultSelect = await view.findByRole("combobox", { name: "Default chat model" });
+    expect(within(defaultSelect).queryByRole("option", { name: "MiniMax M3 (Venice)" })).toBeNull();
+
+    await act(async () => fireEvent.click(view.getByRole("checkbox", { name: "Prefer Surplus" })));
+    await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
+
+    await waitFor(() => expect(
+      within(defaultSelect).getByRole("option", { name: "MiniMax M3 (Venice)" }),
+    ).toBeTruthy());
+    expect(within(view.getByRole("combobox", { name: "Add fallback model" }))
+      .getByRole("option", { name: "MiniMax M3 (Venice)" })).toBeTruthy();
+    for (const name of ["Conductor / floor-manager model", "Stenographer model", "Reflection / Sleep model"]) {
+      expect(within(view.getByRole("combobox", { name }))
+        .queryByRole("option", { name: /MiniMax M3 \(Venice\)/ })).toBeNull();
+    }
+    expect(view.getByText("Saved. Live now.")).toBeTruthy();
   });
 
   test("turns Surplus off without resubmitting retained model selections", async () => {
