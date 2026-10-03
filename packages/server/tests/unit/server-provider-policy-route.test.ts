@@ -51,10 +51,20 @@ function routeHarness(deps: ServerProviderPolicyRouteDeps = {}) {
 const requestBase = { ip: "127.0.0.1", headers: {} };
 
 describe("server-provider-policy update validation", () => {
-  test("accepts an exact boolean body", () => {
+  test("accepts either field or both as a nonempty partial update", () => {
     expect(parseServerProviderPolicyUpdateBodyForTests({
       allowPersonalProviderKeys: true,
-    })).toEqual({ ok: true, allowPersonalProviderKeys: true });
+    })).toEqual({ ok: true, patch: { allowPersonalProviderKeys: true } });
+    expect(parseServerProviderPolicyUpdateBodyForTests({
+      fundingPreference: "server_first",
+    })).toEqual({ ok: true, patch: { fundingPreference: "server_first" } });
+    expect(parseServerProviderPolicyUpdateBodyForTests({
+      allowPersonalProviderKeys: false,
+      fundingPreference: "personal_first",
+    })).toEqual({
+      ok: true,
+      patch: { allowPersonalProviderKeys: false, fundingPreference: "personal_first" },
+    });
   });
 
   test.each([
@@ -63,6 +73,7 @@ describe("server-provider-policy update validation", () => {
     { label: "empty object", body: {} },
     { label: "string value", body: { allowPersonalProviderKeys: "true" } },
     { label: "null value", body: { allowPersonalProviderKeys: null } },
+    { label: "invalid funding preference", body: { fundingPreference: "automatic" } },
     { label: "unknown extra field", body: { allowPersonalProviderKeys: false, extra: true } },
     { label: "unknown field", body: { unknown: false } },
   ])("rejects malformed or non-strict body: $label", ({ body }) => {
@@ -76,7 +87,10 @@ describe("server-provider-policy route", () => {
     let storageCalls = 0;
     const call = routeHarness({
       getCapabilities: async () => { capabilityCalls += 1; return []; },
-      getPolicy: async () => { storageCalls += 1; return { allowPersonalProviderKeys: false }; },
+      getPolicy: async () => {
+        storageCalls += 1;
+        return { allowPersonalProviderKeys: false, fundingPreference: "personal_first" };
+      },
     });
     expect(await call("GET", requestBase)).toEqual({
       status: 401,
@@ -92,11 +106,14 @@ describe("server-provider-policy route", () => {
     const reader = routeHarness({
       getCapabilities: async () => ["read_server_settings"],
       getDb,
-      getPolicy: async () => ({ allowPersonalProviderKeys: false }),
+      getPolicy: async () => ({
+        allowPersonalProviderKeys: false,
+        fundingPreference: "personal_first",
+      }),
     });
     expect(await reader("GET", { ...requestBase, sessionUserId: "reader" })).toEqual({
       status: 200,
-      body: { allowPersonalProviderKeys: false },
+      body: { allowPersonalProviderKeys: false, fundingPreference: "personal_first" },
     });
     expect(await reader("POST", {
       ...requestBase,
@@ -107,11 +124,14 @@ describe("server-provider-policy route", () => {
     const manager = routeHarness({
       getCapabilities: async () => ["manage_server_settings"],
       getDb,
-      getPolicy: async () => ({ allowPersonalProviderKeys: true }),
+      getPolicy: async () => ({
+        allowPersonalProviderKeys: true,
+        fundingPreference: "server_first",
+      }),
     });
     expect(await manager("GET", { ...requestBase, sessionUserId: "manager" })).toEqual({
       status: 200,
-      body: { allowPersonalProviderKeys: true },
+      body: { allowPersonalProviderKeys: true, fundingPreference: "server_first" },
     });
   });
 
@@ -120,7 +140,10 @@ describe("server-provider-policy route", () => {
     const call = routeHarness({
       getCapabilities: async () => allowed ? ["read_server_settings"] : [],
       getDb: () => ({}) as never,
-      getPolicy: async () => ({ allowPersonalProviderKeys: false }),
+      getPolicy: async () => ({
+        allowPersonalProviderKeys: false,
+        fundingPreference: "personal_first",
+      }),
     });
     const request = { ...requestBase, sessionUserId: "reader" };
     expect((await call("GET", request)).status).toBe(200);
@@ -132,7 +155,10 @@ describe("server-provider-policy route", () => {
     let storageCalls = 0;
     const call = routeHarness({
       getCapabilities: async () => ["manage_server_settings"],
-      getPolicy: async () => { storageCalls += 1; return { allowPersonalProviderKeys: false }; },
+      getPolicy: async () => {
+        storageCalls += 1;
+        return { allowPersonalProviderKeys: false, fundingPreference: "personal_first" };
+      },
     });
     expect(await call("POST", {
       ...requestBase,
@@ -140,14 +166,17 @@ describe("server-provider-policy route", () => {
       body: { allowPersonalProviderKeys: true, extra: false },
     })).toEqual({
       status: 422,
-      body: { error: "only allowPersonalProviderKeys is writable" },
+      body: { error: "only allowPersonalProviderKeys and fundingPreference are writable" },
     });
     expect(storageCalls).toBe(0);
   });
 
   test("persists on and off before responding and audits actor and effective values", async () => {
-    let stored = false;
-    const writes: boolean[] = [];
+    let stored = {
+      allowPersonalProviderKeys: false,
+      fundingPreference: "personal_first" as "personal_first" | "server_first",
+    };
+    const writes: unknown[] = [];
     const events: Record<string, unknown>[] = [];
     let unprotectedReads = 0;
     const call = routeHarness({
@@ -155,25 +184,40 @@ describe("server-provider-policy route", () => {
       getDb: () => ({}) as never,
       getPolicy: async () => {
         unprotectedReads += 1;
-        return { allowPersonalProviderKeys: stored };
+        return stored;
       },
       upsertPolicy: async (_db, next) => {
-        writes.push(next.allowPersonalProviderKeys);
+        writes.push(next);
         const previous = stored;
-        stored = next.allowPersonalProviderKeys;
+        stored = { ...stored, ...next };
         return {
-          previous: { allowPersonalProviderKeys: previous },
-          effective: { allowPersonalProviderKeys: stored },
+          previous,
+          effective: stored,
         };
       },
       auditEvent: (_request, event) => { events.push(event); },
     });
     const request = { ...requestBase, sessionUserId: "manager" };
     expect(await call("POST", { ...request, body: { allowPersonalProviderKeys: true } }))
-      .toEqual({ status: 200, body: { allowPersonalProviderKeys: true } });
+      .toEqual({
+        status: 200,
+        body: { allowPersonalProviderKeys: true, fundingPreference: "personal_first" },
+      });
+    expect(await call("POST", { ...request, body: { fundingPreference: "server_first" } }))
+      .toEqual({
+        status: 200,
+        body: { allowPersonalProviderKeys: true, fundingPreference: "server_first" },
+      });
     expect(await call("POST", { ...request, body: { allowPersonalProviderKeys: false } }))
-      .toEqual({ status: 200, body: { allowPersonalProviderKeys: false } });
-    expect(writes).toEqual([true, false]);
+      .toEqual({
+        status: 200,
+        body: { allowPersonalProviderKeys: false, fundingPreference: "server_first" },
+      });
+    expect(writes).toEqual([
+      { allowPersonalProviderKeys: true },
+      { fundingPreference: "server_first" },
+      { allowPersonalProviderKeys: false },
+    ]);
     expect(unprotectedReads).toBe(0);
     expect(events).toEqual([
       {
@@ -181,12 +225,24 @@ describe("server-provider-policy route", () => {
         actorId: "manager",
         previous: false,
         effective: true,
+        previousFundingPreference: "personal_first",
+        effectiveFundingPreference: "personal_first",
+      },
+      {
+        kind: "server_provider_policy_changed",
+        actorId: "manager",
+        previous: true,
+        effective: true,
+        previousFundingPreference: "personal_first",
+        effectiveFundingPreference: "server_first",
       },
       {
         kind: "server_provider_policy_changed",
         actorId: "manager",
         previous: true,
         effective: false,
+        previousFundingPreference: "server_first",
+        effectiveFundingPreference: "server_first",
       },
     ]);
   });
@@ -203,7 +259,10 @@ describe("server-provider-policy route", () => {
     const writeCall = routeHarness({
       getCapabilities: async () => ["manage_server_settings"],
       getDb: () => ({}) as never,
-      getPolicy: async () => ({ allowPersonalProviderKeys: false }),
+      getPolicy: async () => ({
+        allowPersonalProviderKeys: false,
+        fundingPreference: "personal_first",
+      }),
       upsertPolicy: async () => { throw new Error("offline"); },
     });
     expect(await writeCall("POST", {
@@ -218,7 +277,10 @@ describe("server-provider-policy route", () => {
     const call = routeHarness({
       getCapabilities: async () => ["manage_server_settings"],
       getDb: () => ({}) as never,
-      getPolicy: async () => ({ allowPersonalProviderKeys: false }),
+      getPolicy: async () => ({
+        allowPersonalProviderKeys: false,
+        fundingPreference: "personal_first",
+      }),
       upsertPolicy: async () => { throw new Error("write failed"); },
       auditEvent: (_request, event) => { events.push(event); },
     });

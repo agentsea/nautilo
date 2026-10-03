@@ -104,7 +104,7 @@ async function makeHarness(options: HarnessOptions = {}) {
     getDb: () => db,
     getPolicy: async () => {
       maybeFail("policy");
-      return { allowPersonalProviderKeys: await (options.policy?.() ?? true) };
+      return { allowPersonalProviderKeys: await (options.policy?.() ?? true), fundingPreference: "personal_first" };
     },
     getCapabilities: async (userId) => {
       maybeFail("capabilities");

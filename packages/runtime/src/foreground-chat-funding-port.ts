@@ -85,6 +85,7 @@ export async function openForegroundChatFundingSessionForInvocation(input: Reado
   modelId: string;
   roomId: string;
   agentId: string;
+  protectedTurn?: boolean;
 }>): Promise<ForegroundChatFundingSession | null> {
   if (
     installedPort === undefined
@@ -103,22 +104,40 @@ export async function openForegroundChatFundingSessionForInvocation(input: Reado
     || input.causalHumanUserId !== humanUserId
   ) throw new ForegroundChatFundingAuthorityError();
 
-  return installedPort.openSession({
+  const session = await installedPort.openSession({
     humanUserId,
     modelId: input.modelId,
     roomId: input.roomId,
     agentId: input.agentId,
     entrypoint: input.entrypoint,
   });
+  const hasResources = [
+    "attachmentTextBlocks", "retainedAttachmentIds", "artifactRefs", "focusedResources",
+  ].some((field) => Array.isArray(input.jobInput[field]) && input.jobInput[field].length > 0)
+    || input.jobInput["activeMiniApp"] != null
+    || input.jobInput["liveMiniAppSession"] != null;
+  assertForegroundChatFundingWorkloadSupported(session, {
+    hasImages: Array.isArray(input.jobInput["multimodalImages"])
+      && input.jobInput["multimodalImages"].length > 0,
+    voiceRequested: input.jobInput["voiceMode"] === true,
+    hasResources,
+    protectedTurn: input.protectedTurn === true,
+  });
+  return session;
 }
 
 /** Refuse unsupported paid auxiliaries before vision, voice, or chat dispatch. */
 export function assertForegroundChatFundingWorkloadSupported(
   session: ForegroundChatFundingSession | null,
-  input: Readonly<{ hasImages: boolean; voiceRequested: boolean }>,
+  input: Readonly<{
+    hasImages: boolean;
+    voiceRequested: boolean;
+    hasResources?: boolean;
+    protectedTurn?: boolean;
+  }>,
 ): void {
   if (
     session?.kind === "personal"
-    && (input.hasImages || input.voiceRequested)
+    && (input.hasImages || input.voiceRequested || input.hasResources || input.protectedTurn)
   ) throw new ForegroundChatFundingUnsupportedWorkloadError();
 }

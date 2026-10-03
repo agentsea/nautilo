@@ -16,7 +16,7 @@ describe("admin.serverProviderPolicy HTTP contract", () => {
     globalThis.fetch = realFetch;
   });
 
-  test("get reads and validates the persisted policy", async () => {
+  test("get defaults an older response to personal-first", async () => {
     let seenUrl = "";
     let seenMethod = "";
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -30,10 +30,13 @@ describe("admin.serverProviderPolicy HTTP contract", () => {
 
     expect(seenMethod).toBe("GET");
     expect(seenUrl).toBe("http://127.0.0.1:9/api/admin/server-provider-policy");
-    expect(result).toEqual({ allowPersonalProviderKeys: false });
+    expect(result).toEqual({
+      allowPersonalProviderKeys: false,
+      fundingPreference: "personal_first",
+    });
   });
 
-  test("set posts the exact boolean policy and validates the response", async () => {
+  test("set posts an exact partial policy and validates the response", async () => {
     let seenUrl = "";
     let seenMethod = "";
     let seenBody: unknown;
@@ -41,18 +44,44 @@ describe("admin.serverProviderPolicy HTTP contract", () => {
       seenUrl = requestUrl(input);
       seenMethod = init?.method ?? "GET";
       seenBody = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
-      return Response.json({ allowPersonalProviderKeys: true });
+      return Response.json({
+        allowPersonalProviderKeys: true,
+        fundingPreference: "server_first",
+      });
     }) as typeof fetch;
 
     const client = new NautiloApiClient("http://127.0.0.1:9");
     const result = await client.admin.serverProviderPolicy.set({
-      allowPersonalProviderKeys: true,
+      fundingPreference: "server_first",
     });
 
     expect(seenMethod).toBe("POST");
     expect(seenUrl).toBe("http://127.0.0.1:9/api/admin/server-provider-policy");
-    expect(seenBody).toEqual({ allowPersonalProviderKeys: true });
-    expect(result).toEqual({ allowPersonalProviderKeys: true });
+    expect(seenBody).toEqual({ fundingPreference: "server_first" });
+    expect(result).toEqual({
+      allowPersonalProviderKeys: true,
+      fundingPreference: "server_first",
+    });
+  });
+
+  test("rejects empty and unknown request fields before fetch", async () => {
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return Response.json({ allowPersonalProviderKeys: false });
+    }) as unknown as typeof fetch;
+
+    const client = new NautiloApiClient("http://127.0.0.1:9");
+    for (const input of [{}, { unknown: true }]) {
+      let caught: unknown;
+      try {
+        await client.admin.serverProviderPolicy.set(input as never);
+      } catch (cause) {
+        caught = cause;
+      }
+      expect(caught).toBeInstanceOf(Error);
+    }
+    expect(fetchCalls).toBe(0);
   });
 
   test("rejects malformed response shapes", async () => {

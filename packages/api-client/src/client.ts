@@ -1295,7 +1295,16 @@ export const serverContextConfigSchema = z.object({
 
 export const serverProviderPolicySchema = z.object({
   allowPersonalProviderKeys: z.boolean(),
+  fundingPreference: z.enum(["personal_first", "server_first"]).default("personal_first"),
 }).strict();
+
+export const serverProviderPolicyUpdateSchema = z.object({
+  allowPersonalProviderKeys: z.boolean().optional(),
+  fundingPreference: z.enum(["personal_first", "server_first"]).optional(),
+}).strict().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: "At least one server provider policy field is required" },
+);
 
 // shared rooms owned by a user that block their deletion, with the
 // members eligible to receive ownership (non-federated humans).
@@ -1471,6 +1480,8 @@ export type AdminUserDeleteResponse = {
 export type ServerModelConfig = z.infer<typeof serverModelConfigSchema>;
 export type ServerContextConfig = z.infer<typeof serverContextConfigSchema>;
 export type ServerProviderPolicy = z.infer<typeof serverProviderPolicySchema>;
+export type ServerProviderFundingPreference = ServerProviderPolicy["fundingPreference"];
+export type ServerProviderPolicyUpdate = z.infer<typeof serverProviderPolicyUpdateSchema>;
 export type OwnedSharedRoom = z.infer<typeof ownedSharedRoomSchema>;
 export type OwnedSharedRoomsResponse = z.infer<typeof ownedSharedRoomsResponseSchema>;
 export type {
@@ -4135,11 +4146,11 @@ export class NautiloApiClient {
           defaultErrorPrefix: "GET /api/admin/server-provider-policy",
         });
       },
-      set: async (input: ServerProviderPolicy): Promise<ServerProviderPolicy> => {
+      set: async (input: ServerProviderPolicyUpdate): Promise<ServerProviderPolicy> => {
         return this.request<ServerProviderPolicy>({
           method: "POST",
           path: "/api/admin/server-provider-policy",
-          body: serverProviderPolicySchema.parse(input),
+          body: serverProviderPolicyUpdateSchema.parse(input),
           schema: serverProviderPolicySchema,
           defaultErrorPrefix: "POST /api/admin/server-provider-policy",
         });

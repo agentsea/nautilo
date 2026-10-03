@@ -535,6 +535,8 @@ export interface ServerProviderPolicyChangedAuditEvent extends CommonAuditFields
   readonly kind: "server_provider_policy_changed";
   readonly previous: boolean;
   readonly effective: boolean;
+  readonly previousFundingPreference: "personal_first" | "server_first";
+  readonly effectiveFundingPreference: "personal_first" | "server_first";
 }
 
 /** Server key lifecycle metadata only; configuration audit retains the operation. */

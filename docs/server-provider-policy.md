@@ -1,31 +1,50 @@
-# Personal provider keys server policy
+# Provider funding policy contract
 
-The server has one durable **Allow personal provider keys** switch. It is off
-when a server is first installed or upgraded, including when the policy row has
-not yet been written. The current value lives in the server database; it is
-not an environment or browser-local setting. Later BYOK operations must read
-it at their admission boundaries.
+`server_provider_policy` is the database-backed singleton owned by the Server.
+Its fields are `allowPersonalProviderKeys` and `fundingPreference`
+(`personal_first` or `server_first`). A missing row resolves to personal keys
+disabled and personal-first. Storage errors propagate; they are not missing-row
+defaults. The additive funding-preference migration preserves the existing
+allow flag and gives existing rows personal-first.
 
-An administrator can inspect it in **Admin → Server**. A Human with
-`manage_server_settings` can change it there; readers with
-`read_server_settings` see the persisted value without an edit control. The
-server enforces the same permissions on the API. An unsuccessful save leaves
-the displayed persisted value intact and reports an error so the operator can
-retry. The admin API is `GET /api/admin/server-provider-policy` and
-`POST /api/admin/server-provider-policy` with the exact boolean body
-`{"allowPersonalProviderKeys": true | false}`.
+## API and authority
 
-This switch is a release control, not a personal-key setup flow. In this
-release, turning it on does not let a user save a provider key, select a
-personal model, or run chat with personal funding. It does not add people to
-Community or change existing server-funded calls. Leave it off on production
-servers until a supported personal-key journey has been qualified. Use an
-isolated test instance to verify the on/off state and restart persistence.
+`GET /api/admin/server-provider-policy` requires `read_server_settings` or
+`manage_server_settings`. `POST` requires `manage_server_settings` and accepts
+a nonempty subset of the two fields. Both return the complete policy. Unknown
+fields and invalid values are rejected. Updates lock the singleton row,
+preserve omitted fields, and audit the previous and effective policy.
 
-When later personal-funded operations are available, they must require both
-this live server policy and the initiating Human's
-`use_personal_provider_credentials` Capability. A missing row means off; an
-unavailable policy store must not be treated as enabled. Turning the switch
-off must never make a BYOK-only Human fall back to a server credential. A
-database restore also restores the saved switch value, so inspect it before
-opening a restored server to users.
+Legacy switch-only requests preserve a saved funding preference. An older
+strict response decoder does not accept the extended response; a loaded older
+Workbench must refresh after upgrade. The current client defaults a missing
+funding field in an older server response to personal-first. Older binaries
+retain their original personal-first behavior after rollback and cannot enforce
+a stored server-first preference.
+
+## Runtime ownership
+
+Fresh supported own-Genie private-Room text-chat admission resolves the selected
+model's provider route through `resolveModelFunding`. The live enable flag and
+`use_personal_provider_credentials` govern personal funding;
+`use_server_provider_credentials` governs server funding. Priority grants no
+Capability. With both matching sources permitted and configured, the saved
+preference selects the source. Exclusive routes remain available through the
+caller-specific union of the signed catalogue under either preference.
+Server-first usable server routes require no personal-row lookup or custody.
+
+Admitted operations retain their source through retry and model fallback.
+Provider, quota, credential or custody failures do not authorize payment
+failover. Live switch, Capability, ownership and credential-revision checks
+remain authoritative. Usage records the actual funding source; decrypted keys
+stay at the trusted provider boundary, outside Job and checkpoint state.
+
+This policy does not extend personal funding to background work or paid
+auxiliaries. Soul setup, embeddings and shared-memory maintenance retain their
+existing server service policies. Database restore restores the saved policy;
+restore does not establish credential custody readiness.
+
+Tests cover policy storage/concurrency, authenticated routes and client
+contracts, funding resolution, dispatch, catalogue union and foreground
+execution. Provider-boundary integration tests use distinct synthetic server
+and personal credentials with a fake transport.
