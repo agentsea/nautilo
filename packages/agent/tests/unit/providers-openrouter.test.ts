@@ -71,31 +71,30 @@ describe("createUniversalModel OpenRouter routing", () => {
     }).apiKey).toBe("sk-or-v1-explicit-key");
   });
 
-  test("managed Gateway takes precedence and does not forward direct OpenRouter attribution", () => {
+  test("retired managed Gateway variables do not redirect OpenRouter", () => {
     process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
     process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1/";
-    process.env["OPENROUTER_API_KEY"] = "sk-or-v1-direct-key-must-not-be-used";
+    process.env["OPENROUTER_API_KEY"] = "sk-or-v1-direct-key";
     process.env["OPENROUTER_HTTP_REFERER"] = "https://nautilo.local";
 
     expect(buildOpenRouterCreateModelOptions("openrouter:openai/gpt-5.4-mini", {
-      apiKey: "sk-or-v1-explicit-key-must-not-be-used",
+      apiKey: "sk-or-v1-explicit-key",
     })).toEqual({
       modelId: "openrouter:openai/gpt-5.4-mini",
-      apiKey: `ngw_${"a".repeat(43)}`,
-      baseUrl: "https://gateway.qa.example/v1",
-      maxRetries: 0,
-      forbidRedirects: true,
+      apiKey: "sk-or-v1-explicit-key",
+      baseUrl: "https://openrouter.ai/api/v1",
+      headers: { "HTTP-Referer": "https://nautilo.local" },
     });
   });
 
-  test("present malformed managed Gateway configuration fails closed", () => {
+  test("retired managed Gateway variables do not block direct OpenRouter", () => {
     process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
-    process.env["OPENROUTER_API_KEY"] = "sk-or-v1-direct-key-must-not-be-used";
+    process.env["OPENROUTER_API_KEY"] = "sk-or-v1-direct-key";
 
-    expect(() => buildOpenRouterCreateModelOptions(
+    expect(buildOpenRouterCreateModelOptions(
       "openrouter:openai/gpt-5.4-mini",
       {},
-    )).toThrow("NAUTILO_MANAGED_GATEWAY_BASE_URL");
+    ).apiKey).toBe("sk-or-v1-direct-key");
   });
 
   test("sends only a valid opaque Room UUID as session_id", () => {
@@ -162,46 +161,6 @@ describe("OpenRouter error labeling", () => {
     const model: ChatModel = { invoke: async () => "unused", bindTools: () => bound };
     const wrapped = withGatewayErrorLabel(model, "OpenRouter");
     expect(wrapped.bindTools?.([]).invoke([])).rejects.toThrow("OpenRouter: tool request failed");
-  });
-
-  test("managed Gateway labeling removes upstream diagnostics while preserving status", async () => {
-    const raw = Object.assign(
-      new Error("provider body includes private-canary and bearer-like diagnostics"),
-      { status: 502 },
-    );
-    const model: ChatModel = {
-      invoke: async () => { throw raw; },
-      bindTools: () => ({ invoke: async () => { throw raw; } }),
-    };
-    const guarded = withGatewayErrorLabel(model, "Nautilo Gateway", { sanitize: true });
-
-    for (const target of [guarded, guarded.bindTools?.([])]) {
-      const error: unknown = await target?.invoke([]).catch((caught: unknown) => caught);
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toBe(
-        "Nautilo Gateway: The Gateway is temporarily unavailable.",
-      );
-      expect((error as Error).message).not.toContain("private-canary");
-      expect((error as Error & { status?: number }).status).toBe(502);
-      expect((error as Error).cause).toBeUndefined();
-    }
-  });
-
-  test("managed Gateway labeling sanitizes timeout diagnostics", async () => {
-    const raw = Object.assign(new Error("timeout includes private-canary diagnostics"), {
-      name: "ProviderTimeoutError",
-      code: "NAUTILO_PROVIDER_TIMEOUT",
-    });
-    const model: ChatModel = { invoke: async () => { throw raw; } };
-    const guarded = withGatewayErrorLabel(model, "Nautilo Gateway", { sanitize: true });
-
-    const error: unknown = await guarded.invoke([]).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toBe(
-      "Nautilo Gateway: The Gateway request was cancelled or timed out.",
-    );
-    expect((error as Error).message).not.toContain("private-canary");
-    expect((error as Error).cause).toBeUndefined();
   });
 
   test("labels stream failures and preserves retriable status", async () => {

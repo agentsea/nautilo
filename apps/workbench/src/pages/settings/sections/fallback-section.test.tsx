@@ -23,7 +23,7 @@ mock.module("../../../hooks/use-can", () => ({
 
 mock.module("../../../lib/api", () => ({
   apiClient: {
-    getModels: async () => [
+    getCallerModels: async () => [
       {
         id: "openai:gpt-5.4-mini",
         displayName: "GPT-5.4 mini",

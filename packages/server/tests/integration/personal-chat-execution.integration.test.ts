@@ -3,6 +3,7 @@ import {
   and,
   desc,
   eq,
+  getServerProviderPolicy,
   jobs,
   llmUsageEvents,
   sessionMessages,
@@ -14,36 +15,38 @@ import { registerAllTools } from "@nautilo/agent";
 import { setupOwnerAppFixture } from "./helpers/app-fixture";
 import { authedInject } from "./helpers/request-helpers";
 
-const MODEL = "openrouter:moonshotai/kimi-k2.6";
+const MODEL = "openrouter:moonshotai/kimi-k3";
 const PERSONAL_KEY = "sk-synthetic-personal-chat-transport";
-const SERVER_KEY = "sk-synthetic-server-must-not-be-used";
+const SERVER_KEY = "sk-synthetic-server-chat-transport";
 
-test.each([false, true])("authenticated foreground chat uses the caller's key through the real graph (server keys present: %s)", async (serverKeysPresent) => {
+test.each([
+  { personalKeysPresent: true, serverKeysPresent: false, preference: "personal_first" as const, expectedFunding: "personal" },
+  { personalKeysPresent: true, serverKeysPresent: true, preference: "personal_first" as const, expectedFunding: "personal" },
+  { personalKeysPresent: true, serverKeysPresent: true, preference: "server_first" as const, expectedFunding: "server" },
+  { personalKeysPresent: true, serverKeysPresent: false, preference: "server_first" as const, expectedFunding: "personal" },
+  { personalKeysPresent: false, serverKeysPresent: true, preference: "personal_first" as const, expectedFunding: "server" },
+  { personalKeysPresent: false, serverKeysPresent: true, preference: "server_first" as const, expectedFunding: "server" },
+])("foreground graph uses $expectedFunding funding with $preference (server: $serverKeysPresent, personal: $personalKeysPresent)", async ({ personalKeysPresent, serverKeysPresent, preference, expectedFunding }) => {
   const priorCatalog = getToolCatalog();
   const catalog = new ToolCatalog();
   registerAllTools(catalog);
   initToolCatalog(catalog);
   const fx = await setupOwnerAppFixture({
-    suiteName: `personal-chat-execution-${serverKeysPresent ? "both" : "personal-only"}`,
+    suiteName: `chat-priority-${preference}-${serverKeysPresent ? "server" : "no-server"}-${personalKeysPresent ? "personal" : "no-personal"}`,
     withDefaultAgentGraph: true,
   });
   if (!fx.defaultRoomId || !fx.defaultAgentId) throw new Error("owner Room fixture missing");
   const bearer = await fx.mintOwnerBearer();
+  const priorPolicy = await getServerProviderPolicy(fx.db);
   const priorFetch = globalThis.fetch;
   const priorDirect = process.env["OPENROUTER_API_KEY"];
-  const priorGateway = process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
-  const priorGatewayUrl = process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
   const requests: Array<{ authorization: string | null; url: string; body: string }> = [];
   let credentialRevision: number | null = null;
 
   if (serverKeysPresent) {
     process.env["OPENROUTER_API_KEY"] = SERVER_KEY;
-    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"d".repeat(43)}`;
-    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1";
   } else {
     delete process.env["OPENROUTER_API_KEY"];
-    delete process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
-    delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
   }
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -62,12 +65,12 @@ test.each([false, true])("authenticated foreground chat uses the caller's key th
       const chunks = [
         {
           id: "chatcmpl-personal-integration", object: "chat.completion.chunk",
-          created: 1, model: "moonshotai/kimi-k2.6",
+          created: 1, model: "moonshotai/kimi-k3",
           choices: [{ index: 0, delta: { role: "assistant", content: "Synthetic personal chat answer." }, finish_reason: null }],
         },
         {
           id: "chatcmpl-personal-integration", object: "chat.completion.chunk",
-          created: 1, model: "moonshotai/kimi-k2.6",
+          created: 1, model: "moonshotai/kimi-k3",
           choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
           usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
         },
@@ -80,7 +83,7 @@ test.each([false, true])("authenticated foreground chat uses the caller's key th
       id: "chatcmpl-personal-integration",
       object: "chat.completion",
       created: 1,
-      model: "moonshotai/kimi-k2.6",
+      model: "moonshotai/kimi-k3",
       choices: [{
         index: 0,
         message: { role: "assistant", content: "Synthetic personal chat answer." },
@@ -91,14 +94,27 @@ test.each([false, true])("authenticated foreground chat uses the caller's key th
   }) as typeof fetch;
 
   try {
-    await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: true });
-    const saved = await authedInject(fx.app, {
-      method: "PUT", url: "/api/account/provider-credentials/openrouter",
-      bearer, payload: { apiKey: PERSONAL_KEY },
+    const policySave = await authedInject(fx.app, {
+      method: "POST", url: "/api/admin/server-provider-policy", bearer,
+      payload: { allowPersonalProviderKeys: true, fundingPreference: preference },
     });
-    expect(saved.statusCode).toBe(200);
-    expect(saved.body).not.toContain(PERSONAL_KEY);
-    credentialRevision = 1;
+    expect(policySave.statusCode).toBe(200);
+    expect(JSON.parse(policySave.body)).toEqual({ allowPersonalProviderKeys: true, fundingPreference: preference });
+    const legacySwitch = await authedInject(fx.app, {
+      method: "POST", url: "/api/admin/server-provider-policy", bearer,
+      payload: { allowPersonalProviderKeys: true },
+    });
+    expect(legacySwitch.statusCode).toBe(200);
+    expect(legacySwitch.json<{ fundingPreference: string }>().fundingPreference).toBe(preference);
+    if (personalKeysPresent) {
+      const saved = await authedInject(fx.app, {
+        method: "PUT", url: "/api/account/provider-credentials/openrouter",
+        bearer, payload: { apiKey: PERSONAL_KEY },
+      });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.body).not.toContain(PERSONAL_KEY);
+      credentialRevision = 1;
+    }
 
     const selected = await authedInject(fx.app, {
       method: "PUT",
@@ -106,7 +122,7 @@ test.each([false, true])("authenticated foreground chat uses the caller's key th
       bearer,
       payload: { selection: { modelId: MODEL } },
     });
-    expect(selected.statusCode).toBe(200);
+    expect(selected.statusCode, selected.body).toBe(200);
 
     const sent = await authedInject(fx.app, {
       method: "POST", url: "/api/chat", bearer,
@@ -141,7 +157,7 @@ test.each([false, true])("authenticated foreground chat uses the caller's key th
       })),
     })).toBe("completed");
     expect(requests).toHaveLength(1);
-    expect(requests[0]?.authorization).toBe(`Bearer ${PERSONAL_KEY}`);
+    expect(requests[0]?.authorization).toBe(`Bearer ${expectedFunding === "personal" ? PERSONAL_KEY : SERVER_KEY}`);
     expect(requests[0]?.url).toBe("https://openrouter.ai/api/v1/chat/completions");
     expect(requests[0]?.body).not.toContain(PERSONAL_KEY);
     expect(requests[0]?.body).not.toContain(SERVER_KEY);
@@ -156,26 +172,33 @@ test.each([false, true])("authenticated foreground chat uses the caller's key th
 
     const usage = await fx.db.select().from(llmUsageEvents)
       .where(and(eq(llmUsageEvents.userId, fx.ownerId), eq(llmUsageEvents.callType, "chat")));
-    expect(usage.some((event) => event.fundingKind === "personal"
-      && event.payerHumanId === fx.ownerId
-      && event.providerRoute === "openrouter"
-      && event.credentialRevision === 1)).toBe(true);
+    const chatUsage = usage.filter((event) => event.model === MODEL);
+    expect(chatUsage.length).toBeGreaterThan(0);
+    for (const event of chatUsage) {
+      expect(event.fundingKind).toBe(expectedFunding);
+      expect(event.providerRoute).toBe("openrouter");
+      if (expectedFunding === "personal") {
+        expect(event.payerHumanId).toBe(fx.ownerId);
+        expect(event.credentialRevision).toBe(1);
+        expect(event.credentialId).toBeTruthy();
+      } else {
+        expect(event.payerHumanId).toBeNull();
+        expect(event.credentialId).toBeNull();
+        expect(event.credentialRevision).toBeNull();
+      }
+    }
 
   } finally {
     globalThis.fetch = priorFetch;
     if (priorDirect === undefined) delete process.env["OPENROUTER_API_KEY"];
     else process.env["OPENROUTER_API_KEY"] = priorDirect;
-    if (priorGateway === undefined) delete process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
-    else process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = priorGateway;
-    if (priorGatewayUrl === undefined) delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
-    else process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = priorGatewayUrl;
     if (credentialRevision !== null) {
       await authedInject(fx.app, {
         method: "DELETE", url: "/api/account/provider-credentials/openrouter",
         bearer, payload: { expectedRevision: credentialRevision },
       });
     }
-    await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: false });
+    await upsertServerProviderPolicy(fx.db, priorPolicy);
     await fx.db.delete(llmUsageEvents).where(eq(llmUsageEvents.userId, fx.ownerId));
     await fx.cleanup();
     if (priorCatalog) initToolCatalog(priorCatalog);

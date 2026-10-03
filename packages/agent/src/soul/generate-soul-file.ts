@@ -2,10 +2,13 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { fromRuntimeConfig } from "@nautilo/config";
 import { warn } from "@nautilo/logger";
 import { createUniversalModel } from "../providers/universal";
+import { modelRouteProvider } from "../providers/model-route";
+import { resolveOpenRouterTransport } from "../providers/openrouter-transport";
 import { runWithUsageContext } from "../usage/usage-context";
 import { normalizeSoulFileInput, type SoulFileInput } from "./types";
 import { resolveModelRole } from "../config/model-role-resolution";
 import {
+  assertCanUseServerFundedOwnSoul,
   assertCanUseServerProviderCredentials,
   ServerProviderCredentialsDeniedError,
 } from "@nautilo/trust";
@@ -231,8 +234,14 @@ export type SoulGenerationStreamEvent =
 export interface SoulGenerationAuthorization {
   /** Exact initiating Human (`users.id`), never an Agent Actor id. */
   readonly humanUserId: string;
+  /** Ordinary tools retain the general server-key guard. */
+  readonly admission?: "server_capability" | "own_soul_setup_service";
+  /** Required for the own-Soul setup service exception. */
+  readonly agentId?: string;
   /** Test seam; production always resolves current canonical RBAC state. */
   readonly assertServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+  /** Test seam for the narrowly scoped own-Soul setup service. */
+  readonly assertOwnSoulSetupService?: typeof assertCanUseServerFundedOwnSoul;
 }
 
 async function assertSoulServerFunding(
@@ -242,8 +251,41 @@ async function assertSoulServerFunding(
   if (!humanUserId) {
     throw new ServerProviderCredentialsDeniedError("", "soul_generation");
   }
+  if (authorization.admission === "own_soul_setup_service") {
+    await (authorization.assertOwnSoulSetupService
+      ?? assertCanUseServerFundedOwnSoul)({
+        humanUserId,
+        agentId: authorization.agentId ?? "",
+        origin: "soul_generation",
+      });
+    return;
+  }
   await (authorization.assertServerProviderCredentials
     ?? assertCanUseServerProviderCredentials)(humanUserId, "soul_generation");
+}
+
+function soulUsageProviderRoute(modelId: string): string {
+  const provider = modelRouteProvider(modelId);
+  if (provider !== "openrouter") return provider;
+  return resolveOpenRouterTransport()?.kind ?? provider;
+}
+
+function soulUsageContext(
+  modelId: string,
+  authorization: SoulGenerationAuthorization,
+) {
+  return {
+    callType: "soul" as const,
+    userId: authorization.humanUserId,
+    funding: {
+      kind: "service" as const,
+      humanUserId: authorization.humanUserId,
+      providerRoute: soulUsageProviderRoute(modelId),
+    },
+    ...(authorization.agentId
+      ? { metadata: { agentId: authorization.agentId, service: "soul_generation" } }
+      : {}),
+  };
 }
 
 /**
@@ -322,7 +364,7 @@ export async function generateSoulFile(
     });
     const model = await createUniversalModel(modelId);
     await assertSoulServerFunding(authorization);
-    const response = (await runWithUsageContext({ callType: "soul" }, () =>
+    const response = (await runWithUsageContext(soulUsageContext(modelId, authorization), () =>
       model.invoke(
         [
           new SystemMessage(SOUL_FILE_SYSTEM_PROMPT),
@@ -377,14 +419,19 @@ export async function* generateSoulFileStream(
 
     let content = "";
     await assertSoulServerFunding(authorization);
-    const stream = await model.stream(
+    const usageContext = soulUsageContext(modelId, authorization);
+    const stream = await runWithUsageContext(usageContext, () => model.stream!(
       [
         new SystemMessage(SOUL_FILE_SYSTEM_PROMPT),
         new HumanMessage(buildSoulPrompt(normalized)),
       ],
       { signal: abortContext.signal },
-    );
-    for await (const chunk of stream) {
+    ));
+    const iterator = stream[Symbol.asyncIterator]();
+    for (;;) {
+      const next = await runWithUsageContext(usageContext, () => iterator.next());
+      if (next.done) break;
+      const chunk = next.value;
       const delta = extractMessageText((chunk as { content?: unknown }).content);
       if (!delta) continue;
       content += delta;
@@ -405,7 +452,8 @@ export async function* generateSoulFileStream(
       error: "Soul generation returned incomplete markdown; using fallback.",
       fallback,
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof ServerProviderCredentialsDeniedError) throw error;
     warnSoulGenerationFailure(modelId, abortContext.signal, true);
     yield { type: "error", error: SOUL_GENERATION_FAILED_MESSAGE, fallback };
   } finally {

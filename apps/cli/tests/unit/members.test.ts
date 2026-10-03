@@ -59,6 +59,7 @@ const ACTIVE_INVITE = {
   targetRoomId: null,
   targetRoomLabel: null,
   targetRoleSlug: "member",
+  codeAvailable: true,
 };
 
 const MEMBER_ID = "11111111-1111-4111-8111-111111111111";
@@ -587,7 +588,7 @@ describe("signed member lifecycle", () => {
       "members", "provision",
       "--handle", "newperson",
       "--display-name", "New Person",
-      "--role", "member",
+      "--role", "community",
       "--handoff-file", "/safe/provision.json",
       "--format", "json",
     ], {
@@ -606,7 +607,7 @@ describe("signed member lifecycle", () => {
     expect(provisionMember).toHaveBeenCalledWith({
       handle: "newperson",
       displayName: "New Person",
-      roleSlug: "member",
+      roleSlug: "community",
     }, "generated-provision-key");
     expect(handoff).toMatchObject({
       kind: "nautilo.provisioned-member-handoff",

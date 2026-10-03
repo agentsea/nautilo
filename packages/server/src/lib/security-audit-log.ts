@@ -535,6 +535,15 @@ export interface ServerProviderPolicyChangedAuditEvent extends CommonAuditFields
   readonly kind: "server_provider_policy_changed";
   readonly previous: boolean;
   readonly effective: boolean;
+  readonly previousFundingPreference: "personal_first" | "server_first";
+  readonly effectiveFundingPreference: "personal_first" | "server_first";
+}
+
+/** Server key lifecycle metadata only; configuration audit retains the operation. */
+export interface ServerProviderKeyChangedAuditEvent extends CommonAuditFields {
+  readonly kind: "server_provider_key_changed";
+  readonly provider: string;
+  readonly action: "deleted";
 }
 
 /** Credential lifecycle metadata only: no key, ciphertext, or provider response. */
@@ -882,6 +891,7 @@ export type SecurityAuditEvent =
   | UserDeletedAuditEvent
   | ServerModelConfigChangedAuditEvent
   | ServerProviderPolicyChangedAuditEvent
+  | ServerProviderKeyChangedAuditEvent
   | PersonalProviderCredentialAuditEvent
   | EncryptionTransitionPolicyChangedAuditEvent
   | EncryptionTransitionPolicyChangeRequestedAuditEvent

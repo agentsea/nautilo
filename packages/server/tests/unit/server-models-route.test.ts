@@ -827,7 +827,7 @@ test("embedding GET reports actual runtime selection and pending state after a f
   expect(refreshCount).toBe(1);
 });
 
-test("embedding GET marks OpenRouter routes available through Nautilo Gateway", async () => {
+test("embedding GET ignores retired managed Gateway settings without an OpenRouter key", async () => {
   const previousKey = process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
   const previousBase = process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
   const previousOpenRouter = process.env["OPENROUTER_API_KEY"];
@@ -846,9 +846,9 @@ test("embedding GET marks OpenRouter routes available through Nautilo Gateway", 
     });
     const result = await call("GET", { ...requestBase, sessionUserId: "viewer" });
     const body = result.body as { embeddingModels: { id: string; available: boolean }[] };
-    expect(body.embeddingModels
-      .filter((entry) => entry.id.startsWith("openrouter:"))
-      .every((entry) => entry.available)).toBe(true);
+    const openRouterModels = body.embeddingModels.filter((entry) => entry.id.startsWith("openrouter:"));
+    expect(openRouterModels.length).toBeGreaterThan(0);
+    expect(openRouterModels.every((entry) => !entry.available)).toBe(true);
   } finally {
     if (previousKey === undefined) delete process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
     else process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = previousKey;

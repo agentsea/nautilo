@@ -26,8 +26,8 @@
  *   - Nondelegable management caps may not appear in any custom Role
  *     bundle, even for an actor who holds them. This includes Owner-only
  *     server settings/security and the Owner/Admin uncontained-host policy.
- *   - Custom Role slugs cannot impersonate the six canonical ladder slugs;
- *     custom Group types use `custom:<slug>` and cannot impersonate the six
+ *   - Custom Role slugs cannot impersonate the seven canonical ladder slugs;
+ *     custom Group types use `custom:<slug>` and cannot impersonate the seven
  *     canonical Group types.
  *   - New custom Roles are `is_system:false`; custom Groups require a
  *     non-null owner and `is_system:false`.
@@ -334,7 +334,6 @@ export type CheckCode =
   | "owner_required"
   | "user_not_found"
   | "last_owner"
-  | "community_enrollment_unavailable"
   | "insufficient_moderation_scope"
   | "moderation_room_unavailable";
 
@@ -1378,9 +1377,6 @@ function evaluateGroupSetRoles(
     if (group.isSystem) checks.push(fail("protected_definition", "system group"));
     else checks.push(pass("protected_definition"));
     checks.push(...validateCustomRoleSlugs(state, op.roleSlugs));
-    if (group.members.length > 0 && op.roleSlugs.includes("community")) {
-      checks.push(fail("community_enrollment_unavailable"));
-    }
     const proposedBundle = bundleOfRoleSlugs(state, op.roleSlugs);
     checks.push(nondelegableCheck(proposedBundle));
     // Authority over BOTH current and proposed bundles.
@@ -1519,9 +1515,6 @@ function evaluateMembership(
     checks.push(fail("not_found", "group"));
   } else {
     checks.push(pass("not_found"));
-    if (op.kind === "membership.add" && (group.type === "communities" || group.roleSlugs.includes("community"))) {
-      checks.push(fail("community_enrollment_unavailable"));
-    }
     if (group.type === UNCONTAINED_HOST_COMMANDS_GRANTEE_GROUP_TYPE) {
       if (actorHeldManagementCaps.includes("manage_uncontained_host_commands")) {
         checks.push(pass("missing_manage_uncontained_host_commands"));

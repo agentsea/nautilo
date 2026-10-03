@@ -32,7 +32,10 @@ export {
   isRoomPendingAttentionEventForViewer,
 } from "./client";
 export type {
+  ServerProviderPolicy,
+  ServerProviderFundingPreference,
   CredentialMetadata,
+  PersonalProviderCatalogEntry,
   PutProviderCredentialInput,
   ProviderCredentialRevisionInput,
   PutProviderCredentialResponse,

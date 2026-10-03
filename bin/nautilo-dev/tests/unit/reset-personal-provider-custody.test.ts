@@ -127,7 +127,7 @@ describe("personal provider custody reset command", () => {
   test("requires the provider-key policy to be disabled and closes the handle", async () => {
     const output = captureOutput();
     const harness = installCommonMocks();
-    harness.policy.mockResolvedValue({ allowPersonalProviderKeys: true });
+    harness.policy.mockResolvedValue({ allowPersonalProviderKeys: true, fundingPreference: "personal_first" });
 
     expect(await resetPersonalProviderCustody(validOptions)).toBe(2);
     expect(harness.reset).not.toHaveBeenCalled();

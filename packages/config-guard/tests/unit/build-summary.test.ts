@@ -18,7 +18,6 @@ const PASSING_VALUES: Record<string, string> = {
   anthropic: `sk-ant-api03-${"a".repeat(50)}`,
   openai: `sk-proj-${"a".repeat(40)}`,
   openrouter: `sk-or-v1-${"a".repeat(40)}`,
-  "nautilo-gateway": `ngw_${"a".repeat(43)}`,
   gateway: "opaque-gateway-key-1234",
   google: `AIzaSy${"a".repeat(34)}`,
   fireworks: `fw_${"a".repeat(20)}`,
@@ -32,15 +31,12 @@ const ALL_LLM_ENV_VARS = getAllKeyDefinitions()
 
 describe("buildSummary().hasLlm derives from key-registry", () => {
   const saved: Record<string, string | undefined> = {};
-  const gatewayBaseUrlEnvVar = "NAUTILO_MANAGED_GATEWAY_BASE_URL";
 
   beforeEach(() => {
     for (const { envVar } of ALL_LLM_ENV_VARS) {
       saved[envVar] = process.env[envVar];
       delete process.env[envVar];
     }
-    saved[gatewayBaseUrlEnvVar] = process.env[gatewayBaseUrlEnvVar];
-    delete process.env[gatewayBaseUrlEnvVar];
   });
 
   afterEach(() => {
@@ -49,9 +45,6 @@ describe("buildSummary().hasLlm derives from key-registry", () => {
       if (prev === undefined) delete process.env[envVar];
       else process.env[envVar] = prev;
     }
-    const previousBaseUrl = saved[gatewayBaseUrlEnvVar];
-    if (previousBaseUrl === undefined) delete process.env[gatewayBaseUrlEnvVar];
-    else process.env[gatewayBaseUrlEnvVar] = previousBaseUrl;
   });
 
   test("hasLlm is false when no LLM env vars are set", async () => {
@@ -68,9 +61,6 @@ describe("buildSummary().hasLlm derives from key-registry", () => {
         );
       }
       process.env[envVar] = v;
-      if (id === "nautilo-gateway") {
-        process.env[gatewayBaseUrlEnvVar] = "https://gateway.example/v1";
-      }
       const r = await check({ validate: false });
       const keyReport = r.keys.find((k) => k.id === id);
       expect(keyReport?.status === "verified" || keyReport?.status === "present").toBe(true);
@@ -114,12 +104,10 @@ describe("buildSummary().hasConversion derives from cloudconvert key", () => {
 });
 
 describe("buildSummary().hasEmbeddings accepts qualified runtime paths", () => {
-  const envVars = ["OPENAI_API_KEY", "OPENROUTER_API_KEY", "NAUTILO_MANAGED_GATEWAY_API_KEY", "NAUTILO_MANAGED_GATEWAY_BASE_URL", "VENICE_API_KEY"] as const;
+  const envVars = ["OPENAI_API_KEY", "OPENROUTER_API_KEY", "VENICE_API_KEY"] as const;
   const saved: Record<(typeof envVars)[number], string | undefined> = {
     OPENAI_API_KEY: undefined,
     OPENROUTER_API_KEY: undefined,
-    NAUTILO_MANAGED_GATEWAY_API_KEY: undefined,
-    NAUTILO_MANAGED_GATEWAY_BASE_URL: undefined,
     VENICE_API_KEY: undefined,
   };
 
@@ -147,29 +135,6 @@ describe("buildSummary().hasEmbeddings accepts qualified runtime paths", () => {
   test("is true for Venice without OpenAI or OpenRouter", async () => {
     process.env["VENICE_API_KEY"] = "a".repeat(48);
     const result = await check({ validate: false });
-    expect(result.summary.hasEmbeddings).toBe(true);
-  });
-
-  test("is false for a Nautilo Gateway key without its API root", async () => {
-    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
-    const result = await check({ validate: false });
-    expect(result.summary.hasLlm).toBe(false);
-    expect(result.summary.hasEmbeddings).toBe(false);
-  });
-
-  test("is false for a Nautilo Gateway key with an invalid API root", async () => {
-    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
-    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "http://gateway.example/v1";
-    const result = await check({ validate: false });
-    expect(result.summary.hasLlm).toBe(false);
-    expect(result.summary.hasEmbeddings).toBe(false);
-  });
-
-  test("is true for a complete Nautilo Gateway credential tuple", async () => {
-    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
-    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.example/v1";
-    const result = await check({ validate: false });
-    expect(result.summary.hasLlm).toBe(true);
     expect(result.summary.hasEmbeddings).toBe(true);
   });
 

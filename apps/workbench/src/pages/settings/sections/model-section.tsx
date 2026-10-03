@@ -6,7 +6,11 @@ import {
 } from "@nautilo/api-client/browser";
 import type { KeyReport } from "@nautilo/config-guard";
 import { apiClient } from "../../../lib/api";
-import { isSelectableModel, mergeModelRows } from "../../../lib/model-availability";
+import { isSelectableModel } from "../../../lib/model-availability";
+import {
+  loadCallerModelRows,
+  PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT,
+} from "../../../lib/caller-model-availability";
 import { useCan } from "../../../hooks/use-can";
 import { useProfile } from "../../../hooks/use-profile";
 import {
@@ -42,7 +46,6 @@ const LLM_KEY_IDS = new Set<string>([
   "anthropic",
   "openai",
   "openrouter",
-  "nautilo-gateway",
   "gateway",
   "google",
   "fireworks",
@@ -87,6 +90,13 @@ export function ModelSection({ showProviderKeyStatus = true }: { showProviderKey
   const sectionTitle = `Default model for ${agentName} (per-Agent)`;
   const can = useCan();
   const canReadServerModels = can("read_server_settings");
+  const canUsePersonalProviderCredentials = can("use_personal_provider_credentials");
+  const canManageServerProviderCredentials =
+    can("manage_connection_providers") || can("manage_server_settings");
+  const showServerProviderKeyStatus =
+    showProviderKeyStatus &&
+    canManageServerProviderCredentials &&
+    !canUsePersonalProviderCredentials;
   // M129 — the agent's default model is PERSONAL, per-agent config (it
   // lives on the viewer's own profile, same as fallback), NOT a server
   // setting. Gate on owning this Agent (per-agent `viewerRole === "owner"`,
@@ -101,6 +111,7 @@ export function ModelSection({ showProviderKeyStatus = true }: { showProviderKey
   const [loadError, setLoadError] = useState<string | null>(null);
   const [save, setSave] = useState<SaveState>("idle");
   const [keyReports, setKeyReports] = useState<KeyReport[] | null>(null);
+  const [modelRefresh, setModelRefresh] = useState(0);
   /** True after the user changes draft; false after a successful save — avoids clobbering edits when profile refetches. */
   const draftDirtyRef = useRef(false);
   const groupId = useId();
@@ -113,19 +124,21 @@ export function ModelSection({ showProviderKeyStatus = true }: { showProviderKey
 
   useEffect(() => {
     if (!enabled) return;
+    const refresh = () => setModelRefresh((revision) => revision + 1);
+    window.addEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, refresh);
+  }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     void (async () => {
       setLoadError(null);
       try {
         const retainedIds = profile?.defaultModel ? [profile.defaultModel] : [];
-        const [raw, retained] = await Promise.all([
-          apiClient.getModels(),
-          retainedIds.length > 0
-            ? apiClient.resolveRetainedModels(retainedIds)
-            : Promise.resolve([]),
-        ]);
+        const rows = await loadCallerModelRows(apiClient, retainedIds);
         if (cancelled) return;
-        setModels(mergeModelRows(raw.filter(isSelectableModel), retained));
+        setModels(rows);
       } catch (e) {
         if (!cancelled) {
           setLoadError(e instanceof Error ? e.message : "Failed to load models");
@@ -135,10 +148,10 @@ export function ModelSection({ showProviderKeyStatus = true }: { showProviderKey
     return () => {
       cancelled = true;
     };
-  }, [enabled, profile?.defaultModel]);
+  }, [enabled, modelRefresh, profile?.agentIdentity, profile?.defaultModel]);
 
   useEffect(() => {
-    if (!enabled || !showProviderKeyStatus) {
+    if (!enabled || !showServerProviderKeyStatus) {
       setKeyReports([]);
       return;
     }
@@ -160,7 +173,7 @@ export function ModelSection({ showProviderKeyStatus = true }: { showProviderKey
     return () => {
       cancelled = true;
     };
-  }, [enabled, showProviderKeyStatus]);
+  }, [enabled, showServerProviderKeyStatus]);
 
   useEffect(() => {
     if (!enabled || !profile) return;
@@ -227,7 +240,7 @@ export function ModelSection({ showProviderKeyStatus = true }: { showProviderKey
       ? keyReports.find((k) => k.id === draftTargetProvider)
       : undefined;
   const showKeyHint =
-    showProviderKeyStatus &&
+    showServerProviderKeyStatus &&
     draftTargetProvider !== null &&
     draftTargetProvider !== "unknown" &&
     LLM_KEY_IDS.has(draftTargetProvider);
@@ -315,8 +328,25 @@ export function ModelSection({ showProviderKeyStatus = true }: { showProviderKey
           </p>
           {selectableModels.length === 0 ? (
             <p className="rounded-md border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-3 py-2 text-xs text-foreground">
-              No model is runnable. A server owner must add a provider credential,
-              then return here.
+              {canUsePersonalProviderCredentials ? (
+                <>
+                  No model is runnable for your account. Add or repair a{" "}
+                  <Link to="/settings#personal-provider-keys" className="font-medium underline">
+                    personal provider key
+                  </Link>
+                  , then return here.
+                </>
+              ) : canManageServerProviderCredentials ? (
+                <>
+                  No model is runnable. Add a provider credential in{" "}
+                  <Link to="/admin#provider-credentials" className="font-medium underline">
+                    Server Admin
+                  </Link>
+                  , then return here.
+                </>
+              ) : (
+                <>No model is runnable. Ask a server owner to add a provider credential.</>
+              )}
             </p>
           ) : null}
           <div className="rounded-lg border border-border/70 bg-background-panel/70 p-3">

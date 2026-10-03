@@ -9,6 +9,7 @@ import {
   ServerProviderCredentialsDeniedError,
   assertAcceptedInvocationAuthoritySubject,
   assertCanInvokeAgent,
+  assertCanUseServerFundedOwnSoul,
   assertCanUseServerProviderCredentials,
   assertCanWriteArtifacts,
   createAcceptedInvocationAuthority,
@@ -21,6 +22,7 @@ import {
   type AcceptedInvocationAuthority,
   type ActionCapabilityAdmissionDeps,
   type AgentInvocationOrigin,
+  type ServerFundedOwnSoulAdmissionDeps,
 } from "../../src/action-capability-admission";
 
 const AGENT_INVOCATION_ORIGINS = [
@@ -430,6 +432,73 @@ describe("M246 dormant action-Capability admission", () => {
         "origin",
         "roomId",
       ].sort(),
+    );
+  });
+});
+
+describe("server-funded own-Soul setup admission", () => {
+  function soulDeps(
+    capabilities: string[],
+    options: { owner?: string | null; enabled?: boolean } = {},
+  ): ServerFundedOwnSoulAdmissionDeps {
+    return {
+      getUserCapabilities: async () => capabilities,
+      findAgentOwnerUserId: async () => Object.hasOwn(options, "owner")
+        ? options.owner ?? null
+        : "human-1",
+      personalProviderKeysAllowed: async () => options.enabled ?? true,
+    };
+  }
+
+  const input = {
+    humanUserId: "human-1",
+    agentId: "agent-own",
+    origin: "profile_soul_generation",
+  } as const;
+
+  test("preserves established server-funded access while the personal-key switch is off", async () => {
+    let ownerLookups = 0;
+    let policyLookups = 0;
+    await assertCanUseServerFundedOwnSoul(input, {
+      getUserCapabilities: async () => ["use_server_provider_credentials"],
+      findAgentOwnerUserId: async () => {
+        ownerLookups += 1;
+        return "human-1";
+      },
+      personalProviderKeysAllowed: async () => {
+        policyLookups += 1;
+        return false;
+      },
+    });
+    expect(ownerLookups).toBe(1);
+    expect(policyLookups).toBe(0);
+  });
+
+  test("admits only an eligible personal-key Human's exact own Genie while the switch is on", async () => {
+    const capabilities = ["invoke_agents", "use_personal_provider_credentials"];
+    expect(await assertCanUseServerFundedOwnSoul(input, soulDeps(capabilities))).toBeUndefined();
+
+    for (const deps of [
+      soulDeps(["use_personal_provider_credentials"]),
+      soulDeps(["invoke_agents"]),
+      soulDeps(capabilities, { enabled: false }),
+      soulDeps(capabilities, { owner: "human-2" }),
+      soulDeps(capabilities, { owner: null }),
+    ]) {
+      expect(await rejectionOf(assertCanUseServerFundedOwnSoul(input, deps))).toBeInstanceOf(
+        ServerProviderCredentialsDeniedError,
+      );
+    }
+  });
+
+  test("fresh-checks the live switch for each paid setup attempt", async () => {
+    let enabled = true;
+    const deps = soulDeps(["invoke_agents", "use_personal_provider_credentials"]);
+    deps.personalProviderKeysAllowed = async () => enabled;
+    await assertCanUseServerFundedOwnSoul(input, deps);
+    enabled = false;
+    expect(await rejectionOf(assertCanUseServerFundedOwnSoul(input, deps))).toBeInstanceOf(
+      ServerProviderCredentialsDeniedError,
     );
   });
 });

@@ -31,11 +31,7 @@ import { SurplusOutcomeUnknownError } from "../providers/surplus-transport";
 import { DEFAULT_REASONING_EFFORT } from "../providers/factory";
 import { isDirectGpt6Model } from "../providers/openai-compat";
 import { modelRouteProvider } from "../providers/model-route";
-import {
-  managedGatewayKeyIsPresent,
-  markManagedGatewayOutcomeUnknown,
-  resolveOpenRouterTransport,
-} from "../providers/openrouter-transport";
+import { resolveOpenRouterTransport } from "../providers/openrouter-transport";
 import { hasStubModelForTests } from "../providers/stub-model-state";
 import type { ReasoningEffort } from "../providers/types";
 import { resolveFireworksKimiK3ServingProfile, type ResolvedFireworksKimiK3ServingProfile } from "../providers/serving-profile";
@@ -175,8 +171,9 @@ function serverUsageFunding(
   modelId: string,
   humanUserId: string | undefined,
   service: ModelFundingService | undefined,
+  allowSurplus: boolean,
 ): UsageFundingProvenance {
-  const providerRoute = usageProviderRoute(modelId);
+  const providerRoute = allowSurplus ? "surplus" : usageProviderRoute(modelId);
   if (service === "shared_memory_maintenance") {
     return { kind: "service", providerRoute };
   }
@@ -902,9 +899,6 @@ export async function invokeChatModelWithFallback(
       throw error;
     }
 
-    const managedGatewayAttempt = !personalFunding && modelRouteProvider(currentModelId) === "openrouter"
-      && managedGatewayKeyIsPresent();
-    let managedGatewayInvocationStarted = false;
     let surplusAttemptedForModel = false;
     const recoveryVisibility = invokeOptions?.recoverContext ? contextRecoveryVisibilityFence() : null;
     let hasSelectedReasoningEffort = false;
@@ -956,6 +950,7 @@ export async function invokeChatModelWithFallback(
           && (usageFunding.kind !== "server" || personalCredential !== undefined)) {
           throw new Error("Server foreground funding session returned an invalid attempt binding.");
         }
+        let directUsageFunding = usageFunding;
         try {
           // This is a server-wide serving preference, never a personal-key
           // transport or another catalogue model. Supported routes reuse the
@@ -1025,7 +1020,7 @@ export async function invokeChatModelWithFallback(
               // A definitive pre-service refusal can switch transports.
               // Its cost stays unknown until a receipt confirms it. Recheck
               // live funding before the original provider receives the prompt.
-              if (!modelHasRunnableCredentials(currentModelId, process.env, "chat")) {
+              if (!modelHasRunnableCredentials(currentModelId, process.env)) {
                 throw new SurplusDirectFallbackUnavailableError();
               }
               try {
@@ -1035,12 +1030,18 @@ export async function invokeChatModelWithFallback(
                 throw new ForegroundFundingRecheckError(error);
               }
             } else if (surplus.status === "available"
-              && !modelHasRunnableCredentials(currentModelId, process.env, "chat")) {
+              && !modelHasRunnableCredentials(currentModelId, process.env)) {
               // The route can make the model selectable, but this request is
               // outside its supported request envelope. Never drift
               // into an imaginary direct-provider attempt.
               throw new SurplusDirectFallbackUnavailableError("request-not-qualified");
             }
+          }
+          if (directUsageFunding.kind !== "personal" && directUsageFunding.providerRoute === "surplus") {
+            directUsageFunding = {
+              ...directUsageFunding,
+              providerRoute: usageProviderRoute(currentModelId),
+            };
           }
           log(`[nautilo/agent] Attempting model: ${currentModelId}`);
           const model = await createUniversalModel(currentModelId, {
@@ -1061,7 +1062,6 @@ export async function invokeChatModelWithFallback(
             ...(personalCredential === undefined ? {} : { personalCredential }),
           });
           const modelWithTools = model.bindTools!(tools);
-          managedGatewayInvocationStarted = managedGatewayAttempt;
           return await invokeForegroundAttemptWithUsageContext(
             modelWithTools,
             attemptMessages,
@@ -1073,9 +1073,9 @@ export async function invokeChatModelWithFallback(
             agentId,
             controls,
             serving,
-            usageFunding,
+            directUsageFunding,
             invokeOptions?.useOpenAIResponsesApi === true,
-            managedGatewayAttempt ? "none" : invokeOptions?.sameModelRetryMode ?? "short",
+            invokeOptions?.sameModelRetryMode ?? "short",
             {
               ...(callerProviderTimeoutMs === undefined ? {} : { providerTimeoutMs: callerProviderTimeoutMs }),
               callerSuppliedProviderTimeout: callerProviderTimeoutMs !== undefined,
@@ -1100,11 +1100,18 @@ export async function invokeChatModelWithFallback(
         // opt into the request-local foreground session.
         await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
         providerAttemptStarted = true;
+        kickServerModelConfigRefresh();
+        const allowSurplus = resolveSurplusChatServingAvailability({
+          catalogModelId: currentModelId,
+          policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
+          keyConfigured: resolveProviderKey("surplus") !== null,
+        }).status === "available";
         response = await runProviderAttempt({
           usageFunding: serverUsageFunding(
             currentModelId,
             invokeOptions?.fundingHumanUserId,
             invokeOptions?.serverFundedService,
+            allowSurplus,
           ),
         });
       }
@@ -1121,18 +1128,9 @@ export async function invokeChatModelWithFallback(
       // classification, health cooldown, reasoning retries, and chain
       // fallback even if the provider surfaced a timeout-shaped AbortError.
       if (invocationConfig?.signal?.aborted) {
-        if (managedGatewayInvocationStarted) {
-          throw markManagedGatewayOutcomeUnknown(providerError);
-        }
         throw personalFunding
           ? invocationConfig.signal.reason ?? new Error("Model invocation cancelled by caller")
           : providerError;
-      }
-      // A managed Gateway request may have been accepted and billed before a
-      // timeout/502 became visible. Never replay it against the same model or
-      // continue into an unrelated paid provider chain.
-      if (managedGatewayInvocationStarted) {
-        throw markManagedGatewayOutcomeUnknown(providerError);
       }
       const classified = classifyError(providerError);
       const terminalProviderError = personalFunding

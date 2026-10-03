@@ -22,6 +22,7 @@ import { WorkspaceArtifactsProvider } from "./artifacts/workspace-artifacts-prov
 import { DrawerProvider } from "./modes/rooms/thread-drawer/drawer-state.tsx";
 import { useDeepLink } from "./hooks/use-deep-link";
 import { InviteRedeem } from "./routes/invite-redeem";
+import { PublicJoinEntry } from "./routes/public-join-entry";
 import { OwnerClaimRedeem } from "./routes/owner-claim-redeem";
 import type { OwnerClaimRouteBootstrap } from "./lib/owner-claim-entry";
 import { deploymentSafeLazy } from "./lib/deployment-safe-lazy";
@@ -140,6 +141,7 @@ export function App({ ownerClaimBootstrap }: { readonly ownerClaimBootstrap?: Ow
           <Route path="/claim" element={<OwnerClaimRedeem bootstrap={ownerClaimBootstrap} />} />
           <Route path="/invite/:token" element={<InviteRedeem />} />
           <Route path="/redeem/:token" element={<InviteRedeem />} />
+          <Route path="/join/continue" element={<PublicJoinEntry />} />
           <Route path="*" element={<AppShell />} />
         </Routes>
       </AuthProvider>

@@ -90,6 +90,7 @@ function makeDb() {
 beforeAll(() => {
   mock.module("@nautilo/db", () => ({
     getSharedDirectDb: makeDb,
+    inviteTokenCondition: () => ({}),
     serverAdmission: { userId: "userId" },
     moderationAccessAllowedSql: () => ({}),
     sql: () => ({}),

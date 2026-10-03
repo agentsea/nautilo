@@ -1,4 +1,5 @@
 export * from "./schema/index";
+export { inviteTokenCondition } from "./utils/invite-token-condition";
 export { moderationAccessAllowedSql, moderationBanAbsentSql, moderationEffectiveHumanActorIdsSql } from "./queries/moderation-admission";
 export * from "./queries/owned-photo-library";
 export * from "./queries/push-notifications";
@@ -10,6 +11,7 @@ export * from "./queries/legacy-photo-history";
 export * from "./queries/reflection-sources";
 export * from "./queries/personal-encryption-coverage";
 export * from "./queries/personal-provider-credentials";
+export * from "./queries/soul-generation-attempts";
 export * from "./queries/protected-task-output-bindings";
 export * from "./queries/video-generation-links";
 export {
@@ -409,6 +411,7 @@ export {
   upsertServerProviderPolicy,
   type ResolvedServerProviderPolicy,
   type ServerProviderPolicyChange,
+  type ServerProviderPolicyUpdate,
   type ServerProviderPolicyDb,
 } from "./utils/server-provider-policy-queries";
 export {

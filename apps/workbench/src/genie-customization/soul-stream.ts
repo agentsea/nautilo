@@ -78,6 +78,9 @@ export async function readSoulGenerationStream(
   response: Response,
   handlers: SoulStreamHandlers,
 ): Promise<string> {
+  if (response.status === 429) {
+    throw new Error("You've used today's Soul generations. Continue without a generated Soul, then try again later.");
+  }
   if (!response.ok) throw new Error("Soul generation is unavailable. Please try again.");
   if (!response.body) throw new Error(INCOMPLETE_STREAM_ERROR);
 

@@ -3,6 +3,7 @@ export * from "./schemas/memory-processor-transport";
 export {
   NautiloApiClient,
   ApiError,
+  InviteShareApiError,
   ProviderCredentialApiError,
   VideoGenerationPreparationError,
   DirectHumanInteractionBlockedError,
@@ -39,6 +40,7 @@ export {
 
 export type {
   CredentialMetadata,
+  PersonalProviderCatalogEntry,
   PutProviderCredentialInput,
   ProviderCredentialRevisionInput,
   PutProviderCredentialResponse,

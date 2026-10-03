@@ -19,7 +19,6 @@ import type { ResolvedFallbackPolicy } from "../../src/utils/resolve-fallback-po
 import { setAgentEventSink } from "../../src/runtime-hooks";
 import { getOrCreateAgentTurnContextByKey, turnContextKey, _resetAgentTurnContextsForTests } from "../../src/runtime/turn-context";
 import { ProviderTimeoutError } from "../../src/providers/errors";
-import { isManagedGatewayOutcomeUnknownError } from "../../src/providers/openrouter-transport";
 import { canUseQualifiedSurplusChatRoute } from "../../src/providers/surplus-attempt";
 import { SurplusOutcomeUnknownError } from "../../src/providers/surplus-transport";
 import type { ModelCatalog, ModelFallbackEvent, ServerEvent } from "@nautilo/types";
@@ -27,7 +26,7 @@ import { getCurrentTurnId, runWithTurn } from "@nautilo/logger";
 import { classifyModelStreamProgress, resolveModelAttemptPolicy } from "../../src/utils/model-attempt-policy";
 import { classifyError } from "../../src/utils/errors";
 import { runWithTaskCausalHuman } from "../../src/runtime/causal-human-context";
-import { getUsageContext } from "../../src/usage/usage-context";
+import { getUsageContext, type UsageFundingProvenance } from "../../src/usage/usage-context";
 import {
   configureRuntimeModelCatalog,
   hydrateRuntimeModelCatalog,
@@ -67,6 +66,13 @@ const markModelInvokeFailureMock = mock((_modelId: string, _message: string): vo
 const invokeSurplusChatAttemptMock = mock(async (_input?: {
   config: RunnableConfig;
   route: { catalogModelId: string };
+  messages: BaseMessage[];
+  funding: Extract<UsageFundingProvenance, { kind: "server" | "service" }>;
+  invokeModel: (
+    model: { invoke(messages: BaseMessage[], options?: RunnableConfig): Promise<unknown> },
+    messages: BaseMessage[],
+    config: RunnableConfig,
+  ) => Promise<AIMessage>;
 }): Promise<
   { kind: "served"; response: AIMessage } | { kind: "direct_fallback" }
 > => ({ kind: "direct_fallback" }));
@@ -92,7 +98,7 @@ const TEST_PROVIDER_KEYS = {
   SURPLUS_API_KEY: "test-surplus",
 } as const;
 const priorProviderKeys = Object.fromEntries(
-  [...Object.keys(TEST_PROVIDER_KEYS), "NAUTILO_MANAGED_GATEWAY_API_KEY", "NAUTILO_MANAGED_GATEWAY_BASE_URL"]
+  Object.keys(TEST_PROVIDER_KEYS)
     .map((key) => [key, process.env[key]]),
 );
 const priorFetch = globalThis.fetch;
@@ -228,8 +234,6 @@ describe("invokeChatModelWithFallback (chain)", () => {
 
   beforeEach(() => {
     Object.assign(process.env, TEST_PROVIDER_KEYS);
-    delete process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
-    delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
     policyState = { enabled: false, chain: [] };
     cachedServerModelConfig = null;
     createUniversalModelMock.mockReset();
@@ -311,36 +315,7 @@ describe("invokeChatModelWithFallback (chain)", () => {
     expect(observed[0]?.modelControl).toBeUndefined();
   });
 
-  test("records the actual managed Gateway route for an OpenRouter attempt", async () => {
-    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
-    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1";
-    let observed: ReturnType<typeof getUsageContext>;
-    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
-      bindTools: () => ({ invoke: async () => {
-        observed = getUsageContext();
-        return new AIMessage("ok");
-      } }),
-    }) as unknown as AuraModel);
-
-    await invokeChatModelWithFallback(
-      messages,
-      tools,
-      T1,
-      "agent-owner",
-      "agent-1",
-      null,
-      undefined,
-      { fundingHumanUserId: "causal-human", modelFallbackMode: "none" },
-    );
-
-    expect(observed?.funding).toEqual({
-      kind: "server",
-      humanUserId: "causal-human",
-      providerRoute: "managed-gateway",
-    });
-  });
-
-  test("records the direct OpenRouter route when no managed Gateway is active", async () => {
+  test("records the direct OpenRouter route", async () => {
     let observed: ReturnType<typeof getUsageContext>;
     createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
       bindTools: () => ({ invoke: async () => {
@@ -391,48 +366,6 @@ describe("invokeChatModelWithFallback (chain)", () => {
       providerRoute: "anthropic",
     });
     expect(fundingAdmission).not.toHaveBeenCalled();
-  });
-
-  test.each([
-    ["401", Object.assign(new Error("gateway private 401 canary"), { status: 401 })],
-    ["402", Object.assign(new Error("gateway private 402 canary"), { status: 402 })],
-    ["429", Object.assign(new Error("gateway private 429 canary"), { status: 429 })],
-    ["502", Object.assign(new Error("gateway private 502 canary"), { status: 502 })],
-    ["timeout", new ProviderTimeoutError(T1, 25)],
-  ])("managed Gateway %s performs one invocation with no same-model retry or fallback hop", async (_kind, failure) => {
-    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
-    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1";
-    policyState = { enabled: true, chain: [T1, A, B] };
-    let invokes = 0;
-    createUniversalModelMock.mockImplementation(async (modelId: string): Promise<AuraModel> => {
-      expect(modelId).toBe(T1);
-      return {
-        bindTools: () => ({
-          invoke: async () => {
-            invokes += 1;
-            throw failure;
-          },
-        }),
-      } as unknown as AuraModel;
-    });
-
-    const thrown: unknown = await invokeChatModelWithFallback(
-      messages,
-      tools,
-      T1,
-      "user-1",
-      "agent-1",
-      null,
-    ).catch((error: unknown) => error);
-
-    expect(isManagedGatewayOutcomeUnknownError(thrown)).toBeTrue();
-    expect((thrown as Error).message).toBe(failure.message);
-    if ("status" in failure) {
-      expect((thrown as { status?: number }).status).toBe(failure.status);
-    }
-    expect(invokes).toBe(1);
-    expect(modelIdsFromCalls()).toEqual([T1]);
-    expect(capturedEvents.filter((event) => event.type === "model.fallback")).toHaveLength(0);
   });
 
   test("unavailable selected model uses only an already-configured eligible fallback", async () => {
@@ -1369,8 +1302,6 @@ describe("invokeChatModelWithFallback — Surplus serving order", () => {
 
   beforeEach(() => {
     Object.assign(process.env, TEST_PROVIDER_KEYS);
-    delete process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
-    delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
     cachedServerModelConfig = { preferSurplus: true };
     policyState = { enabled: false, chain: [] };
     createUniversalModelMock.mockReset();
@@ -1399,6 +1330,56 @@ describe("invokeChatModelWithFallback — Surplus serving order", () => {
     expect(createUniversalModelMock).not.toHaveBeenCalled();
   });
 
+  test("uses keyed Surplus for a signed OpenRouter model without a direct key", async () => {
+    const { getActiveModelCatalogSync } = await import("../../src/config/model-catalog/runtime-catalog");
+    const entry = getActiveModelCatalogSync().catalog.entries.find((row) => row.id === T1);
+    expect(entry).toMatchObject({ id: T1, defaultEnabled: true, provider: "openrouter" });
+    delete process.env["OPENROUTER_API_KEY"];
+    const persistedFunding: UsageFundingProvenance[] = [];
+    const ambientFunding: UsageFundingProvenance[] = [];
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      if (!input) throw new Error("Surplus attempt input missing");
+      persistedFunding.push(input.funding);
+      const response = await input.invokeModel({
+        invoke: async () => {
+          const funding = getUsageContext()?.funding;
+          if (funding) ambientFunding.push(funding);
+          return new AIMessage("surplus openrouter");
+        },
+      }, input.messages, input.config);
+      return { kind: "served", response };
+    });
+
+    const result = await invokeChatModelWithFallback(messages, tools, T1, "user-1", "agent-1", null);
+
+    expect(result).toMatchObject({ modelUsed: T1, response: { content: "surplus openrouter" } });
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+    expect(persistedFunding).toEqual([{
+      kind: "server",
+      humanUserId: "user-1",
+      providerRoute: "surplus",
+    }]);
+    expect(ambientFunding).toEqual(persistedFunding);
+  });
+
+  test("keeps a keyless OpenRouter model unavailable while Surplus policy is off", async () => {
+    cachedServerModelConfig = { preferSurplus: false };
+    delete process.env["OPENROUTER_API_KEY"];
+
+    const thrown = await invokeChatModelWithFallback(messages, tools, T1, "user-1", "agent-1", null)
+      .catch((error: unknown) => error);
+
+    expect(thrown).toMatchObject({
+      name: "ModelUnavailableError",
+      code: "model_unavailable",
+      modelId: T1,
+      availability: "missing-key",
+    });
+    expect(invokeSurplusChatAttemptMock).not.toHaveBeenCalled();
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+
   test("tries Surplus with Kimi K3's catalogue-default standard profile", async () => {
     const id = "fireworks:accounts/fireworks/models/kimi-k3";
     const { getActiveModelCatalogSync } = await import("../../src/config/model-catalog/runtime-catalog");
@@ -1421,6 +1402,7 @@ describe("invokeChatModelWithFallback — Surplus serving order", () => {
 
   test("tries the original direct provider only after a definitive Surplus refusal", async () => {
     const order: string[] = [];
+    let directFunding: UsageFundingProvenance | undefined;
     invokeSurplusChatAttemptMock.mockImplementation(async () => {
       order.push("surplus");
       return { kind: "direct_fallback" };
@@ -1429,6 +1411,7 @@ describe("invokeChatModelWithFallback — Surplus serving order", () => {
       bindTools: () => ({
         invoke: async () => {
           order.push("direct");
+          directFunding = getUsageContext()?.funding;
           return new AIMessage("direct success");
         },
       }),
@@ -1439,6 +1422,7 @@ describe("invokeChatModelWithFallback — Surplus serving order", () => {
     expect(result.modelUsed).toBe(A);
     expect(order).toEqual(["surplus", "direct"]);
     expect(modelIdsFromCalls()).toEqual([A]);
+    expect(directFunding).toMatchObject({ kind: "server", providerRoute: "anthropic" });
   });
 
   test("advances to the configured chain when Surplus refuses and the original provider has no credential", async () => {
@@ -2321,8 +2305,6 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
 
   beforeEach(() => {
     Object.assign(process.env, TEST_PROVIDER_KEYS);
-    delete process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"];
-    delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
     policyState = { enabled: false, chain: [] };
     createUniversalModelMock.mockReset();
     fundingAdmission.mockReset();
@@ -2488,9 +2470,7 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
     expect(classifyError(thrown).category).toBe("AUTH_ERROR");
   });
 
-  test("keeps personal OpenRouter isolated from managed-Gateway replay and health state", async () => {
-    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = "server-managed-gateway";
-    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.example.test/v1";
+  test("keeps personal OpenRouter isolated from server provider health state", async () => {
     const session: ForegroundChatFundingSession = {
       kind: "personal",
       async recheckAttempt() {},
@@ -2518,7 +2498,6 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
       { fundingSession: session, sameModelRetryMode: "none" },
     ).then(() => null, (error: unknown) => error);
 
-    expect(isManagedGatewayOutcomeUnknownError(thrown)).toBe(false);
     expect(classifyError(thrown).category).toBe("SERVICE_ERROR");
     expect(modelOptionsFromCalls()[0]?.["personalCredential"]).toEqual({ apiKey: "personal-openrouter-key" });
     expect(markModelInvokeFailureMock).not.toHaveBeenCalled();

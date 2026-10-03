@@ -158,7 +158,7 @@ export function PersonalityScreen({
           </div>
           <div style={styles.statusDetail}>
             {generationStatus?.detail ??
-              "Your instructions will be used as the main signal for the new soul file."}
+              "Your Server provides this optional generation. Your instructions will be the main signal for the new soul file."}
           </div>
         </div>
       ) : null}

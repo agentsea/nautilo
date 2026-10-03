@@ -63,7 +63,14 @@ let invocationCapabilityEnabled = true;
 let manageRoomsCapabilityEnabled = true;
 let personalChatEnabled = false;
 let personalCredentialConfigured = false;
+let personalCredentialLookupError: Error | null = null;
 let serverFundingAllowed = true;
+let preflightFundingKind: "personal" | "server" = "personal";
+const preflightFunding = mock(async (_input: { humanUserId: string; roomId: string; agentId: string; turnModelId: string | null }) => ({ kind: preflightFundingKind }));
+const personalFundingLookup = mock(async () => {
+  if (personalCredentialLookupError) throw personalCredentialLookupError;
+  return personalCredentialConfigured;
+});
 const serverFundingAdmission = mock(async (humanUserId: string) => {
   if (!serverFundingAllowed) {
     throw new actualTrust.ServerProviderCredentialsDeniedError(humanUserId, "room_message");
@@ -72,7 +79,10 @@ const serverFundingAdmission = mock(async (humanUserId: string) => {
 
 mock.module("../../src/lib/foreground-chat-funding", () => ({
   callerMayUsePersonalChat: async () => personalChatEnabled,
-  callerHasConfiguredPersonalFunding: async () => personalCredentialConfigured,
+  callerHasConfiguredPersonalFunding: personalFundingLookup,
+}));
+mock.module("../../src/lib/foreground-chat-preflight", () => ({
+  resolveForegroundChatPreflightFunding: preflightFunding,
 }));
 
 mock.module("@nautilo/trust", () => ({
@@ -2470,6 +2480,8 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     personalChatEnabled = true;
     personalCredentialConfigured = true;
     serverFundingAllowed = false;
+    preflightFunding.mockClear();
+    personalFundingLookup.mockClear();
     serverFundingAdmission.mockClear();
     const mocks = makeTestMocks();
     mocks.getRoomDetailForMember.mockImplementation(async (roomId) => {
@@ -2495,6 +2507,8 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
       expect(res.statusCode).toBe(202);
       expect(mocks.createForegroundJob).toHaveBeenCalledTimes(1);
       expect(serverFundingAdmission).not.toHaveBeenCalled();
+      expect(personalFundingLookup).not.toHaveBeenCalled();
+      expect(preflightFunding).toHaveBeenCalledTimes(1);
     } finally {
       personalChatEnabled = false;
       personalCredentialConfigured = false;
@@ -2503,9 +2517,60 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     }
   });
 
+  test.each(["personal", "server"] as const)("own-Genie voice preflight follows %s funding rather than key presence", async (kind) => {
+    personalChatEnabled = true;
+    personalCredentialConfigured = true;
+    preflightFundingKind = kind;
+    preflightFunding.mockClear();
+    serverFundingAdmission.mockClear();
+    const mocks = makeTestMocks();
+    mocks.getRoomDetailForMember.mockImplementation(async (roomId) => {
+      if (roomId !== R1_ID) return null;
+      const detail = r1Detail();
+      return {
+        ...detail,
+        members: detail.members.map((member) => member.kind === "agent"
+          ? { ...member, agentOwnerUserId: SENDER_USER_ID }
+          : member),
+      };
+    });
+    const app = await makeMessagingApp(
+      mocks,
+      { ownerId: SENDER_USER_ID, agentId: CUSTOM_AGENT_ID, roomId: R1_ID },
+      { actorRole: "contributor", laneKey: `room:${R1_ID}`, graphThreadId: `room:${R1_ID}` },
+    );
+    try {
+      const res = await app.inject({
+        method: "POST", url: `/api/rooms/${R1_ID}/messages`,
+        payload: { content: "hello via selected model", voiceMode: true, model: "openrouter:example/model" },
+      });
+      expect(preflightFunding).toHaveBeenCalledTimes(1);
+      expect(preflightFunding.mock.calls[0]).toEqual([{
+        humanUserId: SENDER_USER_ID, roomId: R1_ID, agentId: CUSTOM_AGENT_ID,
+        turnModelId: "openrouter:example/model",
+      }]);
+      if (kind === "personal") {
+        expect(res.statusCode).toBe(422);
+        expect(JSON.parse(res.body)).toMatchObject({ code: "unsupported_workload" });
+        expect(mocks.createForegroundJob).not.toHaveBeenCalled();
+        expect(serverFundingAdmission).not.toHaveBeenCalled();
+      } else {
+        expect(res.statusCode).toBe(202);
+        expect(mocks.createForegroundJob).toHaveBeenCalledTimes(1);
+        expect(serverFundingAdmission).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      personalChatEnabled = false;
+      personalCredentialConfigured = false;
+      preflightFundingKind = "personal";
+      await app.close();
+    }
+  });
+
   test("an own Genie with no personal key keeps server-funded admission", async () => {
     personalChatEnabled = true;
     personalCredentialConfigured = false;
+    preflightFundingKind = "server";
     serverFundingAdmission.mockClear();
     const mocks = makeTestMocks();
     mocks.getRoomDetailForMember.mockImplementation(async (roomId) => {
@@ -2533,6 +2598,50 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
       expect(serverFundingAdmission).toHaveBeenCalledTimes(1);
     } finally {
       personalChatEnabled = false;
+      preflightFundingKind = "personal";
+      await app.close();
+    }
+  });
+
+  test.each([
+    { label: "plain text", payload: { content: "hello via server key" } },
+    { label: "auxiliary voice", payload: { content: "hello via server voice", voiceMode: true } },
+  ])("server-first $label dispatch never performs a broad personal credential lookup", async ({ payload }) => {
+    personalChatEnabled = true;
+    preflightFundingKind = "server";
+    personalCredentialLookupError = new Error("personal rows must not be listed");
+    preflightFunding.mockClear();
+    personalFundingLookup.mockClear();
+    serverFundingAdmission.mockClear();
+    const mocks = makeTestMocks();
+    mocks.getRoomDetailForMember.mockImplementation(async (roomId) => {
+      if (roomId !== R1_ID) return null;
+      const detail = r1Detail();
+      return {
+        ...detail,
+        members: detail.members.map((member) => member.kind === "agent"
+          ? { ...member, agentOwnerUserId: SENDER_USER_ID }
+          : member),
+      };
+    });
+    const app = await makeMessagingApp(
+      mocks,
+      { ownerId: SENDER_USER_ID, agentId: CUSTOM_AGENT_ID, roomId: R1_ID },
+      { actorRole: "contributor", laneKey: `room:${R1_ID}`, graphThreadId: `room:${R1_ID}` },
+    );
+    try {
+      const res = await app.inject({
+        method: "POST", url: `/api/rooms/${R1_ID}/messages`, payload,
+      });
+      expect(res.statusCode).toBe(202);
+      expect(mocks.createForegroundJob).toHaveBeenCalledTimes(1);
+      expect(preflightFunding).toHaveBeenCalledTimes(1);
+      expect(personalFundingLookup).not.toHaveBeenCalled();
+      expect(serverFundingAdmission).toHaveBeenCalledTimes(1);
+    } finally {
+      personalChatEnabled = false;
+      preflightFundingKind = "personal";
+      personalCredentialLookupError = null;
       await app.close();
     }
   });
@@ -2540,6 +2649,7 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
   test("a configured personal key cannot reach mixed-Room paid routing", async () => {
     personalCredentialConfigured = true;
     serverFundingAllowed = false;
+    personalFundingLookup.mockClear();
     serverFundingAdmission.mockClear();
     const mocks = makeTestMocks();
     mocks.getRoomDetailForMember.mockImplementation(async (roomId) =>
@@ -2559,6 +2669,7 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
       expect(JSON.parse(res.body)).toMatchObject({ code: "unsupported_workload" });
       expect(mocks.createForegroundJob).not.toHaveBeenCalled();
       expect(serverFundingAdmission).toHaveBeenCalledTimes(1);
+      expect(personalFundingLookup).toHaveBeenCalledTimes(1);
     } finally {
       personalCredentialConfigured = false;
       serverFundingAllowed = true;

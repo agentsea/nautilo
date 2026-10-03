@@ -13,6 +13,38 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   each attempt’s actual or pending charge, and uncertain service fails without
   automatic replay. Turning the preference off restores direct routing.
 
+- New ordinary invitation links can be copied again from the server after a
+  page reload or device change. Existing links continue to redeem, while older
+  hash-only codes that were lost must be replaced. The invite browser cache is
+  removed. Server admins can choose or clear the Community `/join` invitation
+  in Settings. Existing members who open `/join` go straight into the app;
+  visitors need an active selected invite to join.
+
+- Admins can choose server or personal provider keys first for eligible chat.
+  Members retain both permitted model catalogues; existing servers keep personal
+  keys first unless an admin changes the preference.
+
+- Members can manage personal provider keys in Settings, select a compatible
+  chat model, and chat with their own Genie when personal keys are enabled by
+  the server. Personal and server key controls share masked previews and
+  individual replace, validate, and delete actions. Community is available for
+  ordinary invitations; personal-only members can optionally personalize their
+  own Genie through the server-funded Soul setup service.
+
+- Approval replies retain the initiating Human and tool context when another
+  message arrives during an interrupted turn. Checkpoint cleanup preserves the
+  complete resumable snapshot, and approval prompts no longer describe a
+  required review as already auto-approved.
+
+- Voice auditions preserve their complete playable slate and sample text in live
+  chat and reopened history, including voices with large language/model catalogs.
+
+- Imported full-size Agent photos remain available in the owned photo library.
+  An unindexed previous photo no longer blocks browsing or selecting a
+  replacement; undo still requires an owned, available previous photo.
+  Existing servers must complete the [photo protocol upgrade check](docs/agent-photo-library-upgrade.md)
+  before adopting the new creation hash contract; existing media IDs stay unchanged.
+
 - Document reads and authorization checks avoid resolving unrelated model
   metadata when checking decision-tool availability. Model credentials and
   document access are still checked against current state.

@@ -7,8 +7,9 @@ import {
   test,
 } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
+import type { TransactionResult } from "@nautilo/config-guard";
 
-const transactionMock = mock(async (_input: unknown) => ({
+const transactionMock = mock(async (_input: unknown): Promise<TransactionResult> => ({
   success: true,
   snapshot: "snap-1",
   applied: 1,
@@ -59,15 +60,27 @@ describe("POST /api/setup/keys (D445 Phase 1)", () => {
   const instances: FastifyInstance[] = [];
   let originalBootstrapToken: string | undefined;
   let originalDeploymentMode: string | undefined;
+  let originalTavilyKey: string | undefined;
 
   beforeEach(() => {
     setRelayRegistry(null);
     actualTrust._resetBootstrapStateCacheForTests();
     originalBootstrapToken = process.env["NAUTILO_BOOTSTRAP_TOKEN"];
     originalDeploymentMode = process.env["NAUTILO_DEPLOYMENT_MODE"];
+    originalTavilyKey = process.env["TAVILY_API_KEY"];
     delete process.env["NAUTILO_BOOTSTRAP_TOKEN"];
     delete process.env["NAUTILO_DEPLOYMENT_MODE"];
+    delete process.env["TAVILY_API_KEY"];
     transactionMock.mockClear();
+    transactionMock.mockImplementation(async () => ({
+      success: true,
+      snapshot: "snap-1",
+      applied: 1,
+      skipped: 0,
+      rolledBack: false,
+      error: null,
+      details: [{ key: "ANTHROPIC_API_KEY", action: "applied" as const }],
+    }));
     writeSecurityAuditEventMock.mockClear();
     getUserCapabilitiesMock.mockImplementation(async () => [
       "manage_server_settings",
@@ -84,6 +97,8 @@ describe("POST /api/setup/keys (D445 Phase 1)", () => {
     }
     if (originalDeploymentMode === undefined) delete process.env["NAUTILO_DEPLOYMENT_MODE"];
     else process.env["NAUTILO_DEPLOYMENT_MODE"] = originalDeploymentMode;
+    if (originalTavilyKey === undefined) delete process.env["TAVILY_API_KEY"];
+    else process.env["TAVILY_API_KEY"] = originalTavilyKey;
     await Promise.all(instances.splice(0).map((app) => app.close()));
   });
 
@@ -163,6 +178,132 @@ describe("POST /api/setup/keys (D445 Phase 1)", () => {
     expect(body.success).toBe(true);
     // The submitted secret must never be echoed back in the response.
     expect(res.body).not.toContain(SECRET_VALUE);
+  });
+
+  test("deletes exactly one registered provider key with session management authority", async () => {
+    const res = await makeApp(ADMIN_USER_ID).inject({
+      method: "DELETE",
+      url: "/api/setup/keys/tavily",
+      remoteAddress: "203.0.113.10",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ success: true, applied: 1 });
+    expect(transactionMock).toHaveBeenCalledTimes(1);
+    expect(transactionMock.mock.calls[0]?.[0]).toEqual({
+      operations: [{ type: "remove", key: "TAVILY_API_KEY" }],
+      healthCheck: "none",
+      overwrite: true,
+      reason: "Provider key removed in Server admin",
+      actor: "setup-spa",
+    });
+    expect(writeSecurityAuditEventMock).toHaveBeenCalledTimes(1);
+    expect(writeSecurityAuditEventMock.mock.calls[0]?.[1]).toMatchObject({
+      kind: "server_provider_key_changed",
+      actorId: ADMIN_USER_ID,
+      provider: "tavily",
+      action: "deleted",
+    });
+  });
+
+  test("deletion never accepts loopback or bootstrap privilege without a session", async () => {
+    process.env["NAUTILO_BOOTSTRAP_TOKEN"] = "bootstrap-delete-denied";
+    for (const request of [
+      { remoteAddress: "127.0.0.1" },
+      {
+        remoteAddress: "203.0.113.10",
+        headers: { authorization: "Bearer bootstrap-delete-denied" },
+      },
+    ]) {
+      const res = await makeApp(null).inject({
+        method: "DELETE",
+        url: "/api/setup/keys/tavily",
+        ...request,
+      });
+      expect(res.statusCode).toBe(401);
+    }
+    expect(transactionMock).not.toHaveBeenCalled();
+  });
+
+  test("deletion rejects an authenticated caller without management authority", async () => {
+    getUserCapabilitiesMock.mockImplementation(async () => []);
+    const res = await makeApp(MEMBER_USER_ID).inject({
+      method: "DELETE",
+      url: "/api/setup/keys/tavily",
+      remoteAddress: "203.0.113.10",
+    });
+    expect(res.statusCode).toBe(403);
+    expect(transactionMock).not.toHaveBeenCalled();
+  });
+
+  test("deletion rejects an unknown provider without calling config-guard", async () => {
+    const res = await makeApp(ADMIN_USER_ID).inject({
+      method: "DELETE",
+      url: "/api/setup/keys/not-a-provider",
+      remoteAddress: "203.0.113.10",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: "invalid_provider" });
+    expect(transactionMock).not.toHaveBeenCalled();
+  });
+
+  test("cloud-managed rejects deletion before authorization and mutation", async () => {
+    process.env["NAUTILO_DEPLOYMENT_MODE"] = "cloud-managed";
+    const res = await makeApp(null).inject({
+      method: "DELETE",
+      url: "/api/setup/keys/tavily",
+      remoteAddress: "127.0.0.1",
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: "managed_credentials_control_plane_owned" });
+    expect(transactionMock).not.toHaveBeenCalled();
+  });
+
+  test("does not claim deletion when an effective platform key remains", async () => {
+    transactionMock.mockImplementation(async () => {
+      process.env["TAVILY_API_KEY"] = "platform-controlled-secret";
+      return {
+        success: true,
+        snapshot: "snap-platform",
+        applied: 1,
+        skipped: 0,
+        rolledBack: false,
+        error: null,
+        details: [{ key: "TAVILY_API_KEY", action: "applied" as const }],
+      };
+    });
+    const res = await makeApp(ADMIN_USER_ID).inject({
+      method: "DELETE",
+      url: "/api/setup/keys/tavily",
+      remoteAddress: "203.0.113.10",
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({
+      success: false,
+      error: "provider_key_remains_platform_controlled",
+    });
+    expect(res.body).not.toContain("platform-controlled-secret");
+    expect(writeSecurityAuditEventMock).not.toHaveBeenCalled();
+  });
+
+  test("returns a secret-safe failure when config-guard refuses deletion", async () => {
+    transactionMock.mockImplementation(async () => ({
+      success: false,
+      snapshot: null,
+      applied: 0,
+      skipped: 0,
+      rolledBack: false,
+      error: `canonical guard refused ${SECRET_VALUE}`,
+      details: [],
+    }));
+    const res = await makeApp(ADMIN_USER_ID).inject({
+      method: "DELETE",
+      url: "/api/setup/keys/tavily",
+      remoteAddress: "203.0.113.10",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toMatchObject({ success: false });
+    expect(res.body).not.toContain(SECRET_VALUE);
+    expect(writeSecurityAuditEventMock).not.toHaveBeenCalled();
   });
 
   test("admin provider managers can save keys without owner settings authority", async () => {

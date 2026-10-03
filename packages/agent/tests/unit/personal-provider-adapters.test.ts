@@ -27,8 +27,6 @@ const ENV_KEYS = [
   "FIREWORKS_API_KEY",
   "TOGETHER_AI_API_KEY",
   "VENICE_API_KEY",
-  "NAUTILO_MANAGED_GATEWAY_API_KEY",
-  "NAUTILO_MANAGED_GATEWAY_BASE_URL",
 ] as const;
 
 const originalEnv = Object.fromEntries(
@@ -67,8 +65,6 @@ afterEach(restoreEnv);
 describe("personal provider chat adapters", () => {
   test.each(MODEL_IDS)("injects the exact personal key into %s", async (modelId) => {
     for (const key of ENV_KEYS) process.env[key] = "server-key-must-not-be-used";
-    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = `ngw_${"a".repeat(43)}`;
-    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1";
     const apiKey = "  exact-personal-key  ";
 
     const model = await createUnmeteredEvaluationModel(modelId, {
@@ -92,7 +88,7 @@ describe("personal provider chat adapters", () => {
     } as Record<string, unknown>)).rejects.toThrow("valid personal provider credential");
   });
 
-  test("rejects personal credentials for the managed gateway and unknown providers", async () => {
+  test("rejects personal credentials for the generic gateway and unknown providers", async () => {
     for (const modelId of ["gateway:local-model", "unknown:model"]) {
       expect(createUnmeteredEvaluationModel(modelId, {
         personalCredential: { apiKey: "personal-key" },
@@ -105,10 +101,7 @@ describe("personal OpenRouter transport", () => {
   test("sends the personal key through direct OpenRouter transport without leaking it into the request body", async () => {
     const personalApiKey = "sk-personal-openrouter-transport";
     const serverDirectApiKey = "sk-server-openrouter-must-not-be-used";
-    const serverGatewayKey = `ngw_${"d".repeat(43)}`;
     process.env["OPENROUTER_API_KEY"] = serverDirectApiKey;
-    process.env["NAUTILO_MANAGED_GATEWAY_API_KEY"] = serverGatewayKey;
-    process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = "https://gateway.qa.example/v1";
 
     const requests: Array<{ authorization: string | null; body: string; url: string }> = [];
     const originalFetch = globalThis.fetch;
@@ -156,10 +149,8 @@ describe("personal OpenRouter transport", () => {
       expect(requests[0]?.url).toBe("https://openrouter.ai/api/v1/chat/completions");
       expect(requests[0]?.authorization).toBe(`Bearer ${personalApiKey}`);
       expect(requests[0]?.authorization).not.toContain(serverDirectApiKey);
-      expect(requests[0]?.authorization).not.toContain(serverGatewayKey);
       expect(requests[0]?.body).not.toContain(personalApiKey);
       expect(requests[0]?.body).not.toContain(serverDirectApiKey);
-      expect(requests[0]?.body).not.toContain(serverGatewayKey);
       expect(JSON.stringify(response)).not.toContain(personalApiKey);
       expect(response.content).toBe("personal transport success");
     } finally {
@@ -167,13 +158,11 @@ describe("personal OpenRouter transport", () => {
     }
   });
 
-  test("personal funding selects direct OpenRouter even when managed Gateway is configured", () => {
+  test("personal funding selects direct OpenRouter", () => {
     const personalApiKey = "  exact-personal-openrouter-key  ";
     expect(resolveOpenRouterTransport({
       personalApiKey,
       env: {
-        NAUTILO_MANAGED_GATEWAY_API_KEY: `ngw_${"b".repeat(43)}`,
-        NAUTILO_MANAGED_GATEWAY_BASE_URL: "https://gateway.qa.example/v1",
         OPENROUTER_API_KEY: "server-openrouter-key",
       },
     })).toEqual({
@@ -183,19 +172,4 @@ describe("personal OpenRouter transport", () => {
     });
   });
 
-  test("server funding retains managed Gateway precedence over direct OpenRouter", () => {
-    const gatewayKey = `ngw_${"c".repeat(43)}`;
-    expect(resolveOpenRouterTransport({
-      directApiKey: "explicit-server-openrouter-key",
-      env: {
-        NAUTILO_MANAGED_GATEWAY_API_KEY: gatewayKey,
-        NAUTILO_MANAGED_GATEWAY_BASE_URL: "https://gateway.qa.example/v1/",
-        OPENROUTER_API_KEY: "server-openrouter-key",
-      },
-    })).toEqual({
-      kind: "managed-gateway",
-      apiKey: gatewayKey,
-      baseUrl: "https://gateway.qa.example/v1",
-    });
-  });
 });

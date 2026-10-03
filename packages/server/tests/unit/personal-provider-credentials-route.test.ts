@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
+import { getAllKeyDefinitions } from "@nautilo/config-guard";
 import {
   type PersonalProviderCredentialRecord,
   type PersonalProviderId,
@@ -14,6 +15,7 @@ import {
   personalProviderCredentialRoutes,
   type PersonalProviderCredentialRouteDeps,
 } from "../../src/routes/personal-provider-credentials";
+import { PERSONAL_CHAT_PROVIDER_IDS } from "../../src/lib/model-funding";
 
 const USER_A = "11111111-1111-4111-8111-111111111111";
 const USER_B = "22222222-2222-4222-8222-222222222222";
@@ -102,7 +104,7 @@ async function makeHarness(options: HarnessOptions = {}) {
     getDb: () => db,
     getPolicy: async () => {
       maybeFail("policy");
-      return { allowPersonalProviderKeys: await (options.policy?.() ?? true) };
+      return { allowPersonalProviderKeys: await (options.policy?.() ?? true), fundingPreference: "personal_first" };
     },
     getCapabilities: async (userId) => {
       maybeFail("capabilities");
@@ -224,6 +226,39 @@ function body(response: { body: string }): Record<string, unknown> {
 }
 
 describe("personal provider credential routes", () => {
+  test("projects the canonical server key registry without configuration internals", async () => {
+    const harness = await makeHarness();
+    const response = await harness.app.inject({
+      method: "GET", url: "/api/account/provider-credentials", headers: auth(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    const result = body(response);
+    expect(result["credentials"]).toEqual([]);
+    const providers = result["providers"] as Array<Record<string, unknown>>;
+    const definitions = getAllKeyDefinitions().filter(
+      ({ id }) => id !== "nautilo-gateway" && id !== "gateway",
+    );
+    expect(providers.map(({ id }) => id)).toEqual(definitions.map(({ id }) => id));
+    expect(providers).toEqual(definitions.map((definition) => ({
+      id: definition.id,
+      name: definition.name,
+      purpose: definition.purpose,
+      ...(definition.signupUrl ? { signupUrl: definition.signupUrl } : {}),
+      ...(definition.formatHint ? { formatHint: definition.formatHint } : {}),
+      personalCapabilities: (PERSONAL_CHAT_PROVIDER_IDS as readonly string[]).includes(definition.id)
+        ? ["chat"]
+        : [],
+    })));
+    const serializedProviders = JSON.stringify(providers);
+    expect(serializedProviders).not.toContain("envVar");
+    expect(serializedProviders).not.toContain("formatCheck");
+    expect(serializedProviders).not.toContain("doctorHints");
+    for (const definition of definitions) {
+      expect(serializedProviders).not.toContain(definition.envVar);
+    }
+  });
+
   test("requires an authenticated Human before every operation", async () => {
     const harness = await makeHarness();
     const requests = [
@@ -299,7 +334,7 @@ describe("personal provider credential routes", () => {
       committed: true,
       credential: {
         provider: "openai", revision: 1, validationStatus: "unverified",
-        validatedAt: null, requiresReplacement: false,
+        validatedAt: null, requiresReplacement: false, masked: "sk-perso...",
       },
     });
     const first = harness.records.get(key(USER_A, "openai"))!;
@@ -309,7 +344,9 @@ describe("personal provider credential routes", () => {
       method: "GET", url: "/api/account/provider-credentials", headers: auth(),
     });
     expect(listed.statusCode).toBe(200);
-    expect((body(listed)["credentials"] as unknown[])).toHaveLength(1);
+    expect(body(listed)["credentials"]).toEqual([
+      expect.objectContaining({ revision: 1, masked: "sk-perso..." }),
+    ]);
 
     const replacementSecret = `${SENTINEL}-replacement`;
     const replaced = await harness.app.inject({
@@ -317,7 +354,10 @@ describe("personal provider credential routes", () => {
       headers: auth(), payload: { apiKey: replacementSecret, expectedRevision: 1 },
     });
     expect(replaced.statusCode).toBe(200);
-    expect(body(replaced)).toMatchObject({ committed: true, credential: { revision: 2 } });
+    expect(body(replaced)).toMatchObject({
+      committed: true,
+      credential: { revision: 2, masked: "sk-perso..." },
+    });
     const second = harness.records.get(key(USER_A, "openai"))!;
     expect(second.id).toBe(first.id);
     expect(decryptPersonalProviderCredential(harness.custody, second.envelope, second)).toBe(replacementSecret);
@@ -328,7 +368,8 @@ describe("personal provider credential routes", () => {
     });
     expect(validated.statusCode).toBe(200);
     expect(body(validated)).toMatchObject({
-      committed: false, credential: { revision: 2, validationStatus: "accepted" },
+      committed: false,
+      credential: { revision: 2, validationStatus: "accepted", masked: "sk-perso..." },
     });
     expect(harness.validatedSecrets).toEqual([{ provider: "openai", apiKey: replacementSecret }]);
 
@@ -369,13 +410,117 @@ describe("personal provider credential routes", () => {
     ]);
   });
 
+  test("fully masks credentials too short for the canonical prefix preview", async () => {
+    const harness = await makeHarness();
+    const response = await harness.app.inject({
+      method: "PUT", url: "/api/account/provider-credentials/typesafe",
+      headers: auth(), payload: { apiKey: "tiny" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(body(response)).toMatchObject({ credential: { masked: "********" } });
+    expect(response.body).not.toContain("tiny");
+  });
+
+  test("stores a canonical non-chat provider without leaking it or granting chat capability", async () => {
+    const harness = await makeHarness();
+    const created = await harness.app.inject({
+      method: "PUT", url: "/api/account/provider-credentials/tavily",
+      headers: auth(), payload: { apiKey: SENTINEL },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.body).not.toContain(SENTINEL);
+
+    const saved = harness.records.get(key(USER_A, "tavily"))!;
+    expect(decryptPersonalProviderCredential(harness.custody, saved.envelope, saved)).toBe(SENTINEL);
+
+    const listed = await harness.app.inject({
+      method: "GET", url: "/api/account/provider-credentials", headers: auth(),
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.body).not.toContain(SENTINEL);
+    const result = body(listed);
+    expect(result["credentials"]).toEqual([
+      expect.objectContaining({ provider: "tavily", validationStatus: "unverified" }),
+    ]);
+    expect((result["providers"] as Array<Record<string, unknown>>)
+      .find(({ id }) => id === "tavily")?.["personalCapabilities"]).toEqual([]);
+  });
+
+  test("rejects new retained-only providers while preserving revision conflict semantics", async () => {
+    const harness = await makeHarness();
+    for (const provider of ["xai", "together", "nautilo-gateway", "gateway"] as const) {
+      const response = await harness.app.inject({
+        method: "PUT", url: `/api/account/provider-credentials/${provider}`,
+        headers: auth(), payload: { apiKey: SENTINEL },
+      });
+      expect(response.statusCode).toBe(422);
+      expect(body(response)).toEqual({
+        error: "invalid_provider", committed: false, retryable: false, repair: null,
+      });
+    }
+
+    const fencedRetry = await harness.app.inject({
+      method: "PUT", url: "/api/account/provider-credentials/xai",
+      headers: auth(), payload: { apiKey: SENTINEL, expectedRevision: 1 },
+    });
+    expect(fencedRetry.statusCode).toBe(409);
+    expect(body(fencedRetry)).toEqual({
+      error: "credential_conflict", committed: false,
+      retryable: false, repair: "reread_metadata",
+    });
+    expect(harness.records.size).toBe(0);
+    expect(harness.auditEvents).toEqual([]);
+  });
+
+  test("allows actor-scoped replacement of retained provider rows", async () => {
+    for (const provider of ["xai", "together", "nautilo-gateway", "gateway"] as const) {
+      const custody = createPersonalProviderCustody();
+      const existing = credential(custody, {
+        userId: USER_A, provider, plaintext: `${SENTINEL}-old-${provider}`,
+      });
+      const harness = await makeHarness({ custody, records: [existing] });
+      const replacementSecret = `${SENTINEL}-new-${provider}`;
+
+      const response = await harness.app.inject({
+        method: "PUT", url: `/api/account/provider-credentials/${provider}`,
+        headers: auth(), payload: { apiKey: replacementSecret, expectedRevision: 1 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(body(response)).toMatchObject({
+        committed: true, credential: { provider, id: existing.id, revision: 2 },
+      });
+      const replaced = harness.records.get(key(USER_A, provider))!;
+      expect(decryptPersonalProviderCredential(custody, replaced.envelope, replaced))
+        .toBe(replacementSecret);
+      expect(harness.auditEvents).toHaveLength(1);
+      expect(harness.auditEvents[0]).toMatchObject({
+        actorId: USER_A, provider, credentialId: existing.id, revision: 2, action: "replaced",
+      });
+    }
+
+    const custody = createPersonalProviderCustody();
+    const foreign = credential(custody, {
+      userId: USER_B, provider: "xai", plaintext: `${SENTINEL}-foreign-xai`,
+    });
+    const foreignHarness = await makeHarness({ custody, records: [foreign] });
+    const rejected = await foreignHarness.app.inject({
+      method: "PUT", url: "/api/account/provider-credentials/xai",
+      headers: auth(USER_A), payload: { apiKey: `${SENTINEL}-actor-a` },
+    });
+    expect(rejected.statusCode).toBe(422);
+    expect(body(rejected)["error"]).toBe("invalid_provider");
+    expect(foreignHarness.records.get(key(USER_B, "xai"))).toEqual(foreign);
+    expect(foreignHarness.auditEvents).toEqual([]);
+  });
+
   test("derives ownership exclusively from the session and never probes another Human's row", async () => {
     const custody = createPersonalProviderCustody();
     const foreign = credential(custody, { userId: USER_B, provider: "openai", plaintext: `${SENTINEL}-foreign` });
     const harness = await makeHarness({ custody, records: [foreign] });
 
     const listed = await harness.app.inject({ method: "GET", url: "/api/account/provider-credentials", headers: auth(USER_A) });
-    expect(body(listed)).toEqual({ credentials: [] });
+    expect(body(listed)["credentials"]).toEqual([]);
     const validateMissing = await harness.app.inject({
       method: "POST", url: "/api/account/provider-credentials/openai/validate",
       headers: auth(USER_A), payload: { expectedRevision: 1 },
@@ -432,7 +577,7 @@ describe("personal provider credential routes", () => {
     expect(listed.statusCode).toBe(200);
     expect(body(listed)).toMatchObject({ credentials: [{
       provider: "anthropic", revision: 1, validationStatus: "unverified",
-      validatedAt: null, requiresReplacement: true,
+      validatedAt: null, requiresReplacement: true, masked: null,
     }] });
 
     const blockedValidation = await harness.app.inject({
@@ -452,7 +597,9 @@ describe("personal provider credential routes", () => {
       headers: auth(), payload: { apiKey: replacementSecret, expectedRevision: 1 },
     });
     expect(replaced.statusCode).toBe(200);
-    expect(body(replaced)).toMatchObject({ credential: { revision: 2, requiresReplacement: false } });
+    expect(body(replaced)).toMatchObject({
+      credential: { revision: 2, requiresReplacement: false, masked: "sk-perso..." },
+    });
     const current = harness.records.get(key(USER_A, "anthropic"))!;
     expect(current.envelope.keyId).toBe(resetCustody.keyId);
     expect(decryptPersonalProviderCredential(resetCustody, current.envelope, current)).toBe(replacementSecret);

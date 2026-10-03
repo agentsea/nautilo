@@ -1,9 +1,6 @@
 import { checkKeysHealth } from "./health-checker";
-import {
-  computeHasLlmFromKeys,
-  managedGatewayIsConfigured,
-} from "./compute-has-llm";
-import { firstDoctorHint, getAllKeyDefinitions, maskValue } from "./key-registry";
+import { computeHasLlmFromKeys } from "./compute-has-llm";
+import { firstDoctorHint, getAllKeyDefinitions, getKeyDefinition, maskValue } from "./key-registry";
 import { MODE_REGISTRY } from "./mode-registry";
 import { parseCheckInput } from "./schemas";
 import { isCloudMode } from "@nautilo/config";
@@ -15,6 +12,7 @@ import type {
   ModeReport,
   ModeReportEntry,
 } from "./types";
+import { ConfigGuardError } from "./types";
 
 export type {
   AuditActor,
@@ -37,14 +35,6 @@ export type {
   TransactionResult,
 } from "./types";
 export { ConfigGuardError } from "./types";
-export {
-  isManagedGatewayKey,
-  managedGatewayKeyUrl,
-  normalizeManagedGatewayBaseUrl,
-  MANAGED_GATEWAY_API_KEY_ENV_VAR,
-  MANAGED_GATEWAY_BASE_URL_ENV_VAR,
-} from "./managed-gateway";
-
 export {
   getAllKeyDefinitions,
   getKeyByEnvVar,
@@ -153,7 +143,6 @@ export type {
 
 function buildSummary(
   keys: KeyReport[],
-  env: NodeJS.ProcessEnv,
 ): CheckSummary {
   let configured = 0;
   let verified = 0;
@@ -178,10 +167,9 @@ function buildSummary(
     return r?.status === "verified" || r?.status === "present";
   };
 
-  const hasLlm = computeHasLlmFromKeys(keys, env);
+  const hasLlm = computeHasLlmFromKeys(keys);
   const hasEmbeddings = ok("openai")
     || ok("openrouter")
-    || managedGatewayIsConfigured(keys, env)
     || ok("venice");
   const hasVoice = ok("elevenlabs");
   const hasSearch = ok("tavily");
@@ -202,7 +190,10 @@ function buildSummary(
 }
 
 export async function check(input?: unknown): Promise<CheckResult> {
-  const { validate } = parseCheckInput(input);
+  const { validate, providerId } = parseCheckInput(input);
+  if (providerId !== undefined && !getKeyDefinition(providerId)) {
+    throw new ConfigGuardError("VALIDATION", "Unknown provider");
+  }
   const validateKeys = validate ?? false;
   const env = process.env;
   const keys: KeyReport[] = [];
@@ -244,7 +235,7 @@ export async function check(input?: unknown): Promise<CheckResult> {
   if (validateKeys) {
     const health = await checkKeysHealth(
       env,
-      getAllKeyDefinitions().map((k) => k.id),
+      providerId === undefined ? getAllKeyDefinitions().map((k) => k.id) : [providerId],
     );
     for (const k of keys) {
       if (k.status !== "present") {
@@ -266,7 +257,7 @@ export async function check(input?: unknown): Promise<CheckResult> {
     }
   }
 
-  return { keys, summary: buildSummary(keys, env) };
+  return { keys, summary: buildSummary(keys) };
 }
 
 /**

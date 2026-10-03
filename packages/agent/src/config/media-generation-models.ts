@@ -29,15 +29,7 @@ export function listMediaGenerationModels(
   env: NodeJS.ProcessEnv = process.env,
 ): MediaGenerationModel[] {
   const output = kind === "music" ? "audio" : kind;
-  // The managed Gateway supports chat and embeddings only. Evaluate catalog
-  // credential availability for media using the existing direct credentials,
-  // while retaining every routing/privacy/catalog decision from the resolver.
-  const directMediaEnv = {
-    ...env,
-    NAUTILO_MANAGED_GATEWAY_API_KEY: undefined,
-    NAUTILO_MANAGED_GATEWAY_BASE_URL: undefined,
-  };
-  return listResolvedCatalogModels({ includeUnavailable: true, env: directMediaEnv })
+  return listResolvedCatalogModels({ includeUnavailable: true, env })
     .filter((row) => row.workload === "generation"
       && row.generation?.family === kind
       && row.output.includes(output)

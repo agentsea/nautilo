@@ -2,7 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { type AssistantModelSummary, ApiError } from "@nautilo/api-client/browser";
 import { apiClient } from "../../../lib/api";
-import { isSelectableModel, mergeModelRows } from "../../../lib/model-availability";
+import { isSelectableModel } from "../../../lib/model-availability";
+import {
+  loadCallerModelRows,
+  PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT,
+} from "../../../lib/caller-model-availability";
 import { useProfile } from "../../../hooks/use-profile";
 import { useCan } from "../../../hooks/use-can";
 import {
@@ -55,6 +59,7 @@ export function FallbackSection() {
   const [draftChain, setDraftChain] = useState<string[]>([]);
   const [addPick, setAddPick] = useState("");
   const [save, setSave] = useState<SaveState>("idle");
+  const [modelRefresh, setModelRefresh] = useState(0);
   const draftDirtyRef = useRef(false);
 
   useEffect(() => {
@@ -65,19 +70,21 @@ export function FallbackSection() {
 
   useEffect(() => {
     if (!enabled) return;
+    const refresh = () => setModelRefresh((revision) => revision + 1);
+    window.addEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, refresh);
+  }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     void (async () => {
       setLoadError(null);
       try {
         const retainedIds = profile?.fallback?.chain ?? [];
-        const [raw, retained] = await Promise.all([
-          apiClient.getModels(),
-          retainedIds.length > 0
-            ? apiClient.resolveRetainedModels(retainedIds)
-            : Promise.resolve([]),
-        ]);
+        const rows = await loadCallerModelRows(apiClient, retainedIds);
         if (cancelled) return;
-        setModels(mergeModelRows(raw.filter(isSelectableModel), retained));
+        setModels(rows);
       } catch (e) {
         if (!cancelled) {
           setLoadError(e instanceof Error ? e.message : "Failed to load models");
@@ -87,7 +94,7 @@ export function FallbackSection() {
     return () => {
       cancelled = true;
     };
-  }, [enabled, profile?.fallback?.chain]);
+  }, [enabled, modelRefresh, profile?.agentIdentity, profile?.fallback?.chain]);
 
   useEffect(() => {
     if (!enabled || !profile) return;

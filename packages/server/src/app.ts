@@ -4607,7 +4607,8 @@ export async function createApp(options?: CreateAppOptions) {
     startupReceiptSecret: () => requirePairingPepper(),
   });
   publicJoinRoutes(app, {
-    inviteToken: process.env["NAUTILO_PUBLIC_JOIN_INVITE_TOKEN"],
+    joinUrl: `${resolvePublicBaseUrl(options)}/join`,
+    legacyInviteToken: process.env["NAUTILO_PUBLIC_JOIN_INVITE_TOKEN"],
     isEnrollmentOpen: async () => !(await readServerModerationPolicy()).joinsPaused,
   });
   enrollmentReviewRoutes(app);

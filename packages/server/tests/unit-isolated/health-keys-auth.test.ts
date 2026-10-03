@@ -230,5 +230,30 @@ describe("GET /api/health/keys + POST /api/health/keys/validate (D445 Phase 1)",
       expect(res.statusCode).toBe(200);
       expect(checkMock).toHaveBeenCalledTimes(1);
     });
+
+    test("validates only the selected registered provider while returning the full shape", async () => {
+      const res = await makeApp(ADMIN_USER_ID).inject({
+        method: "POST",
+        url: "/api/health/keys/validate",
+        payload: { providerId: "openai" },
+        remoteAddress: "203.0.113.10",
+      });
+      expect(res.statusCode).toBe(200);
+      expect(checkMock).toHaveBeenCalledTimes(1);
+      expect(checkMock.mock.calls[0]?.[0]).toEqual({ validate: true, providerId: "openai" });
+      expect(JSON.parse(res.body)).toEqual({ keys: keysFixture, summary: { hasLlm: true } });
+    });
+
+    test("rejects an unknown selected provider without probing keys", async () => {
+      const res = await makeApp(ADMIN_USER_ID).inject({
+        method: "POST",
+        url: "/api/health/keys/validate",
+        payload: { providerId: "unknown-provider" },
+        remoteAddress: "203.0.113.10",
+      });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: "invalid_provider" });
+      expect(checkMock).not.toHaveBeenCalled();
+    });
   });
 });

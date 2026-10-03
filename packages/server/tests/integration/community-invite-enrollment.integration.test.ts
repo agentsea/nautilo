@@ -22,7 +22,7 @@ describe("server invite enrollment boundary", () => {
   let bearer: string;
 
   beforeAll(async () => {
-    fixture = await setupOwnerAppFixture({ suiteName: "invitefence" });
+    fixture = await setupOwnerAppFixture({ suiteName: "communityenrollment" });
     bearer = await fixture.mintOwnerBearer();
   });
 
@@ -30,42 +30,14 @@ describe("server invite enrollment boundary", () => {
     if (fixture) await fixture.cleanup();
   });
 
-  test("owner cannot mint a Community enrollment invite while Guest enrollment remains available", async () => {
-    const before = await fixture.db
-      .select({ id: invites.id })
-      .from(invites)
-      .where(eq(invites.createdBy, fixture.ownerId));
-
-    const blocked = await authedInject(fixture.app, {
-      method: "POST",
-      url: "/api/invites",
-      bearer,
-      payload: {
-        kind: "server",
-        targetGroupRoleSlug: "community",
-        maxUses: 1,
-      },
-    });
-    expect(blocked.statusCode).toBe(403);
-    expect(blocked.json<{ error: string }>()).toEqual({
-      error: "target_role_forbidden",
-    });
-
-    const afterBlocked = await fixture.db
-      .select({ id: invites.id })
-      .from(invites)
-      .where(eq(invites.createdBy, fixture.ownerId));
-    expect(afterBlocked.map((row) => row.id).sort()).toEqual(
-      before.map((row) => row.id).sort(),
-    );
-
+  test("owner mints a Community enrollment invite through the ordinary ladder path", async () => {
     const allowed = await authedInject(fixture.app, {
       method: "POST",
       url: "/api/invites",
       bearer,
       payload: {
         kind: "server",
-        targetGroupRoleSlug: "guest",
+        targetGroupRoleSlug: "community",
         maxUses: 1,
       },
     });
@@ -85,75 +57,52 @@ describe("server invite enrollment boundary", () => {
       .where(
         and(
           eq(invites.id, allowedBody.id),
-          eq(groups.type, "guests"),
+          eq(groups.type, "communities"),
         ),
       )
       .limit(1);
     expect(persisted?.targetGroupId).toBeString();
   });
 
-  test("direct provisioning rejects Community before creating a user while Guest provisioning remains available", async () => {
+  test("direct provisioning assigns Community through the ordinary ladder path", async () => {
     const priorSecret = process.env["NAUTILO_PROVISIONING_IDEMPOTENCY_SECRET"];
     process.env["NAUTILO_PROVISIONING_IDEMPOTENCY_SECRET"] =
-      "integration-only-community-fence-secret";
+      "integration-only-community-enrollment-secret";
     const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
     const communityHandle = `community${suffix}`;
-    const guestHandle = `guest${suffix}`;
-    let guestUserId: string | null = null;
+    let communityUserId: string | null = null;
 
     try {
-      const blocked = await authedInject(fixture.app, {
-        method: "POST",
-        url: "/api/admin/users/provision",
-        bearer,
-        headers: { "idempotency-key": `community-fence-${crypto.randomUUID()}` },
-        payload: {
-          handle: communityHandle,
-          displayName: "Community Fence Target",
-          roleSlug: "community",
-        },
-      });
-      expect(blocked.statusCode).toBe(400);
-      expect(blocked.json<{ code: string }>()).toEqual({
-        code: "invalid_provision_intent",
-      });
-      expect(
-        await fixture.db
-          .select({ id: users.id })
-          .from(users)
-          .where(eq(users.handle, communityHandle)),
-      ).toHaveLength(0);
-
       const allowed = await authedInject(fixture.app, {
         method: "POST",
         url: "/api/admin/users/provision",
         bearer,
-        headers: { "idempotency-key": `guest-enrollment-${crypto.randomUUID()}` },
+        headers: { "idempotency-key": `community-enrollment-${crypto.randomUUID()}` },
         payload: {
-          handle: guestHandle,
-          displayName: "Guest Enrollment Target",
-          roleSlug: "guest",
+          handle: communityHandle,
+          displayName: "Community Enrollment Target",
+          roleSlug: "community",
         },
       });
       expect(allowed.statusCode).toBe(200);
       const body = allowed.json<{ memberId: string; roleSlug: string }>();
-      guestUserId = body.memberId;
-      expect(body.roleSlug).toBe("guest");
+      communityUserId = body.memberId;
+      expect(body.roleSlug).toBe("community");
 
       const memberships = await fixture.db
         .select({ type: groups.type })
         .from(groupMembers)
         .innerJoin(groups, eq(groups.id, groupMembers.groupId))
-        .where(eq(groupMembers.userId, guestUserId));
-      expect(memberships.map((row) => row.type)).toContain("guests");
+        .where(eq(groupMembers.userId, communityUserId));
+      expect(memberships.map((row) => row.type)).toContain("communities");
     } finally {
-      if (guestUserId) {
+      if (communityUserId) {
         await authedInject(fixture.app, {
           method: "DELETE",
-          url: `/api/admin/users/${guestUserId}`,
+          url: `/api/admin/users/${communityUserId}`,
           bearer,
         });
-        await fixture.db.delete(users).where(eq(users.id, guestUserId));
+        await fixture.db.delete(users).where(eq(users.id, communityUserId));
       }
       if (priorSecret === undefined) {
         delete process.env["NAUTILO_PROVISIONING_IDEMPOTENCY_SECRET"];
@@ -163,7 +112,7 @@ describe("server invite enrollment boundary", () => {
     }
   });
 
-  test("membership mutation rejects a custom Group carrying Community while an equivalent Guest Group remains usable", async () => {
+  test("membership mutation accepts a legacy custom Group carrying Community", async () => {
     const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
     const [target] = await fixture.db
       .insert(users)
@@ -218,31 +167,9 @@ describe("server invite enrollment boundary", () => {
         { groupId: guestGroup.id, roleId: guestRole.id },
       ]);
 
-      const blocked = await authedInject(fixture.app, {
-        method: "PUT",
-        url: `/api/groups/${communityGroup.id}/members/${target.id}`,
-        bearer,
-      });
-      expect(blocked.statusCode).toBe(403);
-      expect(blocked.json<{ code: string; reason: string }>()).toMatchObject({
-        code: "authorization_denied",
-        reason: "community_enrollment_unavailable",
-      });
-      expect(
-        await fixture.db
-          .select({ userId: groupMembers.userId })
-          .from(groupMembers)
-          .where(
-            and(
-              eq(groupMembers.groupId, communityGroup.id),
-              eq(groupMembers.userId, target.id),
-            ),
-          ),
-      ).toHaveLength(0);
-
       const allowed = await authedInject(fixture.app, {
         method: "PUT",
-        url: `/api/groups/${guestGroup.id}/members/${target.id}`,
+        url: `/api/groups/${communityGroup.id}/members/${target.id}`,
         bearer,
       });
       expect(allowed.statusCode).toBe(200);
@@ -253,7 +180,7 @@ describe("server invite enrollment boundary", () => {
           .from(groupMembers)
           .where(
             and(
-              eq(groupMembers.groupId, guestGroup.id),
+              eq(groupMembers.groupId, communityGroup.id),
               eq(groupMembers.userId, target.id),
             ),
           ),
@@ -274,7 +201,7 @@ describe("server invite enrollment boundary", () => {
     }
   });
 
-  test("role mutation cannot assign Community to an occupied custom Group", async () => {
+  test("role mutation keeps the ordinary canonical-role protection for Community", async () => {
     const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
     const [target] = await fixture.db
       .insert(users)
@@ -335,9 +262,8 @@ describe("server invite enrollment boundary", () => {
       }>();
       expect(previewBody.ok).toBe(false);
       expect(previewBody.failures.map((failure) => failure.code)).toContain(
-        "community_enrollment_unavailable",
+        "protected_definition",
       );
-
       const applied = await authedInject(fixture.app, {
         method: "POST",
         url: "/api/admin/access-control/changes/apply",
@@ -349,7 +275,7 @@ describe("server invite enrollment boundary", () => {
         applied
           .json<{ code: string; failures: Array<{ code: string }> }>()
           .failures.map((failure) => failure.code),
-      ).toContain("community_enrollment_unavailable");
+      ).toContain("protected_definition");
 
       const remainingRoles = await fixture.db
         .select({ roleId: groupRoles.roleId })

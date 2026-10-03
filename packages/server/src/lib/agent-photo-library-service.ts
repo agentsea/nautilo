@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   agentPhotoSelectionRevisions,
   and,
@@ -18,7 +18,7 @@ import {
 import { error as logError } from "@nautilo/logger";
 import { gt } from "drizzle-orm";
 import type { AvatarRef } from "@nautilo/types";
-import { deriveOwnedAvatarBlobId } from "../photo-library/owned-avatar-staging";
+import { createOwnedAvatarLeaseToken, deriveOwnedAvatarBlobId, hasCurrentOwnedAvatarProtocol } from "../photo-library/owned-avatar-staging";
 import {
   AgentPhotoLibraryError,
   validateAgentPhotoLibraryAuthority,
@@ -193,6 +193,7 @@ export interface AgentPhotoSelectionInput {
   readonly expectedSelectionRevision: string;
   readonly origin: AgentPhotoSelectionOrigin;
   readonly target: AgentPhotoSelectionTarget;
+  readonly replaceMissingCurrent?: boolean;
 }
 
 export interface AgentPhotoUndoInput {
@@ -666,7 +667,7 @@ function entryAvatarKind(entry: OwnedPhotoEntry): "generated" | "uploaded" {
 }
 
 /**
- * The sole mutation spine for D487 Agent-photo selection and Undo.
+ * The sole mutation spine for Agent-photo selection and Undo.
  *
  * Callers must resolve an authority tuple first. The service does not trust it:
  * the durable instance identity, canonical actors mirror, and Agent profile are
@@ -735,7 +736,7 @@ export class AgentPhotoLibraryService {
         )),
       ]);
       if ((active[0]?.count ?? 0) + (reserved[0]?.count ?? 0) + input.slotCount > ACTIVE_ENTRY_LIMIT) {
-        const leaseToken = randomUUID();
+        const leaseToken = createOwnedAvatarLeaseToken();
         await tx.insert(photoLibraryOperations).values({
           serverInstanceId: input.authority.serverInstanceId,
           viewerUserId: input.authority.viewerUserId,
@@ -768,7 +769,7 @@ export class AgentPhotoLibraryService {
         };
       }
       const expiresAt = new Date(now.getTime() + CREATE_RESERVATION_MS);
-      const leaseToken = randomUUID();
+      const leaseToken = createOwnedAvatarLeaseToken();
       await tx.insert(photoLibraryOperations).values({
         serverInstanceId: input.authority.serverInstanceId,
         viewerUserId: input.authority.viewerUserId,
@@ -957,6 +958,9 @@ export class AgentPhotoLibraryService {
       }
       if (operation.reservedSlots !== input.entries.length) {
         throw new AgentPhotoLibraryError(failure("idempotency_mismatch", "Photo creation batch does not match its reservation"));
+      }
+      if (!hasCurrentOwnedAvatarProtocol(input.leaseToken)) {
+        throw new AgentPhotoLibraryError(failure("operation_incomplete", "Legacy photo reservations must be drained before upgrading"));
       }
       const expectedSemantics = canonicalCreateSemantics(input.source, input.semantics);
       for (const [ordinal, entry] of input.entries.entries()) {
@@ -1353,6 +1357,7 @@ export class AgentPhotoLibraryService {
       operation: "select",
       origin: input.origin,
       target: canonicalTarget(input.target),
+      ...(input.replaceMissingCurrent === true ? { replaceMissingCurrent: true } : {}),
     }) };
   }
 
@@ -1366,7 +1371,9 @@ export class AgentPhotoLibraryService {
       const replay = await this.#findReplay(tx, "select", input, fingerprint);
       if (replay) return replay;
 
-      const beforeEntry = await this.#resolveCurrentEntry(tx, input.authority, profile.avatarRef);
+      // Replacing an unindexed legacy reference does not grant access to its
+      // bytes. Record the old pointer for history, with no owned undo target.
+      const beforeEntry = await this.#resolveCurrentEntry(tx, input.authority, profile.avatarRef, input.replaceMissingCurrent === true);
 
       if (profile.avatarSelectionRevision !== expectedRevision) {
         return this.#recordFailure(tx, "select", input, fingerprint, failure(
@@ -1859,6 +1866,7 @@ export class AgentPhotoLibraryService {
     tx: Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0],
     authority: AgentPhotoLibraryAuthority,
     avatarRef: AvatarRef | null,
+    allowMissing = false,
   ): Promise<OwnedPhotoEntry | null> {
     if (!currentCustomRef(avatarRef)) return null;
     const [entry] = await tx
@@ -1875,6 +1883,7 @@ export class AgentPhotoLibraryService {
       .limit(1)
       .for("update");
     if (!entry) {
+      if (allowMissing) return null;
       throw new AgentPhotoLibraryError(failure(
         "photo_not_found",
         "The current custom Agent photo has no owned library entry",
@@ -1953,11 +1962,10 @@ export class AgentPhotoLibraryService {
       return { entry: null };
     }
     if (!expectedEntryId) {
-      throw new AgentPhotoLibraryError(failure(
-        "photo_library_unavailable",
-        "Custom selection revision does not name its owned entry",
-        true,
-      ));
+      return {
+        entry: null,
+        error: failure("photo_not_found", "The previous Agent photo has no owned library entry"),
+      };
     }
     const [entry] = await tx
       .select()

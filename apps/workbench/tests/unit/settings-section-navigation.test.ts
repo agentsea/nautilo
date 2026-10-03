@@ -7,12 +7,13 @@ import {
 } from "../../src/pages/settings/settings-page";
 
 describe("desktop Settings section navigation", () => {
-  test("puts My Agents and desktop-only This Mac immediately after the Human profile", () => {
+  test("puts Personal API keys before My Agents and desktop-only This Mac", () => {
     const profileIndex = SETTINGS_SECTIONS.findIndex((section) => section.id === "profile");
     expect(SETTINGS_SECTIONS[profileIndex]).toEqual({ id: "profile", label: "Profile", catalogueTarget: "settings.profile" });
-    expect(SETTINGS_SECTIONS[profileIndex + 1]).toEqual({ id: "my-agents", label: "My Agents", catalogueTarget: "settings.my_agents" });
-    expect(SETTINGS_SECTIONS[profileIndex + 2]).toEqual({ id: "this-mac", label: "This Mac", catalogueTarget: "settings.this_mac" });
-    expect(SETTINGS_SECTIONS[profileIndex + 3]).toEqual({ id: "notifications", label: "Notifications", catalogueTarget: "settings.notifications" });
+    expect(SETTINGS_SECTIONS[profileIndex + 1]).toEqual({ id: "personal-provider-keys", label: "Personal API keys", catalogueTarget: "settings.personal_api_keys" });
+    expect(SETTINGS_SECTIONS[profileIndex + 2]).toEqual({ id: "my-agents", label: "My Agents", catalogueTarget: "settings.my_agents" });
+    expect(SETTINGS_SECTIONS[profileIndex + 3]).toEqual({ id: "this-mac", label: "This Mac", catalogueTarget: "settings.this_mac" });
+    expect(SETTINGS_SECTIONS[profileIndex + 4]).toEqual({ id: "notifications", label: "Notifications", catalogueTarget: "settings.notifications" });
     expect(SETTINGS_SECTIONS.some((section) => section.id === "playback")).toBeFalse();
     expect(SETTINGS_SECTIONS.some((section) => section.id === "web-research")).toBeFalse();
     expect(activeSectionForHash("playback")).toBeNull();
@@ -47,11 +48,11 @@ describe("desktop Settings section navigation", () => {
     expect(activeSectionForHash("this-mac")).toBe("this-mac");
 
     const desktop = visibleSettingsSections({
-      managedByCloud: false,
+      canCreateInvites: false,
       isDesktopShell: true,
     });
     const web = visibleSettingsSections({
-      managedByCloud: false,
+      canCreateInvites: false,
       isDesktopShell: false,
     });
     expect(desktop.some((section) => section.id === "this-mac")).toBeTrue();

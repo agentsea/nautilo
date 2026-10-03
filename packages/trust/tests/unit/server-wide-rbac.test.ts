@@ -8,11 +8,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { M128_ROLE_CAPABILITIES, M128_ROLE_SLUGS } from "@nautilo/db";
-import {
-  assertCommunityEnrollmentAvailable,
-  MembershipOpError,
-  SERVER_ROLE_RANK,
-} from "../../src/queries.ts";
+import { SERVER_ROLE_RANK } from "../../src/queries.ts";
 
 const APPROVER_CAP = "approve_destructive_actions";
 
@@ -176,26 +172,5 @@ describe("M128 server-wide RBAC (T15, grid + ladder)", () => {
         )
         .sort(),
     );
-  });
-
-  test("Community enrollment fence follows the Role onto custom Groups", () => {
-    for (const [groupType, roleSlugs] of [
-      ["communities", ["community"]],
-      ["custom-builders", ["contributor", "community"]],
-    ] as const) {
-      expect(() =>
-        assertCommunityEnrollmentAvailable(groupType, roleSlugs),
-      ).toThrow(MembershipOpError);
-      try {
-        assertCommunityEnrollmentAvailable(groupType, roleSlugs);
-      } catch (error) {
-        expect((error as MembershipOpError).opCode).toBe(
-          "community_enrollment_unavailable",
-        );
-      }
-    }
-    expect(() =>
-      assertCommunityEnrollmentAvailable("custom-builders", ["contributor"]),
-    ).not.toThrow();
   });
 });

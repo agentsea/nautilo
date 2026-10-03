@@ -7,6 +7,7 @@ import {
   getDefaultImageModel,
   kickRuntimeModelCatalogRefresh,
   MAX_RETAINED_MODEL_IDS,
+  resolveCatalogModel,
   resolveRetainedModels,
   resolveProviderKey,
 } from "@nautilo/agent";
@@ -75,6 +76,29 @@ export async function resolveCallerModelAvailability(
   if (base.availability !== "selectable" && base.availability !== "missing-key") {
     return { model: base, funding: null, selectableInThisRelease: false };
   }
+  // Missing credentials can mask purpose qualification in the generic
+  // catalogue. A caller's key must never make an image-only or other
+  // non-chat model selectable for foreground text.
+  const catalogModel = resolveCatalogModel(modelId, {
+    ...(options.allowChinaUpstream !== undefined
+      ? { allowChinaUpstream: options.allowChinaUpstream }
+      : {}),
+    env: {},
+  });
+  if (catalogModel.workload !== "chat" || !catalogModel.output.includes("text")) {
+    return {
+      model: {
+        ...base,
+        enabled: false,
+        availability: "unsupported-capability",
+        unavailableReason: catalogModel.output.includes("text")
+          ? "model cannot be used for chat"
+          : "model does not produce text",
+      },
+      funding: null,
+      selectableInThisRelease: false,
+    };
+  }
 
   try {
     const funding = await (deps.resolveFunding ?? resolveModelFunding)({
@@ -82,6 +106,21 @@ export async function resolveCallerModelAvailability(
       modelId,
       workload: "foreground_text_chat",
     });
+    if (funding.kind === "server" && options.purpose === "chat-tools"
+      && catalogModel.features.tools !== true) {
+      return {
+        model: {
+          ...base,
+          enabled: false,
+          availability: "unsupported-capability",
+          unavailableReason: catalogModel.features.tools === false
+            ? "model does not support tool/function calling"
+            : "tool/function calling capability is unverified",
+        },
+        funding: null,
+        selectableInThisRelease: false,
+      };
+    }
     // Existing server-funded selection still requires a tool-capable chat
     // model. Personal-funded selection is the narrower text-only surface.
     const selectedBase = funding.kind === "server" && options.purpose === "chat-tools"
@@ -213,7 +252,7 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
         (await resolveAvailability(
           humanUserId,
           candidate.id,
-          { purpose: "chat", allowChinaUpstream, env: {} },
+          { purpose: "chat-tools", allowChinaUpstream, env: {} },
         )).model,
       ),
     );

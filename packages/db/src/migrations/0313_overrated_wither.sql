@@ -1,0 +1,2 @@
+ALTER TABLE "server_provider_policy" ADD COLUMN "funding_preference" text DEFAULT 'personal_first' NOT NULL;--> statement-breakpoint
+ALTER TABLE "server_provider_policy" ADD CONSTRAINT "server_provider_policy_funding_preference" CHECK ("server_provider_policy"."funding_preference" in ('personal_first', 'server_first'));

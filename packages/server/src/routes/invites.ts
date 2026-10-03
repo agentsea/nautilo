@@ -21,6 +21,7 @@ import {
   desc,
   inArray,
   isNull,
+  inviteTokenCondition,
   db,
 } from "@nautilo/db";
 import {
@@ -608,11 +609,10 @@ export function invitesRoutes(app: FastifyInstance, opts: InvitesRoutesOpts): vo
     if (!token.startsWith(INV_PREFIX)) {
       return reply.code(404).send({ error: "not_found" });
     }
-    const hash = sha256Hex(token);
     const [row] = await db
       .select()
       .from(invites)
-      .where(eq(invites.tokenHash, hash))
+      .where(inviteTokenCondition(token))
       .limit(1);
     if (!row || row.revokedAt) {
       return reply.code(404).send({ error: "not_found" });
@@ -754,7 +754,7 @@ export function invitesRoutes(app: FastifyInstance, opts: InvitesRoutesOpts): vo
       const [invRow] = await db
         .select({ kind: invites.kind })
         .from(invites)
-        .where(eq(invites.tokenHash, hash))
+        .where(inviteTokenCondition(token))
         .limit(1);
 
       auditEvent(request, {
@@ -804,11 +804,10 @@ export function invitesRoutes(app: FastifyInstance, opts: InvitesRoutesOpts): vo
       if (!token.startsWith(INV_PREFIX)) {
         return reply.code(404).send({ error: "not_found" });
       }
-      const hash = sha256Hex(token);
       const [row] = await db
         .select()
         .from(invites)
-        .where(eq(invites.tokenHash, hash))
+        .where(inviteTokenCondition(token))
         .limit(1);
       if (!row || row.revokedAt) {
         return reply.code(404).send({ error: "not_found" });
@@ -1051,7 +1050,7 @@ export function invitesRoutes(app: FastifyInstance, opts: InvitesRoutesOpts): vo
       // `targetGroupId` (the canonical Group the invitee joins) and
       // optionally `targetRoomId` (when the invitee should also be added
       // to a specific Room). The wire-level field is `targetGroupRoleSlug`
-      // (one of the six ladder slugs), mapped to the canonical Group via
+      // (one of the seven ladder slugs), mapped to the canonical Group via
       // SERVER_ROLE_TO_GROUP_TYPE. `targetAgentId` is no longer accepted;
       // older clients that still emit it get an error.
       const roleSlug = body["targetGroupRoleSlug"] as
@@ -1097,12 +1096,12 @@ export function invitesRoutes(app: FastifyInstance, opts: InvitesRoutesOpts): vo
       }
 
       const token = mintInviteToken();
-      const tokenHash = sha256Hex(token);
 
       const [inserted] = await db
         .insert(invites)
         .values({
-          tokenHash,
+          token,
+          tokenHash: null,
           kind: normalizedKind,
           targetGroupId,
           targetRoomId,
@@ -1235,6 +1234,7 @@ export function invitesRoutes(app: FastifyInstance, opts: InvitesRoutesOpts): vo
           targetRoleSlug: r.targetGroupId
             ? (groupMap.get(r.targetGroupId)?.slug ?? null)
             : null,
+          codeAvailable: r.token !== null,
         })),
         page: {
           returned: rows.length,
@@ -1245,6 +1245,41 @@ export function invitesRoutes(app: FastifyInstance, opts: InvitesRoutesOpts): vo
             : null,
           continuationAvailable: true,
         },
+      });
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/api/invites/:id/share",
+    async (request, reply) => {
+      const userId = request.sessionUserId;
+      if (!userId) {
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+      const authority = await resolveInviteAuthority(userId);
+      if (!authority.canCreateOwn && !authority.canManageAll) {
+        return reply.code(403).send({ error: "forbidden" });
+      }
+      const [row] = await db
+        .select({ token: invites.token, createdBy: invites.createdBy })
+        .from(invites)
+        .where(eq(invites.id, request.params.id))
+        .limit(1);
+      if (!row) {
+        return reply.code(404).send({ error: "not_found" });
+      }
+      if (!authority.canManageAll && row.createdBy !== userId) {
+        return reply.code(403).send({ error: "forbidden" });
+      }
+      if (row.token === null) {
+        return reply.code(409).send({
+          error: "invite_code_unavailable",
+          code: "invite_code_unavailable",
+        });
+      }
+      return reply.send({
+        code: row.token,
+        url: `${baseUrl}/redeem/${encodeURIComponent(row.token)}`,
       });
     },
   );

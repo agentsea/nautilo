@@ -3,11 +3,14 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
+import { inspectLegacyAvatarMedia } from "../../src/photo-library/legacy-current-reference-backfill";
 import { getAvatarBlobDir } from "../../src/routes/_helpers/avatar";
 import { hasCompleteOwnedAvatarMedia, readStrictOwnedAvatarMedia } from "../../src/photo-library/strict-avatar-media";
 import {
+  createOwnedAvatarLeaseToken,
   deriveOwnedAvatarBlobId,
   discardOwnedAvatarStaging,
+  discardExpiredOwnedAvatarArtifacts,
   discardPublishedOwnedAvatarAfterNoCommit,
   publishStagedOwnedAvatar,
   stageOwnedAvatar,
@@ -35,7 +38,7 @@ async function expectRejected(action: () => Promise<unknown>, message: string): 
 }
 
 async function writeUploaded(bytes: Buffer): Promise<string> {
-  const blobId = `d487-strict-${randomUUID()}`;
+  const blobId = `strict-${randomUUID()}`;
   blobs.push(blobId);
   await mkdir(getAvatarBlobDir("uploaded"), { recursive: true });
   await writeFile(join(getAvatarBlobDir("uploaded"), `${blobId}.png`), bytes);
@@ -47,6 +50,24 @@ afterAll(async () => {
 });
 
 describe("strict owned avatar media", () => {
+  test("refuses to stage or mark legacy artifacts cleaned under the current hash contract", async () => {
+    const scope = { serverInstanceId: randomUUID(), ownerUserId: randomUUID(), agentId: randomUUID() };
+    const operationId = randomUUID();
+    const leaseToken = randomUUID();
+    const bytes = await sharp({ create: { width: 256, height: 256, channels: 4, background: "red" } }).png().toBuffer();
+    const legacyBlobId = await writeUploaded(bytes);
+    const legacyStaging = join(getAvatarBlobDir("uploaded"), ".photo-library-staging", operationId, leaseToken);
+    await mkdir(legacyStaging, { recursive: true });
+    await expectRejected(() => stageOwnedAvatar({ scope, operationId, leaseToken, ordinal: 0, kind: "uploaded", bytes }), "drained before upgrading");
+    await expectRejected(() => discardExpiredOwnedAvatarArtifacts({
+      scope, operationId, leaseToken, slotCount: 1,
+      proof: { kind: "confirmed_no_committed_owned_rows", operationId, leaseToken },
+    }), "previous server version");
+    const media = await readStrictOwnedAvatarMedia({ kind: "uploaded", entryId: randomUUID(), blobId: legacyBlobId, variant: "full", mediaMimeType: "image/png", mediaByteSize: bytes.length, mediaSha256: digest(bytes) });
+    expect(media.ok).toBe(true);
+    if (media.ok) expect(media.bytes).toEqual(bytes);
+    await rm(legacyStaging, { recursive: true, force: true });
+  });
   test("never invokes a candidate producer before reservation and skips it for an exact replay", async () => {
     const scope = { serverInstanceId: randomUUID(), ownerUserId: randomUUID(), agentId: randomUUID() };
     const operationId = randomUUID();
@@ -91,7 +112,7 @@ describe("strict owned avatar media", () => {
   test("stages under the lease, publishes without overwrite, and requires matching no-commit proof before cleanup", async () => {
     const scope = { serverInstanceId: randomUUID(), ownerUserId: randomUUID(), agentId: randomUUID() };
     const operationId = randomUUID();
-    const leaseToken = randomUUID();
+    const leaseToken = createOwnedAvatarLeaseToken();
     const bytes = await sharp({ create: { width: 256, height: 256, channels: 4, background: "#bada55" } }).png().toBuffer();
     const staged = await stageOwnedAvatar({ scope, operationId, leaseToken, ordinal: 0, kind: "uploaded", bytes });
     expect(staged.blobId).toBe(deriveOwnedAvatarBlobId({ scope, operationId, ordinal: 0 }));
@@ -100,13 +121,13 @@ describe("strict owned avatar media", () => {
     try {
       // A second lease with the same scoped operation sees the existing exact
       // final as a replay, rather than replacing it through rename().
-      const replay = await stageOwnedAvatar({ scope, operationId, leaseToken: randomUUID(), ordinal: 0, kind: "uploaded", bytes });
+      const replay = await stageOwnedAvatar({ scope, operationId, leaseToken: createOwnedAvatarLeaseToken(), ordinal: 0, kind: "uploaded", bytes });
       await publishStagedOwnedAvatar(replay);
       await discardOwnedAvatarStaging(replay);
       await expectRejected(() => discardPublishedOwnedAvatarAfterNoCommit(staged, {
         kind: "confirmed_no_committed_owned_rows",
         operationId,
-        leaseToken: randomUUID(),
+        leaseToken: createOwnedAvatarLeaseToken(),
       }), "cleanup proof");
       expect(await Bun.file(finalPath).exists()).toBe(true);
       await discardPublishedOwnedAvatarAfterNoCommit(staged, {
@@ -124,7 +145,7 @@ describe("strict owned avatar media", () => {
   test("rejects malformed staging and refuses to overwrite a different final blob", async () => {
     const scope = { serverInstanceId: randomUUID(), ownerUserId: randomUUID(), agentId: randomUUID() };
     const operationId = randomUUID();
-    const leaseToken = randomUUID();
+    const leaseToken = createOwnedAvatarLeaseToken();
     const tooSmall = await sharp({ create: { width: 128, height: 128, channels: 4, background: "#111111" } }).png().toBuffer();
     await expectRejected(() => stageOwnedAvatar({ scope, operationId, leaseToken, ordinal: 0, kind: "uploaded", bytes: tooSmall }), "image contract");
     const bytes = await sharp({ create: { width: 256, height: 256, channels: 4, background: "#222222" } }).png().toBuffer();
@@ -146,7 +167,7 @@ describe("strict owned avatar media", () => {
   test("reconciles a partial generated original/thumbnail publish after no-commit proof", async () => {
     const scope = { serverInstanceId: randomUUID(), ownerUserId: randomUUID(), agentId: randomUUID() };
     const operationId = randomUUID();
-    const leaseToken = randomUUID();
+    const leaseToken = createOwnedAvatarLeaseToken();
     const bytes = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: "#8844cc" } }).png().toBuffer();
     const staged = await stageOwnedAvatar({ scope, operationId, leaseToken, ordinal: 0, kind: "generated", bytes });
     const original = join(getAvatarBlobDir("generated"), `${staged.blobId}.png`);
@@ -173,7 +194,7 @@ describe("strict owned avatar media", () => {
   test("leaves finals quarantined when the post-finalize database re-read is unavailable", async () => {
     const scope = { serverInstanceId: randomUUID(), ownerUserId: randomUUID(), agentId: randomUUID() };
     const operationId = randomUUID();
-    const leaseToken = randomUUID();
+    const leaseToken = createOwnedAvatarLeaseToken();
     const blobId = deriveOwnedAvatarBlobId({ scope, operationId, ordinal: 0 });
     const finalPath = join(getAvatarBlobDir("uploaded"), `${blobId}.png`);
     const unavailable: AgentPhotoLibraryCreateService = {
@@ -210,6 +231,29 @@ describe("strict owned avatar media", () => {
     }
   });
 
+  test("adopts, stages, and serves a full-size imported PNG as uploaded without changing its bytes", async () => {
+    const bytes = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: "#336699" } }).png().toBuffer();
+    const blobId = await writeUploaded(bytes);
+    const media = { mediaByteSize: bytes.length, mediaSha256: digest(bytes), mediaMimeType: "image/png" };
+    expect(await inspectLegacyAvatarMedia({ kind: "uploaded", blobId })).toMatchObject({ exists: true, ...media });
+    const read = { kind: "uploaded" as const, entryId: randomUUID(), blobId, ...media };
+    for (const variant of ["thumb", "full"] as const) {
+      const result = await readStrictOwnedAvatarMedia({ ...read, variant });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.bytes).toEqual(bytes);
+    }
+    expect(await hasCompleteOwnedAvatarMedia(read)).toBe(true);
+    expect(await readStrictOwnedAvatarMedia({ ...read, variant: "full", mediaSha256: "0".repeat(64) })).toEqual({ ok: false });
+    const operationId = randomUUID();
+    const leaseToken = createOwnedAvatarLeaseToken();
+    const staged = await stageOwnedAvatar({ scope: { serverInstanceId: randomUUID(), ownerUserId: randomUUID(), agentId: randomUUID() }, operationId, leaseToken, ordinal: 0, kind: "uploaded", bytes });
+    try {
+      expect(staged.sha256).toBe(digest(bytes));
+    } finally {
+      await discardOwnedAvatarStaging(staged);
+    }
+  });
+
   test("serves an original only when its entry size and sha256 match", async () => {
     const bytes = await sharp({ create: { width: 256, height: 256, channels: 4, background: "#ff0000" } }).png().toBuffer();
     const blobId = await writeUploaded(bytes);
@@ -235,7 +279,7 @@ describe("strict owned avatar media", () => {
   });
 
   test("rejects generated thumbnails that are not 256-square WebP", async () => {
-    const blobId = `d487-strict-${randomUUID()}`;
+    const blobId = `strict-${randomUUID()}`;
     const original = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: "#00ff00" } }).png().toBuffer();
     const invalidThumb = await sharp({ create: { width: 128, height: 128, channels: 4, background: "#00ff00" } }).webp().toBuffer();
     await mkdir(getAvatarBlobDir("generated"), { recursive: true });
@@ -255,7 +299,7 @@ describe("strict owned avatar media", () => {
   test("rejects symlinks, over-cap metadata, and a missing required generated thumbnail", async () => {
     const bytes = await sharp({ create: { width: 256, height: 256, channels: 4, background: "#0000ff" } }).png().toBuffer();
     const target = await writeUploaded(bytes);
-    const link = `d487-strict-link-${randomUUID()}`;
+    const link = `strict-link-${randomUUID()}`;
     blobs.push(link);
     await symlink(join(getAvatarBlobDir("uploaded"), `${target}.png`), join(getAvatarBlobDir("uploaded"), `${link}.png`));
     const linked = await readStrictOwnedAvatarMedia({
@@ -267,13 +311,13 @@ describe("strict owned avatar media", () => {
     });
     expect(overCap).toEqual({ ok: false });
     const missingThumb = await readStrictOwnedAvatarMedia({
-      kind: "generated", entryId: randomUUID(), blobId: `d487-strict-missing-${randomUUID()}`, variant: "thumb", mediaByteSize: 1, mediaSha256: "a".repeat(64), mediaMimeType: "image/png",
+      kind: "generated", entryId: randomUUID(), blobId: `strict-missing-${randomUUID()}`, variant: "thumb", mediaByteSize: 1, mediaSha256: "a".repeat(64), mediaMimeType: "image/png",
     });
     expect(missingThumb).toEqual({ ok: false });
   });
 
   test("requires the complete generated original and thumbnail set for lifecycle recovery", async () => {
-    const blobId = `d487-strict-complete-${randomUUID()}`;
+    const blobId = `strict-complete-${randomUUID()}`;
     const entryId = randomUUID();
     const original = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: "#c0ffee" } }).png().toBuffer();
     const thumbnail = await sharp(original).resize(256, 256).webp().toBuffer();

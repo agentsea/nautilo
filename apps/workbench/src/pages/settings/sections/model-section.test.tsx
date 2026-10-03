@@ -2,6 +2,7 @@ import { reapplyHappyDomGlobals } from "../../../../tests/bun-dom-preload";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { act } from "react";
 import type { AgentProfileFull } from "@nautilo/types";
 
 const agent: AgentProfileFull = {
@@ -22,6 +23,15 @@ const agent: AgentProfileFull = {
   fallback: { enabled: false, chain: [] },
 };
 let keySummaryCalls = 0;
+let callerModels: Array<{
+  id: string;
+  displayName: string;
+  provider: string;
+  priority: number;
+  costCoefficient: number;
+  availability: "selectable";
+}> = [];
+let capabilities = new Set<string>();
 
 mock.module("../../../hooks/use-profile", () => ({
   useProfile: () => ({
@@ -30,21 +40,12 @@ mock.module("../../../hooks/use-profile", () => ({
 }));
 
 mock.module("../../../hooks/use-can", () => ({
-  useCan: () => () => true,
+  useCan: () => (capability: string) => capabilities.has(capability),
 }));
 
 mock.module("../../../lib/api", () => ({
   apiClient: {
-    getModels: async () => [
-      {
-        id: "openrouter:openai/gpt-5.4",
-        displayName: "GPT-5.4 via OpenRouter",
-        provider: "openrouter",
-        priority: 1,
-        costCoefficient: 1,
-        availability: "selectable",
-      },
-    ],
+    getCallerModels: async () => callerModels,
     resolveRetainedModels: async () => [],
     getKeySummary: async () => {
       keySummaryCalls += 1;
@@ -76,10 +77,26 @@ mock.module("../../../lib/api", () => ({
 
 const { ModelSection } = await import("./model-section");
 
+async function flush(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
 beforeEach(() => {
   reapplyHappyDomGlobals();
   cleanup();
   keySummaryCalls = 0;
+  callerModels = [{
+    id: "openrouter:openai/gpt-5.4",
+    displayName: "GPT-5.4 via OpenRouter",
+    provider: "openrouter",
+    priority: 1,
+    costCoefficient: 1,
+    availability: "selectable",
+  }];
+  capabilities = new Set([
+    "read_server_settings",
+    "manage_connection_providers",
+  ]);
 });
 
 describe("ModelSection Agent scope", () => {
@@ -110,9 +127,25 @@ describe("ModelSection Agent scope", () => {
 
   test("does not inspect or hint at provider keys for a managed tenant", async () => {
     const view = render(<MemoryRouter><ModelSection showProviderKeyStatus={false} /></MemoryRouter>);
-    await waitFor(() => expect(view.queryByText("Loading…")).toBeNull());
+    await act(flush);
+    expect(view.queryByText("Loading…")).toBeNull();
     expect(keySummaryCalls).toBe(0);
     expect(view.queryByText(/API key for this choice/)).toBeNull();
     expect(view.queryByText(/API keys section/)).toBeNull();
+  });
+
+  test("sends a personal-key member with no runnable model to their own key settings", async () => {
+    callerModels = [];
+    capabilities = new Set(["use_personal_provider_credentials"]);
+    const view = render(<MemoryRouter><ModelSection /></MemoryRouter>);
+
+    await act(flush);
+    expect(view.queryByText("Loading…")).toBeNull();
+    const link = view.getByRole("link", { name: "personal provider key" });
+    expect(link.getAttribute("href")).toBe("/settings#personal-provider-keys");
+    expect(view.getByText(/No model is runnable for your account/)).toBeTruthy();
+    expect(view.queryByText(/server owner must add/i)).toBeNull();
+    expect(view.queryByText(/Provider key status is unavailable/i)).toBeNull();
+    expect(keySummaryCalls).toBe(0);
   });
 });

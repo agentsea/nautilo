@@ -19,7 +19,6 @@ import {
   orderedCanonicalGroups,
   userRoleLabel,
 } from "./user-helpers";
-import { isCommunityEnrollmentTarget } from "../../access-control/group-membership-authority";
 
 const UNCONTAINED_HOST_COMMANDS_GRANTEE_GROUP_TYPE =
   "uncontained_host_commands_grantees";
@@ -568,11 +567,8 @@ export function UserDetailPanel({
                 // Owners membership is an owner-only privilege; everything else
                 // rides on manage_members. The server enforces both; this mirrors.
                 const permitted = isOwnersRow ? isOwner : canManageMembers;
-                const communityEnrollmentUnavailable = !member && isCommunityEnrollmentTarget(group);
-                const disabled = !permitted || pendingGroupId != null || communityEnrollmentUnavailable;
-                const tooltip = communityEnrollmentUnavailable
-                  ? "Community enrollment is unavailable until personal-key chat launches."
-                  : !permitted
+                const disabled = !permitted || pendingGroupId != null;
+                const tooltip = !permitted
                   ? isOwnersRow
                     ? TRANSFER_OWNER_TOOLTIP
                     : "Requires manage_members."

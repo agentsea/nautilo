@@ -26,7 +26,10 @@ describe("server provider policy concurrent updates", () => {
   test("reports the committed value held behind another writer's row lock", async () => {
     const [original] = await blockerDb.select().from(serverProviderPolicy)
       .where(eq(serverProviderPolicy.id, "server"));
-    await upsertServerProviderPolicy(blockerDb, { allowPersonalProviderKeys: false });
+    await upsertServerProviderPolicy(blockerDb, {
+      allowPersonalProviderKeys: false,
+      fundingPreference: "personal_first",
+    });
 
     let releaseLock: () => void = () => {};
     const held = new Promise<void>((resolve) => { releaseLock = resolve; });
@@ -37,7 +40,7 @@ describe("server provider policy concurrent updates", () => {
         .where(eq(serverProviderPolicy.id, "server"))
         .for("update");
       await tx.update(serverProviderPolicy)
-        .set({ allowPersonalProviderKeys: true })
+        .set({ fundingPreference: "server_first" })
         .where(eq(serverProviderPolicy.id, "server"));
       signalLocked();
       await held;
@@ -51,16 +54,20 @@ describe("server provider policy concurrent updates", () => {
       releaseLock();
       await blocker;
       expect(await writer).toEqual({
-        previous: { allowPersonalProviderKeys: true },
-        effective: { allowPersonalProviderKeys: false },
+        previous: { allowPersonalProviderKeys: false, fundingPreference: "server_first" },
+        effective: { allowPersonalProviderKeys: false, fundingPreference: "server_first" },
       });
-      expect(await getServerProviderPolicy(writerDb)).toEqual({ allowPersonalProviderKeys: false });
+      expect(await getServerProviderPolicy(writerDb)).toEqual({
+        allowPersonalProviderKeys: false,
+        fundingPreference: "server_first",
+      });
     } finally {
       releaseLock();
       await blocker;
       if (original) {
         await upsertServerProviderPolicy(blockerDb, {
           allowPersonalProviderKeys: original.allowPersonalProviderKeys,
+          fundingPreference: original.fundingPreference,
         });
       } else {
         await blockerDb.delete(serverProviderPolicy).where(eq(serverProviderPolicy.id, "server"));

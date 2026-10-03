@@ -11,10 +11,11 @@ import type { CapabilitySlug } from "./capabilities";
 import {
   CAP_INVOKE_AGENTS,
   CAP_INVOKE_OTHER_AGENTS,
+  CAP_USE_PERSONAL_PROVIDER_CREDENTIALS,
   CAP_USE_SERVER_PROVIDER_CREDENTIALS,
   CAP_WRITE_ARTIFACTS,
 } from "./capabilities";
-import { and, eq, getSharedDirectDb, isNull, moderationAccessAllowedSql, taskInvocationOriginAllowedSql, sql, users } from "@nautilo/db";
+import { and, eq, getServerProviderPolicy, getSharedDirectDb, isNull, moderationAccessAllowedSql, taskInvocationOriginAllowedSql, sql, users } from "@nautilo/db";
 import { AmbiguousAgentOwnerError, findAgentOwnerUserId, getUserCapabilities } from "./queries";
 
 export type AgentInvocationOrigin =
@@ -48,6 +49,27 @@ export interface ArtifactWriteAdmissionInput {
 }
 
 export type ServerProviderCredentialOrigin = string;
+
+export interface ServerFundedOwnSoulAdmissionInput {
+  /** Exact authenticated Human requesting the setup service. */
+  readonly humanUserId: string;
+  /** Exact personal Genie whose Soul will be generated. */
+  readonly agentId: string;
+  readonly origin?: ServerProviderCredentialOrigin;
+}
+
+export interface ServerFundedOwnSoulAdmissionDeps {
+  getUserCapabilities(humanUserId: string): Promise<string[]>;
+  findAgentOwnerUserId(agentId: string): Promise<string | null>;
+  personalProviderKeysAllowed(): Promise<boolean>;
+}
+
+const DEFAULT_OWN_SOUL_DEPS: ServerFundedOwnSoulAdmissionDeps = {
+  getUserCapabilities,
+  findAgentOwnerUserId,
+  personalProviderKeysAllowed: async () =>
+    (await getServerProviderPolicy(getSharedDirectDb())).allowPersonalProviderKeys,
+};
 
 export interface ActionCapabilityAdmissionDeps {
   getUserCapabilities(humanUserId: string): Promise<string[]>;
@@ -362,6 +384,44 @@ export async function assertCanUseServerProviderCredentials(
   ) {
     throw new ServerProviderCredentialsDeniedError(humanUserId, origin);
   }
+}
+
+/**
+ * Admit the server-funded own-Genie Soul setup service without broadening the
+ * general server-provider capability. Existing server-funded Humans retain
+ * their established access. The setup exception is freshly resolved from the
+ * live switch, effective capabilities, and exact Genie ownership.
+ */
+export async function assertCanUseServerFundedOwnSoul(
+  input: ServerFundedOwnSoulAdmissionInput,
+  deps: ServerFundedOwnSoulAdmissionDeps = DEFAULT_OWN_SOUL_DEPS,
+): Promise<void> {
+  const humanUserId = input.humanUserId.trim();
+  const agentId = input.agentId.trim();
+  const deny = (): never => {
+    throw new ServerProviderCredentialsDeniedError(humanUserId, input.origin);
+  };
+  if (!humanUserId || !agentId) deny();
+
+  const capabilities = await deps.getUserCapabilities(humanUserId);
+  if (!capabilities.includes(CAP_USE_SERVER_PROVIDER_CREDENTIALS)) {
+    if (
+      !capabilities.includes(CAP_INVOKE_AGENTS)
+      || !capabilities.includes(CAP_USE_PERSONAL_PROVIDER_CREDENTIALS)
+    ) {
+      deny();
+    }
+    if (!(await deps.personalProviderKeysAllowed())) deny();
+  }
+
+  let ownerUserId: string | null;
+  try {
+    ownerUserId = await deps.findAgentOwnerUserId(agentId);
+  } catch (error) {
+    if (error instanceof AmbiguousAgentOwnerError) deny();
+    throw error;
+  }
+  if (ownerUserId !== humanUserId) deny();
 }
 
 /** Dormant in M246: resolve current RBAC authority for one Human Artifact write. */

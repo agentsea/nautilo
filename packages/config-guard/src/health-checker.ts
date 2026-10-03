@@ -1,5 +1,4 @@
 import { getKeyDefinition } from "./key-registry";
-import { managedGatewayKeyUrl } from "./managed-gateway";
 
 const TIMEOUT_MS = 5000;
 
@@ -21,6 +20,7 @@ export async function checkProviderHealth(
   value: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ status: "verified" | "invalid_key" | "unreachable"; detail?: string }> {
+  void env;
   try {
     switch (keyId) {
       case "anthropic": {
@@ -164,32 +164,6 @@ export async function checkProviderHealth(
         if (res.ok) {
           return { status: "verified" };
         }
-        return { status: "unreachable", detail: `HTTP ${res.status}` };
-      }
-      case "nautilo-gateway": {
-        const configuredBase = env["NAUTILO_MANAGED_GATEWAY_BASE_URL"]?.trim();
-        if (!configuredBase) {
-          return {
-            status: "unreachable",
-            detail: "NAUTILO_MANAGED_GATEWAY_BASE_URL is not configured",
-          };
-        }
-        const keyUrl = managedGatewayKeyUrl(configuredBase);
-        if (!keyUrl) {
-          return {
-            status: "unreachable",
-            detail: "NAUTILO_MANAGED_GATEWAY_BASE_URL must be an HTTPS API root ending in /v1",
-          };
-        }
-        const res = await fetchWithTimeout(keyUrl, {
-          method: "GET",
-          headers: { authorization: `Bearer ${value}` },
-          redirect: "error",
-        });
-        if (res.status === 401 || res.status === 403) {
-          return { status: "invalid_key", detail: `${res.status}` };
-        }
-        if (res.ok) return { status: "verified" };
         return { status: "unreachable", detail: `HTTP ${res.status}` };
       }
       case "typesafe": {

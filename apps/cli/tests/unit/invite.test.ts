@@ -109,7 +109,7 @@ describe("nautilo invite", () => {
           "nautilo",
           "invite",
           "create",
-          "--role=guest",
+          "--role=community",
           "--yes",
           "--format",
           "json",
@@ -123,7 +123,7 @@ describe("nautilo invite", () => {
       const j = JSON.parse(out.trim()) as { id: string };
       expect(j.id).toBe("inv-1");
       expect(createSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: "server", targetGroupRoleSlug: "guest" }),
+        expect.objectContaining({ kind: "server", targetGroupRoleSlug: "community" }),
       );
     } finally {
       process.stdout.write = ow;
@@ -294,6 +294,7 @@ describe("nautilo invite", () => {
           targetRoomId: null,
           targetRoomLabel: null,
           targetRoleSlug: null,
+          codeAvailable: true,
         },
         {
           id: "b",
@@ -307,6 +308,7 @@ describe("nautilo invite", () => {
           targetRoomId: null,
           targetRoomLabel: null,
           targetRoleSlug: "member",
+          codeAvailable: false,
         },
       ],
       page: { ...MOCK_PAGE, returned: 2 },
@@ -389,6 +391,7 @@ describe("nautilo invite", () => {
           targetRoomId: null,
           targetRoomLabel: "War Room",
           targetRoleSlug: "member",
+          codeAvailable: true,
         },
       ],
       page: { ...MOCK_PAGE, returned: 1 },
@@ -435,6 +438,7 @@ describe("nautilo invite", () => {
           targetRoomId: AGENT_UUID,
           targetRoomLabel: null,
           targetRoleSlug: "member",
+          codeAvailable: true,
         },
       ],
       page: { ...MOCK_PAGE, returned: 1 },
@@ -479,6 +483,7 @@ describe("nautilo invite", () => {
           targetRoomId: null,
           targetRoomLabel: null,
           targetRoleSlug: "guest",
+          codeAvailable: true,
         },
       ],
       page: { ...MOCK_PAGE, returned: 1 },

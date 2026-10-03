@@ -11,6 +11,7 @@ import {
   llmUsageEvents,
   users,
   type DirectDatabase,
+  type PersonalProviderId,
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import {
@@ -70,7 +71,7 @@ describe("model funding with migrated personal credential and usage tables", () 
       getPolicy: async () => ({ allowPersonalProviderKeys: true }),
       getCapabilities: async () => ["use_personal_provider_credentials", "use_server_provider_credentials"],
       getCredential: (userId, provider) => getPersonalProviderCredential(db, userId, provider),
-      serverRoute: () => "managed-gateway",
+      serverRoute: () => "openrouter",
       readCustody: async () => custody,
       decrypt: decryptPersonalProviderCredential,
     };
@@ -153,5 +154,141 @@ describe("model funding with migrated personal credential and usage tables", () 
     expect(rejected).toBe(true);
     expect(await db.select({ id: llmUsageEvents.id }).from(llmUsageEvents)
       .where(eq(llmUsageEvents.id, malformedId))).toEqual([]);
+  });
+
+  test("both priorities send the exact exclusive or overlap key and persist the admitted payer", async () => {
+    const [created] = await db.insert(users).values({
+      name: `funding-matrix-${randomUUID()}`,
+    }).returning({ id: users.id });
+    if (!created) throw new Error("Expected synthetic funding user");
+    userIds.push(created.id);
+
+    const personalSecrets = new Map<string, string>([
+      ["anthropic", "synthetic-personal-anthropic"],
+      ["openrouter", "synthetic-personal-openrouter"],
+    ] as const);
+    for (const [provider, secret] of personalSecrets) {
+      const identity = createPersonalProviderCredentialIdentity();
+      const inserted = await insertPersonalProviderCredential(db, {
+        identity,
+        userId: created.id,
+        provider: provider as PersonalProviderId,
+        envelope: encryptPersonalProviderCredential(custody, secret, {
+          id: identity.id,
+          revision: identity.revision,
+          userId: created.id,
+          provider,
+        }),
+      });
+      expect(inserted.status).toBe("created");
+    }
+
+    const serverSecrets = new Map([
+      ["fireworks", "synthetic-server-fireworks"],
+      ["openrouter", "synthetic-server-openrouter"],
+    ]);
+    const models = [
+      {
+        id: "anthropic:synthetic/personal-only",
+        providerRoute: "anthropic",
+        expected: { personal_first: "personal", server_first: "personal" },
+      },
+      {
+        id: "openrouter:synthetic/overlap",
+        providerRoute: "openrouter",
+        expected: { personal_first: "personal", server_first: "server" },
+      },
+      {
+        id: "fireworks:synthetic/server-only",
+        providerRoute: "fireworks",
+        expected: { personal_first: "server", server_first: "server" },
+      },
+    ] as const;
+
+    for (const fundingPreference of ["personal_first", "server_first"] as const) {
+      const deps: ModelFundingDeps = {
+        getPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference }),
+        getCapabilities: async () => [
+          "use_personal_provider_credentials",
+          "use_server_provider_credentials",
+        ],
+        getCredential: (userId, provider) => getPersonalProviderCredential(db, userId, provider),
+        serverRoute: (modelId) => modelId.startsWith("openrouter:")
+          ? "openrouter"
+          : modelId.startsWith("fireworks:") ? "fireworks" : null,
+        readCustody: async () => custody,
+        decrypt: decryptPersonalProviderCredential,
+      };
+
+      for (const entry of models) {
+        const decision = await resolveModelFunding({
+          humanUserId: created.id,
+          modelId: entry.id,
+          workload: "foreground_text_chat",
+        }, deps);
+        expect(decision.kind).toBe(entry.expected[fundingPreference]);
+
+        const boundaryCalls: Array<{ key: string; providerRoute: string }> = [];
+        const invokeFakeProvider = async (key: string) => {
+          boundaryCalls.push({ key, providerRoute: decision.providerRoute });
+          return "synthetic-response";
+        };
+        if (decision.kind === "personal") {
+          await withAdmittedPersonalProviderKey(decision, invokeFakeProvider, deps);
+        } else {
+          const serverKey = serverSecrets.get(decision.providerRoute);
+          if (!serverKey) throw new Error("Missing synthetic server key");
+          await invokeFakeProvider(serverKey);
+        }
+        const expectedBoundaryKey = decision.kind === "personal"
+          ? personalSecrets.get(entry.providerRoute)
+          : serverSecrets.get(entry.providerRoute);
+        if (!expectedBoundaryKey) throw new Error("Missing expected synthetic boundary key");
+        expect(boundaryCalls).toEqual([{
+          key: expectedBoundaryKey,
+          providerRoute: entry.providerRoute,
+        }]);
+
+        const usageId = randomUUID();
+        usageIds.push(usageId);
+        await db.insert(llmUsageEvents).values({
+          id: usageId,
+          userId: created.id,
+          callType: "chat",
+          provider: entry.providerRoute,
+          model: entry.id,
+          inputTokens: 2,
+          outputTokens: 1,
+          estimatedCostUsd: "0.00100000",
+          fundingKind: decision.kind,
+          providerRoute: decision.providerRoute,
+          ...(decision.kind === "personal"
+            ? {
+                payerHumanId: decision.payerHumanId,
+                credentialId: decision.credentialId,
+                credentialRevision: decision.credentialRevision,
+              }
+            : {}),
+        });
+        const [usage] = await db.select().from(llmUsageEvents)
+          .where(eq(llmUsageEvents.id, usageId));
+        expect(usage).toMatchObject({
+          fundingKind: decision.kind,
+          providerRoute: entry.providerRoute,
+          ...(decision.kind === "personal"
+            ? {
+                payerHumanId: created.id,
+                credentialId: decision.credentialId,
+                credentialRevision: decision.credentialRevision,
+              }
+            : {
+                payerHumanId: null,
+                credentialId: null,
+                credentialRevision: null,
+              }),
+        });
+        expect(JSON.stringify(usage)).not.toContain(boundaryCalls[0]!.key);
+      }
+    }
   });
 });

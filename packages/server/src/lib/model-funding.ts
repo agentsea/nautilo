@@ -9,9 +9,9 @@ import {
   getCachedServerModelConfigRow,
   getPersonalProviderCredential,
   getServerProviderPolicy,
-  PERSONAL_PROVIDER_IDS,
   type PersonalProviderCredentialRecord,
   type PersonalProviderId,
+  type ServerProviderFundingPreference,
 } from "@nautilo/db";
 import {
   decryptPersonalProviderCredential,
@@ -22,6 +22,11 @@ import { readPersonalProviderCustody } from "./personal-provider-custody";
 import { getServerDirectDb } from "./server-direct-db";
 
 export type ModelFundingWorkload = "foreground_text_chat";
+
+/** Runnable personal chat adapters; storing a service key never enables its paid path. */
+export const PERSONAL_CHAT_PROVIDER_IDS = [
+  "anthropic", "openai", "openrouter", "google", "xai", "fireworks", "together", "venice",
+] as const satisfies readonly PersonalProviderId[];
 
 interface FundingBase {
   readonly humanUserId: string;
@@ -68,7 +73,10 @@ export interface ResolveModelFundingInput {
 }
 
 export interface ModelFundingDeps {
-  getPolicy: () => Promise<{ allowPersonalProviderKeys: boolean }>;
+  getPolicy: () => Promise<{
+    allowPersonalProviderKeys: boolean;
+    fundingPreference?: ServerProviderFundingPreference;
+  }>;
   getCapabilities: (humanUserId: string) => Promise<readonly string[]>;
   getCredential: (humanUserId: string, provider: PersonalProviderId) => Promise<PersonalProviderCredentialRecord | null>;
   serverRoute: (modelId: string) => string | null;
@@ -86,7 +94,7 @@ export function resolveServerFundingRoute(
   } = {},
 ): string | null {
   const env = input.env ?? process.env;
-  if (modelHasRunnableCredentials(modelId, env, "chat")) {
+  if (modelHasRunnableCredentials(modelId, env)) {
     if (modelId.toLowerCase().startsWith("openrouter:")) {
       try {
         return resolveOpenRouterTransport({ env })?.kind ?? null;
@@ -121,7 +129,7 @@ function directProvider(modelId: string): PersonalProviderId | null {
   const colon = modelId.indexOf(":");
   if (colon <= 0 || colon === modelId.length - 1) return null;
   const prefix = modelId.slice(0, colon).toLowerCase();
-  return (PERSONAL_PROVIDER_IDS as readonly string[]).includes(prefix)
+  return (PERSONAL_CHAT_PROVIDER_IDS as readonly string[]).includes(prefix)
     ? prefix as PersonalProviderId
     : null;
 }
@@ -149,8 +157,8 @@ function verifyPrior(input: ResolveModelFundingInput, provider: PersonalProvider
 
 /**
  * Resolve a single paid model attempt from live policy and the causal Human.
- * A present personal row always wins for a fresh operation, regardless of its
- * validation observation. An admitted source never changes on later attempts.
+ * Fresh operations follow the saved source priority for this model's route.
+ * Validation remains an observation. An admitted source never changes later.
  */
 export async function resolveModelFunding(
   input: ResolveModelFundingInput,
@@ -174,6 +182,19 @@ export async function resolveModelFunding(
   }
   if (prior?.kind === "personal" && !personalAllowed) {
     throw new ModelFundingError("personal_credentials_forbidden");
+  }
+
+  // Priority applies only to fresh admissions. An eligible server-first route
+  // needs neither a personal row lookup nor access to personal key custody.
+  if (!prior && policy.fundingPreference === "server_first"
+    && caps.includes("use_server_provider_credentials")) {
+    const route = deps.serverRoute(input.modelId);
+    if (route) {
+      return {
+        kind: "server", humanUserId: input.humanUserId,
+        modelId: input.modelId, providerRoute: route, workload: input.workload,
+      };
+    }
   }
 
   // A fallback to a different provider must still honor the originally

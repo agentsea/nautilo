@@ -12,14 +12,22 @@ import {
 import { users } from "./users";
 
 export const PERSONAL_PROVIDER_IDS = [
+  "typesafe",
   "anthropic",
   "openai",
   "openrouter",
+  "nautilo-gateway",
+  "gateway",
   "google",
   "xai",
   "fireworks",
   "together",
   "venice",
+  "elevenlabs",
+  "groq",
+  "tavily",
+  "browser-use",
+  "cloudconvert",
 ] as const;
 
 export type PersonalProviderId = (typeof PERSONAL_PROVIDER_IDS)[number];
@@ -76,7 +84,7 @@ export const personalProviderCredentials = pgTable(
     ),
     check(
       "personal_provider_credentials_provider_check",
-      sql`${table.provider} in ('anthropic', 'openai', 'openrouter', 'google', 'xai', 'fireworks', 'together', 'venice')`,
+      sql`${table.provider} in ('typesafe', 'anthropic', 'openai', 'openrouter', 'nautilo-gateway', 'gateway', 'google', 'xai', 'fireworks', 'together', 'venice', 'elevenlabs', 'groq', 'tavily', 'browser-use', 'cloudconvert')`,
     ),
     check(
       "personal_provider_credentials_revision_check",

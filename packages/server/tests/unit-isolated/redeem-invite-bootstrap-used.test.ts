@@ -166,6 +166,7 @@ function getSharedDirectDb() {
 beforeAll(() => {
   mock.module("@nautilo/db", () => ({
     getSharedDirectDb,
+    inviteTokenCondition: () => ({}),
     serverAdmission: { userId: "userId" },
     moderationAccessAllowedSql: () => ({}),
     sql: () => ({}),
@@ -278,7 +279,7 @@ describe("redeemInviteAtomically — bootstrap .used sentinel", () => {
     expect(marked).toEqual([]);
   });
 
-  test("an outstanding invite cannot enroll a Human into Community during the dormant phase", async () => {
+  test("an outstanding invite enrolls a Human into Community like any other target Group", async () => {
     const { redeemInviteAtomically } = await import("../../src/lib/redeem-invite.ts");
     inviteRowState.kind = "server";
     inviteRowState.targetGroupId = "group-x";
@@ -290,8 +291,8 @@ describe("redeemInviteAtomically — bootstrap .used sentinel", () => {
       }, { logto: { findUserByEmailOrUsername: async () => null,
         createUser: async () => ({ id: "logto-sub-2" }), deleteUser: async () => {} } as never,
         allowLogtoSessionMint: false });
-      expect(result).toMatchObject({ ok: false, httpStatus: 409, code: "community_enrollment_unavailable" });
-      expect(groupMembershipWrites).toEqual([]);
+      expect(result).toMatchObject({ ok: true });
+      expect(groupMembershipWrites).toEqual(["insert"]);
     } finally {
       targetRoleSlug = "member";
     }

@@ -5,7 +5,7 @@ import {
   type ReactNode,
 } from "react";
 import type { InviteSummary, InvitableRoom } from "@nautilo/api-client/browser";
-import { ApiError } from "@nautilo/api-client/browser";
+import { ApiError, InviteShareApiError } from "@nautilo/api-client/browser";
 import { apiClient } from "../../../lib/api";
 import { useCan } from "../../../hooks/use-can";
 import { Button, FieldRow, SectionCard, TextInput } from "../ui";
@@ -30,20 +30,19 @@ type LadderRoleSlug =
   | "contributor"
   | "community"
   | "guest";
-type EnrollableLadderRoleSlug = Exclude<LadderRoleSlug, "community">;
+type EnrollableLadderRoleSlug = LadderRoleSlug;
 
 const ROLE_OPTIONS: ReadonlyArray<{
   slug: LadderRoleSlug;
   label: string;
-  enrollmentAvailable: boolean;
 }> = [
-  { slug: "owner", label: "Owner", enrollmentAvailable: true },
-  { slug: "admin", label: "Admin", enrollmentAvailable: true },
-  { slug: "superuser", label: "Superuser", enrollmentAvailable: true },
-  { slug: "member", label: "Member", enrollmentAvailable: true },
-  { slug: "contributor", label: "Contributor", enrollmentAvailable: true },
-  { slug: "community", label: "Community", enrollmentAvailable: false },
-  { slug: "guest", label: "Guest", enrollmentAvailable: true },
+  { slug: "owner", label: "Owner" },
+  { slug: "admin", label: "Admin" },
+  { slug: "superuser", label: "Superuser" },
+  { slug: "member", label: "Member" },
+  { slug: "contributor", label: "Contributor" },
+  { slug: "community", label: "Community" },
+  { slug: "guest", label: "Guest" },
 ];
 
 export function inviteRoleOptions(adminSurface: boolean): ReadonlyArray<EnrollableLadderRoleSlug> {
@@ -52,87 +51,10 @@ export function inviteRoleOptions(adminSurface: boolean): ReadonlyArray<Enrollab
     : ROLE_OPTIONS.filter(
         (role) => role.slug === "member"
           || role.slug === "contributor"
+          || role.slug === "community"
           || role.slug === "guest",
       )
-  ).filter((role) => role.enrollmentAvailable)
-    .map((role) => role.slug as EnrollableLadderRoleSlug);
-}
-
-// localStorage key — keeps the freshly-minted invite code around so the
-// user can copy it again later without re-creating the invite. Server
-// only returns the token once (on POST /api/invites), so without this
-// the code would become uncopyable after the success banner is dismissed.
-const CODE_STORAGE_KEY = "nautilo.inviteCodes.v1";
-/** Pre-code-only UI persisted full redeem URLs; migrate tokens out of those. */
-const LEGACY_URL_STORAGE_KEY = "nautilo.inviteUrls.v1";
-
-function extractInviteCode(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (/^inv_[A-Za-z0-9_-]+$/.test(trimmed)) return trimmed;
-  const pathMatch = trimmed.match(
-    /(?:^|\/)(?:redeem|invite)\/(inv_[A-Za-z0-9_-]+)/,
-  );
-  return pathMatch?.[1] ?? null;
-}
-
-function parseStoredCodeMap(raw: string | null): Record<string, string> {
-  if (!raw) return {};
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return {};
-    }
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      if (typeof k !== "string" || typeof v !== "string") continue;
-      const code = extractInviteCode(v);
-      if (code) out[k] = code;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function readStoredCodes(): Record<string, string> {
-  if (typeof localStorage === "undefined") return {};
-  const current = parseStoredCodeMap(localStorage.getItem(CODE_STORAGE_KEY));
-  if (Object.keys(current).length > 0) return current;
-  // One-shot migrate from the old URL cache (codes only; drop the URLs).
-  const legacy = parseStoredCodeMap(
-    localStorage.getItem(LEGACY_URL_STORAGE_KEY),
-  );
-  if (Object.keys(legacy).length > 0) {
-    writeStoredCodes(legacy);
-    try {
-      localStorage.removeItem(LEGACY_URL_STORAGE_KEY);
-    } catch {
-      /* ignore */
-    }
-  }
-  return legacy;
-}
-
-function writeStoredCodes(map: Record<string, string>): void {
-  if (typeof localStorage === "undefined") return;
-  try {
-    localStorage.setItem(CODE_STORAGE_KEY, JSON.stringify(map));
-  } catch {
-    /* ignore quota / private-mode failures */
-  }
-}
-
-function pruneStoredCodes(activeIds: ReadonlyArray<string>): void {
-  const have = readStoredCodes();
-  const allowed = new Set(activeIds);
-  let changed = false;
-  for (const id of Object.keys(have)) {
-    if (!allowed.has(id)) {
-      delete have[id];
-      changed = true;
-    }
-  }
-  if (changed) writeStoredCodes(have);
+  ).map((role) => role.slug);
 }
 
 function SubSectionCard({
@@ -197,6 +119,22 @@ function isActiveInvite(inv: InviteSummary): boolean {
     if (Number.isFinite(end) && end <= Date.now()) return false;
   }
   return true;
+}
+
+function inviteLabel(inv: InviteSummary): string {
+  return inv.displayName?.trim() || `${kindLabel(inv.kind)} invite`;
+}
+
+function inviteRoleLabel(inv: InviteSummary): string {
+  const option = ROLE_OPTIONS.find((role) => role.slug === inv.targetRoleSlug);
+  return option?.label ?? inv.targetRoleSlug ?? "No server role";
+}
+
+function isPublicJoinEligible(inv: InviteSummary): boolean {
+  return inv.kind === "server"
+    && inv.codeAvailable
+    && isActiveInvite(inv)
+    && (inv.targetRoleSlug === "community" || inv.targetRoleSlug === "guest");
 }
 
 function ttlIndexToExpiresAt(idx: number): string | null {
@@ -279,12 +217,7 @@ function NewInviteForm({
   const selectClass =
     "w-full rounded-md border border-border bg-background-element px-3 py-2 text-sm text-foreground focus:border-border-interactive focus:outline-none";
   const allowedRoles = new Set(inviteRoleOptions(adminSurface));
-  const roleOptions = ROLE_OPTIONS.filter((role) =>
-    allowedRoles.has(role.slug as EnrollableLadderRoleSlug) || role.slug === "community"
-  ).filter((role) =>
-    adminSurface || role.slug === "member" || role.slug === "contributor" ||
-    role.slug === "community" || role.slug === "guest"
-  );
+  const roleOptions = ROLE_OPTIONS.filter((role) => allowedRoles.has(role.slug));
 
   return (
     <form
@@ -310,11 +243,7 @@ function NewInviteForm({
           }
           className={selectClass}
         >
-          {roleOptions.map((r) => (
-            <option key={r.slug} value={r.slug} disabled={!r.enrollmentAvailable}>
-              {r.label}{r.enrollmentAvailable ? "" : " — unavailable until personal-key chat launches"}
-            </option>
-          ))}
+          {roleOptions.map((r) => <option key={r.slug} value={r.slug}>{r.label}</option>)}
         </select>
       </FieldRow>
       {form.role === "owner" ? (
@@ -407,6 +336,9 @@ export function InviteManagement({
 }) {
   const can = useCan();
   const canUseInvites = adminSurface ? can("manage_members") : can("create_invites");
+  const canManagePublicJoin = adminSurface
+    && can("manage_members")
+    && can("manage_server_enrollment");
   const [invites, setInvites] = useState<InviteSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState<"none" | "sign-in" | "message">(
@@ -414,15 +346,22 @@ export function InviteManagement({
   );
   const [listErrorMessage, setListErrorMessage] = useState<string | null>(null);
 
-  const [codeByInviteId, setCodeByInviteId] = useState<Record<string, string>>(
-    () => readStoredCodes(),
-  );
+  const [shareByInviteId, setShareByInviteId] = useState<
+    Record<string, { code: string; url: string }>
+  >({});
   const [showForm, setShowForm] = useState(false);
   const [justCreatedId, setJustCreatedId] = useState<string | null>(null);
-  const [justCreatedUrl, setJustCreatedUrl] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [sharingTarget, setSharingTarget] = useState<string | null>(null);
   const [copiedTarget, setCopiedTarget] = useState<string | null>(null);
+  const [publicJoin, setPublicJoin] = useState<{
+    inviteId: string | null;
+    revision: number;
+    joinUrl: string;
+  } | null>(null);
+  const [publicJoinError, setPublicJoinError] = useState<string | null>(null);
+  const [updatingPublicJoin, setUpdatingPublicJoin] = useState(false);
 
   const loadInvites = useCallback(async () => {
     setLoading(true);
@@ -447,8 +386,16 @@ export function InviteManagement({
         cursor = next;
       } while (cursor);
       setInvites(rows);
-      pruneStoredCodes(rows.map((row) => row.id));
-      setCodeByInviteId(readStoredCodes());
+      if (canManagePublicJoin) {
+        try {
+          setPublicJoin(await apiClient.getPublicJoinSelection());
+          setPublicJoinError(null);
+        } catch (e) {
+          setPublicJoinError(
+            e instanceof Error ? e.message : "Could not load the public join invite.",
+          );
+        }
+      }
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         setListError("sign-in");
@@ -463,7 +410,7 @@ export function InviteManagement({
     } finally {
       setLoading(false);
     }
-  }, [adminSurface]);
+  }, [adminSurface, canManagePublicJoin]);
 
   useEffect(() => {
     if (!canUseInvites) {
@@ -474,12 +421,10 @@ export function InviteManagement({
   }, [canUseInvites, loadInvites]);
 
   const activeInvites = invites.filter(isActiveInvite);
-
-  const persistCode = useCallback((id: string, code: string) => {
-    const next = { ...readStoredCodes(), [id]: code };
-    writeStoredCodes(next);
-    setCodeByInviteId(next);
-  }, []);
+  const publicJoinEligibleInvites = activeInvites.filter(isPublicJoinEligible);
+  const selectedPublicJoinInvite = publicJoinEligibleInvites.find(
+    (invite) => invite.id === publicJoin?.inviteId,
+  );
 
   const copyText = useCallback(async (
     text: string,
@@ -498,17 +443,70 @@ export function InviteManagement({
     }
   }, []);
 
+  const copyInviteShare = useCallback(async (
+    invite: InviteSummary,
+    field: "code" | "url",
+  ) => {
+    const target = `${invite.id}:${field}`;
+    setSharingTarget(target);
+    setActionError(null);
+    try {
+      const freshShare = justCreatedId === invite.id
+        ? shareByInviteId[invite.id]
+        : undefined;
+      const share = freshShare ?? await apiClient.getInviteShare(invite.id);
+      setShareByInviteId((current) => ({ ...current, [invite.id]: share }));
+      await copyText(share[field], target, field === "code" ? "code" : "URL");
+    } catch (e) {
+      if (
+        e instanceof InviteShareApiError
+        && e.status === 409
+        && e.code === "invite_code_unavailable"
+      ) {
+        setActionError(
+          "This older invite's code cannot be recovered. Revoke it and create a replacement invite to share.",
+        );
+      } else {
+        setActionError(
+          e instanceof Error ? e.message : "Could not load the invite share details.",
+        );
+      }
+    } finally {
+      setSharingTarget(null);
+    }
+  }, [copyText, justCreatedId, shareByInviteId]);
+
   const onCreated = useCallback(
     async (created: { id: string; code: string; url: string }) => {
-      persistCode(created.id, created.code);
+      setShareByInviteId((current) => ({
+        ...current,
+        [created.id]: { code: created.code, url: created.url },
+      }));
       setJustCreatedId(created.id);
-      setJustCreatedUrl(created.url);
       setShowForm(false);
       setActionError(null);
       await loadInvites();
     },
-    [loadInvites, persistCode],
+    [loadInvites],
   );
+
+  const updatePublicJoin = useCallback(async (inviteId: string | null) => {
+    if (!publicJoin) return;
+    setUpdatingPublicJoin(true);
+    setPublicJoinError(null);
+    try {
+      setPublicJoin(await apiClient.updatePublicJoinSelection({
+        inviteId,
+        revision: publicJoin.revision,
+      }));
+    } catch (e) {
+      setPublicJoinError(
+        e instanceof Error ? e.message : "Could not update the public join invite.",
+      );
+    } finally {
+      setUpdatingPublicJoin(false);
+    }
+  }, [publicJoin]);
 
   const onRevoke = useCallback(
     async (id: string) => {
@@ -523,13 +521,13 @@ export function InviteManagement({
       setActionError(null);
       try {
         await apiClient.revokeInvite(id);
-        const map = readStoredCodes();
-        delete map[id];
-        writeStoredCodes(map);
-        setCodeByInviteId(map);
+        setShareByInviteId((current) => {
+          const next = { ...current };
+          delete next[id];
+          return next;
+        });
         if (justCreatedId === id) {
           setJustCreatedId(null);
-          setJustCreatedUrl(null);
         }
         await loadInvites();
       } catch (e) {
@@ -603,9 +601,8 @@ export function InviteManagement({
             ) : (
               <ul className="divide-y divide-border/60 border border-border/60 rounded-md">
                 {activeInvites.map((inv) => {
-                  const rowCode = codeByInviteId[inv.id];
+                  const share = shareByInviteId[inv.id];
                   const isFresh = justCreatedId === inv.id;
-                  const rowUrl = isFresh ? justCreatedUrl : null;
                   const codeTarget = `${inv.id}:code`;
                   const urlTarget = `${inv.id}:url`;
                   return (
@@ -615,25 +612,47 @@ export function InviteManagement({
                       data-fresh={isFresh ? "1" : undefined}
                     >
                       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="text-xs text-foreground-muted">
-                          {kindLabel(inv.kind)} · {formatUseLine(inv)} ·{" "}
-                          {formatExpiresLine(inv.expiresAt)}
+                        <div>
+                          <p className="text-sm font-medium text-foreground">
+                            {inviteLabel(inv)}
+                            {publicJoin?.inviteId === inv.id ? (
+                              <span className="ml-2 rounded bg-primary/15 px-1.5 py-0.5 text-xs text-primary">
+                                Selected for /join
+                              </span>
+                            ) : null}
+                          </p>
+                          <p className="text-xs text-foreground-muted">
+                            {inviteRoleLabel(inv)} · Room: {inv.targetRoomLabel ?? "None"} ·{" "}
+                            {formatExpiresLine(inv.expiresAt)} · {formatUseLine(inv)}
+                          </p>
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2">
-                          {rowCode ? (
+                          {inv.codeAvailable ? (
                             <Button
                               variant="secondary"
-                              onClick={() => void copyText(rowCode, codeTarget, "code")}
+                              loading={sharingTarget === codeTarget}
+                              onClick={() => void copyInviteShare(inv, "code")}
                             >
                               {copiedTarget === codeTarget ? "Code copied" : "Copy code"}
                             </Button>
                           ) : null}
-                          {rowUrl ? (
+                          {inv.codeAvailable ? (
                             <Button
                               variant="secondary"
-                              onClick={() => void copyText(rowUrl, urlTarget, "URL")}
+                              loading={sharingTarget === urlTarget}
+                              onClick={() => void copyInviteShare(inv, "url")}
                             >
                               {copiedTarget === urlTarget ? "URL copied" : "Copy URL"}
+                            </Button>
+                          ) : null}
+                          {canManagePublicJoin && isPublicJoinEligible(inv) ? (
+                            <Button
+                              variant={publicJoin?.inviteId === inv.id ? "primary" : "secondary"}
+                              loading={updatingPublicJoin && publicJoin?.inviteId !== inv.id}
+                              disabled={updatingPublicJoin || publicJoin?.inviteId === inv.id}
+                              onClick={() => void updatePublicJoin(inv.id)}
+                            >
+                              {publicJoin?.inviteId === inv.id ? "Selected for /join" : "Use for /join"}
                             </Button>
                           ) : null}
                           <Button
@@ -645,43 +664,37 @@ export function InviteManagement({
                           </Button>
                         </div>
                       </div>
-                      {rowCode ? (
-                        <FieldRow
-                          label={isFresh ? "New invite code" : "Code"}
-                          htmlFor={`invite-code-${inv.id}`}
-                        >
-                          <TextInput
-                            id={`invite-code-${inv.id}`}
-                            value={rowCode}
-                            onChange={() => {}}
-                            readOnly
-                            ariaLabel="Invite code"
-                          />
-                        </FieldRow>
-                      ) : (
+                      {!inv.codeAvailable ? (
                         <p className="text-xs text-foreground-dim">
-                          Code unavailable — invites minted on another device or
-                          after a localStorage reset can&apos;t be recovered. Revoke
-                          and mint a new one if you need to share it.
+                          This older invite&apos;s code cannot be recovered. Revoke it
+                          and create a replacement invite if you need to share it.
                         </p>
-                      )}
-                      {rowUrl ? (
+                      ) : share ? (
                         <>
                           <FieldRow
-                            label="New invite URL"
+                            label={isFresh ? "New invite code" : "Invite code"}
+                            htmlFor={`invite-code-${inv.id}`}
+                          >
+                            <TextInput
+                              id={`invite-code-${inv.id}`}
+                              value={share.code}
+                              onChange={() => {}}
+                              readOnly
+                              ariaLabel="Invite code"
+                            />
+                          </FieldRow>
+                          <FieldRow
+                            label={isFresh ? "New invite URL" : "Invite URL"}
                             htmlFor={`invite-url-${inv.id}`}
                           >
                             <TextInput
                               id={`invite-url-${inv.id}`}
-                              value={rowUrl}
+                              value={share.url}
                               onChange={() => {}}
                               readOnly
                               ariaLabel="Invite URL"
                             />
                           </FieldRow>
-                          <p className="text-xs text-foreground-dim">
-                            Copy this URL before reloading. It won&apos;t be shown again.
-                          </p>
                         </>
                       ) : null}
                     </li>
@@ -690,6 +703,52 @@ export function InviteManagement({
               </ul>
             )}
           </SubSectionCard>
+
+          {canManagePublicJoin ? (
+            <SubSectionCard
+              title="Public /join invite"
+              description="Choose the active Community or Guest invite used by the server's canonical /join address."
+              actions={publicJoin?.inviteId ? (
+                <Button
+                  variant="secondary"
+                  loading={updatingPublicJoin}
+                  disabled={updatingPublicJoin}
+                  onClick={() => void updatePublicJoin(null)}
+                >
+                  Clear /join
+                </Button>
+              ) : undefined}
+            >
+              {publicJoinError ? (
+                <p className="text-sm text-[var(--error)]">{publicJoinError}</p>
+              ) : publicJoin ? (
+                <div className="space-y-2">
+                  <p className="text-sm text-foreground">
+                    {selectedPublicJoinInvite
+                      ? "The public join address uses the selected invite."
+                      : publicJoin.inviteId
+                        ? "The selected invite is unavailable. Choose another or clear /join."
+                        : "The public join address is unavailable until you select an invite."}
+                  </p>
+                  <a
+                    className="break-all text-sm text-primary hover:underline"
+                    href={publicJoin.joinUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {publicJoin.joinUrl}
+                  </a>
+                  {publicJoinEligibleInvites.length === 0 ? (
+                    <p className="text-xs text-foreground-muted">
+                      Create an active Community or Guest invite to make /join available.
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="text-sm text-foreground-muted">Loading the public join invite…</p>
+              )}
+            </SubSectionCard>
+          ) : null}
         </>
       )}
     </>
@@ -701,7 +760,7 @@ export function InvitePeopleSection() {
     <SectionCard
       id="invite-people"
       title="Invite people"
-      description="Create and manage invitations. Community is visible for planning but remains unavailable until personal-key chat launches."
+      description="Create and manage invitations."
     >
       <InviteManagement adminSurface={false} />
     </SectionCard>

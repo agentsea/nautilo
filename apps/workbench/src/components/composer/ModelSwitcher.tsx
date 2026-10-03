@@ -3,7 +3,11 @@ import { useNavigate } from "react-router-dom";
 import { ChevronDown, Check, Eye, Brain } from "lucide-react";
 import { type AssistantModelSummary } from "@nautilo/api-client/browser";
 import { apiClient } from "../../lib/api";
-import { isSelectableModel, mergeModelRows } from "../../lib/model-availability";
+import { isSelectableModel } from "../../lib/model-availability";
+import {
+  loadCallerModelRows,
+  PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT,
+} from "../../lib/caller-model-availability";
 import { useProfile } from "../../hooks/use-profile";
 import {
   ModelControlRows,
@@ -59,19 +63,28 @@ export function ModelSwitcher({
   const [panel, setPanel] = useState<PickerPanel>("model");
   const [query, setQuery] = useState("");
   const [saveState, setSaveState] = useState<"idle" | "saving" | { error: string }>("idle");
+  const [modelRefresh, setModelRefresh] = useState(0);
+
+  useEffect(() => {
+    if (!isOwner) return;
+    const refresh = () => setModelRefresh((revision) => revision + 1);
+    window.addEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, refresh);
+  }, [isOwner]);
+
+  const defaultModelId = profile?.defaultModel ?? null;
 
   useEffect(() => {
     if (!isOwner) return;
     let cancelled = false;
     void (async () => {
       try {
-        const raw = await apiClient.getModels();
-        if (cancelled) return;
-        setModels(
-          raw.filter(isSelectableModel).sort(
-            (a, b) => a.priority - b.priority || a.id.localeCompare(b.id),
-          ),
+        const retainedIds = [roomSelection?.modelId, defaultModelId].filter(
+          (id): id is string => !!id,
         );
+        const rows = await loadCallerModelRows(apiClient, retainedIds);
+        if (cancelled) return;
+        setModels(rows);
       } catch {
         if (!cancelled) setModels([]);
       }
@@ -79,7 +92,7 @@ export function ModelSwitcher({
     return () => {
       cancelled = true;
     };
-  }, [isOwner]);
+  }, [defaultModelId, isOwner, modelRefresh, profile?.agentIdentity, roomSelection?.modelId]);
 
   useEffect(() => {
     if (!isOwner || !roomId || !agentId) {
@@ -106,7 +119,6 @@ export function ModelSwitcher({
     };
   }, [agentId, isOwner, roomId]);
 
-  const defaultModelId = profile?.defaultModel ?? null;
   // A null Agent default means the server resolves the shared chat-role
   // policy. The browser must not guess that result from catalog priority.
   const agentDefaultId = defaultModelId;
@@ -115,19 +127,6 @@ export function ModelSwitcher({
     () => (effectiveId ? models?.find((model) => model.id === effectiveId) ?? null : null),
     [models, effectiveId],
   );
-  useEffect(() => {
-    const retainedIds = [roomSelection?.modelId, defaultModelId].filter(
-      (id): id is string => !!id,
-    );
-    if (!isOwner || retainedIds.length === 0) return;
-    let cancelled = false;
-    void apiClient.resolveRetainedModels(retainedIds).then((retained) => {
-      if (!cancelled) setModels((current) => mergeModelRows(current ?? [], retained));
-    }).catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [defaultModelId, isOwner, roomSelection?.modelId]);
   const effectiveSelection = useMemo(
     () =>
       currentModel && isSelectableModel(currentModel)

@@ -180,6 +180,8 @@ describe("Desktop Relay sidecar client", () => {
     let childProcess: ReturnType<typeof spawn> | null = null;
     let resolveCrashDispatchStarted!: () => void;
     const crashDispatchStarted = new Promise<void>((resolveStarted) => { resolveCrashDispatchStarted = resolveStarted; });
+    let resolveReplacementTopology!: () => void;
+    const replacementTopology = new Promise<void>((resolveTopology) => { resolveReplacementTopology = resolveTopology; });
     let crashDispatchAborted = false;
     const client = createDesktopRelaySidecarClient({
       executablePath: process.execPath,
@@ -198,6 +200,9 @@ describe("Desktop Relay sidecar client", () => {
       runShellOwnerInstanceId: "instance-1",
       browserPageOwnerInstanceId: "instance-1",
       capabilities: { profile: "desktop-agent", canRunShell: true },
+      onDesktopTopologyChange: (topology) => {
+        if (topology?.relaySessionId === "relay-session-2") resolveReplacementTopology();
+      },
       onDispatch: async (request, signal) => {
         dispatched = request;
         if (request.toolName === "crash_fence_test") {
@@ -212,89 +217,90 @@ describe("Desktop Relay sidecar client", () => {
       },
     });
 
-    const connecting = client.connect();
-    const socket = await live.socket;
-    const register = await nextJson(socket);
-    expect(register["type"]).toBe("relay:register");
-    expect(register["token"]).toBe(token);
-    socket.send(JSON.stringify({
-      type: "relay:registered",
-      relayId: "relay-1",
-      protocolVersion: RELAY_PROTOCOL_VERSION,
-      selectedProtocolVersion: RELAY_PROTOCOL_VERSION,
-      relaySessionId: "relay-session-1",
-      pairingGenerationRef: "pairing-1",
-    }));
-    await connecting;
+    try {
+      const connecting = client.connect();
+      const socket = await live.socket;
+      const register = await nextJson(socket);
+      expect(register["type"]).toBe("relay:register");
+      expect(register["token"]).toBe(token);
+      socket.send(JSON.stringify({
+        type: "relay:registered",
+        relayId: "relay-1",
+        protocolVersion: RELAY_PROTOCOL_VERSION,
+        selectedProtocolVersion: RELAY_PROTOCOL_VERSION,
+        relaySessionId: "relay-session-1",
+        pairingGenerationRef: "pairing-1",
+      }));
+      await connecting;
 
-    expect(client.getStatus()).toBe("connected");
-    expect(client.getDesktopTopology()).toMatchObject({ relayId: "relay-1", desktopSessionId: "desktop-1" });
-    expect(launch).not.toBeNull();
-    expect(JSON.stringify(launch)).not.toContain(token);
+      expect(client.getStatus()).toBe("connected");
+      expect(client.getDesktopTopology()).toMatchObject({ relayId: "relay-1", desktopSessionId: "desktop-1" });
+      expect(launch).not.toBeNull();
+      expect(JSON.stringify(launch)).not.toContain(token);
 
-    const updating = client.updateCapabilities({ profile: "desktop-agent", canRunShell: true, canUseTerminal: true });
-    const update = await nextJson(socket);
-    expect(update["type"]).toBe("relay:update-capabilities");
-    expect(update["capabilityRevision"]).toBe(Number(register["capabilityRevision"]) + 1);
-    socket.send(JSON.stringify({
-      type: "relay:capabilities-updated",
-      relayId: "relay-1",
-      capabilityRevision: update["capabilityRevision"],
-      status: "ok",
-    }));
-    await updating;
-    expect(client.getAcknowledgedCapabilityRevision()).toBe(Number(update["capabilityRevision"]));
+      const updating = client.updateCapabilities({ profile: "desktop-agent", canRunShell: true, canUseTerminal: true });
+      const update = await nextJson(socket);
+      expect(update["type"]).toBe("relay:update-capabilities");
+      expect(update["capabilityRevision"]).toBe(Number(register["capabilityRevision"]) + 1);
+      socket.send(JSON.stringify({
+        type: "relay:capabilities-updated",
+        relayId: "relay-1",
+        capabilityRevision: update["capabilityRevision"],
+        status: "ok",
+      }));
+      await updating;
+      expect(client.getAcknowledgedCapabilityRevision()).toBe(Number(update["capabilityRevision"]));
 
-    socket.send(JSON.stringify({
-      type: "relay:dispatch",
-      correlationId: "corr-1",
-      toolName: "bounded_test_tool",
-      args: { value: 1 },
-      timeout: 1_000,
-      impact: "low",
-      approvalObtained: true,
-      executionClass: "desktop",
-    }));
-    const result = await nextJson(socket);
-    expect(result).toMatchObject({
-      type: "relay:result",
-      correlationId: "corr-1",
-      status: "ok",
-      result: { bridged: true },
-    });
-    expect(dispatched).toMatchObject({ toolName: "bounded_test_tool", args: { value: 1 } });
+      socket.send(JSON.stringify({
+        type: "relay:dispatch",
+        correlationId: "corr-1",
+        toolName: "bounded_test_tool",
+        args: { value: 1 },
+        timeout: 1_000,
+        impact: "low",
+        approvalObtained: true,
+        executionClass: "desktop",
+      }));
+      const result = await nextJson(socket);
+      expect(result).toMatchObject({
+        type: "relay:result",
+        correlationId: "corr-1",
+        status: "ok",
+        result: { bridged: true },
+      });
+      expect(dispatched).toMatchObject({ toolName: "bounded_test_tool", args: { value: 1 } });
 
-    const replacementSocket = new Promise<WebSocket>((resolveSocket) => live.server.once("connection", resolveSocket));
-    socket.send(JSON.stringify({
-      type: "relay:dispatch",
-      correlationId: "corr-crash",
-      toolName: "crash_fence_test",
-      args: {},
-      timeout: 1_000,
-      impact: "low",
-      approvalObtained: true,
-      executionClass: "desktop",
-    }));
-    await crashDispatchStarted;
-    childProcess!.kill("SIGKILL");
-    const replacement = await replacementSocket;
-    const replacementRegister = await nextJson(replacement);
-    expect(replacementRegister["type"]).toBe("relay:register");
-    replacement.send(JSON.stringify({
-      type: "relay:registered",
-      relayId: "relay-1",
-      protocolVersion: RELAY_PROTOCOL_VERSION,
-      selectedProtocolVersion: RELAY_PROTOCOL_VERSION,
-      relaySessionId: "relay-session-2",
-      pairingGenerationRef: "pairing-2",
-    }));
-    for (let attempts = 0; attempts < 50 && client.getStatus() !== "connected"; attempts += 1) {
-      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      const replacementSocket = new Promise<WebSocket>((resolveSocket) => live.server.once("connection", resolveSocket));
+      socket.send(JSON.stringify({
+        type: "relay:dispatch",
+        correlationId: "corr-crash",
+        toolName: "crash_fence_test",
+        args: {},
+        timeout: 1_000,
+        impact: "low",
+        approvalObtained: true,
+        executionClass: "desktop",
+      }));
+      await crashDispatchStarted;
+      childProcess!.kill("SIGKILL");
+      const replacement = await replacementSocket;
+      const replacementRegister = await nextJson(replacement);
+      expect(replacementRegister["type"]).toBe("relay:register");
+      replacement.send(JSON.stringify({
+        type: "relay:registered",
+        relayId: "relay-1",
+        protocolVersion: RELAY_PROTOCOL_VERSION,
+        selectedProtocolVersion: RELAY_PROTOCOL_VERSION,
+        relaySessionId: "relay-session-2",
+        pairingGenerationRef: "pairing-2",
+      }));
+      await replacementTopology;
+      expect(crashDispatchAborted).toBe(true);
+      expect(client.getStatus()).toBe("connected");
+      expect(client.getDesktopTopology()).toMatchObject({ relaySessionId: "relay-session-2" });
+    } finally {
+      await client.disconnect();
     }
-    expect(crashDispatchAborted).toBe(true);
-    expect(client.getStatus()).toBe("connected");
-    expect(client.getDesktopTopology()).toMatchObject({ relaySessionId: "relay-session-2" });
-    await client.disconnect();
   }, 20_000);
 
   test.each(["child crash", "client recreation"] as const)(

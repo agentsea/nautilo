@@ -1,14 +1,13 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { getSharedDirectDb } from "@nautilo/db";
-import { fromRuntimeConfig, invalidateRuntimeConfigCache } from "@nautilo/config";
+import { fromRuntimeConfig, invalidateRuntimeConfigCache, resolveNautiloRootDir } from "@nautilo/config";
 import {
+  ConfigGuardError,
   getAllKeyDefinitions,
+  getKeyDefinition,
   isCloudManagedDeployment,
-  MANAGED_GATEWAY_BASE_URL_ENV_VAR,
-  normalizeManagedGatewayBaseUrl,
   transaction,
 } from "@nautilo/config-guard";
 import { getRelayRegistry } from "@nautilo/agent";
@@ -26,12 +25,13 @@ import {
   revokeOwnerClaim,
 } from "../lib/owner-claim-control";
 import { requestAllowsPrivilegedSetup } from "../lib/request-trust";
-import { writeSecurityAuditEvent, type SecurityAuditEvent } from "../lib/security-audit-log";
+import { writeSecurityAuditEvent, type SecurityAuditEvent, type ServerProviderKeyChangedAuditEvent } from "../lib/security-audit-log";
 import { managedProviderCredentialRouteIsBlocked } from "../managed-provider-route-inventory";
+import { replyForConfigGuardError } from "../lib/config-guard-http";
 
 function audit(request: FastifyRequest, event: Record<string, unknown>): void {
   try {
-    writeSecurityAuditEvent(join(homedir(), ".nautilo", "logs", "security-audit.log"), {
+    writeSecurityAuditEvent(join(resolveNautiloRootDir(), "logs", "security-audit.log"), {
       ...event,
       ts: new Date().toISOString(),
       ip: request.ip,
@@ -49,10 +49,6 @@ const SetupKeysBodySchema = z.object({
 
 const ResearchProviderBodySchema = z.object({
   provider: z.enum(["auto", "duckduckgo_html"]),
-}).strict();
-
-const NautiloGatewayBodySchema = z.object({
-  baseUrl: z.string(),
 }).strict();
 
 const OwnerClaimInstallBodySchema = z
@@ -112,59 +108,6 @@ function researchDesktopDiagnostics(userId: string): {
 }
 
 export function setupRoutes(app: FastifyInstance) {
-  app.get("/api/setup/nautilo-gateway", async (request, reply) => {
-    const sessionUserId = request.sessionUserId;
-    if (!sessionUserId) return reply.code(401).send({ error: "Authentication required" });
-    if (!(await viewerCanManageProviderKeys(sessionUserId))) {
-      return reply.code(403).send({ error: "admin only" });
-    }
-    if (managedProviderCredentialRouteIsBlocked("/api/setup/nautilo-gateway")) {
-      return reply.code(403).send({ error: "managed_credentials_control_plane_owned" });
-    }
-    return reply.send({
-      baseUrl: normalizeManagedGatewayBaseUrl(process.env[MANAGED_GATEWAY_BASE_URL_ENV_VAR]),
-    });
-  });
-
-  app.put("/api/setup/nautilo-gateway", async (request, reply) => {
-    const sessionUserId = request.sessionUserId;
-    if (!sessionUserId) return reply.code(401).send({ error: "Authentication required" });
-    if (!(await viewerCanManageProviderKeys(sessionUserId))) {
-      return reply.code(403).send({ error: "admin only" });
-    }
-    if (managedProviderCredentialRouteIsBlocked("/api/setup/nautilo-gateway")) {
-      return reply.code(403).send({ error: "managed_credentials_control_plane_owned" });
-    }
-    const parsed = NautiloGatewayBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "Invalid Nautilo Gateway URL" });
-    const baseUrl = normalizeManagedGatewayBaseUrl(parsed.data.baseUrl);
-    if (!baseUrl) return reply.code(400).send({ error: "Invalid Nautilo Gateway URL" });
-
-    const before = normalizeManagedGatewayBaseUrl(
-      process.env[MANAGED_GATEWAY_BASE_URL_ENV_VAR],
-    );
-    const result = await transaction({
-      operations: [{ type: "set", key: MANAGED_GATEWAY_BASE_URL_ENV_VAR, value: baseUrl }],
-      healthCheck: "none",
-      overwrite: true,
-      reason: "Nautilo Gateway URL changed in Server admin",
-      actor: "setup-spa",
-    });
-    if (!result.success) {
-      return reply.code(400).send({
-        error: result.error ?? "Nautilo Gateway URL could not be saved",
-      });
-    }
-
-    invalidateRuntimeConfigCache();
-    audit(request, {
-      kind: "server_nautilo_gateway_changed",
-      actorId: sessionUserId,
-      changes: { baseUrl: { before, after: baseUrl } },
-    });
-    return reply.send({ baseUrl });
-  });
-
   app.get("/api/setup/research-provider", async (request, reply) => {
     const sessionUserId = request.sessionUserId;
     if (!sessionUserId) return reply.code(401).send({ error: "Authentication required" });
@@ -311,6 +254,7 @@ export function setupRoutes(app: FastifyInstance) {
       });
 
       if (result.success) {
+        invalidateRuntimeConfigCache();
         return reply.send({
           success: true,
           applied: result.applied,
@@ -330,6 +274,70 @@ export function setupRoutes(app: FastifyInstance) {
       });
     },
   );
+
+  app.delete("/api/setup/keys/:provider", async (request, reply) => {
+    if (managedProviderCredentialRouteIsBlocked("/api/setup/keys/:provider")) {
+      return reply.code(403).send({ error: "managed_credentials_control_plane_owned" });
+    }
+    // Deletion always requires a resolved Human session. Loopback and the
+    // bootstrap bearer authorize initial setup, not removal of live funding.
+    const sessionUserId = request.sessionUserId;
+    if (!sessionUserId) return reply.code(401).send({ error: "Authentication required" });
+    if (!(await viewerCanManageProviderKeys(sessionUserId))) {
+      return reply.code(403).send({ error: "admin only" });
+    }
+    const provider = (request.params as { provider?: unknown } | undefined)?.provider;
+    const definition = typeof provider === "string" ? getKeyDefinition(provider) : undefined;
+    if (!definition) return reply.code(400).send({ error: "invalid_provider" });
+
+    try {
+      const result = await transaction({
+        operations: [{ type: "remove", key: definition.envVar }],
+        healthCheck: "none",
+        overwrite: true,
+        reason: "Provider key removed in Server admin",
+        actor: "setup-spa",
+      });
+      if (!result.success) {
+        return reply.code(400).send({
+          success: false,
+          rolledBack: result.rolledBack,
+          error: "Provider key could not be removed",
+          snapshot: result.snapshot,
+          details: result.details,
+        });
+      }
+
+      invalidateRuntimeConfigCache();
+      // config-guard's canonical reload emits the process-wide environment
+      // reload event. Confirm its effective result before reporting success:
+      // an injected platform value must not be described as deleted.
+      if (process.env[definition.envVar]?.trim()) {
+        return reply.code(409).send({
+          success: false,
+          error: "provider_key_remains_platform_controlled",
+          snapshot: result.snapshot,
+          details: result.details,
+        });
+      }
+      audit(request, {
+        kind: "server_provider_key_changed",
+        actorId: sessionUserId,
+        provider: definition.id,
+        action: "deleted",
+      } satisfies Omit<ServerProviderKeyChangedAuditEvent, "ts" | "ip" | "userAgent">);
+      return reply.send({
+        success: true,
+        applied: result.applied,
+        skipped: result.skipped,
+        snapshot: result.snapshot,
+        details: result.details,
+      });
+    } catch (error) {
+      if (error instanceof ConfigGuardError) return replyForConfigGuardError(reply, error);
+      throw error;
+    }
+  });
 
   app.post("/api/setup/mint-claim-invite", async (request, reply) => {
     if (!requestAllowsPrivilegedSetup(request)) {

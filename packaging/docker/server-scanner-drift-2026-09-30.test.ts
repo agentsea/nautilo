@@ -11,7 +11,8 @@ const fixture = read("fixtures/server-scanner-drift-2026-09-30.json") as {
   sourceSha: string;
   architectures: Record<Architecture, Tuple[]>;
 };
-const source = read("server-vulnerability-exceptions.input.json");
+// Retired production decisions remain bound to the historical scanner replay.
+const source = read("fixtures/retired-server-decisions-2026-09-30.json");
 const decisions = source.exceptions.filter((entry: { reviewedAt: string }) => entry.reviewedAt === "2026-09-30T15:20:00Z");
 const digest = `sha256:${"a".repeat(64)}`;
 

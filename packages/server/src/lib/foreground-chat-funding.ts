@@ -8,6 +8,7 @@ import {
 } from "@nautilo/trust";
 import {
   ModelFundingError,
+  PERSONAL_CHAT_PROVIDER_IDS,
   resolveModelFunding,
   withAdmittedPersonalProviderKey,
   type ModelFundingDecision,
@@ -70,7 +71,8 @@ export async function callerHasConfiguredPersonalFunding(humanUserId: string): P
   const db = getServerDirectDb();
   const policy = await getServerProviderPolicy(db);
   if (!policy.allowPersonalProviderKeys) return false;
-  return (await listPersonalProviderCredentials(db, humanUserId)).length > 0;
+  return (await listPersonalProviderCredentials(db, humanUserId)).some((credential) =>
+    (PERSONAL_CHAT_PROVIDER_IDS as readonly string[]).includes(credential.provider));
 }
 
 export async function callerMayUsePersonalChat(humanUserId: string): Promise<boolean> {
@@ -89,13 +91,20 @@ export async function openForegroundChatFundingSession(
 ): Promise<ForegroundChatFundingSession | null> {
   const db = getServerDirectDb();
   const policy = await getServerProviderPolicy(db);
-  if (!policy.allowPersonalProviderKeys) return null;
   const caps = await getUserCapabilities(input.humanUserId);
-  if (!caps.includes("use_personal_provider_credentials")) return null;
+  const serverAllowed = caps.includes("use_server_provider_credentials");
+  if (!policy.allowPersonalProviderKeys) {
+    if (serverAllowed) return null;
+    throw new ModelFundingError("personal_credentials_disabled");
+  }
+  if (!caps.includes("use_personal_provider_credentials")) {
+    if (serverAllowed) return null;
+    throw new ModelFundingError("personal_credentials_forbidden");
+  }
   if (!(await isOwnPrivateGenieRoom(input.humanUserId, input.roomId, input.agentId))) {
     // A member who also has server funding keeps the established foreign-DM
     // path. Personal-only callers cannot turn a foreign Room into server spend.
-    if (caps.includes("use_server_provider_credentials")) return null;
+    if (serverAllowed) return null;
     throw new ModelFundingError("unsupported_workload");
   }
   await assertCanInvokeAgent({

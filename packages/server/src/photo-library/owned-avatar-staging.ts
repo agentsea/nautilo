@@ -1,9 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { link, lstat, mkdir, open, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
 import { getAvatarBlobDir, isSafeBlobId } from "../routes/_helpers/avatar";
+import { hasOwnedAvatarOriginalDimensions } from "./strict-avatar-media";
 
 export type OwnedAvatarKind = "uploaded" | "generated";
 
@@ -30,6 +31,54 @@ const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const MAX_GENERATED_BYTES = 8 * 1024 * 1024;
 const MAX_GENERATED_THUMBNAIL_BYTES = 5 * 1024 * 1024;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Application-defined UUID version 8 identifies the current artifact hash contract. */
+export function createOwnedAvatarLeaseToken(): string {
+  const token = randomUUID();
+  return `${token.slice(0, 14)}8${token.slice(15)}`;
+}
+
+export function hasCurrentOwnedAvatarProtocol(leaseToken: string): boolean {
+  return UUID_PATTERN.test(leaseToken) && leaseToken[14] === "8";
+}
+
+const STAGING_PROTOCOL = Buffer.from("owned-avatar/v2\n", "utf8");
+
+async function assertCurrentStagingProtocol(directory: string): Promise<void> {
+  const directoryStat = await lstat(directory);
+  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) throw new Error("Unsafe owned-photo staging directory");
+  const handle = await open(join(directory, ".protocol"), constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size !== STAGING_PROTOCOL.length || !(await handle.readFile()).equals(STAGING_PROTOCOL)) {
+      throw new Error("Legacy photo artifacts require cleanup by the previous server version");
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function prepareStagingDirectory(kind: OwnedAvatarKind, operationId: string, leaseToken: string): Promise<void> {
+  const directory = stageDir(kind, operationId, leaseToken);
+  if (hasCurrentOwnedAvatarProtocol(leaseToken)) {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    return;
+  }
+  // Direct current-version staging callers can retain an older UUID format.
+  // Tag only a newly created directory; never adopt untagged legacy artifacts.
+  await mkdir(join(getAvatarBlobDir(kind), ".photo-library-staging", operationId), { recursive: true, mode: 0o700 });
+  try {
+    await mkdir(directory, { mode: 0o700 });
+    await createExclusive(join(directory, ".protocol"), STAGING_PROTOCOL);
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
+    try {
+      await assertCurrentStagingProtocol(directory);
+    } catch {
+      throw new Error("Legacy photo reservations must be drained before upgrading");
+    }
+  }
+}
 
 function stageDir(kind: OwnedAvatarKind, operationId: string, leaseToken: string): string {
   return join(getAvatarBlobDir(kind), ".photo-library-staging", operationId, leaseToken);
@@ -62,7 +111,7 @@ export function deriveOwnedAvatarBlobId(input: {
     if (!UUID_PATTERN.test(value)) throw new Error("invalid owned-photo scope");
   }
   return createHash("sha256")
-    .update("nautilo/d487/owned-avatar/v1\0", "utf8")
+    .update("nautilo/owned-avatar/v2\0", "utf8")
     .update(input.scope.serverInstanceId, "utf8")
     .update("\0", "utf8")
     .update(input.scope.ownerUserId, "utf8")
@@ -77,13 +126,11 @@ export function deriveOwnedAvatarBlobId(input: {
 
 async function validateOriginal(kind: OwnedAvatarKind, bytes: Buffer): Promise<void> {
   const cap = kind === "uploaded" ? MAX_UPLOAD_BYTES : MAX_GENERATED_BYTES;
-  const dimension = kind === "uploaded" ? 256 : 1024;
   if (bytes.length < 1 || bytes.length > cap) throw new Error("avatar bytes exceed the owned-photo limit");
   const metadata = await sharp(bytes, { limitInputPixels: 1024 * 1024 }).metadata();
   if (
     metadata.format !== "png"
-    || metadata.width !== dimension
-    || metadata.height !== dimension
+    || !hasOwnedAvatarOriginalDimensions(kind, metadata.width, metadata.height)
     || (metadata.pages !== undefined && metadata.pages !== 1)
   ) {
     throw new Error("avatar bytes do not satisfy the owned-photo image contract");
@@ -146,7 +193,7 @@ export async function stageOwnedAvatar(input: {
     thumbnailSha256: null,
   };
   const location = paths(staged);
-  await mkdir(stageDir(input.kind, input.operationId, input.leaseToken), { recursive: true, mode: 0o700 });
+  await prepareStagingDirectory(input.kind, input.operationId, input.leaseToken);
   await createExclusive(location.stagingOriginal, input.bytes);
   try {
     if (input.kind !== "generated") return staged;
@@ -258,6 +305,25 @@ export async function discardExpiredOwnedAvatarArtifacts(input: {
     || input.slotCount < 1
     || input.slotCount > 4
   ) throw new Error("expired owned avatar cleanup proof is invalid");
+  if (!hasCurrentOwnedAvatarProtocol(input.leaseToken)) {
+    let tagged = false;
+    for (const kind of ["uploaded", "generated"] as const) {
+      const directory = stageDir(kind, input.operationId, input.leaseToken);
+      try {
+        await lstat(directory);
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") continue;
+        throw error;
+      }
+      try {
+        await assertCurrentStagingProtocol(directory);
+        tagged = true;
+      } catch {
+        throw new Error("Legacy photo artifacts require cleanup by the previous server version");
+      }
+    }
+    if (!tagged) throw new Error("Legacy photo artifacts require cleanup by the previous server version");
+  }
   for (const ordinal of Array.from({ length: input.slotCount }, (_, index) => index)) {
     const blobId = deriveOwnedAvatarBlobId({ scope: input.scope, operationId: input.operationId, ordinal });
     await Promise.all((["uploaded", "generated"] as const).flatMap((kind) => {

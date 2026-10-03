@@ -1,6 +1,25 @@
 import type { SetupStatusResponse } from "@nautilo/api-client/browser";
 import type { RoomMemberDto } from "@nautilo/types";
 
+export type PersonalChatReadiness =
+  | "checking"
+  | "ready"
+  | "missing-key"
+  | "missing-model"
+  | "disabled"
+  | "unavailable";
+
+/** A personal-only Human cannot use a configured server key as a chat fallback. */
+export function needsPersonalChatReadiness(
+  canUsePersonalKeys: boolean,
+): boolean {
+  return canUsePersonalKeys;
+}
+
+export function personalChatNeedsSetup(state: PersonalChatReadiness): boolean {
+  return state !== "ready";
+}
+
 export function shouldShowProviderSetupEmptyState(
   status: SetupStatusResponse | null,
   members: readonly RoomMemberDto[],
@@ -13,9 +32,49 @@ export function shouldShowProviderSetupEmptyState(
 
 export function ProviderSetupEmptyState({
   canManageProviders,
+  personalState,
+  onRetry,
 }: {
   readonly canManageProviders: boolean;
+  readonly personalState?: PersonalChatReadiness;
+  readonly onRetry?: () => void;
 }) {
+  const personalMessage = personalState === "checking"
+    ? "Checking which models you can use…"
+    : personalState === "missing-key"
+      ? "Add one of your provider keys in Settings to chat with your Genie."
+      : personalState === "missing-model"
+        ? "Your saved key does not currently make a text-chat model available. Check the provider and choose an eligible model in Settings."
+        : personalState === "disabled"
+          ? "Personal provider keys are disabled on this server. Ask a server administrator to enable them."
+          : "Your personal chat setup could not be checked. Try again in a moment.";
+  if (personalState && personalState !== "ready") {
+    return (
+      <div
+        className="relative flex h-full min-h-0 flex-1 flex-col items-center justify-center bg-background px-6 pb-24 text-center"
+        data-testid="personal-provider-setup-empty-state"
+      >
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-background-element text-lg text-foreground-muted" aria-hidden>✦</div>
+        <h2 className="mt-4 text-xl font-semibold text-foreground">
+          {personalState === "checking" ? "Checking chat access" : "Set up your chat model"}
+        </h2>
+        <p className="mt-2 max-w-md text-sm leading-6 text-foreground-muted">{personalMessage}</p>
+        {personalState !== "checking" && personalState !== "disabled" && personalState !== "unavailable" ? (
+          <a
+            href={personalState === "missing-model" ? "/settings#model" : "/settings#personal-provider-keys"}
+            className="mt-6 inline-flex min-h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-[var(--on-primary)] hover:bg-primary-hover"
+          >
+            {personalState === "missing-model" ? "Choose a model" : "Set up your key"}
+          </a>
+        ) : null}
+        {personalState === "unavailable" && onRetry ? (
+          <button type="button" onClick={onRetry} className="mt-6 rounded-md bg-primary px-4 py-2 text-sm font-medium text-[var(--on-primary)]">
+            Try again
+          </button>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div
       className="relative flex h-full min-h-0 flex-1 flex-col items-center justify-center bg-background px-6 pb-24 text-center"

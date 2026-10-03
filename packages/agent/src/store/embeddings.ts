@@ -52,7 +52,6 @@ interface ResolvedEmbeddingProvider {
   apiKey: string;
   endpoint: string;
   model: string;
-  forbidRedirects: boolean;
 }
 
 function getEmbeddingConfig(modelOverride?: string | null) {
@@ -125,7 +124,6 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       apiKey: veniceKey,
       endpoint: VENICE_EMBEDDINGS_URL,
       model: trimmedModel.slice("venice:".length),
-      forbidRedirects: false,
     };
   }
 
@@ -142,17 +140,11 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       apiKey: openAiKey,
       endpoint: OPENAI_EMBEDDINGS_URL,
       model: trimmedModel.slice("openai:".length),
-      forbidRedirects: false,
     };
   }
 
   if (explicitlyOpenRouter) {
-    let openRouterTransport: ReturnType<typeof resolveOpenRouterTransport>;
-    try {
-      openRouterTransport = resolveOpenRouterTransport();
-    } catch (error) {
-      throwInvalidGatewayEmbeddingConfiguration(error);
-    }
+    const openRouterTransport = resolveOpenRouterTransport();
     if (!openRouterTransport) {
       throw new EmbeddingProviderError({
         message:
@@ -166,41 +158,30 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       apiKey: openRouterTransport.apiKey,
       endpoint: `${openRouterTransport.baseUrl}/embeddings`,
       model: openRouterModelId(trimmedModel),
-      forbidRedirects: openRouterTransport.kind === "managed-gateway",
     };
   }
 
   // Preserve the established automatic embedding identity when a direct
-  // provider is already configured. Enabling Gateway must not reinterpret an
-  // existing index. Gateway-only installations take the OpenRouter route.
+  // provider is already configured.
   if (veniceKey) {
     return {
       provider: "venice",
       apiKey: veniceKey,
       endpoint: VENICE_EMBEDDINGS_URL,
       model: trimmedModel || DEFAULT_VENICE_EMBEDDING_MODEL,
-      forbidRedirects: false,
     };
   }
 
-  // An invalid managed transport must block a direct OpenRouter route, but it
-  // does not invalidate an unrelated legacy OpenAI auto route.
   if (!directOpenRouterKey && openAiKey) {
     return {
       provider: "openai",
       apiKey: openAiKey,
       endpoint: OPENAI_EMBEDDINGS_URL,
       model: trimmedModel || DEFAULT_OPENAI_EMBEDDING_MODEL,
-      forbidRedirects: false,
     };
   }
 
-  let openRouterTransport: ReturnType<typeof resolveOpenRouterTransport>;
-  try {
-    openRouterTransport = resolveOpenRouterTransport();
-  } catch (error) {
-    throwInvalidGatewayEmbeddingConfiguration(error);
-  }
+  const openRouterTransport = resolveOpenRouterTransport();
 
   if (directOpenRouterKey && openRouterTransport) {
     return {
@@ -212,7 +193,6 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       model: trimmedModel
         ? openRouterModelId(trimmedModel)
         : DEFAULT_OPENROUTER_EMBEDDING_MODEL,
-      forbidRedirects: openRouterTransport.kind === "managed-gateway",
     };
   }
 
@@ -222,19 +202,6 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       apiKey: openAiKey,
       endpoint: OPENAI_EMBEDDINGS_URL,
       model: trimmedModel || DEFAULT_OPENAI_EMBEDDING_MODEL,
-      forbidRedirects: false,
-    };
-  }
-
-  if (openRouterTransport?.kind === "managed-gateway") {
-    return {
-      provider: "openrouter",
-      apiKey: openRouterTransport.apiKey,
-      endpoint: `${openRouterTransport.baseUrl}/embeddings`,
-      model: trimmedModel
-        ? openRouterModelId(trimmedModel)
-        : DEFAULT_OPENROUTER_EMBEDDING_MODEL,
-      forbidRedirects: true,
     };
   }
 
@@ -243,14 +210,6 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       "Memory embeddings require a configured Venice, OpenRouter, or OpenAI credential.",
     code: "missing_credentials",
     provider: null,
-  });
-}
-
-function throwInvalidGatewayEmbeddingConfiguration(error: unknown): never {
-  throw new EmbeddingProviderError({
-    message: error instanceof Error ? error.message : "The Nautilo Gateway configuration is invalid.",
-    code: "missing_credentials",
-    provider: "openrouter",
   });
 }
 
@@ -366,7 +325,6 @@ async function embedTextsWithResolvedProvider(
           : {}),
       }),
       ...(signal === undefined ? {} : { signal }),
-      ...(resolved.forbidRedirects ? { redirect: "error" as const } : {}),
     });
   } catch {
     throw new EmbeddingProviderError({

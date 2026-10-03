@@ -23,6 +23,7 @@ const LADDER = [
   { roleSlug: "superuser", groupType: "superusers" },
   { roleSlug: "member", groupType: "members" },
   { roleSlug: "contributor", groupType: "contributors" },
+  { roleSlug: "community", groupType: "communities" },
   { roleSlug: "guest", groupType: "guests" },
 ] as const;
 

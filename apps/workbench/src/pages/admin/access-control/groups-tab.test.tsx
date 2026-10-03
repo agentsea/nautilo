@@ -50,7 +50,7 @@ describe("GroupsTab", () => {
     capabilities = ["manage_groups"];
     const view = render(<GroupsTab onReview={() => undefined} />);
     fireEvent.click(view.getByRole("button", { name: "New custom group" }));
-    await waitFor(() => expect(view.getByRole("option", { name: "Owner" })).toBeTruthy());
+    await waitFor(() => expect(view.getByRole("option", { name: /^Owner/ })).toBeTruthy());
     fireEvent.click(view.getByText("Members"));
     expect(view.getByText(/Membership management requires manage_members/)).toBeTruthy();
     expect(view.queryByRole("button", { name: "Review add" })).toBeNull();
@@ -75,21 +75,25 @@ describe("GroupsTab", () => {
       .toBeTrue();
   });
 
-  test("blocks Community enrollment while preserving removal", async () => {
+  test("reviews Community additions and removals with normal Group authority", async () => {
     reapplyHappyDomGlobals();
     listGroupMembers.mockResolvedValueOnce({
       members: [{ userId: "ada", displayName: "Ada", handle: "ada" }],
     });
-    const view = render(<GroupsTab onReview={() => undefined} />);
+    const review = mock(() => undefined);
+    const view = render(<GroupsTab onReview={review} />);
     fireEvent.click(view.getByText("Communities"));
 
-    expect(view.getByText(/Community enrollment is unavailable/)).toBeTruthy();
-    expect((view.getByRole("button", { name: "Review add" }) as HTMLButtonElement).disabled)
-      .toBeTrue();
+    await waitFor(() => expect(view.getByRole("option", { name: /^Owner/ })).toBeTruthy());
+    fireEvent.change(view.getByRole("combobox", { name: "Member to add" }), { target: { value: "owner" } });
+    fireEvent.click(view.getByRole("button", { name: "Review add" }));
+    expect(review).toHaveBeenCalledWith({ kind: "membership.add", groupId: "community", userId: "owner" });
     await waitFor(() => {
       expect((view.getByRole("button", { name: "Review removal" }) as HTMLButtonElement).disabled)
         .toBeFalse();
     });
+    fireEvent.click(view.getByRole("button", { name: "Review removal" }));
+    expect(review).toHaveBeenCalledWith({ kind: "membership.remove", groupId: "community", userId: "ada" });
   });
 
   test("ignores an out-of-order roster response and reviews the matching Group/member", async () => {

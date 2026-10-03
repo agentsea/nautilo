@@ -182,6 +182,8 @@ export const DATA_TABLES = [
   "public.logto_account_security",
   "public.nautilo_instance_identity",
   "public.credentials",
+  // Preserve recent server-funded Soul admissions across an instance move.
+  "public.soul_generation_attempts",
   "public.recovery_codes",
   "public.channel_identities",
   // M233 — Human-owned notification default. References users only.
@@ -369,6 +371,8 @@ export const DATA_TABLES = [
   "public.standing_approvals",
   "public.approval_challenges",
   "public.invites",
+  // The public shortcut references an ordinary Invite and its updating Human.
+  "public.server_public_join",
   // M260 — per-Human Invite state; both Invite and User parents are earlier.
   "public.invite_redemptions",
 

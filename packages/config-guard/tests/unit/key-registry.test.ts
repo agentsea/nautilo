@@ -15,8 +15,8 @@ describe("key-registry", () => {
     expect(getKeyByEnvVar("NAUTILO_GATEWAY_API_KEY")?.signupUrl).toBe("");
   });
 
-  test("registry has fifteen keys", () => {
-    expect(KEY_REGISTRY.length).toBe(15);
+  test("registry has fourteen keys", () => {
+    expect(KEY_REGISTRY.length).toBe(14);
   });
 
   test("Surplus accepts an opaque single-line buyer key without a Bearer prefix", () => {
@@ -82,15 +82,6 @@ describe("key-registry", () => {
     expect(k?.id).toBe("gateway");
     expect(k?.formatCheck("local-gateway-key")).toBe(true);
     expect(k?.formatCheck("")).toBe(false);
-  });
-
-  test("Nautilo Gateway is a separate chat and embeddings credential", () => {
-    const k = getKeyByEnvVar("NAUTILO_MANAGED_GATEWAY_API_KEY");
-    expect(k?.id).toBe("nautilo-gateway");
-    expect(k?.name).toBe("Nautilo Gateway key (coming soon)");
-    expect(k?.category).toBe("llm+embeddings");
-    expect(k?.formatCheck(`ngw_${"a".repeat(43)}`)).toBe(true);
-    expect(k?.formatCheck("sk-or-v1-not-a-gateway-key")).toBe(false);
   });
 
   test("ElevenLabs expects sk_ prefix and length", () => {

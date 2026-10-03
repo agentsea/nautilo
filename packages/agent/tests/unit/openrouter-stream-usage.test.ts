@@ -118,7 +118,6 @@ async function invokeStream(baseURL: string, chunks: StreamChunk[]) {
 
 describe.each([
   ["direct OpenRouter", "https://openrouter.ai/api/v1"],
-  ["Nautilo Gateway", "http://127.0.0.1:43318/v1"],
 ])("OpenRouter streaming usage through %s", (_label, baseURL) => {
   test("records a choice-attached provider receipt exactly once", async () => {
     const { message, output, requests } = await invokeStream(baseURL, [

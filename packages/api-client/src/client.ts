@@ -1307,7 +1307,16 @@ export const serverContextConfigSchema = z.object({
 
 export const serverProviderPolicySchema = z.object({
   allowPersonalProviderKeys: z.boolean(),
+  fundingPreference: z.enum(["personal_first", "server_first"]).default("personal_first"),
 }).strict();
+
+export const serverProviderPolicyUpdateSchema = z.object({
+  allowPersonalProviderKeys: z.boolean().optional(),
+  fundingPreference: z.enum(["personal_first", "server_first"]).optional(),
+}).strict().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: "At least one server provider policy field is required" },
+);
 
 // shared rooms owned by a user that block their deletion, with the
 // members eligible to receive ownership (non-federated humans).
@@ -1458,11 +1467,7 @@ export type CanonicalServerRoleSlug =
   | "contributor"
   | "community"
   | "guest";
-/** Community is installed but remains closed to enrollment in this phase. */
-export type EnrollableServerRoleSlug = Exclude<
-  CanonicalServerRoleSlug,
-  "community"
->;
+export type EnrollableServerRoleSlug = CanonicalServerRoleSlug;
 export interface AdminProvisionMemberInput {
   handle: string;
   displayName: string;
@@ -1487,6 +1492,8 @@ export type AdminUserDeleteResponse = {
 export type ServerModelConfig = z.infer<typeof serverModelConfigSchema>;
 export type ServerContextConfig = z.infer<typeof serverContextConfigSchema>;
 export type ServerProviderPolicy = z.infer<typeof serverProviderPolicySchema>;
+export type ServerProviderFundingPreference = ServerProviderPolicy["fundingPreference"];
+export type ServerProviderPolicyUpdate = z.infer<typeof serverProviderPolicyUpdateSchema>;
 export type OwnedSharedRoom = z.infer<typeof ownedSharedRoomSchema>;
 export type OwnedSharedRoomsResponse = z.infer<typeof ownedSharedRoomsResponseSchema>;
 export type {
@@ -1547,7 +1554,6 @@ const LLM_KEY_IDS = new Set<string>([
   "anthropic",
   "openai",
   "openrouter",
-  "nautilo-gateway",
   "gateway",
   "google",
   "fireworks",
@@ -1556,13 +1562,12 @@ const LLM_KEY_IDS = new Set<string>([
 ]);
 
 function computeHasLlmFromKeys(keys: KeyReport[]): boolean {
-  // A masked Gateway key report cannot prove that its separate API root is
-  // usable. Keep this browser-side projection conservative; authoritative
-  // setup readiness comes from config-guard's server-side summary.
+  // A Surplus marketplace credential alone cannot establish a direct provider
+  // route. Authoritative setup readiness comes from config-guard's server-side
+  // summary.
   return keys.some(
     (k) =>
-      k.id !== "nautilo-gateway"
-      && k.id !== "surplus"
+      k.id !== "surplus"
       && LLM_KEY_IDS.has(k.id)
       && (k.status === "present" || k.status === "verified"),
   );
@@ -1934,8 +1939,7 @@ export interface CreateInviteInput {
   kind: "server";
   /**
    * Required. The canonical Group rung the invitee joins on redeem.
-   * One of the currently enrollable ladder slugs. Community is canonical but
-   * remains unavailable as an invitation target in this phase.
+   * One of the currently enrollable ladder slugs.
    */
   targetGroupRoleSlug: EnrollableServerRoleSlug;
   /**
@@ -1979,6 +1983,18 @@ export interface InviteSummary {
   targetRoomId: string | null;
   targetRoomLabel: string | null;
   targetRoleSlug: string | null;
+  codeAvailable: boolean;
+}
+
+export interface InviteShare {
+  code: string;
+  url: string;
+}
+
+export interface PublicJoinSelection {
+  inviteId: string | null;
+  revision: number;
+  joinUrl: string;
 }
 
 export interface InvitePage {
@@ -2038,6 +2054,18 @@ const inviteSummarySchema = z.object({
   targetRoomId: z.string().nullable(),
   targetRoomLabel: z.string().nullable(),
   targetRoleSlug: z.string().nullable(),
+  codeAvailable: z.boolean(),
+}).strict();
+
+const inviteShareSchema = z.object({
+  code: z.string().min(1),
+  url: z.string().url(),
+}).strict();
+
+const publicJoinSelectionSchema = z.object({
+  inviteId: z.string().nullable(),
+  revision: z.number().int().nonnegative(),
+  joinUrl: z.string().url(),
 }).strict();
 
 const invitePageSchema = z.object({
@@ -2215,6 +2243,13 @@ export class ApiError extends Error {
   }
 }
 
+export class InviteShareApiError extends ApiError {
+  constructor(status: number, readonly code: string) {
+    super(status, code);
+    this.name = "InviteShareApiError";
+  }
+}
+
 export type CredentialValidationStatus =
   | "unverified"
   | "accepted"
@@ -2231,6 +2266,17 @@ export interface CredentialMetadata {
   readonly validationStatus: CredentialValidationStatus;
   readonly validatedAt: string | null;
   readonly requiresReplacement: boolean;
+  readonly masked: string | null;
+}
+
+/** Secret-free provider metadata available for personal credential enrollment. */
+export interface PersonalProviderCatalogEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly purpose: string;
+  readonly signupUrl?: string | undefined;
+  readonly formatHint?: string | undefined;
+  readonly personalCapabilities: readonly "chat"[];
 }
 
 export interface PutProviderCredentialInput {
@@ -2257,7 +2303,7 @@ export interface DeleteProviderCredentialResponse {
   readonly committed: true;
 }
 
-const credentialMetadataSchema: z.ZodType<CredentialMetadata> = z.object({
+const credentialMetadataSchema = z.object({
   provider: z.string().min(1),
   id: z.string().min(1),
   revision: z.number().int().nonnegative(),
@@ -2266,10 +2312,23 @@ const credentialMetadataSchema: z.ZodType<CredentialMetadata> = z.object({
   validationStatus: z.enum(["unverified", "accepted", "rejected", "unavailable"]),
   validatedAt: z.string().min(1).nullable(),
   requiresReplacement: z.boolean(),
+  // Older servers do not project a preview during a rolling upgrade.
+  masked: z.string().min(1).nullable().optional().default(null),
+}).strict();
+
+const personalProviderCatalogEntrySchema: z.ZodType<PersonalProviderCatalogEntry> = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  purpose: z.string().min(1),
+  signupUrl: z.string().min(1).optional(),
+  formatHint: z.string().min(1).optional(),
+  personalCapabilities: z.array(z.literal("chat")),
 }).strict();
 
 const listProviderCredentialsResponseSchema = z.object({
   credentials: z.array(credentialMetadataSchema),
+  // During a rolling upgrade an older server may not project its registry yet.
+  providers: z.array(personalProviderCatalogEntrySchema).optional().default([]),
 }).strict();
 
 const putProviderCredentialResponseSchema = z.object({
@@ -4138,11 +4197,11 @@ export class NautiloApiClient {
           defaultErrorPrefix: "GET /api/admin/server-provider-policy",
         });
       },
-      set: async (input: ServerProviderPolicy): Promise<ServerProviderPolicy> => {
+      set: async (input: ServerProviderPolicyUpdate): Promise<ServerProviderPolicy> => {
         return this.request<ServerProviderPolicy>({
           method: "POST",
           path: "/api/admin/server-provider-policy",
-          body: serverProviderPolicySchema.parse(input),
+          body: serverProviderPolicyUpdateSchema.parse(input),
           schema: serverProviderPolicySchema,
           defaultErrorPrefix: "POST /api/admin/server-provider-policy",
         });
@@ -5706,7 +5765,10 @@ export class NautiloApiClient {
     return { keys, hasLlm: computeHasLlmFromKeys(keys) };
   }
 
-  async listProviderCredentials(): Promise<{ credentials: CredentialMetadata[] }> {
+  async listProviderCredentials(): Promise<{
+    credentials: CredentialMetadata[];
+    providers: PersonalProviderCatalogEntry[];
+  }> {
     return this.request({
       path: "/api/account/provider-credentials",
       schema: listProviderCredentialsResponseSchema,
@@ -5750,25 +5812,6 @@ export class NautiloApiClient {
       body: input,
       schema: deleteProviderCredentialResponseSchema,
       statusErrors: providerCredentialStatusErrors,
-    });
-  }
-
-  /** Read the administrator-visible Nautilo Gateway API root. */
-  async getNautiloGateway(): Promise<{ baseUrl: string | null }> {
-    return this.request({
-      path: "/api/setup/nautilo-gateway",
-      defaultErrorPrefix: "GET /api/setup/nautilo-gateway",
-    });
-  }
-
-  /** Update the Nautilo Gateway API root. */
-  async updateNautiloGateway(baseUrl: string): Promise<{ baseUrl: string }> {
-    return this.request({
-      method: "PUT",
-      path: "/api/setup/nautilo-gateway",
-      auth: "session-fresh",
-      body: { baseUrl },
-      defaultErrorPrefix: "PUT /api/setup/nautilo-gateway",
     });
   }
 
@@ -8227,6 +8270,7 @@ export class NautiloApiClient {
     input: {
       readonly target: AgentPhotoSelectionTargetDto;
       readonly expectedSelectionRevision: string;
+      readonly replaceMissingCurrent?: boolean;
     },
     options: AgentPhotoLibraryMutationOptions,
   ): Promise<AgentPhotoLibrarySelectionResponse> {
@@ -10889,6 +10933,26 @@ export class NautiloApiClient {
     return z.array(assistantModelSummarySchema).parse(models);
   }
 
+  /**
+   * List text-chat models using the authenticated Human's server-resolved
+   * funding availability. The response contains display metadata only; route
+   * and credential authority remain on the server.
+   */
+  async getCallerModels(
+    query?: Pick<GetEligibleModelsQuery, "includeUnavailable" | "allowChinaUpstream">,
+  ): Promise<AssistantModelSummary[]> {
+    const params = new URLSearchParams();
+    if (query?.includeUnavailable === true) params.set("includeUnavailable", "true");
+    if (query?.allowChinaUpstream === true) params.set("allowChinaUpstream", "true");
+    const qs = params.toString();
+    const models = await this.request<unknown>({
+      path: `/api/config/models/caller${qs ? `?${qs}` : ""}`,
+      auth: "session-fresh",
+      defaultErrorPrefix: "GET /api/config/models/caller",
+    });
+    return z.array(assistantModelSummarySchema).parse(models);
+  }
+
   async resolveRetainedModels(
     ids: readonly string[],
     query?: Omit<GetEligibleModelsQuery, "includeUnavailable">,
@@ -10989,10 +11053,11 @@ export class NautiloApiClient {
     });
   }
 
-  async validateKeys(): Promise<{ keys: KeyReport[]; summary: CheckSummary }> {
+  async validateKeys(providerId?: string): Promise<{ keys: KeyReport[]; summary: CheckSummary }> {
     return this.request<{ keys: KeyReport[]; summary: CheckSummary }>({
       method: "POST",
       path: "/api/health/keys/validate",
+      ...(providerId === undefined ? {} : { body: { providerId } }),
       defaultErrorPrefix: "POST /api/health/keys/validate",
     });
   }
@@ -11011,6 +11076,14 @@ export class NautiloApiClient {
       path: "/api/setup/keys",
       body: { keys, overwrite },
       defaultErrorPrefix: "POST /api/setup/keys",
+    });
+  }
+
+  async deleteServerProviderKey(providerId: string): Promise<SetupKeysResult> {
+    return this.request<SetupKeysResult>({
+      method: "DELETE",
+      path: `/api/setup/keys/${encodeURIComponent(providerId)}`,
+      defaultErrorPrefix: "DELETE /api/setup/keys/:provider",
     });
   }
 
@@ -11183,6 +11256,44 @@ export class NautiloApiClient {
 
   async listMyInvites(): Promise<InviteListResult> {
     return this.listInvites();
+  }
+
+  async getInviteShare(inviteId: string): Promise<InviteShare> {
+    const enc = encodeURIComponent(inviteId);
+    return this.request<InviteShare>({
+      path: `/api/invites/${enc}/share`,
+      schema: inviteShareSchema,
+      defaultErrorPrefix: `GET /api/invites/${inviteId}/share`,
+      statusErrors: {
+        409: (body) => {
+          const code = typeof body["code"] === "string"
+            ? body["code"]
+            : "invite_code_unavailable";
+          return new InviteShareApiError(409, code);
+        },
+      },
+    });
+  }
+
+  async getPublicJoinSelection(): Promise<PublicJoinSelection> {
+    return this.request<PublicJoinSelection>({
+      path: "/api/admin/public-join",
+      schema: publicJoinSelectionSchema,
+      defaultErrorPrefix: "GET /api/admin/public-join",
+    });
+  }
+
+  async updatePublicJoinSelection(input: {
+    inviteId: string | null;
+    revision: number;
+  }): Promise<PublicJoinSelection> {
+    return this.request<PublicJoinSelection>({
+      method: "PUT",
+      path: "/api/admin/public-join",
+      body: input,
+      schema: publicJoinSelectionSchema,
+      defaultErrorPrefix: "PUT /api/admin/public-join",
+    });
   }
 
   async revokeInvite(inviteId: string): Promise<RevokeInviteResult> {
