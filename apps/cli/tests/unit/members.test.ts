@@ -59,6 +59,7 @@ const ACTIVE_INVITE = {
   targetRoomId: null,
   targetRoomLabel: null,
   targetRoleSlug: "member",
+  codeAvailable: true,
 };
 
 const MEMBER_ID = "11111111-1111-4111-8111-111111111111";

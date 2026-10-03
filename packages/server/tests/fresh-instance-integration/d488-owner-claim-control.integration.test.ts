@@ -62,6 +62,7 @@ describe("D488 owner claim controller on Postgres", () => {
     expect(active).toHaveLength(1);
     const winner = active[0];
     if (!winner) throw new Error("expected one active controller claim");
+    if (!winner.tokenHash) throw new Error("expected hashed controller claim");
     expect(["a".repeat(64), "b".repeat(64)]).toContain(winner.tokenHash);
 
     // A fresh handle observes durable DB state, not process-local controller state.

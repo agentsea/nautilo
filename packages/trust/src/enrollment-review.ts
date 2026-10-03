@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { and, asc, eq, getSharedDirectDb, inviteRedemptions, invites, isNull, ilike, or, sql, users } from "@nautilo/db";
+import { and, asc, eq, getSharedDirectDb, inviteRedemptions, inviteTokenCondition, invites, isNull, ilike, or, sql, users } from "@nautilo/db";
 import type { EnrollmentReviewItem, EnrollmentReviewStatus } from "@nautilo/types";
 import { prepareModerationEnrollmentInTx } from "./moderation-enrollment";
 import { ModerationError } from "./moderation-policy";
@@ -14,8 +13,7 @@ export async function applicantEnrollmentReview(input: {
   if (message !== undefined && !message) throw new ModerationError("join_message_required");
   const db = getSharedDirectDb();
   return db.transaction(async tx => {
-    const [invite] = await tx.select().from(invites).where(eq(invites.tokenHash,
-      createHash("sha256").update(input.inviteToken).digest("hex"))).for("update");
+    const [invite] = await tx.select().from(invites).where(inviteTokenCondition(input.inviteToken)).for("update");
     if (!invite || invite.revokedAt || (invite.expiresAt && invite.expiresAt <= new Date())) throw new ModerationError("target_unavailable");
     const [human] = await tx.select().from(users).where(eq(users.externalId, input.subject)).for("update");
     if (!human) throw new ModerationError("target_unavailable");

@@ -1,4 +1,5 @@
 export * from "./schema/index";
+export { inviteTokenCondition } from "./utils/invite-token-condition";
 export { moderationAccessAllowedSql, moderationBanAbsentSql, moderationEffectiveHumanActorIdsSql } from "./queries/moderation-admission";
 export * from "./queries/owned-photo-library";
 export * from "./queries/push-notifications";

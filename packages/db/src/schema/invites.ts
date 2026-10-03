@@ -1,4 +1,5 @@
 import {
+  boolean,
   index,
   check,
   integer,
@@ -25,7 +26,10 @@ export const invites = pgTable(
   "invites",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    tokenHash: text("token_hash").notNull(),
+    /** New shareable invites retain their code so an authorized inviter can copy it again. */
+    token: text("token"),
+    /** Historical invites and bootstrap claims retain their one-way lookup. */
+    tokenHash: text("token_hash"),
     kind: text("kind").notNull(),
     targetGroupId: uuid("target_group_id").references(() => groups.id, {
       onDelete: "cascade",
@@ -56,13 +60,31 @@ export const invites = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
+    uniqueIndex("uq_invites_token").on(table.token),
     uniqueIndex("uq_invites_token_hash").on(table.tokenHash),
+    check("invites_token_present", sql`${table.token} IS NOT NULL OR ${table.tokenHash} IS NOT NULL`),
     index("idx_invites_created_by").on(table.createdBy),
   ],
 );
 
 export type Invite = typeof invites.$inferSelect;
 export type NewInvite = typeof invites.$inferInsert;
+
+/** The one server-wide public joining shortcut; absence means not yet configured. */
+export const serverPublicJoin = pgTable(
+  "server_public_join",
+  {
+    singleton: boolean("singleton").primaryKey().default(true),
+    inviteId: uuid("invite_id").references(() => invites.id, { onDelete: "set null" }),
+    revision: integer("revision").notNull().default(1),
+    updatedBy: uuid("updated_by").references(() => users.id, { onDelete: "set null" }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check("server_public_join_singleton", sql`${table.singleton}`),
+    check("server_public_join_revision", sql`${table.revision} > 0`),
+  ],
+);
 
 /**
  * M260 — one durable browser/mobile redemption binding per Human.

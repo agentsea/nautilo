@@ -1,5 +1,4 @@
 import type { HumanMembershipEventProducer } from "../event-feed/membership-producer";
-import { createHash } from "node:crypto";
 // D168 P3 — this invite-redemption flow does inline PIN enrollment +
 // credential lookup as part of a multi-table transaction (users +
 // actors + channel_identities + credentials seeded atomically). The
@@ -21,6 +20,7 @@ import {
   moderationAccessAllowedSql,
   sql,
   invites,
+  inviteTokenCondition,
   users,
   actors,
    
@@ -218,10 +218,6 @@ async function emitCompletedInviteMembership(
   }
 }
 
-function sha256Hex(s: string): string {
-  return createHash("sha256").update(s, "utf8").digest("hex");
-}
-
 function normalizeHandle(raw: string): string {
   return raw.trim().toLowerCase();
 }
@@ -331,14 +327,13 @@ export async function redeemInviteAtomically(
   }
 
   const handle = normalizeHandle(input.handle);
-  const tokenHash = sha256Hex(plaintextToken);
 
   const probeDb = getSharedDirectDb();
   let logtoSub: string | undefined;
   const [inviteRow] = await probeDb
       .select()
       .from(invites)
-      .where(eq(invites.tokenHash, tokenHash))
+      .where(inviteTokenCondition(plaintextToken))
       .limit(1);
 
     if (!inviteRow) {
@@ -420,7 +415,7 @@ export async function redeemInviteAtomically(
         const [locked] = await tx
           .select()
           .from(invites)
-          .where(eq(invites.tokenHash, tokenHash))
+          .where(inviteTokenCondition(plaintextToken))
           .for("update")
           .limit(1);
         if (!locked) {
@@ -870,7 +865,6 @@ export async function redeemInviteWithLogtoSub(
     };
   }
 
-  const tokenHash = sha256Hex(plaintextToken);
 
   // Probe phase (mirrors redeemInviteAtomically). Outside any tx so the early
   // 404/410 returns are cheap and don't take a lock.
@@ -878,7 +872,7 @@ export async function redeemInviteWithLogtoSub(
   const [inviteRow] = await probeDb
     .select()
     .from(invites)
-    .where(eq(invites.tokenHash, tokenHash))
+    .where(inviteTokenCondition(plaintextToken))
     .limit(1);
   if (!inviteRow) {
     return { ok: false, httpStatus: 404, error: "not_found", code: "not_found" };
@@ -903,7 +897,7 @@ export async function redeemInviteWithLogtoSub(
       const [locked] = await tx
         .select()
         .from(invites)
-        .where(eq(invites.tokenHash, tokenHash))
+        .where(inviteTokenCondition(plaintextToken))
         .for("update")
         .limit(1);
       if (!locked) throw new RedeemAbort(404, "not_found");
@@ -1207,13 +1201,12 @@ export async function completeInviteProfile(
     return { ok: false, httpStatus: 400, error: v, code: v };
   }
 
-  const tokenHash = sha256Hex(plaintextToken);
 
   const probeDb = deps.db ?? getSharedDirectDb();
   const [inviteRow] = await probeDb
     .select()
     .from(invites)
-    .where(eq(invites.tokenHash, tokenHash))
+    .where(inviteTokenCondition(plaintextToken))
     .limit(1);
   if (!inviteRow) {
     return { ok: false, httpStatus: 404, error: "not_found", code: "not_found" };
@@ -1277,7 +1270,7 @@ export async function completeInviteProfile(
       const [locked] = await tx
         .select()
         .from(invites)
-        .where(eq(invites.tokenHash, tokenHash))
+        .where(inviteTokenCondition(plaintextToken))
         .for("update")
         .limit(1);
       if (!locked) throw new RedeemAbort(404, "not_found");
