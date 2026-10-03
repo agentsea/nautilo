@@ -85,7 +85,6 @@ function TaskTranscriptRow({ item }: { readonly item: TaskTranscriptMessageVM })
         role="assistant"
         outgoing={false}
         content={item.content}
-        servingTransport={item.servingTransport}
         selectableContent
       />
     );

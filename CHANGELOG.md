@@ -8,9 +8,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 ## [Unreleased]
 
 - Administrators can enable Prefer Surplus for server-funded GPT-5.6 Sol
-  (OpenRouter) text and tool requests. Replies identify Surplus serving, Costs
-  records its actual charge, and uncertain attempts fail without automatic
-  replay. Turning the preference off restores the original provider path.
+  (OpenRouter) text and tool requests. Costs records its actual charge, and
+  uncertain attempts fail without automatic replay. Turning the preference
+  off restores the original provider path.
 
 - Document reads and authorization checks avoid resolving unrelated model
   metadata when checking decision-tool availability. Model credentials and

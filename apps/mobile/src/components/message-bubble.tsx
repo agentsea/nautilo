@@ -15,7 +15,6 @@ import {
   type AvatarRef,
   type MessageActionDescriptor,
   type MessageActionSurface,
-  type ServingTransport,
 } from '@nautilo/types';
 
 const AVATAR_SIZE = 28;
@@ -35,7 +34,6 @@ type MessageBubbleProps = {
   outgoing: boolean;
   content: string;
   sentAt?: string;
-  servingTransport?: ServingTransport;
   pending?: boolean;
   failed?: boolean;
   /** D382 — optional local preview URIs rendered as thumbnails above the text. */
@@ -86,7 +84,6 @@ export function MessageBubble({
   outgoing,
   content,
   sentAt,
-  servingTransport,
   pending = false,
   failed = false,
   attachments,
@@ -303,9 +300,6 @@ export function MessageBubble({
       {!pending && !failed ? (
         <View style={styles.messageDetails}>
           <MessageTimestamp sentAt={sentAt} />
-          {role === 'assistant' && servingTransport === 'surplus' ? (
-            <Text style={styles.servingTransport}>via Surplus</Text>
-          ) : null}
         </View>
       ) : null}
       {!pending && !failed && editedAt ? (
@@ -437,11 +431,6 @@ function createStyles(t: AppTheme) {
       flexDirection: 'row',
       alignItems: 'baseline',
       gap: t.spacing.xs,
-    },
-    servingTransport: {
-      ...t.typography.caption,
-      color: t.color.text.muted,
-      fontWeight: '600',
     },
     bubble: {
       borderRadius: t.radii.lg,
