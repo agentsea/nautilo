@@ -18,6 +18,24 @@ export interface ForegroundChatFundingAttempt {
  */
 export interface ForegroundChatFundingSession {
   readonly kind: "personal" | "server";
+  /**
+   * Trusted foreground-only admission for the bounded native Task controls.
+   * Background workers and sessions whose signed model cannot call functions
+   * leave this absent, so personal execution remains tool-free by default.
+   */
+  readonly personalTaskControls?: boolean;
+  /**
+   * Non-secret current union of caller-runnable Task model ids. Projected into
+   * Task discovery for either parent funding class; every create/fire attempt
+   * is rechecked by the server funding owner.
+   */
+  readonly runnableModelIds?: readonly string[];
+  /**
+   * Trusted subset of {@link runnableModelIds} that the caller can fund but
+   * the server cannot. An exact selection from this set may be admitted only
+   * as a native root tool-free Task; canonical creation rechecks live funding.
+   */
+  readonly personalOnlyTaskModelIds?: readonly string[];
   runAttempt<T>(
     modelId: string,
     callback: (attempt: ForegroundChatFundingAttempt) => Promise<T>,

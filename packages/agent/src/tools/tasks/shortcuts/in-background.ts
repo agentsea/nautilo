@@ -17,6 +17,7 @@ import { validateTaskModelSelectionForCreate } from "../selection-validation";
 import { codexHarnessFailureGuidance } from "../codex-harness-guidance";
 import { getTaskCreationReturnContext } from "../../../runtime/task-creation-return-context";
 import { genieRecoveryResult } from "../../genie-recovery";
+import { isPersonalOnlyNativeShortcutCreate } from "../../../runtime/personal-task-controls";
 
 /**
  * M144 — `in_background` intent shortcut (generic, no scoping). A thin
@@ -59,6 +60,13 @@ const inBackgroundSchema = z.object({
   model_id: modelIdParam,
 });
 
+const personalInBackgroundSchema = inBackgroundSchema.pick({
+  brief: true,
+  result_delivery: true,
+  model_selection: true,
+  model_id: true,
+});
+
 type InBackgroundArgs = z.infer<typeof inBackgroundSchema>;
 
 /** Mirror of the `task` tool's tools→mode mapping (dispatch.ts). */
@@ -75,23 +83,41 @@ const IN_BACKGROUND_DESCRIPTION =
 
 export function createInBackgroundTool(context?: unknown) {
   const ctx: ShortcutContext = shortcutContextFromUnknown(context);
+  const trustedContext = context as Record<string, unknown> | undefined;
+  const personalTaskControls = trustedContext?.["personalTaskControls"] === true;
+  const personalOnlyTaskModelIds = Array.isArray(trustedContext?.["personalOnlyTaskModelIds"])
+    ? trustedContext["personalOnlyTaskModelIds"] as string[]
+    : undefined;
 
   return new DynamicStructuredTool({
     name: "in_background",
     description: IN_BACKGROUND_DESCRIPTION,
-    schema: inBackgroundSchema,
+    schema: personalTaskControls ? personalInBackgroundSchema : inBackgroundSchema,
     func: async (args: InBackgroundArgs) => {
       log(`[in_background]`);
+      const personalOnlyCreate = !personalTaskControls
+        && isPersonalOnlyNativeShortcutCreate(
+          args as unknown as Readonly<Record<string, unknown>>,
+          ctx.currentTaskId,
+          personalOnlyTaskModelIds,
+          { allowTools: true },
+        );
+      const callerFundedToolFree = personalTaskControls || personalOnlyCreate;
       if (!ctx.ownerId || !ctx.agentId) {
         return "Cannot start background task: missing owner or agent context.";
       }
       if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
+      if (callerFundedToolFree && ctx.currentTaskId) {
+        return "Personal background Tasks can only be created from the foreground parent chat.";
+      }
       const rt = getTaskToolRuntime();
-      const lineage = await resolveTaskToolCreateLineage({
-        ownerId: ctx.ownerId,
-        db: rt.db,
-        ...(ctx.currentTaskId ? { currentTaskId: ctx.currentTaskId } : {}),
-      });
+      const lineage = callerFundedToolFree
+        ? { ok: true as const, depth: 0, parentTaskId: undefined }
+        : await resolveTaskToolCreateLineage({
+            ownerId: ctx.ownerId,
+            db: rt.db,
+            ...(ctx.currentTaskId ? { currentTaskId: ctx.currentTaskId } : {}),
+          });
       if (!lineage.ok) return lineage.message;
       if (args.harness === "codex") {
         if (
@@ -149,8 +175,10 @@ export function createInBackgroundTool(context?: unknown) {
           return "Cannot start Native background task: working_directory must exactly match the selected Current Folder; omit it to inherit the Current Folder automatically.";
         }
       }
-      const toolsFields = toolsFieldsFromArgs(args.tools);
-      const selectionError = validateTaskModelSelectionForCreate({
+      const toolsFields = callerFundedToolFree
+        ? { toolsMode: "none" as const, toolsWhitelist: [] }
+        : toolsFieldsFromArgs(args.tools);
+      const selectionError = callerFundedToolFree ? null : validateTaskModelSelectionForCreate({
         requestedModelId: args.model_id,
         profile: args.model_selection,
         toolsMode: toolsFields.toolsMode,

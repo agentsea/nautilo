@@ -47,6 +47,10 @@ export interface DiscoverModelsContext {
   /** Override the credential environment (tests / server injection). */
   env?: NodeJS.ProcessEnv;
   allowChinaUpstream?: boolean;
+  /** Trusted personal parent projection; never accepted from model arguments. */
+  personalTaskControls?: boolean;
+  /** Non-secret union of currently runnable Task model ids for this Human. */
+  personalTaskRunnableModelIds?: readonly string[];
 }
 
 interface ListSearchResponse {
@@ -161,7 +165,22 @@ function resolveCatalogRows(context?: DiscoverModelsContext): ResolvedCatalogMod
   };
   if (context?.env !== undefined) options.env = context.env;
   if (context?.allowChinaUpstream !== undefined) options.allowChinaUpstream = context.allowChinaUpstream;
-  return listResolvedCatalogModels(options);
+  const rows = listResolvedCatalogModels(options);
+  const runnable = new Set(context?.personalTaskRunnableModelIds ?? []);
+  const callerRunnableRows = rows.map((row) => runnable.has(row.id)
+    && row.workload === "chat"
+    && row.output.includes("text")
+    ? ({
+      ...row,
+      availability: "selectable" as const,
+      unavailableReason: undefined,
+    })
+    : row);
+  if (context?.personalTaskControls !== true) return callerRunnableRows;
+  return callerRunnableRows.filter((row) =>
+    runnable.has(row.id)
+    && row.workload === "chat"
+    && row.output.includes("text"));
 }
 
 function paginate(
@@ -187,18 +206,7 @@ function malformed(message: string): string {
   return JSON.stringify({ error: "malformed_input", message });
 }
 
-export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
-  return new DynamicStructuredTool({
-    name: "discover_models",
-    description:
-      "Search the resolved model catalog to find available models by " +
-      "name, provider, workload, or capability. Use `list` to browse with optional " +
-      "workload/capability/output/generation filters, `search` to add a text query to those " +
-      "filters (AND semantics), and `get` " +
-      "to fetch one curated model by its exact stable id. Results are " +
-      "non-secret and bounded with explicit truncation/next offset. " +
-      "Dynamic openrouter:/gateway: ids are not accepted by `get`.",
-    schema: z.object({
+const discoverModelsSchema = z.object({
       command: z
         .enum(["list", "search", "get"])
         .describe("Discovery command: list (browse), search (text + filters), or get (one curated id)."),
@@ -268,17 +276,44 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
         .int()
         .optional()
         .describe("Zero-based offset of the first item to return (default 0)."),
-    }),
+});
+
+const personalDiscoverModelsSchema = discoverModelsSchema.pick({
+  command: true,
+  model_id: true,
+  query: true,
+  provider: true,
+  runnable_only: true,
+  requires_reasoning: true,
+  workload: true,
+  output: true,
+  limit: true,
+  offset: true,
+}).extend({
+  workload: z.literal("chat").optional(),
+  output: z.literal("text").optional(),
+});
+
+export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
+  return new DynamicStructuredTool({
+    name: "discover_models",
+    description: context?.personalTaskControls === true
+      ? "List, search, or get the non-secret catalog rows currently runnable for your native tool-free text Tasks."
+      : "Search the resolved model catalog to find available models by name, provider, workload, or capability. Use `list` to browse with optional workload/capability/output/generation filters, `search` to add a text query to those filters (AND semantics), and `get` to fetch one curated model by its exact stable id. Results are non-secret and bounded with explicit truncation/next offset. Dynamic openrouter:/gateway: ids are not accepted by `get`.",
+    schema: context?.personalTaskControls === true
+      ? personalDiscoverModelsSchema
+      : discoverModelsSchema,
     // LangChain DynamicStructuredTool requires func to return Promise<string>;
     // this handler is synchronous (queries local/cache-backed catalog rows).
     // eslint-disable-next-line @typescript-eslint/require-await
     func: async (input): Promise<string> => {
-      const command = input.command as DiscoverModelsCommand;
-      const limit = clampLimit(input.limit);
-      const offset = clampOffset(input.offset);
-      const query = capText(input.query?.trim() || undefined, MAX_QUERY_LEN);
-      const provider = capText(input.provider?.trim() || undefined, MAX_PROVIDER_LEN);
-      const modelId = capText(input.model_id?.trim() || undefined, MAX_MODEL_ID_LEN);
+      const fullInput = input as z.infer<typeof discoverModelsSchema>;
+      const command = fullInput.command as DiscoverModelsCommand;
+      const limit = clampLimit(fullInput.limit);
+      const offset = clampOffset(fullInput.offset);
+      const query = capText(fullInput.query?.trim() || undefined, MAX_QUERY_LEN);
+      const provider = capText(fullInput.provider?.trim() || undefined, MAX_PROVIDER_LEN);
+      const modelId = capText(fullInput.model_id?.trim() || undefined, MAX_MODEL_ID_LEN);
 
       // Handler-level validation of command-specific required fields. The
       // top-level schema stays a flat z.object (never a discriminated union),
@@ -313,17 +348,17 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
       }
 
       const filters = {
-        runnableOnly: input.runnable_only,
-        requiresTools: input.requires_tools,
-        decisionOperation: input.decision_operation,
-        requiresVision: input.requires_vision,
-        requiresFileInput: input.requires_file_input,
-        requiresReasoning: input.requires_reasoning,
-        requiresVisualGrounding: input.requires_visual_grounding,
-        workload: input.workload,
-        output: input.output,
-        generationFamily: input.generation_family,
-        requiresReferenceRole: input.requires_reference_role,
+        runnableOnly: fullInput.runnable_only,
+        requiresTools: fullInput.requires_tools,
+        decisionOperation: fullInput.decision_operation,
+        requiresVision: fullInput.requires_vision,
+        requiresFileInput: fullInput.requires_file_input,
+        requiresReasoning: fullInput.requires_reasoning,
+        requiresVisualGrounding: fullInput.requires_visual_grounding,
+        workload: fullInput.workload,
+        output: fullInput.output,
+        generationFamily: fullInput.generation_family,
+        requiresReferenceRole: fullInput.requires_reference_role,
       };
 
       const rows = resolveCatalogRows(context).filter((row) => {

@@ -250,11 +250,14 @@ describe("tasks HTTP API (M146)", () => {
         timezone: "UTC",
         targetChat: "orphan",
         resultDelivery: "raw_and_wake",
-        tools: [],
+        tools: ["search_memory"],
       },
     });
     expect(created.statusCode).toBe(201);
     const taskId = created.json<{ taskId: string }>().taskId;
+    const [definition] = await fx.db.select({ fundingMode: tasks.fundingMode }).from(tasks)
+      .where(eq(tasks.id, taskId)).limit(1);
+    expect(definition?.fundingMode).toBe("legacy_server");
 
     try {
       const assertParity = async (expected: {
@@ -1252,6 +1255,87 @@ describe("tasks HTTP API (M146)", () => {
     expect(new Date(patched.nextFireAt!).getUTCHours()).toBe(17);
 
     await fx.db.delete(tasks).where(eq(tasks.id, taskId));
+  });
+
+  test("PATCH clears the memoized target Room when the target mode changes", async () => {
+    const [seeded] = await fx.db.insert(tasks).values({
+      ownerId: fx.ownerId,
+      requestorId: fx.ownerId,
+      agentId: ownerAgentId,
+      prompt: "retarget this Task",
+      status: "pending",
+      scheduleKind: "one_shot",
+      runAt: new Date(FUTURE_RUN_AT),
+      nextFireAt: new Date(FUTURE_RUN_AT),
+      targetChat: "last_in_namespace",
+      targetRoomId: fx.defaultRoomId!,
+    }).returning({ id: tasks.id });
+    if (!seeded) throw new Error("target-change Task seed failed");
+
+    try {
+      const response = await authedInject(fx.app, {
+        method: "PATCH",
+        url: `/api/tasks/${seeded.id}`,
+        bearer: await fx.mintOwnerBearer(),
+        payload: { targetChat: "orphan" },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      const [updated] = await fx.db.select({
+        targetChat: tasks.targetChat,
+        targetRoomId: tasks.targetRoomId,
+      }).from(tasks).where(eq(tasks.id, seeded.id));
+      expect(updated).toEqual({ targetChat: "orphan", targetRoomId: null });
+    } finally {
+      await fx.db.delete(tasks).where(eq(tasks.id, seeded.id));
+    }
+  });
+
+  test("PATCH rejects retargeting a caller-funded resumable Task before writing", async () => {
+    const [seeded] = await fx.db.insert(tasks).values({
+      ownerId: fx.ownerId,
+      requestorId: fx.ownerId,
+      agentId: ownerAgentId,
+      prompt: "preserve this resumable Task",
+      status: "paused",
+      scheduleKind: "one_shot",
+      runAt: new Date(FUTURE_RUN_AT),
+      nextFireAt: new Date(FUTURE_RUN_AT),
+      targetChat: "last_in_namespace",
+      targetRoomId: fx.defaultRoomId!,
+      callingRoomId: fx.defaultRoomId!,
+      fundingMode: "caller",
+      toolsMode: "none",
+      toolsWhitelist: [],
+    }).returning({ id: tasks.id });
+    if (!seeded) throw new Error("resumable target-change Task seed failed");
+    await fx.db.insert(taskRuns).values({
+      taskId: seeded.id,
+      graphThreadId: `task-target-change:${randomUUID()}`,
+      status: "paused",
+      modelId: "openrouter:moonshotai/kimi-k3",
+      fundingBinding: { kind: "server", providerRoute: "openrouter" },
+    });
+
+    try {
+      const response = await authedInject(fx.app, {
+        method: "PATCH",
+        url: `/api/tasks/${seeded.id}`,
+        bearer: await fx.mintOwnerBearer(),
+        payload: { targetChat: "orphan" },
+      });
+      expect(response.statusCode, response.body).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({ error: "funding_source_changed" });
+      const [unchanged] = await fx.db.select({
+        targetChat: tasks.targetChat,
+        targetRoomId: tasks.targetRoomId,
+      }).from(tasks).where(eq(tasks.id, seeded.id));
+      expect(unchanged).toEqual({
+        targetChat: "last_in_namespace",
+        targetRoomId: fx.defaultRoomId!,
+      });
+    } finally {
+      await fx.db.delete(tasks).where(eq(tasks.id, seeded.id));
+    }
   });
 
   test("GET ?status=completed returns terminal tasks (not [])", async () => {

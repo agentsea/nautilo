@@ -1,4 +1,9 @@
-import { readTaskPreparation } from "@nautilo/types";
+import {
+  parseTaskFundingBinding,
+  readTaskPreparation,
+  type TaskFundingBinding,
+  type TaskFundingFailureCode,
+} from "@nautilo/types";
 /**
  * M141 — Task primitive data-access layer (foundation).
  *
@@ -11,7 +16,7 @@ import { readTaskPreparation } from "@nautilo/types";
  * Phase 2 can pass either a pooled `DirectDatabase` or a transaction-
  * scoped handle) rather than reaching for a module-level singleton.
  */
-import { and, arrayContains, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, notExists, or, sql } from "drizzle-orm";
+import { and, arrayContains, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, notExists, notInArray, or, sql } from "drizzle-orm";
 import type { DirectDatabase } from "../config/direct-database";
 import { tasks, type Task, type NewTask } from "../schema/tasks";
 import { taskRuns, type TaskRun, type NewTaskRun } from "../schema/task-runs";
@@ -4174,6 +4179,465 @@ export async function pauseClaimedTaskForAuthorizationDenial(
     )
     .returning();
   return { task, run: undefined, transitioned: Boolean(task) };
+}
+
+/**
+ * Park only the exact claimed occurrence whose funding admission failed.
+ * Requestor and fire-lock predicates prevent a stale or cross-Human denial
+ * from mutating a later claim, while releasing this claim for explicit repair.
+ */
+export async function pauseClaimedTaskForFundingDenial(
+  db: DirectDatabase,
+  input: {
+    taskId: string;
+    requestorId: string;
+    fireLockId: string;
+    reason: TaskFundingFailureCode;
+  },
+): Promise<AuthorizationPauseTransition> {
+  const [task] = await db
+    .update(tasks)
+    .set({
+      status: "paused",
+      lastError: input.reason,
+      fireLockId: null,
+      fireLockedAt: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(tasks.id, input.taskId),
+        eq(tasks.requestorId, input.requestorId),
+        eq(tasks.status, "pending"),
+        eq(tasks.fireLockId, input.fireLockId),
+      ),
+    )
+    .returning();
+  return { task, run: undefined, transitioned: Boolean(task) };
+}
+
+/**
+ * Park the exact latest active run after funding is denied. Locking the Task
+ * first serializes this transition with lifecycle operations; the latest-run
+ * fence prevents an older worker from pausing a newer occurrence.
+ */
+export async function pauseTaskRunForFundingDenial(
+  db: DirectDatabase,
+  input: {
+    taskId: string;
+    taskRunId: string;
+    requestorId: string;
+    reason: TaskFundingFailureCode;
+  },
+): Promise<AuthorizationPauseTransition> {
+  return db.transaction(async (tx) => {
+    const [task] = await tx
+      .select()
+      .from(tasks)
+      .where(and(
+        eq(tasks.id, input.taskId),
+        eq(tasks.requestorId, input.requestorId),
+        notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
+      ))
+      .limit(1)
+      .for("update");
+    if (!task) return { task: undefined, run: undefined, transitioned: false };
+
+    const [run] = await tx
+      .select()
+      .from(taskRuns)
+      .where(eq(taskRuns.taskId, input.taskId))
+      .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id))
+      .limit(1)
+      .for("update");
+    if (
+      !run
+      || run.id !== input.taskRunId
+      || (run.status !== "running" && run.status !== "awaiting")
+    ) {
+      return { task, run, transitioned: false };
+    }
+
+    const [updatedRun] = await tx
+      .update(taskRuns)
+      .set({ status: "paused", lastError: input.reason })
+      .where(and(
+        eq(taskRuns.id, input.taskRunId),
+        eq(taskRuns.taskId, input.taskId),
+        inArray(taskRuns.status, ["running", "awaiting"]),
+      ))
+      .returning();
+    const [updatedTask] = await tx
+      .update(tasks)
+      .set({
+        status: "paused",
+        lastError: input.reason,
+        fireLockId: null,
+        fireLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(tasks.id, input.taskId),
+        eq(tasks.requestorId, input.requestorId),
+        notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
+      ))
+      .returning();
+    if (!updatedRun || !updatedTask) {
+      throw new Error("funding pause lost its locked Task aggregate");
+    }
+    return { task: updatedTask, run: updatedRun, transitioned: true };
+  });
+}
+
+export interface RecordTaskWakeFundingFailureResult {
+  task: Task | undefined;
+  run: TaskRun | undefined;
+  recorded: boolean;
+  taskErrorRecorded: boolean;
+}
+
+export type CallerFundedRunningTaskRunCursor = Readonly<{
+  startedAt: Date;
+  runId: string;
+}>;
+
+/** Bounded startup candidates whose process-local caller funding vanished. */
+export async function listCallerFundedRunningTaskRunsForRestart(
+  db: DirectDatabase,
+  options: Readonly<{ limit: number; after?: CallerFundedRunningTaskRunCursor }>,
+): Promise<Array<{ task: Task; run: TaskRun }>> {
+  if (!Number.isInteger(options.limit) || options.limit <= 0) return [];
+  const after = options.after;
+  return db
+    .select({ task: tasks, run: taskRuns })
+    .from(taskRuns)
+    .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
+    .where(and(
+      eq(tasks.fundingMode, "caller"),
+      inArray(tasks.status, ["pending", "running"]),
+      eq(taskRuns.status, "running"),
+      after
+        ? or(
+            gt(taskRuns.startedAt, after.startedAt),
+            and(eq(taskRuns.startedAt, after.startedAt), gt(taskRuns.id, after.runId)),
+          )
+        : undefined,
+    ))
+    .orderBy(asc(taskRuns.startedAt), asc(taskRuns.id))
+    .limit(options.limit);
+}
+
+export interface ReconcileCallerFundedTaskRunResult {
+  task: Task | undefined;
+  run: TaskRun | undefined;
+  transitioned: boolean;
+}
+
+function sameTaskFundingBinding(
+  left: TaskFundingBinding,
+  right: TaskFundingBinding,
+): boolean {
+  return left.kind === right.kind
+    && left.providerRoute === right.providerRoute
+    && (left.kind === "server"
+      || (right.kind === "personal"
+        && left.credentialId === right.credentialId
+        && left.credentialRevision === right.credentialRevision));
+}
+
+/**
+ * Consume one exact observer claim into a caller-funded TaskRun. Any paused
+ * continuation is bound to the locked latest predecessor before the new row
+ * exists, so Stop or a newer occurrence cannot be overwritten by dispatch.
+ */
+export async function startClaimedCallerTaskRun(
+  db: DirectDatabase,
+  input: Readonly<{
+    taskId: string;
+    requestorId: string;
+    fireLockId: string;
+    graphThreadId: string;
+    modelId: string;
+    fundingBinding: TaskFundingBinding;
+    fundingPredecessorRunId?: string;
+  }>,
+): Promise<TaskRun | undefined> {
+  if (!input.taskId || !input.requestorId || !input.fireLockId
+    || !input.graphThreadId || !input.modelId) {
+    throw new TypeError("caller-funded TaskRun claim is incomplete");
+  }
+  const binding = parseTaskFundingBinding(input.fundingBinding);
+  return db.transaction(async (tx) => {
+    const [task] = await tx.select().from(tasks).where(and(
+      eq(tasks.id, input.taskId),
+      eq(tasks.requestorId, input.requestorId),
+      eq(tasks.fundingMode, "caller"),
+      eq(tasks.status, "pending"),
+      eq(tasks.fireLockId, input.fireLockId),
+    )).limit(1).for("update");
+    if (
+      !task
+      || task.requestorId !== input.requestorId
+      || task.fundingMode !== "caller"
+      || task.status !== "pending"
+      || task.fireLockId !== input.fireLockId
+    ) return undefined;
+
+    if (input.fundingPredecessorRunId) {
+      const [predecessor] = await tx.select().from(taskRuns)
+        .where(eq(taskRuns.taskId, input.taskId))
+        .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id))
+        .limit(1)
+        .for("update");
+      if (
+        !predecessor
+        || predecessor.id !== input.fundingPredecessorRunId
+        || predecessor.taskId !== input.taskId
+        || predecessor.status !== "paused"
+        || predecessor.graphThreadId !== input.graphThreadId
+        || predecessor.modelId !== input.modelId
+        || predecessor.fundingBinding === null
+      ) return undefined;
+      let predecessorBinding: TaskFundingBinding;
+      try {
+        predecessorBinding = parseTaskFundingBinding(predecessor.fundingBinding);
+      } catch {
+        return undefined;
+      }
+      if (!sameTaskFundingBinding(predecessorBinding, binding)) return undefined;
+    }
+
+    const [run] = await tx.insert(taskRuns).values({
+      taskId: input.taskId,
+      graphThreadId: input.graphThreadId,
+      status: "running",
+      modelId: input.modelId,
+      fundingBinding: binding,
+      fundingPredecessorRunId: input.fundingPredecessorRunId ?? null,
+    }).returning();
+    if (!run) throw new Error("caller-funded TaskRun insert returned no row");
+    const [updatedTask] = await tx.update(tasks).set({
+      status: "running",
+      lastError: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(tasks.id, input.taskId),
+      eq(tasks.requestorId, input.requestorId),
+      eq(tasks.fundingMode, "caller"),
+      eq(tasks.status, "pending"),
+      eq(tasks.fireLockId, input.fireLockId),
+    )).returning();
+    if (!updatedTask) throw new Error("caller-funded TaskRun start lost its locked Task claim");
+    return run;
+  });
+}
+
+/**
+ * Settle an exact latest run whose process-local caller funding disappeared on
+ * restart. The run becomes terminal so it can never resume or replay. Cron
+ * definitions retain their already-advanced future schedule; other Tasks park
+ * for an explicit Human decision.
+ */
+export async function reconcileCallerFundedTaskRunAfterRestart(
+  db: DirectDatabase,
+  input: Readonly<{ taskId: string; taskRunId: string }>,
+): Promise<ReconcileCallerFundedTaskRunResult> {
+  return db.transaction(async (tx) => {
+    const [task] = await tx.select().from(tasks)
+      .where(eq(tasks.id, input.taskId)).limit(1).for("update");
+    if (
+      !task
+      || task.fundingMode !== "caller"
+      || (task.status !== "pending" && task.status !== "running")
+    ) return { task, run: undefined, transitioned: false };
+
+    const [run] = await tx.select().from(taskRuns)
+      .where(eq(taskRuns.taskId, input.taskId))
+      .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id))
+      .limit(1)
+      .for("update");
+    if (!run || run.id !== input.taskRunId || run.status !== "running") {
+      return { task, run, transitioned: false };
+    }
+
+    const completedAt = new Date();
+    const [updatedRun] = await tx.update(taskRuns).set({
+      status: "errored",
+      lastError: "funding_interrupted_uncertain",
+      completedAt,
+    }).where(and(
+      eq(taskRuns.id, input.taskRunId),
+      eq(taskRuns.taskId, input.taskId),
+      eq(taskRuns.status, "running"),
+    )).returning();
+    const preserveCronSchedule = task.scheduleKind === "cron";
+    const [updatedTask] = await tx.update(tasks).set({
+      status: preserveCronSchedule ? "pending" : "paused",
+      lastError: "funding_interrupted_uncertain",
+      fireLockId: null,
+      fireLockedAt: null,
+      updatedAt: completedAt,
+    }).where(and(
+      eq(tasks.id, input.taskId),
+      eq(tasks.fundingMode, "caller"),
+      inArray(tasks.status, ["pending", "running"]),
+    )).returning();
+    if (!updatedRun || !updatedTask) {
+      throw new Error("caller-funded restart reconciliation lost its locked Task aggregate");
+    }
+    return { task: updatedTask, run: updatedRun, transitioned: true };
+  });
+}
+
+/**
+ * Bind the executor's accepted Job to the exact latest caller-funded run.
+ * The Task row lock serializes lifecycle changes, while the latest-run and
+ * graph predicates keep a delayed executor from claiming a replay or a newer
+ * occurrence. Re-reading the same Job is idempotent; another Job is rejected.
+ */
+export async function claimCallerTaskRunJob(
+  db: DirectDatabase,
+  input: {
+    taskId: string;
+    taskRunId: string;
+    requestorId: string;
+    graphThreadId: string;
+    jobId: string;
+  },
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [task] = await tx
+      .select()
+      .from(tasks)
+      .where(and(
+        eq(tasks.id, input.taskId),
+        eq(tasks.requestorId, input.requestorId),
+        eq(tasks.fundingMode, "caller"),
+        notInArray(tasks.status, [...TERMINAL_TASK_STATUSES]),
+      ))
+      .limit(1)
+      .for("update");
+    if (!task) return false;
+
+    const [run] = await tx
+      .select()
+      .from(taskRuns)
+      .where(eq(taskRuns.taskId, input.taskId))
+      .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id))
+      .limit(1)
+      .for("update");
+    if (
+      !run
+      || run.id !== input.taskRunId
+      || run.graphThreadId !== input.graphThreadId
+      || run.status !== "running"
+    ) return false;
+    if (run.jobId === input.jobId) return true;
+    if (run.jobId !== null) return false;
+
+    const [claimed] = await tx
+      .update(taskRuns)
+      .set({ jobId: input.jobId })
+      .where(and(
+        eq(taskRuns.id, input.taskRunId),
+        eq(taskRuns.taskId, input.taskId),
+        eq(taskRuns.graphThreadId, input.graphThreadId),
+        eq(taskRuns.status, "running"),
+        isNull(taskRuns.jobId),
+      ))
+      .returning({ id: taskRuns.id });
+    return Boolean(claimed);
+  });
+}
+
+/**
+ * Record a report-back funding failure without changing completed work or a
+ * recurring Task's lifecycle. Only the latest producing run may project its
+ * safe reason onto the Task row.
+ */
+export async function recordTaskWakeFundingFailure(
+  db: DirectDatabase,
+  input: {
+    taskId: string;
+    taskRunId: string;
+    requestorId: string;
+    reason: TaskFundingFailureCode;
+  },
+): Promise<RecordTaskWakeFundingFailureResult> {
+  return db.transaction(async (tx) => {
+    const [task] = await tx
+      .select()
+      .from(tasks)
+      .where(and(
+        eq(tasks.id, input.taskId),
+        eq(tasks.requestorId, input.requestorId),
+      ))
+      .limit(1)
+      .for("update");
+    if (!task) {
+      return {
+        task: undefined,
+        run: undefined,
+        recorded: false,
+        taskErrorRecorded: false,
+      };
+    }
+
+    const [run] = await tx
+      .select()
+      .from(taskRuns)
+      .where(and(
+        eq(taskRuns.id, input.taskRunId),
+        eq(taskRuns.taskId, input.taskId),
+        eq(taskRuns.status, "completed"),
+      ))
+      .limit(1)
+      .for("update");
+    if (!run) {
+      return { task, run: undefined, recorded: false, taskErrorRecorded: false };
+    }
+    const [latest] = await tx
+      .select({ id: taskRuns.id })
+      .from(taskRuns)
+      .where(eq(taskRuns.taskId, input.taskId))
+      .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id))
+      .limit(1);
+
+    const [updatedRun] = await tx
+      .update(taskRuns)
+      .set({ lastError: input.reason })
+      .where(and(
+        eq(taskRuns.id, input.taskRunId),
+        eq(taskRuns.taskId, input.taskId),
+        eq(taskRuns.status, "completed"),
+      ))
+      .returning();
+    if (!updatedRun) throw new Error("funding wake failure lost its locked TaskRun");
+
+    if (latest?.id !== input.taskRunId) {
+      return {
+        task,
+        run: updatedRun,
+        recorded: true,
+        taskErrorRecorded: false,
+      };
+    }
+    const [updatedTask] = await tx
+      .update(tasks)
+      .set({ lastError: input.reason, updatedAt: new Date() })
+      .where(and(
+        eq(tasks.id, input.taskId),
+        eq(tasks.requestorId, input.requestorId),
+      ))
+      .returning();
+    if (!updatedTask) throw new Error("funding wake failure lost its locked Task");
+    return {
+      task: updatedTask,
+      run: updatedRun,
+      recorded: true,
+      taskErrorRecorded: true,
+    };
+  });
 }
 
 /**

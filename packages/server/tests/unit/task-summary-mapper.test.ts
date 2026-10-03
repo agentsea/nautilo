@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { TASK_SUMMARY_HIERARCHY_FIXTURES } from "../../../../dev/fixtures/task-summary-hierarchy";
-import { toTaskSummary, toOwnerVisibleTaskSummary, toTaskContentSummaryV1 } from "../../src/routes/tasks";
+import {
+  taskRunFundingProjection,
+  toTaskSummary,
+  toOwnerVisibleTaskSummary,
+  toTaskContentSummaryV1,
+} from "../../src/routes/tasks";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
-import type { Task } from "@nautilo/db";
+import type { Task, TaskRun } from "@nautilo/db";
 
 function source(
   hierarchy: { parentTaskId: string | null; depth: number },
@@ -75,6 +80,42 @@ test("research Resume is an explicit owner enrichment, never model metadata", ()
   expect(toOwnerVisibleTaskSummary(row, owner).canResumeResearch).toBeUndefined();
   expect(toOwnerVisibleTaskSummary(row, { ...owner, canResumeResearch: false }).canResumeResearch).toBeUndefined();
   expect(toOwnerVisibleTaskSummary(row, { ...owner, canResumeResearch: true }).canResumeResearch).toBe(true);
+});
+
+test("Task summary exposes only recognized funding recovery codes", () => {
+  expect(toTaskSummary({
+    ...source({ parentTaskId: null, depth: 0 }),
+    status: "paused",
+    lastError: "personal_credential_missing",
+  }).fundingFailure).toBe("personal_credential_missing");
+  expect(toTaskSummary({
+    ...source({ parentTaskId: null, depth: 0 }),
+    status: "paused",
+    lastError: "provider returned private diagnostic text",
+  }).fundingFailure).toBeUndefined();
+});
+
+test("Task run funding projection exposes only payer class and safe failures", () => {
+  expect(taskRunFundingProjection(
+    { fundingMode: "caller" } as Task,
+    { fundingBinding: {
+      kind: "personal",
+      providerRoute: "anthropic",
+      credentialId: "91000000-0000-4000-8000-000000000009",
+      credentialRevision: 4,
+    }, lastError: "personal_credential_missing" } as TaskRun,
+  )).toEqual({
+    fundingSource: "personal",
+    fundingFailure: "personal_credential_missing",
+  });
+  expect(taskRunFundingProjection(
+    { fundingMode: "caller" } as Task,
+    { fundingBinding: null, lastError: "raw provider detail" } as TaskRun,
+  )).toEqual({ fundingFailure: "funding_source_changed" });
+  expect(taskRunFundingProjection(
+    { fundingMode: "legacy_server" } as Task,
+    { fundingBinding: null, lastError: null } as TaskRun,
+  )).toEqual({ fundingSource: "server" });
 });
 
 test("current Task summary projects verified protected coordinates without plaintext", () => {

@@ -1,6 +1,8 @@
 import {
   getLatestResumableTaskRun,
   getTaskById,
+  getTaskByIdWithMutationVersion,
+  updateTaskIfCurrent,
   transitionTaskLifecyclePaused,
   transitionTaskLifecycleTerminal,
   updateTask,
@@ -9,6 +11,7 @@ import {
 } from "@nautilo/db";
 import { log } from "@nautilo/logger";
 import { eventBus } from "../event-bus";
+import { assertTaskFundingAdmission } from "../task-funding-port";
 import { nextCronOccurrence } from "./cron";
 import { getTaskObserver } from "./task-runtime-context";
 import {
@@ -202,6 +205,10 @@ export async function unpauseTask(
       message: `Cannot resume a ${task.status} task (only paused tasks resume).`,
     };
   }
+  if (task.fundingMode === "caller" && task.lastError === "funding_interrupted_uncertain") {
+    return { ok: false, status: "paused",
+      message: "The previous provider outcome is uncertain. Review its saved result and start a fresh Task." };
+  }
   // Defensive compatibility fence: a legacy caller must not turn an
   // externally-reviewed run into a fresh provider dispatch merely because it
   // managed to write `paused` before this lifecycle was installed.
@@ -216,19 +223,33 @@ export async function unpauseTask(
   // A parked (`paused`) run means there is a checkpoint to continue → fire now.
   // Absent that, a `cron` task is a dormant schedule → re-arm to its next
   // occurrence instead of firing on re-enable (D406).
+  const fundingSnapshot = task.fundingMode === "caller"
+    ? await getTaskByIdWithMutationVersion(db, taskId) : undefined;
+  if (task.fundingMode === "caller" && (!fundingSnapshot || fundingSnapshot.status !== "paused")) {
+    return { ok: false, status: fundingSnapshot?.status ?? "not_found", message: "Task changed before resume. Reload and try again." };
+  }
+  if (fundingSnapshot?.lastError === "funding_interrupted_uncertain") {
+    return { ok: false, status: "paused", message: "The previous provider outcome is uncertain. Start a fresh Task." };
+  }
   const resumableRun = await getLatestResumableTaskRun(db, taskId);
+  await assertTaskFundingAdmission(fundingSnapshot ?? task, resumableRun);
   const { nextFireAt, mode: resumeMode } = computeResumeFireAt(
-    task,
+    fundingSnapshot ?? task,
     Boolean(resumableRun),
     new Date(),
   );
 
-  await updateTask(db, taskId, {
-    status: "pending",
-    nextFireAt,
-    fireLockId: null,
-    fireLockedAt: null,
-  });
+  const patch = { status: "pending" as const, nextFireAt, fireLockId: null, fireLockedAt: null };
+  if (fundingSnapshot) {
+    const rearmed = await updateTaskIfCurrent(db, {
+      id: taskId, ownerId: fundingSnapshot.ownerId, expectedStatus: "paused",
+      expectedMutationVersion: fundingSnapshot.mutationVersion,
+      expectedContentRevision: fundingSnapshot.contentRevision,
+    }, { ...patch, lastError: null });
+    if (!rearmed) return { ok: false, status: "changed", message: "Task changed before resume. Reload and try again." };
+  } else {
+    await updateTask(db, taskId, patch);
+  }
 
   const observer = deps.observer ?? getTaskObserver();
   observer?.kick();

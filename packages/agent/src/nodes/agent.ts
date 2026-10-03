@@ -50,6 +50,10 @@ import {
   type RecallRecordsPortForState,
 } from "../tools/memory/recall-records";
 import type { ForegroundChatFundingSession } from "../runtime/foreground-chat-funding";
+import {
+  filterPersonalTaskControlTools,
+  PERSONAL_TASK_CONTROL_TOOL_NAMES,
+} from "../runtime/personal-task-controls";
 
 function signedCatalogEntrySupportsForegroundText(
   entry: ReturnType<typeof getActiveModelCatalogSync>["catalog"]["entries"][number],
@@ -120,10 +124,11 @@ export async function agentNode(
   // The pre-model projection is defensive-normalized before prompt building;
   // repeat the actor boundary here because provider binding is an independent
   // authority site and a guest can share the owner's graph checkpoint.
-  const activatedToolNames = selectedActivatedToolNamesForActor(
-    state.actorRole,
-    state.activatedToolNames,
-  );
+  const personalTaskControls = foregroundChatFundingSession?.kind === "personal"
+    && foregroundChatFundingSession.personalTaskControls === true;
+  const activatedToolNames = personalTaskControls
+    ? [...PERSONAL_TASK_CONTROL_TOOL_NAMES]
+    : selectedActivatedToolNamesForActor(state.actorRole, state.activatedToolNames);
   const recallRecordsContext = recallRecordsToolContextForState(
     state,
     recallRecordsPortForState?.(state),
@@ -188,6 +193,9 @@ export async function agentNode(
     trustedExecutionEntrypoint: state.trustedExecutionEntrypoint,
     deepResearchForegroundAvailable: deepResearchReturnContextForState(state) !== null,
     initiatingClientSurface: getCurrentInitiatingClientSurface(),
+    personalTaskControls,
+    personalTaskRunnableModelIds: foregroundChatFundingSession?.runnableModelIds,
+    personalOnlyTaskModelIds: foregroundChatFundingSession?.personalOnlyTaskModelIds,
     ...recallRecordsContext,
     ...applyPatchContext,
   };
@@ -200,7 +208,9 @@ export async function agentNode(
     relayCapabilities: state.relayCapabilities ?? undefined,
     readableNamespaces: envelopeReadableNamespaces(state.memoryAccessEnvelope),
     activeModelCapabilities,
-    toolNameWhitelist: state.toolWhitelist,
+    toolNameWhitelist: personalTaskControls
+      ? PERSONAL_TASK_CONTROL_TOOL_NAMES
+      : state.toolWhitelist,
       activatedToolNames,
       fullEncryptionOnly,
     },
@@ -210,7 +220,9 @@ export async function agentNode(
   // Personal-funded foreground chat supports text generation only. Keeping the
   // provider binding empty is an execution fence in addition to route/tool
   // admission owned by the server and graph.
-  const invocationTools = foregroundChatFundingSession?.kind === "personal" ? [] : tools;
+  const invocationTools = foregroundChatFundingSession?.kind === "personal"
+    ? personalTaskControls ? filterPersonalTaskControlTools(tools) : []
+    : tools;
   // Recompute only the stable intent category here for telemetry parity with
   // pre_model; the persisted activation set remains the binding authority.
   const intentPackToolNames = state.actorRole === "guest"

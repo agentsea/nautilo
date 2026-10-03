@@ -89,8 +89,8 @@ function resetStream() {
 }
 beforeEach(() => {
   task = { id: "task", ownerId: "owner", requestorId: "owner", agentId: "agent", targetChat: "orphan", status: "awaiting",
-    scheduleKind: "now", metadata: {} } as Task;
-  run = { id: "run", taskId: task.id, jobId: "completed-original-job", graphThreadId: "subagent:approval", status: "awaiting" } as TaskRun;
+    scheduleKind: "now", fundingMode: "legacy_server", metadata: {} } as Task;
+  run = { id: "run", taskId: task.id, jobId: "completed-original-job", graphThreadId: "subagent:approval", status: "awaiting", fundingBinding: null, fundingPredecessorRunId: null } as TaskRun;
   completion.mockClear(); failure.mockClear(); inspect.mockClear(); baseProcess.mockClear(); baseEmit.mockClear();
   reparked = false; rejectOnAbort = false; beforePauseRunWrite = undefined; resetStream();
 });

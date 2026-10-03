@@ -17,6 +17,8 @@ import {
   listAwaitingWriterReviewTasks,
   listPendingWriterReviewVerificationTasks,
   listRunningWriterReviewVerificationTasks,
+  listCallerFundedRunningTaskRunsForRestart,
+  reconcileCallerFundedTaskRunAfterRestart,
   rescheduleCron,
   updateTask,
   type DirectDatabase,
@@ -296,6 +298,25 @@ export class TaskObserver implements Observer {
       const cleared = await clearStaleFireLocks(this.db, cutoff);
       if (cleared > 0) {
         log(`[task-observer] cleared ${cleared} stale fire-lock(s) on start`);
+      }
+      // Caller-funded provider authority is process-local. A running run left
+      // by this process cannot be replayed truthfully after restart, so settle
+      // exact latest candidates before any due Task can be claimed again.
+      let fundingAfter: { startedAt: Date; runId: string } | undefined;
+      for (;;) {
+        const interrupted = await listCallerFundedRunningTaskRunsForRestart(
+          this.db,
+          { limit: this.batch, ...(fundingAfter ? { after: fundingAfter } : {}) },
+        );
+        if (interrupted.length === 0) break;
+        for (const { task, run } of interrupted) {
+          await reconcileCallerFundedTaskRunAfterRestart(this.db, {
+            taskId: task.id,
+            taskRunId: run.id,
+          });
+        }
+        const last = interrupted.at(-1)!;
+        fundingAfter = { startedAt: last.run.startedAt, runId: last.run.id };
       }
       // A live session capability never survives process restart. Reconcile
       // only exact Writer-review markers, in bounded SQL-filtered pages; do

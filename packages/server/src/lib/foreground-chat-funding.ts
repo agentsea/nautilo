@@ -1,4 +1,4 @@
-import { resolveRetainedModels, type ForegroundChatFundingSession } from "@nautilo/agent";
+import { resolveRetainedModels, resolveCatalogModel, type ForegroundChatFundingSession } from "@nautilo/agent";
 import { getServerProviderPolicy, listPersonalProviderCredentials } from "@nautilo/db";
 import {
   assertCanInvokeAgent,
@@ -14,6 +14,7 @@ import {
   type ModelFundingDecision,
 } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
+import { callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
 
 type FundingPortInput = Readonly<{
   humanUserId: string;
@@ -23,7 +24,7 @@ type FundingPortInput = Readonly<{
   entrypoint: "foreground.main" | "foreground.fork";
 }>;
 
-function usageFundingFor(decision: ModelFundingDecision) {
+export function usageFundingFor(decision: ModelFundingDecision) {
   return decision.kind === "personal"
     ? {
         kind: "personal" as const,
@@ -132,8 +133,13 @@ export async function openForegroundChatFundingSession(
       priorDecision: admitted,
     });
   };
+  const runnableModelIds = await callerTaskModelIds(input.humanUserId);
   return {
     kind: admitted.kind,
+    personalTaskControls: admitted.kind === "personal"
+      && resolveCatalogModel(input.modelId, { env: {} }).features.tools === true,
+    runnableModelIds,
+    personalOnlyTaskModelIds: await personalOnlyTaskModelIds(input.humanUserId, runnableModelIds),
     async recheckAttempt(modelId) {
       await resolveCandidate(modelId);
     },

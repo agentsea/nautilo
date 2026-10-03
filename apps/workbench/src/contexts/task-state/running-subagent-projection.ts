@@ -57,6 +57,7 @@ export function taskSummaryToRunningSubagent(
   const startedAtMs = parseTaskPresentationTimestamp(task.createdAt);
   return {
     ...(status === "errored" && task.canResumeResearch === true ? { canResumeResearch: true } : {}),
+    ...(task.fundingFailure ? { fundingFailure: task.fundingFailure } : {}),
     taskId: task.id,
     parentTaskId: task.parentTaskId,
     depth: task.depth,

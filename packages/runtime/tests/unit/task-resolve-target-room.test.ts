@@ -16,6 +16,7 @@ const baseTask = (over: Partial<Task> = {}): Task =>
     scheduleKind: "now",
     timezone: "UTC",
     depth: 0,
+    fundingMode: "legacy_server",
     ...over,
   }) as unknown as Task;
 

@@ -53,13 +53,19 @@ function wrapper({ children }: { children: ReactNode }) {
   return <ConversationEncryptionPolicyModeContext.Provider value={policyMode}>{children}</ConversationEncryptionPolicyModeContext.Provider>;
 }
 
-function detail(content: string): TaskDetail {
+function detail(content: string, funding?: {
+  source: "personal" | "server";
+  failure?: "personal_credential_missing" | "personal_credential_stale";
+}): TaskDetail {
   return {
-    task: { status: "running" },
+    task: { status: "running", ...(funding?.failure ? { fundingFailure: funding.failure } : {}) },
     runs: [{ id: "run-1", transcript: [{
       role: "assistant", content, toolName: null, toolCalls: null,
       createdAt: "2026-01-01T00:00:00.000Z",
-    }] }],
+    }], ...(funding ? {
+      fundingSource: funding.source,
+      ...(funding.failure ? { fundingFailure: funding.failure } : {}),
+    } : {}) }],
   } as TaskDetail;
 }
 
@@ -131,5 +137,19 @@ describe("Task transcript viewer scope", () => {
     expect(view.result.current.messages[0]?.content).toBe("ordinary in Shadow");
     expect(getTaskContentV1).toHaveBeenCalledWith("task-1");
     expect(getTask).toHaveBeenCalledWith("task-1");
+  });
+
+  test("projects only the server-classified funding recovery with the transcript", async () => {
+    const view = renderHook(() => useSubagentTranscript("task-1"), { wrapper });
+    await waitFor(() => expect(pending).toHaveLength(1));
+    await act(async () => {
+      pending[0]!.resolve(detail("saved result", {
+        source: "personal",
+        failure: "personal_credential_stale",
+      }));
+    });
+    expect(view.result.current.fundingSource).toBe("personal");
+    expect(view.result.current.fundingFailure).toBe("personal_credential_stale");
+    expect(view.result.current.messages[0]?.content).toBe("saved result");
   });
 });

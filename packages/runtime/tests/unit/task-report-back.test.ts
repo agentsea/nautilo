@@ -104,6 +104,7 @@ const baseTask = (over: Partial<Task> = {}): Task =>
     resultDelivery: "wake",
     scheduleKind: "now",
     status: "running",
+    fundingMode: "legacy_server",
     ...over,
   }) as unknown as Task;
 

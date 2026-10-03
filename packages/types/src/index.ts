@@ -41,6 +41,7 @@ export * from "./security-research-work";
 export * from "./local-tool-control";
 export * from "./security-scan-card";
 export * from "./task-api";
+export * from "./task-funding";
 export * from "./task-content-api";
 export * from "./task-operation-ipc";
 export * from "./task-presentation";

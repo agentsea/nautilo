@@ -39,6 +39,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     preset: "in_background",
     callingRoomId: ids.callingRoom,
     metadata: {},
+    fundingMode: "legacy_server",
     ...overrides,
   } as Task;
 }

@@ -204,6 +204,9 @@ export function createNautiloGraph(
       deps?.fullEncryptionOnlyForState?.(state) === true,
       deps?.ordinaryContentAccessForState,
       deps?.foregroundChatFundingSession?.kind === "personal",
+      deps?.foregroundChatFundingSession?.personalTaskControls === true,
+      deps?.foregroundChatFundingSession?.runnableModelIds,
+      deps?.foregroundChatFundingSession?.personalOnlyTaskModelIds,
     ),
     agent: (state, config, draft) =>
     agentNode(
@@ -218,6 +221,13 @@ export function createNautiloGraph(
   });
   const graphToolsNode = createToolsNode({
     personalFunding: deps?.foregroundChatFundingSession?.kind === "personal",
+    personalTaskControls: deps?.foregroundChatFundingSession?.personalTaskControls === true,
+    ...(deps?.foregroundChatFundingSession?.runnableModelIds === undefined
+      ? {}
+      : { personalTaskRunnableModelIds: deps.foregroundChatFundingSession.runnableModelIds }),
+    ...(deps?.foregroundChatFundingSession?.personalOnlyTaskModelIds === undefined
+      ? {}
+      : { personalOnlyTaskModelIds: deps.foregroundChatFundingSession.personalOnlyTaskModelIds }),
     ...(deps?.ordinaryContentAccessForState === undefined ? {} : { ordinaryContentAccessForState: deps.ordinaryContentAccessForState }),
     ...(recallRecordsPortForState === undefined ? {} : { recallRecordsPortForState }),
     ...(deps?.liveShadowToolBoundaryForState === undefined

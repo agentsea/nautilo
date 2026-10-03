@@ -7,6 +7,10 @@ import {
   isScheduleEnabled,
   scheduleStatusLabel,
 } from "./scheduled-tasks-view-model";
+import {
+  TaskFundingRecoveryNotice,
+  taskFundingRecovery,
+} from "../../components/task-funding-recovery";
 
 /**
  * D406 — one row in the Scheduled tasks management list.
@@ -34,6 +38,9 @@ export function ScheduledTaskCard({
   const [confirmRemove, setConfirmRemove] = useState(false);
   const enabled = isScheduleEnabled(task.status);
   const agentName = task.agentName?.trim() || "Genie";
+  const fundingRecovery = task.fundingFailure
+    ? taskFundingRecovery(task.fundingFailure)
+    : null;
 
   return (
     <li
@@ -60,11 +67,14 @@ export function ScheduledTaskCard({
             <input
               type="checkbox"
               checked={enabled}
-              disabled={busy}
+              disabled={busy || fundingRecovery?.requiresFreshTask === true}
               onChange={() => (enabled ? onDisable(task.id) : onEnable(task.id))}
               className="h-3.5 w-3.5 cursor-pointer disabled:cursor-wait disabled:opacity-40"
               aria-label={enabled ? "Disable schedule" : "Enable schedule"}
               data-testid="scheduled-task-toggle"
+              title={fundingRecovery?.requiresFreshTask
+                ? "This schedule cannot resume; create a fresh task."
+                : undefined}
             />
           </label>
 
@@ -110,6 +120,10 @@ export function ScheduledTaskCard({
       <p className="truncate text-[13px] text-foreground" title={task.prompt}>
         {task.prompt || "(no description)"}
       </p>
+
+      {task.fundingFailure ? (
+        <TaskFundingRecoveryNotice code={task.fundingFailure} />
+      ) : null}
 
       <div className="flex items-center gap-3 text-[11px] text-foreground-muted">
         <span className="font-mono" data-testid="scheduled-task-cadence">

@@ -13,6 +13,7 @@ import {
   type ShortcutContext,
 } from "./shortcut-context";
 import { validateTaskModelSelectionForCreate } from "../selection-validation";
+import { isPersonalOnlyNativeShortcutCreate } from "../../../runtime/personal-task-controls";
 
 /**
  * M145 (spec §7) — `schedule` shortcut. A thin `TaskCreateInput` builder that
@@ -61,6 +62,11 @@ const HAS_OFFSET = /([zZ]|[+-]\d{2}:?\d{2})$/;
 
 export function createScheduleTool(context?: unknown) {
   const ctx: ShortcutContext = shortcutContextFromUnknown(context);
+  const trustedContext = context as Record<string, unknown> | undefined;
+  const personalTaskControls = trustedContext?.["personalTaskControls"] === true;
+  const personalOnlyTaskModelIds = Array.isArray(trustedContext?.["personalOnlyTaskModelIds"])
+    ? trustedContext["personalOnlyTaskModelIds"] as string[]
+    : undefined;
 
   return new DynamicStructuredTool({
     name: "schedule",
@@ -68,11 +74,22 @@ export function createScheduleTool(context?: unknown) {
     schema: scheduleSchema,
     func: async (args: ScheduleArgs) => {
       log(`[schedule]`);
+      const personalOnlyCreate = !personalTaskControls
+        && isPersonalOnlyNativeShortcutCreate(
+          args as unknown as Readonly<Record<string, unknown>>,
+          ctx.currentTaskId,
+          personalOnlyTaskModelIds,
+          { allowTools: false },
+        );
+      const callerFundedToolFree = personalTaskControls || personalOnlyCreate;
       if (!ctx.ownerId || !ctx.agentId) {
         return "Cannot schedule task: missing owner or agent context.";
       }
       if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
-      const selectionError = validateTaskModelSelectionForCreate({
+      if (callerFundedToolFree && ctx.currentTaskId) {
+        return "Personal scheduled Tasks can only be created from the foreground parent chat.";
+      }
+      const selectionError = callerFundedToolFree ? null : validateTaskModelSelectionForCreate({
         requestedModelId: args.model_id,
         profile: args.model_selection,
         // schedule runs with the full tool set (auto).
@@ -124,10 +141,11 @@ export function createScheduleTool(context?: unknown) {
         ...(cron ? { cron } : {}),
         timezone,
         useScope: false,
-        targetChat: "last_in_namespace",
+        targetChat: callerFundedToolFree ? "orphan" : "last_in_namespace",
         resultDelivery: "wake",
         awaitResponse: false,
-        toolsMode: "auto",
+        toolsMode: callerFundedToolFree ? "none" : "auto",
+        ...(callerFundedToolFree ? { toolsWhitelist: [] } : {}),
         callingRoomId: ctx.roomId || null,
         targetUserIds: [ctx.causalHumanUserId],
         depth: 0,

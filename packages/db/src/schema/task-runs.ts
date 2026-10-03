@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
-import { pgTable, uuid, text, timestamp, index, integer, check, customType, foreignKey } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, index, integer, check, customType, foreignKey, jsonb, type AnyPgColumn } from "drizzle-orm/pg-core";
+import type { TaskFundingBinding } from "@nautilo/types";
 import { tasks } from "./tasks";
 import { jobs } from "./jobs";
 import { cryptoObjects } from "./crypto-storage";
@@ -21,6 +22,11 @@ export const taskRuns = pgTable(
       enum: ["running", "awaiting", "paused", "completed", "cancelled", "errored"],
     }).notNull().default("running"),
     modelId: text("model_id"),
+    fundingBinding: jsonb("funding_binding").$type<TaskFundingBinding | null>(),
+    fundingPredecessorRunId: uuid("funding_predecessor_run_id").references(
+      (): AnyPgColumn => taskRuns.id,
+      { onDelete: "set null" },
+    ),
     resultText: text("result_text"),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp("completed_at", { withTimezone: true }),

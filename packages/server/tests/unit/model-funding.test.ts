@@ -72,6 +72,36 @@ async function code(promise: Promise<unknown>): Promise<string | undefined> {
 }
 
 describe("trusted model funding", () => {
+  test("native text Tasks admit independently and pin their own source", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
+    const parent = await resolveModelFunding(request(ALICE), h.deps);
+    expect(parent.kind).toBe("personal");
+    h.setFundingPreference("server_first");
+    const taskRequest = { ...request(ALICE), workload: "native_text_task" as const };
+    const task = await resolveModelFunding(taskRequest, h.deps);
+    expect(task.kind).toBe("server");
+    h.setFundingPreference("personal_first");
+    expect((await resolveModelFunding({ ...taskRequest, priorDecision: task }, h.deps)).kind).toBe("server");
+    expect((await resolveModelFunding(taskRequest, h.deps)).kind).toBe("personal");
+    expect(await code(resolveModelFunding({ ...taskRequest, priorDecision: parent }, h.deps))).toBe("funding_source_changed");
+  });
+
+  test("native personal Task fails closed on revision loss even if server is permitted", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
+    const input = { ...request(ALICE), workload: "native_text_task" as const };
+    const admitted = await resolveModelFunding(input, h.deps);
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter", 2));
+    let calls = 0;
+    if (admitted.kind !== "personal") throw new Error("Expected personal admission");
+    expect(await code(withAdmittedPersonalProviderKey(admitted, async () => { calls++; }, h.deps))).toBe("personal_credential_stale");
+    expect(calls).toBe(0);
+    h.setEnabled(false);
+    expect(await code(resolveModelFunding({ ...input, priorDecision: admitted }, h.deps))).toBe("personal_credentials_disabled");
+  });
   test("stored service keys do not expand personal chat execution", async () => {
     const h = harness();
     h.capabilities.set(ALICE, ["use_personal_provider_credentials"]);
@@ -253,7 +283,7 @@ describe("trusted model funding", () => {
     expect(admitted.kind).toBe("personal");
     h.rows.delete(`${ALICE}:openrouter`);
     expect(await code(resolveModelFunding({ ...request(ALICE), priorDecision: admitted }, h.deps)))
-      .toBe("personal_credential_missing");
+      .toBe("personal_credential_stale");
     h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
     h.capabilities.set(ALICE, ["use_server_provider_credentials"]);
     expect(await code(resolveModelFunding({ ...request(ALICE), priorDecision: admitted }, h.deps)))
