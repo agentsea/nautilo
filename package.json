@@ -19,7 +19,7 @@
     "encryption:assurance": "bash dev/scripts/ci-gates.sh encryption-assurance",
     "db:query-inventory": "bun run --cwd packages/query-invariants inventory",
     "db:query-inventory:check": "bun run --cwd packages/query-invariants check",
-    "test:mutation:d486": "stryker run stryker.d486.config.mjs",
+    "test:mutation:workstation-authority": "stryker run stryker.workstation-authority.config.mjs",
     "test:integration:quick": "turbo run test:integration:quick",
     "test:integration:officecli": "bun run officecli:verify && bun test --timeout 120000 packages/server/tests/integration/officecli-create-roundtrip.integration.test.ts",
     "test:integration:server": "bun test --timeout 60000 packages/server/tests/integration/",
@@ -145,6 +145,7 @@
     "node-pty"
   ],
   "overrides": {
+    "@fastify/busboy": "3.2.1",
     "@hono/node-server": "1.19.15",
     "@langchain/openai": "1.4.5",
     "@langchain/langgraph-checkpoint": "1.0.1",

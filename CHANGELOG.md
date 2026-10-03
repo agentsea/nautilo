@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- The server multipart parser uses the patched Busboy 3.2.1 dependency in both
+  the contributor lockfile and the shipped Docker runtime projection.
+
 - New ordinary invitation links can be copied again from the server after a
   page reload or device change. Existing links continue to redeem, while older
   hash-only codes that were lost must be replaced. The invite browser cache is

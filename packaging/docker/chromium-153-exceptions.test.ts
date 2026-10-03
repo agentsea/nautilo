@@ -10,13 +10,36 @@ const digest = `sha256:${"a".repeat(64)}`;
 const databaseSha = (letter: string) => letter.repeat(64);
 
 describe("Chromium 153 vulnerability exceptions", () => {
-  test("matches only the 14 reviewed finding identities", () => {
+  test("retains exact historical matching and retires all 14 obsolete decisions from the current policy", () => {
     const source = JSON.parse(readFileSync(join(import.meta.dir, "server-vulnerability-exceptions.input.json"), "utf8")) as {
       exceptions: VulnerabilityPolicyV1["exceptions"];
     };
-    const reviewed = source.exceptions.filter((entry) =>
-      /^CVE-2026-933(?:72|73|74|75|77|81|82)$/.test(entry.advisoryId)
+    // Historical tuples remain a policy regression fixture, not active approvals.
+    const advisories = [
+      ["CVE-2026-93372", "critical"],
+      ["CVE-2026-93373", "critical"],
+      ["CVE-2026-93374", "critical"],
+      ["CVE-2026-93375", "high"],
+      ["CVE-2026-93377", "high"],
+      ["CVE-2026-93381", "high"],
+      ["CVE-2026-93382", "high"],
+    ] as const;
+    const reviewed: VulnerabilityPolicyV1["exceptions"] = advisories.flatMap(([advisoryId, severity]) =>
+      ["chromium-common", "chromium-headless-shell"].map((packageName) => ({
+        advisoryId,
+        severity,
+        packageName,
+        installedVersion: "153.0.8010.52-1~deb13u1",
+        observedBy: ["grype" as const],
+        owner: "release/security",
+        reviewedAt: "2026-09-20T16:12:15Z",
+        expiresAt: "2026-10-16T00:00:00Z",
+        rationale: "Historical exact-identity regression fixture; these approvals are retired from the current policy.",
+      }))
     );
+    expect(source.exceptions.filter((entry) =>
+      advisories.some(([advisoryId]) => entry.advisoryId === advisoryId)
+    )).toEqual([]);
     const matches = reviewed.map((entry) => ({
       vulnerability: {
         id: entry.advisoryId,
@@ -67,6 +90,11 @@ describe("Chromium 153 vulnerability exceptions", () => {
     expect(report.exceptions.every((entry) => entry.used)).toBe(true);
     expect(report.failures).toEqual([]);
     expect(report.warnings).toEqual([]);
+
+    const retired = evaluateVulnerabilityPolicy({ ...input, policy: { ...policy, exceptions: [] } });
+    expect(retired.passed).toBe(false);
+    expect(retired.failures).toHaveLength(14);
+    expect(retired.failures.every((failure) => failure.code === "unmatched-high-critical")).toBe(true);
 
     const changedVersion = structuredClone(matches);
     changedVersion[0]!.artifact.version = "153.0.8010.47-2~deb13u1";
