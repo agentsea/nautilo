@@ -42,9 +42,25 @@ export function isPersonalOnlyNativeTaskCreate(
   currentTaskId: string,
   personalOnlyTaskModelIds: readonly string[] | undefined,
 ): boolean {
+  return isBoundedPersonalNativeTaskCreate(args, currentTaskId)
+    && isTrustedPersonalOnlyModel(args["model_id"], personalOnlyTaskModelIds)
+    && args["model_selection_profile"] === undefined
+    && args["model_selection_spec"] === undefined;
+}
+
+/**
+ * Structural gate applied before the trusted server resolves an omitted,
+ * profile-selected, or exact Task model. It deliberately says nothing about
+ * funding; it only proves that converting the create to tool-free caller work
+ * cannot smuggle a paid tool, peer, scope, harness, nested parent, or foreign
+ * destination through an ordinary server-funded parent.
+ */
+export function isBoundedPersonalNativeTaskCreate(
+  args: Readonly<Record<string, unknown>>,
+  currentTaskId: string,
+): boolean {
   return args["command"] === "create"
     && currentTaskId.length === 0
-    && isTrustedPersonalOnlyModel(args["model_id"], personalOnlyTaskModelIds)
     && (args["harness"] === undefined || args["harness"] === "native")
     && (args["tools"] === undefined
       || (Array.isArray(args["tools"]) && args["tools"].length === 0))
@@ -57,9 +73,7 @@ export function isPersonalOnlyNativeTaskCreate(
     && args["working_directory"] === undefined
     && (args["target_chat"] === undefined
       || args["target_chat"] === "orphan"
-      || args["target_chat"] === "last_in_namespace")
-    && args["model_selection_profile"] === undefined
-    && args["model_selection_spec"] === undefined;
+      || args["target_chat"] === "last_in_namespace");
 }
 
 export function isPersonalOnlyNativeShortcutCreate(
@@ -68,9 +82,18 @@ export function isPersonalOnlyNativeShortcutCreate(
   personalOnlyTaskModelIds: readonly string[] | undefined,
   options: Readonly<{ allowTools: boolean }>,
 ): boolean {
-  return currentTaskId.length === 0
+  return isBoundedPersonalNativeShortcutCreate(args, currentTaskId, options)
     && isTrustedPersonalOnlyModel(args["model_id"], personalOnlyTaskModelIds)
-    && args["model_selection"] === undefined
+    && args["model_selection"] === undefined;
+}
+
+/** Structural counterpart of {@link isBoundedPersonalNativeTaskCreate}. */
+export function isBoundedPersonalNativeShortcutCreate(
+  args: Readonly<Record<string, unknown>>,
+  currentTaskId: string,
+  options: Readonly<{ allowTools: boolean }>,
+): boolean {
+  return currentTaskId.length === 0
     && args["harness"] === undefined
     && args["working_directory"] === undefined
     && (!options.allowTools

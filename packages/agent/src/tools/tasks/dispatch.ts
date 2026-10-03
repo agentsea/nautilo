@@ -729,7 +729,13 @@ export async function dispatchTaskCommand(
             args.tools !== undefined
               ? (toolsFields.toolsWhitelist ?? [])
               : task.toolsWhitelist;
-          const selectionError = ctx.personalTaskControls ? null : validateTaskModelSelectionForCreate({
+          // Caller-funded definitions are validated by the required live
+          // server mutation seam below. The foreground turn's own funding
+          // class is independent: a server-funded parent may legitimately
+          // select a personal-only Task model from its trusted caller union.
+          const selectionError = ctx.personalTaskControls || task.fundingMode === "caller"
+            ? null
+            : validateTaskModelSelectionForCreate({
             requestedModelId:
               args.model_id !== undefined ? args.model_id : task.requestedModelId,
             profile:
@@ -742,7 +748,7 @@ export async function dispatchTaskCommand(
                 : task.selectionSpec,
             toolsMode: effectiveToolsMode,
             toolsWhitelist: effectiveToolsWhitelist,
-          });
+            });
           if (selectionError) return selectionError;
         }
 
@@ -811,7 +817,8 @@ export async function dispatchTaskCommand(
           "update",
         );
         if (personalProspectiveRejection) return personalProspectiveRejection;
-        if (ctx.personalTaskControls && !rt.assertMutationFunding) {
+        if ((ctx.personalTaskControls || task.fundingMode === "caller")
+          && !rt.assertMutationFunding) {
           return "Cannot update task: live funding validation is unavailable.";
         }
         await rt.assertMutationFunding?.({

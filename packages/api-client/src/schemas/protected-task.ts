@@ -3,7 +3,10 @@ import {
   MAX_OBJECT_ACCESS_MANIFEST_WIRE_BYTES_V5,
 } from "@nautilo/lattice-crypto/wire-limits";
 import { z } from "zod";
-import { SELECTION_PROFILES } from "@nautilo/types";
+import {
+  SELECTION_PROFILES,
+  TASK_FUNDING_FAILURE_CODES,
+} from "@nautilo/types";
 import type {
   TaskContentDetailV1,
   TaskContentListV1,
@@ -44,6 +47,8 @@ const taskOperationalId = (label: string) => boundedUtf8String(
 );
 
 const selectionAxisSchema = z.enum(["privacy", "smart", "cheap"]);
+const taskFundingFailureSchema = z.enum(TASK_FUNDING_FAILURE_CODES);
+const taskFundingSourceSchema = z.enum(["personal", "server"]);
 const selectionSpecSchema = z.object({
   band: selectionAxisSchema.optional(),
   objective: selectionAxisSchema,
@@ -164,6 +169,7 @@ const summaryLifecycleSchema = z.object({
   updatedAt: z.string().optional(),
   lastModelId: z.string().nullable().optional(),
   requestedModelId: z.string().nullable().optional(),
+  fundingFailure: taskFundingFailureSchema.nullable().optional(),
 });
 
 const ordinarySummaryContentSchema = z.object({
@@ -206,6 +212,8 @@ const taskRunSchema = z.object({
   modelId: z.string().nullable(),
   startedAt: z.string().nullable(),
   completedAt: z.string().nullable(),
+  fundingSource: taskFundingSourceSchema.nullable().optional(),
+  fundingFailure: taskFundingFailureSchema.nullable().optional(),
   content: z.union([
     z.object({
       dtoVersion: z.literal(1), status: z.literal("ordinary"),

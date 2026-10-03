@@ -7,6 +7,12 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Personal provider keys can fund native background text Tasks, one-shot
+  reminders, and recurring text schedules from your own Genie chat. Task runs
+  retain their funding source through retries and Pause/Resume; changed keys
+  require a fresh Task. Existing server-funded Tasks retain their behavior,
+  and personal workers remain tool-free.
+
 - Admins can choose server or personal provider keys first for eligible chat.
   Members retain both permitted model catalogues; existing servers keep personal
   keys first unless an admin changes the preference.

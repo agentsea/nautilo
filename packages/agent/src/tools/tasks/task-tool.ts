@@ -8,9 +8,12 @@ import {
   createTaskToolSchema,
   type TaskToolArgs,
 } from "./schema";
-import { isClaudeCodeTasksEnabled } from "./task-tool-runtime";
+import { getTaskToolRuntime, isClaudeCodeTasksEnabled } from "./task-tool-runtime";
 import { causalHumanForExecution } from "../../runtime/causal-human-context";
-import { isPersonalOnlyNativeTaskCreate } from "../../runtime/personal-task-controls";
+import {
+  isBoundedPersonalNativeTaskCreate,
+  isPersonalOnlyNativeTaskCreate,
+} from "../../runtime/personal-task-controls";
 
 interface TaskToolContext {
   ownerId: string;
@@ -80,12 +83,35 @@ export function createTaskTool(context?: unknown) {
     func: async (args: TaskToolArgs) => {
       log(`[task:${args.command}]`);
 
-      const personalOnlyCreate = !personalTaskControls
+      const rt = getTaskToolRuntime();
+      const boundedPersonalCreate = !personalTaskControls
+        && personalOnlyTaskModelIds !== undefined
+        && isBoundedPersonalNativeTaskCreate(
+          args as unknown as Readonly<Record<string, unknown>>,
+          taskCtx.currentTaskId,
+        );
+      const exactPersonalOnlyCreate = boundedPersonalCreate
+        && rt.isPersonalOnlyTaskSelection === undefined
         && isPersonalOnlyNativeTaskCreate(
           args as unknown as Readonly<Record<string, unknown>>,
           taskCtx.currentTaskId,
           personalOnlyTaskModelIds,
         );
+      const resolvedPersonalOnlyCreate = boundedPersonalCreate
+        && rt.isPersonalOnlyTaskSelection !== undefined
+        && await rt.isPersonalOnlyTaskSelection({
+          requestorId: taskCtx.causalHumanUserId,
+          agentId: taskCtx.agentId,
+          callingRoomId: taskCtx.roomId || taskCtx.callingRoomId,
+          ...(args.model_id === undefined ? {} : { requestedModelId: args.model_id }),
+          ...(args.model_selection_profile === undefined
+            ? {}
+            : { selectionProfile: args.model_selection_profile }),
+          ...(args.model_selection_spec === undefined
+            ? {}
+            : { selectionSpec: args.model_selection_spec }),
+        });
+      const personalOnlyCreate = exactPersonalOnlyCreate || resolvedPersonalOnlyCreate;
       const callerFundedToolFree = personalTaskControls || personalOnlyCreate;
 
       if (personalTaskControls && taskCtx.currentTaskId) {

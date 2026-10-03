@@ -11,7 +11,7 @@ import { isOwnPrivateGenieRoom, usageFundingFor } from "./foreground-chat-fundin
 import { ModelFundingError, resolveModelFunding, withAdmittedPersonalProviderKey, type ModelFundingDecision } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
 
-import { callerTaskModelEnvironment } from "./caller-task-model-context";
+import { callerTaskModelEnvironment, callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
 
 type Candidate = Parameters<TaskFundingPort["prepareCreation"]>[0];
 
@@ -74,7 +74,9 @@ function assertSignedTextModel(modelId: string): void {
   if (catalog.workload !== "chat" || !catalog.output.includes("text")) throw new TaskFundingError("unsupported_workload");
 }
 
-async function selectTaskModel(task: Candidate, priorRun?: TaskRun): Promise<string> {
+type TaskSelection = Pick<Candidate, "agentId" | "requestorId" | "requestedModelId" | "selectionProfile" | "selectionSpec">;
+
+async function selectTaskModel(task: TaskSelection, priorRun?: TaskRun): Promise<string> {
   if (priorRun) {
     if (!priorRun.modelId || (task.requestedModelId && task.requestedModelId !== priorRun.modelId)) {
       throw new TaskFundingError("funding_source_changed");
@@ -100,6 +102,37 @@ async function selectTaskModel(task: Candidate, priorRun?: TaskRun): Promise<str
   const env = await callerTaskModelEnvironment(task.requestorId);
   return resolveTaskModel({ baseModelId,
     profile: task.selectionProfile ?? null, spec: task.selectionSpec ?? null, env, purpose: "chat" }).modelId;
+}
+
+async function selectRunnableTaskModel(task: TaskSelection): Promise<string | null> {
+  const modelId = await selectTaskModel(task);
+  const runnable = await callerTaskModelIds(task.requestorId);
+  return runnable.includes(modelId) ? modelId : null;
+}
+
+/** Validate the persisted selection for the Task's next fresh occurrence. */
+export async function assertRunnableNativeTaskSelection(
+  input: TaskSelection,
+): Promise<void> {
+  if (!await selectRunnableTaskModel(input)) {
+    throw new TaskFundingError("provider_credentials_missing");
+  }
+}
+
+/** Classify the actual worker selection without reading or exposing key plaintext. */
+export async function isPersonalOnlyNativeTaskSelection(
+  input: Omit<TaskSelection, "selectionProfile" | "selectionSpec"> & {
+    callingRoomId: string;
+    selectionProfile?: TaskSelection["selectionProfile"] | null;
+    selectionSpec?: TaskSelection["selectionSpec"] | null;
+  },
+): Promise<boolean> {
+  if (!await isOwnPrivateGenieRoom(input.requestorId, input.callingRoomId, input.agentId)) return false;
+  const modelId = await selectRunnableTaskModel({ ...input,
+    selectionProfile: input.selectionProfile ?? undefined,
+    selectionSpec: input.selectionSpec ?? undefined });
+  if (!modelId) return false;
+  return (await personalOnlyTaskModelIds(input.requestorId, [modelId])).length === 1;
 }
 
 async function admit(task: Task, priorRun?: TaskRun): Promise<TaskFundingAdmission> {

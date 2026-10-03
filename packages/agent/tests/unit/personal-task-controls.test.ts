@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as db from "@nautilo/db";
 import {
+  isBoundedPersonalNativeShortcutCreate,
+  isBoundedPersonalNativeTaskCreate,
   isPersonalTaskControlCall,
   isPersonalOnlyNativeShortcutCreate,
   isPersonalOnlyNativeTaskCreate,
@@ -234,6 +236,62 @@ describe("personal-funded Task controls", () => {
     expect(created[2]?.targetChat).toBe("orphan");
   });
 
+  test("server-funded parent resolves default and profile personal-only selections before shaping Tasks", async () => {
+    const selections: Array<Record<string, unknown>> = [];
+    installRuntime({
+      isPersonalOnlyTaskSelection: async (input) => {
+        selections.push(input as Record<string, unknown>);
+        return true;
+      },
+    });
+
+    await createTaskTool(SERVER_PARENT_CONTEXT).invoke({
+      command: "create",
+      prompt: "use the Agent default",
+    });
+    await createInBackgroundTool(SERVER_PARENT_CONTEXT).invoke({
+      brief: "choose privately",
+      model_selection: "most_private",
+    });
+    await createScheduleTool(SERVER_PARENT_CONTEXT).invoke({
+      message: "use the Agent default later",
+      when: { kind: "recurring", cron: "0 9 * * *" },
+    });
+    await createTaskTool(SERVER_PARENT_CONTEXT).invoke({
+      command: "create",
+      prompt: "use the exact live selection",
+      model_id: PERSONAL_ONLY_MODEL_ID,
+    });
+
+    expect(created).toHaveLength(4);
+    for (const input of created) {
+      expect(input).toMatchObject({
+        ownerId: OWNER_ID,
+        requestorId: OWNER_ID,
+        agentId: AGENT_ID,
+        toolsMode: "none",
+        depth: 0,
+      });
+      expect(input.toolsWhitelist ?? []).toEqual([]);
+    }
+    expect(selections).toEqual([
+      { requestorId: OWNER_ID, agentId: AGENT_ID, callingRoomId: ROOM_ID },
+      {
+        requestorId: OWNER_ID,
+        agentId: AGENT_ID,
+        callingRoomId: ROOM_ID,
+        selectionProfile: "most_private",
+      },
+      { requestorId: OWNER_ID, agentId: AGENT_ID, callingRoomId: ROOM_ID },
+      {
+        requestorId: OWNER_ID,
+        agentId: AGENT_ID,
+        callingRoomId: ROOM_ID,
+        requestedModelId: PERSONAL_ONLY_MODEL_ID,
+      },
+    ]);
+  });
+
   test("personal-only conversion rejects paid, scoped, peer, nested, and biased shapes", () => {
     const trusted = [PERSONAL_ONLY_MODEL_ID];
     const base = {
@@ -257,6 +315,21 @@ describe("personal-funded Task controls", () => {
     expect(isPersonalOnlyNativeShortcutCreate({
       brief: "x", model_id: PERSONAL_ONLY_MODEL_ID, tools: ["file"],
     }, "", trusted, { allowTools: true })).toBeFalse();
+
+    expect(isBoundedPersonalNativeTaskCreate({
+      command: "create", prompt: "x", model_selection_profile: "most_private",
+    }, "")).toBeTrue();
+    expect(isBoundedPersonalNativeShortcutCreate({
+      brief: "x", model_selection: "most_private",
+    }, "", { allowTools: true })).toBeTrue();
+    for (const unsafe of [
+      { command: "create", prompt: "x", tools: ["file"] },
+      { command: "create", prompt: "x", target_users: ["@peer"] },
+      { command: "create", prompt: "x", target_chat: "new_in_namespace" },
+      { command: "create", prompt: "x", harness: "codex" },
+    ]) {
+      expect(isBoundedPersonalNativeTaskCreate(unsafe, "")).toBeFalse();
+    }
   });
 
   test("personal factories reject nested construction and omit unsafe schema fields", async () => {
@@ -338,6 +411,64 @@ describe("personal-funded Task controls", () => {
     expect(result).toContain('"prompt":"new prompt"');
     expect(admissions).toEqual([{ operation: "update", prompt: "new prompt" }]);
     expect(updateTask).toHaveBeenCalledTimes(1);
+  });
+
+  test("server-funded parent updates a caller Task model through live canonical admission", async () => {
+    const task = personalTask();
+    const getTask = spyOn(db, "getTaskById").mockResolvedValue(task as never);
+    const order: string[] = [];
+    const updateTask = spyOn(db, "updateTask").mockImplementation(async (_database, _id, patch) => {
+      order.push("write");
+      return { ...task, ...patch } as never;
+    });
+    restores.push(() => { getTask.mockRestore(); updateTask.mockRestore(); });
+    installRuntime({
+      assertMutationFunding: async ({ patch }) => {
+        order.push(`admit:${String(patch?.requestedModelId)}`);
+      },
+    });
+
+    const result = await dispatchTaskCommand({
+      command: "update",
+      taskId: task.id,
+      model_id: PERSONAL_ONLY_MODEL_ID,
+    }, {
+      ownerId: OWNER_ID,
+      causalHumanUserId: OWNER_ID,
+      agentId: AGENT_ID,
+      roomId: ROOM_ID,
+    });
+
+    expect(result).toContain(`"id":"${task.id}"`);
+    expect(order).toEqual([`admit:${PERSONAL_ONLY_MODEL_ID}`, "write"]);
+    expect(updateTask).toHaveBeenCalledTimes(1);
+  });
+
+  test("caller Task update fails closed before writes when canonical admission is absent or denied", async () => {
+    const task = personalTask();
+    const getTask = spyOn(db, "getTaskById").mockResolvedValue(task as never);
+    const updateTask = spyOn(db, "updateTask").mockResolvedValue(task as never);
+    restores.push(() => { getTask.mockRestore(); updateTask.mockRestore(); });
+    const serverContext = {
+      ownerId: OWNER_ID,
+      causalHumanUserId: OWNER_ID,
+      agentId: AGENT_ID,
+      roomId: ROOM_ID,
+    };
+
+    installRuntime();
+    expect(await dispatchTaskCommand({
+      command: "update", taskId: task.id, model_id: PERSONAL_ONLY_MODEL_ID,
+    }, serverContext)).toBe("Cannot update task: live funding validation is unavailable.");
+    expect(updateTask).not.toHaveBeenCalled();
+
+    installRuntime({
+      assertMutationFunding: async () => { throw new Error("funding denied"); },
+    });
+    expect(await dispatchTaskCommand({
+      command: "update", taskId: task.id, model_id: PERSONAL_ONLY_MODEL_ID,
+    }, serverContext)).toContain("funding denied");
+    expect(updateTask).not.toHaveBeenCalled();
   });
 
   test("personal update and unpause fail closed for unsafe shape or unavailable funding admission", async () => {

@@ -239,6 +239,21 @@ export interface TaskToolRuntime {
   /** Production policy fence until Agent Task content publication and reads are wired. */
   canUseLegacyTaskContent?(): Promise<boolean>;
   /**
+   * Trusted live classification for an otherwise bounded native root Task
+   * selection. The server resolves the effective Agent default/profile/exact
+   * model against the caller's runnable union and returns true only when that
+   * model has no permitted server-funded route. No credential material crosses
+   * this seam.
+   */
+  isPersonalOnlyTaskSelection?(input: Readonly<{
+    requestorId: string;
+    agentId: string;
+    callingRoomId: string;
+    requestedModelId?: string | null;
+    selectionProfile?: SelectionProfile | null;
+    selectionSpec?: ComboSpec | null;
+  }>): Promise<boolean>;
+  /**
    * Server-owned funding admission for mutations that can make a Task
    * runnable. Production composition rechecks the effective Task selection
    * and live funding authority before persistence or unpause. The seam stays

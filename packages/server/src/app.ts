@@ -27,7 +27,11 @@ import { resolveArtifactFeedAuthor, resolveArtifactFeedPeople, resolveArtifactCr
 import { setWorkspaceArtifactCreatedSink } from "@nautilo/agent";
 import { createServerMemoryReviewRuntime } from "./lib/memory-review-runtime";
 import { openForegroundChatFundingSession } from "./lib/foreground-chat-funding";
-import { nativeTaskFundingPort } from "./lib/native-task-funding";
+import {
+  assertRunnableNativeTaskSelection,
+  isPersonalOnlyNativeTaskSelection,
+  nativeTaskFundingPort,
+} from "./lib/native-task-funding";
 import { assertTaskFundingAdmission, TaskFundingError } from "@nautilo/runtime";
 import { getLatestResumableTaskRun } from "@nautilo/db";
 import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
@@ -4170,6 +4174,7 @@ export async function createApp(options?: CreateAppOptions) {
   };
   setTaskToolRuntime({
     db: getServerDirectDb(),
+    isPersonalOnlyTaskSelection: isPersonalOnlyNativeTaskSelection,
     canUseLegacyTaskContent: () => dormantTaskContentOwner.runMutation({
       ordinary: () => Promise.resolve(true),
       dual: () => Promise.resolve(false),
@@ -4292,6 +4297,9 @@ export async function createApp(options?: CreateAppOptions) {
       const priorRun = await getLatestResumableTaskRun(getServerDirectDb(), task.id);
       if (task.fundingMode === "caller" && priorRun && prospective.targetChat !== task.targetChat) {
         throw new TaskFundingError("funding_source_changed");
+      }
+      if (task.fundingMode === "caller" && priorRun && operation === "update") {
+        await assertRunnableNativeTaskSelection(prospective);
       }
       const admission = await assertTaskFundingAdmission(prospective, priorRun);
       if (!admission) await assertCanUseServerProviderCredentials(task.requestorId, `task_${operation}`);

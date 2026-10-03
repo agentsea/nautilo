@@ -13,7 +13,10 @@ import {
   type ShortcutContext,
 } from "./shortcut-context";
 import { validateTaskModelSelectionForCreate } from "../selection-validation";
-import { isPersonalOnlyNativeShortcutCreate } from "../../../runtime/personal-task-controls";
+import {
+  isBoundedPersonalNativeShortcutCreate,
+  isPersonalOnlyNativeShortcutCreate,
+} from "../../../runtime/personal-task-controls";
 
 /**
  * M145 (spec §7) — `schedule` shortcut. A thin `TaskCreateInput` builder that
@@ -74,18 +77,39 @@ export function createScheduleTool(context?: unknown) {
     schema: scheduleSchema,
     func: async (args: ScheduleArgs) => {
       log(`[schedule]`);
-      const personalOnlyCreate = !personalTaskControls
+      if (!ctx.ownerId || !ctx.agentId) {
+        return "Cannot schedule task: missing owner or agent context.";
+      }
+      if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
+      const rt = getTaskToolRuntime();
+      const boundedPersonalCreate = !personalTaskControls
+        && personalOnlyTaskModelIds !== undefined
+        && isBoundedPersonalNativeShortcutCreate(
+          args as unknown as Readonly<Record<string, unknown>>,
+          ctx.currentTaskId,
+          { allowTools: false },
+        );
+      const exactPersonalOnlyCreate = boundedPersonalCreate
+        && rt.isPersonalOnlyTaskSelection === undefined
         && isPersonalOnlyNativeShortcutCreate(
           args as unknown as Readonly<Record<string, unknown>>,
           ctx.currentTaskId,
           personalOnlyTaskModelIds,
           { allowTools: false },
         );
+      const resolvedPersonalOnlyCreate = boundedPersonalCreate
+        && rt.isPersonalOnlyTaskSelection !== undefined
+        && await rt.isPersonalOnlyTaskSelection({
+          requestorId: ctx.causalHumanUserId,
+          agentId: ctx.agentId,
+          callingRoomId: ctx.roomId,
+          ...(args.model_id === undefined ? {} : { requestedModelId: args.model_id }),
+          ...(args.model_selection === undefined
+            ? {}
+            : { selectionProfile: args.model_selection }),
+        });
+      const personalOnlyCreate = exactPersonalOnlyCreate || resolvedPersonalOnlyCreate;
       const callerFundedToolFree = personalTaskControls || personalOnlyCreate;
-      if (!ctx.ownerId || !ctx.agentId) {
-        return "Cannot schedule task: missing owner or agent context.";
-      }
-      if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
       if (callerFundedToolFree && ctx.currentTaskId) {
         return "Personal scheduled Tasks can only be created from the foreground parent chat.";
       }
@@ -129,7 +153,6 @@ export function createScheduleTool(context?: unknown) {
         cron = args.when.cron;
       }
 
-      const rt = getTaskToolRuntime();
       const input: TaskToolCreateInput = {
         ownerId: ctx.ownerId,
         requestorId: ctx.causalHumanUserId,

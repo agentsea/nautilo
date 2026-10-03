@@ -210,7 +210,7 @@ describe("PersonalProviderKeysSection", () => {
     expect(coverage.textContent).not.toContain("Tavily");
     expect(coverage.textContent).not.toContain("Gateway");
     expect(coverage.textContent).toContain(
-      "Only text chat currently uses personal keys; other capabilities will be added later.",
+      "Personal keys currently support personal chat and native tool-free text Tasks; other paid capabilities will be added later.",
     );
     expect(view.getByLabelText("OpenAI: API key not configured")).toBeTruthy();
     expect(view.queryByRole("button", { name: "Add Gateway key" })).toBeNull();
@@ -284,7 +284,7 @@ describe("PersonalProviderKeysSection", () => {
     expect(view.getAllByText(/This saved provider is outside the server’s current provider catalogue/))
       .toHaveLength(2);
     expect(xaiButton.closest(".grid")?.textContent).not.toContain(
-      "Not used by personal chat in this release.",
+      "Not used by personal chat or native tool-free text Tasks in this release.",
     );
 
     fireEvent.click(xaiButton);
@@ -292,7 +292,7 @@ describe("PersonalProviderKeysSection", () => {
     fireEvent.click(view.getByRole("button", { name: "Replace key" }));
     await waitFor(() => expect(view.getByRole("status").textContent?.trim()).toBe("Key saved."));
     expect(view.getByRole("status").closest(".grid")?.textContent).not.toContain(
-      "Not used by personal chat in this release.",
+      "Not used by personal chat or native tool-free text Tasks in this release.",
     );
   });
 
@@ -349,7 +349,9 @@ describe("PersonalProviderKeysSection", () => {
       "tavily",
       { apiKey: "tvly-personal" },
     ));
-    expect(view.getByText("Key saved. Not used by personal chat in this release.")).toBeTruthy();
+    expect(view.getByText(
+      "Key saved. Not used by personal chat or native tool-free text Tasks in this release.",
+    )).toBeTruthy();
     expect(view.queryByRole("link", { name: "Choose a model for your Genie." })).toBeNull();
   });
 

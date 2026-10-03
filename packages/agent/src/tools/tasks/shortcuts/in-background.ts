@@ -17,7 +17,10 @@ import { validateTaskModelSelectionForCreate } from "../selection-validation";
 import { codexHarnessFailureGuidance } from "../codex-harness-guidance";
 import { getTaskCreationReturnContext } from "../../../runtime/task-creation-return-context";
 import { genieRecoveryResult } from "../../genie-recovery";
-import { isPersonalOnlyNativeShortcutCreate } from "../../../runtime/personal-task-controls";
+import {
+  isBoundedPersonalNativeShortcutCreate,
+  isPersonalOnlyNativeShortcutCreate,
+} from "../../../runtime/personal-task-controls";
 
 /**
  * M144 — `in_background` intent shortcut (generic, no scoping). A thin
@@ -95,22 +98,42 @@ export function createInBackgroundTool(context?: unknown) {
     schema: personalTaskControls ? personalInBackgroundSchema : inBackgroundSchema,
     func: async (args: InBackgroundArgs) => {
       log(`[in_background]`);
-      const personalOnlyCreate = !personalTaskControls
+      if (!ctx.ownerId || !ctx.agentId) {
+        return "Cannot start background task: missing owner or agent context.";
+      }
+      if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
+      const rt = getTaskToolRuntime();
+      const boundedPersonalCreate = !personalTaskControls
+        && personalOnlyTaskModelIds !== undefined
+        && isBoundedPersonalNativeShortcutCreate(
+          args as unknown as Readonly<Record<string, unknown>>,
+          ctx.currentTaskId,
+          { allowTools: true },
+        );
+      const exactPersonalOnlyCreate = boundedPersonalCreate
+        && rt.isPersonalOnlyTaskSelection === undefined
         && isPersonalOnlyNativeShortcutCreate(
           args as unknown as Readonly<Record<string, unknown>>,
           ctx.currentTaskId,
           personalOnlyTaskModelIds,
           { allowTools: true },
         );
+      const resolvedPersonalOnlyCreate = boundedPersonalCreate
+        && rt.isPersonalOnlyTaskSelection !== undefined
+        && await rt.isPersonalOnlyTaskSelection({
+          requestorId: ctx.causalHumanUserId,
+          agentId: ctx.agentId,
+          callingRoomId: ctx.roomId,
+          ...(args.model_id === undefined ? {} : { requestedModelId: args.model_id }),
+          ...(args.model_selection === undefined
+            ? {}
+            : { selectionProfile: args.model_selection }),
+        });
+      const personalOnlyCreate = exactPersonalOnlyCreate || resolvedPersonalOnlyCreate;
       const callerFundedToolFree = personalTaskControls || personalOnlyCreate;
-      if (!ctx.ownerId || !ctx.agentId) {
-        return "Cannot start background task: missing owner or agent context.";
-      }
-      if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
       if (callerFundedToolFree && ctx.currentTaskId) {
         return "Personal background Tasks can only be created from the foreground parent chat.";
       }
-      const rt = getTaskToolRuntime();
       const lineage = callerFundedToolFree
         ? { ok: true as const, depth: 0, parentTaskId: undefined }
         : await resolveTaskToolCreateLineage({
