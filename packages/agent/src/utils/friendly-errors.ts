@@ -306,7 +306,7 @@ export function toFriendlyError(error: unknown): FriendlyError {
   if (error instanceof SurplusDirectFallbackUnavailableError) {
     return {
       message: error.reason === "request-not-qualified"
-        ? "This request uses features or token limits that are not qualified for the selected model through Surplus, and the original provider key is not configured. Simplify the request, configure that provider, or choose another available model."
+        ? "This request uses features or token limits that are not supported for the selected model through Surplus, and the original provider key is not configured. Simplify the request, configure that provider, or choose another available model."
         : "Surplus could not serve this request, and the selected model's original provider key is not configured. Ask your server administrator to configure that provider or choose another available model.",
       category: "provider_unavailable",
       code: "MDL006",

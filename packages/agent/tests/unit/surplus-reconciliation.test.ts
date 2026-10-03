@@ -23,11 +23,18 @@ describe("Surplus financial receipt boundary", () => {
     expect(readConfirmedSurplusSettlement(receipt, binding)).toBe(283);
     expect(readConfirmedSurplusSettlement({ ...receipt, buyer_cost_micro: 0 }, binding)).toBe(0);
     for (const change of [
-      { request_id: "other" }, { model: "other" }, { provider: "openai" },
+      { request_id: "other" }, { provider: "openai" },
       { buyer_cost_micro: undefined }, { buyer_cost_micro: -1 }, { buyer_cost_micro: 1.5 },
       { settlement_status: "pending" }, { settlement_type: "onchain" },
       { settlement_error: "unconfirmed" }, { confirmed_at: null }, { confirmed_at: "garbage" },
     ]) expect(readConfirmedSurplusSettlement({ ...receipt, ...change }, binding)).toBeNull();
+  });
+
+  test("retains the actual charge when request detail canonicalizes a provider alias", () => {
+    expect(readConfirmedSurplusSettlement(
+      { ...receipt, model: "gpt-5.5" },
+      { ...binding, surplusModelId: "openai-gpt-55" },
+    )).toBe(283);
   });
 
   test("credential binding does not retain the secret and distinguishes rotations", () => {

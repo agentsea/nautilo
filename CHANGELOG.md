@@ -7,10 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
-- Administrators can enable Prefer Surplus for server-funded GPT-5.6 Sol
-  (OpenRouter) text and tool requests. Costs records its actual charge, and
-  uncertain attempts fail without automatic replay. Turning the preference
-  off restores the original provider path.
+- Administrators can enable Prefer Surplus for server-funded chat models on
+  supported catalogue providers. Nautilo tries Surplus, then the configured
+  original provider, then the configured model fallback chain. Costs retains
+  each attempt’s actual or pending charge, and uncertain service fails without
+  automatic replay. Turning the preference off restores direct routing.
 
 - Document reads and authorization checks avoid resolving unrelated model
   metadata when checking decision-tool availability. Model credentials and

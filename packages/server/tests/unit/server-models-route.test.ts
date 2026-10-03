@@ -319,11 +319,24 @@ describe("server-models route authorization, partial writes, and audit", () => {
       .toEqual({ status: 403, body: { error: "admin only" } });
   });
 
-  test("reports only the released Surplus model as available when policy and key are enabled", async () => {
-    const previous = process.env["OPENROUTER_API_KEY"];
-    delete process.env["OPENROUTER_API_KEY"];
+  test("projects signed chat models across supported providers through Surplus only while policy and key are enabled", async () => {
+    const directCredentialKeys = [
+      "ANTHROPIC_API_KEY",
+      "OPENAI_API_KEY",
+      "GOOGLE_API_KEY",
+      "GOOGLE_GENERATIVE_AI_API_KEY",
+      "GEMINI_API_KEY",
+      "FIREWORKS_API_KEY",
+      "OPENROUTER_API_KEY",
+      "VENICE_API_KEY",
+      "TOGETHER_API_KEY",
+      "NAUTILO_MANAGED_GATEWAY_API_KEY",
+      "NAUTILO_MANAGED_GATEWAY_BASE_URL",
+    ] as const;
+    const previous = Object.fromEntries(directCredentialKeys.map((key) => [key, process.env[key]]));
+    for (const key of directCredentialKeys) delete process.env[key];
     try {
-      const read = async (preferSurplus: boolean) => {
+      const read = async (preferSurplus: boolean, surplusKeyConfigured = true) => {
         const call = routeHarness({
           getCapabilities: async () => ["read_server_settings"],
           getDb: () => ({}) as never,
@@ -333,7 +346,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
           getActiveEmbeddingSelection: () => null,
           listMediaModels,
           getEffectiveMediaModel: () => null,
-          getSurplusKeyConfigured: () => true,
+          getSurplusKeyConfigured: () => surplusKeyConfigured,
         });
         const response = await call("GET", { ...requestBase, sessionUserId: "viewer" });
         expect(response.status).toBe(200);
@@ -349,9 +362,20 @@ describe("server-models route authorization, partial writes, and audit", () => {
         preferSurplus: true,
         surplus: { keyConfigured: true, policyEnabled: true, chatStatus: "available" },
       });
-      expect(enabled.catalogModels.find((model) => model.id === "openrouter:openai/gpt-5.6-sol"))
-        .toMatchObject({ availability: "selectable" });
-      expect(enabled.catalogModels.find((model) => model.id === "openrouter:openai/gpt-6-sol"))
+      for (const id of [
+        "anthropic:claude-sonnet-4-6",
+        "openai:gpt-6-astra",
+        "google:gemini-2.5-pro",
+        "fireworks:accounts/fireworks/models/deepseek-v4p1-flash",
+        "openrouter:moonshotai/kimi-k2.6",
+        "venice:kimi-k3",
+      ]) {
+        expect(enabled.catalogModels.find((model) => model.id === id), id)
+          .toMatchObject({ availability: "selectable" });
+      }
+      expect(enabled.catalogModels.find((model) => model.id === "openrouter:typesafe/jev-1.13"))
+        .toMatchObject({ availability: "missing_credentials" });
+      expect(enabled.catalogModels.find((model) => model.id === "venice:gpt-image-2"))
         .toMatchObject({ availability: "missing_credentials" });
 
       const disabled = await read(false);
@@ -359,11 +383,39 @@ describe("server-models route authorization, partial writes, and audit", () => {
         preferSurplus: false,
         surplus: { keyConfigured: true, policyEnabled: false, chatStatus: "qualified-unavailable" },
       });
-      expect(disabled.catalogModels.find((model) => model.id === "openrouter:openai/gpt-5.6-sol"))
-        .toMatchObject({ availability: "missing_credentials" });
+      for (const id of [
+        "anthropic:claude-sonnet-4-6",
+        "openai:gpt-6-astra",
+        "google:gemini-2.5-pro",
+        "fireworks:accounts/fireworks/models/deepseek-v4p1-flash",
+        "openrouter:moonshotai/kimi-k2.6",
+        "venice:kimi-k3",
+      ]) {
+        expect(disabled.catalogModels.find((model) => model.id === id), id)
+          .toMatchObject({ availability: "missing_credentials" });
+      }
+
+      const missingKey = await read(true, false);
+      expect(missingKey).toMatchObject({
+        preferSurplus: true,
+        surplus: { keyConfigured: false, policyEnabled: true, chatStatus: "qualified-unavailable" },
+      });
+      for (const id of [
+        "anthropic:claude-sonnet-4-6",
+        "openai:gpt-6-astra",
+        "google:gemini-2.5-pro",
+        "fireworks:accounts/fireworks/models/deepseek-v4p1-flash",
+        "openrouter:moonshotai/kimi-k2.6",
+        "venice:kimi-k3",
+      ]) {
+        expect(missingKey.catalogModels.find((model) => model.id === id), id)
+          .toMatchObject({ availability: "missing_credentials" });
+      }
     } finally {
-      if (previous === undefined) delete process.env["OPENROUTER_API_KEY"];
-      else process.env["OPENROUTER_API_KEY"] = previous;
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   });
 

@@ -905,6 +905,7 @@ export async function invokeChatModelWithFallback(
     const managedGatewayAttempt = !personalFunding && modelRouteProvider(currentModelId) === "openrouter"
       && managedGatewayKeyIsPresent();
     let managedGatewayInvocationStarted = false;
+    let surplusAttemptedForModel = false;
     const recoveryVisibility = invokeOptions?.recoverContext ? contextRecoveryVisibilityFence() : null;
     let hasSelectedReasoningEffort = false;
     try {
@@ -957,8 +958,8 @@ export async function invokeChatModelWithFallback(
         }
         try {
           // This is a server-wide serving preference, never a personal-key
-          // transport or another catalogue model. Only an exact route in the
-          // released qualification map may use this path.
+          // transport or another catalogue model. Supported routes reuse the
+          // current signed catalogue and preserve the selected provider pin.
           if (usageFunding.kind !== "personal") {
             kickServerModelConfigRefresh();
             const surplusKey = resolveProviderKey("surplus");
@@ -983,6 +984,7 @@ export async function invokeChatModelWithFallback(
                 estimatedInputTokens: estimateTokenCount(attemptMessages) + estimateBoundToolTokens(tools),
                 maxOutputTokens: maxTokens,
               })) {
+              surplusAttemptedForModel = true;
               const surplusFunding = { ...usageFunding, providerRoute: "surplus" };
               const result = await invokeSurplusChatAttempt({
                 route: surplus.route,
@@ -1024,9 +1026,9 @@ export async function invokeChatModelWithFallback(
                 };
                 return result.response;
               }
-              // A definitive unserved, uncharged refusal is the only same-
-              // model transport hop. Recheck live server funding before the
-              // direct provider receives this prompt.
+              // A definitive pre-service refusal can switch transports.
+              // Its cost stays unknown until a receipt confirms it. Recheck
+              // live funding before the original provider receives the prompt.
               if (!modelHasRunnableCredentials(currentModelId, process.env, "chat")) {
                 throw new SurplusDirectFallbackUnavailableError();
               }
@@ -1039,7 +1041,7 @@ export async function invokeChatModelWithFallback(
             } else if (surplus.status === "available"
               && !modelHasRunnableCredentials(currentModelId, process.env, "chat")) {
               // The route can make the model selectable, but this request is
-              // outside its qualified capability/limit envelope. Never drift
+              // outside its supported request envelope. Never drift
               // into an imaginary direct-provider attempt.
               throw new SurplusDirectFallbackUnavailableError("request-not-qualified");
             }
@@ -1177,7 +1179,13 @@ export async function invokeChatModelWithFallback(
       }
       disableReasoningOutput = false;
 
-      if (!shouldFallbackToNextModel(classified)) throw terminalProviderError;
+      const surplusDirectUnavailable = providerError instanceof SurplusDirectFallbackUnavailableError;
+      // A missing original credential after a safe Surplus refusal does not
+      // exhaust the configured chain. A rejected original credential likewise
+      // leaves other provider routes usable; personal funding stays separate.
+      const directAuthRejectedAfterSurplus = surplusAttemptedForModel && classified.category === "AUTH_ERROR";
+      if (!surplusDirectUnavailable && !directAuthRejectedAfterSurplus
+        && !shouldFallbackToNextModel(classified)) throw terminalProviderError;
 
       if (hasAssistantVisibleOutputForCurrentTurn(agentId)) {
         log(

@@ -78,6 +78,7 @@ export interface SurplusFailedAttemptDisposition {
   readonly failureCode:
     | "cancelled"
     | "no_sellers_for_model"
+    | "pre_service_refusal"
     | "adapted_parameters"
     | "provider_route_mismatch"
     | "truncated_response"
@@ -101,7 +102,7 @@ export function canUseQualifiedSurplusChatRoute(input: {
 }): input is typeof input & { route: QualifiedSurplusChatRoute } {
   const route = input.route;
   if (!route || !input.prefersSurplus || !input.hasSurplusCredential) return false;
-  if (input.funding.kind === "personal" || input.usesResponsesApi || input.hasServingProfile) return false;
+  if (input.funding.kind === "personal" || input.hasServingProfile) return false;
   if (input.needsVision && !route.supportsVision) return false;
   if (input.requiresTools && !route.supportsTools) return false;
   if (input.reasoningRequested && !route.supportsReasoning) return false;
@@ -159,7 +160,7 @@ export function classifySurplusFailedAttempt(input: {
     && !(input.error instanceof SurplusIncompleteResponseError)
     && isSafeSurplusDirectFallback(input.error, input.responseStatus, input.receipt, false);
   const knownCostMicro = input.terminalUsage?.buyerCostMicro ?? input.receipt?.buyerCostMicro;
-  const costState = knownCostMicro !== undefined || safe
+  const costState = knownCostMicro !== undefined
     ? "actual" as const
     : input.receipt?.requestId
       ? "pending" as const
@@ -175,7 +176,9 @@ export function classifySurplusFailedAttempt(input: {
           : input.error instanceof SurplusIncompleteResponseError
             ? "incomplete_response" as const
             : safe
-              ? "no_sellers_for_model" as const
+              ? input.responseStatus === 404
+                ? "no_sellers_for_model" as const
+                : "pre_service_refusal" as const
               : "outcome_unknown" as const;
   return {
     outcome: input.cancelled

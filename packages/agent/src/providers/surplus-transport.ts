@@ -1,8 +1,9 @@
+import type { ChatGenerationChunk } from "@langchain/core/outputs";
 import { ChatOpenAI } from "@langchain/openai";
 import type { ChatModel, ReasoningEffort } from "./types";
 import type { QualifiedSurplusChatRoute } from "./surplus-route";
 import { OpenRouterReasoningCompletions } from "./openrouter-reasoning";
-import { openAICompatibleReasoningModelKwargs, openRouterSessionModelKwargs } from "./factory";
+import { openRouterSessionModelKwargs, surplusReasoningModelKwargs } from "./factory";
 import {
   VeniceChatOpenAICompletions,
   wrapVeniceModelForToolSchemas,
@@ -30,17 +31,75 @@ export class SurplusOutcomeUnknownError extends Error {
   }
 }
 
-/** Only a proven, unserved and uncharged refusal may switch transports. */
+const PRE_SERVICE_BAD_REQUEST_CODES = new Set([
+  "invalid_request",
+  "minimum_discount_not_met",
+  "model_does_not_support_images",
+  "unresolvable_file_reference",
+  "unsupported_provider",
+]);
+const AUTH_REFUSAL_CODES = new Set(["authentication_error", "invalid_api_key"]);
+const PAYMENT_REFUSAL_CODES = new Set([
+  "insufficient_allowance",
+  "insufficient_balance",
+  "insufficient_credit",
+  "payment_required",
+]);
+
+function conflictsWithDocumentedStatus(status: 401 | 402, code: string | undefined): boolean {
+  if (!code) return false;
+  const expected = status === 401 ? AUTH_REFUSAL_CODES : PAYMENT_REFUSAL_CODES;
+  if (expected.has(code)) return false;
+  return PRE_SERVICE_BAD_REQUEST_CODES.has(code)
+    || AUTH_REFUSAL_CODES.has(code)
+    || PAYMENT_REFUSAL_CODES.has(code)
+    || code === "no_healthy_sellers"
+    || code === "no_sellers_for_model";
+}
+
+function surplusErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const topLevel = (error as { code?: unknown }).code;
+  const nested = (error as { error?: unknown }).error;
+  const nestedCode = nested && typeof nested === "object"
+    ? (nested as { code?: unknown }).code
+    : undefined;
+  const code = typeof topLevel === "string" ? topLevel : nestedCode;
+  const normalized = typeof code === "string" ? code.trim().toLowerCase() : "";
+  return normalized || undefined;
+}
+
+/** Only a proven pre-service refusal may switch transports. */
 export function isSafeSurplusDirectFallback(
   error: unknown,
   responseStatus: number | undefined,
   receipt: SurplusWireReceipt | undefined,
   visibleOutput: boolean,
 ): boolean {
-  if (visibleOutput || responseStatus !== 404) return false;
-  if (receipt?.marketplaceAttempts !== 0 || receipt.buyerCostMicro !== 0) return false;
-  const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
-  return code === "no_sellers_for_model";
+  if (visibleOutput || receipt?.truncated || receipt?.adaptedParameters?.trim()) return false;
+  // An affirmative attempt or charge means seller service may have begun. An
+  // omitted cost is deliberately not treated as zero: replay eligibility and
+  // durable cost knowledge are separate decisions.
+  if ((receipt?.marketplaceAttempts ?? 0) > 0 || (receipt?.buyerCostMicro ?? 0) > 0) return false;
+  const code = surplusErrorCode(error);
+  switch (responseStatus) {
+    // The chat contract defines these statuses entirely at the buyer/auth
+    // boundary. They happen before marketplace seller service.
+    case 401:
+    case 402:
+      return !conflictsWithDocumentedStatus(responseStatus, code);
+    // A 400 can also be an upstream rejection, so status alone is not proof.
+    case 400:
+      return code !== undefined && PRE_SERVICE_BAD_REQUEST_CODES.has(code);
+    case 404:
+      return code === "no_sellers_for_model" && receipt?.marketplaceAttempts === 0;
+    // All-unhealthy is safe only when route telemetry affirmatively says that
+    // no seller was dialled. Other 5xx outcomes remain ambiguous.
+    case 503:
+      return code === "no_healthy_sellers" && receipt?.marketplaceAttempts === 0;
+    default:
+      return false;
+  }
 }
 
 function nonEmpty(value: string | null): string | undefined {
@@ -117,6 +176,51 @@ export interface CreateSurplusChatModelInput {
   readonly fetchImpl?: typeof fetch;
 }
 
+function projectSurplusStreamChunk(
+  chunk: ChatGenerationChunk,
+  terminalReason: string | undefined,
+): string | undefined {
+  const reason: unknown = chunk.generationInfo?.["finish_reason"];
+  if (typeof reason === "string") {
+    if (terminalReason !== undefined) {
+      const hasToolDelta = "tool_call_chunks" in chunk.message
+        && Array.isArray(chunk.message.tool_call_chunks) && chunk.message.tool_call_chunks.length > 0;
+      // LangChain concatenates string metadata, so a repeated terminal marker
+      // would otherwise become `tool_callstool_calls`.
+      if (reason === terminalReason && chunk.text === "" && !hasToolDelta) {
+        delete chunk.generationInfo?.["finish_reason"];
+        delete chunk.generationInfo?.["model_name"];
+      }
+      // Keep conflicting markers intact for the completion validator.
+      // Finishing the stream first retains its final charge receipt.
+    } else {
+      terminalReason = reason;
+    }
+  }
+  // LangChain's callback-preferred streaming invoke path concatenates
+  // generation chunks directly and does not project generationInfo onto
+  // message metadata. Room streaming uses that path, while plain invoke uses
+  // the SDK's normal projection. Keep both paths semantically equal.
+  chunk.message.response_metadata = {
+    ...chunk.generationInfo,
+    ...chunk.message.response_metadata,
+  };
+  return terminalReason;
+}
+
+/** Preserve terminal metadata for every non-Venice OpenAI-compatible pin. */
+class SurplusOpenAICompatibleCompletions extends OpenRouterReasoningCompletions {
+  override async *_streamResponseChunks(
+    ...args: Parameters<OpenRouterReasoningCompletions["_streamResponseChunks"]>
+  ) {
+    let terminalReason: string | undefined;
+    for await (const chunk of super._streamResponseChunks(...args)) {
+      terminalReason = projectSurplusStreamChunk(chunk, terminalReason);
+      yield chunk;
+    }
+  }
+}
+
 /** Surplus may repeat the terminal choice when attaching its final usage receipt. */
 class SurplusOpenRouterCompletions extends OpenRouterReasoningCompletions {
   override invocationParams(
@@ -139,31 +243,7 @@ class SurplusOpenRouterCompletions extends OpenRouterReasoningCompletions {
     // terminal marker. Keep the SDK's final usage chunk and all reasoning.
     let terminalReason: string | undefined;
     for await (const chunk of super._streamResponseChunks(...args)) {
-      const reason: unknown = chunk.generationInfo?.["finish_reason"];
-      if (typeof reason === "string") {
-        if (terminalReason !== undefined) {
-          const hasToolDelta = "tool_call_chunks" in chunk.message
-            && Array.isArray(chunk.message.tool_call_chunks) && chunk.message.tool_call_chunks.length > 0;
-          // LangChain concatenates string metadata, so a repeated terminal
-          // marker would otherwise become `tool_callstool_calls`.
-          if (reason === terminalReason && chunk.text === "" && !hasToolDelta) {
-            delete chunk.generationInfo?.["finish_reason"];
-            delete chunk.generationInfo?.["model_name"];
-          }
-          // Keep conflicting markers intact for the completion validator.
-          // Finishing the stream first retains its final charge receipt.
-        } else {
-          terminalReason = reason;
-        }
-      }
-      // LangChain's callback-preferred streaming invoke path concatenates
-      // generation chunks directly and does not project generationInfo onto
-      // message metadata. Room streaming uses that path, while plain invoke
-      // uses the SDK's normal projection. Keep both paths semantically equal.
-      chunk.message.response_metadata = {
-        ...chunk.generationInfo,
-        ...chunk.message.response_metadata,
-      };
+      terminalReason = projectSurplusStreamChunk(chunk, terminalReason);
       yield chunk;
     }
   }
@@ -189,7 +269,7 @@ export function createSurplusChatModel(input: CreateSurplusChatModelInput): Chat
     streamUsage: true,
     modelKwargs: {
       provider: input.route.providerPin,
-      ...openAICompatibleReasoningModelKwargs({
+      ...surplusReasoningModelKwargs({
         modelId: input.route.catalogModelId,
         ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
         ...(input.reasoningOutput === undefined ? {} : { reasoningOutput: input.reasoningOutput }),
@@ -212,7 +292,7 @@ export function createSurplusChatModel(input: CreateSurplusChatModelInput): Chat
       ? { completions: new VeniceChatOpenAICompletions(base) }
       : input.route.providerPin === "openrouter"
         ? { completions: new SurplusOpenRouterCompletions(base) }
-        : {}),
+        : { completions: new SurplusOpenAICompatibleCompletions(base) }),
   }) as unknown as ChatModel;
   return isVenice
     ? wrapVeniceModelForToolSchemas(model)

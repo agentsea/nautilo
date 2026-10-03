@@ -30,6 +30,7 @@ mock.module("../../src/providers/surplus-transport", () => ({
 const {
   openAICompatibleReasoningModelKwargs,
   openRouterSessionModelKwargs,
+  surplusReasoningModelKwargs,
 } = await import("../../src/providers/factory");
 const {
   canUseQualifiedSurplusChatRoute,
@@ -100,6 +101,27 @@ describe("Surplus reasoning parity", () => {
     }, ROUTE.maxOutputTokens)).toEqual({ reasoning: { enabled: false } });
   });
 
+  test("preserves canonical reasoning intent on Surplus's common chat wire", () => {
+    expect(surplusReasoningModelKwargs({
+      modelId: "anthropic:claude-opus-5-5",
+      reasoningEffort: "xhigh",
+    }, ROUTE.maxOutputTokens)).toEqual({ reasoning: { effort: "xhigh" } });
+    expect(surplusReasoningModelKwargs({
+      modelId: "openai:gpt-6-sol",
+      reasoningEffort: "xhigh",
+      useOpenAIResponsesApi: true,
+    }, ROUTE.maxOutputTokens)).toEqual({ reasoning: { effort: "xhigh" } });
+    expect(surplusReasoningModelKwargs({
+      modelId: "openai:gpt-6-sol",
+      reasoningEffort: "off",
+      useOpenAIResponsesApi: true,
+    }, ROUTE.maxOutputTokens)).toEqual({ reasoning: { effort: "none" } });
+    expect(() => surplusReasoningModelKwargs({
+      modelId: "anthropic:claude-opus-5-5",
+      reasoningEffort: "off",
+    }, ROUTE.maxOutputTokens)).toThrow(/not supported by the catalog controls/i);
+  });
+
   test("admits reasoning only for a qualified reasoning-capable route", () => {
     const base = {
       route: ROUTE,
@@ -119,7 +141,7 @@ describe("Surplus reasoning parity", () => {
       ...base,
       route: { ...ROUTE, supportsReasoning: false },
     })).toBe(false);
-    expect(canUseQualifiedSurplusChatRoute({ ...base, usesResponsesApi: true })).toBe(false);
+    expect(canUseQualifiedSurplusChatRoute({ ...base, usesResponsesApi: true })).toBe(true);
     expect(canUseQualifiedSurplusChatRoute({
       ...base,
       funding: {

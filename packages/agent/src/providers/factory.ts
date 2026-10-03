@@ -196,6 +196,39 @@ export function openAICompatibleReasoningModelKwargs(
   }
 }
 
+/**
+ * Preserve the canonical reasoning intent on Surplus's OpenAI-compatible chat
+ * wire. Existing reviewed provider spellings stay authoritative. Providers
+ * whose direct factory uses another SDK receive the documented nested shape
+ * that Surplus can bridge to the selected seller wire.
+ */
+export function surplusReasoningModelKwargs(
+  options: CreateModelOptions,
+  maxTokens: number,
+): Record<string, unknown> {
+  const providerKwargs = openAICompatibleReasoningModelKwargs(options, maxTokens);
+  if (Object.keys(providerKwargs).length > 0) return providerKwargs;
+
+  const provider = providerFromModelId(options.modelId);
+  if (provider !== "anthropic" && provider !== "google" && provider !== "openai") return {};
+  if (options.reasoningEffort === "off") {
+    const entry = getActiveModelCatalogSync().catalog.entries.find(
+      (candidate) => candidate.id === options.modelId,
+    );
+    const control = entry && "controls" in entry ? entry.controls?.reasoning : undefined;
+    if (entry?.features?.reasoning !== true || control?.canDisable !== true || control.mandatory !== false) {
+      throw new Error(`Reasoning effort "off" is not supported by the catalog controls for ${options.modelId}.`);
+    }
+    return { reasoning: { effort: "none" } };
+  }
+  if (!reasoningRequested(options, maxTokens)) return {};
+
+  const effort = requestedReasoningEffort(options);
+  if (provider === "anthropic") assertProviderReasoningEffort("anthropic", effort);
+  if (provider === "openai") assertProviderReasoningEffort("openai-responses", effort);
+  return { reasoning: { effort } };
+}
+
 function resolveTimeoutMs(options: CreateModelOptions): number | undefined {
   return options.timeoutMs === null ? undefined : options.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
 }

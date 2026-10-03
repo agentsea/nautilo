@@ -42,10 +42,15 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
             || (row.fundingKind !== "server" && row.fundingKind !== "service")) continue;
           const key = deps.resolveKey();
           const binding = row.metadata;
+          // A provider pin can use Surplus naming (Google AI Studio) while
+          // usage retains the original catalogue provider (Google).
+          const catalogProvider = typeof binding?.["catalogModelId"] === "string"
+            ? binding["catalogModelId"].split(":", 1)[0]
+            : binding?.["surplusProviderPin"];
           if (!key || binding?.["surplusCredentialFingerprint"] !== surplusCredentialFingerprint(key)
             || typeof binding["surplusModelId"] !== "string"
             || typeof binding["surplusProviderPin"] !== "string"
-            || binding["surplusProviderPin"] !== row.provider) continue;
+            || catalogProvider !== row.provider) continue;
           try {
             const costMicro = await deps.fetchCost({
               apiKey: key,

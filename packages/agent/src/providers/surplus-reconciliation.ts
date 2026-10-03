@@ -41,8 +41,11 @@ export interface SurplusSettlementBinding {
 export function readConfirmedSurplusSettlement(value: unknown, binding: SurplusSettlementBinding): number | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
-  if (row["request_id"] !== binding.requestId || row["model"] !== binding.surplusModelId
-    || row["provider"] !== binding.providerPin) return null;
+  // The creating key and exact request ID bind this charge to its attempt.
+  // Surplus resolves provider aliases to a canonical model in request detail;
+  // that spelling change must not discard a confirmed financial receipt.
+  // Model/answer correctness is a separate execution concern.
+  if (row["request_id"] !== binding.requestId || row["provider"] !== binding.providerPin) return null;
   if (row["settlement_status"] !== "accrued" || row["settlement_type"] !== "credit"
     || (row["settlement_error"] !== undefined && row["settlement_error"] !== null)) return null;
   const confirmedAt = row["confirmed_at"];

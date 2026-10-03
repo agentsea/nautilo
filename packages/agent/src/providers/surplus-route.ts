@@ -1,35 +1,95 @@
+import type { ModelCatalogEntry } from "@nautilo/types";
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
 
-/**
- * A serving mapping is a release decision, not a match from `/v1/models`.
- * Each row must be backed by an exact-model, pinned-provider, feature, and
- * settlement qualification before it is added here.
- */
+export type SurplusProviderPin =
+  | "anthropic"
+  | "openai"
+  | "google-ai-studio"
+  | "google"
+  | "fireworks"
+  | "openrouter"
+  | "together"
+  | "venice";
+
+/** The name is retained for compatibility with the serving and receipt layers. */
 export interface QualifiedSurplusChatRoute {
   readonly catalogModelId: string;
   readonly surplusModelId: string;
-  readonly providerPin: "anthropic" | "openai" | "google" | "fireworks" | "openrouter" | "venice";
+  readonly providerPin: SurplusProviderPin;
   readonly supportsTools: boolean;
   readonly supportsVision: boolean;
   readonly supportsReasoning: boolean;
   readonly maxContextTokens: number;
   readonly maxOutputTokens: number;
-  readonly qualifiedAt: string;
+  /** Compatibility metadata for injected historical qualification fixtures. */
+  readonly qualifiedAt?: string;
 }
 
-const QUALIFIED_CHAT_ROUTES: readonly QualifiedSurplusChatRoute[] = Object.freeze([
-  Object.freeze({
-    catalogModelId: "openrouter:openai/gpt-5.6-sol",
-    surplusModelId: "gpt-5.6-sol",
-    providerPin: "openrouter",
-    supportsTools: true,
-    supportsVision: false,
-    supportsReasoning: true,
-    maxContextTokens: 1_050_000,
-    maxOutputTokens: 128_000,
-    qualifiedAt: "2026-10-03",
-  }),
-]);
+const SURPLUS_PROVIDER_PINS = Object.freeze({
+  anthropic: "anthropic",
+  openai: "openai",
+  google: "google-ai-studio",
+  fireworks: "fireworks",
+  openrouter: "openrouter",
+  together: "together",
+  venice: "venice",
+} satisfies Readonly<Record<string, SurplusProviderPin>>);
+
+function providerPinForCatalogEntry(entry: ModelCatalogEntry): SurplusProviderPin | null {
+  return SURPLUS_PROVIDER_PINS[entry.provider as keyof typeof SURPLUS_PROVIDER_PINS] ?? null;
+}
+
+function isEligibleSignedChatEntry(entry: ModelCatalogEntry): boolean {
+  const workload = "workload" in entry ? entry.workload : "chat";
+  return entry.defaultEnabled
+    && workload === "chat"
+    && (entry.modalities?.output?.includes("text") ?? true)
+    && !entry.id.includes(":e2ee-")
+    && entry.privacy.label !== "e2ee"
+    && entry.routing !== "china-anonymized";
+}
+
+function deriveRoute(entry: ModelCatalogEntry): QualifiedSurplusChatRoute | null {
+  const providerPin = providerPinForCatalogEntry(entry);
+  const separator = entry.id.indexOf(":");
+  const surplusModelId = separator < 1 ? "" : entry.id.slice(separator + 1);
+  const maxContextTokens = entry.limits?.contextTokens;
+  const maxOutputTokens = entry.limits?.outputTokens;
+  if (!providerPin || !surplusModelId || !isEligibleSignedChatEntry(entry)
+    || !Number.isSafeInteger(maxContextTokens) || !Number.isSafeInteger(maxOutputTokens)
+    || (maxContextTokens ?? 0) < 1 || (maxOutputTokens ?? 0) < 1) return null;
+  return Object.freeze({
+    catalogModelId: entry.id,
+    surplusModelId,
+    providerPin,
+    supportsTools: entry.features?.tools === true,
+    supportsVision: entry.modalities?.input?.includes("image") === true,
+    supportsReasoning: entry.features?.reasoning === true,
+    maxContextTokens: maxContextTokens!,
+    maxOutputTokens: maxOutputTokens!,
+  });
+}
+
+function injectedProviderPinMatches(entry: ModelCatalogEntry, pin: SurplusProviderPin): boolean {
+  const expected = providerPinForCatalogEntry(entry);
+  // Keep the former Google pin usable by narrow injected fixtures while all
+  // catalog-derived production routes use Surplus's google-ai-studio family.
+  return pin === expected || (entry.provider === "google" && pin === "google");
+}
+
+function validateInjectedRoute(
+  entry: ModelCatalogEntry,
+  route: QualifiedSurplusChatRoute,
+): QualifiedSurplusChatRoute | null {
+  if (!isEligibleSignedChatEntry(entry) || !providerPinForCatalogEntry(entry)) return null;
+  if (!injectedProviderPinMatches(entry, route.providerPin)) return null;
+  if (!Number.isSafeInteger(route.maxContextTokens) || !Number.isSafeInteger(route.maxOutputTokens)
+    || route.maxContextTokens < 1 || route.maxOutputTokens < 1) return null;
+  if (!route.surplusModelId.trim() || (route.qualifiedAt !== undefined && !route.qualifiedAt.trim())) return null;
+  if (entry.limits?.contextTokens && route.maxContextTokens > entry.limits.contextTokens) return null;
+  if (entry.limits?.outputTokens && route.maxOutputTokens > entry.limits.outputTokens) return null;
+  return route;
+}
 
 export type SurplusChatServingStatus = "not-qualified" | "qualified-unavailable" | "available";
 
@@ -43,7 +103,7 @@ export interface ResolveSurplusChatServingAvailabilityInput {
   readonly policyEnabled: boolean;
   readonly keyConfigured: boolean;
   readonly fundingKind?: "server" | "personal";
-  /** Pure injection seam for offline qualification tests. */
+  /** Pure injection seam for offline transport and narrowed-limit tests. */
   readonly routes?: readonly QualifiedSurplusChatRoute[];
 }
 
@@ -58,41 +118,29 @@ export class SurplusDirectFallbackUnavailableError extends Error {
   }
 }
 
-/** Never synthesize a route from a provider prefix, alias, or public market. */
 export function resolveQualifiedSurplusChatRoute(
   catalogModelId: string,
-  routes: readonly QualifiedSurplusChatRoute[] = QUALIFIED_CHAT_ROUTES,
+  routes?: readonly QualifiedSurplusChatRoute[],
 ): QualifiedSurplusChatRoute | null {
   const entry = getActiveModelCatalogSync().catalog.entries.find((row) => row.id === catalogModelId);
-  if (!entry || !entry.defaultEnabled) return null;
-  const output = entry.modalities?.output;
-  const workload = "workload" in entry ? entry.workload : "chat";
-  if (workload !== "chat" || (output && !output.includes("text"))) return null;
-  if (catalogModelId.includes(":e2ee-") || entry.routing === "china-anonymized") return null;
+  if (!entry) return null;
+  if (routes === undefined) return deriveRoute(entry);
   const route = routes.find((candidate) => candidate.catalogModelId === catalogModelId);
-  if (!route || !Number.isSafeInteger(route.maxContextTokens) || !Number.isSafeInteger(route.maxOutputTokens)
-    || route.maxContextTokens < 1 || route.maxOutputTokens < 1) return null;
-  if (!route.surplusModelId.trim() || !route.qualifiedAt.trim()) return null;
-  if (catalogModelId.split(":", 1)[0] !== route.providerPin) return null;
-  // The qualified route may narrow signed limits, never broaden them.
-  if (entry.limits?.contextTokens && route.maxContextTokens > entry.limits.contextTokens) return null;
-  if (entry.limits?.outputTokens && route.maxOutputTokens > entry.limits.outputTokens) return null;
-  return route;
+  return route ? validateInjectedRoute(entry, route) : null;
 }
 
 /**
- * One fail-closed projection for released Surplus chat capability. It does not
- * infer mappings from provider names and never treats a key as qualification.
+ * One fail-closed projection for signed-catalog Surplus chat capability.
  * Personal funding cannot use the server Surplus credential.
  */
 export function resolveSurplusChatServingAvailability(
   input: ResolveSurplusChatServingAvailabilityInput,
 ): SurplusChatServingAvailability {
-  const routes = input.routes ?? QUALIFIED_CHAT_ROUTES;
   const route = input.catalogModelId === undefined
-    ? routes.map((candidate) => resolveQualifiedSurplusChatRoute(candidate.catalogModelId, routes))
+    ? getActiveModelCatalogSync().catalog.entries
+      .map((entry) => resolveQualifiedSurplusChatRoute(entry.id, input.routes))
       .find((candidate): candidate is QualifiedSurplusChatRoute => candidate !== null) ?? null
-    : resolveQualifiedSurplusChatRoute(input.catalogModelId, routes);
+    : resolveQualifiedSurplusChatRoute(input.catalogModelId, input.routes);
   if (!route) return { status: "not-qualified", route: null };
   if (input.fundingKind === "personal" || !input.policyEnabled || !input.keyConfigured) {
     return { status: "qualified-unavailable", route };

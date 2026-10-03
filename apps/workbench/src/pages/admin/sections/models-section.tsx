@@ -458,7 +458,7 @@ export function ModelsSection() {
                     Prefer Surplus
                   </label>
                   <p className="mt-1 text-[11px] text-foreground-muted">
-                    For qualified server-funded model calls, prefer Surplus Intelligence before the model&apos;s direct route. Surplus and its selected seller receive request content, and actual pricing varies by offer.
+                    For server-funded calls on supported catalogue providers, try Surplus Intelligence first, then the configured original provider and model fallback chain. Surplus and its selected seller receive request content, and actual pricing varies by offer.
                   </p>
                 </div>
                 <input
@@ -475,8 +475,8 @@ export function ModelsSection() {
                   draft.surplus.chatStatus === "available"
                     ? "Available on this server"
                     : draft.surplus.chatStatus === "qualified-unavailable"
-                      ? "Qualified but unavailable"
-                      : "Not qualified"
+                      ? "Unavailable on this server"
+                      : "No supported catalogue models"
                 }
               </p>
             </div>

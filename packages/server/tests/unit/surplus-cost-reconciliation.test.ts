@@ -38,6 +38,29 @@ describe("Surplus automatic financial recovery", () => {
     }]);
   });
 
+  test("recovers a Google attempt using its persisted Surplus provider spelling", async () => {
+    let reads = 0;
+    const writes: unknown[] = [];
+    const recovery = createSurplusCostRecovery({
+      resolveKey: () => key,
+      list: async () => [{ ...row, provider: "google", model: "google:gemini-3.8-pro", metadata: {
+        ...row.metadata, catalogModelId: "google:gemini-3.8-pro",
+        surplusModelId: "gemini-3.8-pro", surplusProviderPin: "google-ai-studio",
+      } }],
+      fetchCost: async (input) => {
+        reads++;
+        expect(input.binding.providerPin).toBe("google-ai-studio");
+        return 283;
+      },
+      settle: async (input) => { writes.push(input); return true; },
+    });
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await recovery.stop();
+    expect(reads).toBe(1);
+    expect(writes).toHaveLength(1);
+  });
+
   test("skips unbound/rotated credentials and missing request ids without guessing zero", async () => {
     let reads = 0;
     let writes = 0;

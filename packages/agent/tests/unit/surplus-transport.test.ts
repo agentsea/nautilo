@@ -141,13 +141,13 @@ describe("Surplus wire boundary", () => {
     expect(bodyReads).toBe(0);
   });
 
-  test("same-model direct fallback needs an unserved zero-cost refusal", () => {
+  test("same-model direct fallback accepts a definitive unserved refusal", () => {
     const refusal = { code: "no_sellers_for_model" };
     const receipt = { marketplaceAttempts: 0, buyerCostMicro: 0, truncated: false };
     expect(isSafeSurplusDirectFallback(refusal, 404, receipt, false)).toBe(true);
     expect(isSafeSurplusDirectFallback(refusal, 404, receipt, true)).toBe(false);
     expect(isSafeSurplusDirectFallback(refusal, 404, { ...receipt, marketplaceAttempts: 1 }, false)).toBe(false);
-    expect(isSafeSurplusDirectFallback(refusal, 404, { marketplaceAttempts: 0, truncated: false }, false)).toBe(false);
+    expect(isSafeSurplusDirectFallback(refusal, 404, { marketplaceAttempts: 0, truncated: false }, false)).toBe(true);
     expect(isSafeSurplusDirectFallback(refusal, 503, receipt, false)).toBe(false);
     expect(isSafeSurplusDirectFallback({ code: "other" }, 404, receipt, false)).toBe(false);
   });
@@ -679,12 +679,16 @@ describe("Surplus wire boundary", () => {
 });
 
 describe("qualified Surplus route selection", () => {
-  test("releases only the exact signed OpenRouter GPT-5.6 Sol route", () => {
+  test("derives supported routes from signed catalog rows", () => {
     expect(resolveQualifiedSurplusChatRoute(QUALIFIED_OPENROUTER_ROUTE.catalogModelId))
-      .toEqual(QUALIFIED_OPENROUTER_ROUTE);
-    expect(resolveQualifiedSurplusChatRoute("venice:openai-gpt-55")).toBeNull();
-    expect(resolveQualifiedSurplusChatRoute("openrouter:openai/gpt-5.6-terra")).toBeNull();
-    expect(resolveQualifiedSurplusChatRoute("openai:gpt-5.6-sol")).toBeNull();
+      .toMatchObject({
+        catalogModelId: QUALIFIED_OPENROUTER_ROUTE.catalogModelId,
+        surplusModelId: "openai/gpt-5.6-sol",
+        providerPin: "openrouter",
+      });
+    expect(resolveQualifiedSurplusChatRoute("venice:openai-gpt-55")).not.toBeNull();
+    expect(resolveQualifiedSurplusChatRoute("openrouter:openai/gpt-5.6-terra")).not.toBeNull();
+    expect(resolveQualifiedSurplusChatRoute("openai:gpt-5.6-sol")).not.toBeNull();
   });
 
   test("requires signed chat membership and an exact provider pin", () => {
@@ -704,17 +708,17 @@ describe("qualified Surplus route selection", () => {
     expect(resolveQualifiedSurplusChatRoute("openai:not-signed", [{ ...candidate, catalogModelId: "openai:not-signed", providerPin: "openai" }])).toBeNull();
   });
 
-  test("projects qualification, policy, credentials, and funding without widening the release list", () => {
+  test("projects catalog support, policy, credentials, and funding", () => {
     const routes = [VENICE_ROUTE];
     expect(resolveSurplusChatServingAvailability({
       policyEnabled: true, keyConfigured: true,
-    })).toEqual({ status: "available", route: QUALIFIED_OPENROUTER_ROUTE });
+    }).status).toBe("available");
     expect(resolveSurplusChatServingAvailability({
       policyEnabled: false, keyConfigured: true,
-    })).toEqual({ status: "qualified-unavailable", route: QUALIFIED_OPENROUTER_ROUTE });
+    }).status).toBe("qualified-unavailable");
     expect(resolveSurplusChatServingAvailability({
       policyEnabled: true, keyConfigured: false,
-    })).toEqual({ status: "qualified-unavailable", route: QUALIFIED_OPENROUTER_ROUTE });
+    }).status).toBe("qualified-unavailable");
     expect(resolveSurplusChatServingAvailability({
       catalogModelId: VENICE_ROUTE.catalogModelId,
       policyEnabled: false, keyConfigured: true, routes,

@@ -492,7 +492,7 @@ describe("ModelsSection Stenographer model", () => {
 
     expect((toggle as HTMLInputElement).checked).toBe(false);
     expect(view.getByTestId("surplus-capability-status").textContent)
-      .toContain("Surplus key: Configured · Chat serving: Not qualified");
+      .toContain("Surplus key: Configured · Chat serving: No supported catalogue models");
 
     await act(async () => fireEvent.click(toggle));
     await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
