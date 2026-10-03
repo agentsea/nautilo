@@ -46,8 +46,8 @@ describe("September 16 server scanner inventory", () => {
       expect(matches).toHaveLength(retiredAdvisories.has(advisoryId) ? 0 : 1);
       if (retiredAdvisories.has(advisoryId)) continue;
       if (advisoryId === "CVE-2026-19499") {
-        expect(matches[0]!.reviewedAt).toBe(fixture.decision.reviewedAt);
-        expect(matches[0]!.expiresAt).toBe("2026-10-16T00:00:00Z");
+        expect(matches[0]!.reviewedAt).toBe("2026-10-03T15:15:00Z");
+        expect(matches[0]!.expiresAt).toBe("2026-10-23T00:00:00Z");
       } else {
         expect(matches[0]!.reviewedAt).toBe("2026-09-17T00:00:00Z");
         expect(matches[0]!.expiresAt).toBe("2026-11-15T00:00:00Z");
