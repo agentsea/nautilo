@@ -6,7 +6,7 @@ import { getUsageContext, normalizeUsageRoomId } from "./usage-context";
 import { createToolProviderCostRecorder } from "./provider-cost-recorder";
 import { estimateProviderToolCostUsd } from "@nautilo/db";
 
-interface ExtractedUsage {
+export interface ExtractedUsage {
   inputTokens: number;
   outputTokens: number;
   totalTokens?: number;
@@ -101,7 +101,7 @@ export function extractUsageFromLLMResult(output: LLMResult): ExtractedUsage | n
       }
       // Provider-reported cost (OpenRouter surfaces `usage.cost` on response_metadata).
       const cost = respUsage?.["cost"] ?? respMeta?.["cost"];
-      if (typeof cost === "number" && Number.isFinite(cost) && cost > 0) {
+      if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) {
         actualCostUsd = (actualCostUsd ?? 0) + cost;
       }
     }
@@ -117,7 +117,7 @@ export function extractUsageFromLLMResult(output: LLMResult): ExtractedUsage | n
     }
   }
 
-  if (inputTokens === 0 && outputTokens === 0) return null;
+  if (inputTokens === 0 && outputTokens === 0 && actualCostUsd === null) return null;
 
   return {
     inputTokens,
@@ -163,6 +163,10 @@ class UsageCallbackHandler extends BaseCallbackHandler {
     // Surplus has a durable pre-wire attempt row and exact buyer receipt.
     // Recording a second callback row would double-count this invocation.
     if (ctx?.funding?.providerRoute === "surplus") return;
+    if (ctx?.trackedAttemptId) {
+      if (usage) ctx.onAttemptUsage?.(usage);
+      return;
+    }
     const nativeSearchRequests = extractNativeWebSearchRequests(output);
     const nativeSearchProvider = this.modelId.startsWith("openai:")
       ? "openai"

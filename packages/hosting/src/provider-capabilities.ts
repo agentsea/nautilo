@@ -110,9 +110,10 @@ interface ProviderDefinition {
 
 /**
  * Current, code-grounded coverage only. OpenRouter and Venice support chat and
- * qualified memory embeddings, but not search/TTS/STT. Surplus remains
- * selectable for credential deployment without claiming chat until a released
- * route is qualified.
+ * qualified memory embeddings, but not search/TTS/STT. Surplus credentials are deployable, but credential presence alone cannot
+ * prove chat readiness: the server must enable Prefer Surplus and admit a
+ * signed route. Runtime-qualified chat may be supplied through the existing
+ * qualifiedBaselineCapabilities input.
  * CloudConvert is recognized for selection but is not a V0 core capability.
  */
 const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [

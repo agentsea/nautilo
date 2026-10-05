@@ -65,9 +65,10 @@ const createUniversalModelMock = mock(
 const markModelInvokeFailureMock = mock((_modelId: string, _message: string): void => {});
 const invokeSurplusChatAttemptMock = mock(async (_input?: {
   config: RunnableConfig;
+  apiKey: string;
   route: { catalogModelId: string };
   messages: BaseMessage[];
-  funding: Extract<UsageFundingProvenance, { kind: "server" | "service" }>;
+  funding: UsageFundingProvenance;
   invokeModel: (
     model: { invoke(messages: BaseMessage[], options?: RunnableConfig): Promise<unknown> },
     messages: BaseMessage[],
@@ -135,6 +136,8 @@ beforeAll(() => {
     throw new Error("network disabled in chat-model-fallback unit test");
   }) as unknown as typeof fetch;
   mock.module("@nautilo/db", () => ({
+    beginPersonalLlmAttempt: async () => {},
+    settlePersonalLlmAttempt: async () => {},
     db: {},
     profiles: {},
     agents: {},
@@ -2501,5 +2504,51 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
     expect(classifyError(thrown).category).toBe("SERVICE_ERROR");
     expect(modelOptionsFromCalls()[0]?.["personalCredential"]).toEqual({ apiKey: "personal-openrouter-key" });
     expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("personal marketplace invocation", () => {
+  beforeEach(() => {
+    createUniversalModelMock.mockReset(); invokeSurplusChatAttemptMock.mockReset(); fundingAdmission.mockClear();
+    policyState = { enabled: false, chain: [] }; _resetAgentTurnContextsForTests();
+  });
+  function session(directAvailable = true): ForegroundChatFundingSession {
+    return { kind: "personal", recheckAttempt: async () => {},
+      async runAttempt(modelId, run, transport) {
+        if (transport === "direct" && !directAvailable) throw new Error("personal_credential_missing");
+        const route = transport === "direct" ? modelId.split(":", 1)[0]! : "surplus";
+        return run({ usageFunding: { kind: "personal", humanUserId: "payer", payerHumanId: "payer",
+          providerRoute: route, credentialId: `caller-${route}`, credentialRevision: 1 },
+          personalCredential: { apiKey: `caller-secret-${route}` } });
+      } };
+  }
+  test("uses the personal marketplace key before the matching caller direct key", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      expect(input!.apiKey).toBe("caller-secret-surplus");
+      expect(input!.funding).toMatchObject({ kind: "personal", providerRoute: "surplus", credentialId: "caller-surplus" });
+      return { kind: "direct_fallback" };
+    });
+    createUniversalModelMock.mockImplementation(async (_model, options) => {
+      expect(options?.["personalCredential"]).toEqual({ apiKey: "caller-secret-anthropic" });
+      return { bindTools: () => ({ invoke: async () => new AIMessage("caller direct answer") }) } as unknown as AuraModel;
+    });
+    const result = await invokeChatModelWithFallback([new HumanMessage("Synthetic personal text")], [], A,
+      "payer", "agent-1", null, undefined, { fundingSession: session(), modelFallbackMode: "none", sameModelRetryMode: "none" });
+    expect(result.response.content).toBe("caller direct answer");
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1); expect(createUniversalModelMock).toHaveBeenCalledTimes(1);
+    expect(fundingAdmission).not.toHaveBeenCalled();
+  });
+  test("uncertain marketplace service never calls direct and missing caller direct never borrows server", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    invokeSurplusChatAttemptMock.mockImplementation(async () => { throw new SurplusOutcomeUnknownError(); });
+    expect(invokeChatModelWithFallback([new HumanMessage("text")], [], A, "payer", "agent-1", null,
+      undefined, { fundingSession: session(), modelFallbackMode: "none", sameModelRetryMode: "none" })).rejects.toThrow();
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+    invokeSurplusChatAttemptMock.mockImplementation(async () => ({ kind: "direct_fallback" }));
+    expect(invokeChatModelWithFallback([new HumanMessage("text")], [], A, "payer", "agent-1", null,
+      undefined, { fundingSession: session(false), modelFallbackMode: "none", sameModelRetryMode: "none" })).rejects.toThrow();
+    expect(createUniversalModelMock).not.toHaveBeenCalled(); expect(fundingAdmission).not.toHaveBeenCalled();
   });
 });

@@ -217,7 +217,7 @@ export const KEY_REGISTRY: KeyDefinition[] = [
     name: "Surplus Intelligence",
     envVar: "SURPLUS_API_KEY",
     category: "llm",
-    purpose: "Marketplace serving for qualified server-funded model routes",
+    purpose: "Marketplace serving for qualified text routes when Prefer Surplus is enabled",
     required: false,
     signupUrl: "https://www.surplusintelligence.ai/",
     formatHint: "raw Surplus buyer API key",

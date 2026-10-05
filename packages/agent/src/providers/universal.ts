@@ -77,6 +77,7 @@ const PERSONAL_CHAT_PROVIDERS: ReadonlySet<string> = new Set([
   "fireworks",
   "together",
   "venice",
+  "gateway",
 ]);
 
 /**
@@ -148,7 +149,9 @@ function readPersonalCredential(
   ) {
     throw new Error("A valid personal provider credential is required.");
   }
-  return { apiKey: (candidate as { apiKey: string }).apiKey };
+  const destination = (candidate as { destination?: unknown }).destination;
+  return { apiKey: (candidate as { apiKey: string }).apiKey,
+    ...(typeof destination === "string" ? { destination } : {}) };
 }
 
 function readHeaders(value: unknown): Record<string, string> | undefined {
@@ -218,7 +221,7 @@ export function buildOpenRouterCreateModelOptions(
   return options;
 }
 
-function normalizeGatewayBaseUrl(value: unknown): string | undefined {
+export function normalizeGatewayBaseUrl(value: unknown): string | undefined {
   const baseUrl = nonEmptyString(value);
   if (!baseUrl) return undefined;
   try {
@@ -408,6 +411,8 @@ async function createUniversalModelInternal(
   delete cleanOptions["useAnthropicLongContext"];
 
   const factoryOpts: CreateModelOptions = { modelId: id };
+  // The durable personal attempt owner accounts for each retry before the wire.
+  if (personalCredential) factoryOpts.maxRetries = 0;
   if (usageCallbacks) factoryOpts.callbacks = usageCallbacks;
   const apiKey = personalCredential?.apiKey ?? cleanOptions["apiKey"] as string | undefined;
   const baseUrl = (cleanOptions["baseUrl"] ?? cleanOptions["baseURL"]) as string | undefined;
@@ -514,6 +519,7 @@ async function createUniversalModelInternal(
         usageCallbacks,
         personalCredential,
       );
+      if (personalCredential) orOpts.maxRetries = 0;
       if (resolvedMaxTokens !== undefined) orOpts.maxTokens = resolvedMaxTokens;
       if (resolvedTimeoutMs !== undefined) orOpts.timeoutMs = resolvedTimeoutMs;
       orOpts.reasoningOutput = reasoningOutput;
@@ -524,7 +530,17 @@ async function createUniversalModelInternal(
       );
     }
     case "gateway": {
-      const gateway = buildGatewayCreateModelOptions(id, cleanOptions, usageCallbacks);
+      if (personalCredential && (!personalCredential.destination
+        || personalCredential.destination !== normalizeGatewayBaseUrl(process.env["NAUTILO_GATEWAY_BASE_URL"]))) {
+        throw new Error("The personal Gateway destination changed; enroll the key for the current endpoint.");
+      }
+      const gateway = buildGatewayCreateModelOptions(id, personalCredential
+        ? { apiKey: personalCredential.apiKey, baseUrl: personalCredential.destination }
+        : cleanOptions, usageCallbacks);
+      if (personalCredential) {
+        gateway.options.forbidRedirects = true;
+        gateway.options.maxRetries = 0;
+      }
       if (resolvedMaxTokens !== undefined) gateway.options.maxTokens = resolvedMaxTokens;
       if (resolvedTimeoutMs !== undefined) gateway.options.timeoutMs = resolvedTimeoutMs;
       gateway.options.reasoningOutput = reasoningOutput;

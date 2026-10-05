@@ -89,6 +89,8 @@ describe("personal provider credential storage", () => {
       revision: 1,
       validationStatus: "unverified",
       validatedAt: null,
+      destination: null,
+      receiptReadStatus: "unknown",
       envelope: sealed,
     });
   });
@@ -126,6 +128,7 @@ describe("personal provider credential storage", () => {
         revision: 1,
         validationStatus: "accepted",
         validatedAt,
+        receiptReadStatus: "unknown",
       },
     });
 
@@ -150,6 +153,7 @@ describe("personal provider credential storage", () => {
         revision: 2,
         validationStatus: "unverified",
         validatedAt: null,
+        receiptReadStatus: "unknown",
         envelope: replacement,
       },
     });
@@ -169,6 +173,7 @@ describe("personal provider credential storage", () => {
       revision: 2,
       validationStatus: "unverified",
       validatedAt: null,
+      receiptReadStatus: "unknown",
       envelope: replacement,
     });
     expect(await replacePersonalProviderCredential(db, {
@@ -230,6 +235,106 @@ describe("personal provider credential storage", () => {
       .from(personalProviderCredentials)
       .where(eq(personalProviderCredentials.userId, ownerId));
     expect(remaining).toEqual([]);
+  });
+
+  test("round-trips Surplus receipt readiness and Gateway destination custody metadata", async () => {
+    const ownerId = await createFixtureUser("provider-metadata");
+    const surplusIdentity = createPersonalProviderCredentialIdentity();
+    const surplusEnvelope = envelope(randomUUID(), "surplus");
+    expect(await insertPersonalProviderCredential(db, {
+      identity: surplusIdentity,
+      userId: ownerId,
+      provider: "surplus",
+      envelope: surplusEnvelope,
+      validationStatus: "accepted",
+      validatedAt: new Date("2026-10-05T10:00:00.000Z"),
+      receiptReadStatus: "unavailable",
+    })).toMatchObject({
+      status: "created",
+      credential: {
+        provider: "surplus",
+        destination: null,
+        receiptReadStatus: "unavailable",
+        envelope: surplusEnvelope,
+      },
+    });
+
+    expect(await setPersonalProviderCredentialValidation(db, {
+      userId: ownerId,
+      provider: "surplus",
+      id: surplusIdentity.id,
+      expectedRevision: 1,
+      status: "accepted",
+      validatedAt: new Date("2026-10-05T10:01:00.000Z"),
+      receiptReadStatus: "available",
+    })).toMatchObject({
+      status: "updated",
+      credential: { receiptReadStatus: "available" },
+    });
+
+    const gatewayIdentity = createPersonalProviderCredentialIdentity();
+    const gatewayDestination = "https://gateway.example.test/tenant/v1";
+    expect(await insertPersonalProviderCredential(db, {
+      identity: gatewayIdentity,
+      userId: ownerId,
+      provider: "gateway",
+      envelope: envelope(randomUUID(), "gateway"),
+      destination: gatewayDestination,
+    })).toMatchObject({
+      status: "created",
+      credential: {
+        provider: "gateway",
+        destination: gatewayDestination,
+        receiptReadStatus: "unknown",
+      },
+    });
+
+    const custodyRows = await listPersonalProviderCredentialsForCustody(db, { limit: 100 });
+    expect(custodyRows.some((row) => row.id === gatewayIdentity.id
+      && row.userId === ownerId
+      && row.provider === "gateway"
+      && row.destination === gatewayDestination)).toBe(true);
+  });
+
+  test("enforces provider-specific destination and receipt-read constraints", async () => {
+    const ownerId = await createFixtureUser("provider-constraints");
+    const invalidDestinationEnvelope = envelope(randomUUID(), "invalid-destination");
+    let destinationRejected = false;
+    try {
+      await db.insert(personalProviderCredentials).values({
+        id: randomUUID(),
+        userId: ownerId,
+        provider: "openai",
+        revision: 1,
+        destination: "https://gateway.example.test/v1",
+        validationStatus: "unverified",
+        validatedAt: null,
+        receiptReadStatus: "unknown",
+        ...invalidDestinationEnvelope,
+      });
+    } catch {
+      destinationRejected = true;
+    }
+    expect(destinationRejected).toBe(true);
+
+    const invalidReceiptEnvelope = envelope(randomUUID(), "invalid-receipt-status");
+    let receiptStatusRejected = false;
+    try {
+      await db.insert(personalProviderCredentials).values({
+        id: randomUUID(),
+        userId: ownerId,
+        provider: "gateway",
+        revision: 1,
+        destination: "https://gateway.example.test/v1",
+        validationStatus: "accepted",
+        validatedAt: new Date("2026-10-05T10:02:00.000Z"),
+        receiptReadStatus: "available",
+        ...invalidReceiptEnvelope,
+      });
+    } catch {
+      receiptStatusRejected = true;
+    }
+    expect(receiptStatusRejected).toBe(true);
   });
 
   test("grants full access only to the product role", async () => {

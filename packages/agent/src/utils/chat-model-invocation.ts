@@ -28,7 +28,7 @@ import {
 } from "../providers/surplus-route";
 import { canUseQualifiedSurplusChatRoute, invokeSurplusChatAttempt } from "../providers/surplus-attempt";
 import { SurplusOutcomeUnknownError } from "../providers/surplus-transport";
-import { DEFAULT_REASONING_EFFORT } from "../providers/factory";
+import { DEFAULT_REASONING_EFFORT, shouldUseOpenAIResponsesApi } from "../providers/factory";
 import { isDirectGpt6Model } from "../providers/openai-compat";
 import { modelRouteProvider } from "../providers/model-route";
 import { resolveOpenRouterTransport } from "../providers/openrouter-transport";
@@ -64,6 +64,7 @@ import type {
   ForegroundChatFundingAttempt,
   ForegroundChatFundingSession,
 } from "../runtime/foreground-chat-funding";
+import { runPersonalLlmAttempt, PersonalAttemptLedgerUnavailableError } from "../usage/personal-llm-attempt";
 import { filterPersonalTaskControlTools } from "../runtime/personal-task-controls";
 
 /**
@@ -451,6 +452,7 @@ async function invokeOnceWithShortRetries(
   fundingSession: ForegroundChatFundingSession | undefined,
   agentId: string | null,
   attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean },
+  endpoint: string,
   maximumAttempts = SAME_MODEL_RETRYABLE_ATTEMPTS,
 ): Promise<AIMessage> {
   for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
@@ -462,7 +464,8 @@ async function invokeOnceWithShortRetries(
     if (attempt > 1) {
       if (fundingSession) {
         try {
-          await fundingSession.recheckAttempt(modelId);
+          await fundingSession.recheckAttempt(modelId,
+            getUsageContext()?.funding?.providerRoute === "surplus" ? "surplus" : "direct");
         } catch (error) {
           throw new ForegroundFundingRecheckError(error);
         }
@@ -479,7 +482,11 @@ async function invokeOnceWithShortRetries(
         ...attemptPolicyOptions,
         ...(firstTokenTimeoutMsOverride === undefined ? {} : { firstProgressMsOverride: firstTokenTimeoutMsOverride }),
       });
-      return await invokeModelWithAttemptSupervisor(modelWithTools, messages, llmCallConfig, agentId, attemptPolicy, attemptPolicyOptions.isolatedProgress);
+      return await runPersonalLlmAttempt({ modelId,
+        endpoint,
+        signal: llmCallConfig.signal,
+        invoke: () => invokeModelWithAttemptSupervisor(modelWithTools, messages, llmCallConfig, agentId, attemptPolicy, attemptPolicyOptions.isolatedProgress),
+      });
     } catch (error) {
       // Caller cancellation is a terminal control-flow outcome, not a model
       // failure. Never turn it into a same-model retry because a provider's
@@ -520,6 +527,7 @@ async function invokeForegroundAttemptWithUsageContext(
   useOpenAIResponsesApi: boolean,
   sameModelRetryMode: "none" | "short",
   attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean },
+  endpoint: string,
 ): Promise<AIMessage> {
   const invoke = () => invokeOnceWithShortRetries(
     modelWithTools,
@@ -531,6 +539,7 @@ async function invokeForegroundAttemptWithUsageContext(
     fundingSession,
     agentId,
     attemptPolicyOptions,
+    endpoint,
     sameModelRetryMode === "none" ? 1 : SAME_MODEL_RETRYABLE_ATTEMPTS,
   );
   const directGpt6Responses = useOpenAIResponsesApi && isDirectGpt6Model(modelId);
@@ -967,12 +976,13 @@ export async function invokeChatModelWithFallback(
         }
         let directUsageFunding = usageFunding;
         try {
-          // This is a server-wide serving preference, never a personal-key
-          // transport or another catalogue model. Supported routes reuse the
-          // current signed catalogue and preserve the selected provider pin.
-          if (usageFunding.kind !== "personal") {
+          // Apply the server-wide serving preference inside the admitted payer.
+          // Supported routes reuse the current signed catalogue and preserve
+          // the selected provider pin.
+          if (usageFunding.kind !== "personal" || usageFunding.providerRoute === "surplus") {
             kickServerModelConfigRefresh();
-            const surplusKey = resolveProviderKey("surplus");
+            const surplusKey = usageFunding.kind === "personal"
+              ? personalCredential?.apiKey ?? null : resolveProviderKey("surplus");
             const surplus = resolveSurplusChatServingAvailability({
               catalogModelId: currentModelId,
               policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
@@ -1027,10 +1037,17 @@ export async function invokeChatModelWithFallback(
                     ...(callerFirstProgressTimeoutMs === undefined ? {} : { firstProgressTimeoutMs: callerFirstProgressTimeoutMs }),
                     ...(invokeOptions?.isolatedProgress ? { isolatedProgress: true } : {}),
                   },
+                  "/v1/chat/completions",
                 ),
               });
               if (result.kind === "served") {
                 return result.response;
+              }
+              if (usageFunding.kind === "personal") {
+                // The funding owner admits the caller's direct credential anew;
+                // the marketplace secret must never reach the original provider.
+                if (!fundingSession) throw new SurplusDirectFallbackUnavailableError();
+                return await fundingSession.runAttempt(currentModelId, runProviderAttempt, "direct");
               }
               // A definitive pre-service refusal can switch transports.
               // Its cost stays unknown until a receipt confirms it. Recheck
@@ -1044,6 +1061,9 @@ export async function invokeChatModelWithFallback(
               } catch (error) {
                 throw new ForegroundFundingRecheckError(error);
               }
+            } else if (usageFunding.kind === "personal" && usageFunding.providerRoute === "surplus") {
+              if (!fundingSession) throw new SurplusDirectFallbackUnavailableError("request-not-qualified");
+              return await fundingSession.runAttempt(currentModelId, runProviderAttempt, "direct");
             } else if (surplus.status === "available"
               && !modelHasRunnableCredentials(currentModelId, process.env)) {
               // The route can make the model selectable, but this request is
@@ -1077,6 +1097,14 @@ export async function invokeChatModelWithFallback(
             ...(personalCredential === undefined ? {} : { personalCredential }),
           });
           const modelWithTools = model.bindTools!(tools);
+          const endpoint = currentModelId.startsWith("anthropic:") ? "/v1/messages"
+            : currentModelId.startsWith("google:")
+              ? `/v1beta/models/${currentModelId.slice("google:".length)}:generateContent`
+            : shouldUseOpenAIResponsesApi({ modelId: currentModelId, maxTokens,
+                ...(requestedReasoningEffort === undefined ? {} : { reasoningEffort: requestedReasoningEffort }),
+                ...(invokeOptions?.useOpenAIResponsesApi === true ? { useOpenAIResponsesApi: true } : {}),
+                ...(openAIExplicitPromptCache ? { openAIExplicitPromptCache: true } : {}),
+              }, maxTokens) ? "/v1/responses" : "/v1/chat/completions";
           return await invokeForegroundAttemptWithUsageContext(
             modelWithTools,
             attemptMessages,
@@ -1097,9 +1125,11 @@ export async function invokeChatModelWithFallback(
               ...(callerFirstProgressTimeoutMs === undefined ? {} : { firstProgressTimeoutMs: callerFirstProgressTimeoutMs }),
               ...(invokeOptions?.isolatedProgress ? { isolatedProgress: true } : {}),
             },
+            endpoint,
           );
         } catch (error) {
           if (error instanceof ForegroundFundingRecheckError) throw error.cause;
+          if (error instanceof PersonalAttemptLedgerUnavailableError) throw error;
           throw new ProviderAttemptError(error);
         }
       };

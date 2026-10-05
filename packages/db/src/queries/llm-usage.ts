@@ -1,9 +1,18 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import { llmUsageEvents } from "../schema/llm-usage";
 import { users } from "../schema/users";
 import { getSharedDirectDb } from "../config/direct-database";
 import type { DirectDatabase } from "../config/direct-database";
 import { buildProviderCostsSummaryQueries } from "./provider-costs";
+import { personalProviderCredentials } from "../schema/personal-provider-credentials";
+import { providerCostEvents } from "../schema/provider-costs";
+import type {
+  PersonalCostsByCallTypeRow,
+  PersonalCostsByModelRow,
+  PersonalCostsByProviderRow,
+  PersonalCostsSummary,
+  PersonalCostsTimeSeriesPoint,
+} from "@nautilo/types";
 
 let _dbOverride: DirectDatabase | null = null;
 
@@ -62,7 +71,27 @@ export interface BeginSurplusLlmAttemptInput {
   /** Canonical Nautilo catalogue model id. */
   model: string;
   endpoint: string;
-  fundingKind: "server" | "service";
+  fundingKind: "personal" | "server" | "service";
+  payerHumanId?: string | null;
+  credentialId?: string | null;
+  credentialRevision?: number | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface BeginPersonalLlmAttemptInput {
+  /** Caller-generated UUID; retrying the same begin is idempotent. */
+  id: string;
+  occurredAt?: Date;
+  userId: string;
+  roomId?: string | null;
+  taskId?: string | null;
+  callType: string;
+  provider: string;
+  model: string;
+  providerRoute: string;
+  credentialId: string;
+  credentialRevision: number;
+  endpoint: string;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -87,21 +116,44 @@ export interface SettleSurplusLlmAttemptInput {
   totalTokens?: number;
   estimatedCostUsd?: number;
   actualCostUsd?: number | null;
+  pricingVersion?: string | null;
   servingProvider?: string | null;
   failureCode?: string | null;
   settledAt?: Date;
 }
 
+export interface SettlePersonalLlmAttemptInput {
+  attemptId: string;
+  outcome: Exclude<SurplusAttemptOutcome, "in_progress">;
+  costState: "actual" | "estimated" | "unknown";
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  cachedInputTokens?: number;
+  totalTokens?: number;
+  estimatedCostUsd?: number;
+  actualCostUsd?: number | null;
+  pricingVersion?: string | null;
+  providerRequestId?: string;
+  servingProvider?: string | null;
+  failureCode?: string | null;
+  metadata?: Record<string, unknown>;
+  settledAt?: Date;
+  /** Late verified usage may replace unknown cost without rewriting the terminal outcome. */
+  preserveOutcome?: boolean;
+}
+
 export interface ListPendingSurplusAttemptsInput {
   limit?: number;
   updatedBefore?: Date;
-  after?: { updatedAt: Date; id: string };
 }
 
 export interface SurplusPendingAttempt {
   id: string;
   occurredAt: Date;
   updatedAt: Date;
+  /** Lossless database timestamp token used by recovery compare-and-set. */
+  updatedAtToken: string;
   userId: string | null;
   roomId: string | null;
   taskId: string | null;
@@ -113,7 +165,12 @@ export interface SurplusPendingAttempt {
   servingProvider: string | null;
   attemptOutcome: SurplusAttemptOutcome;
   costState: "pending" | "unknown";
-  fundingKind: "server" | "service";
+  recoveryState: "pending" | "retryable" | "blocked_repair" | null;
+  fundingKind: "personal" | "server" | "service";
+  payerHumanId: string | null;
+  credentialId: string | null;
+  credentialRevision: number | null;
+  failureCode: string | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -179,6 +236,13 @@ function optionalUsd(value: number | null | undefined, label: string): string | 
 export async function beginSurplusLlmAttempt(
   input: BeginSurplusLlmAttemptInput,
 ): Promise<void> {
+  const personal = input.fundingKind === "personal";
+  const hasPersonalProvenance = Boolean(input.payerHumanId && input.credentialId)
+    && Number.isSafeInteger(input.credentialRevision)
+    && (input.credentialRevision ?? 0) >= 1;
+  if (personal !== hasPersonalProvenance) {
+    throw new Error("Personal Surplus attempts require complete payer and credential provenance");
+  }
   await db()
     .insert(llmUsageEvents)
     .values({
@@ -193,6 +257,43 @@ export async function beginSurplusLlmAttempt(
       endpoint: assertNonEmpty(input.endpoint, "endpoint"),
       providerRoute: "surplus",
       fundingKind: input.fundingKind,
+      payerHumanId: input.payerHumanId ?? null,
+      credentialId: input.credentialId ?? null,
+      credentialRevision: input.credentialRevision ?? null,
+      attemptOutcome: "in_progress",
+      costState: "pending",
+      recoveryState: "pending",
+      estimatedCostUsd: "0.00000000",
+      actualCostUsd: null,
+      metadata: input.metadata ?? null,
+    })
+    .onConflictDoNothing({ target: llmUsageEvents.id });
+}
+
+/** Persist a direct personal-provider wire attempt before dispatch. */
+export async function beginPersonalLlmAttempt(
+  input: BeginPersonalLlmAttemptInput,
+): Promise<void> {
+  if (!Number.isSafeInteger(input.credentialRevision) || input.credentialRevision < 1) {
+    throw new Error("credentialRevision must be a positive integer");
+  }
+  await db()
+    .insert(llmUsageEvents)
+    .values({
+      id: input.id,
+      ...(input.occurredAt ? { occurredAt: input.occurredAt } : {}),
+      userId: input.userId,
+      roomId: input.roomId ?? null,
+      taskId: input.taskId ?? null,
+      callType: assertNonEmpty(input.callType, "callType"),
+      provider: assertNonEmpty(input.provider, "provider"),
+      model: assertNonEmpty(input.model, "model"),
+      endpoint: assertNonEmpty(input.endpoint, "endpoint"),
+      providerRoute: assertNonEmpty(input.providerRoute, "providerRoute"),
+      fundingKind: "personal",
+      payerHumanId: input.userId,
+      credentialId: input.credentialId,
+      credentialRevision: input.credentialRevision,
       attemptOutcome: "in_progress",
       costState: "pending",
       estimatedCostUsd: "0.00000000",
@@ -303,6 +404,10 @@ export async function settleSurplusLlmAttempt(
       actualCostUsd: mayReplaceCost
         ? sql`case when ${mayReplaceCost} then ${actualCostUsd}::numeric else ${llmUsageEvents.actualCostUsd} end`
         : actualCostUsd,
+      ...(input.pricingVersion === undefined ? {} : { pricingVersion: input.pricingVersion }),
+      recoveryState: input.costState === "actual" || input.costState === "estimated"
+        ? null
+        : sql`coalesce(${llmUsageEvents.recoveryState}, 'pending')`,
       ...(input.servingProvider === undefined
         ? {}
         : { servingProvider: input.servingProvider?.trim() || null }),
@@ -323,6 +428,100 @@ export async function settleSurplusLlmAttempt(
   if (rows.length !== 1) throw new Error("Surplus attempt settlement conflicts with durable state");
 }
 
+/** Settle a prewired direct personal attempt in place. */
+export async function settlePersonalLlmAttempt(
+  input: SettlePersonalLlmAttemptInput,
+): Promise<void> {
+  const actualCostUsd = optionalUsd(input.actualCostUsd, "actualCostUsd");
+  const estimatedCostUsd = optionalUsd(input.estimatedCostUsd, "estimatedCostUsd");
+  if (input.costState === "actual" && actualCostUsd === null) {
+    throw new Error("actual costState requires actualCostUsd, including explicit zero");
+  }
+  if (input.costState !== "actual" && actualCostUsd !== null) {
+    throw new Error("actualCostUsd requires actual costState");
+  }
+  if (input.costState === "estimated"
+    && (estimatedCostUsd === null || !input.pricingVersion?.trim())) {
+    throw new Error("estimated costState requires estimatedCostUsd and pricingVersion");
+  }
+  if (input.preserveOutcome && input.costState === "unknown") {
+    throw new Error("Late personal settlement requires known financial evidence");
+  }
+
+  const inputTokens = input.inputTokens === undefined
+    ? undefined : nonnegativeInteger(input.inputTokens);
+  const outputTokens = input.outputTokens === undefined
+    ? undefined : nonnegativeInteger(input.outputTokens);
+  const totalTokens = input.totalTokens !== undefined
+    ? nonnegativeInteger(input.totalTokens)
+    : inputTokens !== undefined && outputTokens !== undefined
+      ? inputTokens + outputTokens : undefined;
+  const providerRequestId = input.providerRequestId === undefined
+    ? undefined : assertNonEmpty(input.providerRequestId, "providerRequestId");
+  const rows = await db().update(llmUsageEvents).set({
+    ...(input.preserveOutcome ? {} : { attemptOutcome: input.outcome }),
+    costState: input.costState,
+    ...(providerRequestId === undefined ? {} : { providerRequestId }),
+    ...(input.metadata === undefined ? {} : {
+      metadata: sql`coalesce(${llmUsageEvents.metadata}, '{}'::jsonb) || ${JSON.stringify(input.metadata)}::jsonb`,
+    }),
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(input.reasoningTokens === undefined
+      ? {} : { reasoningTokens: nonnegativeInteger(input.reasoningTokens) }),
+    ...(input.cachedInputTokens === undefined
+      ? {} : { cachedInputTokens: nonnegativeInteger(input.cachedInputTokens) }),
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+    estimatedCostUsd: estimatedCostUsd ?? "0.00000000",
+    actualCostUsd,
+    pricingVersion: input.pricingVersion?.trim() || null,
+    ...(input.servingProvider === undefined
+      ? {} : { servingProvider: input.servingProvider?.trim() || null }),
+    ...(input.preserveOutcome ? {} : { failureCode: input.failureCode?.trim() || null }),
+    ...(input.preserveOutcome ? {} : { settledAt: input.settledAt ?? new Date() }),
+    updatedAt: new Date(),
+  }).where(and(
+    eq(llmUsageEvents.id, input.attemptId),
+    eq(llmUsageEvents.fundingKind, "personal"),
+    ne(llmUsageEvents.providerRoute, "surplus"),
+    ...(input.preserveOutcome
+      ? [eq(llmUsageEvents.costState, "unknown")]
+      : [eq(llmUsageEvents.attemptOutcome, "in_progress")]),
+  )).returning({ id: llmUsageEvents.id });
+  if (rows.length === 1) return;
+  if (input.preserveOutcome) {
+    const [current] = await db().select({
+      costState: llmUsageEvents.costState,
+      inputTokens: llmUsageEvents.inputTokens,
+      outputTokens: llmUsageEvents.outputTokens,
+      reasoningTokens: llmUsageEvents.reasoningTokens,
+      cachedInputTokens: llmUsageEvents.cachedInputTokens,
+      totalTokens: llmUsageEvents.totalTokens,
+      estimatedCostUsd: llmUsageEvents.estimatedCostUsd,
+      actualCostUsd: llmUsageEvents.actualCostUsd,
+      pricingVersion: llmUsageEvents.pricingVersion,
+    }).from(llmUsageEvents).where(and(
+      eq(llmUsageEvents.id, input.attemptId),
+      eq(llmUsageEvents.fundingKind, "personal"),
+      ne(llmUsageEvents.providerRoute, "surplus"),
+    )).limit(1);
+    const sameEvidence = current?.costState === input.costState
+      && (inputTokens === undefined || current.inputTokens === inputTokens)
+      && (outputTokens === undefined || current.outputTokens === outputTokens)
+      && (input.reasoningTokens === undefined
+        || current.reasoningTokens === nonnegativeInteger(input.reasoningTokens))
+      && (input.cachedInputTokens === undefined
+        || current.cachedInputTokens === nonnegativeInteger(input.cachedInputTokens))
+      && (totalTokens === undefined || current.totalTokens === totalTokens)
+      && (estimatedCostUsd === null || current.estimatedCostUsd === estimatedCostUsd)
+      && (actualCostUsd === null || current.actualCostUsd === actualCostUsd)
+      && (input.pricingVersion === undefined
+        || current.pricingVersion === (input.pricingVersion?.trim() || null));
+    if (sameEvidence) return;
+  }
+  throw new Error("Personal attempt settlement conflicts with durable state");
+}
+
 /** Content-free queue view for restart-safe settlement reconciliation. */
 export async function listPendingSurplusAttempts(
   input: ListPendingSurplusAttemptsInput = {},
@@ -336,6 +535,10 @@ export async function listPendingSurplusAttempts(
       id: llmUsageEvents.id,
       occurredAt: llmUsageEvents.occurredAt,
       updatedAt: llmUsageEvents.updatedAt,
+      updatedAtToken: sql<string>`to_char(
+        ${llmUsageEvents.updatedAt} AT TIME ZONE 'UTC',
+        'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+      )`,
       userId: llmUsageEvents.userId,
       roomId: llmUsageEvents.roomId,
       taskId: llmUsageEvents.taskId,
@@ -347,35 +550,114 @@ export async function listPendingSurplusAttempts(
       servingProvider: llmUsageEvents.servingProvider,
       attemptOutcome: llmUsageEvents.attemptOutcome,
       costState: llmUsageEvents.costState,
+      recoveryState: llmUsageEvents.recoveryState,
       fundingKind: llmUsageEvents.fundingKind,
+      payerHumanId: llmUsageEvents.payerHumanId,
+      credentialId: llmUsageEvents.credentialId,
+      credentialRevision: llmUsageEvents.credentialRevision,
+      failureCode: llmUsageEvents.failureCode,
       metadata: llmUsageEvents.metadata,
     })
     .from(llmUsageEvents)
     .where(and(
       eq(llmUsageEvents.providerRoute, "surplus"),
       inArray(llmUsageEvents.costState, ["pending", "unknown"]),
+      or(
+        isNull(llmUsageEvents.recoveryState),
+        inArray(llmUsageEvents.recoveryState, ["pending", "retryable"]),
+      ),
       ...(input.updatedBefore ? [lte(llmUsageEvents.updatedAt, input.updatedBefore)] : []),
-      ...(input.after ? [or(
-        gt(llmUsageEvents.updatedAt, input.after.updatedAt),
-        and(eq(llmUsageEvents.updatedAt, input.after.updatedAt), gt(llmUsageEvents.id, input.after.id)),
-      )] : []),
     ))
-    .orderBy(asc(llmUsageEvents.updatedAt), asc(llmUsageEvents.id))
+    // Rank within each payer before global age so one noisy account cannot
+    // monopolize a bounded recovery pass.
+    .orderBy(
+      sql`row_number() over (
+        partition by case
+          when ${llmUsageEvents.fundingKind} = 'personal' then ${llmUsageEvents.payerHumanId}::text
+          else coalesce(${llmUsageEvents.fundingKind}, 'legacy')
+        end
+        order by ${llmUsageEvents.updatedAt}, ${llmUsageEvents.id}
+      )`,
+      asc(llmUsageEvents.updatedAt),
+      asc(llmUsageEvents.id),
+    )
     .limit(limit);
   return rows as SurplusPendingAttempt[];
+}
+
+function recoveryUpdatedAtPredicate(input: {
+  expectedUpdatedAt?: Date;
+  expectedUpdatedAtToken?: string;
+}) {
+  if (input.expectedUpdatedAtToken?.trim()) {
+    return sql`to_char(
+      ${llmUsageEvents.updatedAt} AT TIME ZONE 'UTC',
+      'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+    ) = ${input.expectedUpdatedAtToken}`;
+  }
+  if (input.expectedUpdatedAt) return eq(llmUsageEvents.updatedAt, input.expectedUpdatedAt);
+  throw new Error("An exact recovery updatedAt token is required");
+}
+
+/** Persist a content-free recovery classification without altering cost evidence. */
+export async function classifySurplusLlmAttemptRecovery(input: {
+  attemptId: string;
+  expectedUpdatedAt?: Date;
+  expectedUpdatedAtToken?: string;
+  recoveryState: "pending" | "retryable" | "blocked_repair";
+  failureCode: string;
+}): Promise<boolean> {
+  const rows = await db().update(llmUsageEvents).set({
+    recoveryState: input.recoveryState,
+    failureCode: assertNonEmpty(input.failureCode, "failureCode"),
+    updatedAt: new Date(),
+  }).where(and(
+    eq(llmUsageEvents.id, input.attemptId),
+    eq(llmUsageEvents.providerRoute, "surplus"),
+    recoveryUpdatedAtPredicate(input),
+    inArray(llmUsageEvents.costState, ["pending", "unknown"]),
+  )).returning({ id: llmUsageEvents.id });
+  return rows.length === 1;
+}
+
+/** Requeue only the exact repaired personal credential's unresolved receipts. */
+export async function requeueBlockedPersonalSurplusAttempts(input: {
+  payerHumanId: string;
+  credentialId: string;
+  credentialRevision: number;
+}): Promise<number> {
+  if (!Number.isSafeInteger(input.credentialRevision) || input.credentialRevision < 1) {
+    throw new Error("credentialRevision must be a positive integer");
+  }
+  const rows = await db().update(llmUsageEvents).set({
+    recoveryState: "retryable",
+    failureCode: null,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(llmUsageEvents.providerRoute, "surplus"),
+    eq(llmUsageEvents.fundingKind, "personal"),
+    eq(llmUsageEvents.payerHumanId, input.payerHumanId),
+    eq(llmUsageEvents.credentialId, input.credentialId),
+    eq(llmUsageEvents.credentialRevision, input.credentialRevision),
+    eq(llmUsageEvents.recoveryState, "blocked_repair"),
+    inArray(llmUsageEvents.costState, ["pending", "unknown"]),
+  )).returning({ id: llmUsageEvents.id });
+  return rows.length;
 }
 
 /** Conditional late financial settlement: never replace a newer local outcome or known cost. */
 export async function reconcileSurplusLlmAttemptCost(input: {
   attemptId: string;
   providerRequestId: string;
-  expectedUpdatedAt: Date;
+  expectedUpdatedAt?: Date;
+  expectedUpdatedAtToken?: string;
   actualCostUsd: number;
 }): Promise<boolean> {
   const actualCostUsd = optionalUsd(input.actualCostUsd, "actualCostUsd");
   const rows = await db().update(llmUsageEvents).set({
     actualCostUsd,
     costState: "actual",
+    recoveryState: null,
     attemptOutcome: sql`case when ${llmUsageEvents.attemptOutcome} = 'in_progress' then 'unknown' else ${llmUsageEvents.attemptOutcome} end`,
     settledAt: new Date(),
     updatedAt: new Date(),
@@ -383,7 +665,7 @@ export async function reconcileSurplusLlmAttemptCost(input: {
     eq(llmUsageEvents.id, input.attemptId),
     eq(llmUsageEvents.providerRoute, "surplus"),
     eq(llmUsageEvents.providerRequestId, input.providerRequestId),
-    eq(llmUsageEvents.updatedAt, input.expectedUpdatedAt),
+    recoveryUpdatedAtPredicate(input),
     inArray(llmUsageEvents.costState, ["pending", "unknown"]),
   )).returning({ id: llmUsageEvents.id });
   return rows.length === 1;
@@ -535,6 +817,7 @@ const ROW_HAS_FALLBACK_ESTIMATE = sql`
 export function buildCostsSummaryQueries(
   range: CostsRange,
   handle: Pick<DirectDatabase, "select">,
+  payerHumanId?: string,
 ) {
   // The administrator dashboard represents server/service spend plus its
   // pre-provenance history. Historical NULL rows stay visibly unclassified at
@@ -543,7 +826,12 @@ export function buildCostsSummaryQueries(
   const inWindow = and(
     gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
     lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
-    or(isNull(llmUsageEvents.fundingKind), ne(llmUsageEvents.fundingKind, "personal")),
+    ...(payerHumanId === undefined
+      ? [or(isNull(llmUsageEvents.fundingKind), ne(llmUsageEvents.fundingKind, "personal"))]
+      : [
+          eq(llmUsageEvents.fundingKind, "personal"),
+          eq(llmUsageEvents.payerHumanId, payerHumanId),
+        ]),
   );
 
   const totals = handle
@@ -553,6 +841,10 @@ export function buildCostsSummaryQueries(
         sql<number>`COUNT(*) FILTER (WHERE ${llmUsageEvents.costState} = 'pending')::int`,
       unknown_model_attempts:
         sql<number>`COUNT(*) FILTER (WHERE ${llmUsageEvents.costState} = 'unknown')::int`,
+      retryable_model_attempts:
+        sql<number>`COUNT(*) FILTER (WHERE ${llmUsageEvents.recoveryState} = 'retryable')::int`,
+      blocked_model_attempts:
+        sql<number>`COUNT(*) FILTER (WHERE ${llmUsageEvents.recoveryState} = 'blocked_repair')::int`,
       input_tokens:
         sql<number>`COALESCE(SUM(${llmUsageEvents.inputTokens}), 0)::bigint`,
       cached_input_tokens:
@@ -579,6 +871,8 @@ export function buildCostsSummaryQueries(
         sql<number>`COUNT(*) FILTER (WHERE ${llmUsageEvents.costState} = 'pending')::int`,
       unknown_attempts:
         sql<number>`COUNT(*) FILTER (WHERE ${llmUsageEvents.costState} = 'unknown')::int`,
+      blocked_attempts:
+        sql<number>`COUNT(*) FILTER (WHERE ${llmUsageEvents.recoveryState} = 'blocked_repair')::int`,
       input_tokens:
         sql<number>`COALESCE(SUM(${llmUsageEvents.inputTokens}), 0)::bigint`,
       output_tokens:
@@ -673,6 +967,31 @@ export function buildCostsSummaryQueries(
     .orderBy(asc(day));
 
   return { totals, byModel, byCallType, byUser, timeSeries };
+}
+
+/** Personal model spend grouped by the actual funded transport route. */
+export function buildPersonalCostsByRouteQuery(
+  range: CostsRange,
+  handle: Pick<DirectDatabase, "select">,
+  payerHumanId: string,
+) {
+  return handle.select({
+    provider: llmUsageEvents.providerRoute,
+    operation: llmUsageEvents.callType,
+    operations: sql<number>`COUNT(*)::int`,
+    unknown_operations: sql<number>`COUNT(*) FILTER (
+      WHERE ${llmUsageEvents.costState} IN ('pending', 'unknown')
+    )::int`,
+    estimated_cost: sql<string>`COALESCE(SUM(${KNOWN_ESTIMATED_COST}), 0)`,
+    actual_cost: sql<string>`COALESCE(SUM(${llmUsageEvents.actualCostUsd}), 0)`,
+    total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`.as("total_cost"),
+  }).from(llmUsageEvents).where(and(
+    gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
+    lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
+    eq(llmUsageEvents.fundingKind, "personal"),
+    eq(llmUsageEvents.payerHumanId, payerHumanId),
+  )).groupBy(llmUsageEvents.providerRoute, llmUsageEvents.callType)
+    .orderBy(({ total_cost }) => desc(total_cost));
 }
 
 export async function getCostsSummary(range: CostsRange): Promise<CostsSummary> {
@@ -795,5 +1114,152 @@ export async function getCostsSummary(range: CostsRange): Promise<CostsSummary> 
     })),
     byUser: [...usersById.values()].sort((left, right) => right.totalCostUsd - left.totalCostUsd),
     timeSeries: [...days.values()].sort((left, right) => left.day.localeCompare(right.day)),
+  };
+}
+
+export type PersonalCostsData = Omit<
+  PersonalCostsSummary,
+  "currency" | "range" | "pricingVersion"
+>;
+
+/** Account-scoped costs. Every aggregation applies payer identity in SQL. */
+export async function getPersonalCostsSummary(input: {
+  payerHumanId: string;
+  range: CostsRange;
+}): Promise<PersonalCostsData> {
+  const payerHumanId = assertNonEmpty(input.payerHumanId, "payerHumanId");
+  const queries = buildCostsSummaryQueries(input.range, db(), payerHumanId);
+  const providerQueries = buildProviderCostsSummaryQueries(input.range, db(), payerHumanId);
+  const modelByRouteQuery = buildPersonalCostsByRouteQuery(input.range, db(), payerHumanId);
+  const [
+    [totalsRow], byModelRows, byCallTypeRows, modelTimeSeriesRows,
+    [providerTotalsRow], byProviderRows, providerTimeSeriesRows, modelByRouteRows,
+    credentialRows, llmHistoryRows, providerHistoryRows,
+  ] = await Promise.all([
+    queries.totals,
+    queries.byModel,
+    queries.byCallType,
+    queries.timeSeries,
+    providerQueries.totals,
+    providerQueries.byProvider,
+    providerQueries.timeSeries,
+    modelByRouteQuery,
+    db().select({ id: personalProviderCredentials.id })
+      .from(personalProviderCredentials)
+      .where(eq(personalProviderCredentials.userId, payerHumanId))
+      .limit(1),
+    db().select({ id: llmUsageEvents.id })
+      .from(llmUsageEvents)
+      .where(and(
+        eq(llmUsageEvents.fundingKind, "personal"),
+        eq(llmUsageEvents.payerHumanId, payerHumanId),
+      ))
+      .limit(1),
+    db().select({ id: providerCostEvents.id })
+      .from(providerCostEvents)
+      .where(and(
+        eq(providerCostEvents.fundingKind, "personal"),
+        eq(providerCostEvents.payerHumanId, payerHumanId),
+      ))
+      .limit(1),
+  ]);
+
+  const providerOperations = n(providerTotalsRow?.["operations"]);
+  const providerEstimatedCostUsd = n(providerTotalsRow?.["estimated_cost"]);
+  const providerActualCostUsd = n(providerTotalsRow?.["actual_cost"]);
+  const providerTotalCostUsd = n(providerTotalsRow?.["total_cost"]);
+  const pendingAttempts = n(totalsRow?.["pending_model_attempts"]);
+  const unknownAttempts = n(totalsRow?.["unknown_model_attempts"]);
+  const retryableAttempts = n(totalsRow?.["retryable_model_attempts"]);
+  const blockedAttempts = n(totalsRow?.["blocked_model_attempts"]);
+
+  const byModel: PersonalCostsByModelRow[] = byModelRows.map((row) => ({
+    model: String(row["model"]),
+    provider: String(row["provider"]),
+    displayName: String(row["model"]),
+    calls: n(row["calls"]),
+    inputTokens: n(row["input_tokens"]),
+    outputTokens: n(row["output_tokens"]),
+    estimatedCostUsd: n(row["estimated_cost"]),
+    actualCostUsd: n(row["actual_cost"]),
+    totalCostUsd: n(row["total_cost"]),
+    hasActual: row["has_actual"] === true,
+    hasFallbackEstimate: row["has_fallback_estimate"] === true,
+    pendingAttempts: n(row["pending_attempts"]),
+    unknownAttempts: n(row["unknown_attempts"]),
+    blockedAttempts: n(row["blocked_attempts"]),
+  }));
+  const byCallType: PersonalCostsByCallTypeRow[] = byCallTypeRows.map((row) => ({
+    callType: String(row["call_type"]),
+    calls: n(row["calls"]),
+    totalCostUsd: n(row["total_cost"]),
+  }));
+  const byProvider: PersonalCostsByProviderRow[] = byProviderRows.map((row) => ({
+    provider: String(row["provider"]),
+    operation: String(row["operation"]),
+    operations: n(row["operations"]),
+    unknownOperations: n(row["unknown_operations"]),
+    estimatedCostUsd: n(row["estimated_cost"]),
+    actualCostUsd: n(row["actual_cost"]),
+    totalCostUsd: n(row["total_cost"]),
+  }));
+  byProvider.push(...modelByRouteRows.map((row) => ({
+    provider: String(row["provider"]),
+    operation: String(row["operation"]),
+    operations: n(row["operations"]),
+    unknownOperations: n(row["unknown_operations"]),
+    estimatedCostUsd: n(row["estimated_cost"]),
+    actualCostUsd: n(row["actual_cost"]),
+    totalCostUsd: n(row["total_cost"]),
+  })));
+  byProvider.sort((left, right) => right.totalCostUsd - left.totalCostUsd);
+  const days = new Map<string, PersonalCostsTimeSeriesPoint>();
+  for (const row of modelTimeSeriesRows) {
+    const day = String(row["day"]);
+    days.set(day, {
+      day,
+      estimatedCostUsd: n(row["estimated_cost"]),
+      actualCostUsd: n(row["actual_cost"]),
+      totalCostUsd: n(row["total_cost"]),
+    });
+  }
+  for (const row of providerTimeSeriesRows) {
+    const day = String(row["day"]);
+    const current = days.get(day);
+    days.set(day, {
+      day,
+      estimatedCostUsd: (current?.estimatedCostUsd ?? 0) + n(row["estimated_cost"]),
+      actualCostUsd: (current?.actualCostUsd ?? 0) + n(row["actual_cost"]),
+      totalCostUsd: (current?.totalCostUsd ?? 0) + n(row["total_cost"]),
+    });
+  }
+  const hasPersonalCredentials = credentialRows.length > 0;
+  const hasHistory = llmHistoryRows.length > 0 || providerHistoryRows.length > 0;
+  return {
+    entry: {
+      available: hasPersonalCredentials || hasHistory,
+      hasPersonalCredentials,
+      hasHistory,
+    },
+    totals: {
+      calls: n(totalsRow?.["calls"]),
+      providerOperations,
+      inputTokens: n(totalsRow?.["input_tokens"]),
+      cachedInputTokens: n(totalsRow?.["cached_input_tokens"]),
+      outputTokens: n(totalsRow?.["output_tokens"]),
+      totalTokens: n(totalsRow?.["total_tokens"]),
+      estimatedCostUsd: n(totalsRow?.["estimated_cost"]) + providerEstimatedCostUsd,
+      actualCostUsd: n(totalsRow?.["actual_cost"]) + providerActualCostUsd,
+      totalCostUsd: n(totalsRow?.["total_cost"]) + providerTotalCostUsd,
+      pendingAttempts,
+      unknownAttempts,
+      retryableAttempts,
+      blockedAttempts,
+    },
+    byModel,
+    byCallType,
+    byProvider,
+    timeSeries: [...days.values()].sort((left, right) => left.day.localeCompare(right.day)),
+    recovery: { pendingAttempts, retryableAttempts, blockedAttempts, unknownAttempts },
   };
 }

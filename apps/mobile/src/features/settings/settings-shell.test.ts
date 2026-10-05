@@ -25,6 +25,8 @@ describe("Settings landing route inventory", () => {
       ["commands", "/settings/commands"],
       ["human-profile", "/settings/human-profile"],
       ["security", "/settings/security"],
+      ["provider-keys", "/settings/provider-keys"],
+      ["personal-costs", "/settings/personal-costs"],
       ["approvals", "/settings/approvals"],
       ["account-deletion", "/settings/account-deletion"],
       ["appearance", "/settings/appearance"],

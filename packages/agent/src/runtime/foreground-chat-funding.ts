@@ -39,6 +39,7 @@ export interface ForegroundChatFundingSession {
   runAttempt<T>(
     modelId: string,
     callback: (attempt: ForegroundChatFundingAttempt) => Promise<T>,
+    transport?: "direct" | "surplus",
   ): Promise<T>;
-  recheckAttempt(modelId: string): Promise<void>;
+  recheckAttempt(modelId: string, transport?: "direct" | "surplus"): Promise<void>;
 }

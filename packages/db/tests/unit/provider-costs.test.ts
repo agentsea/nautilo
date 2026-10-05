@@ -122,6 +122,22 @@ describe("provider cost events", () => {
     expect(compiled[2]!.sql).toContain('left join "users"');
   });
 
+  test("personal provider aggregates bind payer identity before grouping", () => {
+    const payer = "22222222-2222-4222-8222-222222222222";
+    const queries = buildProviderCostsSummaryQueries(
+      RANGE,
+      drizzle.mock() as unknown as DirectDatabase,
+      payer,
+    );
+    for (const query of Object.values(queries)) {
+      const generated = query.toSQL();
+      expect(generated.sql).toContain('"provider_cost_events"."payer_human_id" =');
+      expect(generated.sql).toContain('"provider_cost_events"."funding_kind" =');
+      expect(generated.params).toContain(payer);
+      expect(generated.params).toContain("personal");
+    }
+  });
+
   test("merges already-aggregated model and provider costs by user and day", async () => {
     __setLlmUsageDbForTests(mockQueryDb([
       [{ calls: 1, input_tokens: 100, cached_input_tokens: 0, output_tokens: 20, total_tokens: 120, estimated_cost: "0.02000000", actual_cost: "0", total_cost: "0.02000000" }],

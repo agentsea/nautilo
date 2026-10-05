@@ -40,7 +40,7 @@ type RowAction =
 
 type ProviderRow = PersonalProviderCatalogEntry & { catalogued: boolean };
 
-const SERVER_ONLY_GATEWAY_PROVIDER_IDS = new Set(["gateway", "nautilo-gateway"]);
+const REMOVED_MANAGED_GATEWAY_PROVIDER_IDS = new Set(["nautilo-gateway"]);
 
 function readableTime(value: string | null): string | null {
   if (!value) return null;
@@ -76,6 +76,10 @@ function errorMessage(error: unknown, action: "load" | "save" | "validate" | "de
         return "You no longer have permission to manage personal provider keys.";
       case "credential_not_found":
         return "This key no longer exists. Current details were reloaded.";
+      case "credential_destination_unavailable":
+        return "This provider destination is not configured on the server. Contact the Server operator.";
+      case "credential_destination_changed":
+        return "The server's provider destination changed. Replace this key before using it again.";
       case "invalid_provider":
       case "invalid_credential_request":
         return "The provider key request was not accepted. Check the value and try again.";
@@ -181,7 +185,6 @@ export function PersonalProviderKeysSection({
   const personalChatProviders = useMemo(
     () => state.kind === "ready"
       ? orderProviderKeys(state.providers)
-        .filter((provider) => !SERVER_ONLY_GATEWAY_PROVIDER_IDS.has(provider.id))
         .filter((provider) => provider.personalCapabilities.includes("chat"))
         .map((provider) => [provider.id, provider.name] as const)
       : [],
@@ -198,14 +201,14 @@ export function PersonalProviderKeysSection({
     );
     return orderProviderKeys([
       ...state.providers
-        .filter((provider) =>
-          !SERVER_ONLY_GATEWAY_PROVIDER_IDS.has(provider.id) || byProvider.has(provider.id))
+        .filter((provider) => !REMOVED_MANAGED_GATEWAY_PROVIDER_IDS.has(provider.id) || byProvider.has(provider.id))
         .map((provider) => ({ ...provider, catalogued: true })),
       ...[...uncataloguedIds].map((provider) => ({
         id: provider,
         name: provider,
         purpose: "This saved provider is outside the server’s current provider catalogue. You can replace, validate, or delete its key.",
         personalCapabilities: [] as const,
+        destination: byProvider.get(provider)?.destination ?? null,
         catalogued: false,
       })),
     ]);
@@ -347,6 +350,7 @@ export function PersonalProviderKeysSection({
       id="personal-provider-keys"
       title="Personal API keys"
       description="Add your own provider keys to use supported models for personal chat and native tool-free text Tasks. Keys belong to your account on this Server; after saving, only a masked preview is shown."
+      actions={<a className="text-sm font-medium text-primary hover:underline" href="/account/costs">View your costs</a>}
     >
       {state.kind === "loading" ? (
         <p className="text-sm text-foreground-muted">Loading…</p>
@@ -420,7 +424,10 @@ export function PersonalProviderKeysSection({
                       </>
                     ) : null}
                     {" · "}
-                    {current ? `Saved${savedAt ? ` ${savedAt}` : ""} · revision ${current.revision}` : "No key saved"}
+                    {current ? `Saved${savedAt ? ` ${savedAt}` : ""}` : "No key saved"}
+                    {provider.destination ? (
+                      <> · Uses <code className="break-all text-[11px]">{provider.destination}</code></>
+                    ) : null}
                   </span>
                 )}
               >
@@ -436,6 +443,11 @@ export function PersonalProviderKeysSection({
                       {validatedAt ? <span>Validated {validatedAt}</span> : null}
                       {current.requiresReplacement ? (
                         <span className="font-medium text-error">Replacement required</span>
+                      ) : null}
+                      {current.receiptReadStatus === "unavailable" ? (
+                        <span className="font-medium text-warning">
+                          Cost receipts are unavailable. Grant receipt-read permission to this key, then use Check again. Receipts from a removed or replaced key may remain unresolved.
+                        </span>
                       ) : null}
                     </div>
                   ) : null}
@@ -495,7 +507,7 @@ export function PersonalProviderKeysSection({
                             ariaLabel={`Validate ${provider.name} key`}
                             onClick={() => void validate(provider.id, current)}
                           >
-                            {current.validationStatus === "unavailable" ? "Retry validation" : "Validate"}
+                            Check again
                           </Button>
                           <Button
                             variant="ghost"
@@ -513,7 +525,7 @@ export function PersonalProviderKeysSection({
                   ) : null}
                   {savedProvider === provider.id ? (
                     <p role="status" className="text-xs text-foreground-muted">
-                      Key saved.{" "}
+                      Key saved and checked without making a paid request.{" "}
                       {provider.catalogued
                         ? provider.personalCapabilities.includes("chat") ? (
                           <a className="text-primary hover:underline" href="/settings#model">Choose a model for your Genie.</a>

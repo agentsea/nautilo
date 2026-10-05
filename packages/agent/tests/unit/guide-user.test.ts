@@ -297,6 +297,13 @@ test("personal API key discovery opens the permanent account Settings destinatio
   }
 });
 
+test("personal costs discovery stays distinct from server and detailed cost dashboards", () => {
+  for (const query of ["my costs", "personal key costs", "BYOK costs"]) {
+    expect(discoverGuideUserTargets(query)[0]?.target).toBe("costs.personal");
+  }
+  expect(discoverGuideUserTargets("server costs")[0]?.target).toBe("admin.costs");
+});
+
 test("community moderation and joining review discover the installed admin destination", () => {
   for (const query of ["ban member", "pause joins", "joining requests", "enrollment approval"]) {
     expect(discoverGuideUserTargets(query)[0]?.target).toBe("admin.moderation");

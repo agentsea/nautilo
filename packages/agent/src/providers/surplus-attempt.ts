@@ -37,7 +37,7 @@ export interface SurplusChatAttemptInput {
   readonly reasoningEffort?: ReasoningEffort;
   readonly reasoningOutput?: boolean;
   readonly openrouterSessionId?: string;
-  readonly funding: Extract<UsageFundingProvenance, { kind: "server" | "service" }>;
+  readonly funding: UsageFundingProvenance;
   readonly invokeModel: InvokeModel;
 }
 
@@ -102,7 +102,8 @@ export function canUseQualifiedSurplusChatRoute(input: {
 }): input is typeof input & { route: QualifiedSurplusChatRoute } {
   const route = input.route;
   if (!route || !input.prefersSurplus || !input.hasSurplusCredential) return false;
-  if (input.funding.kind === "personal" || input.hasRequestChangingServingProfile) return false;
+  if (input.hasRequestChangingServingProfile
+    || (input.funding.kind === "personal" && input.funding.providerRoute !== "surplus")) return false;
   if (input.needsVision && !route.supportsVision) return false;
   if (input.requiresTools && !route.supportsTools) return false;
   if (input.reasoningRequested && !route.supportsReasoning) return false;
@@ -262,6 +263,9 @@ async function settleSurplusAttemptWithRetry(input: SettleSurplusLlmAttemptInput
 
 /** One marketplace wire attempt and its durable, content-free cost receipt. */
 export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): Promise<SurplusChatAttemptResult> {
+  if (input.funding.kind === "personal" && input.funding.providerRoute !== "surplus") {
+    throw new Error("A personal marketplace attempt requires its admitted marketplace credential.");
+  }
   const attemptId = randomUUID();
   const context = getUsageContext();
   const provider = modelRouteProvider(input.route.catalogModelId);
@@ -272,13 +276,19 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
     provider,
     endpoint: "/v1/chat/completions",
     fundingKind: input.funding.kind,
+    ...(input.funding.kind === "personal" ? {
+      payerHumanId: input.funding.payerHumanId, credentialId: input.funding.credentialId,
+      credentialRevision: input.funding.credentialRevision,
+    } : {}),
     callType: context?.callType ?? "chat",
-    userId: context?.userId ?? input.funding.humanUserId ?? null,
+    userId: input.funding.kind === "personal" ? input.funding.humanUserId
+      : context?.userId ?? input.funding.humanUserId ?? null,
     roomId: normalizeUsageRoomId(context?.roomId),
     ...(typeof context?.metadata?.["taskId"] === "string" ? { taskId: context.metadata["taskId"] } : {}),
     metadata: {
       ...surplusAttemptBinding(input.route, input.apiKey),
       catalogModelId: input.route.catalogModelId,
+      ...(typeof context?.metadata?.["taskRunId"] === "string" ? { taskRunId: context.metadata["taskRunId"] } : {}),
       ...(typeof context?.metadata?.["agentId"] === "string" ? { agentId: context.metadata["agentId"] } : {}),
       ...(typeof context?.metadata?.["turnId"] === "string" ? { turnId: context.metadata["turnId"] } : {}),
     },

@@ -13,6 +13,7 @@ import {
   startClaimedCallerTaskRun,
 } from "../../src/queries/tasks";
 import { taskRuns, type TaskRun } from "../../src/schema/task-runs";
+import { llmUsageEvents } from "../../src/schema/llm-usage";
 import { tasks, type Task } from "../../src/schema/tasks";
 
 const task = {
@@ -43,7 +44,7 @@ function aggregateHarness(input: {
   run?: TaskRun;
   latestRunId?: string;
 }) {
-  const writes: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
+  const writes: Array<{ table: unknown; patch: Record<string, unknown>; condition?: unknown }> = [];
   const tx = {
     select: (shape?: unknown) => ({
       from: (table: unknown) => {
@@ -64,9 +65,9 @@ function aggregateHarness(input: {
     }),
     update: (table: unknown) => ({
       set: (patch: Record<string, unknown>) => ({
-        where: (_condition: unknown) => ({
+        where: (condition: unknown) => ({
           returning: async () => {
-            writes.push({ table, patch });
+            writes.push({ table, patch, ...(table === llmUsageEvents ? { condition } : {}) });
             if (table === tasks && input.task) return [{ ...input.task, ...patch }];
             if (table === taskRuns && input.run) return [{ ...input.run, ...patch }];
             return [];
@@ -296,6 +297,11 @@ describe("funding-denied Task claim pause", () => {
       taskRunId: run.id,
     });
     expect(result.transitioned).toBe(true);
+    const interruptedUsage = harness.writes.find((write) => write.table === llmUsageEvents)!;
+    expect(interruptedUsage.patch).toMatchObject({ attemptOutcome: "interrupted", costState: "unknown", failureCode: "execution_interrupted" });
+    const usageCondition = new PgDialect().sqlToQuery(interruptedUsage.condition as Parameters<PgDialect["sqlToQuery"]>[0]);
+    expect(usageCondition.params).toContain(task.id); expect(usageCondition.params).toContain(run.id);
+    expect(usageCondition.params).toContain("personal"); expect(usageCondition.params).toContain("surplus");
     expect(harness.writes.find((write) => write.table === taskRuns)?.patch).toMatchObject({
       status: "errored",
       lastError: "funding_interrupted_uncertain",
@@ -343,7 +349,7 @@ describe("funding-denied Task claim pause", () => {
     });
 
     expect(result).toMatchObject({ transitioned: true, task: undefined });
-    expect(harness.writes).toHaveLength(1);
+    expect(harness.writes.filter((write) => write.table !== llmUsageEvents)).toHaveLength(1);
     expect(harness.writes[0]?.table).toBe(taskRuns);
     expect(harness.writes[0]?.patch).toMatchObject({
       status: "errored",
@@ -370,7 +376,7 @@ describe("funding-denied Task claim pause", () => {
     });
 
     expect(result.transitioned).toBe(true);
-    expect(harness.writes).toHaveLength(1);
+    expect(harness.writes.filter((write) => write.table !== llmUsageEvents)).toHaveLength(1);
     expect(harness.writes[0]?.table).toBe(taskRuns);
     expect(harness.writes[0]?.patch).toMatchObject({
       status: "errored",
@@ -629,7 +635,7 @@ describe("funding-denied Task claim pause", () => {
       reason: "provider_credentials_missing",
     });
     expect(result).toMatchObject({ recorded: true, taskErrorRecorded: false });
-    expect(harness.writes).toHaveLength(1);
+    expect(harness.writes.filter((write) => write.table !== llmUsageEvents)).toHaveLength(1);
     expect(harness.writes[0]?.table).toBe(taskRuns);
   });
 });

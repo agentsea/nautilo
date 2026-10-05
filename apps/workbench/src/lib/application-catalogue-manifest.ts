@@ -32,6 +32,7 @@ export const APPLICATION_CATALOGUE_MANIFEST_V1 = [
   entry("admin", "route", "admin", "Server admin", ["Server admin"], "Manage server-wide configuration and governance.", ["admin", "server admin", "administration"]),
   entry("admin.access_control", "route", "access-control", "Access control", ["Server admin", "Access control"], "Inspect access and permission-set administration.", ["access control", "permissions", "roles", "groups"]),
   entry("costs", "route", "costs", "Costs dashboard", ["Costs dashboard"], "Review detailed Nautilo usage costs.", ["cost dashboard", "usage dashboard", "detailed spending"]),
+  entry("costs.personal", "route", "personal-costs", "Your costs", ["Settings", "Personal API keys", "Your costs"], "Review charges and estimates for work paid with your personal provider keys.", ["my costs", "personal key costs", "BYOK costs", "provider charges", "personal spending"]),
   entry("skills", "route", "skills", "Skills", ["Skills"], "Browse installed and available skills.", ["skills", "skill library"]),
   entry("connections", "route", "connections", "Connections", ["Connections"], "Manage services, tools, and accounts available to Genie.", ["connections", "integrations", "connect"]),
   entry("commands", "route", "commands", "Commands", ["Commands"], "Browse available commands.", ["commands", "slash commands"]),

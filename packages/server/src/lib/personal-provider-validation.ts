@@ -2,6 +2,7 @@ import type { PersonalProviderId } from "@nautilo/db";
 
 export type PersonalProviderValidationResult = Readonly<{
   status: "accepted" | "rejected" | "unavailable" | "unverified";
+  receiptReadStatus?: "available" | "unavailable" | "unknown";
 }>;
 
 type ProviderValidationRequest = Readonly<{
@@ -59,6 +60,7 @@ function bearer(apiKey: string): Readonly<Record<string, string>> {
 function validationRequest(
   provider: PersonalProviderId,
   apiKey: string,
+  destination?: string | null,
 ): ProviderValidationRequest | null {
   switch (provider) {
     case "anthropic":
@@ -94,6 +96,18 @@ function validationRequest(
         url: "https://api.venice.ai/api/v1/api_keys/rate_limits",
         headers: bearer(apiKey),
       };
+    case "surplus":
+      return {
+        url: "https://api.surplusintelligence.ai/v1/buyer/me",
+        headers: bearer(apiKey),
+      };
+    case "gateway":
+      return destination
+        ? {
+            url: `${destination}/models`,
+            headers: bearer(apiKey),
+          }
+        : null;
     case "fireworks":
     case "together":
       // Their documented inference APIs do not expose a credential-only,
@@ -113,9 +127,10 @@ export async function validatePersonalProviderCredential(
   provider: PersonalProviderId,
   apiKey: string,
   signal?: AbortSignal,
+  destination?: string | null,
 ): Promise<PersonalProviderValidationResult> {
-  const request = validationRequest(provider, apiKey);
-  if (!request) return { status: "unverified" };
+  const request = validationRequest(provider, apiKey, destination);
+  if (!request) return { status: "unverified", receiptReadStatus: "unknown" };
 
   const timeoutSignal = AbortSignal.timeout(PROVIDER_VALIDATION_TIMEOUT_MS);
   const boundedSignal = signal
@@ -129,14 +144,41 @@ export async function validatePersonalProviderCredential(
       redirect: "error",
       signal: boundedSignal,
     });
-    if (response.ok) return { status: "accepted" };
+    if (response.ok) {
+      void response.body?.cancel().catch(() => {});
+      if (provider !== "surplus") {
+        return { status: "accepted", receiptReadStatus: "unknown" };
+      }
+      try {
+        const receiptResponse = await fetch(
+          "https://api.surplusintelligence.ai/v1/requests",
+          {
+            method: "GET",
+            headers: bearer(apiKey),
+            redirect: "error",
+            signal: boundedSignal,
+          },
+        );
+        void receiptResponse.body?.cancel().catch(() => {});
+        return {
+          status: "accepted",
+          receiptReadStatus: receiptResponse.ok
+            ? "available"
+            : receiptResponse.status === 401 || receiptResponse.status === 403
+              ? "unavailable"
+              : "unknown",
+        };
+      } catch {
+        return { status: "accepted", receiptReadStatus: "unknown" };
+      }
+    }
     if (response.status === 401 || (
       provider === "google" && response.status === 400 && await hasGoogleInvalidKeyReason(response)
     )) {
-      return { status: "rejected" };
+      return { status: "rejected", receiptReadStatus: "unknown" };
     }
-    return { status: "unavailable" };
+    return { status: "unavailable", receiptReadStatus: "unknown" };
   } catch {
-    return { status: "unavailable" };
+    return { status: "unavailable", receiptReadStatus: "unknown" };
   }
 }

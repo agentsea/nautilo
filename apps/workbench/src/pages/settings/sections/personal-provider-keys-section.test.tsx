@@ -23,6 +23,8 @@ const saved: CredentialMetadata = {
   validatedAt: null,
   requiresReplacement: false,
   masked: "sk-…alue",
+  destination: "https://api.openai.com/v1",
+  receiptReadStatus: "unknown",
 };
 
 const providers: PersonalProviderCatalogEntry[] = [
@@ -33,6 +35,7 @@ const providers: PersonalProviderCatalogEntry[] = [
     signupUrl: "https://platform.claude.com/settings/keys",
     formatHint: "sk-ant-api03-...",
     personalCapabilities: ["chat"],
+    destination: "https://api.anthropic.com/v1",
   },
   {
     id: "openai",
@@ -41,6 +44,7 @@ const providers: PersonalProviderCatalogEntry[] = [
     signupUrl: "https://platform.openai.com/api-keys",
     formatHint: "sk-proj-...",
     personalCapabilities: ["chat"],
+    destination: "https://api.openai.com/v1",
   },
   {
     id: "tavily",
@@ -49,18 +53,21 @@ const providers: PersonalProviderCatalogEntry[] = [
     signupUrl: "https://app.tavily.com/home",
     formatHint: "tvly-...",
     personalCapabilities: [],
+    destination: null,
   },
   {
     id: "gateway",
     name: "Gateway",
     purpose: "Custom gateway",
     personalCapabilities: ["chat"],
+    destination: "https://gateway.example.test/v1",
   },
   {
     id: "nautilo-gateway",
     name: "Nautilo Gateway",
     purpose: "Nautilo relay gateway",
     personalCapabilities: ["chat"],
+    destination: null,
   },
 ];
 
@@ -105,6 +112,8 @@ describe("PersonalProviderKeysSection", () => {
     })} />);
 
     expect(view.getByRole("heading", { name: "Personal API keys" })).toBeTruthy();
+    expect(view.getByRole("link", { name: "View your costs" }).getAttribute("href"))
+      .toBe("/account/costs");
     expect(view.getByText("Loading…")).toBeTruthy();
 
     await act(async () => finishLoad?.(listResponse()));
@@ -201,6 +210,7 @@ describe("PersonalProviderKeysSection", () => {
       "Add OpenAI key",
       "Add Anthropic key",
       "Add Tavily key",
+      "Add Gateway key",
     ]);
     const coverage = view.getByTestId("personal-provider-key-coverage");
     expect(coverage.querySelectorAll("tbody tr")).toHaveLength(1);
@@ -208,12 +218,12 @@ describe("PersonalProviderKeysSection", () => {
     expect(coverage.textContent).toContain("Anthropic");
     expect(coverage.textContent).toContain("OpenAI");
     expect(coverage.textContent).not.toContain("Tavily");
-    expect(coverage.textContent).not.toContain("Gateway");
+    expect(coverage.textContent).toContain("Gateway");
     expect(coverage.textContent).toContain(
       "Personal keys currently support personal chat and native tool-free text Tasks; other paid capabilities will be added later.",
     );
     expect(view.getByLabelText("OpenAI: API key not configured")).toBeTruthy();
-    expect(view.queryByRole("button", { name: "Add Gateway key" })).toBeNull();
+    expect(view.getByRole("button", { name: "Add Gateway key" })).toBeTruthy();
     expect(view.queryByRole("button", { name: "Add Nautilo Gateway key" })).toBeNull();
     fireEvent.click(view.getByRole("button", { name: "Add Anthropic key" }));
     expect(view.getByPlaceholderText("sk-ant-api03-...")).toBeTruthy();
@@ -290,7 +300,7 @@ describe("PersonalProviderKeysSection", () => {
     fireEvent.click(xaiButton);
     await enterSecret(view.getByLabelText("Replacement xai API key"), "legacy-replacement");
     fireEvent.click(view.getByRole("button", { name: "Replace key" }));
-    await waitFor(() => expect(view.getByRole("status").textContent?.trim()).toBe("Key saved."));
+    await waitFor(() => expect(view.getByRole("status").textContent).toContain("Key saved and checked without making a paid request."));
     expect(view.getByRole("status").closest(".grid")?.textContent).not.toContain(
       "Not used by personal chat or native tool-free text Tasks in this release.",
     );
@@ -349,9 +359,10 @@ describe("PersonalProviderKeysSection", () => {
       "tavily",
       { apiKey: "tvly-personal" },
     ));
-    expect(view.getByText(
-      "Key saved. Not used by personal chat or native tool-free text Tasks in this release.",
-    )).toBeTruthy();
+    expect(view.getByRole("status").textContent).toContain("Key saved and checked without making a paid request.");
+    expect(view.getByRole("status").textContent).toContain(
+      "Not used by personal chat or native tool-free text Tasks in this release.",
+    );
     expect(view.queryByRole("link", { name: "Choose a model for your Genie." })).toBeNull();
   });
 
@@ -455,7 +466,8 @@ describe("PersonalProviderKeysSection", () => {
     expect(list).toHaveBeenCalledTimes(2);
     expect(put).toHaveBeenCalledTimes(1);
     expect(view.queryByDisplayValue("discard-after-request")).toBeNull();
-    expect(view.getByText(/revision 4/)).toBeTruthy();
+    expect(view.queryByText(/revision 4/)).toBeNull();
+    expect(view.getByRole("button", { name: "Replace OpenAI key" })).toBeTruthy();
   });
 
   test("rereads metadata after a revision conflict and never retries the write", async () => {
@@ -485,6 +497,7 @@ describe("PersonalProviderKeysSection", () => {
     expect(list).toHaveBeenCalledTimes(2);
     expect(replace).toHaveBeenCalledTimes(1);
     expect(view.queryByDisplayValue("do-not-retain")).toBeNull();
-    expect(view.getByText(/revision 5/)).toBeTruthy();
+    expect(view.queryByText(/revision 5/)).toBeNull();
+    expect(view.getByRole("button", { name: "Replace OpenAI key" })).toBeTruthy();
   });
 });

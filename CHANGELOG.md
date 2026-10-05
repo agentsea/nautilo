@@ -7,6 +7,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Members can use personal Surplus keys for supported text chat and native text
+  Tasks under the administrator's funding priority and Prefer Surplus setting.
+  Generic Gateway keys are bound to the administrator's exact endpoint.
+  Saving a key checks it without a paid request and reports receipt-read access
+  separately. Workbench and Mobile show the selected payer and personal costs,
+  including estimates, delayed receipts, and charges that remain unknown.
+
 - The text editor serializes first saves of empty documents and preserves edits
   made while a save is in progress. Conflict recovery reports failed latest-version
   reads with a retry action, accepts empty latest content, and saves merged drafts

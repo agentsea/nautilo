@@ -115,6 +115,11 @@ export const llmUsageEvents = pgTable(
       length: 16,
       enum: ["actual", "estimated", "pending", "unknown"],
     }),
+    /** Durable state of delayed financial recovery; NULL when no recovery is needed. */
+    recoveryState: varchar("recovery_state", {
+      length: 24,
+      enum: ["pending", "retryable", "blocked_repair"],
+    }),
     /** Content-free stable failure category suitable for operator diagnostics. */
     failureCode: text("failure_code"),
     settledAt: timestamp("settled_at", { withTimezone: true }),
@@ -138,9 +143,12 @@ export const llmUsageEvents = pgTable(
       table.costState,
       table.updatedAt,
     ),
-    uniqueIndex("uq_llm_usage_provider_request")
+    uniqueIndex("uq_llm_usage_nonpersonal_provider_request")
       .on(table.providerRoute, table.providerRequestId)
-      .where(sql`${table.providerRequestId} IS NOT NULL`),
+      .where(sql`${table.providerRequestId} IS NOT NULL AND ${table.fundingKind} IS DISTINCT FROM 'personal'`),
+    uniqueIndex("uq_llm_usage_personal_provider_request")
+      .on(table.payerHumanId, table.providerRoute, table.providerRequestId)
+      .where(sql`${table.providerRequestId} IS NOT NULL AND ${table.fundingKind} = 'personal'`),
     check(
       "llm_usage_events_funding_provenance_check",
       sql`(
@@ -156,9 +164,17 @@ export const llmUsageEvents = pgTable(
     check(
       "llm_usage_events_attempt_state_check",
       sql`(
-        (${table.attemptOutcome} IS NULL AND ${table.costState} IS NULL)
+        (${table.attemptOutcome} IS NULL AND ${table.costState} IS NULL AND ${table.recoveryState} IS NULL)
         OR
-        (${table.providerRoute} = 'surplus' AND ${table.attemptOutcome} IS NOT NULL AND ${table.costState} IS NOT NULL AND ${table.endpoint} IS NOT NULL AND length(${table.endpoint}) > 0)
+        (${table.attemptOutcome} IS NOT NULL AND ${table.costState} IS NOT NULL AND ${table.endpoint} IS NOT NULL AND length(${table.endpoint}) > 0
+          AND (${table.providerRoute} = 'surplus' OR (${table.fundingKind} = 'personal' AND ${table.recoveryState} IS NULL)))
+      )`,
+    ),
+    check(
+      "llm_usage_events_recovery_state_check",
+      sql`(
+        ${table.recoveryState} IS NULL
+        OR (${table.providerRoute} = 'surplus' AND ${table.costState} IN ('pending', 'unknown'))
       )`,
     ),
     check(

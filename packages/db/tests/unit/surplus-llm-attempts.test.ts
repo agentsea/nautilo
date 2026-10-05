@@ -5,9 +5,12 @@ import type { SQL } from "drizzle-orm";
 import {
   __setLlmUsageDbForTests,
   attachSurplusRequestReceipt,
+  beginPersonalLlmAttempt,
   beginSurplusLlmAttempt,
   listPendingSurplusAttempts,
   reconcileSurplusLlmAttemptCost,
+  requeueBlockedPersonalSurplusAttempts,
+  settlePersonalLlmAttempt,
   settleSurplusLlmAttempt,
   type SurplusPendingAttempt,
 } from "../../src/queries/llm-usage";
@@ -91,6 +94,46 @@ describe("Surplus durable LLM attempts", () => {
     });
   });
 
+  test("prewires and settles a direct personal attempt on the same row", async () => {
+    const fake = mutationDb();
+    __setLlmUsageDbForTests(fake.handle);
+    await beginPersonalLlmAttempt({
+      id: ATTEMPT_ID,
+      userId: "22222222-2222-4222-8222-222222222222",
+      callType: "chat",
+      provider: "anthropic",
+      model: "anthropic:claude-sonnet-4-6",
+      providerRoute: "anthropic",
+      credentialId: "55555555-5555-4555-8555-555555555555",
+      credentialRevision: 2,
+      endpoint: "/v1/messages",
+    });
+    expect(fake.inserted[0]).toMatchObject({
+      fundingKind: "personal",
+      payerHumanId: "22222222-2222-4222-8222-222222222222",
+      credentialRevision: 2,
+      attemptOutcome: "in_progress",
+      costState: "pending",
+    });
+
+    await settlePersonalLlmAttempt({
+      attemptId: ATTEMPT_ID,
+      outcome: "succeeded",
+      costState: "estimated",
+      inputTokens: 100,
+      outputTokens: 20,
+      estimatedCostUsd: 0.0012,
+      pricingVersion: "test-pricing-v1",
+    });
+    expect(fake.updated[0]).toMatchObject({
+      attemptOutcome: "succeeded",
+      costState: "estimated",
+      estimatedCostUsd: "0.00120000",
+      pricingVersion: "test-pricing-v1",
+      totalTokens: 120,
+    });
+  });
+
   test("settles an explicit zero as actual rather than unknown", async () => {
     const fake = mutationDb();
     __setLlmUsageDbForTests(fake.handle);
@@ -112,6 +155,29 @@ describe("Surplus durable LLM attempts", () => {
     });
   });
 
+  test("late direct usage replaces unknown cost without rewriting terminal outcome", async () => {
+    const fake = mutationDb();
+    __setLlmUsageDbForTests(fake.handle);
+    await settlePersonalLlmAttempt({
+      attemptId: ATTEMPT_ID,
+      outcome: "interrupted",
+      costState: "estimated",
+      estimatedCostUsd: 0.0009,
+      pricingVersion: "test-pricing-v1",
+      inputTokens: 80,
+      outputTokens: 10,
+      preserveOutcome: true,
+    });
+    expect(fake.updated[0]).toMatchObject({
+      costState: "estimated",
+      estimatedCostUsd: "0.00090000",
+      totalTokens: 90,
+    });
+    expect(fake.updated[0]).not.toHaveProperty("attemptOutcome");
+    expect(fake.updated[0]).not.toHaveProperty("failureCode");
+    expect(fake.updated[0]).not.toHaveProperty("settledAt");
+  });
+
   test("rejects absent actual evidence and conflicting receipt updates", async () => {
     const fake = mutationDb({ returning: [] });
     __setLlmUsageDbForTests(fake.handle);
@@ -131,6 +197,7 @@ describe("Surplus durable LLM attempts", () => {
       id: ATTEMPT_ID,
       occurredAt: new Date("2026-10-01T00:00:00Z"),
       updatedAt: new Date("2026-10-01T00:01:00Z"),
+      updatedAtToken: "2026-10-01T00:01:00.000000Z",
       userId: null,
       roomId: null,
       taskId: null,
@@ -142,7 +209,12 @@ describe("Surplus durable LLM attempts", () => {
       servingProvider: null,
       attemptOutcome: "unknown",
       costState: "unknown",
+      recoveryState: "retryable",
       fundingKind: "service",
+      payerHumanId: null,
+      credentialId: null,
+      credentialRevision: null,
+      failureCode: "receipt_not_confirmed",
     } satisfies SurplusPendingAttempt;
     const builder: Record<string, unknown> = {};
     for (const method of ["from", "where", "orderBy", "limit"] as const) {
@@ -164,6 +236,20 @@ describe("Surplus durable LLM attempts", () => {
     // succeeded/cancelled classification.
     expect(fake.updated[0]?.["attemptOutcome"]).not.toBe("succeeded");
     expect(fake.updated[0]?.["attemptOutcome"]).not.toBe("cancelled");
+  });
+
+  test("requeues only an exact repaired personal credential", async () => {
+    const fake = mutationDb({ returning: [{ id: ATTEMPT_ID }] });
+    __setLlmUsageDbForTests(fake.handle);
+    expect(await requeueBlockedPersonalSurplusAttempts({
+      payerHumanId: "22222222-2222-4222-8222-222222222222",
+      credentialId: "55555555-5555-4555-8555-555555555555",
+      credentialRevision: 2,
+    })).toBe(1);
+    expect(fake.updated[0]).toMatchObject({
+      recoveryState: "retryable",
+      failureCode: null,
+    });
   });
 
   test("terminal completion preserves recovered actual cost while retrying its observed request receipt", async () => {

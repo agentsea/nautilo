@@ -7,6 +7,7 @@ import type { DirectDatabase } from "../../src/config/direct-database";
 import {
   __setLlmUsageDbForTests,
   buildCostsSummaryQueries,
+  buildPersonalCostsByRouteQuery,
   getCostsSummary,
 } from "../../src/queries/llm-usage";
 
@@ -215,6 +216,34 @@ describe("getCostsSummary fallback disclosure (ISSUE-M217)", () => {
       );
       expect(generated.params).toContain("personal");
     }
+  });
+
+  test("personal aggregates bind payer identity in every model query", () => {
+    const offlineDb = drizzle.mock() as unknown as DirectDatabase;
+    const payer = "22222222-2222-4222-8222-222222222222";
+    const compiled = Object.values(buildCostsSummaryQueries(RANGE, offlineDb, payer)).map(
+      (queryBuilder) => queryBuilder.toSQL(),
+    );
+    for (const generated of compiled) {
+      expect(generated.sql).toContain('"llm_usage_events"."payer_human_id" =');
+      expect(generated.sql).toContain('"llm_usage_events"."funding_kind" =');
+      expect(generated.params).toContain(payer);
+      expect(generated.params).toContain("personal");
+    }
+  });
+
+  test("personal route aggregation groups on actual provider route and call type", () => {
+    const payer = "22222222-2222-4222-8222-222222222222";
+    const generated = buildPersonalCostsByRouteQuery(
+      RANGE,
+      drizzle.mock() as unknown as DirectDatabase,
+      payer,
+    ).toSQL();
+    expect(generated.sql).toContain('"llm_usage_events"."provider_route"');
+    expect(generated.sql).toContain('"llm_usage_events"."call_type"');
+    expect(generated.sql).toContain('group by "llm_usage_events"."provider_route", "llm_usage_events"."call_type"');
+    expect(generated.params).toContain(payer);
+    expect(generated.params).toContain("personal");
   });
 
   test("pending and unknown model attempts are counted without entering known spend", async () => {

@@ -4,6 +4,7 @@ import type { Database } from "../config/database";
 import {
   personalProviderCredentials,
   type PersonalProviderCredentialRow,
+  type PersonalProviderCredentialReceiptReadStatus,
   type PersonalProviderCredentialValidationStatus,
   type PersonalProviderId,
 } from "../schema/personal-provider-credentials";
@@ -29,6 +30,8 @@ export interface PersonalProviderCredentialRecord {
   revision: number;
   validationStatus: PersonalProviderCredentialValidationStatus;
   validatedAt: Date | null;
+  destination: string | null;
+  receiptReadStatus: PersonalProviderCredentialReceiptReadStatus;
   envelope: PersonalProviderCredentialEnvelope;
   createdAt: Date;
   updatedAt: Date;
@@ -39,6 +42,7 @@ export interface PersonalProviderCredentialCustodyRow {
   userId: string;
   provider: PersonalProviderId;
   revision: number;
+  destination: string | null;
   envelope: PersonalProviderCredentialEnvelope;
 }
 
@@ -95,6 +99,8 @@ function projectCredential(
     revision: row.revision,
     validationStatus: row.validationStatus,
     validatedAt: row.validatedAt,
+    destination: row.destination,
+    receiptReadStatus: row.receiptReadStatus,
     envelope: {
       formatVersion: 1,
       keyId: row.keyId,
@@ -116,6 +122,7 @@ function projectCustodyRow(
     userId: credential.userId,
     provider: credential.provider,
     revision: credential.revision,
+    destination: credential.destination,
     envelope: credential.envelope,
   };
 }
@@ -127,6 +134,10 @@ export async function insertPersonalProviderCredential(
     userId: string;
     provider: PersonalProviderId;
     envelope: PersonalProviderCredentialEnvelope;
+    destination?: string | null;
+    validationStatus?: PersonalProviderCredentialValidationStatus;
+    validatedAt?: Date | null;
+    receiptReadStatus?: PersonalProviderCredentialReceiptReadStatus;
   },
 ): Promise<InsertPersonalProviderCredentialResult> {
   const [row] = await db
@@ -136,8 +147,10 @@ export async function insertPersonalProviderCredential(
       userId: input.userId,
       provider: input.provider,
       revision: input.identity.revision,
-      validationStatus: "unverified",
-      validatedAt: null,
+      destination: input.destination ?? null,
+      validationStatus: input.validationStatus ?? "unverified",
+      validatedAt: input.validatedAt ?? null,
+      receiptReadStatus: input.receiptReadStatus ?? "unknown",
       ...input.envelope,
     })
     .onConflictDoNothing({
@@ -190,6 +203,10 @@ export async function replacePersonalProviderCredential(
     id: string;
     expectedRevision: number;
     envelope: PersonalProviderCredentialEnvelope;
+    destination?: string | null;
+    validationStatus?: PersonalProviderCredentialValidationStatus;
+    validatedAt?: Date | null;
+    receiptReadStatus?: PersonalProviderCredentialReceiptReadStatus;
   },
 ): Promise<ReplacePersonalProviderCredentialResult> {
   return db.transaction(async (tx) => {
@@ -197,8 +214,10 @@ export async function replacePersonalProviderCredential(
       .update(personalProviderCredentials)
       .set({
         revision: input.expectedRevision + 1,
-        validationStatus: "unverified",
-        validatedAt: null,
+        ...(input.destination !== undefined ? { destination: input.destination } : {}),
+        validationStatus: input.validationStatus ?? "unverified",
+        validatedAt: input.validatedAt ?? null,
+        receiptReadStatus: input.receiptReadStatus ?? "unknown",
         ...input.envelope,
         updatedAt: new Date(),
       })
@@ -239,6 +258,7 @@ export async function setPersonalProviderCredentialValidation(
     expectedRevision: number;
     status: PersonalProviderCredentialValidationStatus;
     validatedAt: Date | null;
+    receiptReadStatus?: PersonalProviderCredentialReceiptReadStatus;
   },
 ): Promise<SetPersonalProviderCredentialValidationResult> {
   const [row] = await db
@@ -246,6 +266,9 @@ export async function setPersonalProviderCredentialValidation(
     .set({
       validationStatus: input.status,
       validatedAt: input.validatedAt,
+      ...(input.receiptReadStatus !== undefined
+        ? { receiptReadStatus: input.receiptReadStatus }
+        : {}),
       updatedAt: new Date(),
     })
     .where(

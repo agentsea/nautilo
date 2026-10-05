@@ -10,6 +10,7 @@ import { parseTaskFundingBinding, type TaskFundingBinding, type TaskFundingFailu
 import { isOwnPrivateGenieRoom, usageFundingFor } from "./foreground-chat-funding";
 import { ModelFundingError, resolveModelFunding, withAdmittedPersonalProviderKey, type ModelFundingDecision } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
+import { currentPersonalGatewayDestination } from "./personal-provider-destination";
 
 import { callerTaskModelEnvironment, callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
 
@@ -111,7 +112,8 @@ async function selectTaskModel(task: TaskSelection, priorRun?: TaskRun): Promise
   }
   const env = await callerTaskModelEnvironment(task.requestorId);
   return resolveTaskModel({ baseModelId,
-    profile: task.selectionProfile ?? null, spec: task.selectionSpec ?? null, env, purpose: "chat" }).modelId;
+    profile: task.selectionProfile ?? null, spec: task.selectionSpec ?? null, env, purpose: "chat",
+    runnableModelIds: await callerTaskModelIds(task.requestorId) }).modelId;
 }
 
 async function selectRunnableTaskModel(task: TaskSelection): Promise<string | null> {
@@ -161,7 +163,7 @@ function sameBinding(left: unknown, right: unknown): boolean {
 async function openSession(task: Task, run: TaskRun, modelId: string, wake: boolean): Promise<ForegroundChatFundingSession> {
   await assertOwnShape(task);
   const admitted = restoreDecision(task, run);
-  const resolveCandidateUnchecked = async (candidateModelId: string) => {
+  const resolveCandidateUnchecked = async (candidateModelId: string, transport?: "direct" | "surplus") => {
     // Every retry/fallback rechecks exact Room authority and the original revision.
     const db = getServerDirectDb();
     const [currentTask, currentRun] = await Promise.all([
@@ -193,10 +195,10 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
       throw new TaskFundingError("funding_source_changed");
     }
     return resolveModelFunding({ humanUserId: task.requestorId, modelId: candidateModelId,
-      workload: "native_text_task", priorDecision: admitted });
+      workload: "native_text_task", priorDecision: admitted, ...(transport ? { transport } : {}) });
   };
-  const resolveCandidate = async (candidateModelId: string) => {
-    try { return await fundingBoundary(() => resolveCandidateUnchecked(candidateModelId)); }
+  const resolveCandidate = async (candidateModelId: string, transport?: "direct" | "surplus") => {
+    try { return await fundingBoundary(() => resolveCandidateUnchecked(candidateModelId, transport)); }
     catch (error) {
       if (wake && run.status === "completed" && error instanceof TaskFundingError) {
         await recordTaskWakeFundingFailure(getServerDirectDb(), { taskId: task.id,
@@ -206,16 +208,27 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
     }
   };
   await resolveCandidate(modelId);
+  let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
-    async recheckAttempt(candidate) { await resolveCandidate(candidate); },
-    async runAttempt(candidate, runAttempt) {
+    async recheckAttempt(candidate, transport) {
+      const current = await resolveCandidate(candidate, transport);
+      if (transport && lastAttempt?.kind === "personal" && current.kind === "personal"
+        && lastAttempt.modelId === candidate && lastAttempt.providerRoute === current.providerRoute
+        && (lastAttempt.credentialId !== current.credentialId
+          || lastAttempt.credentialRevision !== current.credentialRevision)) {
+        throw new TaskFundingError("personal_credential_stale");
+      }
+    },
+    async runAttempt(candidate, runAttempt, transport) {
       try {
-        const decision = await resolveCandidate(candidate);
+        const decision = await resolveCandidate(candidate, transport);
+        lastAttempt = decision;
         const usageFunding = usageFundingFor(decision);
         if (decision.kind === "server") return await runAttempt({ usageFunding });
         return await withAdmittedPersonalProviderKey(decision,
-          (apiKey) => runAttempt({ usageFunding, personalCredential: { apiKey } }), undefined, admitted);
+          (apiKey) => runAttempt({ usageFunding, personalCredential: { apiKey, ...(decision.providerRoute === "gateway"
+          ? { destination: currentPersonalGatewayDestination() ?? undefined } : {}) } }), undefined, admitted);
       } catch (error) {
         const reason = taskFundingFailureCode(error);
         if (wake && run.status === "completed" && reason) {

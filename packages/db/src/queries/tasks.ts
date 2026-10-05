@@ -20,6 +20,7 @@ import { and, arrayContains, asc, desc, eq, exists, getTableColumns, gt, inArray
 import { alias } from "drizzle-orm/pg-core";
 import type { DirectDatabase } from "../config/direct-database";
 import { tasks, type Task, type NewTask } from "../schema/tasks";
+import { llmUsageEvents } from "../schema/llm-usage";
 import { taskRuns, type TaskRun, type NewTaskRun } from "../schema/task-runs";
 import { profiles } from "../schema/profiles";
 import { jobs, type Job } from "../schema/jobs";
@@ -4590,6 +4591,17 @@ export async function reconcileCallerFundedTaskRunAfterRestart(
       eq(taskRuns.taskId, input.taskId),
       eq(taskRuns.status, "running"),
     )).returning();
+    if (updatedRun) {
+      // The restart owner proved this exact run can no longer publish. Preserve
+      // uncertain spend without closing another concurrent schedule occurrence.
+      await tx.update(llmUsageEvents).set({ attemptOutcome: "interrupted", costState: "unknown",
+        failureCode: "execution_interrupted", settledAt: completedAt, updatedAt: completedAt,
+      }).where(and(eq(llmUsageEvents.taskId, input.taskId), eq(llmUsageEvents.fundingKind, "personal"),
+        eq(llmUsageEvents.attemptOutcome, "in_progress"),
+        sql`${llmUsageEvents.providerRoute} <> ${"surplus"}`,
+        sql`${llmUsageEvents.metadata} ->> 'taskRunId' = ${input.taskRunId}`,
+      )).returning({ id: llmUsageEvents.id });
+    }
     if (newerRun) {
       if (!updatedRun) {
         throw new Error("caller-funded restart reconciliation lost its locked older TaskRun");

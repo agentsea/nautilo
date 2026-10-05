@@ -4,11 +4,13 @@ import type { MobilePlatformCapabilities } from "@/platform/capability-contract"
 export type SettingsRoute =
   | "/settings/profile" | "/settings/human-profile" | "/settings/voice" | "/settings/models"
   | "/settings/security" | "/settings/approvals" | "/settings/skills" | "/settings/commands"
+  | "/settings/provider-keys" | "/settings/personal-costs"
   | "/settings/account-deletion" | "/settings/appearance" | "/settings/notifications"
   | "/settings/user-agreement" | "/settings/about";
 
 export type SettingsRowId =
   | "profile" | "human-profile" | "voice" | "models" | "security" | "approvals"
+  | "provider-keys" | "personal-costs"
   | "skills" | "commands" | "account-deletion" | "appearance" | "notifications"
   | "user-agreement" | "about";
 
@@ -85,6 +87,8 @@ export function createSettingsLanding(input: SettingsLandingInput): SettingsLand
     });
     accountRows.push(
       { id: "security", label: "PIN, password & recovery", route: "/settings/security", accessibilityHint: "Opens your PIN, password, and separate recovery-code settings." },
+      { id: "provider-keys", label: "Personal API keys", route: "/settings/provider-keys", accessibilityHint: "Adds or repairs your personal provider keys." },
+      { id: "personal-costs", label: "Your costs", route: "/settings/personal-costs", accessibilityHint: "Reviews charges and estimates paid with your personal provider keys." },
       { id: "approvals", label: "Standing approvals", route: "/settings/approvals", accessibilityHint: "Opens your active standing tool approvals." },
       { id: "account-deletion", label: "Delete account", route: "/settings/account-deletion", accessibilityHint: "Opens permanent account deletion for this server." },
     );

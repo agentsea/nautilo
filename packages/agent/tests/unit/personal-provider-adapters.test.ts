@@ -55,7 +55,7 @@ function modelUsesExactApiKey(model: unknown, apiKey: string): boolean {
     || (candidate.bound !== model && modelUsesExactApiKey(candidate.bound, apiKey));
 }
 
-beforeAll(async () => activateModelCatalogForTests(MODEL_IDS));
+beforeAll(async () => activateModelCatalogForTests([...MODEL_IDS, "gateway:local-model"]));
 afterAll(() => {
   resetRuntimeModelCatalog();
   restoreEnv();
@@ -88,8 +88,8 @@ describe("personal provider chat adapters", () => {
     } as Record<string, unknown>)).rejects.toThrow("valid personal provider credential");
   });
 
-  test("rejects personal credentials for the generic gateway and unknown providers", async () => {
-    for (const modelId of ["gateway:local-model", "unknown:model"]) {
+  test("rejects personal credentials for unknown providers", async () => {
+    for (const modelId of ["unknown:model"]) {
       expect(createUnmeteredEvaluationModel(modelId, {
         personalCredential: { apiKey: "personal-key" },
       })).rejects.toThrow("Personal credentials are not supported");
@@ -98,6 +98,21 @@ describe("personal provider chat adapters", () => {
 });
 
 describe("personal OpenRouter transport", () => {
+  test("leaves retry ownership to the durable attempt ledger", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async (_input: string | URL | Request, _init?: RequestInit) => {
+      calls++;
+      return Response.json({ error: { message: "temporarily unavailable" } }, { status: 503 });
+    }) as typeof fetch;
+    try {
+      const model = await createUnmeteredEvaluationModel("openrouter:moonshotai/kimi-k2.6", {
+        personalCredential: { apiKey: "synthetic-personal-key" },
+      });
+      try { await model.invoke([new HumanMessage("synthetic")]); } catch { /* Expected provider refusal. */ }
+      expect(calls).toBe(1);
+    } finally { globalThis.fetch = originalFetch; }
+  });
   test("sends the personal key through direct OpenRouter transport without leaking it into the request body", async () => {
     const personalApiKey = "sk-personal-openrouter-transport";
     const serverDirectApiKey = "sk-server-openrouter-must-not-be-used";
@@ -172,4 +187,37 @@ describe("personal OpenRouter transport", () => {
     });
   });
 
+});
+
+
+describe("personal generic Gateway destination", () => {
+  test("injects only the bound endpoint and caller key, then rejects destination changes", async () => {
+    const previousBase = process.env["NAUTILO_GATEWAY_BASE_URL"];
+    const previousKey = process.env["NAUTILO_GATEWAY_API_KEY"];
+    try {
+      process.env["NAUTILO_GATEWAY_BASE_URL"] = "https://gateway.invalid/tenant-a/v1";
+      process.env["NAUTILO_GATEWAY_API_KEY"] = "server-gateway-secret";
+      const credential = { apiKey: "personal-gateway-secret", destination: process.env["NAUTILO_GATEWAY_BASE_URL"] };
+      const model = await createUnmeteredEvaluationModel("gateway:local-model", {
+        personalCredential: credential, baseUrl: "https://wrong.invalid", apiKey: "wrong-key",
+      });
+      expect(modelUsesExactApiKey(model, credential.apiKey)).toBe(true);
+      const originalFetch = globalThis.fetch;
+      const requests: Array<{ url: string; redirect: "error" | "follow" | "manual" | undefined }> = [];
+      globalThis.fetch = (async (input, init) => {
+        requests.push({ url: typeof input === "string" ? input : input instanceof URL ? input.href : input.url, redirect: init?.redirect });
+        return Response.json({ error: { message: "redirect refused" } }, { status: 503 });
+      }) as typeof fetch;
+      try {
+        try { await model.invoke([new HumanMessage("synthetic")]); } catch { /* Expected provider refusal. */ }
+        expect(requests).toEqual([{ url: "https://gateway.invalid/tenant-a/v1/chat/completions", redirect: "error" }]);
+      } finally { globalThis.fetch = originalFetch; }
+      process.env["NAUTILO_GATEWAY_BASE_URL"] = "https://gateway.invalid/tenant-b/v1";
+      expect(createUnmeteredEvaluationModel("gateway:local-model", { personalCredential: credential }))
+        .rejects.toThrow("destination changed");
+    } finally {
+      if (previousBase === undefined) delete process.env["NAUTILO_GATEWAY_BASE_URL"]; else process.env["NAUTILO_GATEWAY_BASE_URL"] = previousBase;
+      if (previousKey === undefined) delete process.env["NAUTILO_GATEWAY_API_KEY"]; else process.env["NAUTILO_GATEWAY_API_KEY"] = previousKey;
+    }
+  });
 });

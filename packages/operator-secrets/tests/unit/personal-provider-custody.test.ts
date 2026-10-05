@@ -45,6 +45,41 @@ describe("personal credential encryption", () => {
     expect(() => decryptPersonalProviderCredential(createPersonalProviderCustody(), envelope, context)).toThrow("custody_key_mismatch");
     expect(() => decryptPersonalProviderCredential({ ...createPersonalProviderCustody(), keyId: custody.keyId }, envelope, context)).toThrow("credential_authentication_failed");
   });
+  test("authenticates an enrolled provider destination while preserving legacy envelopes", () => {
+    const custody = createPersonalProviderCustody();
+    const destination = "https://gateway.example/tenant-a/v1";
+    const bound = encryptPersonalProviderCredential(
+      custody,
+      secret,
+      { ...context, provider: "gateway", destination },
+    );
+    expect(decryptPersonalProviderCredential(
+      custody,
+      bound,
+      { ...context, provider: "gateway", destination },
+    )).toBe(secret);
+    for (const changedDestination of [
+      null,
+      "https://gateway.example/tenant-b/v1",
+    ]) {
+      expect(() => decryptPersonalProviderCredential(
+        custody,
+        bound,
+        { ...context, provider: "gateway", destination: changedDestination },
+      )).toThrow("credential_authentication_failed");
+    }
+
+    const legacy = encryptPersonalProviderCredential(
+      custody,
+      secret,
+      { ...context, provider: "gateway" },
+    );
+    expect(decryptPersonalProviderCredential(
+      custody,
+      legacy,
+      { ...context, provider: "gateway", destination: null },
+    )).toBe(secret);
+  });
   test("errors never echo invalid custody or plaintext", () => {
     for (const value of [undefined, "", secret, JSON.stringify({ keyHex: secret })]) {
       try { parsePersonalProviderCustody(value); throw new Error("unexpected success"); } catch (error) {

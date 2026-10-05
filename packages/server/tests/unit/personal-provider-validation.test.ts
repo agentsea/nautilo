@@ -19,15 +19,15 @@ describe("validatePersonalProviderCredential", () => {
       new Response(null, { status: statuses.shift()! })) as unknown as typeof fetch;
 
     expect(await validatePersonalProviderCredential("openai", "submitted-key"))
-      .toEqual({ status: "accepted" });
+      .toEqual({ status: "accepted", receiptReadStatus: "unknown" });
     expect(await validatePersonalProviderCredential("openai", "submitted-key"))
-      .toEqual({ status: "rejected" });
+      .toEqual({ status: "rejected", receiptReadStatus: "unknown" });
     expect(await validatePersonalProviderCredential("openai", "submitted-key"))
-      .toEqual({ status: "unavailable" });
+      .toEqual({ status: "unavailable", receiptReadStatus: "unknown" });
     expect(await validatePersonalProviderCredential("openai", "submitted-key"))
-      .toEqual({ status: "unavailable" });
+      .toEqual({ status: "unavailable", receiptReadStatus: "unknown" });
     expect(await validatePersonalProviderCredential("openai", "submitted-key"))
-      .toEqual({ status: "unavailable" });
+      .toEqual({ status: "unavailable", receiptReadStatus: "unknown" });
   });
 
   test("recognizes Google's documented invalid-key response without generalizing HTTP 400", async () => {
@@ -48,13 +48,13 @@ describe("validatePersonalProviderCredential", () => {
     globalThis.fetch = (async () => responses.shift()!) as unknown as typeof fetch;
 
     expect(await validatePersonalProviderCredential("google", "invalid-google-key"))
-      .toEqual({ status: "rejected" });
+      .toEqual({ status: "rejected", receiptReadStatus: "unknown" });
     expect(await validatePersonalProviderCredential("google", "valid-but-not-eligible-key"))
-      .toEqual({ status: "unavailable" });
+      .toEqual({ status: "unavailable", receiptReadStatus: "unknown" });
     expect(await validatePersonalProviderCredential("google", "submitted-key"))
-      .toEqual({ status: "unavailable" });
+      .toEqual({ status: "unavailable", receiptReadStatus: "unknown" });
     expect(await validatePersonalProviderCredential("openai", "submitted-key"))
-      .toEqual({ status: "unavailable" });
+      .toEqual({ status: "unavailable", receiptReadStatus: "unknown" });
   });
 
   test("uses only fixed provider endpoints and the explicitly submitted key", async () => {
@@ -81,7 +81,7 @@ describe("validatePersonalProviderCredential", () => {
     for (const provider of networkProviders) {
       activeProvider = provider;
       expect(await validatePersonalProviderCredential(provider, `key-for-${provider}`))
-        .toEqual({ status: "accepted" });
+        .toEqual({ status: "accepted", receiptReadStatus: "unknown" });
     }
 
     expect(observed.map(({ provider, url }) => [provider, url])).toEqual([
@@ -127,7 +127,7 @@ describe("validatePersonalProviderCredential", () => {
     ] as const satisfies readonly PersonalProviderId[];
     for (const provider of providers) {
       expect(await validatePersonalProviderCredential(provider, `private-${provider}-key`))
-        .toEqual({ status: "unverified" });
+        .toEqual({ status: "unverified", receiptReadStatus: "unknown" });
     }
     expect(fetchCalls).toBe(0);
   });
@@ -151,7 +151,59 @@ describe("validatePersonalProviderCredential", () => {
 
     expect(observedSignal).not.toBeNull();
     expect((observedSignal as unknown as AbortSignal).aborted).toBe(true);
-    expect(result).toEqual({ status: "unavailable" });
+    expect(result).toEqual({ status: "unavailable", receiptReadStatus: "unknown" });
     expect(JSON.stringify(result)).not.toContain(submittedKey);
+  });
+
+  test("validates Surplus inference separately from receipt-list access", async () => {
+    const responses = [
+      new Response(null, { status: 200 }),
+      new Response(null, { status: 200 }),
+      new Response(null, { status: 200 }),
+      new Response(null, { status: 403 }),
+      new Response(null, { status: 200 }),
+      new Response(null, { status: 503 }),
+      new Response(null, { status: 401 }),
+    ];
+    const observedUrls: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      observedUrls.push(input instanceof Request ? input.url : input.toString());
+      return responses.shift()!;
+    }) as typeof fetch;
+
+    expect(await validatePersonalProviderCredential("surplus", "submitted-key"))
+      .toEqual({ status: "accepted", receiptReadStatus: "available" });
+    expect(await validatePersonalProviderCredential("surplus", "submitted-key"))
+      .toEqual({ status: "accepted", receiptReadStatus: "unavailable" });
+    expect(await validatePersonalProviderCredential("surplus", "submitted-key"))
+      .toEqual({ status: "accepted", receiptReadStatus: "unknown" });
+    expect(await validatePersonalProviderCredential("surplus", "submitted-key"))
+      .toEqual({ status: "rejected", receiptReadStatus: "unknown" });
+    expect(observedUrls).toEqual([
+      "https://api.surplusintelligence.ai/v1/buyer/me",
+      "https://api.surplusintelligence.ai/v1/requests",
+      "https://api.surplusintelligence.ai/v1/buyer/me",
+      "https://api.surplusintelligence.ai/v1/requests",
+      "https://api.surplusintelligence.ai/v1/buyer/me",
+      "https://api.surplusintelligence.ai/v1/requests",
+      "https://api.surplusintelligence.ai/v1/buyer/me",
+    ]);
+  });
+
+  test("validates Gateway credentials only against the bound fixed endpoint", async () => {
+    let observedUrl = "";
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      observedUrl = input instanceof Request ? input.url : input.toString();
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+
+    expect(await validatePersonalProviderCredential(
+      "gateway",
+      "submitted-key",
+      undefined,
+      "https://gateway.example/tenant/v1",
+    )).toEqual({ status: "accepted", receiptReadStatus: "unknown" });
+    expect(observedUrl).toBe("https://gateway.example/tenant/v1/models");
+    expect(observedUrl).not.toContain("submitted-key");
   });
 });
