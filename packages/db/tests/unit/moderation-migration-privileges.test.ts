@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "bun:test";
 
 import { finalizeModerationMigration } from "../../scripts/finalize-moderation";
@@ -42,7 +43,7 @@ describe("moderation migration trigger privileges", () => {
     expect(migration.indexOf(triggerPrivilegeRevoke)).toBeLessThan(migration.indexOf(rowTrigger));
     expectTriggerPrivilegeOrder(repairModerationMigration(migration));
     expect(() => repairModerationMigration(`${migration}\n-- changed`)).toThrow("Refusing unknown");
-    await withModerationMigrationCompat(migrationsFolder.pathname, async (folder) => {
+    await withModerationMigrationCompat(fileURLToPath(migrationsFolder), async (folder) => {
       expectTriggerPrivilegeOrder(readFileSync(`${folder}/0300_flimsy_kingpin.sql`, "utf8"));
       expect(readFileSync(`${folder}/meta/_journal.json`, "utf8"))
         .toBe(readFileSync(new URL("meta/_journal.json", migrationsFolder), "utf8"));

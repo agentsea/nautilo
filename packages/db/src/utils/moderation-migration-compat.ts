@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -33,7 +33,7 @@ export function repairModerationMigration(source: string): string {
     .replace(tableTrigger, `${tableTrigger}${breakpoint}${revoke}`);
 }
 
-/** Symlink the large immutable migration tree; replace only the known bad SQL. */
+/** Preserve the immutable migration tree; replace only the known bad SQL. */
 export async function withModerationMigrationCompat<T>(
   migrationsFolder: string,
   run: (folder: string) => Promise<T>,
@@ -43,11 +43,13 @@ export async function withModerationMigrationCompat<T>(
   if (!existsSync(sourcePath)) return run(original);
 
   const corrected = repairModerationMigration(readFileSync(sourcePath, "utf8"));
+  const windows = process.platform === "win32";
   const temporary = mkdtempSync(join(tmpdir(), "nautilo-migrations-"));
   try {
     for (const entry of readdirSync(original)) {
       const destination = join(temporary, entry);
       if (entry === migrationName) writeFileSync(destination, corrected);
+      else if (windows) cpSync(join(original, entry), destination, { recursive: true, dereference: true });
       else symlinkSync(join(original, entry), destination);
     }
     return await run(temporary);

@@ -9,6 +9,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -176,7 +177,7 @@ afterAll(async () => {
         .select({ id: artifacts.id, storageUri: artifacts.storageUri })
         .from(artifacts)
         .where(inArray(artifacts.id, createdArtifactIds));
-      const paths = rows.map((row) => new URL(row.storageUri!).pathname);
+      const paths = rows.map((row) => fileURLToPath(row.storageUri!));
       if (paths.length > 0) {
         await fx.db.delete(fileRevisions).where(inArray(fileRevisions.absolutePath, paths));
       }

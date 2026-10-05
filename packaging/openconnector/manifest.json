@@ -6,7 +6,7 @@
   "upstreamTag": "v1.4.1",
   "upstreamCommit": "1bfdc0343057303d2993bcff44d0d5821ea658fd",
   "license": "Apache-2.0",
-  "nautiloPatchSha256": "ac0f2d54e5807f7cd6711245dd325a3d66d13027d36c9dcf5263d99f99548c9c",
+  "nautiloPatchSha256": "e07f03b4c49065e6d070f2b7e65ffa9569eb862ea073e81dce3b22097e7e2002",
   "baseImage": "docker.io/library/node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf",
-  "localImage": "nautilo/openconnector:1.4.1-nautilo.1"
+  "localImage": "nautilo/openconnector:1.4.1-nautilo.2"
 }

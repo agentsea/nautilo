@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import {
   assertCompleteMutationCoverage,
   assertNoMutationSuppression,
@@ -20,7 +21,7 @@ import {
   derivePackageTypeScriptSourceInventory,
 } from "./mutation-source-inventory.ts";
 
-const packageRoot = new URL("..", import.meta.url);
+const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const reportsDirectory = new URL("../reports/mutation/", import.meta.url);
 const resolvePackagePath = (path: string): URL =>
   new URL(`../${path}`, import.meta.url);
@@ -35,10 +36,10 @@ const manifest = parseMutationManifest(manifestValue, {
 });
 assertCompleteMutationCoverage(
   manifest,
-  deriveMutationSourceInventory(packageRoot.pathname),
+  deriveMutationSourceInventory(packageRoot),
 );
 assertNoMutationSuppression(
-  derivePackageTypeScriptSourceInventory(packageRoot.pathname).map((path) => ({
+  derivePackageTypeScriptSourceInventory(packageRoot).map((path) => ({
     path,
     source: readFileSync(resolvePackagePath(path), "utf8"),
   })),
@@ -46,7 +47,7 @@ assertNoMutationSuppression(
 
 async function readGitOutput(arguments_: readonly string[]): Promise<string> {
   const child = Bun.spawn(["git", ...arguments_], {
-    cwd: packageRoot.pathname,
+    cwd: packageRoot,
     stderr: "pipe",
     stdout: "pipe",
   });

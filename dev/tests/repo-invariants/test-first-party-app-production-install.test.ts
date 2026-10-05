@@ -43,6 +43,7 @@ describe("first-party app production install", () => {
     const calls: Array<{ command: string; args: readonly string[]; cwd: string }> = [];
     const status = await installFirstPartyApps({
       appsRoot: root,
+      platform: "linux",
       runInstall(command, args, options) {
         calls.push({ command, args, cwd: options.cwd });
         return { status: 0 };
@@ -67,6 +68,37 @@ describe("first-party app production install", () => {
       "--frozen-lockfile",
       "--production",
       "--omit=peer",
+    ]);
+  });
+
+  test("installs Writer and Video on Windows with frozen isolated dependencies", async () => {
+    const root = await mkdtemp(join(tmpdir(), "nautilo-first-party-install-"));
+    await writeApp(root, "writer", {
+      name: "writer",
+      dependencies: { "@nautilo/office-docs": "file:../../office-docs" },
+    });
+    await writeApp(root, "video", {
+      name: "video",
+      dependencies: { "@nautilo/types": "file:../../types" },
+    });
+    const calls: Array<{ args: readonly string[]; cwd: string }> = [];
+    const status = await installFirstPartyApps({
+      appsRoot: root,
+      platform: "win32",
+      runInstall(_command, args, options) {
+        calls.push({ args, cwd: options.cwd });
+        return { status: 0 };
+      },
+    });
+
+    expect(status).toBe(0);
+    expect(calls.map((call) => call.args)).toEqual([
+      ["install", "--frozen-lockfile", "--production", "--omit=peer", "--linker=isolated"],
+      ["install", "--frozen-lockfile", "--production", "--omit=peer", "--linker=isolated"],
+    ]);
+    expect(calls.map((call) => call.cwd)).toEqual([
+      join(root, "video"),
+      join(root, "writer"),
     ]);
   });
 

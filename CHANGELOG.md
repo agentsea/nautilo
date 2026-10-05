@@ -7,6 +7,21 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Windows x64 source builds produce a Desktop installer with bundled Bun and
+  the private Relay Host for connecting to a Nautilo server.
+  ACP-backed local agents remain unavailable on Windows until process-tree
+  containment is supported.
+- New first-owner claim files include a copyable claim URL while retaining the
+  single-use code. Existing code-only files remain redeemable through the
+  server's `/claim` page.
+- Desktop smoke commands read their app path from the environment on Windows,
+  so contributor checks can exercise a packaged `.exe`.
+- Windows source installs use Bun's isolated linker for first-party apps,
+  allowing Writer and Video dependencies to install without elevation. Seeded
+  app copies preserve resolved package versions and dependency cycles.
+- Contributor scripts and tests convert file URLs to native filesystem paths,
+  including Windows drive letters and encoded characters.
+
 - Add GPT-6.1 Sol and Claude Sonnet 5.5 across direct, OpenRouter, and Venice
   routes, plus Venice Claude Fable 5.1. Preserve supported reasoning effort,
   full model allowances, and provider-specific pricing through existing adapters.

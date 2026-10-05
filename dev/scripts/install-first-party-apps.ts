@@ -46,9 +46,15 @@ type InstallRunner = (
 export async function installFirstPartyApps(options?: {
   appsRoot?: string;
   runInstall?: InstallRunner;
+  platform?: NodeJS.Platform;
 }): Promise<number> {
   const appsRoot = options?.appsRoot ?? FIRST_PARTY_APPS_ROOT;
   const runInstall = options?.runInstall ?? spawnSync;
+  // Pinned Bun's hoisted linker fails on nested local file dependencies on
+  // Windows. The isolated linker uses junctions and keeps the same frozen graph.
+  const installArgs = (options?.platform ?? process.platform) === "win32"
+    ? [...FIRST_PARTY_APP_INSTALL_ARGS, "--linker=isolated"]
+    : FIRST_PARTY_APP_INSTALL_ARGS;
   const entries = await readdir(appsRoot, { withFileTypes: true }).catch(() => []);
   const appDirs = entries
     .filter((entry) => entry.isDirectory())
@@ -63,7 +69,7 @@ export async function installFirstPartyApps(options?: {
 
     const label = pkg.name ?? appDir;
     console.log(`[first-party-apps:install] installing production dependencies for ${label}`);
-    const result = runInstall("bun", FIRST_PARTY_APP_INSTALL_ARGS, {
+    const result = runInstall("bun", installArgs, {
       cwd: appDir,
       stdio: "inherit",
     });

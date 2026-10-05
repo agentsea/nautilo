@@ -28,7 +28,7 @@ describe("OpenConnector derivative provenance", () => {
       upstreamVersion: "1.4.1",
       upstreamTag: "v1.4.1",
       license: "Apache-2.0",
-      localImage: "nautilo/openconnector:1.4.1-nautilo.1",
+      localImage: "nautilo/openconnector:1.4.1-nautilo.2",
     });
     expect(manifest.upstreamCommit).toMatch(/^[a-f0-9]{40}$/u);
     expect(manifest.baseImage).toMatch(/@sha256:[a-f0-9]{64}$/u);

@@ -14,7 +14,8 @@
  *
  * Runs at build time (from apps/desktop/package.json `predist`/`prepack`).
  * Idempotent: if the target binaries already exist and match the pinned
- * version, the binaries are reused. The exact bundled license is always checked.
+ * version and recorded hash, the binaries are reused. Each binary has its own
+ * cache record. The exact bundled license is always checked.
  *
  * Bun versioning: pinned to match the dev toolchain (`bun --version`
  * at the time this was written was 1.3.11). Kept in sync manually; a
@@ -24,18 +25,19 @@
  * Supported platforms in this cut:
  *   - macOS arm64 (Apple Silicon)
  *   - macOS x64   (Intel)
- * Linux + Windows are D057 Phase 2d — this script's ARCHES map is the
- * single extension point.
+ *   - Windows x64 (copies the running, version-checked Bun executable)
+ * Linux vendoring is not implemented here.
  *
  * Licensing: Bun is MIT. LICENSE-bun.txt is written alongside the
  * binaries so the DMG's Contents/Resources/bun/ carries attribution.
  */
 
-import { mkdirSync, existsSync, readFileSync, writeFileSync, rmSync, chmodSync, statSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync, rmSync, chmodSync, copyFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { vendorPinnedBunLicense } from "./desktop-license-payload";
+import { isBunRuntimeCached, recordBunRuntimeCache } from "./bun-vendor-cache";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -58,7 +60,6 @@ const ARCHES: Record<string, string> = {
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(scriptDir, "..");
 const VENDOR_DIR = join(desktopRoot, "vendor", "bun");
-const VERSION_STAMP = join(VENDOR_DIR, ".version");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -73,26 +74,8 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-/** Returns true if target binary exists AND the version stamp matches. */
 function isFresh(): boolean {
-  if (!existsSync(VERSION_STAMP)) return false;
-  let stamped: string;
-  try { stamped = readFileSync(VERSION_STAMP, "utf-8").trim(); }
-  catch { return false; }
-  if (stamped !== BUN_VERSION) return false;
-  for (const arch of Object.keys(ARCHES)) {
-    const binPath = join(VENDOR_DIR, arch, "bun");
-    if (!existsSync(binPath)) return false;
-    try {
-      const st = statSync(binPath);
-      // Bun binaries are sizeable (>20 MB). A tiny file means a prior
-      // download failed mid-extract; treat as stale.
-      if (st.size < 1_000_000) return false;
-    } catch {
-      return false;
-    }
-  }
-  return true;
+  return Object.keys(ARCHES).every(arch => isBunRuntimeCached(join(VENDOR_DIR, arch, "bun"), BUN_VERSION));
 }
 
 async function downloadTo(url: string, dest: string): Promise<void> {
@@ -155,6 +138,7 @@ async function vendorArch(arch: string, assetStem: string): Promise<void> {
   const copied = readFileSync(extractedBin);
   writeFileSync(targetBin, copied);
   chmodSync(targetBin, 0o755);
+  recordBunRuntimeCache(targetBin, BUN_VERSION);
 
   rmSync(tmpDir, { recursive: true, force: true });
 
@@ -169,6 +153,25 @@ async function main(): Promise<void> {
   mkdirSync(VENDOR_DIR, { recursive: true });
   vendorPinnedBunLicense(BUN_VERSION, VENDOR_DIR);
 
+  if (process.platform === "win32") {
+    if (process.arch !== "x64") fail(`unsupported Windows architecture ${process.arch}`);
+    const targetDir = join(VENDOR_DIR, "x64");
+    const targetBin = join(targetDir, "bun.exe");
+    const installedVersion = spawnSync(process.execPath, ["--version"], { encoding: "utf8" });
+    if (installedVersion.status !== 0 || installedVersion.stdout.trim() !== BUN_VERSION) {
+      fail(`the running Bun must be v${BUN_VERSION} to vendor a Windows runtime`);
+    }
+    if (isBunRuntimeCached(targetBin, BUN_VERSION)) {
+      log(`cache hit (Bun v${BUN_VERSION} for Windows x64)`);
+      return;
+    }
+    mkdirSync(targetDir, { recursive: true });
+    copyFileSync(process.execPath, targetBin);
+    recordBunRuntimeCache(targetBin, BUN_VERSION);
+    log(`vendored Windows x64 -> ${targetBin}`);
+    return;
+  }
+
   if (isFresh()) {
     log(`cache hit (Bun v${BUN_VERSION} for ${Object.keys(ARCHES).join(", ")}) — nothing to do`);
     return;
@@ -180,7 +183,6 @@ async function main(): Promise<void> {
     await vendorArch(arch, stem);
   }
 
-  writeFileSync(VERSION_STAMP, BUN_VERSION);
   log(`done. pinned to v${BUN_VERSION}`);
 }
 

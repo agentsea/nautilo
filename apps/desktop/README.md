@@ -204,6 +204,10 @@ and updater contracts.
 | `bun run package:linux` | Linux AppImage; native qualification is separate. |
 | `bun run package:win` | Windows installer; native qualification is separate. |
 
+For Windows x64 source builds, read the
+[local evaluation notes](../../docs/windows-local-evaluation.md) before packaging.
+The Windows installer build does not prove owner sign-in or native tool support.
+
 After building, run `bun run smoke`, `bun run smoke:ports` and `bun run smoke:paths`.
 Use absolute `SMOKE_APP_PATH` and `APP_PATH` for a non-default app directory.
 The [contributor packaging workflow](../../.github/workflows/desktop-package.yml)

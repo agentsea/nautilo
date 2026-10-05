@@ -1,0 +1,173 @@
+name: Windows Desktop validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/windows-desktop.yml"
+      - "apps/desktop/**"
+      - "apps/cli/**"
+      - "apps/workbench/**"
+      - "bin/nautilo-dev/**"
+      - "bin/nautilo-relay/**"
+      - "packages/relay/**"
+      - ".bun-version"
+      - "dev/scripts/install-first-party-apps.ts"
+      - "dev/tests/repo-invariants/test-first-party-app-production-install.test.ts"
+      - "infra/compose/**"
+      - "packages/acp-host/**"
+      - "packages/db/**"
+      - "packages/document-mutations/**"
+      - "packages/first-party-apps/**"
+      - "packages/generated-media-ui/**"
+      - "packages/office-core/**"
+      - "packages/office-docs/**"
+      - "packages/lattice-crypto/**"
+      - "packages/runtime/**"
+      - "packages/server/**"
+      - "packages/types/**"
+      - "packages/writer-proposal-core/**"
+      - "packaging/openconnector/**"
+      - "package.json"
+      - "bun.lock"
+      - "scripts/stack309-ios-simulator-input-helper.test.ts"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    name: Windows x64 install, package, and boot
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 50
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.3.11'
+
+      - name: Verify pinned tools and native compiler
+        run: |
+          if ((bun --version).Trim() -ne '1.3.11') { throw 'Wrong Bun version' }
+          if (-not ((node --version).Trim() -match '^v24\.')) { throw 'Node 24 is required' }
+          $vswherePath = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $componentId = 'Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre'
+          $versionRange = '[18.0,19.0)'
+          $vsArgs = @('-products', '*', '-version', $versionRange, '-requires', $componentId, '-property', 'installationPath')
+          if (-not (Test-Path -LiteralPath $vswherePath -PathType Leaf)) { throw 'VSWhere is missing' }
+          $instancePath = & $vswherePath @vsArgs
+          if (-not $instancePath) { throw 'Visual Studio 2026 x64 Spectre libraries are missing' }
+
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test Windows package and Bun cache contracts
+        run: bun test apps/desktop/tests/unit/windows-package-contract.test.ts apps/desktop/tests/unit/bun-vendor-cache.test.ts
+
+      - name: Test first-party app installation and dependency seeding
+        run: bun test dev/tests/repo-invariants/test-first-party-app-production-install.test.ts packages/server/tests/unit/seed-first-party-apps.test.ts packages/server/tests/unit/runtime-dependency-snapshot.test.ts
+
+      - name: Test native file URL paths
+        run: |
+          $tests = @(
+            'packages/db/tests/unit/moderation-migration-privileges.test.ts',
+            'packages/document-mutations/tests/unit/coordinator.test.ts',
+            'packages/runtime/tests/unit/conversation-composition.test.ts',
+            'packages/lattice-crypto/tests/unit/mutation-governance.test.ts',
+            'apps/cli/tests/unit/cloudflare-r2-oauth-probe.test.ts',
+            'apps/workbench/src/modes/rooms/explorer/tests/explorer-grouping.test.ts',
+            'apps/workbench/tests/unit-isolated/terminal-co-driving-consent.test.tsx',
+            'apps/workbench/tests/unit-isolated/maintenance-applying-gate.test.tsx',
+            'apps/workbench/tests/unit-isolated/maintenance-applying-boundary.test.tsx',
+            'scripts/stack309-ios-simulator-input-helper.test.ts'
+          )
+          foreach ($testPath in $tests) {
+            bun test $testPath
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Install Writer development dependencies
+        run: bun install --cwd packages/first-party-apps/writer --frozen-lockfile --omit=peer --linker=isolated
+
+      - name: Install Video development dependencies
+        run: bun install --cwd packages/first-party-apps/video --frozen-lockfile --omit=peer --linker=isolated
+
+      - name: Typecheck Writer
+        run: bun run --cwd packages/first-party-apps/writer typecheck
+
+      - name: Typecheck Video
+        run: bun run --cwd packages/first-party-apps/video typecheck
+
+      - name: Build Writer
+        run: bun run --cwd packages/first-party-apps/writer build
+
+      - name: Build Video
+        run: bun run --cwd packages/first-party-apps/video build
+
+      - name: Test Writer
+        run: bun run --cwd packages/first-party-apps/writer test
+
+      - name: Test Video
+        run: bun run --cwd packages/first-party-apps/video test
+
+      - name: Typecheck Desktop
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: bun run --cwd apps/desktop typecheck
+
+      - name: Typecheck development tools
+        run: bun run --cwd bin/nautilo-dev typecheck
+
+      - name: Typecheck database
+        run: bun run --cwd packages/db typecheck
+
+      - name: Typecheck server
+        env:
+          NODE_OPTIONS: --max-old-space-size=5120
+        run: bun run --cwd packages/server typecheck
+
+      - name: Test Windows agent-browser provisioning
+        run: bun test bin/nautilo-dev/tests/unit/agent-browser-preflight.test.ts
+
+      - name: Test Relay Host path resolution and lifecycle
+        run: bun test apps/desktop/tests/unit-isolated/relay-sidecar-client.test.ts
+
+      - name: Test server browser executable selection
+        run: bun test packages/server/tests/unit/connected-web-account-direct-browser-harness.test.ts
+
+      - name: Test OpenConnector source provenance
+        run: bun test packaging/openconnector/provenance.test.ts
+
+      - name: Build Windows Desktop installer
+        env:
+          CI: 'true'
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: bun run --cwd apps/desktop package:win
+
+      - name: Verify packaged Relay Host launch
+        run: |
+          $appRoot = Join-Path $env:GITHUB_WORKSPACE 'apps\desktop\release\win-unpacked'
+          $env:NAUTILO_PACKAGED_RESOURCES = Join-Path $appRoot 'resources'
+          bun test apps/desktop/tests/unit-isolated/packaged-relay-host.test.ts
+
+      - name: Smoke-test packaged Desktop boot
+        run: |
+          $appPath = Join-Path $env:GITHUB_WORKSPACE 'apps\desktop\release\win-unpacked\Nautilo.exe'
+          if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) { throw 'Packaged Nautilo.exe is missing' }
+          $env:SMOKE_APP_PATH = $appPath
+          bun run --cwd apps/desktop smoke

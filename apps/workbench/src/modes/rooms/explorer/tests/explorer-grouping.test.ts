@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import {
   compareExplorerRows,
   filterSectionsByQuery,
@@ -22,7 +23,7 @@ import type { WorkbenchRoomSummary } from "../../../../rooms/room-navigation-typ
 async function buildExplorerRostersInIsolate(
   rooms: WorkbenchRoomSummary[],
 ): Promise<Map<string, ExplorerRosterMember[]>> {
-  const modulePath = new URL("../use-explorer-data.ts", import.meta.url).pathname;
+  const modulePath = fileURLToPath(new URL("../use-explorer-data.ts", import.meta.url));
   const script = `
     import { buildExplorerRosters } from ${JSON.stringify(modulePath)};
     const rooms = JSON.parse(process.env.D246_ROOMS);

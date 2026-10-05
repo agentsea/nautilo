@@ -35,6 +35,8 @@ operate, package, or release the public source tree.
   public specification template
 - [Build documentation](https://nautilo.ai/docs/build)
 - [Local development](https://nautilo.ai/docs/build/development/local-development)
+- [Windows x64 local source evaluation](docs/windows-local-evaluation.md) —
+  prerequisites, first-owner flow, validation scope, and current blockers
 - [Testing](https://nautilo.ai/docs/build/development/testing)
 
 ## GitHub contribution surfaces

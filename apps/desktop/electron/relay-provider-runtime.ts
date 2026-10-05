@@ -115,7 +115,7 @@ function devVendoredToolPath(name: string): string | null {
 
 function bundledBunPath(): string | null {
   if (!process.resourcesPath) return null;
-  const bundled = path.join(process.resourcesPath, "bun", process.arch, "bun");
+  const bundled = path.join(process.resourcesPath, "bun", process.arch, process.platform === "win32" ? "bun.exe" : "bun");
   return fsSync.existsSync(bundled) ? bundled : null;
 }
 

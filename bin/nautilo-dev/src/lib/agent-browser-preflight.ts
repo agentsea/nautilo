@@ -16,13 +16,14 @@ export async function ensureServerAgentBrowserProvisioned(
 ): Promise<boolean> {
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
-  if ((platform !== "darwin" && platform !== "linux") || (arch !== "arm64" && arch !== "x64")) {
+  if ((platform !== "darwin" && platform !== "linux" && platform !== "win32")
+    || (arch !== "arm64" && arch !== "x64") || (platform === "win32" && arch !== "x64")) {
     process.stderr.write(`[server:start] agent-browser: unsupported host ${platform}/${arch}\n`);
     return false;
   }
   const target = `${platform}-${arch}`;
   const vendorRoot = join(repoRoot, "packages/server/vendor/agent-browser");
-  const binary = join(vendorRoot, target, "agent-browser");
+  const binary = join(vendorRoot, target, platform === "win32" ? "agent-browser.exe" : "agent-browser");
   try {
     const manifest: unknown = JSON.parse(readFileSync(join(vendorRoot, "manifest.json"), "utf8"));
     const entry = record(record(manifest)["agent-browser"]);

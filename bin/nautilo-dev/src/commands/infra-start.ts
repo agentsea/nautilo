@@ -22,6 +22,7 @@
  * a fully provisioned environment to attach to.
  */
 import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import {
@@ -638,7 +639,7 @@ async function bringUpOfficeProfile(inst: ResolvedInstance): Promise<void> {
 
 export async function infraStart(options: InfraStartOptions = {}): Promise<number> {
   const inst = resolveInstance();
-  const home = process.env["HOME"]?.trim();
+  const home = process.env["HOME"]?.trim() || homedir();
   if (!home) {
     console.error("[infra:start] HOME is required to resolve clone provenance");
     return 1;

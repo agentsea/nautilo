@@ -5327,28 +5327,30 @@ const hermesAcpReadinessHost = new ElectronHermesAcpReadinessHost(
 const opencodeAcpReadinessHost = new ElectronOpenCodeAcpReadinessHost(
   createElectronOpenCodeAcpNativeProbe(),
 );
-const hermesAcpExecutionHost = new ElectronHermesAcpExecutionHost({
+const acpProcessTreeAvailable = process.platform !== "win32";
+const unavailableAcpExecutionHost = { isReady: () => false };
+const hermesAcpExecutionHost = acpProcessTreeAvailable ? new ElectronHermesAcpExecutionHost({
   currentFolder: () => currentFolderPath === null
     ? null
     : Object.freeze({ path: currentFolderPath, revision: currentFolderRevision }),
 }, {
   readiness: hermesAcpReadinessHost,
   onAvailabilityChanged: () => { void refreshDesktopRelayCapabilities("ACP cleanup settled"); },
-});
-const opencodeAcpExecutionHost = new ElectronOpenCodeAcpExecutionHost({
+}) : unavailableAcpExecutionHost;
+const opencodeAcpExecutionHost = acpProcessTreeAvailable ? new ElectronOpenCodeAcpExecutionHost({
   currentFolder: () => currentFolderPath === null
     ? null
     : Object.freeze({ path: currentFolderPath, revision: currentFolderRevision }),
 }, {
   readiness: opencodeAcpReadinessHost,
   onAvailabilityChanged: () => { void refreshDesktopRelayCapabilities("ACP cleanup settled"); },
-});
+}) : unavailableAcpExecutionHost;
 const acpExecutionRouter = new ElectronAcpExecutionRouter({
   "hermes-acp": hermesAcpExecutionHost,
   "opencode-acp": opencodeAcpExecutionHost,
 }, {
-  isEnabled: (registrationId) => registrationId === "opencode-acp" ||
-    loadConfig()?.hermesConnectionEnabled === true,
+  isEnabled: (registrationId) => acpProcessTreeAvailable &&
+    (registrationId === "opencode-acp" || loadConfig()?.hermesConnectionEnabled === true),
 });
 
 function codexProductionHostFactory(actorId: string) {

@@ -42,7 +42,7 @@
  * `packages/db/audits/sensitive-tables-matrix.md` for the canonical
  * per-table classification.
  */
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { resolveInstance } from "@nautilo/config";
 import {
   buildFullLegacyRoleRepairSql,
@@ -107,16 +107,18 @@ function defaultClusterExec(): ClusterExec {
       const target = db ?? "postgres";
       return execFileSync(
         "docker",
-        ["exec", container, "psql", "-U", superuser, "-t", "-A", "-c", sql.trim(), target],
-        { stdio: ["ignore", "pipe", "pipe"] },
+        ["exec", "-i", container, "psql", "-U", superuser, "-t", "-A", "-v", "ON_ERROR_STOP=1", target],
+        { input: `${sql.trim()}\n`, stdio: ["pipe", "pipe", "pipe"] },
       )
         .toString()
         .trim();
     },
     containerRunning: (container) => {
       try {
-        const out = execSync(
-          `docker inspect -f '{{.State.Running}}' ${container} 2>/dev/null`,
+        const out = execFileSync(
+          "docker",
+          ["inspect", "-f", "{{.State.Running}}", container],
+          { stdio: ["ignore", "pipe", "ignore"] },
         )
           .toString()
           .trim();

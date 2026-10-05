@@ -14,7 +14,7 @@ function fixture(target = "darwin-arm64") {
   const vendor = join(root, "packages/server/vendor/agent-browser");
   mkdirSync(join(vendor, target), { recursive: true });
   const bytes = Buffer.from("test executable bytes");
-  const binary = join(vendor, target, "agent-browser");
+  const binary = join(vendor, target, target === "win32-x64" ? "agent-browser.exe" : "agent-browser");
   writeFileSync(join(vendor, "manifest.json"), JSON.stringify({ "agent-browser": {
     version: "0.35.2", binaryName: "agent-browser", artifacts: { [target]: { sha256: sha256HexOfBytes(bytes) } },
   } }));
@@ -23,7 +23,7 @@ function fixture(target = "darwin-arm64") {
 }
 
 describe("server browser provisioning", () => {
-  test.each(["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"])("provisions missing %s bytes with the canonical vendor script", async (target) => {
+  test.each(["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"])("provisions missing %s bytes with the canonical vendor script", async (target) => {
     const f = fixture(target);
     const [platform, arch] = target.split("-");
     const calls: unknown[] = [];
@@ -44,7 +44,8 @@ describe("server browser provisioning", () => {
     expect(spawned).toBe(false);
   });
 
-  test.each(["corrupt", "non-executable"])("repairs a %s cached executable", async (condition) => {
+  const invalidCacheCases = process.platform === "win32" ? ["corrupt"] : ["corrupt", "non-executable"];
+  test.each(invalidCacheCases)("repairs a %s cached executable", async (condition) => {
     const f = fixture(); f.install();
     if (condition === "corrupt") writeFileSync(f.binary, "bad bytes");
     else chmodSync(f.binary, 0o644);
@@ -67,7 +68,7 @@ describe("server browser provisioning", () => {
     expect(await ensureServerAgentBrowserProvisioned(f.root, { platform: "darwin", arch: "arm64",
       spawn: () => { throw new Error("spawn failed"); },
     })).toBe(false);
-    expect(await ensureServerAgentBrowserProvisioned(f.root, { platform: "win32", arch: "x64",
+    expect(await ensureServerAgentBrowserProvisioned(f.root, { platform: "win32", arch: "arm64",
       spawn: () => { throw new Error("must not spawn"); },
     })).toBe(false);
   });

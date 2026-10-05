@@ -19,6 +19,7 @@
     "./test-d563-mini-app-source-continuation.test.ts",
     "./test-d563-model-attempt-single-owner.test.ts",
     "./test-harness-guard.test.ts",
+    "./test-first-party-app-production-install.test.ts",
     "./test-runtime-install-projection.test.ts",
     "./xmldom-security-floor.test.ts"
   ]

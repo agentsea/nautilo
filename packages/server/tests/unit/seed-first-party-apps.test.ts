@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import { seedFirstPartyApps } from "../../src/apps/seed-first-party-apps";
 
 let tempDirs: string[] = [];
@@ -211,7 +212,7 @@ describe("seedFirstPartyApps", () => {
 
     const appNodeModulesScope = join(sourceRoot, "writer", "node_modules", "@wafflebase");
     await mkdir(appNodeModulesScope, { recursive: true });
-    await symlink(dependencySource, join(appNodeModulesScope, "sheets"), "dir");
+    await symlink(dependencySource, join(appNodeModulesScope, "sheets"), process.platform === "win32" ? "junction" : "dir");
 
     const appsRoot = await makeTempDir("nautilo-seed-deref-");
     const result = await seedFirstPartyApps({ appsRoot, sourceRoot });
@@ -229,6 +230,68 @@ describe("seedFirstPartyApps", () => {
     expect(await readFile(join(seededDependency, "dist", "index.js"), "utf8")).toBe(
       "export const ok = true;\n",
     );
+  });
+
+  test("snapshots isolated runtime dependencies with local source updates, distinct versions, and cycles", async () => {
+    const sourceRoot = await makeTempDir("nautilo-seed-isolated-src-");
+    await makeFakeAppSource(sourceRoot, "writer", "nautilo-writer");
+    const writerDir = join(sourceRoot, "writer");
+    const store = join(writerDir, "node_modules", ".bun");
+    const localTypes = join(sourceRoot, "types");
+    const typesContext = join(store, "types", "node_modules");
+    const typesInstalled = join(typesContext, "@nautilo", "types");
+    const leafContext = join(store, "leaf", "node_modules");
+    const leafInstalled = join(leafContext, "leaf");
+    const sharedOne = join(store, "shared-one", "node_modules", "shared");
+    const sharedTwo = join(store, "shared-two", "node_modules", "shared");
+    const linkType = process.platform === "win32" ? "junction" : "dir";
+    async function writePackage(root: string, pkg: object, entry: string): Promise<void> {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, "package.json"), JSON.stringify({ main: "index.cjs", ...pkg }));
+      await writeFile(join(root, "index.cjs"), entry);
+    }
+    const typesManifest = {
+      name: "@nautilo/types", dependencies: { leaf: "1", shared: "1" },
+      devDependencies: { "dev-only": "1" },
+    };
+    await writePackage(localTypes, typesManifest,
+      'exports.label = "fresh"; exports.value = require("shared").value + ":" + require("leaf").value;');
+    await writePackage(typesInstalled, typesManifest, 'exports.label = "stale";');
+    await writePackage(leafInstalled, {
+      name: "leaf", dependencies: { shared: "2", "@nautilo/types": "1" },
+      optionalDependencies: { "uninstalled-platform-package": "1" },
+    }, 'exports.value = require("shared").value + ":" + require("@nautilo/types").label;');
+    await writePackage(sharedOne, { name: "shared", version: "1" }, 'exports.value = "one";');
+    await writePackage(sharedTwo, { name: "shared", version: "2" }, 'exports.value = "two";');
+    await writeFile(join(writerDir, "package.json"), JSON.stringify({
+      dependencies: { "@nautilo/types": "file:../types" },
+    }));
+    await mkdir(join(writerDir, "node_modules", "@nautilo"), { recursive: true });
+    await mkdir(join(leafContext, "@nautilo"), { recursive: true });
+    await symlink(typesInstalled, join(writerDir, "node_modules", "@nautilo", "types"), linkType);
+    await symlink(leafInstalled, join(typesContext, "leaf"), linkType);
+    await symlink(sharedOne, join(typesContext, "shared"), linkType);
+    await symlink(sharedTwo, join(leafContext, "shared"), linkType);
+    await symlink(typesInstalled, join(leafContext, "@nautilo", "types"), linkType);
+
+    const appsRoot = await makeTempDir("nautilo-seed-isolated-apps-");
+    await seedFirstPartyApps({ appsRoot, sourceRoot });
+    const seededWriter = join(appsRoot, "nautilo-writer");
+    expect(stat(join(seededWriter, "node_modules", ".bun"))).rejects.toMatchObject({ code: "ENOENT" });
+    const seededTypes = join(seededWriter, "node_modules", "@nautilo", "types");
+    expect(stat(join(seededTypes, "node_modules", "dev-only"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await lstat(join(seededTypes, "node_modules", "leaf"))).isSymbolicLink()).toBe(true);
+    const markerPath = join(seededWriter, ".nautilo-seed.json");
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
+    expect(marker["dependencyLayout"]).toBe("runtime-graph");
+    delete marker["dependencyLayout"];
+    await writeFile(markerPath, JSON.stringify(marker));
+    await writeFile(join(seededTypes, "index.cjs"), 'exports.label = "old-snapshot";');
+    expect((await seedFirstPartyApps({ appsRoot, sourceRoot })).seeded).toEqual(["nautilo-writer"]);
+    expect(await readFile(join(seededTypes, "index.cjs"), "utf8")).toContain('exports.label = "fresh"');
+    expect((await seedFirstPartyApps({ appsRoot, sourceRoot })).seeded).toEqual([]);
+    const requireSeed = createRequire(join(seededWriter, "main.ts"));
+    expect(requireSeed("@nautilo/types")).toEqual({ label: "fresh", value: "one:two:fresh" });
   });
 
   test("reseeds Writer from the declared file: source when its installed dependency copy is stale", async () => {
