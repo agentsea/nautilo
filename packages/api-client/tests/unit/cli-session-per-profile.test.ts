@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   clearCliSession,
   compareCliSessionProfileNames,
+  CliSessionFileModeError,
   CliSessionSecurityError,
   cliSessionPath,
   loadCliSession,
@@ -13,6 +14,10 @@ import {
   saveCliSessionIfRevisionMatches,
   saveCliSession,
 } from "@nautilo/api-client";
+
+// The session store requires POSIX owner-only modes. Windows has no supported
+// ACL implementation here; exercise its refusal separately without relaxing it.
+const posixTest = test.skipIf(process.platform === "win32");
 
 function rootDir(): string {
   const override = process.env["NAUTILO_HOME_OVERRIDE"];
@@ -75,7 +80,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     );
   });
 
-  test("saveCliSession + loadCliSession round-trip per profile with mode 0600", async () => {
+  posixTest("saveCliSession + loadCliSession round-trip per profile with mode 0600", async () => {
     const row = sessionRow("alpha");
     await saveCliSession(row, { profile: "alpha" });
     const st = await stat(join(rootDir(), "sessions", "alpha.json"));
@@ -84,7 +89,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(loaded?.handle).toBe("alpha");
   });
 
-  test("clearCliSession({ profile }) removes only profile file", async () => {
+  posixTest("clearCliSession({ profile }) removes only profile file", async () => {
     await saveCliSession(sessionRow("legacy"), undefined);
     await saveCliSession(sessionRow("prof"), { profile: "p1" });
     await clearCliSession({ profile: "p1" });
@@ -92,7 +97,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(await loadCliSession({ profile: "p1" })).toBeNull();
   });
 
-  test("per-profile and legacy stores are independent", async () => {
+  posixTest("per-profile and legacy stores are independent", async () => {
     await saveCliSession(sessionRow("leg"), undefined);
     await saveCliSession(sessionRow("pro"), { profile: "x" });
     expect((await loadCliSession())?.handle).toBe("leg");
@@ -104,7 +109,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect((await loadCliSession({ profile: "x" }))?.handle).toBe("pro2");
   });
 
-  test("migrateLegacySessionFile: migrates once then no-ops", async () => {
+  posixTest("migrateLegacySessionFile: migrates once then no-ops", async () => {
     const r = rootDir();
     await mkdir(r, { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
@@ -124,7 +129,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(st.mode & 0o777).toBe(0o600);
   });
 
-  test("migrateLegacySessionFile: false when target profile file exists", async () => {
+  posixTest("migrateLegacySessionFile: false when target profile file exists", async () => {
     const r = rootDir();
     await mkdir(join(r, "sessions"), { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
@@ -145,7 +150,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(readFileSync(join(r, "cli-session.json"), "utf-8")).toContain("leg");
   });
 
-  test("migrateLegacySessionFile: false when sessions dir has another .json", async () => {
+  posixTest("migrateLegacySessionFile: false when sessions dir has another .json", async () => {
     const r = rootDir();
     await mkdir(join(r, "sessions"), { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
@@ -166,7 +171,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(readFileSync(join(r, "cli-session.json"), "utf-8")).toContain("leg");
   });
 
-  test("migrateLegacySessionFile: false when nothing to migrate", async () => {
+  posixTest("migrateLegacySessionFile: false when nothing to migrate", async () => {
     expect(await migrateLegacySessionFile("default")).toBe(false);
   });
 
@@ -175,13 +180,13 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(() => cliSessionPath({ profile: ".active" })).toThrow(CliSessionSecurityError);
   });
 
-  test("preserves existing Unicode and space profile names", async () => {
+  posixTest("preserves existing Unicode and space profile names", async () => {
     const profile = "prod café west";
     await saveCliSession(sessionRow("unicode"), { profile });
     expect((await loadCliSession({ profile }))?.handle).toBe("unicode");
   });
 
-  test("hardens an owned historical sessions directory instead of rejecting it", async () => {
+  posixTest("hardens an owned historical sessions directory instead of rejecting it", async () => {
     const r = rootDir();
     const sessions = join(r, "sessions");
     await mkdir(sessions, { recursive: true, mode: 0o700 });
@@ -191,7 +196,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect((await stat(sessions)).mode & 0o777).toBe(0o700);
   });
 
-  test("rejects a symlinked sessions parent during load", async () => {
+  posixTest("rejects a symlinked sessions parent during load", async () => {
     const r = rootDir();
     await mkdir(r, { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
@@ -199,7 +204,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(loadCliSession({ profile: "prod" })).rejects.toBeInstanceOf(CliSessionSecurityError);
   });
 
-  test("refuses a symlinked session file", async () => {
+  posixTest("refuses a symlinked session file", async () => {
     const r = rootDir();
     await mkdir(r, { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
@@ -207,14 +212,14 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(loadCliSession()).rejects.toBeInstanceOf(CliSessionSecurityError);
   });
 
-  test("clear removes an owned regular session even when its mode is insecure", async () => {
+  posixTest("clear removes an owned regular session even when its mode is insecure", async () => {
     await saveCliSession(sessionRow("clear-mode"));
     chmodSync(cliSessionPath(), 0o644);
     await clearCliSession();
     expect(existsSync(cliSessionPath())).toBe(false);
   });
 
-  test("does not present malformed or schema-invalid session bytes as a missing login", async () => {
+  posixTest("does not present malformed or schema-invalid session bytes as a missing login", async () => {
     const r = rootDir();
     await mkdir(r, { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
@@ -226,7 +231,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(loadCliSession()).rejects.toBeInstanceOf(CliSessionSecurityError);
   });
 
-  test("accepts an owned legacy root with compatible non-0700 mode", async () => {
+  posixTest("accepts an owned legacy root with compatible non-0700 mode", async () => {
     const r = rootDir();
     await mkdir(r, { recursive: true, mode: 0o700 });
     chmodSync(r, 0o755);
@@ -234,7 +239,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect((await loadCliSession())?.handle).toBe("root-compatible");
   });
 
-  test("fails closed instead of racing to reclaim a dead-owner lock", async () => {
+  posixTest("fails closed instead of racing to reclaim a dead-owner lock", async () => {
     const r = rootDir();
     await mkdir(r, { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
@@ -245,7 +250,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(readFileSync(lock, "utf8")).toContain('"dead"');
   });
 
-  test("does not remove a lock owned by a live process", async () => {
+  posixTest("does not remove a lock owned by a live process", async () => {
     const r = rootDir();
     await mkdir(r, { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
@@ -256,7 +261,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(readFileSync(lock, "utf8")).toContain('"live"');
   });
 
-  test("serializes clear and save without leaving a lock or temporary file", async () => {
+  posixTest("serializes clear and save without leaving a lock or temporary file", async () => {
     await saveCliSession(sessionRow("before"));
     await Promise.all([clearCliSession(), saveCliSession(sessionRow("after"))]);
     const r = rootDir();
@@ -265,7 +270,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(existsSync(join(r, "cli-session.json.lock"))).toBe(false);
   });
 
-  test("compare-and-swap rotation refuses a stale opaque revision", async () => {
+  posixTest("compare-and-swap rotation refuses a stale opaque revision", async () => {
     const original = { ...sessionRow("rotate"), refreshToken: "refresh-a" };
     await saveCliSession(original, { profile: "default" });
 
@@ -291,7 +296,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect((await loadCliSession({ profile: "default" }))?.refreshToken).toBe("refresh-a");
   });
 
-  test("migration will not overwrite an existing legacy backup", async () => {
+  posixTest("migration will not overwrite an existing legacy backup", async () => {
     const r = rootDir();
     await mkdir(r, { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
@@ -302,7 +307,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(migrateLegacySessionFile("prod")).rejects.toBeInstanceOf(CliSessionSecurityError);
   });
 
-  test("serializes a concurrent legacy save and migration without clobbering either session", async () => {
+  posixTest("serializes a concurrent legacy save and migration without clobbering either session", async () => {
     const r = rootDir();
     const original = sessionRow("legacy-before");
     await saveCliSession(original);
@@ -317,5 +322,19 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(legacy?.handle === "legacy-after" || profiled?.handle === "legacy-after").toBe(true);
     expect(existsSync(join(r, "cli-session.json.lock"))).toBe(false);
     expect(existsSync(join(r, "sessions", "prod.json.lock"))).toBe(false);
+  });
+
+  test.skipIf(process.platform !== "win32")("Windows refuses a profiled credential write without private directory modes", async () => {
+    const result = await saveCliSession(sessionRow("blocked"), { profile: "prod" })
+      .catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(CliSessionSecurityError);
+    expect(existsSync(cliSessionPath({ profile: "prod" }))).toBe(false);
+  });
+
+  test.skipIf(process.platform !== "win32")("Windows refuses to load credentials without owner-only file modes", async () => {
+    await mkdir(rootDir(), { recursive: true });
+    writeFileSync(cliSessionPath(), JSON.stringify(sessionRow("blocked")), { mode: 0o600 });
+    const result = await loadCliSession().catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(CliSessionFileModeError);
   });
 });

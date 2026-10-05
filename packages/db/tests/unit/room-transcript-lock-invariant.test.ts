@@ -8,6 +8,7 @@ describe("M219 production Room transcript lock invariant", () => {
   test("every direct production session_messages writer acquires the shared Room lock", () => {
     const glob = new Bun.Glob("packages/*/src/**/*.ts");
     const writers = [...glob.scanSync({ cwd: REPO_ROOT })]
+      .map((path) => path.replaceAll("\\", "/"))
       .filter((path) => {
         const source = readFileSync(resolve(REPO_ROOT, path), "utf8");
         return (

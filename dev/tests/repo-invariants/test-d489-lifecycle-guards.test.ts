@@ -21,7 +21,7 @@ describe("D489 lifecycle repository guards", () => {
     const productionFiles = walk(devSourceRoot).filter((path) => path.endsWith(".ts"));
     const declarations = (pattern: RegExp): string[] => productionFiles
       .filter((path) => pattern.test(readFileSync(path, "utf8")))
-      .map((path) => relative(repoRoot, path));
+      .map((path) => relative(repoRoot, path).replaceAll("\\", "/"));
 
     expect(declarations(/export async function materializeClone\s*\(/)).toEqual([
       "bin/nautilo-dev/src/commands/clone.ts",
@@ -47,7 +47,7 @@ describe("D489 lifecycle repository guards", () => {
     const deletionOwners = productionFiles
       .filter((path) => /DELETE\s+FROM\s+langchain\.(?:checkpoints|checkpoint_writes|checkpoint_blobs)/i
         .test(readFileSync(path, "utf8")))
-      .map((path) => relative(repoRoot, path));
+      .map((path) => relative(repoRoot, path).replaceAll("\\", "/"));
     expect(deletionOwners).toEqual([
       "bin/nautilo-dev/src/lib/checkpoint-semantic-compaction.ts",
     ]);
@@ -100,7 +100,7 @@ describe("D489 lifecycle repository guards", () => {
         return /(?:Bun\.spawn\(|spawn\("bun")/.test(body) &&
           /NAUTILO_D489_(?:LIVE_CHILD|PARENT_OWNS_CLEANUP)/.test(body);
       })
-      .map((path) => relative(repoRoot, path))
+      .map((path) => relative(repoRoot, path).replaceAll("\\", "/"))
       .sort();
     expect(discovered).toEqual([
       "bin/nautilo-dev/tests/integration/d489-checkpoint-maintenance-acceptance-runner.ts",

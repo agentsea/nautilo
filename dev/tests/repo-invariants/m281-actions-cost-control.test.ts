@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const repositoryRoot = join(import.meta.dir, "../../..");
 const workflowsRoot = join(repositoryRoot, ".github/workflows");
@@ -63,15 +64,10 @@ const gitLocalEnvironmentNames = [
   "GIT_WORK_TREE",
 ] as const;
 
-function withoutGitLocalEnvironment(
-  command: string,
-  args: string[],
-): string[] {
-  return [
-    ...gitLocalEnvironmentNames.flatMap((name) => ["-u", name]),
-    command,
-    ...args,
-  ];
+function withoutGitLocalEnvironment(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of gitLocalEnvironmentNames) delete env[name];
+  return env;
 }
 
 async function spawnText(
@@ -85,6 +81,7 @@ async function spawnText(
   try {
     const child = Bun.spawn([command, ...args], {
       cwd: options.cwd ?? process.cwd(),
+      env: withoutGitLocalEnvironment(),
       stdout: Bun.file(stdoutPath),
       stderr: Bun.file(stderrPath),
     });
@@ -100,7 +97,7 @@ async function spawnText(
 }
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  const result = await spawnText("env", withoutGitLocalEnvironment("git", args), { cwd });
+  const result = await spawnText("git", args, { cwd });
   expect(
     result.status,
     `git ${args.join(" ")} failed:\n${result.stderr}`,
@@ -161,7 +158,7 @@ async function workspacePathsFor(rootName: string): Promise<string[]> {
       };
       if (!manifest.name) continue;
       manifests.set(manifest.name, {
-        path: dirname(manifestPath),
+        path: dirname(manifestPath).replaceAll("\\", "/"),
         dependencies: [
           ...Object.keys(manifest.dependencies ?? {}),
           ...Object.keys(manifest.devDependencies ?? {}),
@@ -207,7 +204,7 @@ async function firstPartyRuntimeWorkspacePaths(): Promise<string[]> {
         relative(
           repositoryRoot,
           resolve(repositoryRoot, dirname(manifestPath), specifier.slice(5)),
-        ),
+        ).replaceAll("\\", "/"),
       );
     }
   }
@@ -575,27 +572,28 @@ describe("M281 GitHub Actions cost controls", () => {
       const baseSha = await git(seed, "rev-parse", "HEAD");
       writeFileSync(join(seed, "fixture.txt"), "head\n");
       await git(seed, "commit", "-am", "head");
-      await git(seed, "remote", "add", "origin", `file://${remote}`);
+      const remoteUrl = pathToFileURL(remote).href;
+      await git(seed, "remote", "add", "origin", remoteUrl);
       await git(seed, "push", "origin", "HEAD:main");
-      await git(fixtureRoot, "clone", "--depth=1", "--branch", "main", `file://${remote}`, shallow);
+      await git(fixtureRoot, "clone", "--depth=1", "--branch", "main", remoteUrl, shallow);
 
       expect(
         (await spawnText(
-          "env",
-          withoutGitLocalEnvironment("git", [
+          "git",
+          [
             "cat-file",
             "-e",
             `${baseSha}^{commit}`,
-          ]),
+          ],
           { cwd: shallow },
         )).status,
       ).not.toBe(0);
       const fetchResult = await spawnText(
-        "env",
-        withoutGitLocalEnvironment("bash", [
-          join(repositoryRoot, "dev/scripts/ensure-ci-base.sh"),
+        "bash",
+        [
+          join(repositoryRoot, "dev/scripts/ensure-ci-base.sh").replaceAll("\\", "/"),
           baseSha,
-        ]),
+        ],
         { cwd: shallow },
       );
       if (fetchResult.status !== 0) {
@@ -603,24 +601,23 @@ describe("M281 GitHub Actions cost controls", () => {
           `Exact-base fetch failed (status ${String(fetchResult.status)}):\n${fetchResult.stderr}`,
         );
       }
-      expect(
-        (await spawnText(
-          "env",
-          withoutGitLocalEnvironment("git", [
+      const fetchedBase = await spawnText(
+          "git",
+          [
             "cat-file",
             "-e",
             `${baseSha}^{commit}`,
-          ]),
+          ],
           { cwd: shallow },
-        )).status,
-      ).toBe(0);
+        );
+      expect(fetchedBase.status, fetchedBase.stderr + fetchResult.stdout + fetchResult.stderr).toBe(0);
 
       const missingResult = await spawnText(
-        "env",
-        withoutGitLocalEnvironment("bash", [
-          join(repositoryRoot, "dev/scripts/ensure-ci-base.sh"),
+        "bash",
+        [
+          join(repositoryRoot, "dev/scripts/ensure-ci-base.sh").replaceAll("\\", "/"),
           "0".repeat(40),
-        ]),
+        ],
         { cwd: shallow },
       );
       expect(missingResult.status).not.toBe(0);

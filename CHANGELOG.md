@@ -21,6 +21,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   app copies preserve resolved package versions and dependency cycles.
 - Contributor scripts and tests convert file URLs to native filesystem paths,
   including Windows drive letters and encoded characters.
+- Contributor Git hooks execute their affected checks on Windows, and repository
+  invariants compare portable paths without changing their ownership rules.
 
 - Add GPT-6.1 Sol and Claude Sonnet 5.5 across direct, OpenRouter, and Venice
   routes, plus Venice Claude Fable 5.1. Preserve supported reasoning effort,

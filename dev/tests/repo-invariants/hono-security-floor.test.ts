@@ -33,7 +33,7 @@ async function findLockfiles(directory: string): Promise<string[]> {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) paths.push(...(await findLockfiles(path)));
     if (entry.isFile() && entry.name === "bun.lock") {
-      paths.push(relative(repositoryRoot, path));
+      paths.push(relative(repositoryRoot, path).replaceAll("\\", "/"));
     }
   }
   return paths.sort();

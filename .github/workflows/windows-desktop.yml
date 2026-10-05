@@ -13,9 +13,15 @@ on:
       - "packages/relay/**"
       - ".bun-version"
       - "dev/scripts/install-first-party-apps.ts"
-      - "dev/tests/repo-invariants/test-first-party-app-production-install.test.ts"
+      - "dev/scripts/windows-unit-gate.ts"
+      - "dev/scripts/pre-push-gate.sh"
+      - "dev/scripts/ci-gates.sh"
+      - "dev/scripts/tsconfig.json"
+      - "dev/tests/repo-invariants/**"
+      - "lefthook.yml"
       - "infra/compose/**"
       - "packages/acp-host/**"
+      - "packages/api-client/**"
       - "packages/db/**"
       - "packages/document-mutations/**"
       - "packages/first-party-apps/**"
@@ -26,6 +32,7 @@ on:
       - "packages/runtime/**"
       - "packages/server/**"
       - "packages/types/**"
+      - "packages/trust/**"
       - "packages/writer-proposal-core/**"
       - "packaging/openconnector/**"
       - "package.json"
@@ -76,31 +83,6 @@ jobs:
       - name: Install frozen dependencies
         run: bun install --frozen-lockfile
 
-      - name: Test Windows package and Bun cache contracts
-        run: bun test apps/desktop/tests/unit/windows-package-contract.test.ts apps/desktop/tests/unit/bun-vendor-cache.test.ts
-
-      - name: Test first-party app installation and dependency seeding
-        run: bun test dev/tests/repo-invariants/test-first-party-app-production-install.test.ts packages/server/tests/unit/seed-first-party-apps.test.ts packages/server/tests/unit/runtime-dependency-snapshot.test.ts
-
-      - name: Test native file URL paths
-        run: |
-          $tests = @(
-            'packages/db/tests/unit/moderation-migration-privileges.test.ts',
-            'packages/document-mutations/tests/unit/coordinator.test.ts',
-            'packages/runtime/tests/unit/conversation-composition.test.ts',
-            'packages/lattice-crypto/tests/unit/mutation-governance.test.ts',
-            'apps/cli/tests/unit/cloudflare-r2-oauth-probe.test.ts',
-            'apps/workbench/src/modes/rooms/explorer/tests/explorer-grouping.test.ts',
-            'apps/workbench/tests/unit-isolated/terminal-co-driving-consent.test.tsx',
-            'apps/workbench/tests/unit-isolated/maintenance-applying-gate.test.tsx',
-            'apps/workbench/tests/unit-isolated/maintenance-applying-boundary.test.tsx',
-            'scripts/stack309-ios-simulator-input-helper.test.ts'
-          )
-          foreach ($testPath in $tests) {
-            bun test $testPath
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-
       - name: Install Writer development dependencies
         run: bun install --cwd packages/first-party-apps/writer --frozen-lockfile --omit=peer --linker=isolated
 
@@ -119,11 +101,8 @@ jobs:
       - name: Build Video
         run: bun run --cwd packages/first-party-apps/video build
 
-      - name: Test Writer
-        run: bun run --cwd packages/first-party-apps/writer test
-
-      - name: Test Video
-        run: bun run --cwd packages/first-party-apps/video test
+      - name: Test Windows source contracts
+        run: bun dev/scripts/windows-unit-gate.ts
 
       - name: Typecheck Desktop
         env:
@@ -140,18 +119,6 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=5120
         run: bun run --cwd packages/server typecheck
-
-      - name: Test Windows agent-browser provisioning
-        run: bun test bin/nautilo-dev/tests/unit/agent-browser-preflight.test.ts
-
-      - name: Test Relay Host path resolution and lifecycle
-        run: bun test apps/desktop/tests/unit-isolated/relay-sidecar-client.test.ts
-
-      - name: Test server browser executable selection
-        run: bun test packages/server/tests/unit/connected-web-account-direct-browser-harness.test.ts
-
-      - name: Test OpenConnector source provenance
-        run: bun test packaging/openconnector/provenance.test.ts
 
       - name: Build Windows Desktop installer
         env:

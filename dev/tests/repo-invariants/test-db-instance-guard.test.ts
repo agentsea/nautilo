@@ -150,7 +150,7 @@ function hasGuard(body: string): boolean {
 type Violation = { file: string; code: "missing_guard" | "hardcoded_default_port" };
 
 function auditFile(absPath: string): Violation[] {
-  const rel = relative(repoRoot, absPath);
+  const rel = relative(repoRoot, absPath).replaceAll("\\", "/");
   if (rel in EXEMPT) return [];
   const body = readFileSync(absPath, "utf8");
   if (!isLiveDbFile(body)) return [];

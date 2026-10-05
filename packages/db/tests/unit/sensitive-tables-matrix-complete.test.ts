@@ -70,7 +70,7 @@ describe("sensitive-tables-matrix completeness", () => {
 
   it("resolves matrix from packages/db/audits (CI layout)", () => {
     const p = resolve(import.meta.dir, MATRIX_RELATIVE);
-    expect(p.endsWith("packages/db/audits/sensitive-tables-matrix.md")).toBe(true);
+    expect(p.replaceAll("\\", "/").endsWith("packages/db/audits/sensitive-tables-matrix.md")).toBe(true);
     expect(existsSync(p)).toBe(true);
   });
 });

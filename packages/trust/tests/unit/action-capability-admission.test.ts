@@ -604,7 +604,7 @@ function productionFilesMatching(pattern: RegExp): string[] {
     collectProductionTypeScriptFiles(join(REPO_ROOT, root)),
   )
     .filter((file) => pattern.test(readFileSync(file, "utf8")))
-    .map((file) => file.slice(REPO_ROOT.length + 1))
+    .map((file) => file.slice(REPO_ROOT.length + 1).replaceAll("\\", "/"))
     .sort();
 }
 
@@ -952,7 +952,7 @@ function productionOccurrenceCounts(sources: readonly { file: string; source: st
           )
         : source;
       return {
-        file: file.slice(REPO_ROOT.length + 1),
+        file: file.slice(REPO_ROOT.length + 1).replaceAll("\\", "/"),
         count: [...searchable.matchAll(matcher)].length,
       };
     })

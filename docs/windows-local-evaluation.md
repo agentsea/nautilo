@@ -110,12 +110,19 @@ it does not contain a database or start the server itself.
 ## Known limits of this Windows result
 
 - The Windows workflow has not yet run on a hosted runner.
-- The root `bun run typecheck` script uses POSIX environment-assignment syntax
-  and fails before TypeScript starts in native PowerShell on Windows. Package
-  typechecks for `@nautilo/dev-tools`, `@nautilo/db`, and `@nautilo/desktop`
-  passed separately; that is not a substitute for the repository-wide check.
+- Contributor Git hooks need native Git Bash from Git for Windows on `PATH`.
+  The hooks run the affected package checks and repository invariants. They
+  do not replace hosted CI or qualify a Windows release.
+- Native Windows unit qualification uses `bun dev/scripts/windows-unit-gate.ts`,
+  shared by the local push hook and Windows workflow. It covers local Server,
+  Desktop, Writer, Video, and portable API/database/trust contracts. Deployment,
+  backup, and recovery tools still require the full POSIX CI qualification.
 - The server OfficeCLI manifest has no `win-x64` artifact; startup reported that
   OfficeCLI provisioning was skipped. Office-dependent behavior is unverified.
+- Persistent CLI login is unsupported on Windows. Its session store requires
+  POSIX owner-only file modes and has no Windows ACL implementation. The
+  Windows tests verify credential storage refusals; POSIX permission and lock
+  tests run on POSIX systems. Desktop uses its own login storage.
 - ACP-backed Hermes and OpenCode execution is not advertised on Windows. The
   process-tree containment required by that feature is unavailable; allowing
   those hosts to start would weaken its safety boundary.
