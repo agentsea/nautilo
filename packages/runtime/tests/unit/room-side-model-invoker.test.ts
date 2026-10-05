@@ -1,8 +1,24 @@
 import { describe, expect, test } from "bun:test";
+import { SurplusOutcomeUnknownError } from "@nautilo/agent";
 import {
   classifyRoomSideInvocationFailure,
+  mapModelFailure,
   runRoomSideModelWithDeadline,
 } from "../../src/stenographer/model-invoker";
+
+describe("room-side model failure classification", () => {
+  test("preserves an uncertain Surplus outcome as a non-replayable failure", () => {
+    const failure = new SurplusOutcomeUnknownError();
+    expect(classifyRoomSideInvocationFailure(failure)).toBe(failure);
+    expect(mapModelFailure(failure)).toBe("provider_outcome_unknown");
+  });
+
+  test("retains ordinary provider and timeout recovery", () => {
+    expect(mapModelFailure(new Error("provider rate limit"))).toBe("provider");
+    expect(mapModelFailure(new Error("room_side_model_deadline_exceeded"))).toBe("timeout");
+    expect(mapModelFailure(new Error("unexpected response"))).toBe("unknown");
+  });
+});
 
 describe("room-side model hard deadline", () => {
   test("preserves room-side provider failures", () => {

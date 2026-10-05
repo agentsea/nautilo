@@ -1395,6 +1395,7 @@ export { MemoryReviewError } from "./memory/memory-review-staging";
 export { exportFinalizedSecurityResearch, assertSecurityResearchResumeBinding, assertSecurityResearchContextFailureRecovery, type SecurityResearchExportInput } from "./tools/security/research-export";
 
 export { ProviderTimeoutError, isSafelyRetryableProviderTimeout } from "./providers/errors";
+export { SurplusOutcomeUnknownError } from "./providers/surplus-transport";
 
 export type {
   OrdinaryContentAccessPort,

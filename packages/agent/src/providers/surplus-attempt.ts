@@ -110,14 +110,22 @@ export function canUseQualifiedSurplusChatRoute(input: {
   return input.estimatedInputTokens + input.maxOutputTokens <= route.maxContextTokens;
 }
 
-/** A successful marketplace response must prove that it stayed on the qualified provider family. */
+function hasUnsupportedSurplusAdaptation(adaptedParameters: string | undefined): boolean {
+  const adapted = adaptedParameters?.trim();
+  // This key only chooses a prompt cache bucket. It does not change the prompt,
+  // model, output budget, or reasoning controls. Other or mixed adaptations
+  // still fail closed; cache retention and session affinity are not exempt.
+  return Boolean(adapted && adapted !== "prompt_cache_key");
+}
+
+/** A successful marketplace response must preserve the provider and inference settings. */
 export function assertSuccessfulSurplusProviderReceipt(
   route: QualifiedSurplusChatRoute,
   receipt: SurplusWireReceipt,
   responseStatus: number,
 ): void {
   if (responseStatus < 200 || responseStatus >= 300) return;
-  if (receipt.adaptedParameters?.trim()) {
+  if (hasUnsupportedSurplusAdaptation(receipt.adaptedParameters)) {
     throw new SurplusAdaptedParametersError();
   }
   if (receipt.providerFamily?.trim().toLowerCase() !== route.providerPin) {
@@ -169,7 +177,7 @@ export function classifySurplusFailedAttempt(input: {
     ? "cancelled" as const
     : input.receipt?.truncated === true
       ? "truncated_response" as const
-      : input.receipt?.adaptedParameters?.trim() || input.error instanceof SurplusAdaptedParametersError
+      : hasUnsupportedSurplusAdaptation(input.receipt?.adaptedParameters) || input.error instanceof SurplusAdaptedParametersError
         ? "adapted_parameters" as const
         : input.error instanceof SurplusProviderRouteMismatchError
           ? "provider_route_mismatch" as const

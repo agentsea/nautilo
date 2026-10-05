@@ -403,6 +403,60 @@ describe("Surplus wire boundary", () => {
     )).not.toThrow();
   });
 
+  test("accepts only the cache routing hint while preserving provider and inference guards", () => {
+    const receipt = { providerFamily: "venice", truncated: false };
+    expect(() => assertSuccessfulSurplusProviderReceipt(
+      VENICE_ROUTE, { ...receipt, adaptedParameters: " prompt_cache_key " }, 200,
+    )).not.toThrow();
+    for (const adaptation of [
+      "model", "reasoning_effort", "max_completion_tokens", "response_format",
+      "prompt_cache_retention", "session_id", "unknown_setting", "PROMPT_CACHE_KEY",
+      "prompt_cache_key,reasoning_effort", "prompt_cache_key,", ",prompt_cache_key",
+    ]) {
+      expect(() => assertSuccessfulSurplusProviderReceipt(
+        VENICE_ROUTE, { ...receipt, adaptedParameters: adaptation }, 200,
+      )).toThrow(SurplusAdaptedParametersError);
+    }
+    expect(() => assertSuccessfulSurplusProviderReceipt(
+      VENICE_ROUTE, { ...receipt, providerFamily: "openai", adaptedParameters: "prompt_cache_key" }, 200,
+    )).toThrow(SurplusProviderRouteMismatchError);
+  });
+
+  test("cache-hint adaptation consumes the streamed completion and its terminal usage once", async () => {
+    const route = { ...QUALIFIED_OPENROUTER_ROUTE, catalogModelId: "openai:gpt-5.6-luna", surplusModelId: "gpt-5.6-luna", providerPin: "openai" as const };
+    const chunks = [{
+      id: "chatcmpl-surplus-cache-hint", object: "chat.completion.chunk", created: 1, model: "gpt-5.6-luna",
+      choices: [{ index: 0, delta: { role: "assistant", content: '{"operations":[]}' }, finish_reason: "stop" }],
+    }, {
+      id: "chatcmpl-surplus-cache-hint", object: "chat.completion.chunk", created: 1, model: "gpt-5.6-luna",
+      choices: [], usage: { prompt_tokens: 50, completion_tokens: 7, total_tokens: 57, buyer_cost_micro: 91 },
+    }];
+    let requests = 0;
+    let receipt: Parameters<typeof assertSuccessfulSurplusProviderReceipt>[1] | undefined;
+    const model = createSurplusChatModel({
+      route, apiKey: "test-key", maxOutputTokens: 100,
+      onResponse: (next, status) => { receipt = next; assertSuccessfulSurplusProviderReceipt(route, next, status); },
+      fetchImpl: (async () => {
+        requests++;
+        return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", {
+          status: 200, headers: { "content-type": "text/event-stream", "x-request-id": "request-cache-hint",
+            "x-si-provider-family": "openai", "x-si-adapted-params": "prompt_cache_key" },
+        });
+      }) as unknown as typeof fetch,
+    });
+    const response = await model.invoke([new HumanMessage("Extract the journal")]) as AIMessage;
+    expect(response.content).toBe('{"operations":[]}');
+    expect(() => assertCompleteSurplusResponse(receipt, response)).not.toThrow();
+    expect(readSurplusResponseUsage(response)).toMatchObject({ inputTokens: 50, outputTokens: 7, totalTokens: 57 });
+    expect(receipt?.adaptedParameters).toBe("prompt_cache_key");
+    expect(requests).toBe(1);
+    expect(classifySurplusFailedAttempt({
+      error: new Error("connection lost"), cancelled: false, responseStatus: 200, receipt,
+    })).toMatchObject({ outcome: "unknown", costState: "pending", failureCode: "outcome_unknown", directFallback: false });
+    expect(isSafeSurplusDirectFallback({ code: "no_sellers_for_model" }, 404,
+      { ...receipt!, marketplaceAttempts: 0 }, false)).toBe(false);
+  });
+
   test("rejects a successful adapted response before the SDK can assemble its output", async () => {
     const chunk = {
       id: "chatcmpl-surplus-adapted",

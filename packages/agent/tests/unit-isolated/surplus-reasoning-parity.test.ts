@@ -7,7 +7,7 @@ import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 const createModelInputs: Record<string, unknown>[] = [];
-let observedResponse: ((receipt: { requestId: string; providerFamily: string; truncated: boolean }, status: number) => Promise<void>) | undefined;
+let observedResponse: ((receipt: { requestId: string; providerFamily: string; truncated: boolean; adaptedParameters?: string }, status: number) => Promise<void>) | undefined;
 const beginAttempt = mock(async () => {});
 const settleAttempt = mock(async (_input: Record<string, unknown>) => {});
 
@@ -217,6 +217,33 @@ describe("Surplus reasoning parity", () => {
       reasoningTokens: 10,
       cachedInputTokens: 3,
     });
+  });
+
+  test("a completed cache-adapted journal response settles once with tokens and no replay", async () => {
+    let inferenceCalls = 0;
+    const response = new AIMessage({
+      content: '{"operations":[]}',
+      response_metadata: { finish_reason: "stop", usage: { prompt_tokens: 50, completion_tokens: 7, total_tokens: 57, buyer_cost_micro: 91 } },
+    });
+    const result = await invokeSurplusChatAttempt({
+      route: ROUTE, apiKey: "synthetic-surplus-key", messages: [new HumanMessage("Extract the journal")], tools: [],
+      config: {}, maxOutputTokens: 256, funding: { kind: "service", providerRoute: "surplus", humanUserId: "user-1" },
+      invokeModel: async () => {
+        inferenceCalls++;
+        await observedResponse!({ requestId: "cache-adapted-journal", providerFamily: "openrouter", truncated: false, adaptedParameters: "prompt_cache_key" }, 200);
+        return response;
+      },
+    });
+    expect(result).toEqual({ kind: "served", response, requestId: "cache-adapted-journal" });
+    expect(inferenceCalls).toBe(1);
+    expect(beginAttempt).toHaveBeenCalledTimes(1);
+    expect(settleAttempt).toHaveBeenCalledTimes(1);
+    expect(settleAttempt.mock.calls[0]?.[0]).toMatchObject({
+      outcome: "succeeded", costState: "actual", actualCostUsd: 0.000091,
+      inputTokens: 50, outputTokens: 7, totalTokens: 57,
+      metadata: { surplusAdaptedParameters: ["prompt_cache_key"] },
+    });
+    expect(settleAttempt.mock.calls[0]?.[0]).not.toHaveProperty("failureCode");
   });
 
   test("an uncertain committed settlement retry remains one attempt", async () => {
