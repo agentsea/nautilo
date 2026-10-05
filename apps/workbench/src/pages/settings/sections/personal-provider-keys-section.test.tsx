@@ -254,6 +254,45 @@ describe("PersonalProviderKeysSection", () => {
     expect(view.container.textContent).not.toContain("sk-private-value");
   });
 
+  test("blocks Gateway key entry until the server publishes its fixed destination", async () => {
+    const withoutGatewayDestination = providers.map((provider) =>
+      provider.id === "gateway" ? { ...provider, destination: null } : provider);
+    const view = render(<PersonalProviderKeysSection credentialApi={api({
+      listProviderCredentials: mock(async () => ({ credentials: [], providers: withoutGatewayDestination })),
+    })} />);
+
+    const add = await view.findByRole("button", { name: "Add Gateway key" });
+    expect((add as HTMLButtonElement).disabled).toBeTrue();
+    expect(view.getByText(
+      "Gateway is not configured on this server. Ask the server operator to publish its fixed destination before adding or replacing a key.",
+    )).toBeTruthy();
+    fireEvent.click(add);
+    expect(view.queryByLabelText("New Gateway API key")).toBeNull();
+  });
+
+  test("keeps an existing Gateway key removable when its destination is unavailable", async () => {
+    const withoutGatewayDestination = providers.map((provider) =>
+      provider.id === "gateway" ? { ...provider, destination: null } : provider);
+    const gateway = { ...saved, provider: "gateway", id: "credential-gateway" };
+    const view = render(<PersonalProviderKeysSection credentialApi={api({
+      listProviderCredentials: mock(async () => ({ credentials: [gateway], providers: withoutGatewayDestination })),
+    })} />);
+
+    expect((await view.findByRole("button", { name: "Replace Gateway key" }) as HTMLButtonElement).disabled).toBeTrue();
+    expect((view.getByRole("button", { name: "Delete Gateway key" }) as HTMLButtonElement).disabled).toBeFalse();
+  });
+
+  test("shows the fixed Gateway destination and permits entry when configured", async () => {
+    const view = render(<PersonalProviderKeysSection credentialApi={api()} />);
+
+    const add = await view.findByRole("button", { name: "Add Gateway key" });
+    expect((add as HTMLButtonElement).disabled).toBeFalse();
+    expect(view.getByText("https://gateway.example.test/v1")).toBeTruthy();
+    fireEvent.click(add);
+    expect(view.getByLabelText("New Gateway API key")).toBeTruthy();
+    expect((view.getByRole("button", { name: "Save key" }) as HTMLButtonElement).disabled).toBeFalse();
+  });
+
   test("derives personal coverage only from usable saved account credentials", async () => {
     const credentials: CredentialMetadata[] = [
       { ...saved, provider: "anthropic", validationStatus: "unavailable" },

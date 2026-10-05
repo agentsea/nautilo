@@ -287,6 +287,8 @@ describe("personal provider credential routes", () => {
       name: definition.name,
       purpose: definition.id === "surplus"
         ? "Marketplace serving for qualified personal model routes"
+        : definition.id === "openai"
+          ? "OpenAI text models; embeddings remain server-managed"
         : definition.purpose,
       ...(definition.signupUrl ? { signupUrl: definition.signupUrl } : {}),
       ...(definition.formatHint ? { formatHint: definition.formatHint } : {}),
@@ -299,6 +301,9 @@ describe("personal provider credential routes", () => {
     expect(serializedProviders).not.toContain("envVar");
     expect(serializedProviders).not.toContain("formatCheck");
     expect(serializedProviders).not.toContain("doctorHints");
+    expect(providers.find(({ id }) => id === "openai")?.["purpose"]).toBe(
+      "OpenAI text models; embeddings remain server-managed",
+    );
     for (const definition of definitions) {
       expect(serializedProviders).not.toContain(definition.envVar);
     }

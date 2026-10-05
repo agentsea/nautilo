@@ -53,6 +53,8 @@ function personalProviderCatalog() {
     name: definition.name,
     purpose: definition.id === "surplus"
       ? "Marketplace serving for qualified personal model routes"
+      : definition.id === "openai"
+        ? "OpenAI text models; embeddings remain server-managed"
       : definition.purpose,
     ...(definition.signupUrl ? { signupUrl: definition.signupUrl } : {}),
     ...(definition.formatHint ? { formatHint: definition.formatHint } : {}),

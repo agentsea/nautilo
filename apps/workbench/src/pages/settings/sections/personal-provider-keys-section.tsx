@@ -400,6 +400,7 @@ export function PersonalProviderKeysSection({
             const action = rowActions[provider.id] ?? { kind: "idle" };
             const busy = action.kind === "busy";
             const editing = editingProvider === provider.id;
+            const destinationUnavailable = provider.id === "gateway" && !provider.destination;
             const savedAt = readableTime(current?.updatedAt ?? null);
             const validatedAt = readableTime(current?.validatedAt ?? null);
             return (
@@ -452,6 +453,12 @@ export function PersonalProviderKeysSection({
                     </div>
                   ) : null}
 
+                  {destinationUnavailable ? (
+                    <p role="status" className="text-xs text-warning">
+                      Gateway is not configured on this server. Ask the server operator to publish its fixed destination before adding or replacing a key.
+                    </p>
+                  ) : null}
+
                   {editing ? (
                     <div className="flex flex-col gap-2">
                       <TextInput
@@ -468,7 +475,7 @@ export function PersonalProviderKeysSection({
                         disabled={busy}
                       />
                       <div className="flex flex-wrap gap-2">
-                        <Button variant="primary" loading={busy} onClick={() => void save(provider.id, current)}>
+                        <Button variant="primary" loading={busy} disabled={destinationUnavailable} onClick={() => void save(provider.id, current)}>
                           {current ? "Replace key" : "Save key"}
                         </Button>
                         <Button
@@ -492,7 +499,7 @@ export function PersonalProviderKeysSection({
                     </div>
                   ) : (
                     <div className="flex flex-wrap gap-2">
-                      <Button onClick={() => {
+                      <Button disabled={destinationUnavailable} onClick={() => {
                         setEditingProvider(provider.id);
                         setSecret("");
                         setSavedProvider(null);
