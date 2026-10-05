@@ -23,7 +23,11 @@ describe("key-registry", () => {
     const key = getKeyByEnvVar("SURPLUS_API_KEY");
     expect(key).toMatchObject({ id: "surplus", category: "llm" });
     expect(key?.formatCheck("inf_12345678901234567890")).toBe(true);
-    expect(key?.formatCheck("short")).toBe(false);
+    expect(key?.formatCheck("short")).toBe(true);
+    expect(key?.formatCheck("")).toBe(false);
+    expect(key?.formatCheck("short key")).toBe(false);
+    expect(key?.formatCheck("short\tkey")).toBe(false);
+    expect(key?.doctorHints.some((hint) => hint.condition("short"))).toBe(false);
     expect(key?.formatCheck("Bearer inf_12345678901234567890")).toBe(false);
     expect(key?.formatCheck("inf_12345678901234567890\n")).toBe(false);
   });

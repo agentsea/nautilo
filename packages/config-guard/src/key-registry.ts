@@ -222,7 +222,7 @@ export const KEY_REGISTRY: KeyDefinition[] = [
     signupUrl: "https://www.surplusintelligence.ai/",
     formatHint: "raw Surplus buyer API key",
     formatCheck: (value) => (
-      value.length >= 16
+      value.length > 0
       && value.trim() === value
       && !/^Bearer\s/i.test(value)
       && isSinglePrintableAsciiLine(value)
@@ -235,10 +235,6 @@ export const KEY_REGISTRY: KeyDefinition[] = [
       {
         condition: (value) => /^Bearer\s/i.test(value.trimStart()),
         message: "Paste the raw Surplus key only — do not include a 'Bearer ' prefix",
-      },
-      {
-        condition: (value) => value.trim().length > 0 && value.trim().length < 16,
-        message: "Key appears truncated",
       },
     ],
   },
