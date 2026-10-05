@@ -6,7 +6,9 @@ import { evaluateVulnerabilityPolicy, parseVulnerabilityPolicy, type EvaluateVul
 
 const read = (path: string) => JSON.parse(readFileSync(join(import.meta.dir, path), "utf8"));
 const fixture = read("fixtures/arm64-chromium-availability-2026-10-01.json");
-const decisions = read("server-vulnerability-exceptions.input.json").exceptions.filter((e: {unavailableFix?: unknown}) => e.unavailableFix);
+const retainedAdvisories = new Set(fixture.findingTuples.map((tuple: string[]) => tuple[1]));
+const decisions = read("server-vulnerability-exceptions.input.json").exceptions.filter((e: {advisoryId: string; unavailableFix?: unknown}) =>
+  e.unavailableFix && retainedAdvisories.has(e.advisoryId));
 const digest = "sha256:" + "a".repeat(64);
 const image = {digest, reference: "registry.example/runtime@" + digest, sizeBytes: 42};
 const now = "2026-10-01T21:40:00Z";
