@@ -272,7 +272,7 @@ describe("cache-aware pricing", () => {
 
   test("Jev Choice uses the reviewed OpenRouter input-only rate", () => {
     const id = "openrouter:typesafe/jev-1.13";
-    expect(PRICING_VERSION).toBe("2026-09-23.1");
+    expect(PRICING_VERSION).toBe("2026-10-05.1");
     expect(hasExplicitPrice(id)).toBe(true);
     expect(resolveModelPrice(id)).toEqual({
       source: "catalog_decision",
@@ -440,5 +440,30 @@ describe("usage extraction from LLMResult ", () => {
         },
       }]],
     } as never)).toBe(5);
+  });
+});
+
+describe("October model rate cards", () => {
+  test("uses the lower Sol 6.1 cache rates at both context tiers", () => {
+    for (const id of ["openai:gpt-6.1-sol", "openrouter:openai/gpt-6.1-sol"]) {
+      const resolved = resolveModelPrice(id);
+      expect(resolved.source).toBe("explicit");
+      expect(resolved.price).toMatchObject({ inputPerMtok: 2, outputPerMtok: 10, cachedInputPerMtok: 0.1,
+        longContext: { inputTokensAbove: 272_000, rates: { inputPerMtok: 4, outputPerMtok: 15, cachedInputPerMtok: 0.2 } } });
+    }
+    expect(resolveModelPrice("venice:openai-gpt-61-sol").price).toMatchObject({
+      inputPerMtok: 2.5, outputPerMtok: 12.5, cachedInputPerMtok: 0.125,
+      longContext: { rates: { cachedInputPerMtok: 0.25 } },
+    });
+  });
+  test("has exact Sonnet and Fable provider prices instead of coefficient estimates", () => {
+    for (const id of ["anthropic:claude-sonnet-5-5", "openrouter:anthropic/claude-sonnet-5.5"]) {
+      expect(resolveModelPrice(id)).toMatchObject({ source: "explicit", price: { inputPerMtok: 2, outputPerMtok: 10, cachedInputPerMtok: 0.2 } });
+    }
+    expect(resolveModelPrice("venice:claude-sonnet-5-5").price.outputPerMtok).toBe(12.5);
+    expect(resolveModelPrice("venice:claude-fable-5-1").price).toMatchObject({ inputPerMtok: 12, outputPerMtok: 60, cachedInputPerMtok: 0.3 });
+    for (const id of ["anthropic:claude-fable-5-1", "openrouter:anthropic/claude-fable-5.1"]) {
+      expect(resolveModelPrice(id).price.cachedInputPerMtok).toBe(0.25);
+    }
   });
 });

@@ -45,6 +45,9 @@ const DEFAULT_OUTPUT_TOKEN_LIMIT = 8_192;
  * never raise the signed catalog ceiling.
  */
 const NAUTILO_BUILTIN_CONTEXT_TOKENS: Record<string, number> = {
+  "openrouter:anthropic/claude-sonnet-5.5": 1_000_000,
+  "venice:claude-sonnet-5-5": 1_000_000,
+  "venice:claude-fable-5-1": 1_000_000,
   "anthropic:claude-opus-5-5": 1_000_000,
   "anthropic:claude-opus-5": 1_000_000,
   "anthropic:claude-opus-4-8": 1_000_000,
@@ -53,15 +56,19 @@ const NAUTILO_BUILTIN_CONTEXT_TOKENS: Record<string, number> = {
   "anthropic:claude-sonnet-4-6": 1_000_000,
   "openrouter:anthropic/claude-sonnet-4.6": 1_000_000,
   "openrouter:openai/gpt-5.5": 1_050_000,
+  "openai:gpt-6.1-sol": 1_050_000,
   "openai:gpt-6-sol": 1_050_000,
   "openai:gpt-6-luna": 1_050_000,
+  "openrouter:openai/gpt-6.1-sol": 1_050_000,
   "openrouter:openai/gpt-6-sol": 1_050_000,
   "openrouter:openai/gpt-6-luna": 1_050_000,
   "openrouter:anthropic/claude-opus-5.5": 1_000_000,
   "venice:claude-opus-5-5": 1_000_000,
+  "venice:openai-gpt-61-sol": 1_050_000,
   "venice:openai-gpt-6-sol": 1_050_000,
   "venice:openai-gpt-6-luna": 1_050_000,
   "openrouter:google/gemini-3.1-pro-preview": 1_048_576,
+  "anthropic:claude-sonnet-5-5": 1_000_000,
   "anthropic:claude-sonnet-5": 1_000_000,
   // Anthropic GET /v1/models/claude-fable-5 → max_input_tokens 1_000_000 (2026-07-08).
   "anthropic:claude-fable-5": 1_000_000,
@@ -100,6 +107,9 @@ const NAUTILO_BUILTIN_CONTEXT_TOKENS: Record<string, number> = {
  * - Anthropic Sonnet 4.6: `GET /v1/models/claude-sonnet-4-6` → `max_tokens` 128_000 (2026-05-01).
  */
 const NAUTILO_BUILTIN_OUTPUT_TOKENS: Record<string, number> = {
+  "openrouter:anthropic/claude-sonnet-5.5": 128_000,
+  "venice:claude-sonnet-5-5": 128_000,
+  "venice:claude-fable-5-1": 128_000,
   "anthropic:claude-opus-5-5": 128_000,
   "anthropic:claude-opus-5": 128_000,
   "anthropic:claude-opus-4-8": 128_000,
@@ -108,15 +118,19 @@ const NAUTILO_BUILTIN_OUTPUT_TOKENS: Record<string, number> = {
   "anthropic:claude-sonnet-4-6": 128_000,
   "openrouter:anthropic/claude-sonnet-4.6": 128_000,
   "openrouter:openai/gpt-5.5": 128_000,
+  "openai:gpt-6.1-sol": 128_000,
   "openai:gpt-6-sol": 128_000,
   "openai:gpt-6-luna": 128_000,
+  "openrouter:openai/gpt-6.1-sol": 128_000,
   "openrouter:openai/gpt-6-sol": 128_000,
   "openrouter:openai/gpt-6-luna": 128_000,
   "openrouter:anthropic/claude-opus-5.5": 128_000,
   "venice:claude-opus-5-5": 128_000,
+  "venice:openai-gpt-61-sol": 128_000,
   "venice:openai-gpt-6-sol": 128_000,
   "venice:openai-gpt-6-luna": 128_000,
   "openrouter:google/gemini-3.1-pro-preview": 65_536,
+  "anthropic:claude-sonnet-5-5": 128_000,
   "anthropic:claude-sonnet-5": 128_000,
   // Anthropic GET /v1/models/claude-fable-5 → max_tokens 128_000 (2026-07-08).
   "anthropic:claude-fable-5": 128_000,

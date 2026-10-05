@@ -93,6 +93,10 @@ function reasoningEnabled(options: CreateModelOptions, maxTokens: number): boole
   return reasoningRequested(options, maxTokens) && requestedReasoningEffort(options) !== "off";
 }
 
+function usesAdaptiveAnthropicThinking(modelId: string): boolean {
+  return /^anthropic:claude-(?:opus-5-5|sonnet-5-5|fable-5-1)$/.test(modelId);
+}
+
 /**
  * Anthropic reasoning request fields.
  *
@@ -106,10 +110,10 @@ function anthropicReasoningFields(
   options: CreateModelOptions,
   maxTokens: number,
 ): Record<string, unknown> {
-  if (options.modelId === "anthropic:claude-opus-5-5") {
+  if (usesAdaptiveAnthropicThinking(options.modelId)) {
     const effort = requestedReasoningEffort(options);
     assertProviderReasoningEffort("anthropic", effort);
-    // Opus 5.5 always thinks. Effort remains independent of whether the caller
+    // These models retain adaptive thinking. Effort is independent of whether the caller
     // renders reasoning; legacy sampling parameters are rejected by this model.
     return { thinking: { type: "adaptive" }, outputConfig: { effort } };
   }
@@ -312,7 +316,7 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
     if (directGpt6 || reasoningRequested(options, maxTokens)) {
       const requestedEffort = requestedReasoningEffort(options);
       if (directGpt6 && (requestedEffort === "minimal"
-        || (options.modelId === "openai:gpt-6-astra" && requestedEffort === "off"))) {
+        || (["openai:gpt-6-astra", "openai:gpt-6.1-sol"].includes(options.modelId) && requestedEffort === "off"))) {
         throw new Error(`Reasoning effort "${requestedEffort}" is not supported by ${options.modelId}.`);
       }
       const effort = requestedEffort === "off" ? "none" : requestedEffort;
@@ -375,9 +379,9 @@ export async function createAnthropic(options: CreateModelOptions): Promise<Chat
     model: stripProviderPrefix(options.modelId),
     maxTokens,
     streamUsage: true,
-    // LangChain aggregates streamed chunks for invoke(). The full Opus output
+    // LangChain aggregates streamed chunks for invoke(). The full model output
     // allowance exceeds the SDK's non-streaming request limit.
-    ...(options.modelId === "anthropic:claude-opus-5-5" ? { streaming: true } : {}),
+    ...(usesAdaptiveAnthropicThinking(options.modelId) ? { streaming: true } : {}),
     ...anthropicReasoningFields(options, maxTokens),
   };
   if (timeoutMs !== undefined) base["timeout"] = timeoutMs;
@@ -404,7 +408,7 @@ export async function createAnthropicWithLongContext(options: CreateModelOptions
     maxTokens,
     betas,
     streamUsage: true,
-    ...(options.modelId === "anthropic:claude-opus-5-5" ? { streaming: true } : {}),
+    ...(usesAdaptiveAnthropicThinking(options.modelId) ? { streaming: true } : {}),
     ...Object.fromEntries(Object.entries(reasoning).filter(([k]) => k !== "betas")),
   };
   if (timeoutMs !== undefined) base["timeout"] = timeoutMs;

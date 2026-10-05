@@ -46,15 +46,15 @@ describe("checked-in model catalog fallback", () => {
     const parsed = ModelCatalogSchema.parse(manifest);
     // Match the canonical publisher's artifact serialization, before schema parsing.
     expect(createHash("sha256").update(`${JSON.stringify(manifest)}\n`).digest("hex"))
-      .toBe("8cea192e0aac3dcfc9805abe9acbfe7ab3d927116f38175b15073192b1b9bbcb");
+      .toBe("66ca370403c3ba973fe35e207633fca80aeb7397ab7904c6fbdea586388fdd7b");
 
     expect(parsed).toEqual(localModelCatalog);
     expect(parsed).toMatchObject({
       version: 6,
-      catalogVersion: "2026.09.23.1",
-      publishedAt: "2026-09-23T09:27:38Z",
+      catalogVersion: "2026.10.05.1",
+      publishedAt: "2026-10-05T09:26:32Z",
     });
-    expect(parsed.entries).toHaveLength(97);
+    expect(parsed.entries).toHaveLength(104);
     expect(
       parsed.entries
         .filter((entry) =>

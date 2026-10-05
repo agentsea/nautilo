@@ -42,7 +42,7 @@ export interface ModelPrice {
 }
 
 /** Bump on any price change. Stored on each usage row for later reconciliation. */
-export const PRICING_VERSION = "2026-09-23.1";
+export const PRICING_VERSION = "2026-10-05.1";
 
 /** Baseline used to derive an estimate for models absent from the explicit table. */
 const SONNET_BASELINE: ModelPrice = { inputPerMtok: 3, outputPerMtok: 15 };
@@ -52,6 +52,35 @@ const SONNET_BASELINE: ModelPrice = { inputPerMtok: 3, outputPerMtok: 15 };
  * Models not listed fall back to a `costCoefficient`-scaled Sonnet baseline.
  */
 export const MODEL_PRICES: Record<string, ModelPrice> = {
+  // Exact provider rates verified 2026-10-05; cache writes use the standard 5m tier.
+  "anthropic:claude-sonnet-5-5": { inputPerMtok: 2, outputPerMtok: 10, cachedInputPerMtok: 0.2, cacheWritePerMtok: 2.5 },
+  "openrouter:anthropic/claude-sonnet-5.5": { inputPerMtok: 2, outputPerMtok: 10, cachedInputPerMtok: 0.2, cacheWritePerMtok: 2.5 },
+  "venice:claude-sonnet-5-5": { inputPerMtok: 2.5, outputPerMtok: 12.5, cachedInputPerMtok: 0.25, cacheWritePerMtok: 3.125 },
+  "anthropic:claude-fable-5-1": { inputPerMtok: 10, outputPerMtok: 50, cachedInputPerMtok: 0.25, cacheWritePerMtok: 12.5 },
+  "openrouter:anthropic/claude-fable-5.1": { inputPerMtok: 10, outputPerMtok: 50, cachedInputPerMtok: 0.25, cacheWritePerMtok: 12.5 },
+  "venice:claude-fable-5-1": { inputPerMtok: 12, outputPerMtok: 60, cachedInputPerMtok: 0.3, cacheWritePerMtok: 15 },
+  "openai:gpt-6.1-sol": {
+    inputPerMtok: 2, outputPerMtok: 10, cachedInputPerMtok: 0.1, cacheWritePerMtok: 2.5,
+    longContext: {
+      inputTokensAbove: 272_000,
+      rates: { inputPerMtok: 4, outputPerMtok: 15, cachedInputPerMtok: 0.2, cacheWritePerMtok: 5 },
+    },
+  },
+  "openrouter:openai/gpt-6.1-sol": {
+    inputPerMtok: 2, outputPerMtok: 10, cachedInputPerMtok: 0.1, cacheWritePerMtok: 2.5,
+    longContext: {
+      inputTokensAbove: 272_000,
+      rates: { inputPerMtok: 4, outputPerMtok: 15, cachedInputPerMtok: 0.2, cacheWritePerMtok: 5 },
+    },
+  },
+  "venice:openai-gpt-61-sol": {
+    inputPerMtok: 2.5, outputPerMtok: 12.5, cachedInputPerMtok: 0.125, cacheWritePerMtok: 3.125,
+    longContext: {
+      inputTokensAbove: 272_000,
+      rates: { inputPerMtok: 5, outputPerMtok: 18.75, cachedInputPerMtok: 0.25, cacheWritePerMtok: 6.25 },
+    },
+  },
+
   // OpenRouter Jev 1.13 model page, verified 2026-09-18. Output usage is free.
   "openrouter:typesafe/jev-1.13": { inputPerMtok: 0.042, outputPerMtok: 0 },
   // --- Anthropic (cache read 0.1× input, cache write 1.25× input) ---
