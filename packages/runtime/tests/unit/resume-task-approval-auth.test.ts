@@ -35,6 +35,7 @@ const task = (over: Partial<Task> = {}): Task =>
     targetChat: "orphan",
     targetRoomId: null,
     scheduleKind: "now",
+    fundingMode: "legacy_server",
     ...over,
   }) as unknown as Task;
 
@@ -44,6 +45,8 @@ const run = (over: Partial<TaskRun> = {}): TaskRun =>
     taskId: "task-1",
     graphThreadId: "subagent:thread-1",
     status: "awaiting",
+    fundingBinding: null,
+    fundingPredecessorRunId: null,
     ...over,
   }) as unknown as TaskRun;
 

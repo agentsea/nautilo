@@ -924,6 +924,12 @@ export interface NautiloToolInvocationServerContext {
   readonly [invocationServerContextBrand]: true;
 }
 export type ServerToolInvocationContextOptions = Readonly<{
+  /** Process-local trusted admission for bounded personal Task controls. */
+  readonly personalTaskControls?: boolean;
+  /** Non-secret caller-runnable Task-model union for model discovery. */
+  readonly personalTaskRunnableModelIds?: readonly string[];
+  /** Trusted caller-only subset; never derived from tool arguments. */
+  readonly personalOnlyTaskModelIds?: readonly string[];
   readonly ordinaryContentAccess?: OrdinaryContentAccessSelection;
   /** Exact server-admitted Full policy for this invocation. */
   readonly fullEncryptionOnly?: boolean;
@@ -952,6 +958,9 @@ class ServerToolInvocationContext implements NautiloToolInvocationServerContext 
   readonly #recallRecordsPort: RecallRecordsPort | undefined;
   readonly #fullEncryptionOnly: boolean;
   readonly #ordinaryContentAccess: OrdinaryContentAccessSelection | undefined;
+  readonly #personalTaskControls: boolean;
+  readonly #personalTaskRunnableModelIds: readonly string[];
+  readonly #personalOnlyTaskModelIds: readonly string[];
 
   constructor(
     readonly state: NautiloState,
@@ -959,6 +968,13 @@ class ServerToolInvocationContext implements NautiloToolInvocationServerContext 
     options: ServerToolInvocationContextOptions,
   ) {
     this.#ordinaryContentAccess = options.ordinaryContentAccess;
+    this.#personalTaskControls = options.personalTaskControls === true;
+    this.#personalTaskRunnableModelIds = Object.freeze([
+      ...(options.personalTaskRunnableModelIds ?? []),
+    ]);
+    this.#personalOnlyTaskModelIds = Object.freeze([
+      ...(options.personalOnlyTaskModelIds ?? []),
+    ]);
     this.#recallRecordsPort = options.recallRecordsPort;
     this.#fullEncryptionOnly = options.fullEncryptionOnly === true;
     this.#protectedMemoryRepository = options.protectedMemoryRepository;
@@ -1002,6 +1018,18 @@ class ServerToolInvocationContext implements NautiloToolInvocationServerContext 
 
   ordinaryContentAccess(): OrdinaryContentAccessSelection | undefined {
     return this.#ordinaryContentAccess;
+  }
+
+  personalTaskControls(): boolean {
+    return this.#personalTaskControls;
+  }
+
+  personalTaskRunnableModelIds(): readonly string[] {
+    return this.#personalTaskRunnableModelIds;
+  }
+
+  personalOnlyTaskModelIds(): readonly string[] {
+    return this.#personalOnlyTaskModelIds;
   }
 }
 
@@ -1077,6 +1105,10 @@ export function createNautiloToolInvocationSession(
   const recallRecordsPort = trustedContext.recallRecordsPort();
   const fullEncryptionOnly = trustedContext.fullEncryptionOnly();
   const ordinaryContentAccess = trustedContext.ordinaryContentAccess();
+  const personalTaskControls = trustedContext.personalTaskControls();
+  const personalTaskRunnableModelIds =
+    trustedContext.personalTaskRunnableModelIds();
+  const personalOnlyTaskModelIds = trustedContext.personalOnlyTaskModelIds();
   const ordinaryContentAccessErrors = new Set<string>();
   const ordinaryContentAccessRetryRequired = new Set<string>();
   const recallRecordsContext = recallRecordsToolContextForState(
@@ -1214,6 +1246,9 @@ export function createNautiloToolInvocationSession(
           trustedExecutionEntrypoint: state.trustedExecutionEntrypoint,
           deepResearchForegroundAvailable: deepResearchReturnContextForState(state) !== null,
           initiatingClientSurface: getCurrentInitiatingClientSurface(),
+          personalTaskControls,
+          personalTaskRunnableModelIds,
+          personalOnlyTaskModelIds,
           ...recallRecordsContext,
           browserResearchExecutionPort: createBrowserResearchExecutionPort({
             ownerId: state.userId,

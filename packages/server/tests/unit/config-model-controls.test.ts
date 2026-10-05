@@ -154,7 +154,7 @@ describe("caller-scoped model availability", () => {
     expect(fundingCalls).toBe(0);
   });
 
-  test("admits personal funding for text chat without advertising unsupported paid features", async () => {
+  test("admits narrow Task delegation for a personal-funded signed function-calling model", async () => {
     const modelId = "anthropic:claude-sonnet-4-6";
     const result = await resolveCallerModelAvailability(
       "human-1",
@@ -188,7 +188,7 @@ describe("caller-scoped model availability", () => {
     });
     expect(result.selectableInThisRelease).toBe(true);
     expect(result.model.capabilities).toMatchObject({
-      tools: false,
+      tools: true,
       vision: false,
       webSearch: false,
     });
@@ -234,6 +234,30 @@ describe("caller-scoped model availability", () => {
     );
     expect(result.model.availability).toBe("unsupported-capability");
     expect(result.selectableInThisRelease).toBe(false);
+  });
+
+  test("does not advertise delegation for a personal-funded model without signed function calling", async () => {
+    const result = await resolveCallerModelAvailability(
+      "human-1",
+      "openrouter:moonshotai/kimi-k2.6",
+      { purpose: "chat-tools", env: {} },
+      {
+        resolveFunding: async (input) => ({
+          kind: "personal",
+          humanUserId: input.humanUserId,
+          payerHumanId: input.humanUserId,
+          credentialId: "credential-1",
+          credentialRevision: 1,
+          modelId: input.modelId,
+          providerRoute: "openrouter",
+          workload: input.workload,
+        }),
+      },
+    );
+    expect(result.selectableInThisRelease).toBe(true);
+    expect(result.model.capabilities.tools).toBe(false);
+    expect(result.model.capabilities.vision).toBe(false);
+    expect(result.model.capabilities.webSearch).toBe(false);
   });
 
   test("fails closed on caller funding denial and does not widen signed catalog restrictions", async () => {

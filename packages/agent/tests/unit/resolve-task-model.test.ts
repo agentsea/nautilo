@@ -6,6 +6,7 @@ import {
 } from "../../src/config/resolve-task-model";
 import { INTELLIGENCE_RANK } from "../../src/config/model-selection";
 import { resolveCatalogModel } from "../../src/config/resolved-catalog";
+import { validateTaskModelSelectionForCreate } from "../../src/tools/tasks/selection-validation";
 
 const KEYS = [
   "ANTHROPIC_API_KEY",
@@ -38,6 +39,32 @@ afterEach(() => {
 const BASE = "anthropic:claude-sonnet-4-6";
 
 describe("resolveTaskModel (M152)", () => {
+  test("trusted tool-free purpose and credential env do not inherit legacy task-tools qualification", () => {
+    const modelId = "google:gemini-2.5-pro";
+    const env = { GOOGLE_API_KEY: "personal-present" };
+    expect(resolveTaskModel({ baseModelId: modelId, purpose: "chat", env }))
+      .toEqual({ modelId });
+    expect(() => resolveTaskModel({ baseModelId: modelId, purpose: "task-tools", env }))
+      .toThrow(/tool\/function calling capability is unverified/);
+  });
+
+  test("create-time profile validation forwards the trusted base model, purpose, and credential env", () => {
+    const modelId = "google:gemini-2.5-pro";
+    const env = { GOOGLE_API_KEY: "personal-present" };
+    expect(validateTaskModelSelectionForCreate({
+      profile: "smartest",
+      baseModelId: modelId,
+      purpose: "chat",
+      env,
+    })).toBeNull();
+    expect(validateTaskModelSelectionForCreate({
+      profile: "smartest",
+      baseModelId: modelId,
+      purpose: "task-tools",
+      env,
+    })).toMatch(/No runnable Task model/);
+  });
+
   test("balanced / no selection returns baseModelId without scanning", () => {
     process.env["ANTHROPIC_API_KEY"] = "x";
     expect(resolveTaskModel({ baseModelId: BASE, profile: "balanced" }).modelId).toBe(BASE);

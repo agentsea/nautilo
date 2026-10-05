@@ -46,6 +46,7 @@ import type {
   RecallRecordsPort,
   RecallRecordsPortForState,
 } from "../tools/memory/recall-records";
+import { isPersonalTaskControlCall } from "../runtime/personal-task-controls";
 
 export {
   RelayUnavailableError,
@@ -75,7 +76,7 @@ type ApprovedToolCall = NonNullable<NautiloState["approvedToolCalls"]>[number];
 
 export const PERSONAL_FUNDING_TOOL_UNSUPPORTED_RESULT = JSON.stringify({
   error: "unsupported_workload",
-  message: "Personal funding supports foreground text chat only. No tool was executed.",
+  message: "Personal funding supports text chat and bounded native Task controls only. No tool was executed.",
   recovery: "continue_without_tools",
 });
 
@@ -163,6 +164,9 @@ export function normalizeAdmittedToolCalls(
 
 type ProtectedToolComposition = Readonly<{
   personalFunding?: boolean;
+  personalTaskControls?: boolean;
+  personalTaskRunnableModelIds?: readonly string[];
+  personalOnlyTaskModelIds?: readonly string[];
   ordinaryContentAccess?: OrdinaryContentAccessSelection;
   recallRecordsPort?: RecallRecordsPort;
   repository?: ProtectedAgentMemoryRepository;
@@ -244,7 +248,13 @@ async function executeToolsNode(
   // A stale checkpoint or a direct node call must not turn the personal text
   // lane into tool funding. Refuse the whole saved batch before opening
   // protected content, resolving live ports, or invoking any tool adapter.
-  if (protectedComposition.personalFunding === true) {
+  if (
+    protectedComposition.personalFunding === true
+    && (
+      protectedComposition.personalTaskControls !== true
+      || toolCalls.some((call) => !isPersonalTaskControlCall(call))
+    )
+  ) {
     return {
       messages: mergeMessagesPreservingInvariants(
         state.messages,
@@ -416,6 +426,15 @@ async function invokeToolCall(
       ...(protectedComposition.fullEncryptionOnly === true
         ? { fullEncryptionOnly: true }
         : {}),
+      ...(protectedComposition.personalTaskControls === true
+        ? { personalTaskControls: true }
+        : {}),
+      ...(protectedComposition.personalTaskRunnableModelIds === undefined
+        ? {}
+        : { personalTaskRunnableModelIds: protectedComposition.personalTaskRunnableModelIds }),
+      ...(protectedComposition.personalOnlyTaskModelIds === undefined
+        ? {}
+        : { personalOnlyTaskModelIds: protectedComposition.personalOnlyTaskModelIds }),
     },
   );
   const session = createNautiloToolInvocationSession(context, config);
@@ -606,6 +625,9 @@ export async function toolsNode(
  */
 export function createToolsNode(input: Readonly<{
   personalFunding?: boolean;
+  personalTaskControls?: boolean;
+  personalTaskRunnableModelIds?: readonly string[];
+  personalOnlyTaskModelIds?: readonly string[];
   ordinaryContentAccessForState?: OrdinaryContentAccessForState;
   recallRecordsPortForState?: RecallRecordsPortForState;
   liveShadowToolBoundaryForState?: LiveShadowToolBoundaryForState;
@@ -625,7 +647,18 @@ export function createToolsNode(input: Readonly<{
 }> = {}): typeof toolsNode {
   return async (state, config) => {
     if (input.personalFunding === true) {
-      return executeToolsNode(state, config, { personalFunding: true });
+      return executeToolsNode(state, config, {
+        personalFunding: true,
+        ...(input.personalTaskControls === true
+          ? { personalTaskControls: true }
+          : {}),
+        ...(input.personalTaskRunnableModelIds === undefined
+          ? {}
+          : { personalTaskRunnableModelIds: input.personalTaskRunnableModelIds }),
+        ...(input.personalOnlyTaskModelIds === undefined
+          ? {}
+          : { personalOnlyTaskModelIds: input.personalOnlyTaskModelIds }),
+      });
     }
     const ordinaryContentAccess = await input.ordinaryContentAccessForState?.(state);
     const recallRecordsPort = input.recallRecordsPortForState?.(state);
@@ -647,6 +680,12 @@ export function createToolsNode(input: Readonly<{
       ...(access === undefined ? {} : { access }),
       ...(projection === undefined ? {} : { projection }),
       ...(fullEncryptionOnly ? { fullEncryptionOnly: true } : {}),
+      ...(input.personalTaskRunnableModelIds === undefined
+        ? {}
+        : { personalTaskRunnableModelIds: input.personalTaskRunnableModelIds }),
+      ...(input.personalOnlyTaskModelIds === undefined
+        ? {}
+        : { personalOnlyTaskModelIds: input.personalOnlyTaskModelIds }),
     });
   };
 }

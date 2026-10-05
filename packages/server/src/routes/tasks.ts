@@ -1,4 +1,8 @@
-import { readTaskPreparation } from "@nautilo/types";
+import {
+  parseTaskFundingBinding,
+  readTaskPreparation,
+  TASK_FUNDING_FAILURE_CODES,
+} from "@nautilo/types";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type {
   ListTasksQuery,
@@ -13,6 +17,8 @@ import type {
   TaskRunSummary,
   TaskSummary,
   TaskUpdatePayload,
+  TaskFundingFailureCode,
+  TaskFundingSource,
   ServerEvent,
 } from "@nautilo/types";
 import {
@@ -29,6 +35,8 @@ import {
   pauseTask,
   unpauseTask,
   canResumeSecurityResearchContextFailure,
+  assertTaskFundingAdmission,
+  TaskFundingError,
   stopTask,
   replayTaskInterruptEvents,
   type TaskCreateInput,
@@ -42,7 +50,9 @@ import {
   getTaskById,
   getTaskByIdWithMutationVersion,
   getTaskRuns,
+  getLatestResumableTaskRun,
   getLatestRunModelByTask,
+  getCachedServerModelConfigRow,
   listTasksForOwner,
   listAwaitingTaskRunsForOwner,
   profiles,
@@ -56,9 +66,12 @@ import {
 import {
   rejectNotYetWiredTaskParams,
   validateTaskModelSelectionForCreate,
+  getProfileByAgentId,
   getRunAgentTranscript,
 } from "@nautilo/agent";
+import { candidatesForModelRole } from "@nautilo/config";
 import { getServerDirectDb } from "../lib/server-direct-db";
+import { callerTaskModelEnvironment } from "../lib/caller-task-model-context";
 import { requireAgentInvocation, requireServerFunding } from "../lib/agent-invocation-admission";
 import {
   AgentInvocationDeniedError,
@@ -173,6 +186,30 @@ function toolsFields(
   return { toolsMode: "whitelist", toolsWhitelist: tools };
 }
 
+async function taskSelectionValidationContext(
+  requestorId: string,
+  agentId: string,
+  toolsMode: NewTask["toolsMode"] | undefined,
+): Promise<Readonly<{
+  env?: NodeJS.ProcessEnv;
+  purpose?: "chat";
+  baseModelId?: string;
+}>> {
+  if (toolsMode !== "none") return {};
+  const [env, profile] = await Promise.all([
+    callerTaskModelEnvironment(requestorId),
+    getProfileByAgentId(agentId),
+  ]);
+  const configuredBaseModel = profile?.defaultModel?.trim()
+    || process.env["NAUTILO_MODEL"]?.trim()
+    || getCachedServerModelConfigRow()?.defaultChatModel?.trim();
+  return {
+    env,
+    purpose: "chat",
+    baseModelId: configuredBaseModel ?? candidatesForModelRole("chat")[0]!,
+  };
+}
+
 type TaskSummarySource = Pick<
   Task,
   | "id"
@@ -193,7 +230,20 @@ type TaskSummarySourceWithTiming = TaskSummarySource & {
   updatedAt?: Task["updatedAt"];
 };
 
-export function toTaskSummary(task: TaskSummarySourceWithTiming): TaskSummary {
+type TaskFundingProjectionOptions = Readonly<{ includeFunding?: boolean }>;
+
+type ListTasksWithFundingQuery = ListTasksQuery & Readonly<{
+  includeFunding?: string;
+}>;
+
+function includesTaskFunding(query: ListTasksWithFundingQuery): boolean {
+  return query.includeFunding === "true";
+}
+
+export function toTaskSummary(
+  task: TaskSummarySourceWithTiming,
+  projection: TaskFundingProjectionOptions = {},
+): TaskSummary {
   if (task.contentRepresentation === "protected") {
     throw new TypeError("Protected Task content requires the current client projection");
   }
@@ -211,8 +261,89 @@ export function toTaskSummary(task: TaskSummarySourceWithTiming): TaskSummary {
     nextFireAt: toIso(task.nextFireAt),
     callingRoomId: task.callingRoomId,
     lastError: task.lastError,
+    ...(projection.includeFunding === true && taskFundingFailure(task.lastError)
+      ? { fundingFailure: taskFundingFailure(task.lastError) }
+      : {}),
     ...(task.updatedAt !== undefined ? { updatedAt: task.updatedAt.toISOString() } : {}),
   };
+}
+
+const TASK_FUNDING_FAILURE_CODE_SET = new Set<string>(TASK_FUNDING_FAILURE_CODES);
+
+function taskFundingFailure(value: string | null): TaskFundingFailureCode | null {
+  return value !== null && TASK_FUNDING_FAILURE_CODE_SET.has(value)
+    ? value as TaskFundingFailureCode
+    : null;
+}
+
+export function taskRunFundingProjection(
+  task: Pick<Task, "fundingMode">,
+  run: Pick<TaskRun, "fundingBinding" | "lastError">,
+): { fundingSource?: TaskFundingSource; fundingFailure?: TaskFundingFailureCode } {
+  const fundingFailure = taskFundingFailure(run.lastError);
+  if (run.fundingBinding === null) {
+    return task.fundingMode === "legacy_server"
+      ? { fundingSource: "server", ...(fundingFailure ? { fundingFailure } : {}) }
+      : { fundingFailure: fundingFailure ?? "funding_source_changed" };
+  }
+  try {
+    const binding = parseTaskFundingBinding(run.fundingBinding);
+    return {
+      fundingSource: binding.kind,
+      ...(fundingFailure ? { fundingFailure } : {}),
+    };
+  } catch {
+    return { fundingFailure: fundingFailure ?? "funding_source_changed" };
+  }
+}
+
+export async function requireTaskFundingForMutation(input: Readonly<{
+  task: Task;
+  priorRun?: TaskRun;
+  origin: "task_update" | "task_unpause";
+  reply: FastifyReply;
+  assertAdmission?: typeof assertTaskFundingAdmission;
+  requireLegacyServerFunding?: typeof requireServerFunding;
+}>): Promise<boolean> {
+  try {
+    const admission = await (input.assertAdmission ?? assertTaskFundingAdmission)(
+      input.task,
+      input.priorRun,
+    );
+    return admission !== null
+      || await (input.requireLegacyServerFunding ?? requireServerFunding)(
+        input.task.requestorId,
+        input.origin,
+        input.reply,
+      );
+  } catch (error) {
+    if (error instanceof TaskFundingError) {
+      input.reply.status(409).send({ error: error.code });
+      return false;
+    }
+    throw error;
+  }
+}
+
+export function taskTargetChatPatch(
+  task: Pick<Task, "targetChat">,
+  targetChat: NewTask["targetChat"] | undefined,
+): Partial<Pick<NewTask, "targetChat" | "targetRoomId">> {
+  if (targetChat === undefined) return {};
+  return targetChat === task.targetChat
+    ? { targetChat }
+    : { targetChat, targetRoomId: null };
+}
+
+export function callerTargetChatChangeConflictsWithResume(
+  task: Pick<Task, "fundingMode" | "targetChat">,
+  targetChat: NewTask["targetChat"] | undefined,
+  priorRun: TaskRun | undefined,
+): boolean {
+  return task.fundingMode === "caller"
+    && priorRun !== undefined
+    && targetChat !== undefined
+    && targetChat !== task.targetChat;
 }
 
 /**
@@ -223,9 +354,10 @@ export function toTaskSummary(task: TaskSummarySourceWithTiming): TaskSummary {
 export function toOwnerVisibleTaskSummary(
   task: TaskSummarySourceWithTiming & Pick<Task, "agentId" | "targetRoomId" | "createdAt" | "requestedModelId">,
   enrichment: { readonly agentName: string | null; readonly lastModelId: string | null; readonly canResumeResearch?: boolean },
+  projection: TaskFundingProjectionOptions = {},
 ): TaskSummary {
   return {
-    ...toTaskSummary(task),
+    ...toTaskSummary(task, projection),
     ...(enrichment.canResumeResearch === true ? { canResumeResearch: true } : {}),
     agentId: task.agentId,
     agentName: enrichment.agentName,
@@ -312,6 +444,7 @@ export function toTaskContentSummaryV1(
     readonly canResumeResearch?: boolean;
     readonly pendingDefinitionReason?: PendingTaskDefinitionReason;
   },
+  projection: TaskFundingProjectionOptions = {},
 ): TaskContentSummaryV1 {
   const definition = taskDefinitionContentV1(task, enrichment.pendingDefinitionReason);
   const preparation = definition.status === "ordinary"
@@ -331,6 +464,9 @@ export function toTaskContentSummaryV1(
     cron: task.cron,
     nextFireAt: toIso(task.nextFireAt),
     callingRoomId: task.callingRoomId,
+    ...(projection.includeFunding === true && taskFundingFailure(task.lastError)
+      ? { fundingFailure: taskFundingFailure(task.lastError) }
+      : {}),
     agentId: task.agentId,
     agentName: enrichment.agentName,
     targetRoomId: task.targetRoomId,
@@ -421,12 +557,18 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     // truth, mutual-exclusion conflict) and the M152 profile/spec bias.
     // Unsatisfiable → 422 with the actionable message + structured detail.
     const toolsFieldsForValidation = toolsFields(body.tools);
+    const validationContext = await taskSelectionValidationContext(
+      ownerId,
+      agentId,
+      toolsFieldsForValidation.toolsMode,
+    );
     const selectionError = validateTaskModelSelectionForCreate({
       requestedModelId: body.requestedModelId,
       profile: body.selectionProfile,
       spec: body.selectionSpec,
       toolsMode: toolsFieldsForValidation.toolsMode,
       toolsWhitelist: toolsFieldsForValidation.toolsWhitelist,
+      ...validationContext,
     });
     if (selectionError) {
       return reply
@@ -462,8 +604,6 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     ) {
       return;
     }
-    if (!(await requireServerFunding(ownerId, "task_create", reply))) return;
-
     const input: TaskCreateInput = {
       ownerId,
       requestorId: ownerId,
@@ -478,6 +618,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       ...(body.timezone !== undefined ? { timezone: body.timezone } : {}),
       targetChat: body.targetChat ?? "orphan",
       resultDelivery: body.resultDelivery ?? "wake",
+      callingRoomId: request.memoryEnvelope?.roomId ?? null,
       useScope: body.useScope ?? false,
       ...(body.scopeId !== undefined ? { scopeId: body.scopeId } : {}),
       ...(body.parentTaskId !== undefined
@@ -520,6 +661,9 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         || err instanceof ServerProviderCredentialsDeniedError) {
         return reply.status(403).send(toActionCapabilityHttpDenial(err));
       }
+      if (err instanceof TaskFundingError) {
+        return reply.status(409).send({ error: err.code });
+      }
       return reply
         .status(400)
         .send({ error: err instanceof Error ? err.message : String(err) });
@@ -534,7 +678,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     });
   });
 
-  app.get<{ Querystring: ListTasksQuery }>("/api/tasks", async (request, reply) => {
+  app.get<{ Querystring: ListTasksWithFundingQuery }>("/api/tasks", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     reply.header("Vary", "Authorization");
     const ownerId =
@@ -546,6 +690,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     // Push status to the store (exact-status filter, precedence over
     // includeTerminal). Terminal history remains bounded.
     const opts = listTaskOptions(request.query);
+    const includeFunding = includesTaskFunding(request.query);
     return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {
     const db = getServerDirectDb();
     const tasks = await listTasksForOwner(db, ownerId, opts);
@@ -565,11 +710,11 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         agentName: agentNames.get(t.agentId) ?? null,
         lastModelId: lastModels.get(t.id) ?? null,
         canResumeResearch: await canResumeSecurityResearchContextFailure(db, t),
-      }))) };
+      }, { includeFunding }))) };
     });
   });
 
-  app.get<{ Querystring: ListTasksQuery }>("/api/tasks/content-v1", async (request, reply) => {
+  app.get<{ Querystring: ListTasksWithFundingQuery }>("/api/tasks/content-v1", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     reply.header("Vary", "Authorization");
     const ownerId = request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
@@ -577,6 +722,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {
 
     const opts = listTaskOptions(request.query);
+    const includeFunding = includesTaskFunding(request.query);
     const db = getServerDirectDb();
     const tasks = await listTasksForOwner(db, ownerId, opts);
     const pendingDefinitions = await pendingInitialTaskDefinitions(db, ownerId, tasks);
@@ -593,15 +739,16 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         ...(pendingDefinitions.has(task.id)
           ? { pendingDefinitionReason: pendingDefinitions.get(task.id)! }
           : {}),
-      })
+      }, { includeFunding })
     )) };
     });
   });
 
-  app.get<{ Params: { id: string } }>("/api/tasks/:id/content-v1", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: ListTasksWithFundingQuery }>("/api/tasks/:id/content-v1", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     reply.header("Vary", "Authorization");
     const ownerId = request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
+    const includeFunding = includesTaskFunding(request.query);
     if (!ownerId) return reply.status(401).send({ error: "Authentication required" });
     if (!isUuidString(request.params.id)) {
       return reply.status(404).send({ error: "Task not found" });
@@ -626,7 +773,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       ...(pendingDefinitions.has(task.id)
         ? { pendingDefinitionReason: pendingDefinitions.get(task.id)! }
         : {}),
-    });
+    }, { includeFunding });
     const runSummaries: TaskRunSummaryV1[] = await Promise.all(runs.map(async (run) => {
       const ordinary = content.status === "ordinary"
         && run.resultRepresentation === "ordinary";
@@ -642,6 +789,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         id: run.id,
         status: run.status,
         modelId: run.modelId,
+        ...(includeFunding ? taskRunFundingProjection(task, run) : {}),
         startedAt: toIso(run.startedAt),
         completedAt: toIso(run.completedAt),
         content: ordinary ? {
@@ -753,11 +901,12 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     return sendAvatar(request, reply, profile?.avatarRef ?? SHELL_AVATAR_REF);
   });
 
-  app.get<{ Params: { id: string } }>("/api/tasks/:id", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: ListTasksWithFundingQuery }>("/api/tasks/:id", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     reply.header("Vary", "Authorization");
     const ownerId =
       request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
+    const includeFunding = includesTaskFunding(request.query);
     if (!ownerId) {
       return reply.status(401).send({ error: "Authentication required" });
     }
@@ -791,6 +940,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
           modelId: run.modelId,
           resultText: run.resultText,
           lastError: run.lastError,
+          ...(includeFunding ? taskRunFundingProjection(task, run) : {}),
           startedAt: toIso(run.startedAt),
           completedAt: toIso(run.completedAt),
         };
@@ -826,7 +976,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
           agentName: agentNames.get(task.agentId) ?? null,
           lastModelId: runs.at(-1)?.modelId ?? null,
           canResumeResearch: await canResumeSecurityResearchContextFailure(db, task),
-        }),
+        }, { includeFunding }),
         expectedOutput: task.expectedOutput,
         cron: task.cron,
         runAt: toIso(task.runAt),
@@ -901,6 +1051,11 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
           body.tools !== undefined ? tf.toolsMode : task.toolsMode;
         const effectiveToolsWhitelist =
           body.tools !== undefined ? (tf.toolsWhitelist ?? []) : task.toolsWhitelist;
+        const validationContext = await taskSelectionValidationContext(
+          task.requestorId,
+          task.agentId,
+          effectiveToolsMode,
+        );
         const selectionError = validateTaskModelSelectionForCreate({
           requestedModelId:
             body.requestedModelId !== undefined
@@ -916,6 +1071,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
               : task.selectionSpec,
           toolsMode: effectiveToolsMode,
           toolsWhitelist: effectiveToolsWhitelist,
+          ...validationContext,
         });
         if (selectionError) {
           return reply
@@ -940,7 +1096,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       if (parsedRunAt !== undefined) patch.runAt = parsedRunAt;
       if (body.cron !== undefined) patch.cron = body.cron;
       if (body.timezone !== undefined) patch.timezone = body.timezone;
-      if (body.targetChat !== undefined) patch.targetChat = body.targetChat;
+      Object.assign(patch, taskTargetChatPatch(task, body.targetChat));
       if (body.resultDelivery !== undefined) patch.resultDelivery = body.resultDelivery;
       if (body.tools !== undefined) {
         const tf = toolsFields(body.tools);
@@ -1000,8 +1156,18 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       ) {
         return;
       }
-      if (Object.keys(patch).length > 0
-        && !(await requireServerFunding(task.requestorId, "task_update", reply))) return;
+      if (Object.keys(patch).length > 0) {
+        const priorRun = await getLatestResumableTaskRun(db, task.id);
+        if (callerTargetChatChangeConflictsWithResume(task, body.targetChat, priorRun)) {
+          return reply.status(409).send({ error: "funding_source_changed" });
+        }
+        if (!await requireTaskFundingForMutation({
+          task: Object.assign({}, task, patch) as Task,
+          ...(priorRun ? { priorRun } : {}),
+          origin: "task_update",
+          reply,
+        })) return;
+      }
 
       const updated = await updateTaskIfCurrent(
         db,
@@ -1060,8 +1226,15 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     ) {
       return;
     }
-    if (requiresInvocation
-      && !(await requireServerFunding(task.requestorId, "task_unpause", reply))) return;
+    if (requiresInvocation) {
+      const priorRun = await getLatestResumableTaskRun(getServerDirectDb(), task.id);
+      if (!await requireTaskFundingForMutation({
+        task,
+        ...(priorRun ? { priorRun } : {}),
+        origin: "task_unpause",
+        reply,
+      })) return;
+    }
     const result = await fn();
     const response: TaskLifecycleResponse = {
       taskId: request.params.id,

@@ -1,5 +1,5 @@
 {
-  "id": "00ef471d-3d2a-4f22-b7be-6f8ed2fe3070",
+  "id": "864b0a8b-6005-4898-948b-b38365eaab8b",
   "prevId": "3c1feea5-34d0-4388-8907-abf0b365af60",
   "version": "7",
   "dialect": "postgresql",
@@ -8596,12 +8596,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "call_type": {
           "name": "call_type",
           "type": "text",
@@ -8704,55 +8698,6 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": false
-        },
-        "provider_request_id": {
-          "name": "provider_request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "endpoint": {
-          "name": "endpoint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "serving_provider": {
-          "name": "serving_provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "attempt_outcome": {
-          "name": "attempt_outcome",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cost_state": {
-          "name": "cost_state",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "failure_code": {
-          "name": "failure_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "settled_at": {
-          "name": "settled_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
         },
         "metadata": {
           "name": "metadata",
@@ -8866,70 +8811,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "idx_llm_usage_task_id": {
-          "name": "idx_llm_usage_task_id",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_llm_usage_surplus_pending": {
-          "name": "idx_llm_usage_surplus_pending",
-          "columns": [
-            {
-              "expression": "provider_route",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "cost_state",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uq_llm_usage_provider_request": {
-          "name": "uq_llm_usage_provider_request",
-          "columns": [
-            {
-              "expression": "provider_route",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "provider_request_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"llm_usage_events\".\"provider_request_id\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -8958,19 +8839,6 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
-        },
-        "llm_usage_events_task_id_tasks_id_fk": {
-          "name": "llm_usage_events_task_id_tasks_id_fk",
-          "tableFrom": "llm_usage_events",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -8980,14 +8848,6 @@
         "llm_usage_events_funding_provenance_check": {
           "name": "llm_usage_events_funding_provenance_check",
           "value": "(\n        (\"llm_usage_events\".\"funding_kind\" IS NULL AND \"llm_usage_events\".\"payer_human_id\" IS NULL AND \"llm_usage_events\".\"provider_route\" IS NULL AND \"llm_usage_events\".\"credential_id\" IS NULL AND \"llm_usage_events\".\"credential_revision\" IS NULL)\n        OR\n        (\"llm_usage_events\".\"funding_kind\" IS NOT NULL AND (\n          (\"llm_usage_events\".\"funding_kind\" = 'personal' AND \"llm_usage_events\".\"payer_human_id\" IS NOT NULL AND \"llm_usage_events\".\"provider_route\" IS NOT NULL AND length(\"llm_usage_events\".\"provider_route\") > 0 AND \"llm_usage_events\".\"credential_id\" IS NOT NULL AND \"llm_usage_events\".\"credential_revision\" IS NOT NULL AND \"llm_usage_events\".\"credential_revision\" >= 1)\n          OR\n          (\"llm_usage_events\".\"funding_kind\" IN ('server', 'service') AND \"llm_usage_events\".\"payer_human_id\" IS NULL AND \"llm_usage_events\".\"provider_route\" IS NOT NULL AND length(\"llm_usage_events\".\"provider_route\") > 0 AND \"llm_usage_events\".\"credential_id\" IS NULL AND \"llm_usage_events\".\"credential_revision\" IS NULL)\n        ))\n      )"
-        },
-        "llm_usage_events_attempt_state_check": {
-          "name": "llm_usage_events_attempt_state_check",
-          "value": "(\n        (\"llm_usage_events\".\"attempt_outcome\" IS NULL AND \"llm_usage_events\".\"cost_state\" IS NULL)\n        OR\n        (\"llm_usage_events\".\"provider_route\" = 'surplus' AND \"llm_usage_events\".\"attempt_outcome\" IS NOT NULL AND \"llm_usage_events\".\"cost_state\" IS NOT NULL AND \"llm_usage_events\".\"endpoint\" IS NOT NULL AND length(\"llm_usage_events\".\"endpoint\") > 0)\n      )"
-        },
-        "llm_usage_events_cost_state_check": {
-          "name": "llm_usage_events_cost_state_check",
-          "value": "(\n        \"llm_usage_events\".\"cost_state\" IS NULL\n        OR (\"llm_usage_events\".\"cost_state\" = 'actual' AND \"llm_usage_events\".\"actual_cost_usd\" IS NOT NULL)\n        OR (\"llm_usage_events\".\"cost_state\" = 'estimated' AND \"llm_usage_events\".\"actual_cost_usd\" IS NULL)\n        OR (\"llm_usage_events\".\"cost_state\" IN ('pending', 'unknown') AND \"llm_usage_events\".\"actual_cost_usd\" IS NULL)\n      )"
         }
       },
       "isRLSEnabled": false
@@ -16209,6 +16069,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "funding_mode": {
+          "name": "funding_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'legacy_server'"
+        },
         "time_limit_seconds": {
           "name": "time_limit_seconds",
           "type": "integer",
@@ -16833,6 +16700,12 @@
         "model_id": {
           "name": "model_id",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "funding_binding": {
+          "name": "funding_binding",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -22012,13 +21885,6 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
-        },
-        "prefer_surplus": {
-          "name": "prefer_surplus",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "updated_at": {
           "name": "updated_at",

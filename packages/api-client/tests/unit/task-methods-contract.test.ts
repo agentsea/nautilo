@@ -16,7 +16,7 @@ describe("task lifecycle HTTP contract (mocked fetch)", () => {
     globalThis.fetch = realFetch;
   });
 
-  test("listActiveTasks — GET /api/tasks with no query params", async () => {
+  test("listActiveTasks requests the funding extension", async () => {
     let seenUrl = "";
     let seenMethod = "";
     const payload = [
@@ -30,6 +30,7 @@ describe("task lifecycle HTTP contract (mocked fetch)", () => {
         scheduleKind: "now",
         nextFireAt: null,
         callingRoomId: null,
+        fundingFailure: "personal_credential_missing",
         updatedAt: "2026-06-15T10:01:00.000Z",
       },
     ];
@@ -49,10 +50,11 @@ describe("task lifecycle HTTP contract (mocked fetch)", () => {
     client.setToken("tok");
     const out = await client.listActiveTasks();
     expect(seenMethod).toBe("GET");
-    expect(seenUrl).toBe("http://127.0.0.1:9/api/tasks");
+    expect(seenUrl).toBe("http://127.0.0.1:9/api/tasks?includeFunding=true");
     expect(out).toHaveLength(1);
     expect(out[0]?.id).toBe("task-1");
     expect(out[0]?.updatedAt).toBe("2026-06-15T10:01:00.000Z");
+    expect(out[0]?.fundingFailure).toBe("personal_credential_missing");
   });
 
   test("listTasks carries explicit bounded recent-terminal query parameters", async () => {
@@ -72,7 +74,7 @@ describe("task lifecycle HTTP contract (mocked fetch)", () => {
     client.setToken("tok");
     await client.listTasks({ includeTerminal: true, recentTerminalLimit: 5 });
     expect(seenUrl).toBe(
-      "http://127.0.0.1:9/api/tasks?includeTerminal=true&recentTerminalLimit=5",
+      "http://127.0.0.1:9/api/tasks?includeTerminal=true&recentTerminalLimit=5&includeFunding=true",
     );
   });
 
@@ -95,7 +97,7 @@ describe("task lifecycle HTTP contract (mocked fetch)", () => {
     expect(seenUrl).toBe("http://127.0.0.1:9/api/tasks/pending-attention");
   });
 
-  test("getTask — GET /api/tasks/:id", async () => {
+  test("getTask requests the funding extension", async () => {
     let seenUrl = "";
     let seenMethod = "";
     const payload = {
@@ -142,7 +144,7 @@ describe("task lifecycle HTTP contract (mocked fetch)", () => {
     client.setToken("tok");
     const out = await client.getTask("task-1");
     expect(seenMethod).toBe("GET");
-    expect(seenUrl).toBe("http://127.0.0.1:9/api/tasks/task-1");
+    expect(seenUrl).toBe("http://127.0.0.1:9/api/tasks/task-1?includeFunding=true");
     expect(out.task.id).toBe("task-1");
   });
 
@@ -284,6 +286,7 @@ describe("task lifecycle HTTP contract (mocked fetch)", () => {
           id: "run-1",
           status: "completed",
           modelId: "anthropic:claude-sonnet-4-6",
+          fundingSource: "server",
           resultText: "done",
           lastError: null,
           startedAt: "2026-06-15T10:00:00.000Z",
@@ -306,5 +309,6 @@ describe("task lifecycle HTTP contract (mocked fetch)", () => {
     expect(out.task.requestedModelId).toBe("anthropic:claude-sonnet-4-6");
     // The actual run model is surfaced separately on the run.
     expect(out.runs[0]?.modelId).toBe("anthropic:claude-sonnet-4-6");
+    expect(out.runs[0]?.fundingSource).toBe("server");
   });
 });

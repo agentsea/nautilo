@@ -14,6 +14,7 @@ import {
   isNull,
   type DirectDatabase,
   type NewTask,
+  type Task,
 } from "@nautilo/db";
 import {
   ACP_RELAY_MAX_OPAQUE_ID_BYTES,
@@ -45,6 +46,8 @@ export interface TaskDispatchContext {
   roomId: string;
   /** Server-authored durable Task currently executing this graph, if any. */
   currentTaskId?: string;
+  /** Trusted foreground-only bounded personal Task-control admission. */
+  personalTaskControls?: boolean;
   taskReadMaxResponseBytes?: number | undefined;
   taskReadMessages?: readonly BaseMessage[] | undefined;
   taskReadPendingPages?: readonly TaskReadPendingPage[] | undefined;
@@ -142,6 +145,44 @@ function toolsFieldsFromArgs(
     return { toolsMode: "none" };
   }
   return { toolsMode: "whitelist", toolsWhitelist: tools };
+}
+
+/**
+ * Personal foreground controls may resume or reshape only the native,
+ * caller-funded root Tasks created for this exact Human, Genie, and Room.
+ * Lifecycle reads, pause, and stop remain available for every owned Task.
+ */
+function isPersonalTaskMutationTarget(task: Task, ctx: TaskDispatchContext): boolean {
+  return task.fundingMode === "caller"
+    && task.requestorId === ctx.causalHumanUserId
+    && task.agentId === ctx.agentId
+    && task.callingRoomId === ctx.roomId
+    && task.parentTaskId === null
+    && task.depth === 0
+    && task.contentRepresentation === "ordinary"
+    && task.useScope === false
+    && task.scopeId === null
+    && task.toolsMode === "none"
+    && task.toolsWhitelist.length === 0
+    && task.awaitResponse === false
+    && task.targetUserIds.length === 1
+    && task.targetUserIds[0] === ctx.causalHumanUserId
+    && (task.targetChat === "orphan" || task.targetChat === "last_in_namespace")
+    && task.targetChatHandle === null
+    && (task.targetChat === "orphan" || task.targetRoomId === null || task.targetRoomId === task.callingRoomId)
+    && taskExternalHarnessId(task.metadata) === null;
+}
+
+function personalTaskMutationRejection(
+  task: Task,
+  ctx: TaskDispatchContext,
+  operation: "update" | "unpause",
+): string | null {
+  if (!ctx.personalTaskControls) return null;
+  if (!isPersonalTaskMutationTarget(task, ctx)) {
+    return `Cannot ${operation} task: personal Task controls only support caller-funded native root tool-free Tasks from this chat.`;
+  }
+  return null;
 }
 
 /**
@@ -357,7 +398,7 @@ export async function dispatchTaskCommand(
         // capability truth, mutual-exclusion conflict) and the M152
         // profile/spec bias. Reject an unsatisfiable selection with the
         // actionable message; do NOT insert.
-        const selectionError = validateTaskModelSelectionForCreate({
+        const selectionError = ctx.personalTaskControls ? null : validateTaskModelSelectionForCreate({
           requestedModelId: args.model_id,
           profile: args.model_selection_profile,
           spec: args.model_selection_spec,
@@ -688,7 +729,13 @@ export async function dispatchTaskCommand(
             args.tools !== undefined
               ? (toolsFields.toolsWhitelist ?? [])
               : task.toolsWhitelist;
-          const selectionError = validateTaskModelSelectionForCreate({
+          // Caller-funded definitions are validated by the required live
+          // server mutation seam below. The foreground turn's own funding
+          // class is independent: a server-funded parent may legitimately
+          // select a personal-only Task model from its trusted caller union.
+          const selectionError = ctx.personalTaskControls || task.fundingMode === "caller"
+            ? null
+            : validateTaskModelSelectionForCreate({
             requestedModelId:
               args.model_id !== undefined ? args.model_id : task.requestedModelId,
             profile:
@@ -701,7 +748,7 @@ export async function dispatchTaskCommand(
                 : task.selectionSpec,
             toolsMode: effectiveToolsMode,
             toolsWhitelist: effectiveToolsWhitelist,
-          });
+            });
           if (selectionError) return selectionError;
         }
 
@@ -715,7 +762,12 @@ export async function dispatchTaskCommand(
         if (parsedRunAt !== undefined) patch.runAt = parsedRunAt;
         if (args.cron !== undefined) patch.cron = args.cron;
         if (args.timezone !== undefined) patch.timezone = args.timezone;
-        if (args.target_chat !== undefined) patch.targetChat = args.target_chat;
+        if (args.target_chat !== undefined) {
+          patch.targetChat = args.target_chat;
+          if (args.target_chat !== task.targetChat) {
+            patch.targetRoomId = null;
+          }
+        }
         if (args.result_delivery !== undefined) {
           patch.resultDelivery = args.result_delivery;
         }
@@ -756,6 +808,25 @@ export async function dispatchTaskCommand(
           );
         }
 
+        const personalCurrentRejection = personalTaskMutationRejection(task, ctx, "update");
+        if (personalCurrentRejection) return personalCurrentRejection;
+        const prospectiveTask = { ...task, ...patch } as Task;
+        const personalProspectiveRejection = personalTaskMutationRejection(
+          prospectiveTask,
+          ctx,
+          "update",
+        );
+        if (personalProspectiveRejection) return personalProspectiveRejection;
+        if ((ctx.personalTaskControls || task.fundingMode === "caller")
+          && !rt.assertMutationFunding) {
+          return "Cannot update task: live funding validation is unavailable.";
+        }
+        await rt.assertMutationFunding?.({
+          task,
+          operation: "update",
+          patch,
+        });
+
         const updated = await updateTask(rt.db, args.taskId, patch);
         if (!updated) return "Task not found.";
         return JSON.stringify({
@@ -781,6 +852,14 @@ export async function dispatchTaskCommand(
         const task = await getTaskById(rt.db, args.taskId);
         if (!task || task.ownerId !== ctx.ownerId) {
           return "Task not found.";
+        }
+        if (args.command === "unpause") {
+          const personalRejection = personalTaskMutationRejection(task, ctx, "unpause");
+          if (personalRejection) return personalRejection;
+          if (ctx.personalTaskControls && !rt.assertMutationFunding) {
+            return "Cannot unpause task: live funding validation is unavailable.";
+          }
+          await rt.assertMutationFunding?.({ task, operation: "unpause" });
         }
         const result =
           args.command === "pause"

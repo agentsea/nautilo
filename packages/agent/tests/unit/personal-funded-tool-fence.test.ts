@@ -97,12 +97,64 @@ function registerPaidFixture(invoke: () => void): void {
   initToolCatalog(catalog);
 }
 
-function fundingSession(kind: "personal" | "server"): ForegroundChatFundingSession {
+function fundingSession(
+  kind: "personal" | "server",
+  personalTaskControls = false,
+): ForegroundChatFundingSession {
   return {
     kind,
+    ...(personalTaskControls
+      ? { personalTaskControls: true, runnableModelIds: ["anthropic:claude-sonnet-4-6"] }
+      : {}),
     runAttempt: async () => { throw new Error("funding attempt is outside this node test"); },
     recheckAttempt: async () => {},
   };
+}
+
+function registerControlFixtures(invoke: (name: string) => void = () => {}): void {
+  const catalog = new ToolCatalog();
+  for (const name of ["task", "in_background", "schedule", "discover_models", "paid_fixture"]) {
+    catalog.register({
+      name,
+      category: name === "paid_fixture" ? "development" : "automation",
+      trustTier: "guest",
+      impact: "read-only",
+      exposure: "core",
+      factory: () => new DynamicStructuredTool({
+        name,
+        description: `${name} fixture`,
+        schema: z.object({}).passthrough(),
+        func: async () => {
+          invoke(name);
+          return `${name} executed`;
+        },
+      }),
+    });
+  }
+  initToolCatalog(catalog);
+}
+
+function registerTaskContextFixture(
+  capture: (context: Readonly<Record<string, unknown>>) => void,
+): void {
+  const catalog = new ToolCatalog();
+  catalog.register({
+    name: "task",
+    category: "automation",
+    trustTier: "guest",
+    impact: "read-only",
+    exposure: "core",
+    factory: (context) => new DynamicStructuredTool({
+      name: "task",
+      description: "Task context fixture",
+      schema: z.object({ command: z.literal("create"), model_id: z.string() }),
+      func: async () => {
+        capture(context as Readonly<Record<string, unknown>>);
+        return "task created";
+      },
+    }),
+  });
+  initToolCatalog(catalog);
 }
 
 function promptText(message: SystemMessage): string {
@@ -173,6 +225,83 @@ describe("personal-funded foreground tool fence", () => {
       .not.toContain("must-not-echo");
   });
 
+  test("pre-model exposes only bounded controls for a trusted function-calling personal parent", async () => {
+    registerControlFixtures();
+    setConfigOverrides({ nautilo_tool_exposure_mode: "eager" });
+
+    const patch = await preModelNode(
+      state(), undefined, undefined, undefined, false, undefined,
+      true, true, ["anthropic:claude-sonnet-4-6"],
+    );
+
+    expect(patch.toolNames?.sort()).toEqual([
+      "discover_models", "in_background", "schedule", "task",
+    ]);
+    expect(patch.activatedToolNames?.sort()).toEqual([
+      "discover_models", "in_background", "schedule", "task",
+    ]);
+    expect(patch.toolNames).not.toContain("paid_fixture");
+  });
+
+  test("post-model admits a narrow control and rejects an unsafe argument before policy", async () => {
+    registerControlFixtures();
+    let policyChecks = 0;
+    const resolver = {
+      checkToolAccess: async () => {
+        policyChecks++;
+        return { type: "allow" as const };
+      },
+    } as unknown as PolicyResolver;
+    const valid = { id: "task-valid", name: "task", args: { command: "create", prompt: "x" }, type: "tool_call" as const };
+    const admitted = await createPostModelNode(resolver, {
+      foregroundChatFundingSession: fundingSession("personal", true),
+      matchCommandApproval: async () => null,
+    })(state({ messages: [new AIMessage({ content: "", tool_calls: [valid] })] }));
+    expect(admitted.approvedToolCalls).toEqual([valid]);
+    expect(policyChecks).toBe(1);
+
+    const unsafe = { id: "task-unsafe", name: "task", args: {
+      command: "create", prompt: "x", harness: "codex",
+    }, type: "tool_call" as const };
+    const denied = await createPostModelNode(resolver, {
+      foregroundChatFundingSession: fundingSession("personal", true),
+      matchCommandApproval: async () => null,
+    })(state({ messages: [new AIMessage({ content: "", tool_calls: [unsafe] })] }));
+    expect(denied.approvedToolCalls).toEqual([]);
+    expect(policyChecks).toBe(1);
+    expect(denied.messages?.at(-1)?.content).toBe(PERSONAL_FUNDING_TOOL_UNSUPPORTED_RESULT);
+  });
+
+  test("tools node executes an admitted bounded control and still fences paid calls", async () => {
+    const invocations: string[] = [];
+    registerControlFixtures((name) => invocations.push(name));
+    const valid = { id: "task-execute", name: "task", args: {
+      command: "list", includeTerminal: false,
+    }, type: "tool_call" as const };
+    const allowed = await createToolsNode({
+      personalFunding: true,
+      personalTaskControls: true,
+      personalTaskRunnableModelIds: ["anthropic:claude-sonnet-4-6"],
+    })(state({
+      messages: [new AIMessage({ content: "", tool_calls: [valid] })],
+      approvedToolCalls: [valid],
+      activatedToolNames: ["task"],
+    }));
+    expect(invocations).toEqual(["task"]);
+    expect(allowed.messages?.at(-1)?.content).toBe("task executed");
+
+    const paid = { id: "paid-execute", name: "paid_fixture", args: {}, type: "tool_call" as const };
+    const denied = await createToolsNode({
+      personalFunding: true,
+      personalTaskControls: true,
+    })(state({
+      messages: [new AIMessage({ content: "", tool_calls: [paid] })],
+      approvedToolCalls: [paid],
+    }));
+    expect(invocations).toEqual(["task"]);
+    expect(denied.messages?.at(-1)?.content).toBe(PERSONAL_FUNDING_TOOL_UNSUPPORTED_RESULT);
+  });
+
   test("post-model preserves earlier preflight rejections without duplicating receipts", async () => {
     const rejected = { id: "preflight-rejected", name: "paid_fixture", args: {}, type: "tool_call" as const };
     const stale = { id: "stale-live", name: "paid_fixture", args: {}, type: "tool_call" as const };
@@ -237,6 +366,32 @@ describe("personal-funded foreground tool fence", () => {
     expect(invocations).toBe(1);
     expect(patch.approvedToolCalls).toEqual([]);
     expect(patch.messages?.at(-1)?.content).toBe("paid fixture executed");
+  });
+
+  test("server-funded tool execution receives the trusted caller model union and personal-only subset", async () => {
+    let captured: Readonly<Record<string, unknown>> | undefined;
+    registerTaskContextFixture((context) => { captured = context; });
+    const call = { id: "server-personal-model", name: "task", args: {
+      command: "create", model_id: "anthropic:claude-sonnet-4-6",
+    }, type: "tool_call" as const };
+
+    const patch = await createToolsNode({
+      personalTaskRunnableModelIds: ["anthropic:claude-sonnet-4-6", "openai:gpt-5"],
+      personalOnlyTaskModelIds: ["anthropic:claude-sonnet-4-6"],
+    })(state({
+      messages: [new AIMessage({ content: "", tool_calls: [call] })],
+      approvedToolCalls: [call],
+      activatedToolNames: ["task"],
+    }));
+
+    expect(captured?.["personalTaskControls"]).toBe(false);
+    expect(captured?.["personalTaskRunnableModelIds"]).toEqual([
+      "anthropic:claude-sonnet-4-6", "openai:gpt-5",
+    ]);
+    expect(captured?.["personalOnlyTaskModelIds"]).toEqual([
+      "anthropic:claude-sonnet-4-6",
+    ]);
+    expect(patch.messages?.at(-1)?.content).toBe("task created");
   });
 
   test("server funding does not trigger the post-model personal fence", async () => {

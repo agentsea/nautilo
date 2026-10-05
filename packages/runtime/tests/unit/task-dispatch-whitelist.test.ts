@@ -35,6 +35,7 @@ function makeTask(overrides: Partial<Task>): Task {
     depth: 0,
     toolsMode: "auto",
     toolsWhitelist: [],
+    fundingMode: "legacy_server",
     ...overrides,
   } as Task;
 }

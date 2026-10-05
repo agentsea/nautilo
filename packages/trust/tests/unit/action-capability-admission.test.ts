@@ -612,6 +612,7 @@ test("M254 invocation admission and authority mint sites stay mechanically inven
   expect(productionFilesMatching(INVOCATION_ADMISSION_PATTERN)).toEqual([
     "packages/runtime/src/tasks/report-back.ts",
     "packages/server/src/lib/foreground-chat-funding.ts",
+    "packages/server/src/lib/native-task-funding.ts",
     "packages/server/src/messaging/await-resume.ts",
     "packages/trust/src/action-capability-admission.ts",
   ]);
@@ -655,6 +656,7 @@ test("M254 invocation admission and authority mint sites stay mechanically inven
     "packages/runtime/src/job-manager.ts",
     "packages/runtime/src/tasks/create-task.ts",
     "packages/runtime/src/tasks/resume-task-approval.ts",
+    "packages/runtime/src/tasks/task-run-executor.ts",
   ]);
 });
 

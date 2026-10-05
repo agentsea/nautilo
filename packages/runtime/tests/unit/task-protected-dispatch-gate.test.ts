@@ -8,7 +8,7 @@ import {
 test("the ordinary Task dispatcher rejects protected content before opening a Job", async () => {
   for (const contentRepresentation of ["protected", "dual"] as const) {
     await dispatchTaskRun(
-      { contentRepresentation } as Task,
+      { contentRepresentation, fundingMode: "legacy_server" } as Task,
       {} as DispatchTaskRunDeps,
     ).then(
       () => { throw new Error("Protected Task dispatch unexpectedly succeeded"); },

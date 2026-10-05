@@ -346,7 +346,7 @@ export function PersonalProviderKeysSection({
     <SectionCard
       id="personal-provider-keys"
       title="Personal API keys"
-      description="Add your own provider keys to use supported models for personal chat. Keys belong to your account on this Server; after saving, only a masked preview is shown."
+      description="Add your own provider keys to use supported models for personal chat and native tool-free text Tasks. Keys belong to your account on this Server; after saving, only a masked preview is shown."
     >
       {state.kind === "loading" ? (
         <p className="text-sm text-foreground-muted">Loading…</p>
@@ -377,7 +377,7 @@ export function PersonalProviderKeysSection({
               Shows saved personal API key coverage, not provider availability. Rejected keys and keys that require replacement do not count as coverage.
             </p>
             <p className="mt-1 text-xs text-foreground-muted">
-              Only text chat currently uses personal keys; other capabilities will be added later.
+              Personal keys currently support personal chat and native tool-free text Tasks; other paid capabilities will be added later.
             </p>
             {state.providers.length > 0 ? (
               <ProviderKeyCoverageTable
@@ -518,7 +518,7 @@ export function PersonalProviderKeysSection({
                         ? provider.personalCapabilities.includes("chat") ? (
                           <a className="text-primary hover:underline" href="/settings#model">Choose a model for your Genie.</a>
                         ) : (
-                          "Not used by personal chat in this release."
+                          "Not used by personal chat or native tool-free text Tasks in this release."
                         )
                         : null}
                     </p>
@@ -527,7 +527,7 @@ export function PersonalProviderKeysSection({
                     && !provider.personalCapabilities.includes("chat")
                     && savedProvider !== provider.id ? (
                     <p className="text-xs text-foreground-muted">
-                      Not used by personal chat in this release.
+                      Not used by personal chat or native tool-free text Tasks in this release.
                     </p>
                   ) : null}
                 </div>

@@ -6,6 +6,10 @@ import { SubagentStepFeed } from "./SubagentStepFeed";
 import { HarnessActivityFeed } from "./HarnessActivityFeed";
 import { harnessPresentation } from "./harness-presentation";
 import { useSubagentTranscript } from "./use-subagent-transcript";
+import {
+  TaskFundingRecoveryNotice,
+  taskFundingRecovery,
+} from "../../../components/task-funding-recovery";
 
 /**
  * D307 (Stack 87) — one card in the Subagent activity dock (§5.12).
@@ -153,6 +157,9 @@ export function SubagentCard({
   const kindLabel = kind ? KIND_LABEL[kind] ?? kind : null;
   const presentation = harnessPresentation(harnessId);
   const nativeControls = harnessId === null;
+  const fundingRecovery = subagent.fundingFailure
+    ? taskFundingRecovery(subagent.fundingFailure)
+    : null;
 
   const openTranscript = () => drawer.open({ kind: "subagent-transcript", taskId });
 
@@ -222,6 +229,7 @@ export function SubagentCard({
           <SubagentControls
             status={status}
             canResumeResearch={subagent.canResumeResearch === true}
+            canResumeFunding={fundingRecovery?.requiresFreshTask !== true}
             busy={busy}
             awaitingRoomId={awaitingRoomId}
             canJump={canJump}
@@ -249,6 +257,12 @@ export function SubagentCard({
       >
         {line3 ? `› ${line3}` : statusFallbackLine(status)}
       </p>
+
+      {subagent.fundingFailure ? (
+        <div className="pl-[22px]">
+          <TaskFundingRecoveryNotice code={subagent.fundingFailure} compact />
+        </div>
+      ) : null}
 
       {/* L1 (expanded) — condensed step feed + "expand to full view" control. */}
       {expanded ? (
@@ -350,6 +364,7 @@ function statusFallbackLine(status: RunningSubagentStatus): string {
 function SubagentControls({
   status,
   canResumeResearch,
+  canResumeFunding,
   busy,
   awaitingRoomId,
   canJump,
@@ -363,6 +378,7 @@ function SubagentControls({
 }: {
   readonly status: RunningSubagentStatus;
   readonly canResumeResearch: boolean;
+  readonly canResumeFunding: boolean;
   readonly busy: boolean;
   readonly awaitingRoomId: string | null;
   readonly canJump: boolean;
@@ -410,7 +426,7 @@ function SubagentControls({
         >
           ⏸
         </button>
-      ) : allowPauseResume ? (
+      ) : allowPauseResume && canResumeFunding ? (
         <button
           type="button"
           onClick={onResume}

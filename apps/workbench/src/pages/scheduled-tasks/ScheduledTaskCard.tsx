@@ -7,6 +7,10 @@ import {
   isScheduleEnabled,
   scheduleStatusLabel,
 } from "./scheduled-tasks-view-model";
+import {
+  TaskFundingRecoveryNotice,
+  taskFundingRecovery,
+} from "../../components/task-funding-recovery";
 
 /**
  * D406 — one row in the Scheduled tasks management list.
@@ -34,6 +38,12 @@ export function ScheduledTaskCard({
   const [confirmRemove, setConfirmRemove] = useState(false);
   const enabled = isScheduleEnabled(task.status);
   const agentName = task.agentName?.trim() || "Genie";
+  const fundingRecovery = task.fundingFailure
+    ? taskFundingRecovery(task.fundingFailure)
+    : null;
+  const uncertainCronOccurrence = task.scheduleKind === "cron"
+    && task.fundingFailure === "funding_interrupted_uncertain";
+  const resumeBlocked = fundingRecovery?.requiresFreshTask === true && !uncertainCronOccurrence;
 
   return (
     <li
@@ -60,11 +70,14 @@ export function ScheduledTaskCard({
             <input
               type="checkbox"
               checked={enabled}
-              disabled={busy}
+              disabled={busy || (!enabled && resumeBlocked)}
               onChange={() => (enabled ? onDisable(task.id) : onEnable(task.id))}
               className="h-3.5 w-3.5 cursor-pointer disabled:cursor-wait disabled:opacity-40"
               aria-label={enabled ? "Disable schedule" : "Enable schedule"}
               data-testid="scheduled-task-toggle"
+              title={!enabled && resumeBlocked
+                ? "This schedule cannot resume; create a fresh task."
+                : undefined}
             />
           </label>
 
@@ -110,6 +123,14 @@ export function ScheduledTaskCard({
       <p className="truncate text-[13px] text-foreground" title={task.prompt}>
         {task.prompt || "(no description)"}
       </p>
+
+      {uncertainCronOccurrence ? (
+        <p role="status" className="text-xs text-foreground-muted">
+          The previous occurrence was interrupted and will not be replayed. Future occurrences use a fresh funding check; you can turn this schedule off or on.
+        </p>
+      ) : task.fundingFailure ? (
+        <TaskFundingRecoveryNotice code={task.fundingFailure} />
+      ) : null}
 
       <div className="flex items-center gap-3 text-[11px] text-foreground-muted">
         <span className="font-mono" data-testid="scheduled-task-cadence">

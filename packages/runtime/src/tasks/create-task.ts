@@ -14,6 +14,7 @@ import {
   type AcceptedInvocationAuthority,
 } from "@nautilo/trust";
 import { getCurrentAcceptedInvocationAuthority } from "../job-manager";
+import { prepareTaskCreationFunding } from "../task-funding-port";
 import {
   assertTaskCreationProvenance,
   TaskCreationUnavailableError,
@@ -104,10 +105,12 @@ export async function createTask(
     agentId: input.agentId,
     ...(input.targetRoomId ? { roomId: input.targetRoomId } : {}),
   });
-  await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(
-    input.requestorId,
-    "task_create",
-  );
+  const callerFunded = await prepareTaskCreationFunding(input, deps.provenance);
+  if (!callerFunded) {
+    await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(
+      input.requestorId, "task_create",
+    );
+  }
 
   const admission = await deps.admission.admit({
     db: deps.db,
@@ -124,6 +127,8 @@ export async function createTask(
 
   const row = await dbCreateTask(deps.db, {
     ...admission.candidate,
+    // Only the trusted funding port may author this definition discriminator.
+    fundingMode: callerFunded ? "caller" : "legacy_server",
     nextFireAt,
     status: "pending",
   });

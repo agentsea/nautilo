@@ -2,8 +2,10 @@ import {
   getLatestResumableTaskRun,
   getTaskById,
   insertTaskRun,
+  startClaimedCallerTaskRun,
   startTaskRunForWriterReviewVerification,
   pauseClaimedTaskForAuthorizationDenial,
+  pauseClaimedTaskForFundingDenial,
   markTaskRunning,
   markTaskRunStatus,
   updateTask,
@@ -66,6 +68,7 @@ import {
   restoreTaskReturnBindingFromCheckpoint,
 } from "./task-return-binding";
 import { resolveTaskMemoryEnvelope } from "./resolve-task-memory-envelope";
+import { assertTaskFundingAdmission, taskFundingFailureCode } from "../task-funding-port";
 
 export {
   selectTaskEnvelopeMode,
@@ -297,10 +300,11 @@ export async function dispatchTaskRun(
       agentId: task.agentId,
       ...(task.targetRoomId ? { roomId: task.targetRoomId } : {}),
     });
-    await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(
-      task.requestorId,
-      "task_dispatch",
-    );
+    if ((task.fundingMode ?? "legacy_server") === "legacy_server") {
+      await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(
+        task.requestorId, "task_dispatch",
+      );
+    }
   } catch (error) {
     if (!(error instanceof AgentInvocationDeniedError)
       && !(error instanceof ServerProviderCredentialsDeniedError)) throw error;
@@ -351,6 +355,20 @@ export async function dispatchTaskRun(
   // `tasks.target_room_id`, so `resolveTargetRoom` still returns the right
   // `roomId`; we only override the thread.
   const resumableRun = await getLatestResumableTaskRun(db, task.id);
+  let fundingAdmission;
+  try {
+    fundingAdmission = await assertTaskFundingAdmission(task, resumableRun);
+  } catch (error) {
+    const reason = taskFundingFailureCode(error);
+    if (!reason || !task.fireLockId) throw error;
+    const transition = await pauseClaimedTaskForFundingDenial(db, {
+      taskId: task.id, requestorId: task.requestorId, fireLockId: task.fireLockId, reason,
+    });
+    if (transition.transitioned && transition.task) {
+      eventBus.emit({ type: "task.status", taskId: task.id, ownerId: transition.task.ownerId, status: "paused" });
+    }
+    return { kind: "authorization_paused" };
+  }
   const deliveryOnlyResume = isSecurityReportDeliveryRetry(resumableRun);
   const securityResearchResume = resumableRun !== undefined && Boolean(resumableRun.modelId)
     && task.toolsMode === "whitelist" && task.toolsWhitelist?.includes("security_scan") === true;
@@ -504,7 +522,10 @@ export async function dispatchTaskRun(
   // current operator routing consent. An exact pin validates its own route.
   let modelId: string;
   let exactModelSelection = false;
-  if (securityResearchResume && resumableRun?.modelId) {
+  if (fundingAdmission) {
+    modelId = fundingAdmission.modelId;
+    exactModelSelection = Boolean(task.requestedModelId);
+  } else if (securityResearchResume && resumableRun?.modelId) {
     // The continuing graph retains its original model. Delivery-only Resume
     // makes no provider request; ordinary audit Resume revalidates eligibility.
     if (task.requestedModelId && task.requestedModelId !== resumableRun.modelId) {
@@ -557,18 +578,26 @@ export async function dispatchTaskRun(
     graphThreadId,
     status: "running",
     modelId,
+    fundingBinding: fundingAdmission?.binding ?? null,
+    fundingPredecessorRunId: fundingAdmission && resumableRun ? resumableRun.id : null,
   } as const;
-  const run = securityResearchResume
+  const run = fundingAdmission
+    ? task.fireLockId ? await startClaimedCallerTaskRun(db, {
+      taskId: task.id, requestorId: task.requestorId, fireLockId: task.fireLockId,
+      graphThreadId, modelId, fundingBinding: fundingAdmission.binding,
+      ...(resumableRun ? { fundingPredecessorRunId: resumableRun.id } : {}),
+    }) : undefined
+    : securityResearchResume
     ? await resumeSecurityResearchRun(db, { taskId: task.id, taskRunId: resumableRun.id, ownerId: task.ownerId,
       threadId: graphThreadId, modelId, deliveryOnly: deliveryOnlyResume })
     : writerReviewVerification
     ? await startTaskRunForWriterReviewVerification(db, runInput)
     : await insertTaskRun(db, runInput);
   if (!run) {
-    if (securityResearchResume) return { kind: "authorization_paused" };
+    if (securityResearchResume || fundingAdmission) return { kind: "authorization_paused" };
     throw new Error(`dispatchTaskRun: accepted Writer verification was no longer pending for task ${task.id}`);
   }
-  if (!writerReviewVerification && !securityResearchResume) await markTaskRunning(db, task.id);
+  if (!fundingAdmission && !writerReviewVerification && !securityResearchResume) await markTaskRunning(db, task.id);
 
   // 5. Create the subagent job on its OWN thread + a task-only lane, so no
   // human room lane is held. The executor runs `runScopeSubagentUntilPause`
@@ -690,6 +719,9 @@ export async function dispatchTaskRun(
         graphThreadId,
       }),
     );
+    if (fundingAdmission && executionRoute) {
+      throw new Error("Caller-funded text Tasks require native execution");
+    }
     if (securityResearchResume && executionRoute?.modelAttribution === "external") {
       throw new Error("SECURITY_RESEARCH_RESUME_REQUIRES_NATIVE_EXECUTION");
     }

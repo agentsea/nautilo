@@ -145,7 +145,7 @@ compact where every listed member shares the same version and license.
 | [Expo SDK](https://github.com/expo/expo) | 57.0.11; Expo modules 57.0.1–57.0.11 | Expo | MIT | Mobile: audio, auth session, camera, file system, notifications, secure store, router, UI, and related Expo modules. |
 | [Electron Log](https://github.com/megahertz/electron-log) / [electron-updater](https://github.com/electron-userland/electron-builder) | 5.4.3 / 6.8.9 | Community | MIT | Desktop. |
 | [node-pty](https://github.com/microsoft/node-pty) / [argon2](https://github.com/ranisalt/node-argon2) | 1.1.0 / 0.44.0 | Microsoft / ranisalt | MIT / MIT | Desktop native addons; argon2 is also in the server projection. |
-| [Fastify](https://github.com/fastify/fastify) family | 5.11.2; cors 10.1.0; multipart 10.0.0; static 10.1.2; websocket 11.3.0 | Fastify | MIT | Server. |
+| [Fastify](https://github.com/fastify/fastify) family | 5.12.5; cors 10.1.0; multipart 10.0.0; static 10.1.2; websocket 11.3.0; busboy 3.2.1 | Fastify | MIT | Server. |
 | [LangChain JS](https://github.com/langchain-ai/langchainjs) family | core 1.1.45; Anthropic 1.3.29; Fireworks 0.1.3; Google GenAI 2.1.29; OpenAI 1.4.5; Tavily 1.2.0; xAI 1.3.17 | LangChain | MIT | Server agent runtime. |
 | [LangGraph JS](https://github.com/langchain-ai/langgraphjs) family | langgraph 1.2.9; checkpoint-postgres 1.0.1 | LangChain | MIT | Server agent runtime. |
 | [Model Context Protocol TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) / [ACP TypeScript SDK](https://github.com/agentclientprotocol/typescript-sdk) | 1.30.0 / 1.3.0 | MCP / ACP | MIT / Apache-2.0 | Desktop and server integration surfaces. |

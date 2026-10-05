@@ -7692,7 +7692,8 @@ export class NautiloApiClient {
     if (query.recentTerminalLimit !== undefined) {
       params.set("recentTerminalLimit", String(query.recentTerminalLimit));
     }
-    const suffix = params.size > 0 ? `?${params.toString()}` : "";
+    params.set("includeFunding", "true");
+    const suffix = `?${params.toString()}`;
     return this.request<TaskContentListV1>({
       path: `/api/tasks/content-v1${suffix}`,
       schema: taskContentListV1Schema,
@@ -7704,7 +7705,7 @@ export class NautiloApiClient {
   async getTaskContentV1(taskId: string): Promise<TaskContentDetailV1> {
     const id = z.string().uuid().parse(taskId);
     return this.request<TaskContentDetailV1>({
-      path: `/api/tasks/${encodeURIComponent(id)}/content-v1`,
+      path: `/api/tasks/${encodeURIComponent(id)}/content-v1?includeFunding=true`,
       schema: taskContentDetailV1Schema,
       defaultErrorPrefix: `GET /api/tasks/${id}/content-v1`,
     });
@@ -7913,7 +7914,7 @@ export class NautiloApiClient {
    */
   async listActiveTasks(): Promise<TaskSummary[]> {
     return this.request<TaskSummary[]>({
-      path: "/api/tasks",
+      path: "/api/tasks?includeFunding=true",
       defaultErrorPrefix: "GET /api/tasks",
     });
   }
@@ -7931,7 +7932,8 @@ export class NautiloApiClient {
     if (query.recentTerminalLimit !== undefined) {
       params.set("recentTerminalLimit", String(query.recentTerminalLimit));
     }
-    const suffix = params.size > 0 ? `?${params.toString()}` : "";
+    params.set("includeFunding", "true");
+    const suffix = `?${params.toString()}`;
     return this.request<TaskSummary[]>({
       path: `/api/tasks${suffix}`,
       defaultErrorPrefix: "GET /api/tasks",
@@ -7941,7 +7943,7 @@ export class NautiloApiClient {
   /** Full task detail including run transcripts (`GET /api/tasks/:id`). */
   async getTask(taskId: string): Promise<TaskDetail> {
     return this.request<TaskDetail>({
-      path: `/api/tasks/${encodeURIComponent(taskId)}`,
+      path: `/api/tasks/${encodeURIComponent(taskId)}?includeFunding=true`,
       defaultErrorPrefix: `GET /api/tasks/${taskId}`,
     });
   }

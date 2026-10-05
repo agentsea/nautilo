@@ -293,6 +293,14 @@ async function resolveLastInNamespace(
   task: Task,
   db: DirectDatabase,
 ): Promise<ResolvedTargetRoom> {
+  // Caller-funded text work belongs to the exact private chat admitted by
+  // the funding owner. The legacy newest-Room search may include shared Rooms.
+  if (task.fundingMode === "caller") {
+    if (!task.callingRoomId || (task.targetRoomId && task.targetRoomId !== task.callingRoomId)) {
+      throw new Error("Caller-funded Task destination does not match its private chat");
+    }
+    return { roomId: task.callingRoomId, graphThreadId: botThreadId(task.callingRoomId, task.agentId) };
+  }
   const harness = harnessExecutionDescriptor(task);
   if (harness && task.targetRoomId) {
     return {

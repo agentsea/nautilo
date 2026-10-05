@@ -1,4 +1,9 @@
-import { normalizeTaskPresentationStatus, type TaskPresentationStatus } from "@nautilo/types";
+import {
+  normalizeTaskPresentationStatus,
+  type TaskFundingFailureCode,
+  type TaskFundingSource,
+  type TaskPresentationStatus,
+} from "@nautilo/types";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useConversationEncryptionPolicyMode, useRunningSubagents } from "../../../adapters/runtime-contexts";
 import { useAuth } from "../../../hooks/use-auth";
@@ -16,6 +21,8 @@ export interface UseSubagentTranscriptResult {
   readonly messages: TranscriptMessageVM[];
   readonly loading: boolean;
   readonly error: string | null;
+  readonly fundingSource: TaskFundingSource | null;
+  readonly fundingFailure: TaskFundingFailureCode | null;
 }
 
 interface TranscriptSnapshot {
@@ -25,6 +32,8 @@ interface TranscriptSnapshot {
   readonly messages: TranscriptMessageVM[];
   readonly loading: boolean;
   readonly error: string | null;
+  readonly fundingSource: TaskFundingSource | null;
+  readonly fundingFailure: TaskFundingFailureCode | null;
 }
 
 /**
@@ -75,19 +84,22 @@ export function useSubagentTranscript(
 
   const [snapshot, setSnapshot] = useState<TranscriptSnapshot>({
     scopeKey, taskId, status: null, messages: [], loading: false, error: null,
+    fundingSource: null, fundingFailure: null,
   });
   const generationRef = useRef(0);
 
   useEffect(() => {
     if (!enabled || !taskId || !auth.viewer.isVerified) {
-      setSnapshot({ scopeKey, taskId, status: null, messages: [], loading: false, error: null });
+      setSnapshot({ scopeKey, taskId, status: null, messages: [], loading: false, error: null,
+        fundingSource: null, fundingFailure: null });
       return;
     }
 
     const generation = ++generationRef.current;
     setSnapshot((prior) => prior.scopeKey === scopeKey && prior.taskId === taskId
       ? { ...prior, status: null, loading: true, error: null }
-      : { scopeKey, taskId, status: null, messages: [], loading: true, error: null });
+      : { scopeKey, taskId, status: null, messages: [], loading: true, error: null,
+          fundingSource: null, fundingFailure: null });
 
     void readWorkbenchTaskForViewer({
       mode: policyMode,
@@ -101,20 +113,26 @@ export function useSubagentTranscript(
             status: normalizeTaskPresentationStatus(read.opened.task.status),
             messages: [], loading: false,
             error: "Protected Task run transcripts are not available yet.",
+            fundingSource: null,
+            fundingFailure: read.opened.task.fundingFailure ?? null,
           });
           return;
         }
         const detail = read.detail;
+        const latestRun = detail.runs.at(-1);
         setSnapshot({
           scopeKey, taskId,
           status: normalizeTaskPresentationStatus(detail.task.status),
           messages: taskDetailToVMs(detail), loading: false, error: null,
+          fundingSource: latestRun?.fundingSource ?? null,
+          fundingFailure: latestRun?.fundingFailure ?? detail.task.fundingFailure ?? null,
         });
       }).catch((err: unknown) => {
         if (generation !== generationRef.current) return;
         setSnapshot({
           scopeKey, taskId, status: null, messages: [], loading: false,
           error: err instanceof Error ? err.message : String(err),
+          fundingSource: null, fundingFailure: null,
         });
       });
 
@@ -125,6 +143,7 @@ export function useSubagentTranscript(
     protectedController]);
 
   return snapshot.scopeKey === scopeKey && snapshot.taskId === taskId && enabled && auth.viewer.isVerified
-    ? { messages: snapshot.messages, loading: snapshot.loading, error: snapshot.error, status: snapshot.status }
-    : { messages: [], loading: false, error: null, status: null };
+    ? snapshot
+    : { messages: [], loading: false, error: null, status: null,
+        fundingSource: null, fundingFailure: null };
 }

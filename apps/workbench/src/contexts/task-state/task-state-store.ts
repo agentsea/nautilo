@@ -26,7 +26,7 @@ import {
   type RunningSubagentStatus,
 } from "../../modes/rooms/subagents/running-subagents-model";
 
-const SCHEDULED_TASKS_POLL_MS = 5000;
+export const TASK_STATE_POLL_MS = 5000;
 // This is a Human-only presentation cache, deliberately aligned with the
 // server's process-local Codex snapshot. It is not a model/Genie polling loop.
 const HARNESS_ACTIVITY_CAP = 20;
@@ -212,7 +212,7 @@ export function shouldSuppressWsOpenSeed(input: {
 export function createTaskStateStore(
   options: CreateTaskStateStoreOptions,
 ): TaskStateStore {
-  const pollIntervalMs = options.pollIntervalMs ?? SCHEDULED_TASKS_POLL_MS;
+  const pollIntervalMs = options.pollIntervalMs ?? TASK_STATE_POLL_MS;
   const seedSuppressAfterMountMs =
     options.seedSuppressAfterMountMs ?? SEED_SUPPRESS_AFTER_MOUNT_MS;
   const now = options.now ?? (() => Date.now());

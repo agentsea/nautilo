@@ -514,6 +514,7 @@ export {
   MAX_RETAINED_MODEL_IDS,
 } from "./config/eligible-models";
 export {
+  modelIdForCapabilityProjection,
   resolveModelRole,
   NoRunnableModelForRoleError,
   type ResolveModelRoleOptions,
@@ -1280,6 +1281,7 @@ export { invokeWithRetry, type RetryOptions } from "./utils/invoke";
 // Chat model invocation (main agent path — budget, timeout, fallback)
 export {
   resolveCompletionBudget,
+  personalProviderInvocationFailureCategory,
   invokeChatModelWithFallback,
   PreparedContextExceededError,
   isPreparedContextExceededError,

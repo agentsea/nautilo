@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, boolean, integer, jsonb, timestamp, index, check, customType, foreignKey } from "drizzle-orm/pg-core";
-import { SELECTION_PROFILES, type ComboSpec } from "@nautilo/types";
+import { SELECTION_PROFILES, TASK_FUNDING_MODES, type ComboSpec } from "@nautilo/types";
 import { users } from "./users";
 import { agents } from "./agents";
 import { rooms } from "./rooms";
@@ -58,6 +58,9 @@ export const tasks = pgTable(
     // runtime projection, not a static table, so a FK would couple the schema
     // to a catalog that does not exist in the database.
     requestedModelId: text("requested_model_id"),
+    fundingMode: text("funding_mode", { enum: TASK_FUNDING_MODES })
+      .notNull()
+      .default("legacy_server"),
     timeLimitSeconds: integer("time_limit_seconds"),
     parentTaskId: uuid("parent_task_id"), // self-FK enforced in migration
     depth: integer("depth").notNull().default(0),

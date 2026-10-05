@@ -12,6 +12,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   original provider, then the configured model fallback chain. Costs retains
   each attempt’s actual or pending charge, and uncertain service fails without
   automatic replay. Turning the preference off restores direct routing.
+- Personal provider keys can fund native background text Tasks, one-shot
+  reminders, and recurring text schedules from your own Genie chat. Task runs
+  retain their funding source through retries and Pause/Resume; changed keys
+  require a fresh Task. Existing server-funded Tasks retain their behavior,
+  and personal workers remain tool-free.
+- The server multipart parser uses the patched Busboy 3.2.1 dependency in both
+  the contributor lockfile and the shipped Docker runtime projection.
 
 - New ordinary invitation links can be copied again from the server after a
   page reload or device change. Existing links continue to redeem, while older

@@ -3,6 +3,7 @@ import type {
   ListTasksQuery,
   TaskCreatePayload,
   TaskRunTranscriptMessage,
+  TaskFundingSource,
   TaskSummary,
   TaskUpdatePayload,
 } from "./task-api";
@@ -10,6 +11,7 @@ import type {
   ProtectedTaskContentResponseV1,
   ProtectedTaskContentUnavailableDtoV1,
 } from "./protected-task-dto";
+import type { TaskFundingFailureCode } from "./task-funding";
 
 /** Opt-in Task HTTP projection. Legacy Task responses retain their existing shape. */
 export const TASK_CONTENT_API_VERSION_V1 = 1 as const;
@@ -76,6 +78,8 @@ export type TaskRunSummaryV1 = Readonly<{
   modelId: string | null;
   startedAt: string | null;
   completedAt: string | null;
+  fundingSource?: TaskFundingSource | null;
+  fundingFailure?: TaskFundingFailureCode | null;
   content: TaskRunContentV1;
 }>;
 

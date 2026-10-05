@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
-import type { TaskDetail, TaskHarnessActivity } from "@nautilo/types";
+import type {
+  TaskDetail,
+  TaskFundingFailureCode,
+  TaskFundingSource,
+  TaskHarnessActivity,
+  TaskSummary,
+} from "@nautilo/types";
+import { TASK_FUNDING_FAILURE_CODES } from "@nautilo/types";
+import { ApiError } from "@nautilo/api-client/browser";
 import { ResearchProgress } from "../../../components/tool-card/research-progress";
 import { ToolCard, type ToolCardProps } from "../../../components/tool-card/tool-card";
 import type { ToolCardState } from "../../../components/tool-card/tool-card-helpers";
@@ -11,7 +19,9 @@ import {
   type ToolActivityEvent,
 } from "../../../adapters/runtime-contexts";
 import { useTaskState } from "../../../contexts/task-state/task-state-context";
+import { TASK_STATE_POLL_MS } from "../../../contexts/task-state/task-state-store";
 import { useAuth } from "../../../hooks/use-auth";
+import { apiClient } from "../../../lib/api";
 import { HarnessActivityFeed } from "./HarnessActivityFeed";
 import {
   harnessPresentation,
@@ -33,6 +43,10 @@ import {
   shouldShowTaskContentAccessRecovery,
   TaskContentAccessRecoveryNotice,
 } from "./TaskContentAccessRecoveryNotice";
+import {
+  TaskFundingRecoveryNotice,
+  taskFundingRecovery,
+} from "../../../components/task-funding-recovery";
 
 interface HarnessTaskResult {
   readonly taskId: string;
@@ -106,6 +120,119 @@ export function harnessTaskFailureOutcome(
   return durableResult || `${presentation.displayName} failed. This older Task did not record a detailed failure outcome. Review the workspace before retrying.`;
 }
 
+export interface NativeTaskFundingState {
+  readonly source: TaskFundingSource | null;
+  readonly failure: TaskFundingFailureCode | null;
+}
+
+/** Funding is a native Task contract; external harness receipts must not inherit it. */
+export function nativeTaskFundingState(
+  execution: string | undefined,
+  detail: TaskDetail | null,
+  liveTask: TaskSummary | undefined,
+): NativeTaskFundingState | null {
+  if (execution !== "native") return null;
+  const latestRun = detail?.runs.at(-1);
+  return {
+    source: latestRun?.fundingSource ?? null,
+    failure: latestRun?.fundingFailure
+      ?? liveTask?.fundingFailure
+      ?? detail?.task.fundingFailure
+      ?? null,
+  };
+}
+
+export function nativeTaskResumeDisabled(
+  fundingFailure: TaskFundingFailureCode | null,
+): boolean {
+  return fundingFailure !== null && taskFundingRecovery(fundingFailure).requiresFreshTask;
+}
+
+export function nativeTaskControlState(
+  execution: string | undefined,
+  status: string | undefined,
+  fundingFailure: TaskFundingFailureCode | null,
+): { readonly showPause: boolean; readonly showResume: boolean; readonly resumeDisabled: boolean } {
+  const native = execution === "native";
+  return {
+    showPause: native && status === "running",
+    showResume: native && status === "paused",
+    resumeDisabled: native && nativeTaskResumeDisabled(fundingFailure),
+  };
+}
+
+const ACTIVE_TASK_STATUSES = new Set(["pending", "running", "paused", "awaiting"]);
+
+export function taskFundingFailureFromApiError(error: unknown): TaskFundingFailureCode | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  return TASK_FUNDING_FAILURE_CODES.find((code) => code === error.message) ?? null;
+}
+
+export function shouldMarkNativeTaskCancelled(status: string | undefined): boolean {
+  return status === "cancelled";
+}
+
+export function taskActionScopeToken(contentScopeKey: string, taskId: string): string {
+  return `${contentScopeKey}\0${taskId}`;
+}
+
+export function harnessTaskCanonicalStatus(input: {
+  readonly execution: string | undefined;
+  readonly durableStatus: string | undefined;
+  readonly protectedStatus: string | undefined;
+  readonly liveStatus: string | undefined;
+}): string | undefined {
+  const persistedStatus = input.protectedStatus ?? input.durableStatus;
+  return input.execution === "native"
+    ? persistedStatus ?? input.liveStatus
+    : input.liveStatus ?? persistedStatus;
+}
+
+export function startTaskDetailRefresh<T>(input: {
+  readonly poll: boolean;
+  readonly initialStatus: string | undefined;
+  readonly read: () => Promise<T>;
+  readonly statusOf: (value: T) => string | undefined;
+  readonly onValue: (value: T) => void;
+  readonly onError: () => void;
+  readonly schedule?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
+  readonly clear?: (timer: ReturnType<typeof setTimeout>) => void;
+  readonly intervalMs?: number;
+}): () => void {
+  const schedule = input.schedule ?? setTimeout;
+  const clear = input.clear ?? clearTimeout;
+  const intervalMs = input.intervalMs ?? TASK_STATE_POLL_MS;
+  let active = true;
+  let lastStatus = input.initialStatus;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const scheduleNext = (): void => {
+    if (!active || !input.poll || !lastStatus || !ACTIVE_TASK_STATUSES.has(lastStatus)) return;
+    timer = schedule(() => {
+      timer = null;
+      void readNext();
+    }, intervalMs);
+  };
+  const readNext = async (): Promise<void> => {
+    try {
+      const value = await input.read();
+      if (!active) return;
+      lastStatus = input.statusOf(value);
+      input.onValue(value);
+    } catch {
+      if (!active) return;
+      input.onError();
+    }
+    scheduleNext();
+  };
+
+  void readNext();
+  return () => {
+    active = false;
+    if (timer) clear(timer);
+  };
+}
+
 /**
  * assistant-ui specialization for Nautilo's generic `task` tool.
  *
@@ -150,7 +277,13 @@ function HarnessExecutionToolCard({
   readonly presentation: HarnessPresentation;
 }): ReactElement {
   const { list } = useRunningSubagents();
-  const { busyIds, lastSuccessfulAtMs, stopTask, taskMap } = useTaskState();
+  const {
+    busyIds,
+    lastSuccessfulAtMs,
+    refresh,
+    stopTask,
+    taskMap,
+  } = useTaskState();
   const auth = useAuth();
   const encryptionPolicyMode = useConversationEncryptionPolicyMode();
   const [scopedDetail, setScopedDetail] = useState<{ scopeKey: string; detail: TaskDetail } | null>(null);
@@ -159,7 +292,9 @@ function HarnessExecutionToolCard({
     opened: Awaited<ReturnType<WorkbenchProtectedHumanTaskController["open"]>>;
   } | null>(null);
   const [stopRequested, setStopRequested] = useState(false);
-  const [stopError, setStopError] = useState(false);
+  const [lifecycleError, setLifecycleError] = useState<"pause" | "resume" | "stop" | null>(null);
+  const [lifecycleFundingFailure, setLifecycleFundingFailure] = useState<TaskFundingFailureCode | null>(null);
+  const [nativeLifecycleBusy, setNativeLifecycleBusy] = useState<"pause" | "resume" | "stop" | null>(null);
   const entry = list.find((item) => item.taskId === taskResult.taskId);
   const liveCanonicalStatus = taskMap[taskResult.taskId]?.status;
   const serverOrigin = typeof window === "undefined" ? "" : window.location.origin;
@@ -172,6 +307,9 @@ function HarnessExecutionToolCard({
     viewerVerified: auth.viewer.isVerified,
     policyMode: encryptionPolicyMode,
   });
+  const actionScopeToken = taskActionScopeToken(contentScopeKey, taskResult.taskId);
+  const actionScopeTokenRef = useRef(actionScopeToken);
+  actionScopeTokenRef.current = actionScopeToken;
   const durableDetail = scopedDetail?.scopeKey === contentScopeKey ? scopedDetail.detail : null;
   const protectedOwner = useMemo(() => createWorkbenchDataOperationOwner(), []);
   const protectedController = useMemo(() => {
@@ -199,32 +337,48 @@ function HarnessExecutionToolCard({
   const protectedOpened = scopedProtected?.scopeKey === contentScopeKey
     ? scopedProtected.opened : null;
   useEffect(() => {
-    let current = true;
+    setStopRequested(false);
+    setLifecycleError(null);
+    setLifecycleFundingFailure(null);
+    setNativeLifecycleBusy(null);
+  }, [actionScopeToken]);
+  useEffect(() => {
     setScopedDetail(null);
     setScopedProtected(null);
-    if (!auth.viewer.isVerified) return () => { current = false; };
-    void readWorkbenchTaskForViewer({
-      mode: encryptionPolicyMode,
-      taskId: taskResult.taskId,
-      protectedController,
-    }).then(
-      (read) => {
-        if (!current) return;
+    if (!auth.viewer.isVerified) return;
+    return startTaskDetailRefresh({
+      poll: taskResult.execution === "native",
+      initialStatus: liveCanonicalStatus ?? entry?.status ?? taskResult.status,
+      read: () => readWorkbenchTaskForViewer({
+        mode: encryptionPolicyMode,
+        taskId: taskResult.taskId,
+        protectedController,
+      }),
+      statusOf: (read) => read.representation === "ordinary"
+        ? read.detail.task.status
+        : read.opened.task.status,
+      onValue: (read) => {
         if (read.representation === "ordinary") {
           setScopedDetail({ scopeKey: contentScopeKey, detail: read.detail });
+          setScopedProtected(null);
         } else {
           setScopedProtected({ scopeKey: contentScopeKey, opened: read.opened });
+          setScopedDetail(null);
         }
       },
-      () => { /* Recovery UI below remains available. */ },
-    );
-    return () => { current = false; };
+      onError: () => { /* Recovery UI below remains available. */ },
+    });
   }, [auth.viewer.isVerified, contentScopeKey, encryptionPolicyMode, entry?.status,
-    entry?.terminalAtMs, liveCanonicalStatus, protectedController, taskResult.taskId]);
+    entry?.terminalAtMs, liveCanonicalStatus, protectedController, taskResult.execution,
+    taskResult.status, taskResult.taskId]);
   const researchProgress = entry ? entry.researchProgress
     : (taskMap[taskResult.taskId] ?? durableDetail?.task)?.preparation?.research;
-  const canonicalStatus = liveCanonicalStatus ?? protectedOpened?.task.status
-    ?? durableDetail?.task.status;
+  const canonicalStatus = harnessTaskCanonicalStatus({
+    execution: taskResult.execution,
+    durableStatus: durableDetail?.task.status,
+    protectedStatus: protectedOpened?.task.status,
+    liveStatus: liveCanonicalStatus,
+  });
   const taskStatus = canonicalStatus ?? entry?.status ?? taskResult.status;
   const recoveryScopeKey = `${serverOrigin}\0${auth.viewerGeneration}\0${viewerId}\0${taskResult.taskId}`;
   const showContentAccessRecovery = shouldShowTaskContentAccessRecovery({
@@ -235,6 +389,20 @@ function HarnessExecutionToolCard({
   });
   const cancelled = taskStatus === "cancelled" || stopRequested;
   const failureOutcome = harnessTaskFailureOutcome(presentation, durableDetail, canonicalStatus);
+  const nativeFunding = nativeTaskFundingState(
+    taskResult.execution,
+    durableDetail,
+    taskMap[taskResult.taskId],
+  );
+  const displayedFundingFailure = lifecycleFundingFailure ?? nativeFunding?.failure ?? null;
+  const fundingRecovery = displayedFundingFailure
+    ? taskFundingRecovery(displayedFundingFailure)
+    : null;
+  const nativeControls = nativeTaskControlState(
+    taskResult.execution,
+    taskStatus,
+    displayedFundingFailure,
+  );
   const { messages, error } = useSubagentTranscript(taskResult.taskId, { enabled: true });
   const transcriptTools = messages.filter(isToolRow);
   const lastLiveActivity = useRef<{ scopeKey: string; activity: readonly TaskHarnessActivity[] } | null>(null);
@@ -313,29 +481,137 @@ function HarnessExecutionToolCard({
                       ? entry?.line3 || taskResult.message || ""
                       : taskStatus === "pending" ? "Waiting to start." : ""}
             </span>
-            {active && presentation.supportsTaskStop ? (
-              <button
-                type="button"
-                disabled={busyIds.has(taskResult.taskId)}
-                onClick={() => {
-                  setStopError(false);
-                  void stopTask(taskResult.taskId)
-                    .then(() => setStopRequested(true))
-                    .catch(() => setStopError(true));
-                }}
-                className="ml-auto shrink-0 rounded border border-border px-2 py-1 font-medium text-foreground-muted hover:bg-background hover:text-foreground disabled:opacity-50"
-              >
-                {busyIds.has(taskResult.taskId) ? "Stopping…" : "Stop task"}
-              </button>
+            {active ? (
+              <span className="ml-auto flex shrink-0 items-center gap-1">
+                {nativeControls.showPause ? (
+                  <button
+                    type="button"
+                    disabled={busyIds.has(taskResult.taskId) || nativeLifecycleBusy !== null}
+                    onClick={() => {
+                      setLifecycleError(null);
+                      setNativeLifecycleBusy("pause");
+                      const actionToken = actionScopeToken;
+                      void apiClient.pauseTask(taskResult.taskId)
+                        .then(() => actionScopeTokenRef.current === actionToken
+                          ? refresh()
+                          : undefined)
+                        .catch((error: unknown) => {
+                          if (actionScopeTokenRef.current !== actionToken) return;
+                          const failure = taskFundingFailureFromApiError(error);
+                          if (failure) setLifecycleFundingFailure(failure);
+                          else setLifecycleError("pause");
+                        })
+                        .finally(() => {
+                          if (actionScopeTokenRef.current === actionToken) {
+                            setNativeLifecycleBusy(null);
+                          }
+                        });
+                    }}
+                    className="rounded border border-border px-2 py-1 font-medium text-foreground-muted hover:bg-background hover:text-foreground disabled:opacity-50"
+                  >
+                    {nativeLifecycleBusy === "pause" ? "Pausing…" : "Pause"}
+                  </button>
+                ) : null}
+                {nativeControls.showResume ? (
+                  <button
+                    type="button"
+                    disabled={busyIds.has(taskResult.taskId)
+                      || nativeLifecycleBusy !== null
+                      || nativeControls.resumeDisabled}
+                    title={fundingRecovery?.requiresFreshTask === true
+                      ? "This run cannot resume. Start a fresh Task."
+                      : undefined}
+                    onClick={() => {
+                      setLifecycleError(null);
+                      setLifecycleFundingFailure(null);
+                      setNativeLifecycleBusy("resume");
+                      const actionToken = actionScopeToken;
+                      void apiClient.unpauseTask(taskResult.taskId)
+                        .then(() => actionScopeTokenRef.current === actionToken
+                          ? refresh()
+                          : undefined)
+                        .catch((error: unknown) => {
+                          if (actionScopeTokenRef.current !== actionToken) return;
+                          const failure = taskFundingFailureFromApiError(error);
+                          if (failure) setLifecycleFundingFailure(failure);
+                          else setLifecycleError("resume");
+                        })
+                        .finally(() => {
+                          if (actionScopeTokenRef.current === actionToken) {
+                            setNativeLifecycleBusy(null);
+                          }
+                        });
+                    }}
+                    className="rounded border border-border px-2 py-1 font-medium text-foreground-muted hover:bg-background hover:text-foreground disabled:opacity-50"
+                  >
+                    {nativeLifecycleBusy === "resume" ? "Resuming…" : "Resume"}
+                  </button>
+                ) : null}
+                {presentation.supportsTaskStop ? (
+                  <button
+                    type="button"
+                    disabled={busyIds.has(taskResult.taskId) || nativeLifecycleBusy !== null}
+                    onClick={() => {
+                      setLifecycleError(null);
+                      if (taskResult.execution !== "native") {
+                        void stopTask(taskResult.taskId)
+                          .then(() => setStopRequested(true))
+                          .catch(() => setLifecycleError("stop"));
+                        return;
+                      }
+                      setNativeLifecycleBusy("stop");
+                      const actionToken = actionScopeToken;
+                      void apiClient.stopTask(taskResult.taskId)
+                        .then(async (response) => {
+                          if (actionScopeTokenRef.current !== actionToken) return;
+                          if (shouldMarkNativeTaskCancelled(response.status)) {
+                            setStopRequested(true);
+                          }
+                          await refresh();
+                        })
+                        .catch((error: unknown) => {
+                          if (actionScopeTokenRef.current !== actionToken) return;
+                          const failure = taskFundingFailureFromApiError(error);
+                          if (failure) setLifecycleFundingFailure(failure);
+                          else setLifecycleError("stop");
+                        })
+                        .finally(() => {
+                          if (actionScopeTokenRef.current === actionToken) {
+                            setNativeLifecycleBusy(null);
+                          }
+                        });
+                    }}
+                    className="rounded border border-border px-2 py-1 font-medium text-foreground-muted hover:bg-background hover:text-foreground disabled:opacity-50"
+                  >
+                    {nativeLifecycleBusy === "stop" || busyIds.has(taskResult.taskId)
+                      ? "Stopping…"
+                      : "Stop task"}
+                  </button>
+                ) : null}
+              </span>
             ) : null}
           </div>
 
           {researchProgress && <ResearchProgress progress={researchProgress} />}
 
-          {stopError ? (
+          {lifecycleError ? (
             <p className="text-xs text-[var(--error)]" role="alert">
-              This Task could not be stopped. Try again.
+              {lifecycleError === "stop"
+                ? "This Task could not be stopped. Try again."
+                : lifecycleError === "pause"
+                  ? "This Task could not be paused. Try again."
+                  : "This Task could not be resumed. Try again."}
             </p>
+          ) : null}
+
+          {nativeFunding?.source ? (
+            <p className="text-xs text-foreground-muted" data-testid="task-funding-source">
+              {nativeFunding.source === "personal" ? "Personal API key" : "Server provider key"}
+            </p>
+          ) : null}
+
+          {displayedFundingFailure && !cancelled ? (
+            <TaskFundingRecoveryNotice code={displayedFundingFailure} />
           ) : null}
 
           {showContentAccessRecovery ? (

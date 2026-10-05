@@ -3,12 +3,18 @@ import { AIMessage } from "@langchain/core/messages";
 import {
   terminalizeTaskWriterReviewVerificationLost,
   transitionTaskLifecycleTerminal,
+  getTaskRunForTask,
+  getCachedServerModelConfigRow,
   type DirectDatabase,
   type Task,
 } from "@nautilo/db";
 import {
   appendTranscriptMessages,
   getRelayRegistry,
+  getProfileByAgentId,
+  modelIdForCapabilityProjection,
+  loadForegroundModelControlSnapshot,
+  foregroundModelControlPlanFromSnapshot,
   type TaskReportBackContinuation,
 } from "@nautilo/agent";
 import {
@@ -26,7 +32,8 @@ import { log, warn } from "@nautilo/logger";
 import type { ServerEvent } from "@nautilo/types";
 import { eventBus } from "../event-bus";
 import { botThreadId } from "../conductor/thread-id";
-import { getTaskRunJobManager } from "./task-runtime-context";
+import { getTaskRunJobManager, getTaskRunDb } from "./task-runtime-context";
+import { openTaskFundingSession, taskFundingFailureCode, TaskFundingError } from "../task-funding-port";
 import {
   createMaintenanceAcceptanceAuthority,
   type MaintenanceAcceptanceAuthority,
@@ -305,13 +312,14 @@ function maintenanceAuthorityForAcceptedTaskRun(
 function invocationAuthorityForAcceptedTaskRun(
   runId: string,
   humanUserId: string,
+  taskId: string,
 ): AcceptedInvocationAuthority {
   const existing = taskRunInvocationAuthorities.get(runId);
   if (existing) return existing;
   // The finalizer is trusted runtime code and has just locked/loaded the exact
   // accepted TaskRun. This is the only restart/retry restoration seam; no
   // serialized bearer is read from Task metadata or Job input.
-  const restored = createAcceptedInvocationAuthority(humanUserId);
+  const restored = createAcceptedInvocationAuthority(humanUserId, { originTaskId: taskId });
   taskRunInvocationAuthorities.set(runId, restored);
   return restored;
 }
@@ -469,8 +477,37 @@ async function wakeCallingRoom(
       roomId: callingRoomId,
       agentId: task.agentId,
     });
-    await assertCanUseServerProviderCredentials(task.requestorId, "task_report_back");
+    if ((task.fundingMode ?? "legacy_server") === "legacy_server") {
+      await assertCanUseServerProviderCredentials(task.requestorId, "task_report_back");
+    } else {
+      const db = getTaskRunDb();
+      const run = taskRunId ? await getTaskRunForTask(db, task.id, taskRunId) : undefined;
+      if (!run) throw new TaskFundingError("funding_source_changed");
+      const profile = await getProfileByAgentId(task.agentId);
+      const modelPlan = foregroundModelControlPlanFromSnapshot(
+        await loadForegroundModelControlSnapshot(callingRoomId, task.agentId),
+        () => modelIdForCapabilityProjection("chat", profile?.defaultModel?.trim()
+          || process.env["NAUTILO_MODEL"]?.trim() || getCachedServerModelConfigRow()?.defaultChatModel?.trim()),
+      );
+      await openTaskFundingSession({ task, run,
+        authority: invocationAuthorityForAcceptedTaskRun(deliveryId, task.requestorId, task.id),
+        requestorId: task.requestorId, modelId: modelPlan.initialModelId, wake: true });
+    }
   } catch (error) {
+    const fundingFailure = taskFundingFailureCode(error);
+    if (fundingFailure) {
+      // Computation is already durable. Preserve it visibly when its extra
+      // model-backed wake cannot be funded; never rerun the producing Task.
+      await postRawAssistantMessage(task, eventBus.emit.bind(eventBus), resultText,
+        appendTranscriptMessages, deliveryId, graphThreadId, taskRunId);
+      if (taskRunId) {
+        const { recordTaskWakeFundingFailure } = await import("@nautilo/db");
+        await recordTaskWakeFundingFailure(getTaskRunDb(), {
+          taskId: task.id, taskRunId, requestorId: task.requestorId, reason: fundingFailure,
+        });
+      }
+      return;
+    }
     if (!(error instanceof AgentInvocationDeniedError)
       && !(error instanceof ServerProviderCredentialsDeniedError)) throw error;
     log(`[task-report-back] skipped model wake after current authorization denial task=${task.id}`);
@@ -566,7 +603,7 @@ async function wakeCallingRoom(
     undefined,
     maintenanceAuthorityForAcceptedTaskRun(deliveryId),
     undefined,
-    invocationAuthorityForAcceptedTaskRun(deliveryId, task.requestorId),
+    invocationAuthorityForAcceptedTaskRun(deliveryId, task.requestorId, task.id),
   );
 }
 

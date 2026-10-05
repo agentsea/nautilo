@@ -172,6 +172,11 @@
   "reviewedExceptions": [
     {
       "kind": "root-override",
+      "name": "@fastify/busboy",
+      "reason": "Keep multipart parsing on the supported patched 3.2.1 release in the production dependency closure."
+    },
+    {
+      "kind": "root-override",
       "name": "@hono/node-server",
       "reason": "Keep the shipped MCP HTTP transport on the audited patched Node adapter release."
     },

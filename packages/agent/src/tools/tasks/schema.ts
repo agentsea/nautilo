@@ -208,6 +208,44 @@ export function createTaskToolSchema(
   });
 }
 
+const PERSONAL_TASK_COMMAND_NAMES = [
+  "create", "read", "list", "update", "pause", "unpause", "stop",
+] as const;
+
+/**
+ * Foreground personal-funded parents receive only native root, tool-free Task
+ * fields. Command-specific requirements remain handler validated so the wire
+ * schema keeps the required top-level object shape.
+ */
+export function createPersonalTaskToolSchema() {
+  return createTaskToolSchema({ claudeCode: false }).pick({
+    command: true,
+    prompt: true,
+    expected_output: true,
+    schedule_kind: true,
+    run_at: true,
+    cron: true,
+    timezone: true,
+    target_chat: true,
+    result_delivery: true,
+    time_limit_seconds: true,
+    model_selection_profile: true,
+    model_selection_spec: true,
+    model_id: true,
+    taskId: true,
+    readSection: true,
+    runId: true,
+    readCursor: true,
+    continueRead: true,
+    readSearch: true,
+    status: true,
+    includeTerminal: true,
+  }).extend({
+    command: z.enum(PERSONAL_TASK_COMMAND_NAMES),
+    target_chat: z.enum(["orphan", "last_in_namespace"]).optional(),
+  });
+}
+
 const _claudeEnabledTaskToolSchema = createTaskToolSchema({ claudeCode: true });
 
 /** Legacy export for static tool registration: Claude stays opt-in. */

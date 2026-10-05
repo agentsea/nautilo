@@ -3,9 +3,17 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { log } from "@nautilo/logger";
 import { dispatchTaskCommand, type TaskDispatchContext } from "./dispatch";
-import { createTaskToolSchema, type TaskToolArgs } from "./schema";
-import { isClaudeCodeTasksEnabled } from "./task-tool-runtime";
+import {
+  createPersonalTaskToolSchema,
+  createTaskToolSchema,
+  type TaskToolArgs,
+} from "./schema";
+import { getTaskToolRuntime, isClaudeCodeTasksEnabled } from "./task-tool-runtime";
 import { causalHumanForExecution } from "../../runtime/causal-human-context";
+import {
+  isBoundedPersonalNativeTaskCreate,
+  isPersonalOnlyNativeTaskCreate,
+} from "../../runtime/personal-task-controls";
 
 interface TaskToolContext {
   ownerId: string;
@@ -50,18 +58,65 @@ const TASK_TOOL_DESCRIPTION =
 const CLAUDE_CODE_TASK_GUIDANCE =
   " CLAUDE CODE: when the user explicitly asks for Claude Code, first call `list_harness_models` with `harness: 'claude-code'`, then create with that exact picker id. It either uses Claude Code or returns an actionable Desktop/Connections failure; it never falls back.";
 
+const PERSONAL_TASK_TOOL_DESCRIPTION =
+  "Create and manage your own native text Tasks. New work is always a root, tool-free Task for this Genie and Human, either immediately, once later, or on a recurring schedule. Use discover_models before setting model_id. read/list/pause/stop remain available even when funding needs repair; update and unpause are revalidated by the server.";
+
 export function createTaskTool(context?: unknown) {
   const taskCtx = contextFromUnknown(context);
   const claudeCodeTasksEnabled = isClaudeCodeTasksEnabled();
+  const trustedContext = context as Record<string, unknown> | undefined;
+  const personalTaskControls = trustedContext?.["personalTaskControls"] === true;
+  const personalOnlyTaskModelIds = Array.isArray(trustedContext?.["personalOnlyTaskModelIds"])
+    ? trustedContext["personalOnlyTaskModelIds"] as string[]
+    : undefined;
 
   return new DynamicStructuredTool({
     name: "task",
-    description: claudeCodeTasksEnabled
+    description: personalTaskControls
+      ? PERSONAL_TASK_TOOL_DESCRIPTION
+      : claudeCodeTasksEnabled
       ? `${TASK_TOOL_DESCRIPTION}${CLAUDE_CODE_TASK_GUIDANCE}`
       : TASK_TOOL_DESCRIPTION,
-    schema: createTaskToolSchema({ claudeCode: claudeCodeTasksEnabled }),
+    schema: personalTaskControls
+      ? createPersonalTaskToolSchema()
+      : createTaskToolSchema({ claudeCode: claudeCodeTasksEnabled }),
     func: async (args: TaskToolArgs) => {
       log(`[task:${args.command}]`);
+
+      const rt = getTaskToolRuntime();
+      const boundedPersonalCreate = !personalTaskControls
+        && personalOnlyTaskModelIds !== undefined
+        && isBoundedPersonalNativeTaskCreate(
+          args as unknown as Readonly<Record<string, unknown>>,
+          taskCtx.currentTaskId,
+        );
+      const exactPersonalOnlyCreate = boundedPersonalCreate
+        && rt.isPersonalOnlyTaskSelection === undefined
+        && isPersonalOnlyNativeTaskCreate(
+          args as unknown as Readonly<Record<string, unknown>>,
+          taskCtx.currentTaskId,
+          personalOnlyTaskModelIds,
+        );
+      const resolvedPersonalOnlyCreate = boundedPersonalCreate
+        && rt.isPersonalOnlyTaskSelection !== undefined
+        && await rt.isPersonalOnlyTaskSelection({
+          requestorId: taskCtx.causalHumanUserId,
+          agentId: taskCtx.agentId,
+          callingRoomId: taskCtx.roomId || taskCtx.callingRoomId,
+          ...(args.model_id === undefined ? {} : { requestedModelId: args.model_id }),
+          ...(args.model_selection_profile === undefined
+            ? {}
+            : { selectionProfile: args.model_selection_profile }),
+          ...(args.model_selection_spec === undefined
+            ? {}
+            : { selectionSpec: args.model_selection_spec }),
+        });
+      const personalOnlyCreate = exactPersonalOnlyCreate || resolvedPersonalOnlyCreate;
+      const callerFundedToolFree = personalTaskControls || personalOnlyCreate;
+
+      if (personalTaskControls && taskCtx.currentTaskId) {
+        return "Personal Task controls are available only from the foreground parent chat.";
+      }
 
       const dispatchCtx: TaskDispatchContext = {
         ownerId: taskCtx.ownerId,
@@ -69,12 +124,17 @@ export function createTaskTool(context?: unknown) {
         agentId: taskCtx.agentId,
         roomId: taskCtx.roomId || taskCtx.callingRoomId,
         currentTaskId: taskCtx.currentTaskId,
+        ...(callerFundedToolFree ? { personalTaskControls: true } : {}),
         taskReadMaxResponseBytes: taskCtx.taskReadMaxResponseBytes,
         taskReadMessages: taskCtx.taskReadMessages,
         taskReadPendingPages: taskCtx.taskReadPendingPages,
       };
 
-      return dispatchTaskCommand(args, dispatchCtx);
+      const dispatchedArgs = callerFundedToolFree
+        && (args.command === "create" || args.command === "update")
+        ? { ...args, tools: [] }
+        : args;
+      return dispatchTaskCommand(dispatchedArgs, dispatchCtx);
     },
   });
 }
