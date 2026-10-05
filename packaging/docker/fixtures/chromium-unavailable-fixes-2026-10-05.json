@@ -1,0 +1,56 @@
+{
+  "architectures": {
+    "linux/amd64": [
+      ["grype", "CVE-2026-103622", "chromium-common", "154.0.8037.92-1~deb13u1", "high", false, []],
+      ["grype", "CVE-2026-103622", "chromium-headless-shell", "154.0.8037.92-1~deb13u1", "high", false, []],
+      ["grype", "CVE-2026-103624", "chromium-common", "154.0.8037.92-1~deb13u1", "high", false, []],
+      ["grype", "CVE-2026-103624", "chromium-headless-shell", "154.0.8037.92-1~deb13u1", "high", false, []],
+      ["grype", "CVE-2026-103625", "chromium-common", "154.0.8037.92-1~deb13u1", "high", false, []],
+      ["grype", "CVE-2026-103625", "chromium-headless-shell", "154.0.8037.92-1~deb13u1", "high", false, []],
+      ["grype", "CVE-2026-103626", "chromium-common", "154.0.8037.92-1~deb13u1", "critical", false, []],
+      ["grype", "CVE-2026-103626", "chromium-headless-shell", "154.0.8037.92-1~deb13u1", "critical", false, []],
+      ["grype", "CVE-2026-103628", "chromium-common", "154.0.8037.92-1~deb13u1", "critical", false, []],
+      ["grype", "CVE-2026-103628", "chromium-headless-shell", "154.0.8037.92-1~deb13u1", "critical", false, []]
+    ],
+    "linux/arm64": [
+      ["grype", "CVE-2026-103622", "chromium-common", "154.0.8037.92-1~deb13u1", "high", false, []],
+      ["grype", "CVE-2026-103622", "chromium-headless-shell", "154.0.8037.92-1~deb13u1", "high", false, []],
+      ["grype", "CVE-2026-103624", "chromium-common", "154.0.8037.92-1~deb13u1", "high", false, []],
+      ["grype", "CVE-2026-103624", "chromium-headless-shell", "154.0.8037.92-1~deb13u1", "high", false, []],
+      ["grype", "CVE-2026-103625", "chromium-common", "154.0.8037.92-1~deb13u1", "high", false, []],
+      ["grype", "CVE-2026-103625", "chromium-headless-shell", "154.0.8037.92-1~deb13u1", "high", false, []],
+      ["grype", "CVE-2026-103626", "chromium-common", "154.0.8037.92-1~deb13u1", "critical", false, []],
+      ["grype", "CVE-2026-103626", "chromium-headless-shell", "154.0.8037.92-1~deb13u1", "critical", false, []],
+      ["grype", "CVE-2026-103628", "chromium-common", "154.0.8037.92-1~deb13u1", "critical", false, []],
+      ["grype", "CVE-2026-103628", "chromium-headless-shell", "154.0.8037.92-1~deb13u1", "critical", false, []]
+    ]
+  },
+  "renewals": {
+    "linux/amd64": [
+      ["grype", "CVE-2026-82560", "perl-base", "5.40.1-6+deb13u1", "high", false, []],
+      ["grype", "CVE-2026-88372", "libsndfile1", "1.2.2-2+deb13u1", "high", false, []],
+      ["grype", "CVE-2026-88806", "libx11-6", "2:1.8.12-1", "high", false, []],
+      ["grype", "CVE-2026-88806", "libx11-data", "2:1.8.12-1", "high", false, []],
+      ["grype", "CVE-2026-88806", "libx11-xcb1", "2:1.8.12-1", "high", false, []],
+      ["grype", "CVE-2026-88807", "libxrender1", "1:0.9.12-1", "high", false, []],
+      ["grype", "CVE-2026-93543", "libxi6", "2:1.8.2-1", "high", false, []],
+      ["trivy", "CVE-2026-88806", "libx11-6", "2:1.8.12-1", "high", false, []],
+      ["trivy", "CVE-2026-88806", "libx11-data", "2:1.8.12-1", "high", false, []],
+      ["trivy", "CVE-2026-88806", "libx11-xcb1", "2:1.8.12-1", "high", false, []],
+      ["trivy", "CVE-2026-88807", "libxrender1", "1:0.9.12-1", "high", false, []]
+    ],
+    "linux/arm64": [
+      ["grype", "CVE-2026-82560", "perl-base", "5.40.1-6+deb13u1", "high", false, []],
+      ["grype", "CVE-2026-88372", "libsndfile1", "1.2.2-2+deb13u1", "high", false, []],
+      ["grype", "CVE-2026-88806", "libx11-6", "2:1.8.12-1", "high", false, []],
+      ["grype", "CVE-2026-88806", "libx11-data", "2:1.8.12-1", "high", false, []],
+      ["grype", "CVE-2026-88806", "libx11-xcb1", "2:1.8.12-1", "high", false, []],
+      ["grype", "CVE-2026-88807", "libxrender1", "1:0.9.12-1", "high", false, []],
+      ["grype", "CVE-2026-93543", "libxi6", "2:1.8.2-1", "high", false, []],
+      ["trivy", "CVE-2026-88806", "libx11-6", "2:1.8.12-1", "high", false, []],
+      ["trivy", "CVE-2026-88806", "libx11-data", "2:1.8.12-1", "high", false, []],
+      ["trivy", "CVE-2026-88806", "libx11-xcb1", "2:1.8.12-1", "high", false, []],
+      ["trivy", "CVE-2026-88807", "libxrender1", "1:0.9.12-1", "high", false, []]
+    ]
+  }
+}
