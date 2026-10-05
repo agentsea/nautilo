@@ -16,20 +16,23 @@ import {
   loadEditableText,
   type LoadEditableTextResult,
 } from "./editor-io";
-import { usePatchDocumentSession, type PatchEditorStatus } from "./use-patch-document-session";
+import { usePatchDocumentSession, type PatchEditorConflict, type PatchEditorStatus } from "./use-patch-document-session";
 import { deploymentSafeLazy } from "../lib/deployment-safe-lazy";
 
 type EditorSessionStatus = PatchEditorStatus;
 
 type EditorSession = {
   autosaveEnabled: boolean;
-  conflict: { latestContent: string | null; currentSha256: string | null } | null;
+  conflict: PatchEditorConflict | null;
+  conflictLoading: boolean;
+  conflictLoadError: string | null;
   dirty: boolean;
   draft: string;
   errorMessage: string | null;
   keepMine: () => Promise<boolean> | boolean | void;
   lastSavedAt: Date | null;
   markMergedAndSave: () => Promise<boolean> | boolean | void;
+  retryConflict: () => Promise<void>;
   saveCopy: () => Promise<boolean> | boolean | void;
   saveNow: (opts: { checkpoint: boolean }) => Promise<boolean> | boolean | void;
   setAutosaveEnabled: (enabled: boolean) => void;
@@ -143,12 +146,15 @@ function LoadedEditorBody({
   const {
     autosaveEnabled,
     conflict,
+    conflictLoading,
+    conflictLoadError,
     dirty,
     draft,
     errorMessage,
     keepMine,
     lastSavedAt,
     markMergedAndSave,
+    retryConflict,
     saveCopy,
     saveNow,
     setAutosaveEnabled,
@@ -372,8 +378,20 @@ function LoadedEditorBody({
               <div>
                 <div className="mb-1 text-xs font-medium text-foreground-muted">Latest version</div>
                 <pre className="max-h-48 overflow-auto rounded border border-border bg-background-panel p-2 text-xs whitespace-pre-wrap">
-                  {conflict.latestContent ?? "Loading latest version..."}
+                  {conflict.latestContent ?? (conflictLoading
+                    ? "Loading latest version..."
+                    : conflictLoadError ?? "Latest version is unavailable.")}
                 </pre>
+                {conflictLoadError ? (
+                  <button
+                    type="button"
+                    onClick={() => void retryConflict()}
+                    disabled={status === "patching"}
+                    className={`${headerButtonClass} mt-2`}
+                  >
+                    Retry loading latest
+                  </button>
+                ) : null}
               </div>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -387,21 +405,24 @@ function LoadedEditorBody({
               <button
                 type="button"
                 onClick={() => void keepMine()}
-                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-background-element"
+                disabled={status === "patching"}
+                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-background-element disabled:opacity-50"
               >
                 Keep mine
               </button>
               <button
                 type="button"
                 onClick={() => takeTheirs()}
-                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-background-element"
+                disabled={status === "patching" || conflict.latestContent === null}
+                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-background-element disabled:opacity-50"
               >
                 Take theirs
               </button>
               <button
                 type="button"
                 onClick={() => void markMergedAndSave()}
-                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-background-element"
+                disabled={status === "patching" || conflict.latestContent === null}
+                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-background-element disabled:opacity-50"
               >
                 Merge and save
               </button>

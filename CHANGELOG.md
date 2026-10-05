@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- The text editor serializes first saves of empty documents and preserves edits
+  made while a save is in progress. Conflict recovery reports failed latest-version
+  reads with a retry action, accepts empty latest content, and saves merged drafts
+  against the displayed version.
+
 - Add GPT-6.1 Sol and Claude Sonnet 5.5 across direct, OpenRouter, and Venice
   routes, plus Venice Claude Fable 5.1. Preserve supported reasoning effort,
   full model allowances, and provider-specific pricing through existing adapters.
