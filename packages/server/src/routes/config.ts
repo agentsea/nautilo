@@ -122,7 +122,9 @@ export async function resolveCallerModelAvailability(
       };
     }
     // Existing server-funded selection still requires a tool-capable chat
-    // model. Personal-funded selection is the narrower text-only surface.
+    // model. A personally funded signed function-calling model may expose the
+    // narrow Task delegation controls; all other paid auxiliary capabilities
+    // remain suppressed here.
     const selectedBase = funding.kind === "server" && options.purpose === "chat-tools"
       ? resolveRetainedModels([modelId], options)[0]!
       : base;
@@ -137,7 +139,7 @@ export async function resolveCallerModelAvailability(
         ? {
             capabilities: {
               ...selectedBase.capabilities,
-              tools: false,
+              tools: catalogModel.features.tools === true,
               vision: false,
               webSearch: false,
             },

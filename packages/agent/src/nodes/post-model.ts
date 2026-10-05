@@ -108,6 +108,7 @@ import {
 } from "../tools/media/media-generation-approval-runtime";
 import type { ForegroundChatFundingSession } from "../runtime/foreground-chat-funding";
 import { personalFundingToolDenialMessage } from "./tools";
+import { isPersonalTaskControlCall } from "../runtime/personal-task-controls";
 
 // ---------------------------------------------------------------------------
 // Interrupt payloads
@@ -482,7 +483,13 @@ export function createPostModelNode(
     // Refuse every still-live model-originated call before catalog resolution,
     // policy checks, approval preparation, or any paid tool-specific side
     // effect. Calls already paired by an earlier preflight stay paired once.
-    if (deps?.foregroundChatFundingSession?.kind === "personal") {
+    if (
+      deps?.foregroundChatFundingSession?.kind === "personal"
+      && (
+        deps.foregroundChatFundingSession.personalTaskControls !== true
+        || toolCalls.some((call) => !isPersonalTaskControlCall(call))
+      )
+    ) {
       return {
         ...(toolCalls.length > 0
           ? {

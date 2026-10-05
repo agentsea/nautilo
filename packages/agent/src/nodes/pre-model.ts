@@ -86,6 +86,10 @@ import {
 import { buildApplyPatchToolContext } from "../tools/apply-patch/execution-router";
 import { ordinaryContentAccessToolContextForState, type OrdinaryContentAccessForState } from "../runtime/ordinary-content-access";
 import { getRelayRegistry } from "./tools";
+import {
+  filterPersonalTaskControlTools,
+  PERSONAL_TASK_CONTROL_TOOL_NAMES,
+} from "../runtime/personal-task-controls";
 import { modelIdForCapabilityProjection } from "../config/model-role-resolution";
 import {
   usesOpenAICompatibleChatTransport,
@@ -572,6 +576,9 @@ export async function preModelNode(
   fullEncryptionOnly = false,
   ordinaryContentAccessForState?: OrdinaryContentAccessForState,
   personalFunding = false,
+  personalTaskControls = false,
+  personalTaskRunnableModelIds?: readonly string[],
+  personalOnlyTaskModelIds?: readonly string[],
 ): Promise<Partial<NautiloState>> {
   if (state.noProgressPendingStop) throw new NoProgressError(state.noProgressPendingStop);
   assertResearchDesktopAvailable(state);
@@ -738,7 +745,7 @@ export async function preModelNode(
   // very model step even if the progressive intent pack was already applied.
   // Normal catalog eligibility still enforces actor policy + live PTY relay.
   const activatedToolNames = personalFunding
-    ? []
+    ? personalTaskControls ? [...PERSONAL_TASK_CONTROL_TOOL_NAMES] : []
     : !isGuest && relayCapabilities?.["hasPendingTerminalHandoff"] === true
       ? mergeEligibleActivatedToolNames(
           ordinaryActivatedToolNames,
@@ -797,6 +804,9 @@ export async function preModelNode(
           verifiedOrdinaryOrigin: state.verifiedOrdinaryOrigin,
           taskReportBackContinuation: state.taskReportBackContinuation,
           initiatingClientSurface,
+          personalTaskControls,
+          personalTaskRunnableModelIds,
+          personalOnlyTaskModelIds,
           ...recallRecordsContext,
           ...applyPatchContext,
         },
@@ -804,7 +814,9 @@ export async function preModelNode(
         relayCapabilities: relayCapabilities ?? undefined,
         readableNamespaces: envelopeReadableNamespaces(state.memoryAccessEnvelope),
         activeModelCapabilities,
-        toolNameWhitelist: state.toolWhitelist,
+        toolNameWhitelist: personalFunding && personalTaskControls
+          ? PERSONAL_TASK_CONTROL_TOOL_NAMES
+          : state.toolWhitelist,
         activatedToolNames: selectedActivatedToolNamesForActor(state.actorRole, activatedToolNames),
         fullEncryptionOnly,
         intentPackToolNames: [],
@@ -822,7 +834,7 @@ export async function preModelNode(
   // Post-model and tools-node fences remain the execution authority for stale
   // or directly injected calls.
   const availableTools = personalFunding
-    ? []
+    ? personalTaskControls ? filterPersonalTaskControlTools(rawTools) : []
     : withholdSkipForExplicitSelection(rawTools, state.explicitlySelected);
   const tools = projectSecurityResearchConsolidationTools(availableTools, consolidating);
   const progressiveToolExposure = measureProgressiveToolExposure({

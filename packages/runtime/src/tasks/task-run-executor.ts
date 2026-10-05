@@ -7,7 +7,7 @@ import {
   type NautiloState,
   type RunScopeSubagentOpts,
 } from "@nautilo/agent";
-import { markTaskAwaiting, markTaskRunStatus } from "@nautilo/db";
+import { markTaskAwaiting, markTaskRunStatus, getTaskById, getTaskRunForTask, pauseTaskRunForFundingDenial, claimCallerTaskRunJob } from "@nautilo/db";
 import {
   buildRuntimeCapabilityTokens,
   createCheckpointSaver,
@@ -19,6 +19,9 @@ import {
 } from "@nautilo/agent";
 import { log, warn } from "@nautilo/logger";
 import { eventBus } from "../event-bus";
+import { getCurrentAcceptedInvocationAuthority } from "../job-manager";
+import { openTaskFundingSession, taskFundingFailureCode, TaskFundingError } from "../task-funding-port";
+import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 import { classifyTurnKind, type TurnKind } from "../executors/turn-kind";
 import type { JobExecutor } from "../job";
 import { getTaskRunDb } from "./task-runtime-context";
@@ -147,17 +150,6 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
     throw new Error("taskRunExecutor: missing taskId / taskRunId / envelope in job input");
   }
 
-  // Link the real (persisted) job id onto the run row.
-  if (isSecurityResearchTask(input)) {
-    if (!await attachSecurityResearchJob(db, { taskId, taskRunId, ownerId: str(input, "ownerId"), jobId })) return;
-  } else {
-    await markTaskRunStatus(db, taskRunId, "running", { jobId });
-  }
-  eventBus.emit({ type: "task.progress", taskId, taskRunId, ownerId: str(input, "ownerId"),
-    ...(input["securityReportDeliveryOnly"] === true
-      ? { detail: "Delivering saved research report" }
-      : { detail: "Preparing task context and model", preparation: { stage: "preparing_model" as const } }) });
-
   // M147 (R4) — an unpause dispatch reuses the prior run's `graphThreadId`
   // (set by `dispatchTaskRun`) and continues the preserved checkpoint via a
   // `null`-input stream rather than cold-starting a fresh brief.
@@ -206,6 +198,43 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
   let repoDocs: RepoDocsWorkspace | null = null;
 
   try {
+    const task = await getTaskById(db, taskId);
+    if (!task) throw new TaskFundingError("funding_source_changed");
+    const run = await getTaskRunForTask(db, taskId, taskRunId);
+    if (!run) throw new TaskFundingError("funding_source_changed");
+    if (task.fundingMode === "caller" && (
+      continueFromCheckpoint !== Boolean(run.fundingPredecessorRunId)
+      || ownerId !== task.ownerId || str(input, "agentId") !== task.agentId
+      || str(input, "callingRoomId") !== task.callingRoomId
+      || str(input, "currentTaskId") !== task.id
+      || str(input, "roomId") !== (task.targetChat === "orphan" ? "" : task.targetRoomId ?? "")
+      || !Array.isArray(input["toolWhitelist"]) || input["toolWhitelist"].length !== 0
+      || input["awaitResponse"] === true || input["requiresLiveMiniApp"] === true
+      || (Array.isArray(input["artifactRefs"]) && input["artifactRefs"].length > 0)
+      || (Array.isArray(input["focusedResources"]) && input["focusedResources"].length > 0)
+    )) throw new TaskFundingError("funding_source_changed");
+    const fundingSession = await openTaskFundingSession({
+      task, run, authority: getCurrentAcceptedInvocationAuthority(),
+      requestorId: str(input, "requestorId"), modelId: str(input, "modelId"),
+      graphThreadId: str(input, "graphThreadId"),
+    });
+    if (task.fundingMode === "caller") {
+      // Identity and funding are verified before an old queued job may touch
+      // the run. A stopped, replaced, or already claimed run cannot be revived.
+      if (!await claimCallerTaskRunJob(db, { taskId, taskRunId,
+        requestorId: task.requestorId, graphThreadId: run.graphThreadId, jobId })) return;
+    } else {
+      if (!fundingSession) await assertCanUseServerProviderCredentials(task.requestorId, "task_execute");
+      if (isSecurityResearchTask(input)) {
+        if (!await attachSecurityResearchJob(db, { taskId, taskRunId, ownerId: str(input, "ownerId"), jobId })) return;
+      } else {
+        await markTaskRunStatus(db, taskRunId, "running", { jobId });
+      }
+    }
+    eventBus.emit({ type: "task.progress", taskId, taskRunId, ownerId,
+      ...(input["securityReportDeliveryOnly"] === true
+        ? { detail: "Delivering saved research report" }
+        : { detail: "Preparing task context and model", preparation: { stage: "preparing_model" as const } }) });
     const deepResearch = readDeepResearchTaskMetadata(input["metadata"]);
     if (deepResearch) {
       const stream = streamDeepResearchReport(
@@ -310,6 +339,7 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
     const result = input["securityReportDeliveryOnly"] === true && continueFromCheckpoint && isSecurityResearchTask(input)
       ? await readSecurityReportDeliveryResult(db, { taskId, taskRunId, ownerId, threadId: str(input, "graphThreadId"), modelId: str(input, "modelId") })
       : await runner({
+      ...(fundingSession ? { foregroundChatFundingSession: fundingSession } : {}),
       ...(continueFromCheckpoint ? { continueFromCheckpoint: true } : {}),
       parentThreadId: str(input, "parentThreadId"),
       parentTurnId: str(input, "turnId"),
@@ -554,6 +584,17 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
     // non-abort error reports back from this catch path.
     if (signal.aborted) {
       log(`[task-run] task=${taskId} run=${taskRunId} aborted (pause/stop, thrown) — skipping report-back`);
+      return;
+    }
+    const fundingFailure = taskFundingFailureCode(err);
+    if (fundingFailure) {
+      const transition = await pauseTaskRunForFundingDenial(db, {
+        taskId, taskRunId, requestorId: str(input, "requestorId"), reason: fundingFailure,
+      });
+      if (transition.transitioned && transition.task) {
+        eventBus.emit({ type: "task.status", taskId, ownerId, status: "paused" });
+      }
+      yield { type: "worker.complete", jobId, result: "success" };
       return;
     }
     const accessRecovery = await parkTaskContentAccessRecovery(db, { taskId, taskRunId, ownerId,

@@ -18,6 +18,7 @@ import {
   TASK_PRESENTATION_STATUS_PRIORITY,
   TASK_PRESENTATION_TERMINAL_LINGER_MS,
   type TaskPreparationProgress,
+  type TaskFundingFailureCode,
   type TaskPresentationHierarchy,
   type TaskPresentationStatus,
 } from "@nautilo/types";
@@ -44,6 +45,7 @@ export type SubagentKind =
 export interface RunningSubagent extends TaskPresentationHierarchy {
   /** Owner-verified recovery affordance, revalidated by unpause. */
   readonly canResumeResearch?: boolean;
+  readonly fundingFailure?: TaskFundingFailureCode;
   readonly taskId: string;
   readonly taskRunId: string | null;
   /** Resolved agent display name (enriched `TaskSummary.agentName`); "Genie" fallback. */

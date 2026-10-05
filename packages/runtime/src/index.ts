@@ -54,6 +54,15 @@ export {
   type ForegroundChatFundingPort,
 } from "./foreground-chat-funding-port";
 export {
+  installTaskFundingPort,
+  uninstallTaskFundingPort,
+  assertTaskFundingAdmission,
+  TaskFundingError,
+  taskFundingFailureCode,
+  type TaskFundingPort,
+  type TaskFundingAdmission,
+} from "./task-funding-port";
+export {
   installDurableToolResultLifecycleObserver,
   notifyDurableToolResultLifecycle,
   _resetDurableToolResultLifecycleObserverForTests,

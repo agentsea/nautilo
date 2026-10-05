@@ -31,9 +31,14 @@ import {
   describe,
   expect,
   it,
+  spyOn,
 } from "bun:test";
 import { tasks, taskRuns, type DirectDatabase, type Task } from "@nautilo/db";
+import { createAcceptedInvocationAuthority } from "@nautilo/trust";
+import * as trust from "@nautilo/trust";
 import type { ServerEvent } from "@nautilo/types";
+import { createMaintenanceAcceptanceAuthority } from "../../src/maintenance-controller";
+import { runWithAcceptedWorkAuthorities } from "../../src/job-manager";
 
 const { taskRunExecutor, _setTaskRunExecutorRunnerForTests, _setTaskRunCleanupFnForTests } =
   await import("../../src/tasks/task-run-executor");
@@ -58,7 +63,9 @@ afterAll(() => {
   setTaskRunDb(null);
 });
 
+let serverFundingSpy: ReturnType<typeof spyOn<typeof trust, "assertCanUseServerProviderCredentials">>;
 beforeEach(() => {
+  serverFundingSpy = spyOn(trust, "assertCanUseServerProviderCredentials").mockResolvedValue();
   eventLog = [];
   cleanupCalls = [];
   cleanupShouldThrow = false;
@@ -78,6 +85,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  serverFundingSpy.mockRestore();
   _setTaskRunExecutorRunnerForTests(null);
   _setTaskRunCleanupFnForTests(null);
   _setSecurityReportArtifactWriterForTests(null);
@@ -97,6 +105,9 @@ function fakeDb(taskRow: Task | undefined = baseTask()): DirectDatabase {
     graphThreadId: "subagent:room:r1:bot:a1:run-1",
     status: "running",
     jobId: "job-1",
+    modelId: "openai:stub",
+    fundingBinding: null,
+    fundingPredecessorRunId: null,
     resultText: null,
   };
   const db: Record<string, unknown> = {
@@ -148,6 +159,7 @@ function baseTask(over: Partial<Task> = {}): Task {
     resultDelivery: "wake",
     scheduleKind: "now",
     status: "running",
+    fundingMode: "legacy_server",
     ...over,
   }) as unknown as Task;
 }
@@ -184,9 +196,13 @@ function baseInput(over: Record<string, unknown> = {}): Record<string, unknown> 
 }
 
 async function drain(executor: AsyncGenerator<ServerEvent>): Promise<void> {
-  for await (const _ev of executor) {
-    void _ev;
-  }
+  await runWithAcceptedWorkAuthorities(
+    createMaintenanceAcceptanceAuthority(),
+    createAcceptedInvocationAuthority("owner-1", { originTaskId: "task-1" }),
+    async () => {
+      for await (const _ev of executor) void _ev;
+    },
+  );
 }
 
 describe("taskRunExecutor — Stack 208 P1 terminal thread cleanup", () => {
@@ -263,7 +279,7 @@ describe("taskRunExecutor — Stack 208 P1 terminal thread cleanup", () => {
 
     await drain(
       taskRunExecutor(
-        baseInput({ graphThreadId: "subagent:input:fallback-thread" }),
+        baseInput(),
         "job-1",
         "task:task-1",
         new AbortController().signal,
@@ -271,7 +287,7 @@ describe("taskRunExecutor — Stack 208 P1 terminal thread cleanup", () => {
     );
 
     expect(cleanupCalls).toEqual(["subagent:generated:authoritative-thread"]);
-    expect(cleanupCalls).not.toContain("subagent:input:fallback-thread");
+    expect(cleanupCalls).not.toContain("subagent:room:r1:bot:a1:run-1");
     expect(eventLog).toEqual(["reportBackCompletion", "cleanup"]);
   });
 
@@ -325,7 +341,7 @@ describe("taskRunExecutor — Stack 208 P1 terminal thread cleanup", () => {
     };
     await drain(
       taskRunExecutor(
-        baseInput({ graphThreadId: "subagent:input:ephemeral" }),
+        baseInput(),
         "job-1",
         "task:task-1",
         new AbortController().signal,

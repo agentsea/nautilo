@@ -50,8 +50,9 @@ async function resume(preparation: unknown) {
   try {
     await runTaskApprovalResume({
       task: { id: taskId, ownerId: "owner", requestorId: "owner", agentId: "agent", targetChat: "orphan",
-        scheduleKind: "now", metadata: { preparation } } as unknown as Task,
-      run: { id: runId, graphThreadId: "subagent:research", taskId } as TaskRun,
+        scheduleKind: "now", fundingMode: "legacy_server", metadata: { preparation } } as unknown as Task,
+      run: { id: runId, graphThreadId: "subagent:research", taskId, fundingBinding: null,
+        fundingPredecessorRunId: null } as TaskRun,
       kind: "prove_it", approved: true,
       invocationAuthority: createAcceptedInvocationAuthority("owner"),
       maintenanceAuthority: createMaintenanceAcceptanceAuthority(),

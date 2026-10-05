@@ -46,10 +46,22 @@ const withKey = mock(async (
 ) => run("synthetic-personal-secret"));
 const assertInvoke = mock(async () => undefined);
 
+const actualAgent = await import("@nautilo/agent");
+const actualDb = await import("@nautilo/db");
+const actualTrust = await import("@nautilo/trust");
+
 mock.module("@nautilo/agent", () => ({
+  ...actualAgent,
   resolveRetainedModels: (ids: string[]) => ids.map((id) => ({ id, availability: "missing-key" })),
+  getEligibleModels: ({ env }: { env: NodeJS.ProcessEnv }) =>
+    env["OPENROUTER_API_KEY"]
+      ? [MODEL, FALLBACK].map((id) => ({ id }))
+      : [],
+  modelHasRunnableCredentials: (modelId: string, env: NodeJS.ProcessEnv) =>
+    modelId.startsWith("openrouter:") && Boolean(env["OPENROUTER_API_KEY"]),
 }));
 mock.module("@nautilo/db", () => ({
+  ...actualDb,
   getServerProviderPolicy: async () => ({
     allowPersonalProviderKeys: switchOn,
     fundingPreference: freshFundingKind === "server" ? "server_first" : "personal_first",
@@ -60,6 +72,7 @@ mock.module("@nautilo/db", () => ({
   })),
 }));
 mock.module("@nautilo/trust", () => ({
+  ...actualTrust,
   getUserCapabilities: async () => capabilities,
   findActorByOwnerId: async () => ({ id: "human-actor" }),
   getRoomDetailForMember: async () => ({

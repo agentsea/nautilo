@@ -55,6 +55,7 @@ import type {
   ForegroundChatFundingAttempt,
   ForegroundChatFundingSession,
 } from "../runtime/foreground-chat-funding";
+import { filterPersonalTaskControlTools } from "../runtime/personal-task-controls";
 
 /**
  * explicit fallback-mode representation threaded from Task
@@ -133,6 +134,11 @@ class PersonalProviderInvocationError extends Error {
             : undefined;
     if (status !== undefined) this.status = status;
   }
+}
+
+/** Safe typed classification after the personal transport exhausted its retries. */
+export function personalProviderInvocationFailureCategory(error: unknown): ClassifiedError["category"] | null {
+  return error instanceof PersonalProviderInvocationError ? error.category : null;
 }
 
 function signedCatalogEntrySupportsForegroundText(
@@ -636,7 +642,12 @@ function nextInUserChain(
     }
     if (personalFunding) {
       const entry = getActiveModelCatalogSync().catalog.entries.find((row) => row.id === candidate);
-      if (!entry || !entry.defaultEnabled || !signedCatalogEntrySupportsForegroundText(entry)) {
+      if (
+        !entry
+        || !entry.defaultEnabled
+        || !signedCatalogEntrySupportsForegroundText(entry)
+        || (requiresTools && entry.features?.tools !== true)
+      ) {
         log(`[nautilo/agent] Skipping unavailable personal-funded chain entry: ${candidate}`);
         continue;
       }
@@ -748,7 +759,11 @@ export async function invokeChatModelWithFallback(
   }
   // Direct callers receive the same model-tool fence as agentNode. The
   // server/legacy path preserves its existing tool binding unchanged.
-  tools = personalFunding ? [] : tools;
+  tools = personalFunding
+    ? fundingSession?.personalTaskControls === true
+      ? filterPersonalTaskControlTools(tools)
+      : []
+    : tools;
   let currentModelId = initialModelId;
   const attemptedModels: string[] = [];
   const needsVision = messagesContainImageInputs(messages);

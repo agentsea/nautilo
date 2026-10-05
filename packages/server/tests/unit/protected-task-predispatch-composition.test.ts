@@ -64,6 +64,7 @@ function task(overrides: Partial<Task> = {}): Task {
     fireLockedAt: null,
     lastError: null,
     metadata: {},
+    fundingMode: "legacy_server",
     contentRepresentation: "protected",
     contentNamespaceId: ids.namespace,
     contentRevision: 3,

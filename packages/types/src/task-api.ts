@@ -14,6 +14,9 @@
  */
 
 import type { SelectionProfile, ComboSpec } from "./model-selection";
+import type { TaskFundingFailureCode } from "./task-funding";
+
+export type TaskFundingSource = "personal" | "server";
 
 export type TaskScheduleKind = "now" | "one_shot" | "cron";
 
@@ -153,6 +156,8 @@ export interface TaskSummary {
   callingRoomId: string | null;
   /** Stable Task-level pause/error reason; null while no reason is recorded. */
   lastError: string | null;
+  /** Safe, server-classified funding interruption; absent for unrelated errors. */
+  fundingFailure?: TaskFundingFailureCode | null;
   /**
    * M152 — the model id the task's MOST RECENT run actually used (resolved by
    * the multi-axis selection at dispatch). `null` when the task has not run yet
@@ -183,6 +188,10 @@ export interface TaskRunSummary {
   modelId: string | null;
   resultText: string | null;
   lastError: string | null;
+  /** Non-secret funding source for this admitted occurrence. */
+  fundingSource?: TaskFundingSource | null;
+  /** Safe, server-classified funding interruption; absent for unrelated errors. */
+  fundingFailure?: TaskFundingFailureCode | null;
   startedAt: string | null;
   completedAt: string | null;
   /**

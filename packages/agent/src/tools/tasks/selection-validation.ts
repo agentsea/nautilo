@@ -20,7 +20,10 @@
  * not run.
  */
 import { getDefaultModel } from "../../config/assistant-models";
-import { validateTaskModelSelection } from "../../config/resolve-task-model";
+import {
+  validateTaskModelSelection,
+  type ResolveTaskModelInput,
+} from "../../config/resolve-task-model";
 import {
   validateExactTaskModelSelection,
   type ValidateExactTaskModelInput,
@@ -34,15 +37,26 @@ import type { SelectionProfile, ComboSpec } from "@nautilo/types";
 export function validateTaskSelectionForCreate(
   profile: SelectionProfile | null | undefined,
   spec?: ComboSpec | null,
+  options: Readonly<Pick<ResolveTaskModelInput, "env" | "purpose"> & {
+    baseModelId?: string;
+  }> = {},
 ): string | null {
   if ((profile == null || profile === "balanced") && spec == null) return null;
   const failure = validateTaskModelSelection({
-    baseModelId: getDefaultModel().id,
+    baseModelId: options.baseModelId ?? getDefaultModel().id,
     profile: profile ?? null,
     spec: spec ?? null,
+    ...(options.env === undefined ? {} : { env: options.env }),
+    ...(options.purpose === undefined ? {} : { purpose: options.purpose }),
   });
   return failure ? failure.message : null;
 }
+
+export type ValidateTaskModelSelectionForCreateInput = ValidateExactTaskModelInput &
+  Readonly<{
+    baseModelId?: string;
+    purpose?: "chat" | "task-tools";
+  }>;
 
 /**
  * D429 Phase 3 — combined create/update guard. Single-sources the message for
@@ -50,11 +64,15 @@ export function validateTaskSelectionForCreate(
  * the one the `task` tool, shortcuts, and HTTP route call before persistence.
  */
 export function validateTaskModelSelectionForCreate(
-  input: ValidateExactTaskModelInput,
+  input: ValidateTaskModelSelectionForCreateInput,
 ): string | null {
   if (input.requestedModelId !== null && input.requestedModelId !== undefined) {
     const exact = validateExactTaskModelSelection(input);
     return exact ? exact.message : null;
   }
-  return validateTaskSelectionForCreate(input.profile, input.spec);
+  return validateTaskSelectionForCreate(input.profile, input.spec, {
+    ...(input.baseModelId === undefined ? {} : { baseModelId: input.baseModelId }),
+    ...(input.env === undefined ? {} : { env: input.env }),
+    ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
+  });
 }

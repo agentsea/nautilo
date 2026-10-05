@@ -30,6 +30,7 @@ import { recordStreamActivityFromEvent, turnContextKey } from "../../runtime/tur
 import { nanoid } from "../deep-research/shared/nanoid";
 import { getCurrentTurnId, log } from "@nautilo/logger";
 import type { ModelFallbackMode } from "../../utils/chat-model-invocation";
+import type { ForegroundChatFundingSession } from "../../runtime/foreground-chat-funding";
 import { omitSensitiveToolArgs } from "../../utils/tool-argument-redaction";
 import { runWithInitiatingClientSurface } from "../../runtime/initiating-client-surface-context";
 import { runWithTaskCausalHuman } from "../../runtime/causal-human-context";
@@ -581,6 +582,8 @@ export type RunScopeSubagentOpts = {
   assistantName: string;
   soulFile: string;
   modelId: string;
+  /** Process-local funding authority; never copied into graph/checkpoint state. */
+  foregroundChatFundingSession?: ForegroundChatFundingSession;
   currentFolder: string;
   workspacePath: string;
   /**
@@ -850,7 +853,13 @@ async function runScopeSubagentUntilPauseInternal(
   const graph = createNautiloGraph(
     checkpointSaver,
     policyResolver,
-    researchNoteDraft ? { ...defaultPostModelDeps, researchNoteDraft } : defaultPostModelDeps,
+    {
+      ...defaultPostModelDeps,
+      ...(researchNoteDraft ? { researchNoteDraft } : {}),
+      ...(opts.foregroundChatFundingSession === undefined
+        ? {}
+        : { foregroundChatFundingSession: opts.foregroundChatFundingSession }),
+    },
   );
 
   const subThreadId =

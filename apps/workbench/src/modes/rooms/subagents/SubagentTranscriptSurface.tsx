@@ -10,6 +10,7 @@ import { StatusGlyph, usePrefersReducedMotion } from "./SubagentCard";
 import type { RunningSubagentStatus } from "./running-subagents-model";
 import { HarnessActivityFeed } from "./HarnessActivityFeed";
 import { harnessPresentation } from "./harness-presentation";
+import { TaskFundingRecoveryNotice } from "../../../components/task-funding-recovery";
 
 /**
  * D314 (Stack 92) — L2 full-transcript surface.
@@ -28,7 +29,14 @@ export function SubagentTranscriptSurface({
   readonly taskId: string;
   readonly taskRunId?: string;
 }): ReactElement {
-  const { messages, loading, error, status: fetchedStatus } = useSubagentTranscript(taskId, { enabled: true });
+  const {
+    messages,
+    loading,
+    error,
+    status: fetchedStatus,
+    fundingSource,
+    fundingFailure,
+  } = useSubagentTranscript(taskId, { enabled: true });
   const { list } = useRunningSubagents();
   const reduced = usePrefersReducedMotion();
 
@@ -71,6 +79,16 @@ export function SubagentTranscriptSurface({
             <p className="truncate pl-[22px] text-[11px] leading-tight text-foreground-muted" title={liveStep}>
               › {liveStep}
             </p>
+          ) : null}
+          {fundingSource ? (
+            <p className="pl-[22px] text-[10px] text-foreground-muted" data-testid="task-funding-source">
+              {fundingSource === "personal" ? "Personal API key" : "Server provider key"}
+            </p>
+          ) : null}
+          {fundingFailure ? (
+            <div className="pl-[22px]">
+              <TaskFundingRecoveryNotice code={fundingFailure} compact />
+            </div>
           ) : null}
         </header>
 

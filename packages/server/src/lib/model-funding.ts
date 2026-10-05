@@ -17,7 +17,7 @@ import { getUserCapabilities } from "@nautilo/trust";
 import { readPersonalProviderCustody } from "./personal-provider-custody";
 import { getServerDirectDb } from "./server-direct-db";
 
-export type ModelFundingWorkload = "foreground_text_chat";
+export type ModelFundingWorkload = "foreground_text_chat" | "native_text_task";
 
 /** Runnable personal chat adapters; storing a service key never enables its paid path. */
 export const PERSONAL_CHAT_PROVIDER_IDS = [
@@ -141,7 +141,9 @@ export async function resolveModelFunding(
   input: ResolveModelFundingInput,
   deps: ModelFundingDeps = DEFAULT_DEPS,
 ): Promise<ModelFundingDecision> {
-  if (input.workload !== "foreground_text_chat") throw new ModelFundingError("unsupported_workload");
+  if (input.workload !== "foreground_text_chat" && input.workload !== "native_text_task") {
+    throw new ModelFundingError("unsupported_workload");
+  }
   if (!input.humanUserId.trim()) throw new ModelFundingError("server_credentials_forbidden");
   const provider = directProvider(input.modelId);
   const serverOnlyGateway = input.modelId.toLowerCase().startsWith("gateway:")
@@ -181,7 +183,7 @@ export async function resolveModelFunding(
     const priorProvider = directProvider(prior.modelId);
     if (!priorProvider) throw new ModelFundingError("funding_source_changed");
     priorCredential = await deps.getCredential(input.humanUserId, priorProvider);
-    if (!priorCredential) throw new ModelFundingError("personal_credential_missing");
+    if (!priorCredential) throw new ModelFundingError("personal_credential_stale");
     if (priorCredential.id !== prior.credentialId
       || priorCredential.revision !== prior.credentialRevision) {
       throw new ModelFundingError("personal_credential_stale");

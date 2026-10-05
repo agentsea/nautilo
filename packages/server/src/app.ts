@@ -27,6 +27,14 @@ import { resolveArtifactFeedAuthor, resolveArtifactFeedPeople, resolveArtifactCr
 import { setWorkspaceArtifactCreatedSink } from "@nautilo/agent";
 import { createServerMemoryReviewRuntime } from "./lib/memory-review-runtime";
 import { openForegroundChatFundingSession } from "./lib/foreground-chat-funding";
+import {
+  assertRunnableNativeTaskSelection,
+  isPersonalOnlyNativeTaskSelection,
+  nativeTaskFundingPort,
+} from "./lib/native-task-funding";
+import { assertTaskFundingAdmission, TaskFundingError } from "@nautilo/runtime";
+import { getLatestResumableTaskRun } from "@nautilo/db";
+import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 import { memoryStatusRoutes } from "./routes/memory-status";
 import {
   createForegroundMemoryEffectRecovery,
@@ -507,6 +515,8 @@ import {
   uninstallForegroundRecordRecallPortFactory,
   installForegroundChatFundingPort,
   uninstallForegroundChatFundingPort,
+  installTaskFundingPort,
+  uninstallTaskFundingPort,
   resolveReflectionModelId,
   resolveStenographerModelId,
   type WorkstationAccessAuditEvent,
@@ -2073,8 +2083,10 @@ export async function createApp(options?: CreateAppOptions) {
     resolveWorker: async () => (await reflectionRuntime()).worker,
   });
   installForegroundChatFundingPort({ openSession: openForegroundChatFundingSession });
+  installTaskFundingPort(nativeTaskFundingPort);
   app.addHook("onClose", () => {
     uninstallForegroundChatFundingPort();
+    uninstallTaskFundingPort();
   });
   installForegroundRecordRecallPortFactory((state) => {
     let bound: ReturnType<
@@ -4162,6 +4174,7 @@ export async function createApp(options?: CreateAppOptions) {
   };
   setTaskToolRuntime({
     db: getServerDirectDb(),
+    isPersonalOnlyTaskSelection: isPersonalOnlyNativeTaskSelection,
     canUseLegacyTaskContent: () => dormantTaskContentOwner.runMutation({
       ordinary: () => Promise.resolve(true),
       dual: () => Promise.resolve(false),
@@ -4278,6 +4291,19 @@ export async function createApp(options?: CreateAppOptions) {
       };
     },
     computeNextFireAt: runtimeComputeNextFireAt,
+    assertMutationFunding: async ({ task, operation, patch }) => {
+      const definedPatch = Object.fromEntries(Object.entries(patch ?? {}).filter(([, value]) => value !== undefined));
+      const prospective = { ...task, ...definedPatch };
+      const priorRun = await getLatestResumableTaskRun(getServerDirectDb(), task.id);
+      if (task.fundingMode === "caller" && priorRun && prospective.targetChat !== task.targetChat) {
+        throw new TaskFundingError("funding_source_changed");
+      }
+      if (task.fundingMode === "caller" && priorRun && operation === "update") {
+        await assertRunnableNativeTaskSelection(prospective);
+      }
+      const admission = await assertTaskFundingAdmission(prospective, priorRun);
+      if (!admission) await assertCanUseServerProviderCredentials(task.requestorId, `task_${operation}`);
+    },
     canResumeResearch: (task) => canResumeSecurityResearchContextFailure(getServerDirectDb(), task),
     // lifecycle commands funnel through the runtime fns (shared abort
     // seam); `unpauseTask` kicks this observer to re-claim for checkpoint resume.

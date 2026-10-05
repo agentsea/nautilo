@@ -1461,6 +1461,51 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     ]);
   });
 
+  test("update clears the memoized room when target_chat changes", async () => {
+    stubRuntime();
+    const getSp = spyOn(db, "getTaskById").mockResolvedValue({
+      id: "task-1",
+      ownerId: OWNER_ID,
+      status: "pending",
+      prompt: "old",
+      scheduleKind: "now",
+      cron: null,
+      runAt: null,
+      timezone: "UTC",
+      targetChat: "last_in_namespace",
+      targetRoomId: ROOM_ID,
+      resultDelivery: "wake",
+      depth: 0,
+    } as never);
+    restores.push(() => getSp.mockRestore());
+
+    const updateSp = spyOn(db, "updateTask").mockImplementation(
+      async (_db, _id, patch) => ({
+        id: "task-1",
+        ownerId: OWNER_ID,
+        status: "pending",
+        prompt: "old",
+        scheduleKind: "now",
+        targetChat: "orphan",
+        targetRoomId: null,
+        resultDelivery: "wake",
+        ...patch,
+      }) as never,
+    );
+    restores.push(() => updateSp.mockRestore());
+
+    await dispatchTaskCommand(
+      { command: "update", taskId: "task-1", target_chat: "orphan" },
+      CTX,
+    );
+
+    expect(updateSp).toHaveBeenCalledWith(
+      expect.anything(),
+      "task-1",
+      expect.objectContaining({ targetChat: "orphan", targetRoomId: null }),
+    );
+  });
+
   test("update without schedule change does NOT recompute next_fire_at", async () => {
     let computeCalled = false;
     let capturedPatch: Record<string, unknown> | null = null;

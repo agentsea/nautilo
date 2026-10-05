@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Personal provider keys can fund native background text Tasks, one-shot
+  reminders, and recurring text schedules from your own Genie chat. Task runs
+  retain their funding source through retries and Pause/Resume; changed keys
+  require a fresh Task. Existing server-funded Tasks retain their behavior,
+  and personal workers remain tool-free.
 - The server multipart parser uses the patched Busboy 3.2.1 dependency in both
   the contributor lockfile and the shipped Docker runtime projection.
 

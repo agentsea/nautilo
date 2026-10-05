@@ -59,7 +59,7 @@ async function dispatch(overrides: Partial<Task> = {}) {
     targetChat: "orphan", targetRoomId: "", callingRoomId: null, targetUserIds: ["owner"],
     awaitResponse: false, useScope: false, preset: "in_background", prompt: "Audit the authorized fixture.",
     depth: 0, parentTaskId: null, toolsMode: "whitelist", toolsWhitelist: ["file", "security_scan"],
-    selectionProfile: "balanced", selectionSpec: null, requestedModelId: null, metadata: {},
+    selectionProfile: "balanced", selectionSpec: null, requestedModelId: null, fundingMode: "legacy_server", metadata: {},
     ...overrides } as Task;
   const result = await dispatchTaskRun(task, {
     db: {} as DirectDatabase,

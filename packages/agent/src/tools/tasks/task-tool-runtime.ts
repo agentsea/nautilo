@@ -1,4 +1,4 @@
-import { getTaskById, type DirectDatabase, type Task } from "@nautilo/db";
+import { getTaskById, type DirectDatabase, type NewTask, type Task } from "@nautilo/db";
 import type { SelectionProfile, ComboSpec, TaskHarnessActivity } from "@nautilo/types";
 
 /**
@@ -238,6 +238,33 @@ export interface TaskToolRuntime {
   db: DirectDatabase;
   /** Production policy fence until Agent Task content publication and reads are wired. */
   canUseLegacyTaskContent?(): Promise<boolean>;
+  /**
+   * Trusted live classification for an otherwise bounded native root Task
+   * selection. The server resolves the effective Agent default/profile/exact
+   * model against the caller's runnable union and returns true only when that
+   * model has no permitted server-funded route. No credential material crosses
+   * this seam.
+   */
+  isPersonalOnlyTaskSelection?(input: Readonly<{
+    requestorId: string;
+    agentId: string;
+    callingRoomId: string;
+    requestedModelId?: string | null;
+    selectionProfile?: SelectionProfile | null;
+    selectionSpec?: ComboSpec | null;
+  }>): Promise<boolean>;
+  /**
+   * Server-owned funding admission for mutations that can make a Task
+   * runnable. Production composition rechecks the effective Task selection
+   * and live funding authority before persistence or unpause. The seam stays
+   * optional for legacy test runtimes; personal-control callers fail closed
+   * when it is absent.
+   */
+  assertMutationFunding?(input: Readonly<{
+    task: Task;
+    operation: "update" | "unpause";
+    patch?: Readonly<Partial<NewTask>>;
+  }>): Promise<void>;
   /** Server-published opt-in. Omitted runtimes retain the legacy tool surface. */
   readonly claudeCodeTasksEnabled?: true;
   /** Bound to the M142 runtime `createTask({ db, observer }, input)`. */

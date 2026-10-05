@@ -53,6 +53,7 @@ function task(overrides: Partial<Task> = {}): Task {
     agentId: ids.agent,
     callingRoomId: null,
     resultDelivery: "wake",
+    fundingMode: "legacy_server",
     contentRepresentation: "protected",
     ...overrides,
   } as Task;
@@ -63,6 +64,8 @@ function run(overrides: Partial<TaskRun> = {}): TaskRun {
     id: ids.run,
     taskId: ids.task,
     status: "completed",
+    fundingBinding: null,
+    fundingPredecessorRunId: null,
     completedAt: terminalAt,
     resultRepresentation: "protected",
     resultRevision: 1,

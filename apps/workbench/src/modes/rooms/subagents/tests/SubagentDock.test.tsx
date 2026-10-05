@@ -309,3 +309,27 @@ test("ordinary terminal cards have no recovery control", () => {
   const view = renderDock();
   expect(view.queryByTestId("subagent-resume")).toBeNull();
 });
+
+test("shows personal key recovery while keeping Stop available", () => {
+  snapshot = { list: [makeSubagent(1, {
+    status: "paused",
+    fundingFailure: "personal_credential_missing",
+  })], heartbeat: { count: 1, line: "Funding interrupted" } };
+  const view = renderDock();
+  expect(view.getByTestId("task-funding-recovery").textContent).toContain("missing key");
+  expect(view.getByRole("link", { name: "Personal API keys" }).getAttribute("href"))
+    .toBe("/settings#personal-provider-keys");
+  expect(view.getByTestId("subagent-resume")).toBeTruthy();
+  expect(view.getByTestId("subagent-stop")).toBeTruthy();
+});
+
+test("explains that a changed key requires fresh work and does not offer Resume", () => {
+  snapshot = { list: [makeSubagent(1, {
+    status: "paused",
+    fundingFailure: "personal_credential_stale",
+  })], heartbeat: { count: 1, line: "Funding interrupted" } };
+  const view = renderDock();
+  expect(view.getByTestId("task-funding-recovery").textContent).toContain("fresh task");
+  expect(view.queryByTestId("subagent-resume")).toBeNull();
+  expect(view.getByTestId("subagent-stop")).toBeTruthy();
+});

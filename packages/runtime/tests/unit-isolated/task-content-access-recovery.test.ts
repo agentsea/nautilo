@@ -26,10 +26,24 @@ const repair = mock(async () => {
   task.status = "awaiting"; run.status = "awaiting"; return true;
 });
 mock.module("@nautilo/db", () => ({ ...database, getTaskById: async () => task, transitionTaskApprovalExecution: transitions,
+  getTaskRunForTask: async () => run,
+  claimCallerTaskRunJob: async () => true,
+  pauseTaskRunForFundingDenial: async () => ({ task, run, transitioned: false }),
   markTaskRunStatus: async (_db: unknown, _runId: string, status: TaskRun["status"], patch: { jobId?: string }) => {
     run.status = status; if (patch.jobId) run.jobId = patch.jobId;
   },
   repairTaskContentAccessRecovery: repair }));
+const taskFunding = await import("../../src/task-funding-port");
+mock.module("../../src/task-funding-port", () => ({
+  ...taskFunding,
+  openTaskFundingSession: async () => ({
+    kind: "server" as const,
+    recheckAttempt: async () => {},
+    runAttempt: async (_model: unknown, callback: (context: unknown) => unknown) => callback({
+      usageFunding: { kind: "server", humanUserId: "human", providerRoute: "openai" },
+    }),
+  }),
+}));
 const read = mock(async (scope: OrdinaryContentAccessRecoveryCoordinate) => available ? {
   ...scope, checkpointId: "checkpoint", turnId: run.id, toolCallId: "share",
 } : null);
@@ -66,8 +80,8 @@ const expected = { taskId: "task", taskRunId: "run", checkpointId: "checkpoint",
 const authorities = { invocation: createAcceptedInvocationAuthority("human"), maintenance: createMaintenanceAcceptanceAuthority() };
 beforeEach(() => {
   task = { id: "task", ownerId: "human", requestorId: "human", agentId: "agent", targetRoomId: "room",
-    targetChat: "last_dm", status: "awaiting", metadata: {}, scheduleKind: "now" } as Task;
-  run = { id: "run", taskId: "task", status: "awaiting", graphThreadId: "thread", jobId: "original-job" } as TaskRun;
+    targetChat: "last_dm", status: "awaiting", metadata: {}, scheduleKind: "now", fundingMode: "legacy_server" } as Task;
+  run = { id: "run", taskId: "task", status: "awaiting", graphThreadId: "thread", jobId: "original-job", fundingBinding: null, fundingPredecessorRunId: null } as TaskRun;
   available = true; advance = undefined; reparked = false; liveWorker = false; originalStatus = "failed";
   for (const fn of [read, resume, completed, failure, transitions, admission, funding, repair]) fn.mockClear();
   funding.mockImplementation(async () => {});

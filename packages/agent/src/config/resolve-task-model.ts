@@ -32,6 +32,10 @@ export interface ModelSelectionFailure {
 
 export interface ResolveTaskModelInput {
   baseModelId: string;
+  /** Credential environment selected by the trusted funding owner. */
+  env?: NodeJS.ProcessEnv;
+  /** Tool-free personal Tasks use chat; legacy Tasks retain task-tools. */
+  purpose?: "chat" | "task-tools";
   profile?: SelectionProfile | null;
   spec?: ComboSpec | null;
   /** Provider-neutral preference asserted by reviewed signed-catalog rows. */
@@ -64,10 +68,13 @@ function better(a: PoolModel, b: PoolModel, axis: SelectionAxis): number {
 
 export function resolveTaskModel(input: ResolveTaskModelInput): ResolveTaskModelResult {
   const { baseModelId } = input;
-  const allowChinaUpstream = resolveChinaUpstreamConsent(input.allowChinaUpstream);
+  const purpose = input.purpose ?? "task-tools";
+  const allowChinaUpstream = resolveChinaUpstreamConsent(input.allowChinaUpstream, input.env);
   const defaultSelection = input.spec == null && (input.profile == null || input.profile === "balanced");
   if (defaultSelection && input.taskPreference == null) {
-    const base = resolveRetainedModels([baseModelId], { purpose: "task-tools", allowChinaUpstream })[0]!;
+    const base = resolveRetainedModels([baseModelId], {
+      purpose, allowChinaUpstream, ...(input.env === undefined ? {} : { env: input.env }),
+    })[0]!;
     if (base.availability !== "selectable") {
       throw new ModelSelectionError({
         ...(input.profile ? { profile: input.profile } : {}),
@@ -81,7 +88,9 @@ export function resolveTaskModel(input: ResolveTaskModelInput): ResolveTaskModel
     }
     return { modelId: baseModelId };
   }
-  const pool: PoolModel[] = getEligibleModels({ purpose: "task-tools", allowChinaUpstream })
+  const pool: PoolModel[] = getEligibleModels({
+    purpose, allowChinaUpstream, ...(input.env === undefined ? {} : { env: input.env }),
+  })
     .map((m) => {
       // Eligibility remains authoritative for runnable/tool-capable models.
       // The active resolved catalog owns its reviewed intelligence metadata,
@@ -124,8 +133,9 @@ export function resolveTaskModel(input: ResolveTaskModelInput): ResolveTaskModel
     // runnable, retain balanced's exact base-model semantics instead of
     // silently turning the preference into a different global optimizer.
     const base = resolveRetainedModels([baseModelId], {
-      purpose: "task-tools",
+      purpose,
       allowChinaUpstream,
+      ...(input.env === undefined ? {} : { env: input.env }),
     })[0]!;
     if (base.availability !== "selectable") {
       throw new ModelSelectionError({

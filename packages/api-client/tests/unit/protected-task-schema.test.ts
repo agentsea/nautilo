@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { LATTICE_LIMITS } from "@nautilo/lattice-crypto/wire-limits";
+import { TASK_FUNDING_FAILURE_CODES } from "@nautilo/types";
 
 import {
   dualTaskPreparedCreateRequestV1Schema,
@@ -15,11 +16,13 @@ import {
 } from "../../src/browser.ts";
 import {
   taskContentDetailV1Schema,
+  taskContentListV1Schema,
   taskContentSummaryV1Schema,
 } from "../../src/schemas/protected-task.ts";
 
 const TASK_ID = "91000000-0000-4000-8000-000000000001";
 const NAMESPACE_ID = "91000000-0000-4000-8000-000000000002";
+const TASK_RUN_ID = "91000000-0000-4000-8000-000000000003";
 
 function createRequest(): ProtectedTaskPreparedCreateRequestV1 {
   return {
@@ -254,6 +257,136 @@ const protectedSummary = {
 };
 
 describe("Task content v1 response schemas", () => {
+  test("parses classified funding failures in Task lists without widening the strict wire shape", () => {
+    const fundingFailedSummary = {
+      ...protectedSummary,
+      status: "paused",
+      fundingFailure: "personal_credential_stale" as const,
+      content: {
+        dtoVersion: 1 as const,
+        status: "ordinary" as const,
+        promptPreview: "Personal-key Task",
+        lastError: "personal_credential_stale",
+      },
+    };
+
+    const [parsed] = taskContentListV1Schema.parse([fundingFailedSummary]);
+    if (!parsed) throw new Error("funding-failed Task list row missing");
+    expect(parsed.fundingFailure).toBe("personal_credential_stale");
+    for (const fundingFailure of TASK_FUNDING_FAILURE_CODES) {
+      expect(taskContentListV1Schema.parse([{
+        ...fundingFailedSummary,
+        fundingFailure,
+      }])[0]?.fundingFailure).toBe(fundingFailure);
+    }
+    expect(taskContentListV1Schema.parse([{
+      ...fundingFailedSummary,
+      fundingFailure: null,
+    }])[0]?.fundingFailure).toBeNull();
+
+    expect(() => taskContentListV1Schema.parse([{
+      ...fundingFailedSummary,
+      fundingFailure: "provider_api_key_exposed",
+    }])).toThrow();
+    expect(() => taskContentListV1Schema.parse([{
+      ...fundingFailedSummary,
+      apiKey: "must-not-cross",
+    }])).toThrow();
+  });
+
+  test("parses Task detail run funding sources and classified failure reasons", () => {
+    const detail = {
+      task: {
+        id: TASK_ID,
+        parentTaskId: null,
+        depth: 0,
+        status: "paused",
+        preset: "task",
+        scheduleKind: "now",
+        nextFireAt: null,
+        callingRoomId: null,
+        fundingFailure: "personal_provider_unavailable" as const,
+        cron: null,
+        runAt: null,
+        timezone: "UTC",
+        targetChat: "orphan",
+        resultDelivery: "raw",
+        useScope: false,
+        scopeId: null,
+        toolsMode: "none",
+        toolsWhitelist: [],
+        selectionProfile: "balanced" as const,
+        selectionSpec: null,
+        requestedModelId: "openrouter:moonshotai/kimi-k3",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:01:00.000Z",
+      },
+      definition: {
+        dtoVersion: 1 as const,
+        status: "ordinary" as const,
+        prompt: "Use my provider key.",
+        expectedOutput: null,
+        lastError: "personal_provider_unavailable",
+      },
+      runs: [{
+        id: TASK_RUN_ID,
+        status: "paused",
+        modelId: "openrouter:moonshotai/kimi-k3",
+        fundingSource: "personal" as const,
+        fundingFailure: "personal_provider_unavailable" as const,
+        startedAt: "2026-01-01T00:00:01.000Z",
+        completedAt: null,
+        content: {
+          dtoVersion: 1 as const,
+          status: "ordinary" as const,
+          resultText: null,
+          lastError: "personal_provider_unavailable",
+          transcript: [],
+        },
+      }, {
+        id: "91000000-0000-4000-8000-000000000004",
+        status: "paused",
+        modelId: "anthropic:claude-sonnet-4-6",
+        fundingSource: "server" as const,
+        fundingFailure: "funding_interrupted_uncertain" as const,
+        startedAt: "2026-01-01T00:02:00.000Z",
+        completedAt: null,
+        content: {
+          dtoVersion: 1 as const,
+          status: "ordinary" as const,
+          resultText: null,
+          lastError: "funding_interrupted_uncertain",
+          transcript: [],
+        },
+      }],
+    };
+
+    const parsed = taskContentDetailV1Schema.parse(detail);
+    expect(parsed.task.fundingFailure).toBe("personal_provider_unavailable");
+    expect(parsed.runs.map((run) => ({
+      source: run.fundingSource,
+      failure: run.fundingFailure,
+    }))).toEqual([
+      { source: "personal", failure: "personal_provider_unavailable" },
+      { source: "server", failure: "funding_interrupted_uncertain" },
+    ]);
+    const nullable = taskContentDetailV1Schema.parse({
+      ...detail,
+      runs: [{
+        ...detail.runs[0],
+        fundingSource: null,
+        fundingFailure: null,
+      }],
+    });
+    expect(nullable.runs[0]?.fundingSource).toBeNull();
+    expect(nullable.runs[0]?.fundingFailure).toBeNull();
+
+    expect(() => taskContentDetailV1Schema.parse({
+      ...detail,
+      runs: [{ ...detail.runs[0], apiKey: "must-not-cross" }],
+    })).toThrow();
+  });
+
   test("rejects plaintext fields at every protected projection boundary", () => {
     expect(taskContentSummaryV1Schema.parse(protectedSummary).content.status)
       .toBe("protected");

@@ -16,7 +16,7 @@ const { resolveTargetRoom } = await import("../../src/tasks/resolve-target-room"
 function task(overrides: Partial<Task> = {}): Task {
   return { id: "task", ownerId: "owner", requestorId: "owner", agentId: "agent", preset: "ask_peer",
     targetChat: "last_dm", targetChatHandle: "@mutable", targetRoomId: null,
-    targetUserIds: ["owner", peerUser], metadata: { ordinaryArtifactPeer: true, expectedArtifactPeerActorId: peerActor },
+    targetUserIds: ["owner", peerUser], fundingMode: "legacy_server", metadata: { ordinaryArtifactPeer: true, expectedArtifactPeerActorId: peerActor },
     ...overrides } as Task;
 }
 function dbWith(rows: unknown[][]) {

@@ -31,14 +31,40 @@ const prepareProtected = mock(async (
 ): Promise<PrepareClaimedProtectedTaskOccurrenceResult> => ({ status: "stale" }));
 const reschedule = mock(async (_db: DirectDatabase, _taskId: string, _next: Date) => {});
 const timedOut = mock(async (_db: DirectDatabase, _now: Date) => []);
+const interruptedBoundary = mock(async (
+  _db: DirectDatabase,
+): Promise<{ startedAt: string; runId: string } | undefined> => undefined);
+const listInterrupted = mock(async (
+  _db: DirectDatabase,
+  _options: {
+    limit: number;
+    through: { startedAt: string; runId: string };
+    after?: { startedAt: string; runId: string };
+  },
+): Promise<Array<{
+  task: Task;
+  run: TaskRun;
+  cursor: { startedAt: string; runId: string };
+}>> => []);
+const reconcileInterrupted = mock(async (
+  _db: DirectDatabase,
+  _input: { taskId: string; taskRunId: string },
+) => ({ transitioned: true }));
 mock.module("@nautilo/db", () => ({
   ...database,
+  clearStaleFireLocks: async () => 0,
   claimDueTasks: claimPlain,
   claimDueProtectedTasks: claimProtected,
   listProtectedAwaitingTaskRunsForAuthorization: listAwaiting,
   prepareClaimedProtectedTaskOccurrence: prepareProtected,
   rescheduleCron: reschedule,
   findTimedOutRunningTasks: timedOut,
+  getCallerFundedRunningTaskRunRestartBoundary: interruptedBoundary,
+  listCallerFundedRunningTaskRunsForRestart: listInterrupted,
+  reconcileCallerFundedTaskRunAfterRestart: reconcileInterrupted,
+  listAwaitingWriterReviewTasks: async () => [],
+  listPendingWriterReviewVerificationTasks: async () => [],
+  listRunningWriterReviewVerificationTasks: async () => [],
 }));
 
 const ordinaryDispatch = mock(async (_task: Task, _deps: unknown) => ({
@@ -97,6 +123,7 @@ function task(overrides: Partial<Task> = {}): Task {
     cryptoAccessRevision: 4,
     cryptoRequiredNamespaceFingerprint: new Uint8Array(32).fill(8),
     cryptoMappingState: "verified",
+    fundingMode: "legacy_server",
     ...overrides,
   } as Task;
 }
@@ -108,8 +135,14 @@ function run(id = EXISTING_RUN_ID): TaskRun {
     jobId: null,
     graphThreadId: `subagent:task:${TASK_ID}:${id}`,
     status: "awaiting",
+    fundingBinding: null,
+    fundingPredecessorRunId: null,
     startedAt: new Date("2026-09-01T09:00:01.000Z"),
   } as TaskRun;
+}
+
+function restartCursor(candidate: TaskRun): { startedAt: string; runId: string } {
+  return { startedAt: candidate.startedAt.toISOString(), runId: candidate.id };
 }
 
 const acceptingGate = {
@@ -129,6 +162,9 @@ beforeEach(() => {
     prepareProtected,
     reschedule,
     timedOut,
+    interruptedBoundary,
+    listInterrupted,
+    reconcileInterrupted,
     ordinaryDispatch,
     dispatchError,
     taskError,
@@ -138,7 +174,94 @@ beforeEach(() => {
   listAwaiting.mockImplementation(async () => []);
   prepareProtected.mockImplementation(async () => ({ status: "stale" as const }));
   timedOut.mockImplementation(async () => []);
+  interruptedBoundary.mockImplementation(async () => undefined);
   ordinaryDispatch.mockImplementation(async () => ({ kind: "dispatched" as const }));
+  listInterrupted.mockImplementation(async () => []);
+  reconcileInterrupted.mockImplementation(async () => ({ transitioned: true }));
+});
+
+test("startup reconciles caller-funded running runs in bounded keyset pages", async () => {
+  const firstRun = {
+    ...run("60000000-0000-4000-8000-000000000006"),
+    status: "running",
+    startedAt: new Date("2026-09-01T09:00:01.000Z"),
+  } as TaskRun;
+  const secondRun = {
+    ...run("60000000-0000-4000-8000-000000000007"),
+    status: "running",
+    startedAt: new Date("2026-09-01T09:00:02.000Z"),
+  } as TaskRun;
+  const callerTask = task({ status: "running", fundingMode: "caller" });
+  interruptedBoundary.mockImplementation(async () => restartCursor(secondRun));
+  listInterrupted.mockImplementation(async (_db, options) => {
+    if (!options.after) return [
+      { task: callerTask, run: firstRun, cursor: restartCursor(firstRun) },
+      { task: callerTask, run: secondRun, cursor: restartCursor(secondRun) },
+    ];
+    return [];
+  });
+  const observer = new TaskObserver({
+    db: {} as never,
+    jobManager: jobManager as never,
+    maintenanceGate: acceptingGate,
+    batch: 2,
+    intervalMs: 60_000,
+  });
+
+  await observer.start();
+  await observer.stop();
+
+  expect(reconcileInterrupted.mock.calls.map((call) => call[1])).toEqual([
+    { taskId: TASK_ID, taskRunId: firstRun.id },
+    { taskId: TASK_ID, taskRunId: secondRun.id },
+  ]);
+  expect(listInterrupted).toHaveBeenCalledTimes(2);
+  expect(listInterrupted.mock.calls[1]?.[1]).toMatchObject({
+    limit: 2,
+    through: restartCursor(secondRun),
+    after: restartCursor(secondRun),
+  });
+  expect(interruptedBoundary).toHaveBeenCalledTimes(1);
+});
+
+test("startup retries a failed caller-funded reconciliation before claiming fresh work", async () => {
+  const interruptedRun = {
+    ...run("60000000-0000-4000-8000-000000000006"),
+    status: "running",
+    startedAt: new Date("2026-09-01T09:00:01.000Z"),
+  } as TaskRun;
+  const callerTask = task({ status: "running", fundingMode: "caller" });
+  interruptedBoundary.mockImplementation(async () => restartCursor(interruptedRun));
+  listInterrupted.mockImplementation(async (_db, options) => options.after
+    ? []
+    : [{ task: callerTask, run: interruptedRun, cursor: restartCursor(interruptedRun) }]);
+  let attempts = 0;
+  const order: string[] = [];
+  reconcileInterrupted.mockImplementation(async () => {
+    attempts += 1;
+    order.push(`reconcile-${attempts}`);
+    if (attempts === 1) throw new Error("transient restart reconciliation failure");
+    return { transitioned: true };
+  });
+  claimPlain.mockImplementation(async () => {
+    order.push("claim");
+    return [];
+  });
+  const observer = new TaskObserver({
+    db: {} as never,
+    jobManager: jobManager as never,
+    maintenanceGate: acceptingGate,
+    intervalMs: 60_000,
+  });
+
+  await observer.start();
+  await observer.stop();
+
+  expect(order).toEqual(["reconcile-1", "reconcile-2", "claim"]);
+  expect(reconcileInterrupted).toHaveBeenCalledTimes(2);
+  expect(listInterrupted.mock.calls[0]?.[1].through)
+    .toBe(listInterrupted.mock.calls[1]?.[1].through);
+  expect(interruptedBoundary).toHaveBeenCalledTimes(1);
 });
 
 test("without a protected port the ordinary observer is unchanged", async () => {

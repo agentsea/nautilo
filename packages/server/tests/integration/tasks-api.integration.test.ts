@@ -54,6 +54,8 @@ import {
   removeTaskReturnBinding,
 } from "@nautilo/runtime";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+import { SELECTION_PROFILES } from "@nautilo/types";
+import { z } from "zod";
 
 let fx: AppFixture;
 let ownerAgentId: string;
@@ -62,6 +64,145 @@ let guest: { userId: string; actorId: string; agentId: string; bearer: string };
 let community: { userId: string; actorId: string; agentId: string; bearer: string };
 
 const FUTURE_RUN_AT = "2035-01-01T00:00:00.000Z";
+
+// Frozen copy of the prior strict content-v1 ordinary wire. This intentionally
+// does not know the funding extension: an old Mobile parser must continue to
+// accept an unopted response from the current server.
+const frozenPriorCounter = z.number().int().nonnegative();
+const frozenPriorTaskPreparationSchema = z.object({
+  stage: z.enum([
+    "preparing_model", "waiting_model", "model_responding", "using_tools",
+    "preparing_scanners", "scanner_started", "scanner_finished", "recording_evidence",
+    "research_ready", "inventory_progress",
+  ]),
+  probe: z.enum(["gitleaks", "osv_scanner", "trivy", "semgrep"]).optional(),
+  filesObserved: frozenPriorCounter.optional(),
+  directoriesObserved: frozenPriorCounter.optional(),
+  activity: z.enum([
+    "reading_source", "searching_source", "mapping_repository", "loading_research",
+    "saving_research", "checkpoint_saved", "review_saved", "hypothesis_saved",
+    "evidence_saved", "finding_saved", "coverage_saved", "validating_report",
+    "recovering_context",
+  ]).optional(),
+  contextRecovery: z.object({
+    pendingInputs: frozenPriorCounter,
+    phase: z.enum(["inactive", "reading", "consolidation_required"]).optional(),
+    recoveredInputBytes: frozenPriorCounter.optional(),
+    retainedUnconsolidatedPages: frozenPriorCounter.optional(),
+  }).strict().optional(),
+  contextPage: z.object({
+    startByte: frozenPriorCounter,
+    endByte: frozenPriorCounter,
+    totalBytes: frozenPriorCounter,
+  }).strict().optional(),
+  research: z.object({
+    unitsTotal: frozenPriorCounter,
+    unitsCompleted: frozenPriorCounter,
+    unitsPending: frozenPriorCounter,
+    filesTotal: frozenPriorCounter,
+    filesAssigned: frozenPriorCounter,
+  }).strict().optional(),
+  researchWork: z.object({
+    role: z.enum(["coordinator", "investigator", "reviewer"]),
+    subject: z.string().optional(),
+    reviewDecision: z.enum(["accepted", "follow_up"]).optional(),
+  }).strict().optional(),
+  taskRunId: z.string(),
+  updatedAt: z.string(),
+}).strict();
+
+const frozenPriorTaskLifecycleSchema = z.object({
+  id: z.string().uuid(),
+  parentTaskId: z.string().uuid().nullable(),
+  depth: z.number().int().nonnegative(),
+  status: z.string(),
+  preset: z.string(),
+  harnessId: z.string().nullable().optional(),
+  canResumeResearch: z.boolean().optional(),
+  preparation: frozenPriorTaskPreparationSchema.optional(),
+  scheduleKind: z.string(),
+  cron: z.string().nullable().optional(),
+  nextFireAt: z.string().nullable(),
+  callingRoomId: z.string().uuid().nullable(),
+  agentId: z.string().nullable().optional(),
+  agentName: z.string().nullable().optional(),
+  targetRoomId: z.string().uuid().nullable().optional(),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+  lastModelId: z.string().nullable().optional(),
+  requestedModelId: z.string().nullable().optional(),
+}).strict();
+
+const frozenPriorOrdinarySummarySchema = frozenPriorTaskLifecycleSchema.extend({
+  content: z.object({
+    dtoVersion: z.literal(1),
+    status: z.literal("ordinary"),
+    promptPreview: z.string(),
+    lastError: z.string().nullable(),
+  }).strict(),
+}).strict();
+
+const frozenPriorTranscriptSchema = z.object({
+  role: z.string(),
+  content: z.string(),
+  toolName: z.string().nullable(),
+  toolCalls: z.array(z.object({
+    name: z.string(),
+    args: z.record(z.string(), z.unknown()),
+    id: z.string().nullable(),
+  }).strict()).nullable(),
+  toolCallId: z.string().optional(),
+  toolStatus: z.enum(["success", "error"]).optional(),
+  createdAt: z.string(),
+}).strict();
+
+const frozenPriorOrdinaryDetailSchema = z.object({
+  task: frozenPriorTaskLifecycleSchema.extend({
+    cron: z.string().nullable(),
+    runAt: z.string().nullable(),
+    timezone: z.string(),
+    targetChat: z.string(),
+    resultDelivery: z.string(),
+    useScope: z.boolean(),
+    scopeId: z.string().uuid().nullable(),
+    toolsMode: z.string(),
+    toolsWhitelist: z.array(z.string()),
+    selectionProfile: z.enum(SELECTION_PROFILES),
+    selectionSpec: z.object({
+      band: z.enum(["privacy", "smart", "cheap"]).optional(),
+      objective: z.enum(["privacy", "smart", "cheap"]),
+      absoluteFloors: z.object({
+        privacy: z.number().optional(),
+        intelligenceRank: z.number().optional(),
+        maxCost: z.number().optional(),
+      }).strict().optional(),
+    }).strict().nullable(),
+    requestedModelId: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  }).strict(),
+  definition: z.object({
+    dtoVersion: z.literal(1),
+    status: z.literal("ordinary"),
+    prompt: z.string(),
+    expectedOutput: z.string().nullable(),
+    lastError: z.string().nullable(),
+  }).strict(),
+  runs: z.array(z.object({
+    id: z.string().uuid(),
+    status: z.string(),
+    modelId: z.string().nullable(),
+    startedAt: z.string().nullable(),
+    completedAt: z.string().nullable(),
+    content: z.object({
+      dtoVersion: z.literal(1),
+      status: z.literal("ordinary"),
+      resultText: z.string().nullable(),
+      lastError: z.string().nullable(),
+      transcript: z.array(frozenPriorTranscriptSchema),
+    }).strict(),
+  }).strict()),
+}).strict();
 
 beforeAll(async () => {
   fx = await setupOwnerAppFixture({
@@ -250,11 +391,14 @@ describe("tasks HTTP API (M146)", () => {
         timezone: "UTC",
         targetChat: "orphan",
         resultDelivery: "raw_and_wake",
-        tools: [],
+        tools: ["search_memory"],
       },
     });
     expect(created.statusCode).toBe(201);
     const taskId = created.json<{ taskId: string }>().taskId;
+    const [definition] = await fx.db.select({ fundingMode: tasks.fundingMode }).from(tasks)
+      .where(eq(tasks.id, taskId)).limit(1);
+    expect(definition?.fundingMode).toBe("legacy_server");
 
     try {
       const assertParity = async (expected: {
@@ -347,6 +491,136 @@ describe("tasks HTTP API (M146)", () => {
       });
     } finally {
       await fx.db.delete(tasks).where(eq(tasks.id, taskId));
+    }
+  });
+
+  test("Task funding metadata is an exact opt-in while the prior strict content wire remains valid", async () => {
+    const [task] = await fx.db.insert(tasks).values({
+      ownerId: fx.ownerId,
+      requestorId: fx.ownerId,
+      agentId: ownerAgentId,
+      prompt: "legacy server-funded scheduled work",
+      status: "paused",
+      lastError: "funding_interrupted_uncertain",
+      scheduleKind: "one_shot",
+      runAt: new Date(FUTURE_RUN_AT),
+      nextFireAt: new Date(FUTURE_RUN_AT),
+      fundingMode: "legacy_server",
+    }).returning({ id: tasks.id });
+    if (!task) throw new Error("Task funding projection seed failed");
+    const [run] = await fx.db.insert(taskRuns).values({
+      taskId: task.id,
+      graphThreadId: `task-funding-wire:${randomUUID()}`,
+      status: "paused",
+      modelId: "anthropic:claude-sonnet-4-6",
+      fundingBinding: null,
+      lastError: "funding_interrupted_uncertain",
+    }).returning({ id: taskRuns.id });
+    if (!run) throw new Error("TaskRun funding projection seed failed");
+
+    try {
+      const bearer = await fx.mintOwnerBearer();
+      const [legacyList, legacyDetail, legacyContentList, legacyContentDetail] =
+        await Promise.all([
+          authedInject(fx.app, { method: "GET", url: "/api/tasks", bearer }),
+          authedInject(fx.app, { method: "GET", url: `/api/tasks/${task.id}`, bearer }),
+          authedInject(fx.app, { method: "GET", url: "/api/tasks/content-v1", bearer }),
+          authedInject(fx.app, {
+            method: "GET",
+            url: `/api/tasks/${task.id}/content-v1`,
+            bearer,
+          }),
+        ]);
+      for (const response of [
+        legacyList,
+        legacyDetail,
+        legacyContentList,
+        legacyContentDetail,
+      ]) {
+        expect(response.statusCode, response.body).toBe(200);
+      }
+
+      const legacyRow = legacyList.json<Array<Record<string, unknown>>>()
+        .find((row) => row["id"] === task.id);
+      const legacyRun = legacyDetail.json<{ runs: Array<Record<string, unknown>> }>()
+        .runs.find((row) => row["id"] === run.id);
+      const legacyContentRow = legacyContentList
+        .json<Array<Record<string, unknown>>>()
+        .find((row) => row["id"] === task.id);
+      const legacyContentBody = legacyContentDetail.json<unknown>();
+      expect(legacyRow).toBeDefined();
+      expect(legacyRun).toBeDefined();
+      expect(legacyContentRow).toBeDefined();
+      for (const projection of [legacyRow, legacyRun, legacyContentRow]) {
+        expect(projection).not.toHaveProperty("fundingSource");
+        expect(projection).not.toHaveProperty("fundingFailure");
+      }
+      expect(legacyContentBody).not.toHaveProperty("task.fundingFailure");
+      expect(legacyContentBody).not.toHaveProperty("runs.0.fundingSource");
+      expect(legacyContentBody).not.toHaveProperty("runs.0.fundingFailure");
+      frozenPriorOrdinarySummarySchema.parse(legacyContentRow);
+      frozenPriorOrdinaryDetailSchema.parse(legacyContentBody);
+
+      const exactFalse = await authedInject(fx.app, {
+        method: "GET",
+        url: "/api/tasks/content-v1?includeFunding=TRUE",
+        bearer,
+      });
+      expect(exactFalse.statusCode, exactFalse.body).toBe(200);
+      const exactFalseRow = exactFalse.json<Array<Record<string, unknown>>>()
+        .find((row) => row["id"] === task.id);
+      frozenPriorOrdinarySummarySchema.parse(exactFalseRow);
+
+      const [currentList, currentDetail, currentContentList, currentContentDetail] =
+        await Promise.all([
+          authedInject(fx.app, {
+            method: "GET",
+            url: "/api/tasks?includeFunding=true",
+            bearer,
+          }),
+          authedInject(fx.app, {
+            method: "GET",
+            url: `/api/tasks/${task.id}?includeFunding=true`,
+            bearer,
+          }),
+          authedInject(fx.app, {
+            method: "GET",
+            url: "/api/tasks/content-v1?includeFunding=true",
+            bearer,
+          }),
+          authedInject(fx.app, {
+            method: "GET",
+            url: `/api/tasks/${task.id}/content-v1?includeFunding=true`,
+            bearer,
+          }),
+        ]);
+      const currentRow = currentList.json<Array<Record<string, unknown>>>()
+        .find((row) => row["id"] === task.id);
+      const currentRun = currentDetail.json<{ runs: Array<Record<string, unknown>> }>()
+        .runs.find((row) => row["id"] === run.id);
+      const currentContentRow = currentContentList
+        .json<Array<Record<string, unknown>>>()
+        .find((row) => row["id"] === task.id);
+      const currentContentBody = currentContentDetail.json<{
+        task: Record<string, unknown>;
+        runs: Array<Record<string, unknown>>;
+      }>();
+      expect(currentRow?.["fundingFailure"]).toBe("funding_interrupted_uncertain");
+      expect(currentRun).toMatchObject({
+        fundingSource: "server",
+        fundingFailure: "funding_interrupted_uncertain",
+      });
+      expect(currentContentRow?.["fundingFailure"])
+        .toBe("funding_interrupted_uncertain");
+      expect(currentContentBody.task["fundingFailure"])
+        .toBe("funding_interrupted_uncertain");
+      expect(currentContentBody.runs.find((row) => row["id"] === run.id))
+        .toMatchObject({
+          fundingSource: "server",
+          fundingFailure: "funding_interrupted_uncertain",
+        });
+    } finally {
+      await fx.db.delete(tasks).where(eq(tasks.id, task.id));
     }
   });
 
@@ -1252,6 +1526,87 @@ describe("tasks HTTP API (M146)", () => {
     expect(new Date(patched.nextFireAt!).getUTCHours()).toBe(17);
 
     await fx.db.delete(tasks).where(eq(tasks.id, taskId));
+  });
+
+  test("PATCH clears the memoized target Room when the target mode changes", async () => {
+    const [seeded] = await fx.db.insert(tasks).values({
+      ownerId: fx.ownerId,
+      requestorId: fx.ownerId,
+      agentId: ownerAgentId,
+      prompt: "retarget this Task",
+      status: "pending",
+      scheduleKind: "one_shot",
+      runAt: new Date(FUTURE_RUN_AT),
+      nextFireAt: new Date(FUTURE_RUN_AT),
+      targetChat: "last_in_namespace",
+      targetRoomId: fx.defaultRoomId!,
+    }).returning({ id: tasks.id });
+    if (!seeded) throw new Error("target-change Task seed failed");
+
+    try {
+      const response = await authedInject(fx.app, {
+        method: "PATCH",
+        url: `/api/tasks/${seeded.id}`,
+        bearer: await fx.mintOwnerBearer(),
+        payload: { targetChat: "orphan" },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      const [updated] = await fx.db.select({
+        targetChat: tasks.targetChat,
+        targetRoomId: tasks.targetRoomId,
+      }).from(tasks).where(eq(tasks.id, seeded.id));
+      expect(updated).toEqual({ targetChat: "orphan", targetRoomId: null });
+    } finally {
+      await fx.db.delete(tasks).where(eq(tasks.id, seeded.id));
+    }
+  });
+
+  test("PATCH rejects retargeting a caller-funded resumable Task before writing", async () => {
+    const [seeded] = await fx.db.insert(tasks).values({
+      ownerId: fx.ownerId,
+      requestorId: fx.ownerId,
+      agentId: ownerAgentId,
+      prompt: "preserve this resumable Task",
+      status: "paused",
+      scheduleKind: "one_shot",
+      runAt: new Date(FUTURE_RUN_AT),
+      nextFireAt: new Date(FUTURE_RUN_AT),
+      targetChat: "last_in_namespace",
+      targetRoomId: fx.defaultRoomId!,
+      callingRoomId: fx.defaultRoomId!,
+      fundingMode: "caller",
+      toolsMode: "none",
+      toolsWhitelist: [],
+    }).returning({ id: tasks.id });
+    if (!seeded) throw new Error("resumable target-change Task seed failed");
+    await fx.db.insert(taskRuns).values({
+      taskId: seeded.id,
+      graphThreadId: `task-target-change:${randomUUID()}`,
+      status: "paused",
+      modelId: "openrouter:moonshotai/kimi-k3",
+      fundingBinding: { kind: "server", providerRoute: "openrouter" },
+    });
+
+    try {
+      const response = await authedInject(fx.app, {
+        method: "PATCH",
+        url: `/api/tasks/${seeded.id}`,
+        bearer: await fx.mintOwnerBearer(),
+        payload: { targetChat: "orphan" },
+      });
+      expect(response.statusCode, response.body).toBe(409);
+      expect(JSON.parse(response.body)).toEqual({ error: "funding_source_changed" });
+      const [unchanged] = await fx.db.select({
+        targetChat: tasks.targetChat,
+        targetRoomId: tasks.targetRoomId,
+      }).from(tasks).where(eq(tasks.id, seeded.id));
+      expect(unchanged).toEqual({
+        targetChat: "last_in_namespace",
+        targetRoomId: fx.defaultRoomId!,
+      });
+    } finally {
+      await fx.db.delete(tasks).where(eq(tasks.id, seeded.id));
+    }
   });
 
   test("GET ?status=completed returns terminal tasks (not [])", async () => {
