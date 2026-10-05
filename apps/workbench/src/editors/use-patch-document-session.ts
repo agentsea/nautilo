@@ -116,6 +116,7 @@ export function usePatchDocumentSession({
   const [autosaveEnabled, setAutosaveEnabledState] = useState(getAutosaveEnabled);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [conflict, setConflict] = useState<PatchEditorConflict | null>(null);
+  const [conflictLoadError, setConflictLoadError] = useState<string | null>(null);
 
   const draftRef = useRef(initialContent);
   const baseContentRef = useRef(initialContent);
@@ -134,6 +135,7 @@ export function usePatchDocumentSession({
   const changedReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const patchInFlightRef = useRef(false);
   const patchQueuedRef = useRef(false);
+  const runQueuedPatchRef = useRef<(checkpoint: boolean) => Promise<boolean>>(() => Promise.resolve(false));
   const ownMutationIdsRef = useRef(new Set<string>());
   const conflictLatestRef = useRef<{
     content: string;
@@ -190,6 +192,7 @@ export function usePatchDocumentSession({
     setStatus("idle");
     setErrorMessage(null);
     setConflict(null);
+    setConflictLoadError(null);
     setLastSavedAt(null);
     if (debounceTimerRef.current !== null) {
       clearTimeout(debounceTimerRef.current);
@@ -222,19 +225,30 @@ export function usePatchDocumentSession({
   }, []);
 
   const enterConflict = useCallback(
-    async (currentSha256: string | null, generation: number) => {
-      const nextConflict = {
+    async (
+      currentSha256: string | null,
+      generation: number,
+      loadedLatest?: Extract<LoadEditableTextResult, { kind: "ready" }>,
+    ) => {
+      if (generation !== patchGenerationRef.current) return;
+      const nextConflict: PatchEditorConflict = {
         latestContent: null,
         currentSha256,
       };
       conflictRef.current = nextConflict;
+      setConflictLoadError(null);
       setStatus("conflict");
       setConflict(nextConflict);
       conflictLatestRef.current = null;
 
-      if (!loadLatest) return;
-
-      const latest = await loadLatest();
+      let latest: LoadEditableTextResult;
+      try {
+        latest = loadedLatest ?? (loadLatest
+          ? await loadLatest()
+          : { kind: "error", message: "Could not reload document." });
+      } catch (err) {
+        latest = { kind: "error", message: err instanceof Error ? err.message : "Could not reload document." };
+      }
       if (generation !== patchGenerationRef.current) return;
       if (latest.kind === "ready") {
         conflictLatestRef.current = {
@@ -248,6 +262,8 @@ export function usePatchDocumentSession({
         };
         conflictRef.current = resolvedConflict;
         setConflict(resolvedConflict);
+      } else {
+        setConflictLoadError(latest.kind === "error" ? latest.message : "Latest version is too large to edit.");
       }
     },
     [loadLatest],
@@ -283,6 +299,7 @@ export function usePatchDocumentSession({
         setDraft(merge.text);
         conflictRef.current = null;
         setConflict(null);
+        setConflictLoadError(null);
         conflictLatestRef.current = null;
         syncDirty();
         if (generation !== patchGenerationRef.current) return true;
@@ -294,7 +311,7 @@ export function usePatchDocumentSession({
         return true;
       }
 
-      await enterConflict(latest.baseSha256, generation);
+      await enterConflict(latest.baseSha256, generation, latest);
       return false;
     },
     [enterConflict, syncDirty],
@@ -371,6 +388,7 @@ export function usePatchDocumentSession({
 
       conflictRef.current = null;
       setConflict(null);
+      setConflictLoadError(null);
       conflictLatestRef.current = null;
       setErrorMessage(null);
 
@@ -421,6 +439,7 @@ export function usePatchDocumentSession({
         setLastSavedAt(new Date());
         setErrorMessage(null);
         setConflict(null);
+        setConflictLoadError(null);
         conflictRef.current = null;
         conflictLatestRef.current = null;
         offlineQueuedRef.current = false;
@@ -452,64 +471,75 @@ export function usePatchDocumentSession({
 
   const runSnapshotSave = useCallback(
     async (force: boolean, checkpoint: boolean) => {
+      if (patchInFlightRef.current) {
+        patchQueuedRef.current = true;
+        return false;
+      }
+      patchInFlightRef.current = true;
       const generation = ++patchGenerationRef.current;
       const content = draftRef.current;
+      const base = force
+        ? { sha256: null, revision: null }
+        : { sha256: baseShaRef.current, revision: baseRevisionRef.current };
       setStatus("patching");
       setErrorMessage(null);
 
       const clientMutationId = newClientMutationId();
       ownMutationIdsRef.current.add(clientMutationId);
       registerLocalArtifactSaveMutation(clientMutationId);
-      if (file.kind === "fs") {
-        registerLocalFsSaveSha(file.path, await sha256HexForText(content));
-      }
-
-      const result = await saveEditableText(
-        file,
-        content,
-        force ? { sha256: null, revision: null } : { sha256: baseShaRef.current, revision: baseRevisionRef.current },
-        checkpoint,
-        { clientMutationId },
-      );
-      settleLocalArtifactSaveMutation(clientMutationId, result.kind === "saved");
-      if (result.kind !== "saved") {
-        ownMutationIdsRef.current.delete(clientMutationId);
-      }
-
-      if (generation !== patchGenerationRef.current) return false;
-
-      if (result.kind === "saved") {
-        baseContentRef.current = content;
-        draftRef.current = content;
-        baseShaRef.current = result.newSha256;
-        if (result.revision !== undefined) {
-          baseRevisionRef.current = result.revision;
+      let saved = false;
+      try {
+        if (file.kind === "fs") {
+          registerLocalFsSaveSha(file.path, await sha256HexForText(content));
         }
-        conflictLatestRef.current = null;
-        conflictRef.current = null;
-        setDirty(false);
-        setConflict(null);
-        setErrorMessage(null);
-        setStatus("saved");
-        setLastSavedAt(new Date());
-        return true;
-      }
+        const result = await saveEditableText(file, content, base, checkpoint, { clientMutationId });
+        saved = result.kind === "saved";
+        settleLocalArtifactSaveMutation(clientMutationId, saved);
+        if (!saved) ownMutationIdsRef.current.delete(clientMutationId);
+        if (generation !== patchGenerationRef.current) return false;
 
-      if (result.kind === "conflict") {
-        await enterConflict(result.currentSha256, generation);
+        if (result.kind === "saved") {
+          // The receipt acknowledges only the sent bytes. Typing and paste
+          // events during this write still belong to the retained human draft.
+          baseContentRef.current = content;
+          baseShaRef.current = result.newSha256;
+          if (result.revision !== undefined) baseRevisionRef.current = result.revision;
+          conflictLatestRef.current = null;
+          conflictRef.current = null;
+          setConflict(null);
+          setConflictLoadError(null);
+          setErrorMessage(null);
+          offlineQueuedRef.current = false;
+          const isDirty = syncDirty();
+          setStatus(isDirty ? "unsaved" : "saved");
+          setLastSavedAt(new Date());
+          if (isDirty && autosaveEnabledRef.current) patchQueuedRef.current = true;
+          return !isDirty;
+        }
+
+        if (result.kind === "conflict") {
+          await enterConflict(result.currentSha256, generation);
+          return false;
+        }
+        setStatus("failed");
+        setErrorMessage(result.message);
+        if (conflictRef.current?.latestContent === null) {
+          setConflictLoadError("Latest version is unavailable. Retry loading it.");
+        }
         return false;
+      } finally {
+        // A failed/uncertain snapshot must preserve the draft for explicit
+        // recovery rather than replaying a queued mutation automatically.
+        if (!saved || draftRef.current === baseContentRef.current) patchQueuedRef.current = false;
+        finishPatchQueue((nextCheckpoint) => runQueuedPatchRef.current(nextCheckpoint));
       }
-
-      setStatus("failed");
-      setErrorMessage(result.message);
-      return false;
     },
-    [enterConflict, file],
+    [enterConflict, file, finishPatchQueue, syncDirty],
   );
 
   const runFsPatch = useCallback(
     async (checkpoint: boolean) => {
-      if (file.kind !== "fs") return false;
+      if (file.kind !== "fs" || conflictRef.current !== null) return false;
 
       if (patchInFlightRef.current) {
         patchQueuedRef.current = true;
@@ -609,6 +639,7 @@ export function usePatchDocumentSession({
             setLastSavedAt(new Date());
             setErrorMessage(null);
             setConflict(null);
+            setConflictLoadError(null);
             conflictRef.current = null;
             conflictLatestRef.current = null;
             offlineQueuedRef.current = false;
@@ -676,7 +707,7 @@ export function usePatchDocumentSession({
 
   const runArtifactPatch = useCallback(
     async (checkpoint: boolean) => {
-      if (file.kind !== "artifact") return false;
+      if (file.kind !== "artifact" || conflictRef.current !== null) return false;
 
       if (patchInFlightRef.current) {
         patchQueuedRef.current = true;
@@ -793,6 +824,10 @@ export function usePatchDocumentSession({
     [file.kind, runArtifactPatch, runFsPatch],
   );
 
+  useEffect(() => {
+    runQueuedPatchRef.current = runPatch;
+  }, [runPatch]);
+
   const scheduleAutosave = useCallback(
     (checkpoint: boolean) => {
       clearDebounce();
@@ -865,6 +900,7 @@ export function usePatchDocumentSession({
 
   const keepMine = useCallback(async () => {
     clearDebounce();
+    if (patchInFlightRef.current) return false;
     if (file.kind === "fs") {
       if (!loadLatest) return false;
       const latest = await loadLatest();
@@ -887,8 +923,9 @@ export function usePatchDocumentSession({
   }, [clearDebounce, file.kind, loadLatest, runSnapshotSave]);
 
   const takeTheirs = useCallback(() => {
+    if (patchInFlightRef.current) return;
     const latest = conflictLatestRef.current?.content ?? conflict?.latestContent;
-    if (!latest) return;
+    if (latest === null || latest === undefined) return;
 
     draftRef.current = latest;
     baseContentRef.current = latest;
@@ -901,6 +938,7 @@ export function usePatchDocumentSession({
     setDirty(false);
     conflictRef.current = null;
     setConflict(null);
+    setConflictLoadError(null);
     conflictLatestRef.current = null;
     setStatus("idle");
     setErrorMessage(null);
@@ -908,10 +946,22 @@ export function usePatchDocumentSession({
 
   const markMergedAndSave = useCallback(() => {
     clearDebounce();
-    conflictRef.current = null;
-    setConflict(null);
-    return runPatch(true);
-  }, [clearDebounce, runPatch]);
+    if (patchInFlightRef.current) return false;
+    const latest = conflictLatestRef.current;
+    if (!latest) return false;
+    baseContentRef.current = latest.content;
+    baseShaRef.current = latest.sha256;
+    baseRevisionRef.current = latest.revision;
+    // Save the human's merged draft against the displayed latest version.
+    // A later competing change must still fail compare-and-swap.
+    return runSnapshotSave(false, true);
+  }, [clearDebounce, runSnapshotSave]);
+
+  const retryConflict = useCallback(async () => {
+    const retained = conflictRef.current;
+    if (!retained || patchInFlightRef.current) return;
+    await enterConflict(retained.currentSha256, ++patchGenerationRef.current);
+  }, [enterConflict]);
 
   const saveCopy = useCallback(async () => {
     const result = await saveConflictCopy(file, draftRef.current);
@@ -1128,12 +1178,15 @@ export function usePatchDocumentSession({
     autosaveEnabled,
     errorMessage,
     conflict,
+    conflictLoading: conflict !== null && conflict.latestContent === null && conflictLoadError === null,
+    conflictLoadError,
     setDraftFromEditor,
     setAutosaveEnabled: updateAutosaveEnabled,
     saveNow,
     keepMine,
     takeTheirs,
     markMergedAndSave,
+    retryConflict,
     saveCopy,
   };
 }

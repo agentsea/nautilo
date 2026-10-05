@@ -1,7 +1,7 @@
 import { reapplyHappyDomGlobals } from "../bun-dom-preload";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { DocumentPatchConflictError } from "@nautilo/api-client/browser";
+import { ConflictError, DocumentPatchConflictError } from "@nautilo/api-client/browser";
 import {
   applyAnchoredTextPatch,
   deriveAnchoredTextPatch,
@@ -271,6 +271,186 @@ function renderPatchSession(
 }
 
 describe("usePatchDocumentSession", () => {
+  test("overlapping initial snapshot saves are serialized", async () => {
+    let complete!: (value: Awaited<ReturnType<typeof saveArtifactMock>>) => void;
+    saveArtifactMock.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const { result } = renderPatchSession("");
+    act(() => result.current.setDraftFromEditor("pasted text\n"));
+    let saving!: Promise<boolean>;
+    await act(async () => {
+      saving = result.current.saveNow({ checkpoint: true });
+      await flushPromises();
+      await result.current.saveNow({ checkpoint: true });
+    });
+    const writeCount = saveArtifactMock.mock.calls.length;
+    await act(async () => {
+      complete({ id: "art-1", revision: 2, size: 12, sha256: "pasted-sha" });
+      await saving;
+      await flushPromises();
+    });
+    expect(writeCount).toBe(1);
+    expect(result.current.status).toBe("saved");
+    expect(result.current.draft).toBe("pasted text\n");
+  });
+
+  test("first-save acknowledgement preserves and saves edits made during the write", async () => {
+    let complete!: (value: Awaited<ReturnType<typeof saveArtifactMock>>) => void;
+    saveArtifactMock.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const { result } = renderPatchSession("");
+    act(() => result.current.setDraftFromEditor("first line\n"));
+    let saving!: Promise<boolean>;
+    await act(async () => {
+      saving = result.current.saveNow({ checkpoint: true });
+      await flushPromises();
+    });
+    act(() => result.current.setDraftFromEditor("first line\nsecond line\n"));
+    await act(async () => {
+      complete({ id: "art-1", revision: 2, size: 11, sha256: "first-sha" });
+      await saving;
+      await flushPromises();
+    });
+    expect(result.current.draft).toBe("first line\nsecond line\n");
+    expect(applyPatchMock).toHaveBeenCalledTimes(1);
+    expect(applyPatchMock.mock.calls[0]?.[1]).toMatchObject({ baseRevision: 2, baseSha256: "first-sha" });
+    expect(result.current.dirty).toBe(false);
+  });
+
+  test("failed conflict reload reports the error and can be retried", async () => {
+    saveArtifactMock.mockImplementationOnce(async () => { throw new ConflictError("remote-sha"); });
+    const loadLatest = mock(async (): Promise<LoadEditableTextResult> => ({ kind: "error", message: "Read failed." }));
+    const { result } = renderPatchSession("", loadLatest);
+    act(() => result.current.setDraftFromEditor("mine\n"));
+    await act(async () => { await result.current.saveNow({ checkpoint: true }); });
+    expect(result.current.status).toBe("conflict");
+    expect(result.current.conflictLoading).toBe(false);
+    expect(result.current.conflictLoadError).toBe("Read failed.");
+    expect(result.current.draft).toBe("mine\n");
+    loadLatest.mockImplementation(async () => readyLoad("", 2));
+    await act(async () => { await result.current.retryConflict(); });
+    expect(result.current.conflict?.latestContent).toBe("");
+    expect(result.current.conflictLoading).toBe(false);
+    expect(result.current.conflictLoadError).toBeNull();
+    act(() => result.current.takeTheirs());
+    expect(result.current.draft).toBe("");
+    expect(result.current.conflict).toBeNull();
+  });
+
+  test("merge and save uses the displayed latest revision for snapshot CAS", async () => {
+    const loadLatest = mock(async (): Promise<LoadEditableTextResult> => readyLoad("remote\n", 3));
+    const { result } = renderPatchSession("base\n", loadLatest);
+    act(() => result.current.setDraftFromEditor("mine\n"));
+    await act(async () => { await artifactEventOptions?.onReconnect?.(); });
+    expect(result.current.status).toBe("conflict");
+    act(() => result.current.setDraftFromEditor("merged\n"));
+    await act(async () => { await result.current.markMergedAndSave(); });
+    expect(saveArtifactMock.mock.calls.at(-1)?.[2]).toMatchObject({ baseRevision: 3, baseSha256: "sha-remote\n" });
+    expect(result.current.draft).toBe("merged\n");
+    expect(result.current.conflict).toBeNull();
+  });
+
+  test("manual first-save acknowledgement leaves later edits dirty when autosave is off", async () => {
+    let complete!: (value: Awaited<ReturnType<typeof saveArtifactMock>>) => void;
+    saveArtifactMock.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const { result } = renderPatchSession("");
+    act(() => {
+      result.current.setAutosaveEnabled(false);
+      result.current.setDraftFromEditor("first\n");
+    });
+    let saving!: Promise<boolean>;
+    await act(async () => {
+      saving = result.current.saveNow({ checkpoint: true });
+      await flushPromises();
+    });
+    act(() => result.current.setDraftFromEditor("first\nlater\n"));
+    await act(async () => {
+      complete({ id: "art-1", revision: 2, size: 6, sha256: "first-sha" });
+      expect(await saving).toBe(false);
+    });
+    expect(result.current.draft).toBe("first\nlater\n");
+    expect(result.current.dirty).toBe(true);
+    expect(applyPatchMock).toHaveBeenCalledTimes(0);
+    await act(async () => { await result.current.saveNow({ checkpoint: true }); });
+    expect(applyPatchMock.mock.calls[0]?.[1]).toMatchObject({ baseRevision: 2 });
+    expect(applyPatchMock.mock.calls[0]?.[1]?.patch.newString).toContain("later");
+  });
+
+  test("merge loses a second CAS race without discarding the merged draft", async () => {
+    const loadLatest = mock(async (): Promise<LoadEditableTextResult> => readyLoad("remote\n", 3));
+    const { result } = renderPatchSession("base\n", loadLatest);
+    act(() => result.current.setDraftFromEditor("mine\n"));
+    await act(async () => { await artifactEventOptions?.onReconnect?.(); });
+    act(() => result.current.setDraftFromEditor("merged\n"));
+    saveArtifactMock.mockImplementationOnce(async () => { throw new ConflictError("new-remote-sha"); });
+    loadLatest.mockImplementation(async () => readyLoad("new remote\n", 4));
+    await act(async () => { expect(await result.current.markMergedAndSave()).toBe(false); });
+    expect(result.current.status).toBe("conflict");
+    expect(result.current.draft).toBe("merged\n");
+    expect(result.current.conflict?.latestContent).toBe("new remote\n");
+    expect(result.current.dirty).toBe(true);
+    expect(saveArtifactMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("thrown latest-version reads remain recoverable without another autosave", async () => {
+    const loadLatest = mock(async (): Promise<LoadEditableTextResult> => readyLoad("remote\n", 3));
+    const { result } = renderPatchSession("base\n", loadLatest);
+    act(() => result.current.setDraftFromEditor("mine\n"));
+    await act(async () => { await artifactEventOptions?.onReconnect?.(); });
+    expect(loadLatest).toHaveBeenCalledTimes(1);
+    loadLatest.mockImplementation(async () => { throw new Error("Connection lost."); });
+    await act(async () => { await result.current.retryConflict(); });
+    expect(result.current.conflictLoading).toBe(false);
+    expect(result.current.conflictLoadError).toBe("Connection lost.");
+    await act(async () => {
+      flushTimers();
+      await result.current.saveNow({ checkpoint: true });
+    });
+    expect(applyPatchMock).toHaveBeenCalledTimes(0);
+    expect(saveArtifactMock).toHaveBeenCalledTimes(0);
+    expect(result.current.draft).toBe("mine\n");
+  });
+
+  test("Keep Mine recovers after a failed latest read while ordinary save remains blocked", async () => {
+    saveArtifactMock.mockImplementationOnce(async () => { throw new ConflictError("remote-sha"); });
+    const loadLatest = mock(async (): Promise<LoadEditableTextResult> => ({ kind: "error", message: "Read failed." }));
+    const { result } = renderPatchSession("", loadLatest);
+    act(() => result.current.setDraftFromEditor("retained paste\n"));
+    await act(async () => { await result.current.saveNow({ checkpoint: true }); });
+    expect(result.current.status).toBe("conflict");
+    await act(async () => { expect(await result.current.saveNow({ checkpoint: true })).toBe(false); });
+    expect(saveArtifactMock).toHaveBeenCalledTimes(1);
+    await act(async () => { expect(await result.current.keepMine()).toBe(true); });
+    expect(saveArtifactMock).toHaveBeenCalledTimes(2);
+    expect(saveArtifactMock.mock.calls.at(-1)?.[2]).toMatchObject({ baseRevision: null, baseSha256: null });
+    expect(result.current.draft).toBe("retained paste\n");
+    expect(result.current.conflict).toBeNull();
+    expect(result.current.status).toBe("saved");
+  });
+
+  test("failed Keep Mine does not leave a superseded latest-version read loading forever", async () => {
+    const loadLatest = mock(async (): Promise<LoadEditableTextResult> => readyLoad("remote\n", 3));
+    const { result } = renderPatchSession("base\n", loadLatest);
+    act(() => result.current.setDraftFromEditor("mine\n"));
+    await act(async () => { await artifactEventOptions?.onReconnect?.(); });
+    let complete!: (value: LoadEditableTextResult) => void;
+    loadLatest.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    let retrying!: Promise<void>;
+    await act(async () => {
+      retrying = result.current.retryConflict();
+      await flushPromises();
+    });
+    expect(result.current.conflictLoading).toBe(true);
+    saveArtifactMock.mockImplementationOnce(async () => { throw new Error("Save failed."); });
+    await act(async () => { expect(await result.current.keepMine()).toBe(false); });
+    await act(async () => {
+      complete(readyLoad("outdated read\n", 3));
+      await retrying;
+    });
+    expect(result.current.conflictLoading).toBe(false);
+    expect(result.current.conflictLoadError).toBeTruthy();
+    expect(result.current.draft).toBe("mine\n");
+    expect(result.current.conflict?.latestContent).toBeNull();
+  });
+
   test("local edit sends patch, not saveWorkspaceArtifactContent", async () => {
     const { result } = renderPatchSession();
 
