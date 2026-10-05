@@ -1,4 +1,4 @@
-/** Targeted D486 mutation gate for the Electron-owned authority boundary. */
+/** Targeted mutation gate for the Electron-owned authority boundary. */
 export default {
   mutate: [
     "apps/desktop/electron/workstation-shell-consent-store.ts:83-142",

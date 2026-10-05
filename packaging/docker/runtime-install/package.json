@@ -47,6 +47,7 @@
     "packages/writer-proposal-core"
   ],
   "overrides": {
+    "@fastify/busboy": "3.2.1",
     "@hono/node-server": "1.19.15",
     "@langchain/langgraph-checkpoint": "1.0.1",
     "@langchain/openai": "1.4.5",

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { ApiError, NautiloApiClient } from "../../src/client";
+import { ApiError, InviteShareApiError, NautiloApiClient } from "../../src/client";
 
 function reqUrl(input: Parameters<typeof fetch>[0]): string {
   return typeof input === "string" ? input : (input as URL).toString();
@@ -75,6 +75,7 @@ describe("NautiloApiClient invite list + revoke (M106)", () => {
               targetRoomId: null,
               targetRoomLabel: null,
               targetRoleSlug: "member",
+              codeAvailable: true,
             },
             {
               id: "claim_1",
@@ -88,6 +89,7 @@ describe("NautiloApiClient invite list + revoke (M106)", () => {
               targetRoomId: null,
               targetRoomLabel: null,
               targetRoleSlug: "owner",
+              codeAvailable: false,
             },
           ],
           page: {
@@ -162,6 +164,96 @@ describe("NautiloApiClient invite list + revoke (M106)", () => {
       nextCursor: null,
       continuationAvailable: false,
     });
+  });
+
+  test("getInviteShare returns a validated code and exposes an unavailable error code", async () => {
+    const client = new NautiloApiClient(base);
+    client.setToken("t");
+    let unavailable = false;
+
+    globalThis.fetch = (async (url: Parameters<typeof fetch>[0]) => {
+      expect(reqUrl(url)).toBe(`${base}/api/invites/invite%2Fid/share`);
+      if (unavailable) {
+        return new Response(JSON.stringify({
+          error: "invite_code_unavailable",
+          code: "invite_code_unavailable",
+        }), {
+          status: 409,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({
+        code: "inv_secret",
+        url: "https://nautilo.example/redeem/inv_secret",
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    expect(await client.getInviteShare("invite/id")).toEqual({
+      code: "inv_secret",
+      url: "https://nautilo.example/redeem/inv_secret",
+    });
+
+    unavailable = true;
+    try {
+      await client.getInviteShare("invite/id");
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(InviteShareApiError);
+      expect(error).toMatchObject({
+        status: 409,
+        code: "invite_code_unavailable",
+      });
+    }
+  });
+
+  test("public join selection GET and PUT use the admin contract", async () => {
+    const client = new NautiloApiClient(base);
+    client.setToken("t");
+    const calls: Array<{ url: string; method: string; body: unknown }> = [];
+
+    globalThis.fetch = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = typeof init?.body === "string"
+        ? JSON.parse(init.body) as unknown
+        : null;
+      calls.push({
+        url: reqUrl(url),
+        method: init?.method ?? "GET",
+        body,
+      });
+      return new Response(JSON.stringify({
+        inviteId: calls.length === 1 ? null : "invite-id",
+        revision: calls.length,
+        joinUrl: "https://nautilo.example/join",
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    expect(await client.getPublicJoinSelection()).toEqual({
+      inviteId: null,
+      revision: 1,
+      joinUrl: "https://nautilo.example/join",
+    });
+    expect(await client.updatePublicJoinSelection({
+      inviteId: "invite-id",
+      revision: 1,
+    })).toEqual({
+      inviteId: "invite-id",
+      revision: 2,
+      joinUrl: "https://nautilo.example/join",
+    });
+    expect(calls).toEqual([
+      { url: `${base}/api/admin/public-join`, method: "GET", body: null },
+      {
+        url: `${base}/api/admin/public-join`,
+        method: "PUT",
+        body: { inviteId: "invite-id", revision: 1 },
+      },
+    ]);
   });
 
   test("listMyInvites 401 throws ApiError(401, Authentication required)", async () => {

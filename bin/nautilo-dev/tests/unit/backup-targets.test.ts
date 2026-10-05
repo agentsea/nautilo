@@ -24,6 +24,11 @@ describe("backup restore target allowlists", () => {
     expect(DATA_TABLES.indexOf("public.users"))
       .toBeLessThan(DATA_TABLES.indexOf("public.soul_generation_attempts"));
   });
+  test("restores the public join selection after its Invite and Human", () => {
+    const child = DATA_TABLES.indexOf("public.server_public_join");
+    expect(DATA_TABLES.indexOf("public.users")).toBeLessThan(child);
+    expect(DATA_TABLES.indexOf("public.invites")).toBeLessThan(child);
+  });
   test("restores moderation authority after its foreign-key parents", () => {
     const parents: Record<string, string[]> = {
       group_moderation_scopes: ["groups", "rooms"],

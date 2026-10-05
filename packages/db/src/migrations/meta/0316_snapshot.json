@@ -1,6 +1,6 @@
 {
-  "id": "864b0a8b-6005-4898-948b-b38365eaab8b",
-  "prevId": "3c1feea5-34d0-4388-8907-abf0b365af60",
+  "id": "6b56a97a-8041-4c6e-b1b3-f5b1216440b0",
+  "prevId": "864b0a8b-6005-4898-948b-b38365eaab8b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -16709,6 +16709,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "funding_predecessor_run_id": {
+          "name": "funding_predecessor_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "result_text": {
           "name": "result_text",
           "type": "text",
@@ -16824,6 +16830,19 @@
           "tableTo": "jobs",
           "columnsFrom": [
             "job_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "task_runs_funding_predecessor_run_id_task_runs_id_fk": {
+          "name": "task_runs_funding_predecessor_run_id_task_runs_id_fk",
+          "tableFrom": "task_runs",
+          "tableTo": "task_runs",
+          "columnsFrom": [
+            "funding_predecessor_run_id"
           ],
           "columnsTo": [
             "id"

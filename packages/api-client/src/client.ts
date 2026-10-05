@@ -1964,6 +1964,18 @@ export interface InviteSummary {
   targetRoomId: string | null;
   targetRoomLabel: string | null;
   targetRoleSlug: string | null;
+  codeAvailable: boolean;
+}
+
+export interface InviteShare {
+  code: string;
+  url: string;
+}
+
+export interface PublicJoinSelection {
+  inviteId: string | null;
+  revision: number;
+  joinUrl: string;
 }
 
 export interface InvitePage {
@@ -2023,6 +2035,18 @@ const inviteSummarySchema = z.object({
   targetRoomId: z.string().nullable(),
   targetRoomLabel: z.string().nullable(),
   targetRoleSlug: z.string().nullable(),
+  codeAvailable: z.boolean(),
+}).strict();
+
+const inviteShareSchema = z.object({
+  code: z.string().min(1),
+  url: z.string().url(),
+}).strict();
+
+const publicJoinSelectionSchema = z.object({
+  inviteId: z.string().nullable(),
+  revision: z.number().int().nonnegative(),
+  joinUrl: z.string().url(),
 }).strict();
 
 const invitePageSchema = z.object({
@@ -2197,6 +2221,13 @@ export class ApiError extends Error {
   ) {
     super(message);
     this.name = "ApiError";
+  }
+}
+
+export class InviteShareApiError extends ApiError {
+  constructor(status: number, readonly code: string) {
+    super(status, code);
+    this.name = "InviteShareApiError";
   }
 }
 
@@ -11207,6 +11238,44 @@ export class NautiloApiClient {
 
   async listMyInvites(): Promise<InviteListResult> {
     return this.listInvites();
+  }
+
+  async getInviteShare(inviteId: string): Promise<InviteShare> {
+    const enc = encodeURIComponent(inviteId);
+    return this.request<InviteShare>({
+      path: `/api/invites/${enc}/share`,
+      schema: inviteShareSchema,
+      defaultErrorPrefix: `GET /api/invites/${inviteId}/share`,
+      statusErrors: {
+        409: (body) => {
+          const code = typeof body["code"] === "string"
+            ? body["code"]
+            : "invite_code_unavailable";
+          return new InviteShareApiError(409, code);
+        },
+      },
+    });
+  }
+
+  async getPublicJoinSelection(): Promise<PublicJoinSelection> {
+    return this.request<PublicJoinSelection>({
+      path: "/api/admin/public-join",
+      schema: publicJoinSelectionSchema,
+      defaultErrorPrefix: "GET /api/admin/public-join",
+    });
+  }
+
+  async updatePublicJoinSelection(input: {
+    inviteId: string | null;
+    revision: number;
+  }): Promise<PublicJoinSelection> {
+    return this.request<PublicJoinSelection>({
+      method: "PUT",
+      path: "/api/admin/public-join",
+      body: input,
+      schema: publicJoinSelectionSchema,
+      defaultErrorPrefix: "PUT /api/admin/public-join",
+    });
   }
 
   async revokeInvite(inviteId: string): Promise<RevokeInviteResult> {

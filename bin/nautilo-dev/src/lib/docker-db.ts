@@ -371,6 +371,8 @@ export const DATA_TABLES = [
   "public.standing_approvals",
   "public.approval_challenges",
   "public.invites",
+  // The public shortcut references an ordinary Invite and its updating Human.
+  "public.server_public_join",
   // M260 — per-Human Invite state; both Invite and User parents are earlier.
   "public.invite_redemptions",
 

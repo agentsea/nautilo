@@ -3,9 +3,9 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const migrations = resolve(import.meta.dir, "../../src/migrations");
-const tag = "0314_high_jean_grey";
+const tag = "0315_high_jean_grey";
 const sql = readFileSync(resolve(migrations, `${tag}.sql`), "utf8");
-const predecessorTag = "0315_rich_callisto";
+const predecessorTag = "0316_rich_callisto";
 const predecessorSql = readFileSync(
   resolve(migrations, `${predecessorTag}.sql`),
   "utf8",
@@ -27,10 +27,10 @@ describe("Task funding storage migration", () => {
     const journal = JSON.parse(
       readFileSync(resolve(migrations, "meta/_journal.json"), "utf8"),
     ) as { entries: Array<{ idx: number; tag: string }> };
-    expect(journal.entries.find((entry) => entry.idx === 314)?.tag).toBe(tag);
+    expect(journal.entries.find((entry) => entry.idx === 315)?.tag).toBe(tag);
 
     const snapshot = JSON.parse(
-      readFileSync(resolve(migrations, "meta/0314_snapshot.json"), "utf8"),
+      readFileSync(resolve(migrations, "meta/0315_snapshot.json"), "utf8"),
     ) as {
       tables: Record<string, {
         columns?: Record<string, {
@@ -72,10 +72,10 @@ describe("Task funding storage migration", () => {
     const journal = JSON.parse(
       readFileSync(resolve(migrations, "meta/_journal.json"), "utf8"),
     ) as { entries: Array<{ idx: number; tag: string }> };
-    expect(journal.entries.find((entry) => entry.idx === 315)?.tag)
+    expect(journal.entries.find((entry) => entry.idx === 316)?.tag)
       .toBe(predecessorTag);
     const snapshot = JSON.parse(
-      readFileSync(resolve(migrations, "meta/0315_snapshot.json"), "utf8"),
+      readFileSync(resolve(migrations, "meta/0316_snapshot.json"), "utf8"),
     ) as {
       tables: Record<string, {
         columns: Record<string, unknown>;

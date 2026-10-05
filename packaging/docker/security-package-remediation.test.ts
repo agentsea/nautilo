@@ -8,6 +8,8 @@ const historical = read("fixtures/server-vulnerability-exceptions-2026-09-11.jso
 const current = read("server-vulnerability-exceptions.input.json");
 const bootstrap = read("bootstrap-vulnerability-policy.input.json");
 const supersededChromiumAdvisories = new Set([
+  "CVE-2026-93372", "CVE-2026-93373", "CVE-2026-93374", "CVE-2026-93375",
+  "CVE-2026-93377", "CVE-2026-93381", "CVE-2026-93382",
   "CVE-2026-87644",
   "CVE-2026-87646",
   "CVE-2026-87648",
@@ -49,7 +51,7 @@ describe("Debian 13 security update and exception retirement", () => {
       }
     }
     expect(fixed).toBe(27); // 28 old decisions: one advisory had two scanner severity identities.
-    expect(current.exceptions).toHaveLength(343);
+    expect(current.exceptions).toHaveLength(333);
     expect(bootstrap.exceptions).toHaveLength(2);
     expect(bootstrap.exceptions[0]).toMatchObject({ advisoryId: "CVE-2026-5435", installedVersion: "2.41-12+deb13u4" });
   });
@@ -60,7 +62,7 @@ describe("Debian 13 security update and exception retirement", () => {
     expect(floors.size).toBe(9);
     for (const entry of current.exceptions) {
       // This historical September 13 review predates these separately tested findings.
-      if (entry.reviewedAt === "2026-10-01T21:39:28Z" || entry.reviewedAt === "2026-10-01T20:28:00Z" || entry.reviewedAt === "2026-09-30T15:20:00Z" ||
+      if (entry.reviewedAt === "2026-10-03T15:15:00Z" || entry.reviewedAt === "2026-10-01T21:39:28Z" || entry.reviewedAt === "2026-10-01T20:28:00Z" || entry.reviewedAt === "2026-09-30T15:20:00Z" ||
           ["CVE-2026-88806", "CVE-2026-88807", "CVE-2026-88372", "CVE-2026-93543"].includes(entry.advisoryId)) continue;
       const p = review.packages.find((p) => p.package === entry.packageName)!;
       const expectedVersion = /^CVE-2026-933(?:72|73|74|75|77|81|82)$/.test(entry.advisoryId)
