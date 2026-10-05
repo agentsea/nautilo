@@ -39,7 +39,11 @@ export function sanitizeMessageForTranscript(message: BaseMessage): BaseMessage 
   const filtered = message.content.filter((block) => !isReasoningContentBlock(block));
   if (filtered.length === message.content.length) return message;
   const content = filtered.length > 0 ? filtered : "";
-  const sanitized = new AIMessage({ content });
+  const sanitized = new AIMessage({
+    content,
+    additional_kwargs: message.additional_kwargs,
+    response_metadata: message.response_metadata,
+  });
   if (message.tool_calls?.length) {
     sanitized.tool_calls = message.tool_calls;
   }

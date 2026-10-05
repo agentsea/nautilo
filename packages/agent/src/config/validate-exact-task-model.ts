@@ -31,6 +31,12 @@ import {
   listResolvedCatalogModels,
   resolveCatalogModel,
 } from "./resolved-catalog";
+import { getCachedServerModelConfigRow } from "@nautilo/db";
+import { resolveProviderKey } from "../resolve-provider-key";
+import {
+  resolveSurplusChatServingAvailability,
+  type QualifiedSurplusChatRoute,
+} from "../providers/surplus-route";
 import type { ResolvedCatalogModel } from "@nautilo/trust";
 import type { SelectionProfile, ComboSpec } from "@nautilo/types";
 
@@ -65,6 +71,12 @@ export interface ValidateExactTaskModelInput {
   allowChinaUpstream?: boolean | undefined;
   /** Override the credential environment (tests / server injection). */
   env?: NodeJS.ProcessEnv | undefined;
+  /** Pure server-funded qualification seam for offline tests. */
+  surplus?: {
+    readonly policyEnabled: boolean;
+    readonly keyConfigured: boolean;
+    readonly routes?: readonly QualifiedSurplusChatRoute[];
+  } | undefined;
 }
 
 /**
@@ -121,10 +133,44 @@ export function validateExactTaskModelSelection(
     requestedModelId,
     options,
   );
+  const serverModelConfig = input.surplus === undefined
+    ? getCachedServerModelConfigRow()
+    : null;
+  const surplusInput = input.surplus ?? {
+    policyEnabled: serverModelConfig?.preferSurplus === true,
+    keyConfigured: resolveProviderKey("surplus") !== null,
+  };
+  const surplus = row.availability === "missing_credentials"
+    ? resolveSurplusChatServingAvailability({
+        catalogModelId: requestedModelId,
+        policyEnabled: surplusInput.policyEnabled,
+        keyConfigured: surplusInput.keyConfigured,
+        fundingKind: "server",
+        ...(surplusInput.routes === undefined ? {} : { routes: surplusInput.routes }),
+      })
+    : null;
+  const taskUsesTools = taskRequiresTools(input.toolsMode, input.toolsWhitelist);
+  if (surplus?.status === "available") {
+    if (taskUsesTools && !surplus.route.supportsTools) {
+      return {
+        code: "capability_mismatch",
+        modelId: requestedModelId,
+        message: `Model "${requestedModelId}" is not qualified for tool-using Tasks through Surplus. Pick a directly configured model or a qualified tool-capable route.`,
+      };
+    }
+    if (row.maxOutputTokens !== null && surplus.route.maxOutputTokens < row.maxOutputTokens) {
+      return {
+        code: "capability_mismatch",
+        modelId: requestedModelId,
+        message: `Model "${requestedModelId}" requires an output budget above its qualified Surplus route. Configure its original provider or pick another exact model.`,
+      };
+    }
+  }
   switch (row.availability) {
     case "selectable":
       break;
     case "missing_credentials":
+      if (surplus?.status === "available") break;
       return {
         code: "missing_credentials",
         modelId: requestedModelId,
@@ -174,7 +220,7 @@ export function validateExactTaskModelSelection(
   // empty whitelist) may use a model whose tool capability is unknown
   // (`null`). Tool-USING tasks (auto, or a non-empty whitelist) require a
   // CONFIRMED `tools === true`; `null`/`false` never satisfies it.
-  if (taskRequiresTools(input.toolsMode, input.toolsWhitelist)) {
+  if (taskUsesTools) {
     if (row.features.tools !== true) {
       return {
         code: "capability_mismatch",
@@ -208,6 +254,24 @@ export function assertExactTaskModelSelection(
         `rejected: ${failure.message}`,
     );
   }
+}
+
+/**
+ * Dispatch/runtime variant that preserves the normalized canonical id after
+ * applying the exact-pin admission gate. Exact Task callers must never infer
+ * or substitute another model when the requested id is absent or unavailable.
+ */
+export function resolveExactTaskModelId(
+  input: ValidateExactTaskModelInput,
+): string {
+  const requestedModelId = normalizeId(input.requestedModelId);
+  if (requestedModelId === null) {
+    throw new Error(
+      `[task-model-selection] exact model_id "?" rejected: An exact Task run requires a non-empty model_id.`,
+    );
+  }
+  assertExactTaskModelSelection({ ...input, requestedModelId });
+  return requestedModelId;
 }
 
 function normalizeId(id: string | null | undefined): string | null {

@@ -479,14 +479,14 @@ describe("createAuthenticatedAdminClient", () => {
   });
 
   test("rejects a cleartext non-loopback Human endpoint", async () => {
-    const profileSpy = spyOn(profileAwareServer, "readActiveProfileName").mockReturnValue(undefined);
+    const activeProfileSpy = spyOn(profileAwareServer, "readActiveProfileName").mockReturnValue(undefined);
     try {
       await expectCode(resolveHumanServer({ serverFlag: "http://server.example" }), "target_mismatch");
       await expectCode(resolveHumanServer({ serverFlag: "https://server.example/path" }), "target_mismatch");
       await expectCode(resolveHumanServer({ serverFlag: "https://user:pass@server.example" }), "target_mismatch");
       await expectCode(resolveHumanServer({ serverFlag: "https://server.example?query=1" }), "target_mismatch");
     } finally {
-      profileSpy.mockRestore();
+      activeProfileSpy.mockRestore();
     }
   });
 

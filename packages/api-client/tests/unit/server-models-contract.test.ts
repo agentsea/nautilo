@@ -6,6 +6,12 @@ function requestUrl(input: Parameters<typeof fetch>[0]): string {
 }
 
 const SAMPLE = {
+  preferSurplus: false,
+  surplus: {
+    keyConfigured: true,
+    policyEnabled: false,
+    chatStatus: "not-qualified" as const,
+  },
   defaultChatModel: "anthropic:claude-sonnet-4-6",
   conductorModel: "google:gemini-3.1-flash-lite-preview",
   stenographerModel: "openai:gpt-5.4-mini",
@@ -142,6 +148,7 @@ describe("admin.serverModels HTTP contract (mocked fetch)", () => {
     const client = new NautiloApiClient("http://127.0.0.1:9");
     client.setToken("tok");
     const out = await client.admin.serverModels.set({
+      preferSurplus: true,
       conductorModel: "google:gemini-3.1-flash-lite-preview",
       stenographerModel: "openai:gpt-5.4-mini",
       reflectionModel: "anthropic:claude-haiku-4-5",
@@ -155,6 +162,7 @@ describe("admin.serverModels HTTP contract (mocked fetch)", () => {
     expect(seenMethod).toBe("POST");
     expect(seenUrl).toBe("http://127.0.0.1:9/api/admin/server-models");
     expect(seenBody).toEqual({
+      preferSurplus: true,
       conductorModel: "google:gemini-3.1-flash-lite-preview",
       stenographerModel: "openai:gpt-5.4-mini",
       reflectionModel: "anthropic:claude-haiku-4-5",

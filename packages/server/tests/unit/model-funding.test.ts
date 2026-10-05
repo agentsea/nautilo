@@ -8,6 +8,7 @@ import {
 import {
   ModelFundingError,
   resolveModelFunding,
+  resolveServerFundingRoute,
   withAdmittedPersonalProviderKey,
   type ModelFundingDeps,
 } from "../../src/lib/model-funding";
@@ -72,6 +73,24 @@ async function code(promise: Promise<unknown>): Promise<string | undefined> {
 }
 
 describe("trusted model funding", () => {
+  test("server route admits only an exact qualified Surplus mapping when direct credentials are absent", () => {
+    const route = {
+      catalogModelId: "venice:openai-gpt-55",
+      surplusModelId: "gpt-5.5",
+      providerPin: "venice" as const,
+      supportsTools: true,
+      supportsVision: false,
+      supportsReasoning: false,
+      maxContextTokens: 100_000,
+      maxOutputTokens: 8_000,
+    };
+    const input = { env: {}, preferSurplus: true, surplusKeyConfigured: true, routes: [route] };
+    expect(resolveServerFundingRoute(route.catalogModelId, input)).toBe("surplus");
+    expect(resolveServerFundingRoute("openai:not-signed", input)).toBeNull();
+    expect(resolveServerFundingRoute(route.catalogModelId, { ...input, preferSurplus: false })).toBeNull();
+    expect(resolveServerFundingRoute(route.catalogModelId, { ...input, surplusKeyConfigured: false })).toBeNull();
+  });
+
   test("native text Tasks admit independently and pin their own source", async () => {
     const h = harness();
     h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
@@ -115,6 +134,7 @@ describe("trusted model funding", () => {
       .toBe("server_credentials_forbidden");
     expect(h.reads).toEqual([]);
   });
+
   test("off switch preserves server route without inspecting personal records", async () => {
     const h = harness();
     h.setEnabled(false);
@@ -160,6 +180,25 @@ describe("trusted model funding", () => {
     });
     expect(h.reads).toEqual([]);
   });
+
+  test.each(["personal_first", "server_first"] as const)(
+    "%s treats Surplus as server funding while preserving personal lookup priority",
+    async (preference) => {
+      const h = harness();
+      h.setFundingPreference(preference);
+      h.setServerRoute("surplus");
+      h.capabilities.set(ALICE, [
+        "use_server_provider_credentials",
+        "use_personal_provider_credentials",
+      ]);
+
+      expect(await resolveModelFunding(request(ALICE), h.deps)).toMatchObject({
+        kind: "server",
+        providerRoute: "surplus",
+      });
+      expect(h.reads).toEqual(preference === "personal_first" ? [`${ALICE}:openrouter`] : []);
+    },
+  );
 
   test.each(["personal_first", "server_first"] as const)(
     "%s keeps each sole funding source usable and denies a route with neither source",

@@ -115,6 +115,28 @@ describe("health-checker", () => {
       .toEqual({ status: "unreachable", detail: "HTTP 500" });
   });
 
+  test("Surplus validates against the authenticated buyer status endpoint", async () => {
+    let seenUrl = "";
+    let seenAuth = "";
+    globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      seenUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      seenAuth = new Headers(init?.headers).get("authorization") ?? "";
+      return Promise.resolve(new Response(JSON.stringify({ balance_micro: 1 }), { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    expect(await checkProviderHealth("surplus", "inf_12345678901234567890"))
+      .toEqual({ status: "verified" });
+    expect(seenUrl).toBe("https://api.surplusintelligence.ai/v1/buyer/me");
+    expect(seenAuth).toBe("Bearer inf_12345678901234567890");
+  });
+
+  test("Surplus authentication failures are invalid without exposing the body", async () => {
+    globalThis.fetch = (async () => new Response("private-provider-body", { status: 401 })) as unknown as typeof fetch;
+    const result = await checkProviderHealth("surplus", "inf_12345678901234567890");
+    expect(result).toEqual({ status: "invalid_key", detail: "401" });
+    expect(JSON.stringify(result)).not.toContain("private-provider-body");
+  });
+
   test("network error maps to unreachable", async () => {
     globalThis.fetch = (async () => {
       throw new Error("ECONNREFUSED");

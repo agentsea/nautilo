@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { SurplusOutcomeUnknownError } from "@nautilo/agent";
 import {
   roomJournalBatches,
   roomJournalState,
@@ -8,6 +9,7 @@ import {
   failCompaction,
   failExtraction,
 } from "../../src/stenographer/repository";
+import { mapModelFailure } from "../../src/stenographer/model-invoker";
 
 const NOW = new Date("2026-08-17T12:00:00.000Z");
 const ROOM_ID = "11111111-1111-4111-8111-111111111111";
@@ -107,7 +109,7 @@ describe("Stenographer failure transitions", () => {
         roomId: ROOM_ID,
         leaseToken: LEASE_TOKEN,
       } as never,
-      errorCode: "provider_outcome_unknown",
+      errorCode: mapModelFailure(new SurplusOutcomeUnknownError()),
       modelId: "openrouter:test-model",
       now: NOW,
       db: state.db as never,
@@ -129,7 +131,7 @@ describe("Stenographer failure transitions", () => {
         leaseToken: LEASE_TOKEN,
         attemptCount: 1,
       } as never,
-      errorCode: "provider_outcome_unknown",
+      errorCode: mapModelFailure(new SurplusOutcomeUnknownError()),
       modelId: "openrouter:test-model",
       now: NOW,
       db: state.db as never,

@@ -45,6 +45,8 @@ import {
   type NoProgressOutcome,
 } from "../graph/no-progress";
 import { isEmptyTerminalResponseError } from "../graph/empty-terminal-response";
+import { SurplusOutcomeUnknownError } from "../providers/surplus-transport";
+import { SurplusDirectFallbackUnavailableError } from "../providers/surplus-route";
 
 /**
  * User-visible error categories. Deliberately a thinner re-grouping
@@ -301,6 +303,24 @@ function isProviderToolSchemaRejectionMessage(message: string): boolean {
  * return it`) here — do NOT silently re-classify.
  */
 export function toFriendlyError(error: unknown): FriendlyError {
+  if (error instanceof SurplusDirectFallbackUnavailableError) {
+    return {
+      message: error.reason === "request-not-qualified"
+        ? "This request uses features or token limits that are not supported for the selected model through Surplus, and the original provider key is not configured. Simplify the request, configure that provider, or choose another available model."
+        : "Surplus could not serve this request, and the selected model's original provider key is not configured. Ask your server administrator to configure that provider or choose another available model.",
+      category: "provider_unavailable",
+      code: "MDL006",
+      detailsForLog: error.code,
+    };
+  }
+  if (error instanceof SurplusOutcomeUnknownError) {
+    return {
+      message: "The model request may have been processed. Check Costs before trying again, or ask your server administrator to review the Surplus request.",
+      category: "unknown",
+      code: "MDL007",
+      detailsForLog: "surplus_outcome_unknown",
+    };
+  }
   if (error instanceof Error && error.name === "OrdinaryContentAccessRetryRequiredError") {
     return {
       message: "The sharing outcome needs verification. Check the original operation before requesting another share; repeating the request could create a different access change.",

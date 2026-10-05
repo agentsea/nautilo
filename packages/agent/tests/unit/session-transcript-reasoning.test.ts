@@ -28,6 +28,17 @@ describe("session transcript reasoning sanitization", () => {
     expect((sanitized.content as Array<{ type?: string; text?: string }>)[0]?.type).toBe("text");
   });
 
+  test("keeps response metadata while stripping reasoning blocks", () => {
+    const sanitized = sanitizeMessageForTranscript(new AIMessage({
+      content: [
+        { type: "reasoning", text: "hidden" },
+        { type: "text", text: "visible" },
+      ],
+      response_metadata: { request_id: "request-1" },
+    }));
+    expect(sanitized.response_metadata).toEqual({ request_id: "request-1" });
+  });
+
   test("persists only a compact marker for delegated browser observations", () => {
     const content = JSON.stringify({ observation: { snapshot: "x".repeat(20_000) } });
     const delegated = new ToolMessage({

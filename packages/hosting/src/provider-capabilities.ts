@@ -21,6 +21,7 @@ export const HOSTING_PROVIDER_ENV_VARS = {
   google: "GOOGLE_API_KEY",
   fireworks: "FIREWORKS_API_KEY",
   venice: "VENICE_API_KEY",
+  surplus: "SURPLUS_API_KEY",
   typesafe: "TYPESAFE_API_KEY",
   elevenlabs: "ELEVENLABS_API_KEY",
   groq: "GROQ_API_KEY",
@@ -109,7 +110,9 @@ interface ProviderDefinition {
 
 /**
  * Current, code-grounded coverage only. OpenRouter and Venice support chat and
- * qualified memory embeddings, but not search/TTS/STT.
+ * qualified memory embeddings, but not search/TTS/STT. Surplus remains
+ * selectable for credential deployment without claiming chat until a released
+ * route is qualified.
  * CloudConvert is recognized for selection but is not a V0 core capability.
  */
 const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
@@ -119,6 +122,7 @@ const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
   { provider: "gateway", name: "OpenAI-Compatible Gateway", coverage: { chat: "baseline" } },
   { provider: "google", name: "Google", coverage: { chat: "baseline" } },
   { provider: "fireworks", name: "Fireworks", coverage: { chat: "baseline" } },
+  { provider: "surplus", name: "Surplus Intelligence", coverage: {} },
   { provider: "typesafe", name: "TypeSafe", coverage: {} },
   { provider: "venice", name: "Venice", coverage: { chat: "baseline", embeddings: "baseline" } },
   { provider: "elevenlabs", name: "ElevenLabs", coverage: { tts: "enhanced", stt: "enhanced" } },

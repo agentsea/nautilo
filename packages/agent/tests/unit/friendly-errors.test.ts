@@ -14,6 +14,7 @@ import {
 import { EmptyTerminalResponseError } from "../../src/graph/empty-terminal-response";
 import { DEFAULT_GRAPH_RECURSION_LIMIT } from "../../src/graph/execution-policy";
 import { NoProgressError } from "../../src/graph/no-progress";
+import { SurplusDirectFallbackUnavailableError } from "../../src/providers/surplus-route";
 
 /**
  * Friendly-error translator.
@@ -571,4 +572,17 @@ test("prepared context exhaustion uses the existing context recovery message", (
   const friendly = toFriendlyError(error);
   expect(friendly.category).toBe("context_exceeded");
   expect(friendly.code).toBe("MDL005");
+});
+
+test("Surplus-only safe fallback failure explains the missing direct route", () => {
+  expect(toFriendlyError(new SurplusDirectFallbackUnavailableError())).toEqual({
+    message: "Surplus could not serve this request, and the selected model's original provider key is not configured. Ask your server administrator to configure that provider or choose another available model.",
+    category: "provider_unavailable",
+    code: "MDL006",
+    detailsForLog: "surplus_direct_fallback_unavailable",
+  });
+  const unsupported = toFriendlyError(new SurplusDirectFallbackUnavailableError("request-not-qualified"));
+  expect(unsupported.message).toContain("features or token limits");
+  expect(unsupported.category).toBe("provider_unavailable");
+  expect(unsupported.detailsForLog).toBe("surplus_direct_fallback_unavailable");
 });

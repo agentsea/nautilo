@@ -51,6 +51,11 @@ value = { value = "REPLACE_with_OpenRouter_key" }
 # key = "VENICE_API_KEY"
 # value = { value = "REPLACE_with_Venice_key" }
 
+# Surplus: marketplace serving for qualified routes. A key alone does not enable chat.
+# [[providers]]
+# key = "SURPLUS_API_KEY"
+# value = { value = "REPLACE_with_Surplus_key" }
+
 # TypeSafe: Jev text classification and scoring; does not provide chat.
 # [[providers]]
 # key = "TYPESAFE_API_KEY"

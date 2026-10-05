@@ -32,6 +32,13 @@ export const DEFAULT_REASONING_EFFORT = "medium" as const;
 
 const OPAQUE_ROOM_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export function openRouterSessionModelKwargs(sessionId?: string): Record<string, unknown> {
+  const normalized = sessionId?.trim();
+  return normalized && OPAQUE_ROOM_UUID_PATTERN.test(normalized)
+    ? { session_id: normalized }
+    : {};
+}
+
 function fireworksAffinityHeaders(options: CreateModelOptions): Record<string, string> | undefined {
   const affinityId = options.fireworksSessionAffinityId?.trim();
   if (!affinityId || !OPAQUE_ROOM_UUID_PATTERN.test(affinityId)) return undefined;
@@ -144,7 +151,7 @@ export function shouldUseOpenAIResponsesApi(
   return isDirectGpt6Model(options.modelId) || reasoningRequested(options, maxTokens);
 }
 
-function openAICompatibleReasoningModelKwargs(
+export function openAICompatibleReasoningModelKwargs(
   options: CreateModelOptions,
   maxTokens: number,
 ): Record<string, unknown> {
@@ -187,6 +194,39 @@ function openAICompatibleReasoningModelKwargs(
     default:
       return {};
   }
+}
+
+/**
+ * Preserve the canonical reasoning intent on Surplus's OpenAI-compatible chat
+ * wire. Existing reviewed provider spellings stay authoritative. Providers
+ * whose direct factory uses another SDK receive the documented nested shape
+ * that Surplus can bridge to the selected seller wire.
+ */
+export function surplusReasoningModelKwargs(
+  options: CreateModelOptions,
+  maxTokens: number,
+): Record<string, unknown> {
+  const providerKwargs = openAICompatibleReasoningModelKwargs(options, maxTokens);
+  if (Object.keys(providerKwargs).length > 0) return providerKwargs;
+
+  const provider = providerFromModelId(options.modelId);
+  if (provider !== "anthropic" && provider !== "google" && provider !== "openai") return {};
+  if (options.reasoningEffort === "off") {
+    const entry = getActiveModelCatalogSync().catalog.entries.find(
+      (candidate) => candidate.id === options.modelId,
+    );
+    const control = entry && "controls" in entry ? entry.controls?.reasoning : undefined;
+    if (entry?.features?.reasoning !== true || control?.canDisable !== true || control.mandatory !== false) {
+      throw new Error(`Reasoning effort "off" is not supported by the catalog controls for ${options.modelId}.`);
+    }
+    return { reasoning: { effort: "none" } };
+  }
+  if (!reasoningRequested(options, maxTokens)) return {};
+
+  const effort = requestedReasoningEffort(options);
+  if (provider === "anthropic") assertProviderReasoningEffort("anthropic", effort);
+  if (provider === "openai") assertProviderReasoningEffort("openai-responses", effort);
+  return { reasoning: { effort } };
 }
 
 function resolveTimeoutMs(options: CreateModelOptions): number | undefined {

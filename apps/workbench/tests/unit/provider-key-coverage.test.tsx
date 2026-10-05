@@ -49,6 +49,7 @@ describe("ProviderKeyCoverage", () => {
     expect(rows.map((row) => within(row).getByRole("rowheader").textContent)).toEqual([
       "Classification and scoring",
       "Chat",
+      "Surplus marketplace key",
       "Embeddings",
       "Text-to-speech",
       "Speech-to-text",
@@ -64,6 +65,7 @@ describe("ProviderKeyCoverage", () => {
     ).toEqual([
       "TypeSafeOpenRouterVenice",
       "VeniceOpenRouterOpenAIAnthropicGoogleFireworksOpenAI-compatible Gateway",
+      "Surplus Intelligence",
       "VeniceOpenRouterOpenAI",
       "ElevenLabs",
       "ElevenLabsGroq",
@@ -75,8 +77,8 @@ describe("ProviderKeyCoverage", () => {
       "CloudConvert",
     ]);
 
-    expect(within(rows[4]).queryByLabelText(/^OpenAI:/u)).toBeNull();
-    expect(view.getAllByLabelText(/no supporting API key configured$/u)).toHaveLength(11);
+    expect(within(rows[5]).queryByLabelText(/^OpenAI:/u)).toBeNull();
+    expect(view.getAllByLabelText(/no supporting API key configured$/u)).toHaveLength(12);
   });
 
   test("TypeSafe covers classification and scoring without claiming chat", () => {
@@ -192,12 +194,11 @@ describe("ProviderKeyCoverage", () => {
     const keyApi = {
       getKeySummary: mock(async () => ({ keys: [missing], hasLlm: false })),
       setupKeys: mock(async () => ({ success: true })),
-      getNautiloGateway: mock(async () => ({ baseUrl: null })),
-      updateNautiloGateway: mock(async (baseUrl: string) => ({ baseUrl })),
       validateKeys: mock(async () => ({
         keys: [verified],
         summary: { total: 1, ok: 1, warnings: 0, errors: 0 },
       })),
+      deleteServerProviderKey: mock(async () => ({ success: true })),
     };
     const view = render(
       <ProviderCredentialsEditor keyApi={keyApi} enabled viewerIsVerified />,
@@ -224,12 +225,11 @@ describe("ProviderKeyCoverage", () => {
     const disabledApi = {
       getKeySummary: mock(async () => pending),
       setupKeys: mock(async () => ({ success: true })),
-      getNautiloGateway: mock(async () => ({ baseUrl: null })),
-      updateNautiloGateway: mock(async (baseUrl: string) => ({ baseUrl })),
       validateKeys: mock(async () => ({
         keys: [],
         summary: { total: 0, ok: 0, warnings: 0, errors: 0 },
       })),
+      deleteServerProviderKey: mock(async () => ({ success: true })),
     };
     const denied = render(
       <ProviderCredentialsEditor keyApi={disabledApi} enabled={false} viewerIsVerified />,
@@ -237,7 +237,7 @@ describe("ProviderKeyCoverage", () => {
     expect(denied.queryByTestId("provider-key-coverage")).toBeNull();
     expect(denied.getByText(/don't have permission/u)).toBeTruthy();
     expect(disabledApi.getKeySummary).not.toHaveBeenCalled();
-    expect(disabledApi.getNautiloGateway).not.toHaveBeenCalled();
+    expect(disabledApi.deleteServerProviderKey).not.toHaveBeenCalled();
     denied.unmount();
 
     const loading = render(

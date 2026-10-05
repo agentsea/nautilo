@@ -1766,6 +1766,8 @@ const reviewedBridgeProductConsumerInventory = [
   // reviewed client/server bridge projections; restricted storage stays in the
   // bridge implementation.
   "apps/workbench/src/adapters/session-rehydrate.ts -> @nautilo/lattice-bridge",
+  // History hydration regression exercises the public message codec.
+  "apps/workbench/src/adapters/session-rehydrate-edit.test.ts -> @nautilo/lattice-bridge",
   "packages/server/src/routes/room-history-shadow-read-composition.ts -> @nautilo/lattice-bridge/server",
   // M318 retains bridge-owned typed enforcement and canonical protected
   // publication: these callers do not own raw crypto storage or keys.

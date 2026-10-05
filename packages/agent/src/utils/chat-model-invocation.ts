@@ -7,6 +7,7 @@ import { isInteropZodSchema } from "@langchain/core/utils/types";
 import { toJsonSchema } from "@langchain/core/utils/json_schema";
 import { log, getCurrentTurnId } from "@nautilo/logger";
 import { ServerProviderCredentialsDeniedError, assertCanUseServerProviderCredentials } from "@nautilo/trust";
+import { getCachedServerModelConfigRow, kickServerModelConfigRefresh } from "@nautilo/db";
 import { causalHumanForExecution } from "../runtime/causal-human-context";
 import {
   bindModelAttemptProgressSinkByKey,
@@ -18,7 +19,15 @@ import { ProviderTimeoutError, formatProviderError, isProviderTimeoutError, isSa
 import { getModelById } from "../config/assistant-models";
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
 import { ModelUnavailableError, resolveRetainedModels } from "../config/eligible-models";
+import { modelHasRunnableCredentials } from "../chat/model-runtime-credentials";
 import { createUniversalModel } from "../providers/universal";
+import { resolveProviderKey } from "../resolve-provider-key";
+import {
+  resolveSurplusChatServingAvailability,
+  SurplusDirectFallbackUnavailableError,
+} from "../providers/surplus-route";
+import { canUseQualifiedSurplusChatRoute, invokeSurplusChatAttempt } from "../providers/surplus-attempt";
+import { SurplusOutcomeUnknownError } from "../providers/surplus-transport";
 import { DEFAULT_REASONING_EFFORT } from "../providers/factory";
 import { isDirectGpt6Model } from "../providers/openai-compat";
 import { modelRouteProvider } from "../providers/model-route";
@@ -168,8 +177,9 @@ function serverUsageFunding(
   modelId: string,
   humanUserId: string | undefined,
   service: ModelFundingService | undefined,
+  allowSurplus: boolean,
 ): UsageFundingProvenance {
-  const providerRoute = usageProviderRoute(modelId);
+  const providerRoute = allowSurplus ? "surplus" : usageProviderRoute(modelId);
   if (service === "shared_memory_maintenance") {
     return { kind: "service", providerRoute };
   }
@@ -602,6 +612,29 @@ function emitFallbackHop(
  * - We've walked off the end of the chain
  * - All remaining chain entries are unhealthy or vision-incompatible
  */
+function resolveServerForegroundAvailability(
+  modelId: string,
+  needsVision: boolean,
+  requiresTools: boolean,
+) {
+  const direct = resolveRetainedModels([modelId], {
+    purpose: needsVision
+      ? requiresTools ? "vision-tools" : "vision"
+      : requiresTools ? "chat-tools" : "chat",
+  })[0]!;
+  if (direct.availability !== "missing-key") return direct;
+  kickServerModelConfigRefresh();
+  const surplus = resolveSurplusChatServingAvailability({
+    catalogModelId: modelId,
+    policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
+    keyConfigured: resolveProviderKey("surplus") !== null,
+  });
+  if (surplus.status !== "available"
+    || (needsVision && !surplus.route.supportsVision)
+    || (requiresTools && !surplus.route.supportsTools)) return direct;
+  return { ...direct, enabled: true, availability: "selectable" as const, unavailableReason: undefined };
+}
+
 function nextInUserChain(
   currentId: string,
   policy: ResolvedFallbackPolicy,
@@ -652,11 +685,7 @@ function nextInUserChain(
         continue;
       }
     } else {
-      const availability = resolveRetainedModels([candidate], {
-        purpose: needsVision
-          ? requiresTools ? "vision-tools" : "vision"
-          : requiresTools ? "chat-tools" : "chat",
-      })[0]!;
+      const availability = resolveServerForegroundAvailability(candidate, needsVision, requiresTools);
       if (availability.availability !== "selectable") {
         log(`[nautilo/agent] Skipping unavailable chain entry: ${candidate}`);
         continue;
@@ -818,11 +847,7 @@ export async function invokeChatModelWithFallback(
             }
             return { availability: "selectable" as const, unavailableReason: undefined };
           })()
-        : resolveRetainedModels([currentModelId], {
-            purpose: needsVision
-              ? requiresTools ? "vision-tools" : "vision"
-              : requiresTools ? "chat-tools" : "chat",
-          })[0]!;
+        : resolveServerForegroundAvailability(currentModelId, needsVision, requiresTools);
       if (availability.availability !== "selectable") {
         const next = nextInUserChain(
           currentModelId,
@@ -889,6 +914,7 @@ export async function invokeChatModelWithFallback(
       throw error;
     }
 
+    let surplusAttemptedForModel = false;
     const recoveryVisibility = invokeOptions?.recoverContext ? contextRecoveryVisibilityFence() : null;
     let hasSelectedReasoningEffort = false;
     try {
@@ -939,7 +965,99 @@ export async function invokeChatModelWithFallback(
           && (usageFunding.kind !== "server" || personalCredential !== undefined)) {
           throw new Error("Server foreground funding session returned an invalid attempt binding.");
         }
+        let directUsageFunding = usageFunding;
         try {
+          // This is a server-wide serving preference, never a personal-key
+          // transport or another catalogue model. Supported routes reuse the
+          // current signed catalogue and preserve the selected provider pin.
+          if (usageFunding.kind !== "personal") {
+            kickServerModelConfigRefresh();
+            const surplusKey = resolveProviderKey("surplus");
+            const surplus = resolveSurplusChatServingAvailability({
+              catalogModelId: currentModelId,
+              policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
+              keyConfigured: surplusKey !== null,
+            });
+            const catalogEntry = getActiveModelCatalogSync().catalog.entries.find((entry) => entry.id === currentModelId);
+            if (surplus.status === "available" && surplusKey !== null
+              && canUseQualifiedSurplusChatRoute({
+                route: surplus.route,
+                funding: usageFunding,
+                prefersSurplus: true,
+                hasSurplusCredential: true,
+                needsVision,
+                requiresTools,
+                reasoningRequested: requestedReasoningEffort !== undefined
+                  || (catalogEntry?.features?.reasoning === true && reasoningOutput),
+                hasRequestChangingServingProfile: serving !== undefined
+                  && (serving.effectiveModelId !== serving.canonicalModelId || serving.requestModelKwargs !== undefined),
+                estimatedInputTokens: estimateTokenCount(attemptMessages) + estimateBoundToolTokens(tools),
+                maxOutputTokens: maxTokens,
+              })) {
+              surplusAttemptedForModel = true;
+              const surplusFunding = { ...usageFunding, providerRoute: "surplus" };
+              const result = await invokeSurplusChatAttempt({
+                route: surplus.route,
+                apiKey: surplusKey,
+                messages: attemptMessages,
+                tools,
+                config: llmCallConfig,
+                maxOutputTokens: maxTokens,
+                ...(requestedReasoningEffort === undefined ? {} : { reasoningEffort: requestedReasoningEffort }),
+                reasoningOutput,
+                ...(openRouterSessionId === undefined ? {} : { openrouterSessionId: openRouterSessionId }),
+                funding: surplusFunding,
+                invokeModel: (model, selectedMessages, selectedConfig) => invokeForegroundAttemptWithUsageContext(
+                  model,
+                  selectedMessages,
+                  selectedConfig,
+                  currentModelId,
+                  invokeOptions?.fundingHumanUserId ?? "",
+                  invokeOptions?.serverFundedService,
+                  fundingSession,
+                  agentId,
+                  controls,
+                  undefined,
+                  surplusFunding,
+                  false,
+                  "none",
+                  {
+                    ...(callerProviderTimeoutMs === undefined ? {} : { providerTimeoutMs: callerProviderTimeoutMs }),
+                    callerSuppliedProviderTimeout: callerProviderTimeoutMs !== undefined,
+                    ...(callerFirstProgressTimeoutMs === undefined ? {} : { firstProgressTimeoutMs: callerFirstProgressTimeoutMs }),
+                    ...(invokeOptions?.isolatedProgress ? { isolatedProgress: true } : {}),
+                  },
+                ),
+              });
+              if (result.kind === "served") {
+                return result.response;
+              }
+              // A definitive pre-service refusal can switch transports.
+              // Its cost stays unknown until a receipt confirms it. Recheck
+              // live funding before the original provider receives the prompt.
+              if (!modelHasRunnableCredentials(currentModelId, process.env)) {
+                throw new SurplusDirectFallbackUnavailableError();
+              }
+              try {
+                if (fundingSession) await fundingSession.recheckAttempt(currentModelId);
+                else await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
+              } catch (error) {
+                throw new ForegroundFundingRecheckError(error);
+              }
+            } else if (surplus.status === "available"
+              && !modelHasRunnableCredentials(currentModelId, process.env)) {
+              // The route can make the model selectable, but this request is
+              // outside its supported request envelope. Never drift
+              // into an imaginary direct-provider attempt.
+              throw new SurplusDirectFallbackUnavailableError("request-not-qualified");
+            }
+          }
+          if (directUsageFunding.kind !== "personal" && directUsageFunding.providerRoute === "surplus") {
+            directUsageFunding = {
+              ...directUsageFunding,
+              providerRoute: usageProviderRoute(currentModelId),
+            };
+          }
           log(`[nautilo/agent] Attempting model: ${currentModelId}`);
           const model = await createUniversalModel(currentModelId, {
             maxTokens,
@@ -970,7 +1088,7 @@ export async function invokeChatModelWithFallback(
             agentId,
             controls,
             serving,
-            usageFunding,
+            directUsageFunding,
             invokeOptions?.useOpenAIResponsesApi === true,
             invokeOptions?.sameModelRetryMode ?? "short",
             {
@@ -997,11 +1115,18 @@ export async function invokeChatModelWithFallback(
         // opt into the request-local foreground session.
         await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
         providerAttemptStarted = true;
+        kickServerModelConfigRefresh();
+        const allowSurplus = resolveSurplusChatServingAvailability({
+          catalogModelId: currentModelId,
+          policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
+          keyConfigured: resolveProviderKey("surplus") !== null,
+        }).status === "available";
         response = await runProviderAttempt({
           usageFunding: serverUsageFunding(
             currentModelId,
             invokeOptions?.fundingHumanUserId,
             invokeOptions?.serverFundedService,
+            allowSurplus,
           ),
         });
       }
@@ -1013,6 +1138,7 @@ export async function invokeChatModelWithFallback(
       // provider failure or unlock another fallback/funding source.
       if (!(error instanceof ProviderAttemptError)) throw error;
       const providerError = error.cause;
+      if (providerError instanceof SurplusOutcomeUnknownError) throw providerError;
       // The caller owns this cancellation. It must bypass error
       // classification, health cooldown, reasoning retries, and chain
       // fallback even if the provider surfaced a timeout-shaped AbortError.
@@ -1062,7 +1188,13 @@ export async function invokeChatModelWithFallback(
       }
       disableReasoningOutput = false;
 
-      if (!shouldFallbackToNextModel(classified)) throw terminalProviderError;
+      const surplusDirectUnavailable = providerError instanceof SurplusDirectFallbackUnavailableError;
+      // A missing original credential after a safe Surplus refusal does not
+      // exhaust the configured chain. A rejected original credential likewise
+      // leaves other provider routes usable; personal funding stays separate.
+      const directAuthRejectedAfterSurplus = surplusAttemptedForModel && classified.category === "AUTH_ERROR";
+      if (!surplusDirectUnavailable && !directAuthRejectedAfterSurplus
+        && !shouldFallbackToNextModel(classified)) throw terminalProviderError;
 
       if (hasAssistantVisibleOutputForCurrentTurn(agentId)) {
         log(

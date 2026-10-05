@@ -183,8 +183,9 @@ function PageFrame({ children }: { children: React.ReactNode }) {
 function CostsContent({ data }: { data: CostsSummary }) {
   const { totals } = data;
   const topModel = data.byModel[0];
-  const hasAnyActual = totals.actualCostUsd > 0;
+  const hasAnyActual = data.byModel.some((row) => row.hasActual);
   const totalOperations = totals.calls + totals.providerOperations;
+  const unresolvedModelAttempts = totals.pendingModelAttempts + totals.unknownModelAttempts;
 
   const chartData = useMemo(
     () =>
@@ -215,6 +216,8 @@ function CostsContent({ data }: { data: CostsSummary }) {
             ? `${formatUsd(totals.estimatedCostUsd)} est · ${formatUsd(totals.actualCostUsd)} actual`
             : "estimated"}${totals.unknownProviderOperations > 0
             ? ` · ${formatInt(totals.unknownProviderOperations)} unknown`
+            : ""}${unresolvedModelAttempts > 0
+            ? ` · ${formatInt(unresolvedModelAttempts)} unresolved model ${unresolvedModelAttempts === 1 ? "attempt" : "attempts"}`
             : ""}`}
         />
         <StatCard
@@ -234,7 +237,7 @@ function CostsContent({ data }: { data: CostsSummary }) {
         <StatCard
           label="Operations"
           value={formatInt(totalOperations)}
-          sub={`${formatInt(totals.calls)} model · ${formatInt(totals.providerOperations)} paid tool`}
+          sub={`${formatInt(totals.calls)} model attempts · ${formatInt(totals.providerOperations)} paid tool`}
         />
         <StatCard
           label="Top model"

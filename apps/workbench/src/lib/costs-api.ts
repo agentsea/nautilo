@@ -13,6 +13,8 @@ export interface CostsTotals {
   calls: number;
   providerOperations: number;
   unknownProviderOperations: number;
+  pendingModelAttempts: number;
+  unknownModelAttempts: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -40,6 +42,8 @@ export interface CostsByModelRow {
    * coefficient/default fallback pricing stored on the row at insert time.
    */
   hasFallbackEstimate: boolean;
+  pendingAttempts: number;
+  unknownAttempts: number;
 }
 
 export interface CostsByCallTypeRow {

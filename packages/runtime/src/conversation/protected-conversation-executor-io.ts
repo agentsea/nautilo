@@ -13,9 +13,7 @@ import {
   type MessagePayloadV2,
   type ProtectedAgentRuntimeForegroundEntrypointId,
 } from "@nautilo/lattice-bridge";
-import {
-  computeMessageFingerprint,
-} from "@nautilo/agent";
+import { computeMessageFingerprint } from "@nautilo/agent";
 
 import type {
   ActiveConversationRepository,

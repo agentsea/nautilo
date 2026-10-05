@@ -250,7 +250,8 @@ export function taskRunTranscriptToPresentation(messages: readonly TaskRunTransc
     const row = messages[index];
     if (!row) continue;
     if (row.role === "assistant") {
-      if (row.content.length > 0) rows.push({ key: `${runId}:source:${index}:assistant`, role: "assistant", content: row.content, createdAt: row.createdAt });
+      if (row.content.length > 0) rows.push({ key: `${runId}:source:${index}:assistant`, role: "assistant", content: row.content,
+        createdAt: row.createdAt });
       for (const [callIndex, call] of (row.toolCalls ?? []).entries()) {
         const pairedIndex = findPairedToolIndex(index, callIndex, call.name, call.id);
         const paired = pairedIndex === null ? undefined : messages[pairedIndex];

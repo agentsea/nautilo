@@ -50,6 +50,7 @@ const LLM_KEY_IDS = new Set<string>([
   "google",
   "fireworks",
   "venice",
+  "surplus",
 ]);
 
 function keyStatusPill(status: KeyReport["status"]) {

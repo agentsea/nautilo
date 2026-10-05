@@ -216,4 +216,63 @@ describe("getCostsSummary fallback disclosure (ISSUE-M217)", () => {
       expect(generated.params).toContain("personal");
     }
   });
+
+  test("pending and unknown model attempts are counted without entering known spend", async () => {
+    __setLlmUsageDbForTests(
+      mockDb([
+        [{
+          ...emptyTotalsRow(),
+          calls: 2,
+          pending_model_attempts: 1,
+          unknown_model_attempts: 1,
+        }],
+        [{
+          model: "venice:openai-gpt-55",
+          provider: "venice",
+          calls: 2,
+          pending_attempts: 1,
+          unknown_attempts: 1,
+          input_tokens: 0,
+          output_tokens: 0,
+          estimated_cost: 0,
+          actual_cost: 0,
+          total_cost: 0,
+          has_actual: false,
+          has_fallback_estimate: false,
+        }],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+      ]),
+    );
+
+    const summary = await getCostsSummary(RANGE);
+    expect(summary.totals).toMatchObject({
+      calls: 2,
+      pendingModelAttempts: 1,
+      unknownModelAttempts: 1,
+      totalCostUsd: 0,
+    });
+    expect(summary.byModel[0]).toMatchObject({
+      pendingAttempts: 1,
+      unknownAttempts: 1,
+      totalCostUsd: 0,
+    });
+  });
+
+  test("known-spend SQL preserves legacy rows and zeros unresolved attempt estimates", () => {
+    const offlineDb = drizzle.mock() as unknown as DirectDatabase;
+    const compiled = Object.values(buildCostsSummaryQueries(RANGE, offlineDb)).map(
+      (queryBuilder) => queryBuilder.toSQL().sql.replace(/\s+/g, " ").toLowerCase(),
+    );
+    expect(compiled[0]).toContain("cost_state\" in ('pending', 'unknown')");
+    expect(compiled[0]).toContain("then 0");
+    expect(compiled[0]).toContain("else coalesce");
+    expect(compiled[1]).toContain("filter (where \"cost_state\" = 'pending')");
+    expect(compiled[1]).toContain("filter (where \"cost_state\" = 'unknown')");
+  });
 });

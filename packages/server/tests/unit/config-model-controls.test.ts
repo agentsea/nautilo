@@ -194,6 +194,29 @@ describe("caller-scoped model availability", () => {
     });
   });
 
+  test("admits a server-funded Surplus-only route without changing personal capability isolation", async () => {
+    const modelId = "venice:openai-gpt-55";
+    const result = await resolveCallerModelAvailability(
+      "human-1",
+      modelId,
+      { purpose: "chat-tools", env: {} },
+      {
+        resolveFunding: async (input) => ({
+          kind: "server",
+          humanUserId: input.humanUserId,
+          modelId: input.modelId,
+          providerRoute: "surplus",
+          workload: input.workload,
+        }),
+      },
+    );
+    expect(result).toMatchObject({
+      model: { id: modelId, availability: "selectable", enabled: true },
+      funding: { kind: "server", providerRoute: "surplus" },
+      selectableInThisRelease: true,
+    });
+  });
+
   test("server-funded caller rows obey the same tool qualification as model writes", async () => {
     const result = await resolveCallerModelAvailability(
       "human-1",

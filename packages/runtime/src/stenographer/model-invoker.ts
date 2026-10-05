@@ -1,6 +1,7 @@
 import { HumanMessage, type BaseMessage } from "@langchain/core/messages";
 import {
   invokeChatModelWithFallback,
+  SurplusOutcomeUnknownError,
   type UsageCallType,
 } from "@nautilo/agent";
 
@@ -88,6 +89,9 @@ export function createRoomSideModelInvoker(opts: {
 export function mapModelFailure(
   error: unknown,
 ): "provider" | "provider_outcome_unknown" | "timeout" | "unknown" {
+  if (error instanceof SurplusOutcomeUnknownError) {
+    return "provider_outcome_unknown";
+  }
   const text = error instanceof Error
     ? error.message.toLowerCase()
     : String(error).toLowerCase();

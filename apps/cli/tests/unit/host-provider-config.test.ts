@@ -75,6 +75,7 @@ describe("Railway provider-only TOML", () => {
       tavily: tavily("t"),
       openrouter: openRouter("r"),
       venice: venice("v"),
+      surplus: "inf_surplus-complete-bundle-key",
       typesafe: "synthetic-typesafe-key",
       cloudconvert: ["eyJ" + "a".repeat(70), "b".repeat(70), "c".repeat(70)].join("."),
       google: "g".repeat(40),
@@ -108,8 +109,46 @@ describe("Railway provider-only TOML", () => {
       });
       expect(plan.issues).toEqual([]);
       expect(plan.providers.filter((provider) => provider.selected)).toHaveLength(HOSTING_KEY_REGISTRY.length);
+      expect(plan.providers.find((provider) => provider.provider === "surplus")).toMatchObject({
+        selected: true,
+        state: "configured",
+        capabilities: [],
+      });
       for (const value of Object.values(values)) expect(JSON.stringify(plan)).not.toContain(value);
     }
+  });
+
+  test("adopts a Surplus key without treating it as qualified chat capability", async () => {
+    const config = join(root, "providers.toml");
+    const value = "inf_surplus-provider-config-key";
+    await writeProviderConfig(config, [
+      "schemaVersion = 1",
+      "[providers]",
+      `surplus = { value = "${value}" }`,
+      "",
+    ].join("\n"));
+
+    const result = await resolveRailwayProviderConfig({
+      providerConfigPath: config,
+      environment: { HOME: root },
+    });
+    expect(result.outcome).toBe("resolved");
+    if (result.outcome !== "resolved") return;
+    expect(result.providers.get("surplus")).toEqual({
+      value,
+      source: "documented-config",
+    });
+
+    const plan = resolveProviderCapabilities({
+      references: [{ provider: "surplus", source: "documented-config", state: "configured" }],
+      allProviders: true,
+      infrastructure: "planned",
+      coreDegradedConsent: false,
+    });
+    expect(plan.providers.find((provider) => provider.provider === "surplus")?.capabilities).toEqual([]);
+    expect(plan.capabilities.find((capability) => capability.capability === "chat")?.experience)
+      .toBe("unavailable");
+    expect(plan.readiness.coreReadiness).toBe("blocked");
   });
 
   test("resolves declared TOML providers before environment and legacy dotenv per provider", async () => {
@@ -205,6 +244,7 @@ describe("Railway provider-only TOML", () => {
         GOOGLE_API_KEY: "g".repeat(40),
         FIREWORKS_API_KEY: `fw_${"f".repeat(40)}`,
         GROQ_API_KEY: `gsk_${"q".repeat(40)}`,
+        SURPLUS_API_KEY: "inf_surplus-environment-key",
         NAUTILO_GATEWAY_API_KEY: "synthetic-gateway-key",
         NAUTILO_DOTENV_PATH: unsafeCompatibility,
       },

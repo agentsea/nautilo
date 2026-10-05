@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { decodeMessagePayloadV2, encodeMessagePayloadV2 } from "@nautilo/lattice-bridge";
 import {
   reconcileRoomHistoryShadowPayloads,
   restoreSessionMessages,
@@ -215,8 +216,8 @@ describe("restoreSessionMessages M230 edit metadata", () => {
     expect(message?.metadata).toBeUndefined();
   });
 
-  test("derives assistant parity input from the actual ordinary row", () => {
-    expect(roomHistoryShadowOrdinarySibling({
+  test("derives strict-codec assistant parity input from the actual ordinary row", () => {
+    const sibling = roomHistoryShadowOrdinarySibling({
       id: "45",
       logicalMessageKey: "logical:45",
       role: "assistant",
@@ -229,7 +230,8 @@ describe("restoreSessionMessages M230 edit metadata", () => {
           arguments: JSON.stringify({ pageSize: 25, cursor: "page:2" }),
         },
       }]),
-    })).toEqual({
+    });
+    expect(sibling).toEqual({
       logicalMessageKey: "logical:45",
       payload: {
         role: "assistant",
@@ -241,6 +243,7 @@ describe("restoreSessionMessages M230 edit metadata", () => {
         }],
       },
     });
+    expect(decodeMessagePayloadV2(encodeMessagePayloadV2(sibling!.payload))).toEqual(sibling!.payload);
   });
 
   test("applies verified protected payloads before one ordinary restore pass", () => {

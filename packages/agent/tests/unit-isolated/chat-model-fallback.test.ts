@@ -12,19 +12,21 @@ import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages
 import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { ChatModel } from "../../src/providers/types";
 import type { ForegroundChatFundingSession } from "../../src/runtime/foreground-chat-funding";
 import type { ResolvedFallbackPolicy } from "../../src/utils/resolve-fallback-policy";
 import { setAgentEventSink } from "../../src/runtime-hooks";
 import { getOrCreateAgentTurnContextByKey, turnContextKey, _resetAgentTurnContextsForTests } from "../../src/runtime/turn-context";
 import { ProviderTimeoutError } from "../../src/providers/errors";
+import { canUseQualifiedSurplusChatRoute } from "../../src/providers/surplus-attempt";
+import { SurplusOutcomeUnknownError } from "../../src/providers/surplus-transport";
 import type { ModelCatalog, ModelFallbackEvent, ServerEvent } from "@nautilo/types";
 import { getCurrentTurnId, runWithTurn } from "@nautilo/logger";
 import { classifyModelStreamProgress, resolveModelAttemptPolicy } from "../../src/utils/model-attempt-policy";
 import { classifyError } from "../../src/utils/errors";
 import { runWithTaskCausalHuman } from "../../src/runtime/causal-human-context";
-import { getUsageContext } from "../../src/usage/usage-context";
+import { getUsageContext, type UsageFundingProvenance } from "../../src/usage/usage-context";
 import {
   configureRuntimeModelCatalog,
   hydrateRuntimeModelCatalog,
@@ -61,6 +63,20 @@ const createUniversalModelMock = mock(
   },
 );
 const markModelInvokeFailureMock = mock((_modelId: string, _message: string): void => {});
+const invokeSurplusChatAttemptMock = mock(async (_input?: {
+  config: RunnableConfig;
+  route: { catalogModelId: string };
+  messages: BaseMessage[];
+  funding: Extract<UsageFundingProvenance, { kind: "server" | "service" }>;
+  invokeModel: (
+    model: { invoke(messages: BaseMessage[], options?: RunnableConfig): Promise<unknown> },
+    messages: BaseMessage[],
+    config: RunnableConfig,
+  ) => Promise<AIMessage>;
+}): Promise<
+  { kind: "served"; response: AIMessage } | { kind: "direct_fallback" }
+> => ({ kind: "direct_fallback" }));
+let cachedServerModelConfig: { preferSurplus: boolean } | null = null;
 
 function modelIdsFromCalls(): string[] {
   return createUniversalModelMock.mock.calls.map((call) => String(call[0]));
@@ -79,6 +95,7 @@ const TEST_PROVIDER_KEYS = {
   GOOGLE_API_KEY: "test-google",
   FIREWORKS_API_KEY: "test-fireworks",
   OPENROUTER_API_KEY: "test-openrouter",
+  SURPLUS_API_KEY: "test-surplus",
 } as const;
 const priorProviderKeys = Object.fromEntries(
   Object.keys(TEST_PROVIDER_KEYS)
@@ -122,7 +139,7 @@ beforeAll(() => {
     profiles: {},
     agents: {},
     eq: () => ({}),
-    getCachedServerModelConfigRow: () => null,
+    getCachedServerModelConfigRow: () => cachedServerModelConfig,
     kickServerModelConfigRefresh: () => {},
     refreshServerModelConfigCache: async () => null,
     primeServerModelConfigCache: () => {},
@@ -143,6 +160,11 @@ beforeAll(() => {
   mock.module("../../src/providers/universal", () => ({
     createUniversalModel: (modelId: string, options?: Record<string, unknown>): Promise<AuraModel> =>
       createUniversalModelMock(modelId, options),
+  }));
+
+  mock.module("../../src/providers/surplus-attempt", () => ({
+    canUseQualifiedSurplusChatRoute,
+    invokeSurplusChatAttempt: invokeSurplusChatAttemptMock,
   }));
 });
 
@@ -200,6 +222,12 @@ afterAll(() => {
   }
 });
 
+afterEach(() => {
+  cachedServerModelConfig = null;
+  invokeSurplusChatAttemptMock.mockReset();
+  invokeSurplusChatAttemptMock.mockResolvedValue({ kind: "direct_fallback" });
+});
+
 describe("invokeChatModelWithFallback (chain)", () => {
   const messages = [new HumanMessage("hi")];
   const tools: StructuredTool[] = [];
@@ -207,7 +235,10 @@ describe("invokeChatModelWithFallback (chain)", () => {
   beforeEach(() => {
     Object.assign(process.env, TEST_PROVIDER_KEYS);
     policyState = { enabled: false, chain: [] };
+    cachedServerModelConfig = null;
     createUniversalModelMock.mockReset();
+    invokeSurplusChatAttemptMock.mockReset();
+    invokeSurplusChatAttemptMock.mockResolvedValue({ kind: "direct_fallback" });
     fundingAdmission.mockReset();
     fundingAdmission.mockImplementation(async () => undefined);
     markModelInvokeFailureMock.mockReset();
@@ -284,7 +315,7 @@ describe("invokeChatModelWithFallback (chain)", () => {
     expect(observed[0]?.modelControl).toBeUndefined();
   });
 
-  test("records the direct OpenRouter route when no managed Gateway is active", async () => {
+  test("records the direct OpenRouter route", async () => {
     let observed: ReturnType<typeof getUsageContext>;
     createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
       bindTools: () => ({ invoke: async () => {
@@ -1262,6 +1293,312 @@ describe("invokeChatModelWithFallback (chain)", () => {
     const out = await invokeChatModelWithFallback(IMAGE_MESSAGES, tools, T1, "user-1", "agent-1", null);
     expect(out.modelUsed).toBe(V);
     expect(modelIdsFromCalls()).toEqual([V]);
+  });
+});
+
+describe("invokeChatModelWithFallback — Surplus serving order", () => {
+  const messages = [new HumanMessage("serve this")];
+  const tools: StructuredTool[] = [];
+
+  beforeEach(() => {
+    Object.assign(process.env, TEST_PROVIDER_KEYS);
+    cachedServerModelConfig = { preferSurplus: true };
+    policyState = { enabled: false, chain: [] };
+    createUniversalModelMock.mockReset();
+    invokeSurplusChatAttemptMock.mockReset();
+    fundingAdmission.mockReset();
+    fundingAdmission.mockImplementation(async () => undefined);
+    markModelInvokeFailureMock.mockReset();
+    capturedEvents.length = 0;
+    _resetAgentTurnContextsForTests();
+    _setFirstTokenTimeoutMsForTests(undefined);
+  });
+
+  test("uses a successful Surplus response without invoking the direct provider", async () => {
+    invokeSurplusChatAttemptMock.mockResolvedValue({
+      kind: "served",
+      response: new AIMessage("surplus success"),
+    });
+    createUniversalModelMock.mockImplementation(async () => {
+      throw new Error("direct provider must not be constructed after Surplus succeeds");
+    });
+
+    const result = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null);
+
+    expect(result).toMatchObject({ modelUsed: A, response: { content: "surplus success" } });
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+
+  test("uses keyed Surplus for a signed OpenRouter model without a direct key", async () => {
+    const { getActiveModelCatalogSync } = await import("../../src/config/model-catalog/runtime-catalog");
+    const entry = getActiveModelCatalogSync().catalog.entries.find((row) => row.id === T1);
+    expect(entry).toMatchObject({ id: T1, defaultEnabled: true, provider: "openrouter" });
+    delete process.env["OPENROUTER_API_KEY"];
+    const persistedFunding: UsageFundingProvenance[] = [];
+    const ambientFunding: UsageFundingProvenance[] = [];
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      if (!input) throw new Error("Surplus attempt input missing");
+      persistedFunding.push(input.funding);
+      const response = await input.invokeModel({
+        invoke: async () => {
+          const funding = getUsageContext()?.funding;
+          if (funding) ambientFunding.push(funding);
+          return new AIMessage("surplus openrouter");
+        },
+      }, input.messages, input.config);
+      return { kind: "served", response };
+    });
+
+    const result = await invokeChatModelWithFallback(messages, tools, T1, "user-1", "agent-1", null);
+
+    expect(result).toMatchObject({ modelUsed: T1, response: { content: "surplus openrouter" } });
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+    expect(persistedFunding).toEqual([{
+      kind: "server",
+      humanUserId: "user-1",
+      providerRoute: "surplus",
+    }]);
+    expect(ambientFunding).toEqual(persistedFunding);
+  });
+
+  test("keeps a keyless OpenRouter model unavailable while Surplus policy is off", async () => {
+    cachedServerModelConfig = { preferSurplus: false };
+    delete process.env["OPENROUTER_API_KEY"];
+
+    const thrown = await invokeChatModelWithFallback(messages, tools, T1, "user-1", "agent-1", null)
+      .catch((error: unknown) => error);
+
+    expect(thrown).toMatchObject({
+      name: "ModelUnavailableError",
+      code: "model_unavailable",
+      modelId: T1,
+      availability: "missing-key",
+    });
+    expect(invokeSurplusChatAttemptMock).not.toHaveBeenCalled();
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+
+  test("tries Surplus with Kimi K3's catalogue-default standard profile", async () => {
+    const id = "fireworks:accounts/fireworks/models/kimi-k3";
+    const { getActiveModelCatalogSync } = await import("../../src/config/model-catalog/runtime-catalog");
+    const { resolveModelControlSelection } = await import("../../src/config/model-control-selection");
+    const entry = getActiveModelCatalogSync().catalog.entries.find((row) => row.id === id)!;
+    const selection = resolveModelControlSelection({ catalogByModelId: new Map([[id, entry]]), catalogDefaultModelId: id });
+    expect(selection.status).toBe("resolved");
+    if (selection.status !== "resolved") throw new Error("Kimi controls did not resolve");
+    const servingProfileId = selection.effective.servingProfileId;
+    if (servingProfileId !== "standard") throw new Error("Kimi standard profile missing");
+    delete process.env["FIREWORKS_API_KEY"];
+    invokeSurplusChatAttemptMock.mockResolvedValue({ kind: "served", response: new AIMessage("surplus kimi") });
+    const result = await invokeChatModelWithFallback(messages, tools, id, "user-1", "agent-1", null, {}, {
+      resolveForegroundControls: () => ({ canonicalModelId: id, servingProfileId }),
+    });
+    expect(result).toMatchObject({ modelUsed: id, response: { content: "surplus kimi" } });
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+
+  test("tries the original direct provider only after a definitive Surplus refusal", async () => {
+    const order: string[] = [];
+    let directFunding: UsageFundingProvenance | undefined;
+    invokeSurplusChatAttemptMock.mockImplementation(async () => {
+      order.push("surplus");
+      return { kind: "direct_fallback" };
+    });
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          order.push("direct");
+          directFunding = getUsageContext()?.funding;
+          return new AIMessage("direct success");
+        },
+      }),
+    }) as unknown as AuraModel);
+
+    const result = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null);
+
+    expect(result.modelUsed).toBe(A);
+    expect(order).toEqual(["surplus", "direct"]);
+    expect(modelIdsFromCalls()).toEqual([A]);
+    expect(directFunding).toMatchObject({ kind: "server", providerRoute: "anthropic" });
+  });
+
+  test("advances to the configured chain when Surplus refuses and the original provider has no credential", async () => {
+    delete process.env["ANTHROPIC_API_KEY"];
+    policyState = { enabled: true, chain: [B] };
+    const order: string[] = [];
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      order.push(`surplus:${input?.route.catalogModelId}`);
+      return input?.route.catalogModelId === A
+        ? { kind: "direct_fallback" }
+        : { kind: "served", response: new AIMessage("chain success") };
+    });
+    createUniversalModelMock.mockImplementation(async (modelId) => {
+      order.push(`direct:${modelId}`);
+      throw new Error(`unexpected direct provider ${modelId}`);
+    });
+
+    const result = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null);
+
+    expect(result.modelUsed).toBe(B);
+    expect(order).toEqual([`surplus:${A}`, `surplus:${B}`]);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+
+  test("returns the typed friendly-error input when refusal has neither direct credentials nor a chain", async () => {
+    delete process.env["ANTHROPIC_API_KEY"];
+    invokeSurplusChatAttemptMock.mockResolvedValue({ kind: "direct_fallback" });
+
+    const thrown = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null)
+      .catch((error: unknown) => error);
+
+    expect(thrown).toMatchObject({
+      name: "SurplusDirectFallbackUnavailableError",
+      code: "surplus_direct_fallback_unavailable",
+    });
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+
+  test("advances to the configured chain after direct authentication fails following a Surplus refusal", async () => {
+    policyState = { enabled: true, chain: [B] };
+    const order: string[] = [];
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      order.push(`surplus:${input?.route.catalogModelId}`);
+      return input?.route.catalogModelId === A
+        ? { kind: "direct_fallback" }
+        : { kind: "served", response: new AIMessage("fallback success") };
+    });
+    createUniversalModelMock.mockImplementation(async (modelId): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          order.push(`direct:${modelId}`);
+          throw Object.assign(new Error("credential rejected"), { status: 401 });
+        },
+      }),
+    }) as unknown as AuraModel);
+
+    const result = await invokeChatModelWithFallback(
+      messages,
+      tools,
+      A,
+      "user-1",
+      "agent-1",
+      null,
+      undefined,
+      { sameModelRetryMode: "none" },
+    );
+
+    expect(result.modelUsed).toBe(B);
+    expect(order).toEqual([`surplus:${A}`, `direct:${A}`, `surplus:${B}`]);
+    expect(modelIdsFromCalls()).toEqual([A]);
+  });
+
+  test("uses only the direct provider while the Surplus policy is off", async () => {
+    cachedServerModelConfig = { preferSurplus: false };
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => new AIMessage("direct only") }),
+    }) as unknown as AuraModel);
+
+    const result = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null);
+
+    expect(result.modelUsed).toBe(A);
+    expect(invokeSurplusChatAttemptMock).not.toHaveBeenCalled();
+    expect(modelIdsFromCalls()).toEqual([A]);
+  });
+
+  test("keeps a direct authentication failure terminal when Surplus was not attempted", async () => {
+    cachedServerModelConfig = { preferSurplus: false };
+    policyState = { enabled: true, chain: [B] };
+    createUniversalModelMock.mockImplementation(async (modelId): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          throw Object.assign(new Error(`credential rejected for ${modelId}`), { status: 401 });
+        },
+      }),
+    }) as unknown as AuraModel);
+
+    const thrown = await invokeChatModelWithFallback(
+      messages,
+      tools,
+      A,
+      "user-1",
+      "agent-1",
+      null,
+      undefined,
+      { sameModelRetryMode: "none" },
+    ).catch((error: unknown) => error);
+
+    expect(thrown).toMatchObject({ status: 401 });
+    expect(invokeSurplusChatAttemptMock).not.toHaveBeenCalled();
+    expect(modelIdsFromCalls()).toEqual([A]);
+  });
+
+  test("strict mode does not widen a missing-direct Surplus refusal into the user chain", async () => {
+    delete process.env["ANTHROPIC_API_KEY"];
+    policyState = { enabled: true, chain: [B] };
+    invokeSurplusChatAttemptMock.mockResolvedValue({ kind: "direct_fallback" });
+
+    const thrown = await invokeChatModelWithFallback(
+      messages,
+      tools,
+      A,
+      "user-1",
+      "agent-1",
+      null,
+      undefined,
+      { modelFallbackMode: "none" },
+    ).catch((error: unknown) => error);
+
+    expect(thrown).toMatchObject({ code: "surplus_direct_fallback_unavailable" });
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+
+  test("does not replay an uncertain Surplus outcome through direct or chain providers", async () => {
+    policyState = { enabled: true, chain: [B] };
+    const uncertain = new SurplusOutcomeUnknownError();
+    invokeSurplusChatAttemptMock.mockRejectedValue(uncertain);
+
+    const thrown = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null)
+      .catch((error: unknown) => error);
+
+    expect(thrown).toBe(uncertain);
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+
+  test("does not replay a cancelled Surplus request through direct or chain providers", async () => {
+    policyState = { enabled: true, chain: [B] };
+    const controller = new AbortController();
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      markStarted();
+      return await new Promise<never>((_resolve, reject) => {
+        input?.config.signal?.addEventListener("abort", () => {
+          reject(new Error("surplus request aborted"));
+        }, { once: true });
+      });
+    });
+
+    const pending = invokeChatModelWithFallback(
+      messages,
+      tools,
+      A,
+      "user-1",
+      "agent-1",
+      null,
+      { signal: controller.signal },
+    ).catch((error: unknown) => error);
+    await started;
+    controller.abort(new Error("cancelled by caller"));
+    const thrown = await pending;
+
+    expect(thrown).toMatchObject({ message: "surplus request aborted" });
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
   });
 });
 

@@ -18,6 +18,7 @@ import {
   createFireworks,
   createXAI,
   createTogether,
+  openRouterSessionModelKwargs,
 } from "./factory";
 import { VENICE_API_V1_BASE } from "./venice-api";
 import { getModelById, type VeniceRouting } from "../config/assistant-models";
@@ -208,9 +209,11 @@ export function buildOpenRouterCreateModelOptions(
     ? buildOpenRouterHeaders(cleanOptions)
     : undefined;
   if (headers) options.headers = headers;
-  const sessionId = nonEmptyString(cleanOptions["openRouterSessionId"]);
-  if (sessionId && UUID_PATTERN.test(sessionId)) {
-    options.modelKwargs = { session_id: sessionId };
+  const sessionModelKwargs = openRouterSessionModelKwargs(
+    nonEmptyString(cleanOptions["openRouterSessionId"]),
+  );
+  if (Object.keys(sessionModelKwargs).length > 0) {
+    options.modelKwargs = sessionModelKwargs;
   }
   return options;
 }

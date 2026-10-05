@@ -1210,6 +1210,16 @@ export const adminUsersListResponseSchema = z.object({
 // server-wide model config. `conductorModel` empty ⇒ inherit the
 // default chat model. `fallbackChain` is an ordered list of catalog model ids.
 export const serverModelConfigSchema = z.object({
+  preferSurplus: z.boolean().optional().default(false),
+  surplus: z.object({
+    keyConfigured: z.boolean(),
+    policyEnabled: z.boolean(),
+    chatStatus: z.enum(["not-qualified", "qualified-unavailable", "available"]),
+  }).strict().optional().default({
+    keyConfigured: false,
+    policyEnabled: false,
+    chatStatus: "not-qualified",
+  }),
   defaultChatModel: z.string(),
   conductorModel: z.string(),
   stenographerModel: z.string(),
@@ -1229,6 +1239,8 @@ export const serverModelConfigSchema = z.object({
     provider: z.string(),
     workload: z.string(),
     availability: z.string(),
+    directAvailability: z.string().optional(),
+    directUnavailableReason: z.string().optional(),
     unavailableReason: z.string().optional(),
     input: z.array(z.string()),
     output: z.array(z.string()),
@@ -1546,12 +1558,19 @@ const LLM_KEY_IDS = new Set<string>([
   "google",
   "fireworks",
   "venice",
+  "surplus",
 ]);
 
 function computeHasLlmFromKeys(keys: KeyReport[]): boolean {
-  return keys.some((key) =>
-    LLM_KEY_IDS.has(key.id)
-    && (key.status === "present" || key.status === "verified"));
+  // A Surplus marketplace credential alone cannot establish a direct provider
+  // route. Authoritative setup readiness comes from config-guard's server-side
+  // summary.
+  return keys.some(
+    (k) =>
+      k.id !== "surplus"
+      && LLM_KEY_IDS.has(k.id)
+      && (k.status === "present" || k.status === "verified"),
+  );
 }
 
 /**
@@ -4112,6 +4131,7 @@ export class NautiloApiClient {
         });
       },
       set: async (patch: {
+        preferSurplus?: boolean;
         defaultChatModel?: string;
         conductorModel?: string;
         stenographerModel?: string;

@@ -11,6 +11,7 @@ describe("resolveProviderKey (D120 A1.P4)", () => {
     openrouter: process.env["OPENROUTER_API_KEY"],
     anthropic: process.env["ANTHROPIC_API_KEY"],
     google: process.env["GOOGLE_API_KEY"],
+    surplus: process.env["SURPLUS_API_KEY"],
   };
   afterEach(() => {
     for (const [name, envVar] of [
@@ -18,11 +19,17 @@ describe("resolveProviderKey (D120 A1.P4)", () => {
       ["openrouter", "OPENROUTER_API_KEY"],
       ["anthropic", "ANTHROPIC_API_KEY"],
       ["google", "GOOGLE_API_KEY"],
+      ["surplus", "SURPLUS_API_KEY"],
     ] as const) {
       const prev = orig[name];
       if (prev === undefined) delete process.env[envVar];
       else process.env[envVar] = prev;
     }
+  });
+
+  test("surplus is a server-only credential mapping", () => {
+    process.env["SURPLUS_API_KEY"] = "inf_test-surplus-key";
+    expect(resolveProviderKey("surplus")).toBe("inf_test-surplus-key");
   });
 
   test("openai: returns env value when present", () => {

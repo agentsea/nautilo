@@ -571,13 +571,15 @@ export function reconcileRoomHistoryShadowPayloads(
 export function withholdRoomHistoryShadowPayloads(
   messages: readonly StoredSessionMessageDto[],
 ): readonly StoredSessionMessageDto[] {
-  return messages.map((message) => Object.freeze({
-    ...message,
-    attachments: [],
-    content: "Encrypted history is unavailable on this device.",
-    historyUnavailable: true,
-    ...(message.role === "assistant" ? { toolCalls: "[]" } : {}),
-  }));
+  return messages.map((message) => {
+    return Object.freeze({
+      ...message,
+      attachments: [],
+      content: "Encrypted history is unavailable on this device.",
+      historyUnavailable: true,
+      ...(message.role === "assistant" ? { toolCalls: "[]" } : {}),
+    });
+  });
 }
 
 function restoreToolResultContent(content: string, toolName: string): string {

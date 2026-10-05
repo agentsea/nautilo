@@ -16,6 +16,9 @@ import {
   resolveModelRole,
   resolveProviderKey,
   resolveRetainedModels,
+  resolveServerFundedForegroundCatalogModel,
+  resolveSurplusChatServingAvailability,
+  type QualifiedSurplusChatRoute,
 } from "@nautilo/agent";
 import { candidatesForModelRole } from "@nautilo/config";
 import {
@@ -33,29 +36,43 @@ import { writeSecurityAuditEvent, type SecurityAuditEvent } from "../lib/securit
 import { getServerDirectDb } from "../lib/server-direct-db";
 
 const REASONING_EFFORTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-
 /** Read-only display projection of the same live catalog used by execution. */
-function catalogModels() {
+function catalogModels(input?: {
+  readonly policyEnabled: boolean;
+  readonly keyConfigured: boolean;
+  readonly routes?: readonly QualifiedSurplusChatRoute[];
+}) {
   kickRuntimeModelCatalogRefresh();
-  return listResolvedCatalogModels({ includeUnavailable: true }).map((model) => ({
-    id: model.id,
-    displayName: model.displayName,
-    provider: model.provider,
-    workload: model.workload,
-    availability: model.availability,
-    ...(model.unavailableReason ? { unavailableReason: model.unavailableReason } : {}),
-    input: model.input,
-    output: model.output,
-    features: {
-      tools: model.features.tools,
-      structuredOutputs: model.features.structuredOutputs,
-      reasoning: model.features.reasoning,
-      visualGrounding: model.features.visualGrounding ?? null,
-      webSearch: model.features.webSearch,
-      e2ee: model.features.e2ee,
-    },
-    decision: model.decision ? { operations: model.decision.operations } : null,
-  }));
+  return listResolvedCatalogModels({ includeUnavailable: true }).map((directModel) => {
+    const model = input
+      ? resolveServerFundedForegroundCatalogModel(directModel.id, {
+          policyEnabled: input.policyEnabled,
+          keyConfigured: input.keyConfigured,
+          ...(input.routes === undefined ? {} : { routes: input.routes }),
+        })
+      : directModel;
+    return ({
+      id: model.id,
+      displayName: model.displayName,
+      provider: model.provider,
+      workload: model.workload,
+      availability: model.availability,
+      directAvailability: directModel.availability,
+      ...(directModel.unavailableReason ? { directUnavailableReason: directModel.unavailableReason } : {}),
+      ...(model.unavailableReason ? { unavailableReason: model.unavailableReason } : {}),
+      input: model.input,
+      output: model.output,
+      features: {
+        tools: model.features.tools,
+        structuredOutputs: model.features.structuredOutputs,
+        reasoning: model.features.reasoning,
+        visualGrounding: model.features.visualGrounding ?? null,
+        webSearch: model.features.webSearch,
+        e2ee: model.features.e2ee,
+      },
+      decision: model.decision ? { operations: model.decision.operations } : null,
+    });
+  });
 }
 
 function embeddingModels() {
@@ -165,6 +182,12 @@ type ParseResult =
 function parseUpdateBody(
   body: unknown,
   listMediaModels: typeof mediaGenerationModels = mediaGenerationModels,
+  surplusInput?: {
+    readonly policyEnabled: boolean;
+    readonly keyConfigured: boolean;
+    readonly routes?: readonly QualifiedSurplusChatRoute[];
+  },
+  retained?: ResolvedServerModelConfig,
 ): ParseResult {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, error: "invalid body" };
@@ -221,19 +244,29 @@ function parseUpdateBody(
   const unavailableReason = (
     modelId: string,
     purpose: "chat" | "chat-tools",
+    allowSurplus: boolean,
   ): string | null => {
     const row = resolveRetainedModels([modelId], { purpose })[0]!;
-    return row.availability === "selectable"
-      ? null
-      : row.unavailableReason ?? "model is not runnable";
+    if (row.availability === "selectable") return null;
+    if (row.availability === "missing-key" && allowSurplus && surplusInput) {
+      const surplus = resolveSurplusChatServingAvailability({
+        catalogModelId: modelId,
+        policyEnabled: surplusInput.policyEnabled,
+        keyConfigured: surplusInput.keyConfigured,
+        ...(surplusInput.routes === undefined ? {} : { routes: surplusInput.routes }),
+      });
+      if (surplus.status === "available"
+        && (purpose !== "chat-tools" || (row.capabilities.tools && surplus.route.supportsTools))) return null;
+    }
+    return row.unavailableReason ?? "model is not runnable";
   };
 
   if ("defaultChatModel" in raw) {
     const v = raw["defaultChatModel"];
     if (typeof v !== "string") return { ok: false, error: "defaultChatModel must be a string" };
     if (v.trim() !== "") {
-      const reason = unavailableReason(v, "chat-tools");
-      if (reason) return { ok: false, error: `model unavailable: ${v} (${reason})` };
+      const reason = unavailableReason(v, "chat-tools", true);
+      if (reason && v !== retained?.defaultChatModel) return { ok: false, error: `model unavailable: ${v} (${reason})` };
     }
     patch.defaultChatModel = v.trim() === "" ? null : v;
   }
@@ -243,8 +276,8 @@ function parseUpdateBody(
     if (typeof v !== "string") return { ok: false, error: "conductorModel must be a string" };
     // Empty string ⇒ inherit the default chat model (stored as null).
     if (v.trim() !== "") {
-      const reason = unavailableReason(v, "chat");
-      if (reason) return { ok: false, error: `model unavailable: ${v} (${reason})` };
+      const reason = unavailableReason(v, "chat", false);
+      if (reason && v !== retained?.conductorModel) return { ok: false, error: `model unavailable: ${v} (${reason})` };
     }
     patch.conductorModel = v.trim() === "" ? null : v;
   }
@@ -255,8 +288,8 @@ function parseUpdateBody(
       return { ok: false, error: "stenographerModel must be a string" };
     }
     if (v.trim() !== "") {
-      const reason = unavailableReason(v, "chat");
-      if (reason) return { ok: false, error: `model unavailable: ${v} (${reason})` };
+      const reason = unavailableReason(v, "chat", false);
+      if (reason && v !== retained?.stenographerModel) return { ok: false, error: `model unavailable: ${v} (${reason})` };
     }
     patch.stenographerModel = v.trim() === "" ? null : v;
   }
@@ -267,8 +300,8 @@ function parseUpdateBody(
       return { ok: false, error: "reflectionModel must be a string" };
     }
     if (v.trim() !== "") {
-      const reason = unavailableReason(v, "chat");
-      if (reason) return { ok: false, error: `model unavailable: ${v} (${reason})` };
+      const reason = unavailableReason(v, "chat", false);
+      if (reason && v !== retained?.reflectionModel) return { ok: false, error: `model unavailable: ${v} (${reason})` };
     }
     patch.reflectionModel = v.trim() === "" ? null : v;
   }
@@ -279,8 +312,8 @@ function parseUpdateBody(
       return { ok: false, error: "memoryReviewModel must be a string or null" };
     }
     if (value?.trim()) {
-      const reason = unavailableReason(value, "chat-tools");
-      if (reason) return { ok: false, error: `model unavailable: ${value} (${reason})` };
+      const reason = unavailableReason(value, "chat-tools", false);
+      if (reason && value !== retained?.memoryReviewModel) return { ok: false, error: `model unavailable: ${value} (${reason})` };
     }
     patch.memoryReviewModel = value?.trim() ? value : null;
   }
@@ -291,8 +324,8 @@ function parseUpdateBody(
       return { ok: false, error: "fallbackChain must be an array of strings" };
     }
     for (const id of v) {
-      const reason = unavailableReason(id, "chat-tools");
-      if (reason) {
+      const reason = unavailableReason(id, "chat-tools", true);
+      if (reason && JSON.stringify(v) !== JSON.stringify(retained?.fallbackChain)) {
         return { ok: false, error: `model unavailable in fallbackChain: ${id} (${reason})` };
       }
     }
@@ -309,7 +342,7 @@ function parseUpdateBody(
       if (typeof enabled !== "boolean") {
         return { ok: false, error: `reasoningOutput.${modelId} must be a boolean` };
       }
-      const reason = unavailableReason(modelId, "chat");
+      const reason = unavailableReason(modelId, "chat", true);
       if (reason) {
         return { ok: false, error: `model unavailable in reasoningOutput: ${modelId} (${reason})` };
       }
@@ -337,7 +370,7 @@ function parseUpdateBody(
       if (typeof effort !== "string" || !REASONING_EFFORTS.has(effort)) {
         return { ok: false, error: `reasoningPolicy.overrides.${modelId} is invalid` };
       }
-      const reason = unavailableReason(modelId, "chat");
+      const reason = unavailableReason(modelId, "chat", true);
       if (reason) return { ok: false, error: `model unavailable in reasoningPolicy: ${modelId} (${reason})` };
       parsedOverrides[modelId] = effort as typeof parsedOverrides[string];
     }
@@ -345,6 +378,14 @@ function parseUpdateBody(
       defaultEffort: defaultEffort as typeof parsedOverrides[string] | null,
       overrides: parsedOverrides,
     };
+  }
+
+  if ("preferSurplus" in raw) {
+    const value = raw["preferSurplus"];
+    if (typeof value !== "boolean") {
+      return { ok: false, error: "preferSurplus must be a boolean" };
+    }
+    patch.preferSurplus = value;
   }
 
   if (
@@ -361,6 +402,7 @@ function parseUpdateBody(
     patch.fallbackChain === undefined &&
     patch.reasoningOutput === undefined
     && patch.reasoningPolicy === undefined
+    && patch.preferSurplus === undefined
   ) {
     return { ok: false, error: "no recognized fields to update" };
   }
@@ -382,6 +424,7 @@ export function toWire(config: ResolvedServerModelConfig) {
     fallbackChain: config.fallbackChain,
     reasoningOutput: config.reasoningOutput,
     reasoningPolicy: config.reasoningPolicy,
+    preferSurplus: config.preferSurplus,
   };
 }
 
@@ -389,8 +432,9 @@ export function toWire(config: ResolvedServerModelConfig) {
 export function parseUpdateBodyForTests(
   body: unknown,
   listMediaModels?: typeof mediaGenerationModels,
+  surplusInput?: Parameters<typeof parseUpdateBody>[2],
 ): ParseResult {
-  return parseUpdateBody(body, listMediaModels);
+  return parseUpdateBody(body, listMediaModels, surplusInput);
 }
 
 function auditChanges(
@@ -425,6 +469,9 @@ export interface ServerModelsRouteDeps {
   listMediaModels?: typeof mediaGenerationModels;
   getEffectiveMediaModel?: typeof effectiveMediaGenerationModel;
   getEffectiveSpeechModel?: () => string | null;
+  getSurplusKeyConfigured?: () => boolean;
+  /** Pure offline seam; production derives routes from the signed catalogue. */
+  getQualifiedSurplusChatRoutes?: () => readonly QualifiedSurplusChatRoute[];
 }
 
 export function serverModelsRoutes(
@@ -442,20 +489,36 @@ export function serverModelsRoutes(
     ?? (() => getCachedServerModelConfigRow()?.embeddingModel ?? null);
   const listMediaModels = overrides.listMediaModels ?? mediaGenerationModels;
   const getEffectiveMediaModel = overrides.getEffectiveMediaModel ?? effectiveMediaGenerationModel;
-  const wire = (config: ResolvedServerModelConfig) => ({ ...toWire(config),
-    catalogModels: catalogModels(),
-    effectiveEmbeddingModel: (overrides.getEffectiveEmbeddingModel ?? effectiveEmbeddingModel)(),
-    embeddingSelectionPending: activeEmbeddingSelection() !== config.embeddingModel,
-    embeddingModels: embeddingModels(),
-    imageModels: listMediaModels("image"),
-    musicModels: listMediaModels("music"),
-    videoModels: listMediaModels("video"),
-    speechModels: listSpeechModels().map(({ speech, providerModelId, ...model }) => model),
-    effectiveSpeechModel: (overrides.getEffectiveSpeechModel ?? (() => { try { return getServerSpeechModel().id; } catch { return null; } }))(),
-    effectiveImageModel: getEffectiveMediaModel("image"),
-    effectiveMusicModel: getEffectiveMediaModel("music"),
-    effectiveVideoModel: getEffectiveMediaModel("video"),
-  });
+  const wire = (config: ResolvedServerModelConfig) => {
+    const keyConfigured = (overrides.getSurplusKeyConfigured
+      ?? (() => resolveProviderKey("surplus") !== null))();
+    const routes = overrides.getQualifiedSurplusChatRoutes?.();
+    const surplus = resolveSurplusChatServingAvailability({
+      policyEnabled: config.preferSurplus,
+      keyConfigured,
+      ...(routes === undefined ? {} : { routes }),
+    });
+    return ({ ...toWire(config),
+      surplus: {
+        keyConfigured,
+        policyEnabled: config.preferSurplus,
+        chatStatus: surplus.status,
+      },
+      catalogModels: catalogModels({ policyEnabled: config.preferSurplus, keyConfigured,
+        ...(routes === undefined ? {} : { routes }) }),
+      effectiveEmbeddingModel: (overrides.getEffectiveEmbeddingModel ?? effectiveEmbeddingModel)(),
+      embeddingSelectionPending: activeEmbeddingSelection() !== config.embeddingModel,
+      embeddingModels: embeddingModels(),
+      imageModels: listMediaModels("image"),
+      musicModels: listMediaModels("music"),
+      videoModels: listMediaModels("video"),
+      speechModels: listSpeechModels().map(({ speech, providerModelId, ...model }) => model),
+      effectiveSpeechModel: (overrides.getEffectiveSpeechModel ?? (() => { try { return getServerSpeechModel().id; } catch { return null; } }))(),
+      effectiveImageModel: getEffectiveMediaModel("image"),
+      effectiveMusicModel: getEffectiveMediaModel("music"),
+      effectiveVideoModel: getEffectiveMediaModel("video"),
+    });
+  };
 
   app.get("/api/admin/server-models", async (request, reply) => {
     const userId = request.sessionUserId;
@@ -477,12 +540,22 @@ export function serverModelsRoutes(
       return reply.code(403).send({ error: "admin only" });
     }
 
-    const parsed = parseUpdateBody(request.body, listMediaModels);
-    if (!parsed.ok) return reply.code(422).send({ error: parsed.error });
-
     const db = getDb();
     const defaults = getDefaults();
     const before = await getConfig(db, defaults);
+    const requestedPolicy = typeof (request.body as Record<string, unknown> | null)?.["preferSurplus"] === "boolean"
+      ? (request.body as Record<string, boolean>)["preferSurplus"]!
+      : before.preferSurplus;
+    const keyConfigured = (overrides.getSurplusKeyConfigured
+      ?? (() => resolveProviderKey("surplus") !== null))();
+    const routes = overrides.getQualifiedSurplusChatRoutes?.();
+    const parsed = parseUpdateBody(request.body, listMediaModels, {
+      policyEnabled: requestedPolicy,
+      keyConfigured,
+      ...(routes === undefined ? {} : { routes }),
+    }, before);
+    if (!parsed.ok) return reply.code(422).send({ error: parsed.error });
+
     const after = await upsertConfig(db, parsed.patch, defaults);
 
     // Make the write live for the sync consumers (default/conductor/fallback).

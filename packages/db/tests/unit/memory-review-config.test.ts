@@ -12,7 +12,8 @@ test("unset Memory overrides preserve runtime ownership instead of inheriting ch
     id: "server", defaultChatModel: "test:chat", conductorModel: null, embeddingModel: null,
     imageModel: null, musicModel: null, videoModel: null, speechModel: null,
     stenographerModel: null, reflectionModel: null, memoryReviewModel: "test:review",
-    fallbackChain: [], reasoningOutput: null, reasoningPolicy: null, updatedAt: new Date(),
+    fallbackChain: [], reasoningOutput: null, reasoningPolicy: null, preferSurplus: false,
+    updatedAt: new Date(),
   };
   expect(resolveServerModelConfig(row, defaults).memoryReviewModel).toBe("test:review");
   expect(resolveServerContextConfig({ recentConversationLimit: 50, minimumFullTurns: 1,

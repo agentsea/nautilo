@@ -13,6 +13,8 @@ import userEvent from "@testing-library/user-event";
 
 let canManage = true;
 let openRouterAvailable = true;
+let anthropicDirectAvailable = true;
+let gateVeniceBySurplusPolicy = false;
 let modelLoadGate: Promise<void> | null = null;
 let retainedLoadGate: Promise<void> | null = null;
 const catalogModels: NonNullable<ServerModelConfig["catalogModels"]> = [
@@ -30,6 +32,12 @@ const catalogModels: NonNullable<ServerModelConfig["catalogModels"]> = [
   },
 ];
 const initialConfig = {
+  preferSurplus: false,
+  surplus: {
+    keyConfigured: false,
+    policyEnabled: false,
+    chatStatus: "not-qualified" as const,
+  },
   catalogModels: catalogModels as ServerModelConfig["catalogModels"],
   defaultChatModel: "anthropic:claude-sonnet-4-6",
   conductorModel: "",
@@ -117,8 +125,9 @@ mock.module("../../../hooks/use-can", () => ({
 
 mock.module("../../../lib/api", () => ({
   apiClient: {
-    getModels: async () => {
+    getModels: async (query?: { includeUnavailable?: boolean }) => {
       const openRouterWasAvailable = openRouterAvailable;
+      const surplusPolicyWasEnabled = savedConfig.preferSurplus;
       await modelLoadGate;
       return [
         {
@@ -137,7 +146,8 @@ mock.module("../../../lib/api", () => ({
           id: "anthropic:claude-sonnet-4-6",
           displayName: "Claude Sonnet 4.6",
           provider: "anthropic",
-          availability: "selectable",
+          availability: anthropicDirectAvailable ? "selectable" : "missing-key",
+          ...(!anthropicDirectAvailable ? { unavailableReason: "Anthropic credential is not configured" } : {}),
         },
         {
           id: "openai:gpt-5.4-mini",
@@ -146,7 +156,9 @@ mock.module("../../../lib/api", () => ({
           availability: "selectable",
           capabilities: { reasoning: true },
         },
-      ].filter((model) => openRouterWasAvailable || model.provider !== "openrouter");
+      ].filter((model) => (openRouterWasAvailable || model.provider !== "openrouter")
+        && (!gateVeniceBySurplusPolicy || surplusPolicyWasEnabled || model.provider !== "venice")
+        && (query?.includeUnavailable || model.availability === "selectable"));
     },
     resolveRetainedModels: resolveRetainedModelsMock,
     admin: {
@@ -178,6 +190,8 @@ beforeEach(() => {
   resolveRetainedModelsMock.mockClear();
   canManage = true;
   openRouterAvailable = true;
+  anthropicDirectAvailable = true;
+  gateVeniceBySurplusPolicy = false;
   modelLoadGate = null;
   retainedLoadGate = null;
   Object.assign(savedConfig, initialConfig);
@@ -220,6 +234,7 @@ describe("ModelsSection catalog inventory", () => {
     const select = view.getByTestId("server-stenographer-model") as HTMLSelectElement;
     await act(async () => fireEvent.change(select, { target: { value: "openai:gpt-5.4-mini" } }));
     openRouterAvailable = true;
+  anthropicDirectAvailable = true;
     act(() => window.dispatchEvent(new Event("nautilo:provider-keys-saved")));
     await waitFor(() => expect(view.queryByText("OpenRouter credential is not configured") === null).toBe(true));
     expect(select.value).toBe("openai:gpt-5.4-mini");
@@ -253,6 +268,7 @@ describe("ModelsSection Stenographer model", () => {
     const view = render(<ModelsSection />);
     act(() => window.dispatchEvent(new Event("nautilo:provider-keys-saved")));
     openRouterAvailable = true;
+  anthropicDirectAvailable = true;
     releaseModelLoad();
 
     const scope = await waitFor(() =>
@@ -290,6 +306,7 @@ describe("ModelsSection Stenographer model", () => {
     });
 
     openRouterAvailable = true;
+  anthropicDirectAvailable = true;
     act(() => window.dispatchEvent(new Event("nautilo:provider-keys-saved")));
 
     await waitFor(() => expect(view.container.querySelector(
@@ -399,16 +416,7 @@ describe("ModelsSection Stenographer model", () => {
     });
 
     await waitFor(() => {
-      expect(setServerModelsMock).toHaveBeenCalledWith({
-        defaultChatModel: "anthropic:claude-sonnet-4-6",
-        conductorModel: "",
-        stenographerModel: "openai:gpt-5.4-mini",
-        reflectionModel: "",
-        memoryReviewModel: null,
-        embeddingModel: null,
-        fallbackChain: [],
-        reasoningPolicy: { defaultEffort: null, overrides: {} },
-      });
+      expect(setServerModelsMock).toHaveBeenCalledWith({ stenographerModel: "openai:gpt-5.4-mini" });
       expect(view.getByText("Saved. Live now.")).toBeTruthy();
     });
   });
@@ -423,16 +431,7 @@ describe("ModelsSection Stenographer model", () => {
       fireEvent.change(select, { target: { value: "openai:gpt-5.4-mini" } });
       fireEvent.click(view.getByRole("button", { name: "Save changes" }));
     });
-    await waitFor(() => expect(setServerModelsMock).toHaveBeenCalledWith({
-      defaultChatModel: "anthropic:claude-sonnet-4-6",
-      conductorModel: "",
-      stenographerModel: "",
-      reflectionModel: "openai:gpt-5.4-mini",
-      memoryReviewModel: null,
-      embeddingModel: null,
-      fallbackChain: [],
-        reasoningPolicy: { defaultEffort: null, overrides: {} },
-    }));
+    await waitFor(() => expect(setServerModelsMock).toHaveBeenCalledWith({ reflectionModel: "openai:gpt-5.4-mini" }));
   });
 
   test("saves a scoped server reasoning-effort policy", async () => {
@@ -447,16 +446,7 @@ describe("ModelsSection Stenographer model", () => {
     });
 
     await waitFor(() => {
-      expect(setServerModelsMock).toHaveBeenCalledWith({
-        defaultChatModel: "anthropic:claude-sonnet-4-6",
-        conductorModel: "",
-        stenographerModel: "",
-        reflectionModel: "",
-        memoryReviewModel: null,
-        embeddingModel: null,
-        fallbackChain: [],
-        reasoningPolicy: { defaultEffort: null, overrides: { "openai:gpt-5.4-mini": "high" } },
-      });
+      expect(setServerModelsMock).toHaveBeenCalledWith({ reasoningPolicy: { defaultEffort: null, overrides: { "openai:gpt-5.4-mini": "high" } } });
     });
   });
 
@@ -467,7 +457,102 @@ describe("ModelsSection Stenographer model", () => {
     expect((scope as HTMLSelectElement).disabled).toBe(true);
     expect((view.getByTestId("server-stenographer-model") as HTMLSelectElement).disabled)
       .toBe(true);
+    expect((view.getByRole("checkbox", { name: "Prefer Surplus" }) as HTMLInputElement).disabled)
+      .toBe(true);
     expect(view.getByText("manage_server_operations", { selector: "code" })).toBeTruthy();
+  });
+
+  test("shows unqualified Surplus separately and persists the default-off preference", async () => {
+    savedConfig.surplus = {
+      keyConfigured: true,
+      policyEnabled: false,
+      chatStatus: "not-qualified",
+    };
+    const view = render(<ModelsSection />);
+    const toggle = await view.findByRole("checkbox", { name: "Prefer Surplus" });
+
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    expect(view.getByTestId("surplus-capability-status").textContent)
+      .toContain("Surplus key: Configured · Chat serving: No supported catalogue models");
+
+    await act(async () => fireEvent.click(toggle));
+    await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
+    await waitFor(() => expect(setServerModelsMock.mock.calls[0]?.[0].preferSurplus).toBe(true));
+  });
+
+  test("refreshes foreground and fallback choices after enabling Surplus while keeping backgrounds direct-only", async () => {
+    gateVeniceBySurplusPolicy = true;
+    savedConfig.catalogModels = [...catalogModels, {
+      id: "venice:minimax-m3-preview", displayName: "MiniMax M3 (Venice)", provider: "venice",
+      workload: "chat", availability: "selectable", directAvailability: "missing_credentials",
+      directUnavailableReason: "Venice credential is not configured", input: ["text"], output: ["text"],
+      features: { tools: true, structuredOutputs: true, reasoning: true, visualGrounding: null, webSearch: false, e2ee: false },
+      decision: null,
+    }];
+    setServerModelsMock.mockImplementationOnce(async (patch: typeof savedConfig) => {
+      Object.assign(savedConfig, patch, {
+        surplus: { keyConfigured: true, policyEnabled: true, chatStatus: "available" },
+      });
+      return { ...savedConfig };
+    });
+
+    const view = render(<ModelsSection />);
+    const defaultSelect = await view.findByRole("combobox", { name: "Default chat model" });
+    expect(within(defaultSelect).queryByRole("option", { name: "MiniMax M3 (Venice)" })).toBeNull();
+
+    await act(async () => fireEvent.click(view.getByRole("checkbox", { name: "Prefer Surplus" })));
+    await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
+
+    await waitFor(() => expect(
+      within(defaultSelect).getByRole("option", { name: "MiniMax M3 (Venice)" }),
+    ).toBeTruthy());
+    expect(within(view.getByRole("combobox", { name: "Add fallback model" }))
+      .getByRole("option", { name: "MiniMax M3 (Venice)" })).toBeTruthy();
+    for (const name of ["Conductor / floor-manager model", "Stenographer model", "Reflection / Sleep model"]) {
+      expect(within(view.getByRole("combobox", { name }))
+        .queryByRole("option", { name: /MiniMax M3 \(Venice\)/ })).toBeNull();
+    }
+    expect(view.getByText("Saved. Live now.")).toBeTruthy();
+  });
+
+  test("turns Surplus off without resubmitting retained model selections", async () => {
+    Object.assign(savedConfig, {
+      preferSurplus: true,
+      defaultChatModel: "venice:openai-gpt-55",
+      fallbackChain: ["venice:openai-gpt-55"],
+      surplus: { keyConfigured: true, policyEnabled: true, chatStatus: "available" },
+    });
+    const view = render(<ModelsSection />);
+    const toggle = await view.findByRole("checkbox", { name: "Prefer Surplus" });
+    await act(async () => fireEvent.click(toggle));
+    await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
+    await waitFor(() => {
+      expect(setServerModelsMock).toHaveBeenCalledWith({ preferSurplus: false });
+      expect(view.getByText("Saved. Live now.")).toBeTruthy();
+    });
+  });
+
+  test("offers Surplus-only models for chat but excludes them from background roles", async () => {
+    anthropicDirectAvailable = false;
+    retainedRows = [{ id: "anthropic:claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", availability: "missing-key", unavailableReason: "Anthropic credential is not configured" }];
+    savedConfig.catalogModels = [...catalogModels, {
+      id: "anthropic:claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", provider: "anthropic",
+      workload: "chat", availability: "selectable", directAvailability: "missing_credentials",
+      directUnavailableReason: "Anthropic credential is not configured", input: ["text"], output: ["text"],
+      features: { tools: true, structuredOutputs: true, reasoning: true, visualGrounding: null, webSearch: false, e2ee: false },
+      decision: null,
+    }];
+    savedConfig.memoryReviewModel = "anthropic:claude-sonnet-4-6";
+    const view = render(<ModelsSection />);
+    const defaultSelect = await view.findByRole("combobox", { name: "Default chat model" });
+    expect(within(defaultSelect).getByRole("option", { name: "Claude Sonnet 4.6" })).toBeTruthy();
+    for (const name of ["Conductor / floor-manager model", "Stenographer model", "Reflection / Sleep model"]) {
+      expect(within(view.getByRole("combobox", { name })).queryByRole("option", { name: "Claude Sonnet 4.6" })).toBeNull();
+    }
+    const memorySelect = view.getByTestId("server-memory-review-model");
+    expect((within(memorySelect).getByRole("option", { name: "Claude Sonnet 4.6 (Unavailable)" }) as HTMLOptionElement).disabled).toBe(true);
+    expect(within(memorySelect).queryByRole("option", { name: "Claude Sonnet 4.6" })).toBeNull();
+    expect(view.getByText("Anthropic credential is not configured")).toBeTruthy();
   });
 
   test("retains unavailable values in all five Admin roles with reasons and recovery actions", async () => {

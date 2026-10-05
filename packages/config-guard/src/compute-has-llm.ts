@@ -19,5 +19,12 @@ function keyIsConfigured(key: KeyReport | undefined): boolean {
 export function computeHasLlmFromKeys(
   keys: KeyReport[],
 ): boolean {
-  return keys.some((key) => LLM_KEY_IDS.has(key.id) && keyIsConfigured(key));
+  return keys.some(
+    (key) =>
+      // A Surplus key is only a marketplace credential and cannot make setup
+      // inference-ready without a direct model-provider credential.
+      key.id !== "surplus"
+      && LLM_KEY_IDS.has(key.id)
+      && keyIsConfigured(key),
+  );
 }

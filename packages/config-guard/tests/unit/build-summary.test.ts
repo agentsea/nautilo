@@ -22,6 +22,7 @@ const PASSING_VALUES: Record<string, string> = {
   google: `AIzaSy${"a".repeat(34)}`,
   fireworks: `fw_${"a".repeat(20)}`,
   venice: "a".repeat(48),
+  surplus: "surplus-test-key",
 };
 
 const ALL_LLM_ENV_VARS = getAllKeyDefinitions()
@@ -52,7 +53,7 @@ describe("buildSummary().hasLlm derives from key-registry", () => {
   });
 
   for (const { id, envVar } of ALL_LLM_ENV_VARS) {
-    test(`hasLlm is true when ${id} (${envVar}) is configured`, async () => {
+    test(`hasLlm reflects qualification when ${id} (${envVar}) is configured`, async () => {
       const v = PASSING_VALUES[id];
       if (!v) {
         throw new Error(
@@ -63,7 +64,9 @@ describe("buildSummary().hasLlm derives from key-registry", () => {
       const r = await check({ validate: false });
       const keyReport = r.keys.find((k) => k.id === id);
       expect(keyReport?.status === "verified" || keyReport?.status === "present").toBe(true);
-      expect(r.summary.hasLlm).toBe(true);
+      // A marketplace key does not prove that any released chat route has
+      // passed model, provider-pin, and usage qualification.
+      expect(r.summary.hasLlm).toBe(id !== "surplus");
     });
   }
 });

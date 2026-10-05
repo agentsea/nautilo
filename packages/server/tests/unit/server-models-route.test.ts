@@ -14,6 +14,16 @@ import {
 
 const KNOWN_MODEL = "anthropic:claude-sonnet-4-6";
 const REPAIR_MODEL = "openai:gpt-5.6-terra";
+const QUALIFIED_SURPLUS_ROUTE = {
+  catalogModelId: "venice:openai-gpt-55",
+  surplusModelId: "gpt-5.5",
+  providerPin: "venice" as const,
+  supportsTools: true,
+  supportsVision: false,
+  supportsReasoning: false,
+  maxContextTokens: 100_000,
+  maxOutputTokens: 8_000,
+};
 const MEDIA_MODELS = {
   image: [{ id: "venice:gpt-image-2", displayName: "GPT Image 2", provider: "venice", available: true }],
   music: [{ id: "venice:sonilo-v1-1-music", displayName: "Sonilo", provider: "venice", available: true }],
@@ -92,9 +102,62 @@ const modelConfig: ResolvedServerModelConfig = {
   fallbackChain: ["openai:gpt-5.4-mini"],
   reasoningOutput: { [KNOWN_MODEL]: true },
   reasoningPolicy: { defaultEffort: null, overrides: {} },
+  preferSurplus: false,
 };
 
 describe("server-models parseUpdateBody — reasoningOutput", () => {
+  test("Surplus-only admission is limited to foreground model settings", () => {
+    const previous = process.env["VENICE_API_KEY"];
+    try {
+      delete process.env["VENICE_API_KEY"];
+      const surplus = {
+        policyEnabled: true,
+        keyConfigured: true,
+        routes: [QUALIFIED_SURPLUS_ROUTE],
+      };
+      expect(parseUpdateBodyForTests({ defaultChatModel: QUALIFIED_SURPLUS_ROUTE.catalogModelId }, undefined, surplus))
+        .toEqual({ ok: true, patch: { defaultChatModel: QUALIFIED_SURPLUS_ROUTE.catalogModelId } });
+      expect(parseUpdateBodyForTests({ fallbackChain: [QUALIFIED_SURPLUS_ROUTE.catalogModelId] }, undefined, surplus))
+        .toEqual({ ok: true, patch: { fallbackChain: [QUALIFIED_SURPLUS_ROUTE.catalogModelId] } });
+      for (const field of ["conductorModel", "stenographerModel", "reflectionModel", "memoryReviewModel"] as const) {
+        const result = parseUpdateBodyForTests({ [field]: QUALIFIED_SURPLUS_ROUTE.catalogModelId }, undefined, surplus);
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error).toContain("credential");
+      }
+    } finally {
+      if (previous === undefined) delete process.env["VENICE_API_KEY"];
+      else process.env["VENICE_API_KEY"] = previous;
+    }
+  });
+
+  test("can disable Surplus with retained defaults and chain when the original key is absent", async () => {
+    const previous = process.env["VENICE_API_KEY"];
+    try {
+      delete process.env["VENICE_API_KEY"];
+      const id = QUALIFIED_SURPLUS_ROUTE.catalogModelId;
+      const before = { ...modelConfig, preferSurplus: true, defaultChatModel: id, fallbackChain: [id] };
+      const writes: unknown[] = [];
+      const call = routeHarness({
+        getCapabilities: async () => ["manage_server_operations"], getDb: () => ({}) as never,
+        getDefaults: () => ({ defaultChatModel: id, fallbackChain: [id] }), getConfig: async () => before,
+        getSurplusKeyConfigured: () => true,
+        upsertConfig: async (_db, patch) => { writes.push(patch); return { ...before, preferSurplus: patch.preferSurplus ?? before.preferSurplus, defaultChatModel: patch.defaultChatModel ?? before.defaultChatModel, fallbackChain: patch.fallbackChain ?? before.fallbackChain }; },
+        refreshConfigCache: async () => null, auditEvent: () => undefined,
+        listMediaModels, getEffectiveMediaModel: () => null, getEffectiveEmbeddingModel: () => null,
+      });
+      expect(await call("POST", { ...requestBase, sessionUserId: "admin", body: {
+        preferSurplus: false, defaultChatModel: id, fallbackChain: [id],
+      } })).toMatchObject({ status: 200, body: { preferSurplus: false, defaultChatModel: id, fallbackChain: [id] } });
+      expect(writes).toEqual([{ preferSurplus: false, defaultChatModel: id, fallbackChain: [id] }]);
+      expect(await call("POST", { ...requestBase, sessionUserId: "admin", body: {
+        preferSurplus: false, defaultChatModel: "venice:minimax-m3-preview",
+      } })).toMatchObject({ status: 422 });
+    } finally {
+      if (previous === undefined) delete process.env["VENICE_API_KEY"];
+      else process.env["VENICE_API_KEY"] = previous;
+    }
+  });
+
   test("accepts every server model-policy field in one patch", () => {
     expect(parseUpdateBodyForTests({
       defaultChatModel: KNOWN_MODEL,
@@ -109,6 +172,7 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
       fallbackChain: [KNOWN_MODEL],
       reasoningOutput: { [KNOWN_MODEL]: false },
       reasoningPolicy: { defaultEffort: null, overrides: {} },
+      preferSurplus: true,
     })).toEqual({
       ok: true,
       patch: {
@@ -124,6 +188,7 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
         fallbackChain: [KNOWN_MODEL],
         reasoningOutput: { [KNOWN_MODEL]: false },
         reasoningPolicy: { defaultEffort: null, overrides: {} },
+        preferSurplus: true,
       },
     });
   });
@@ -192,6 +257,17 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
       error: "no recognized fields to update",
     });
   });
+
+  test("accepts only a boolean Surplus preference", () => {
+    expect(parseUpdateBodyForTests({ preferSurplus: true })).toEqual({
+      ok: true,
+      patch: { preferSurplus: true },
+    });
+    expect(parseUpdateBodyForTests({ preferSurplus: "true" })).toEqual({
+      ok: false,
+      error: "preferSurplus must be a boolean",
+    });
+  });
 });
 
 describe("server-models toWire", () => {
@@ -209,6 +285,7 @@ describe("server-models toWire", () => {
       fallbackChain: [],
       reasoningOutput: { [KNOWN_MODEL]: false },
       reasoningPolicy: { defaultEffort: null, overrides: { [KNOWN_MODEL]: "off" } },
+      preferSurplus: true,
     };
     expect(toWire(config)).toEqual({
       defaultChatModel: KNOWN_MODEL,
@@ -223,6 +300,7 @@ describe("server-models toWire", () => {
       fallbackChain: [],
       reasoningOutput: { [KNOWN_MODEL]: false },
       reasoningPolicy: { defaultEffort: null, overrides: { [KNOWN_MODEL]: "off" } },
+      preferSurplus: true,
     });
   });
 
@@ -268,6 +346,131 @@ describe("server-models route authorization, partial writes, and audit", () => {
       .toEqual({ status: 403, body: { error: "admin only" } });
   });
 
+  test("projects signed chat models across supported providers through Surplus only while policy and key are enabled", async () => {
+    const directCredentialKeys = [
+      "ANTHROPIC_API_KEY",
+      "OPENAI_API_KEY",
+      "GOOGLE_API_KEY",
+      "GOOGLE_GENERATIVE_AI_API_KEY",
+      "GEMINI_API_KEY",
+      "FIREWORKS_API_KEY",
+      "OPENROUTER_API_KEY",
+      "VENICE_API_KEY",
+      "TOGETHER_API_KEY",
+      "NAUTILO_MANAGED_GATEWAY_API_KEY",
+      "NAUTILO_MANAGED_GATEWAY_BASE_URL",
+    ] as const;
+    const previous = Object.fromEntries(directCredentialKeys.map((key) => [key, process.env[key]]));
+    for (const key of directCredentialKeys) delete process.env[key];
+    try {
+      const read = async (preferSurplus: boolean, surplusKeyConfigured = true) => {
+        const call = routeHarness({
+          getCapabilities: async () => ["read_server_settings"],
+          getDb: () => ({}) as never,
+          getConfig: async () => ({ ...modelConfig, preferSurplus }),
+          refreshConfigCache: async () => null,
+          getEffectiveEmbeddingModel: () => null,
+          getActiveEmbeddingSelection: () => null,
+          listMediaModels,
+          getEffectiveMediaModel: () => null,
+          getSurplusKeyConfigured: () => surplusKeyConfigured,
+        });
+        const response = await call("GET", { ...requestBase, sessionUserId: "viewer" });
+        expect(response.status).toBe(200);
+        return response.body as {
+          preferSurplus: boolean;
+          surplus: { keyConfigured: boolean; policyEnabled: boolean; chatStatus: string };
+          catalogModels: Array<{ id: string; availability: string }>;
+        };
+      };
+
+      const enabled = await read(true);
+      expect(enabled).toMatchObject({
+        preferSurplus: true,
+        surplus: { keyConfigured: true, policyEnabled: true, chatStatus: "available" },
+      });
+      for (const id of [
+        "anthropic:claude-sonnet-4-6",
+        "openai:gpt-6-astra",
+        "google:gemini-2.5-pro",
+        "fireworks:accounts/fireworks/models/deepseek-v4p1-flash",
+        "openrouter:moonshotai/kimi-k2.6",
+        "venice:kimi-k3",
+      ]) {
+        expect(enabled.catalogModels.find((model) => model.id === id), id)
+          .toMatchObject({ availability: "selectable" });
+      }
+      expect(enabled.catalogModels.find((model) => model.id === "openrouter:typesafe/jev-1.13"))
+        .toMatchObject({ availability: "missing_credentials" });
+      expect(enabled.catalogModels.find((model) => model.id === "venice:gpt-image-2"))
+        .toMatchObject({ availability: "missing_credentials" });
+
+      const disabled = await read(false);
+      expect(disabled).toMatchObject({
+        preferSurplus: false,
+        surplus: { keyConfigured: true, policyEnabled: false, chatStatus: "qualified-unavailable" },
+      });
+      for (const id of [
+        "anthropic:claude-sonnet-4-6",
+        "openai:gpt-6-astra",
+        "google:gemini-2.5-pro",
+        "fireworks:accounts/fireworks/models/deepseek-v4p1-flash",
+        "openrouter:moonshotai/kimi-k2.6",
+        "venice:kimi-k3",
+      ]) {
+        expect(disabled.catalogModels.find((model) => model.id === id), id)
+          .toMatchObject({ availability: "missing_credentials" });
+      }
+
+      const missingKey = await read(true, false);
+      expect(missingKey).toMatchObject({
+        preferSurplus: true,
+        surplus: { keyConfigured: false, policyEnabled: true, chatStatus: "qualified-unavailable" },
+      });
+      for (const id of [
+        "anthropic:claude-sonnet-4-6",
+        "openai:gpt-6-astra",
+        "google:gemini-2.5-pro",
+        "fireworks:accounts/fireworks/models/deepseek-v4p1-flash",
+        "openrouter:moonshotai/kimi-k2.6",
+        "venice:kimi-k3",
+      ]) {
+        expect(missingKey.catalogModels.find((model) => model.id === id), id)
+          .toMatchObject({ availability: "missing_credentials" });
+      }
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  test("derives available capability and catalog readiness from an injected qualified route", async () => {
+    const call = routeHarness({
+      getCapabilities: async () => ["read_server_settings"],
+      getDb: () => ({}) as never,
+      getConfig: async () => ({ ...modelConfig, preferSurplus: true }),
+      refreshConfigCache: async () => null,
+      getEffectiveEmbeddingModel: () => null,
+      getActiveEmbeddingSelection: () => null,
+      listMediaModels,
+      getEffectiveMediaModel: () => null,
+      getSurplusKeyConfigured: () => true,
+      getQualifiedSurplusChatRoutes: () => [QUALIFIED_SURPLUS_ROUTE],
+    });
+
+    const response = await call("GET", { ...requestBase, sessionUserId: "viewer" });
+    expect(response.status).toBe(200);
+    const body = response.body as {
+      surplus: { chatStatus: string };
+      catalogModels: Array<{ id: string; availability: string }>;
+    };
+    expect(body.surplus.chatStatus).toBe("available");
+    expect(body.catalogModels.find((model) => model.id === QUALIFIED_SURPLUS_ROUTE.catalogModelId))
+      .toMatchObject({ availability: "selectable" });
+  });
+
   test("catalog inventory includes decision models and live missing-credential reasons without admitting them for chat", async () => {
     const previous = process.env["OPENROUTER_API_KEY"];
     configureRuntimeModelCatalog({ catalogPointerUrl: null });
@@ -301,7 +504,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
       });
       expect(Object.keys(decision!).sort()).toEqual([
         "id", "displayName", "provider", "workload", "availability", "unavailableReason",
-        "input", "output", "features", "decision",
+        "input", "output", "features", "decision", "directAvailability", "directUnavailableReason",
       ].sort());
       const grounded = listResolvedCatalogModels({ includeUnavailable: true }).find((row) => row.features.visualGrounding === true);
       expect(grounded).toBeDefined();
@@ -357,6 +560,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
           fallbackChain: patch.fallbackChain ?? modelConfig.fallbackChain,
           reasoningOutput: patch.reasoningOutput ?? modelConfig.reasoningOutput,
           reasoningPolicy: patch.reasoningPolicy ?? modelConfig.reasoningPolicy,
+          preferSurplus: patch.preferSurplus ?? modelConfig.preferSurplus,
         };
       },
       refreshConfigCache: async (force) => {
@@ -418,6 +622,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
         fallbackChain: null,
         reasoningOutput: null,
         reasoningPolicy: null,
+        preferSurplus: false,
         updatedAt: new Date(),
       });
       const seenDefaults: unknown[] = [];
@@ -516,6 +721,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
         fallbackChain: null,
         reasoningOutput: null,
         reasoningPolicy: null,
+        preferSurplus: false,
         updatedAt: new Date(),
       });
       const writes: unknown[] = [];

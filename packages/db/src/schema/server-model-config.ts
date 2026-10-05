@@ -1,4 +1,4 @@
-import { jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { boolean, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import type { ModelCatalogReasoningEffort } from "@nautilo/types";
 
 export interface ServerReasoningPolicy {
@@ -46,6 +46,8 @@ export const serverModelConfig = pgTable("server_model_config", {
   reasoningOutput: jsonb("reasoning_output").$type<Record<string, boolean>>(),
   /** compact server-wide reasoning intensity policy. */
   reasoningPolicy: jsonb("reasoning_policy").$type<ServerReasoningPolicy>(),
+  /** Prefer qualified Surplus serving paths for server-funded model calls. */
+  preferSurplus: boolean("prefer_surplus").notNull().default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

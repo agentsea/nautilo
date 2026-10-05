@@ -79,8 +79,8 @@ export const TranscriptRow = memo(function TranscriptRow({
       className="rounded-lg border border-border bg-background-element px-3 py-2 text-sm"
       data-transcript-role={message.role}
     >
-      <div className="mb-1 text-[0.65rem] font-semibold uppercase tracking-wide text-foreground-dim">
-        {message.role}
+      <div className="mb-1 flex items-baseline gap-1.5 text-[0.65rem] font-semibold uppercase tracking-wide text-foreground-dim">
+        <span>{message.role}</span>
       </div>
       <p className="whitespace-pre-wrap break-words text-foreground">{message.content}</p>
     </div>

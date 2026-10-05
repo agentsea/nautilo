@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Administrators can enable Prefer Surplus for server-funded chat models on
+  supported catalogue providers. Nautilo tries Surplus, then the configured
+  original provider, then the configured model fallback chain. Costs retains
+  each attempt’s actual or pending charge, and uncertain service fails without
+  automatic replay. Turning the preference off restores direct routing.
 - Personal provider keys can fund native background text Tasks, one-shot
   reminders, and recurring text schedules from your own Genie chat. Task runs
   retain their funding source through retries and Pause/Resume; changed keys

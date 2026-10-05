@@ -26,6 +26,7 @@ import { resolveArtifactFeedAuthor, resolveArtifactFeedPeople, resolveArtifactCr
   resolveArtifactFeedActorNames } from "./event-feed/artifact-identities";
 import { setWorkspaceArtifactCreatedSink } from "@nautilo/agent";
 import { createServerMemoryReviewRuntime } from "./lib/memory-review-runtime";
+import { createSurplusCostRecovery } from "./lib/surplus-cost-reconciliation";
 import { openForegroundChatFundingSession } from "./lib/foreground-chat-funding";
 import {
   assertRunnableNativeTaskSelection,
@@ -1031,7 +1032,9 @@ export async function createApp(options?: CreateAppOptions) {
   // Close work stranded by the previous process without waiting for a new
   // Room send or even the first interval tick.
   reconcileLiveShadowLifecycle();
+  const surplusCostRecovery = createSurplusCostRecovery();
   app.addHook("onClose", async () => {
+    await surplusCostRecovery.stop();
     clearInterval(liveShadowLifecycleTimer);
     await liveShadowLifecycleReconciliation;
     uninstallDurableToolResultLifecycleObserver();
@@ -2873,6 +2876,7 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   app.addHook("onListen", () => {
+    surplusCostRecovery.start();
     void loadConnectionProviderCatalog().then((resolved) => {
       const nextServices = createConnectedAppServices(resolved);
       if (mcpCatalog) syncConnectedAppOperationTools(mcpCatalog, resolved.catalog.providers);

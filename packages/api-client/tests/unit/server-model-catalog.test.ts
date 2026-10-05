@@ -15,6 +15,31 @@ const base = {
 test("older model-config payloads leave catalogModels absent", () => {
   const parsed = serverModelConfigSchema.parse(base);
   expect(parsed.catalogModels).toBeUndefined();
+  expect(parsed.preferSurplus).toBe(false);
+  expect(parsed.surplus).toEqual({
+    keyConfigured: false,
+    policyEnabled: false,
+    chatStatus: "not-qualified",
+  });
+});
+
+test("Surplus policy and capability status are parsed independently", () => {
+  expect(serverModelConfigSchema.parse({
+    ...base,
+    preferSurplus: true,
+    surplus: {
+      keyConfigured: true,
+      policyEnabled: true,
+      chatStatus: "not-qualified",
+    },
+  })).toMatchObject({
+    preferSurplus: true,
+    surplus: {
+      keyConfigured: true,
+      policyEnabled: true,
+      chatStatus: "not-qualified",
+    },
+  });
 });
 
 test("catalog model rows retain safe forward-compatible display fields and strip extras", () => {

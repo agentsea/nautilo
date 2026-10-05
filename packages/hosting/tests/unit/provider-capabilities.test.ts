@@ -43,6 +43,7 @@ describe("resolveProviderCapabilities", () => {
       "google",
       "fireworks",
       "venice",
+      "surplus",
       "typesafe",
       "elevenlabs",
       "groq",
@@ -64,6 +65,23 @@ describe("resolveProviderCapabilities", () => {
     expect(result.issues).toEqual([]);
     expect(result.providers.find((provider) => provider.provider === "typesafe")?.selected).toBe(true);
     for (const name of HOSTING_CAPABILITIES) expect(capability(result, name).experience).toBe("unavailable");
+    expect(result.readiness.coreReadiness).toBe("blocked");
+  });
+
+  test("Surplus credentials remain selectable without claiming an unqualified chat route", () => {
+    const result = resolve({
+      allProviders: true,
+      references: [{ provider: "surplus", state: "configured", source: "environment" }],
+    });
+    expect(result.issues).toEqual([]);
+    expect(result.providers.find((provider) => provider.provider === "surplus")).toMatchObject({
+      selected: true,
+      state: "configured",
+      capabilities: [],
+    });
+    for (const name of HOSTING_CAPABILITIES) {
+      expect(capability(result, name).experience).toBe("unavailable");
+    }
     expect(result.readiness.coreReadiness).toBe("blocked");
   });
 

@@ -297,7 +297,11 @@ export function MessageBubble({
           ) : null}
         </View>
       </Pressable>
-      {!pending && !failed ? <MessageTimestamp sentAt={sentAt} /> : null}
+      {!pending && !failed ? (
+        <View style={styles.messageDetails}>
+          <MessageTimestamp sentAt={sentAt} />
+        </View>
+      ) : null}
       {!pending && !failed && editedAt ? (
         <Text style={[styles.editedMarker, isUser ? styles.editedMarkerUser : null]}>edited</Text>
       ) : null}
@@ -422,6 +426,11 @@ function createStyles(t: AppTheme) {
     },
     bubblePressed: {
       opacity: 0.92,
+    },
+    messageDetails: {
+      flexDirection: 'row',
+      alignItems: 'baseline',
+      gap: t.spacing.xs,
     },
     bubble: {
       borderRadius: t.radii.lg,

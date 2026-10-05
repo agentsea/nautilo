@@ -189,6 +189,20 @@ export async function checkProviderHealth(
         }
         return { status: "unreachable", detail: `HTTP ${res.status}` };
       }
+      case "surplus": {
+        // /v1/models is public and therefore cannot authenticate a credential.
+        // Buyer status is read-only and requires the candidate key.
+        const res = await fetchWithTimeout("https://api.surplusintelligence.ai/v1/buyer/me", {
+          method: "GET",
+          headers: { authorization: `Bearer ${value}` },
+          redirect: "error",
+        });
+        if (res.status === 401 || res.status === 403) {
+          return { status: "invalid_key", detail: `${res.status}` };
+        }
+        if (res.ok) return { status: "verified" };
+        return { status: "unreachable", detail: `HTTP ${res.status}` };
+      }
       case "cloudconvert": {
         // List jobs needs task.read — the same scope Nautilo's convert
         // adapter requires. Prefer this over /v2/users/me (user.read), which

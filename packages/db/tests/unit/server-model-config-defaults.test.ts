@@ -32,6 +32,7 @@ describe("resolveServerModelConfig", () => {
       fallbackChain: [],
       reasoningOutput: {},
       reasoningPolicy: { defaultEffort: null, overrides: {} },
+      preferSurplus: false,
     });
   });
 
@@ -50,6 +51,7 @@ describe("resolveServerModelConfig", () => {
       fallbackChain: ["openai:gpt-5.4-mini"],
       reasoningOutput: null,
       reasoningPolicy: null,
+      preferSurplus: false,
       updatedAt: new Date("2026-06-09T12:00:00.000Z"),
     };
     expect(resolveServerModelConfig(row, DEFAULTS)).toEqual({
@@ -65,6 +67,7 @@ describe("resolveServerModelConfig", () => {
       fallbackChain: ["openai:gpt-5.4-mini"],
       reasoningOutput: {},
       reasoningPolicy: { defaultEffort: null, overrides: {} },
+      preferSurplus: false,
     });
   });
 
@@ -83,6 +86,7 @@ describe("resolveServerModelConfig", () => {
       fallbackChain: ["openai:gpt-5.4-mini", "openai:gpt-5.4-nano"],
       reasoningOutput: { "anthropic:claude-sonnet-4-6": false },
       reasoningPolicy: { defaultEffort: null, overrides: { "anthropic:claude-sonnet-4-6": "off" } },
+      preferSurplus: true,
       updatedAt: new Date("2026-06-09T12:00:00.000Z"),
     };
     expect(resolveServerModelConfig(row, DEFAULTS)).toEqual({
@@ -98,6 +102,7 @@ describe("resolveServerModelConfig", () => {
       fallbackChain: ["openai:gpt-5.4-mini", "openai:gpt-5.4-nano"],
       reasoningOutput: { "anthropic:claude-sonnet-4-6": false },
       reasoningPolicy: { defaultEffort: null, overrides: { "anthropic:claude-sonnet-4-6": "off" } },
+      preferSurplus: true,
     });
   });
 });
@@ -118,6 +123,7 @@ describe("upsertServerModelConfig", () => {
       fallbackChain: [] as string[],
       reasoningOutput: { "anthropic:claude-sonnet-4-6": false },
       reasoningPolicy: null,
+      preferSurplus: false,
       updatedAt: new Date(),
     } satisfies ServerModelConfigRow;
 
@@ -147,11 +153,16 @@ describe("upsertServerModelConfig", () => {
 
     const result = await upsertServerModelConfig(
       db,
-      { embeddingModel, reasoningOutput: { "anthropic:claude-sonnet-4-6": false } },
+      {
+        embeddingModel,
+        reasoningOutput: { "anthropic:claude-sonnet-4-6": false },
+        preferSurplus: true,
+      },
       DEFAULTS,
     );
     expect(result.reasoningOutput).toEqual({ "anthropic:claude-sonnet-4-6": false });
     expect(result.embeddingModel).toBe(embeddingModel);
+    expect(result.preferSurplus).toBe(true);
   });
 
   it("round-trips independent nullable and automatic media selections", async () => {
@@ -169,6 +180,7 @@ describe("upsertServerModelConfig", () => {
       fallbackChain: [] as string[],
       reasoningOutput: null,
       reasoningPolicy: null,
+      preferSurplus: false,
       updatedAt: new Date(),
     } satisfies ServerModelConfigRow;
     const db = {
@@ -219,6 +231,7 @@ describe("server model config cache", () => {
       fallbackChain: null,
       reasoningOutput: null,
       reasoningPolicy: null,
+      preferSurplus: false,
       updatedAt: new Date(),
     };
     primeServerModelConfigCache(row);

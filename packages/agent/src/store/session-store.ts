@@ -281,9 +281,12 @@ export interface AppendTranscriptResult {
 
 /** Match live quiet-supervision presentation while retaining the exact tool audit. */
 export function transcriptMetadataForMessage(message: BaseMessage, options: AppendTranscriptOptions): Record<string, unknown> | null {
-  let metadata = options.internalToolMetadata && (
+  const sourceMetadata = options.internalToolMetadata && (
     message instanceof ToolMessage || (AIMessage.isInstance(message) && message.tool_calls?.length)
   ) ? options.internalToolMetadata : options.metadata ?? null;
+  let metadata = sourceMetadata !== null && Object.keys(sourceMetadata).length > 0
+    ? sourceMetadata
+    : null;
   if (message instanceof ToolMessage
     && message.additional_kwargs["nautilo_browser_decision_observation"] === true) {
     metadata = {
@@ -679,7 +682,8 @@ export async function getRunAgentTranscriptSnapshot(
         if (row.content === null) throw new Error("Task transcript ordinary content is unavailable");
         messages.push({ id: row.id, role: row.role, content: row.content, toolName: row.toolName ?? null,
           ...(opts.includeToolPresentation && row.role === "tool" ? readTranscriptToolPresentation(row.metadata) : {}),
-          toolCalls: row.role === "tool" ? null : parseTranscriptToolCalls(row.toolCalls), createdAt: row.createdAt });
+          toolCalls: row.role === "tool" ? null : parseTranscriptToolCalls(row.toolCalls),
+          createdAt: row.createdAt });
       }
       if (rows.length < batchRows) break;
       const last = rows.at(-1)!;
@@ -816,6 +820,7 @@ export async function getSessionMessages(
       content: sessionMessages.content,
       toolCalls: sessionMessages.toolCalls,
       toolName: sessionMessages.toolName,
+      metadata: sessionMessages.metadata,
       createdAt: sessionMessages.createdAt,
       editedAt: sessionMessages.editedAt,
       editRevision: sessionMessages.editRevision,
@@ -854,6 +859,7 @@ export async function getLatestSessionMessages(
       content: sessionMessages.content,
       toolCalls: sessionMessages.toolCalls,
       toolName: sessionMessages.toolName,
+      metadata: sessionMessages.metadata,
       createdAt: sessionMessages.createdAt,
       editedAt: sessionMessages.editedAt,
       editRevision: sessionMessages.editRevision,
@@ -1327,7 +1333,11 @@ export function sanitizeMessageForTranscript(message: BaseMessage): BaseMessage 
   const filtered = message.content.filter((block) => !isReasoningContentBlock(block));
   if (filtered.length === message.content.length) return message;
   const content = filtered.length > 0 ? filtered : "";
-  const sanitized = new AIMessage({ content });
+  const sanitized = new AIMessage({
+    content,
+    additional_kwargs: message.additional_kwargs,
+    response_metadata: message.response_metadata,
+  });
   if (message.tool_calls?.length) {
     sanitized.tool_calls = message.tool_calls;
   }

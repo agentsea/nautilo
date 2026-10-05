@@ -7,16 +7,19 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { users } from "./users";
 import { rooms } from "./rooms";
+import { tasks } from "./tasks";
 
 /**
- * Costs dashboard substrate — one row per LLM API call whose token usage we
- * can observe.
+ * Costs dashboard substrate. Legacy/direct rows represent completed calls;
+ * Surplus rows are created before the wire attempt and settled in place so an
+ * interrupted or failed request remains reconcilable.
  *
  * Nautilo never receives a dollar figure from most providers (Anthropic,
  * OpenAI, Google, Fireworks, xAI return token counts only), so
@@ -46,6 +49,10 @@ export const llmUsageEvents = pgTable(
     roomId: uuid("room_id").references(() => rooms.id, {
       onDelete: "set null",
     }),
+    /** Durable Task attribution when the attempt belongs to a Task run. */
+    taskId: uuid("task_id").references(() => tasks.id, {
+      onDelete: "set null",
+    }),
     /**
      * What kind of call this was:
      * `chat` | `subagent` | `conductor` | `room_stenographer` | `room_reflection`
@@ -65,7 +72,7 @@ export const llmUsageEvents = pgTable(
     /** Cache-read (cached prompt) tokens, when reported; billed at a lower rate. */
     cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
     totalTokens: integer("total_tokens").notNull().default(0),
-    /** Our token×price estimate, frozen at insert. Always present. */
+    /** Frozen token×price estimate. Pending rows keep zero behind explicit costState. */
     estimatedCostUsd: numeric("estimated_cost_usd", {
       precision: 14,
       scale: 8,
@@ -92,6 +99,28 @@ export const llmUsageEvents = pgTable(
     credentialId: uuid("credential_id"),
     /** Credential revision admitted for this exact attempt. */
     credentialRevision: integer("credential_revision"),
+    /** Provider request receipt used for exact Surplus settlement. */
+    providerRequestId: text("provider_request_id"),
+    /** Provider endpoint used by this attempt, for example `/v1/chat/completions`. */
+    endpoint: text("endpoint"),
+    /** Actual Surplus seller/provider family when the response identifies it. */
+    servingProvider: text("serving_provider"),
+    /** Durable wire-attempt outcome. NULL preserves the legacy completed-row contract. */
+    attemptOutcome: varchar("attempt_outcome", {
+      length: 16,
+      enum: ["in_progress", "succeeded", "failed", "cancelled", "interrupted", "unknown"],
+    }),
+    /** Cost evidence for an attempt. NULL preserves legacy COALESCE semantics. */
+    costState: varchar("cost_state", {
+      length: 16,
+      enum: ["actual", "estimated", "pending", "unknown"],
+    }),
+    /** Content-free stable failure category suitable for operator diagnostics. */
+    failureCode: text("failure_code"),
+    settledAt: timestamp("settled_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     /** Freeform: sessionId, threadId, agentId, imageCount, requestId, etc. */
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
   },
@@ -103,6 +132,15 @@ export const llmUsageEvents = pgTable(
     index("idx_llm_usage_provider").on(table.provider),
     index("idx_llm_usage_funding_kind").on(table.fundingKind),
     index("idx_llm_usage_payer_human_id").on(table.payerHumanId),
+    index("idx_llm_usage_task_id").on(table.taskId),
+    index("idx_llm_usage_surplus_pending").on(
+      table.providerRoute,
+      table.costState,
+      table.updatedAt,
+    ),
+    uniqueIndex("uq_llm_usage_provider_request")
+      .on(table.providerRoute, table.providerRequestId)
+      .where(sql`${table.providerRequestId} IS NOT NULL`),
     check(
       "llm_usage_events_funding_provenance_check",
       sql`(
@@ -113,6 +151,23 @@ export const llmUsageEvents = pgTable(
           OR
           (${table.fundingKind} IN ('server', 'service') AND ${table.payerHumanId} IS NULL AND ${table.providerRoute} IS NOT NULL AND length(${table.providerRoute}) > 0 AND ${table.credentialId} IS NULL AND ${table.credentialRevision} IS NULL)
         ))
+      )`,
+    ),
+    check(
+      "llm_usage_events_attempt_state_check",
+      sql`(
+        (${table.attemptOutcome} IS NULL AND ${table.costState} IS NULL)
+        OR
+        (${table.providerRoute} = 'surplus' AND ${table.attemptOutcome} IS NOT NULL AND ${table.costState} IS NOT NULL AND ${table.endpoint} IS NOT NULL AND length(${table.endpoint}) > 0)
+      )`,
+    ),
+    check(
+      "llm_usage_events_cost_state_check",
+      sql`(
+        ${table.costState} IS NULL
+        OR (${table.costState} = 'actual' AND ${table.actualCostUsd} IS NOT NULL)
+        OR (${table.costState} = 'estimated' AND ${table.actualCostUsd} IS NULL)
+        OR (${table.costState} IN ('pending', 'unknown') AND ${table.actualCostUsd} IS NULL)
       )`,
     ),
   ],

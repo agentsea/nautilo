@@ -2220,6 +2220,13 @@
       "when": 1791035183322,
       "tag": "0316_rich_callisto",
       "breakpoints": true
+    },
+    {
+      "idx": 317,
+      "version": "7",
+      "when": 1791184048656,
+      "tag": "0317_bouncy_shaman",
+      "breakpoints": true
     }
   ]
 }

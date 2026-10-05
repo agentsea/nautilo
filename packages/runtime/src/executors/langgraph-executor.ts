@@ -16,10 +16,10 @@ import {
   commitPromptBriefMemoryOverflow,
   getAgentExecutionConfigById,
   getAgentDisplayNameById,
-  getDefaultModel,
+  getDefaultForegroundAgentModelId,
+  resolveForegroundAgentModelId,
   loadForegroundModelControlSnapshot,
   foregroundModelControlPlanFromSnapshot,
-  resolveModelRole,
   collectPendingInterruptEvents,
   interruptValueToServerEvent,
   maybeSummarizeImagesWithVisionFallback,
@@ -734,7 +734,7 @@ export async function* langgraphExecutor(
   const foregroundModelPlan = foregroundModelControlPlanFromSnapshot(foregroundModelControlSnapshot, () =>
     configuredModel
       ? configuredModel
-      : getDefaultModel().id,
+      : getDefaultForegroundAgentModelId(),
   );
   const fundingSession = await openTaskWakeFundingSessionForInvocation({
     authority: getCurrentAcceptedInvocationAuthority(), jobInput: input, causalHumanUserId,
@@ -753,7 +753,7 @@ export async function* langgraphExecutor(
   });
   const modelId = fundingSession?.kind === "personal"
     ? foregroundModelPlan.initialModelId
-    : resolveModelRole("chat", { configuredId: foregroundModelPlan.initialModelId });
+    : resolveForegroundAgentModelId(foregroundModelPlan.initialModelId, { fundingKind: "server" });
   assertForegroundChatFundingWorkloadSupported(fundingSession, {
     hasImages: multimodalImages.length > 0,
     voiceRequested: input["voiceMode"] === true,
