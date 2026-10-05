@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Successful skips end the agent turn without another model call. Silence and
+  hand-off control activity stays out of chat while rejected hand-offs remain
+  recoverable and already-admitted sibling tools finish normally.
+
 - The text editor serializes first saves of empty documents and preserves edits
   made while a save is in progress. Conflict recovery reports failed latest-version
   reads with a retry action, accepts empty latest content, and saves merged drafts

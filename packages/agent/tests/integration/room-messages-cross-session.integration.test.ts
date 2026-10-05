@@ -215,7 +215,7 @@ describe("getRoomMessagesAcrossMemberSessions (D124)", () => {
     expect(texts).not.toContain("SUB HIDDEN");
   });
 
-  test("omits known react tool rows but retains legacy NULL tool names", async () => {
+  test("omits internal control tool rows but retains legacy NULL tool names", async () => {
     const sessionId = await ensureSession({
       threadId: `room-d430-react-${ts}`,
       ownerId: ownerA,
@@ -225,17 +225,19 @@ describe("getRoomMessagesAcrossMemberSessions (D124)", () => {
     const before = new Date("2025-03-01T12:00:00.000Z");
     await db.insert(sessionMessages).values([
       { sessionId, role: "tool", content: "known react", toolName: "react", createdAt: before },
-      { sessionId, role: "tool", content: "legacy unknown", toolName: null, createdAt: new Date("2025-03-01T12:01:00.000Z") },
+      { sessionId, role: "tool", content: "known skip", toolName: "skip", createdAt: new Date("2025-03-01T12:01:00.000Z") },
+      { sessionId, role: "tool", content: "legacy unknown", toolName: null, createdAt: new Date("2025-03-01T12:02:00.000Z") },
     ]);
 
     const page = await getRoomMessagesAcrossMemberSessions({
       ownerId: ownerA,
       roomId,
-      beforeCreatedAt: new Date("2025-03-01T12:02:00.000Z"),
+      beforeCreatedAt: new Date("2025-03-01T12:03:00.000Z"),
       beforeId: 9_999_999,
       limit: 20,
     });
     expect(page.messages.map((message) => message.content)).not.toContain("known react");
+    expect(page.messages.map((message) => message.content)).not.toContain("known skip");
     expect(page.messages.map((message) => message.content)).toContain("legacy unknown");
   });
 
