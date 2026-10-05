@@ -105,6 +105,11 @@ export async function insertProviderCostEvent(input: InsertProviderCostEventInpu
 }
 
 const EFFECTIVE_COST = sql`COALESCE(${providerCostEvents.actualCostUsd}, ${providerCostEvents.estimatedCostUsd}, 0)`;
+const CURRENT_ESTIMATED_COST = sql`CASE
+  WHEN ${providerCostEvents.evidenceState} = 'estimated'
+    THEN ${providerCostEvents.estimatedCostUsd}
+  ELSE 0
+END`;
 
 export function buildProviderCostsSummaryQueries(
   range: { sinceIso: string; untilIso: string },
@@ -124,12 +129,17 @@ export function buildProviderCostsSummaryQueries(
           eq(providerCostEvents.payerHumanId, payerHumanId),
         ]),
   );
+  // Actual provider evidence may retain its earlier estimate for audit. The
+  // personal ledger reports only estimates that remain the current evidence.
+  const estimatedCost = payerHumanId === undefined
+    ? providerCostEvents.estimatedCostUsd
+    : CURRENT_ESTIMATED_COST;
   const totals = handle
     .select({
       operations: sql<number>`COUNT(*)::int`,
       unknown_operations:
         sql<number>`COUNT(*) FILTER (WHERE ${providerCostEvents.evidenceState} = 'unknown')::int`,
-      estimated_cost: sql<string>`COALESCE(SUM(${providerCostEvents.estimatedCostUsd}), 0)`,
+      estimated_cost: sql<string>`COALESCE(SUM(${estimatedCost}), 0)`,
       actual_cost: sql<string>`COALESCE(SUM(${providerCostEvents.actualCostUsd}), 0)`,
       total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`,
     })
@@ -143,7 +153,7 @@ export function buildProviderCostsSummaryQueries(
       operations: sql<number>`COUNT(*)::int`,
       unknown_operations:
         sql<number>`COUNT(*) FILTER (WHERE ${providerCostEvents.evidenceState} = 'unknown')::int`,
-      estimated_cost: sql<string>`COALESCE(SUM(${providerCostEvents.estimatedCostUsd}), 0)`,
+      estimated_cost: sql<string>`COALESCE(SUM(${estimatedCost}), 0)`,
       actual_cost: sql<string>`COALESCE(SUM(${providerCostEvents.actualCostUsd}), 0)`,
       total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`.as("total_cost"),
     })
@@ -159,7 +169,7 @@ export function buildProviderCostsSummaryQueries(
       unknown_operations:
         sql<number>`COUNT(*) FILTER (WHERE ${providerCostEvents.evidenceState} = 'unknown')::int`.as("unknown_operations"),
       estimated_cost:
-        sql<string>`COALESCE(SUM(${providerCostEvents.estimatedCostUsd}), 0)`.as("estimated_cost"),
+        sql<string>`COALESCE(SUM(${estimatedCost}), 0)`.as("estimated_cost"),
       actual_cost:
         sql<string>`COALESCE(SUM(${providerCostEvents.actualCostUsd}), 0)`.as("actual_cost"),
       total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`.as("total_cost"),
@@ -190,7 +200,7 @@ export function buildProviderCostsSummaryQueries(
   const timeSeries = handle
     .select({
       day,
-      estimated_cost: sql<string>`COALESCE(SUM(${providerCostEvents.estimatedCostUsd}), 0)`,
+      estimated_cost: sql<string>`COALESCE(SUM(${estimatedCost}), 0)`,
       actual_cost: sql<string>`COALESCE(SUM(${providerCostEvents.actualCostUsd}), 0)`,
       total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`,
     })

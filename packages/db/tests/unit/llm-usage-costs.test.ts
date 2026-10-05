@@ -232,6 +232,39 @@ describe("getCostsSummary fallback disclosure (ISSUE-M217)", () => {
     }
   });
 
+  test("personal estimated aggregates exclude estimates superseded by actual evidence", () => {
+    const offlineDb = drizzle.mock() as unknown as DirectDatabase;
+    const payer = "22222222-2222-4222-8222-222222222222";
+    const personal = Object.values(buildCostsSummaryQueries(RANGE, offlineDb, payer)).map(
+      (queryBuilder) => queryBuilder.toSQL().sql.replace(/\s+/g, " ").toLowerCase(),
+    );
+    const personalRoute = buildPersonalCostsByRouteQuery(
+      RANGE,
+      offlineDb,
+      payer,
+    ).toSQL().sql.replace(/\s+/g, " ").toLowerCase();
+
+    for (const sqlText of [personal[0]!, personal[1]!, personal[3]!, personal[4]!, personalRoute]) {
+      expect(sqlText).toContain(
+        `when "llm_usage_events"."cost_state" = 'estimated' then "llm_usage_events"."estimated_cost_usd"`,
+      );
+      expect(sqlText).toContain(
+        `when "llm_usage_events"."cost_state" is null and "llm_usage_events"."actual_cost_usd" is null then "llm_usage_events"."estimated_cost_usd"`,
+      );
+      expect(sqlText).toContain("else 0 end");
+    }
+  });
+
+  test("administrator estimated aggregates retain their existing historical semantics", () => {
+    const offlineDb = drizzle.mock() as unknown as DirectDatabase;
+    const totalsSql = buildCostsSummaryQueries(RANGE, offlineDb).totals
+      .toSQL().sql.replace(/\s+/g, " ").toLowerCase();
+
+    expect(totalsSql).toContain(
+      `when "llm_usage_events"."cost_state" in ('pending', 'unknown') then 0 else "llm_usage_events"."estimated_cost_usd" end`,
+    );
+  });
+
   test("personal route aggregation groups on actual provider route and call type", () => {
     const payer = "22222222-2222-4222-8222-222222222222";
     const generated = buildPersonalCostsByRouteQuery(

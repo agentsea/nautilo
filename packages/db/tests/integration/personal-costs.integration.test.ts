@@ -10,8 +10,11 @@ import {
   eq,
   getPersonalCostsSummary,
   inArray,
+  insertProviderCostEventWith,
   llmUsageEvents,
   listPendingSurplusAttempts,
+  providerCostEvents,
+  providerCostIdempotencyKey,
   requeueBlockedPersonalSurplusAttempts,
   reconcileSurplusLlmAttemptCost,
   settlePersonalLlmAttempt,
@@ -23,6 +26,7 @@ import { bootstrapTestDbInstance } from "../../src/testing/instance-guard";
 
 const FIXTURE_PREFIX = "personal-costs-integration";
 const attemptIds: string[] = [];
+const providerCostKeys: string[] = [];
 const userIds: string[] = [];
 let db: DirectDatabase;
 
@@ -59,6 +63,11 @@ beforeAll(async () => {
 afterAll(async () => {
   if (attemptIds.length > 0) {
     await db?.delete(llmUsageEvents).where(inArray(llmUsageEvents.id, attemptIds));
+  }
+  if (providerCostKeys.length > 0) {
+    await db?.delete(providerCostEvents).where(
+      inArray(providerCostEvents.idempotencyKey, providerCostKeys),
+    );
   }
   for (const userId of userIds) {
     await db?.delete(users).where(eq(users.id, userId));
@@ -268,8 +277,81 @@ describe("personal cost attempts and account isolation", () => {
       attemptId: personalSurplusId,
       outcome: "succeeded",
       costState: "actual",
-      actualCostUsd: 0.001,
+      estimatedCostUsd: 0.005568,
+      actualCostUsd: 0.003929,
     });
+    const unknownId = attemptId();
+    await beginSurplusLlmAttempt({
+      id: unknownId,
+      userId: payer,
+      payerHumanId: payer,
+      callType: "chat",
+      provider: "anthropic",
+      model: "anthropic:claude-sonnet-4-6",
+      endpoint: "/v1/chat/completions",
+      fundingKind: "personal",
+      credentialId: randomUUID(),
+      credentialRevision: 1,
+    });
+    await settleSurplusLlmAttempt({
+      attemptId: unknownId,
+      outcome: "succeeded",
+      costState: "unknown",
+      estimatedCostUsd: 0.007,
+    });
+    const zeroActualId = attemptId();
+    await beginSurplusLlmAttempt({
+      id: zeroActualId,
+      userId: payer,
+      payerHumanId: payer,
+      callType: "chat",
+      provider: "anthropic",
+      model: "anthropic:claude-sonnet-4-6",
+      endpoint: "/v1/chat/completions",
+      fundingKind: "personal",
+      credentialId: randomUUID(),
+      credentialRevision: 1,
+    });
+    await settleSurplusLlmAttempt({
+      attemptId: zeroActualId,
+      outcome: "succeeded",
+      costState: "actual",
+      estimatedCostUsd: 0.004,
+      actualCostUsd: 0,
+    });
+    const providerCredentialId = randomUUID();
+    for (const [label, evidence] of Object.entries({
+      actual: {
+        evidenceState: "actual" as const,
+        estimatedCostUsd: "0.00080000",
+        actualCostUsd: "0.00060000",
+      },
+      estimated: {
+        evidenceState: "estimated" as const,
+        estimatedCostUsd: "0.00120000",
+      },
+      unknown: { evidenceState: "unknown" as const },
+      zero: {
+        evidenceState: "actual" as const,
+        estimatedCostUsd: "0.00070000",
+        actualCostUsd: "0.00000000",
+      },
+    })) {
+      const idempotencyKey = providerCostIdempotencyKey(`${FIXTURE_PREFIX}:${label}:${randomUUID()}`);
+      providerCostKeys.push(idempotencyKey);
+      await insertProviderCostEventWith(db, {
+        userId: payer,
+        provider: "tavily",
+        operation: "search",
+        fundingKind: "personal",
+        payerHumanId: payer,
+        providerRoute: "tavily",
+        credentialId: providerCredentialId,
+        credentialRevision: 1,
+        idempotencyKey,
+        ...evidence,
+      });
+    }
     const otherId = attemptId();
     await beginPersonalLlmAttempt({
       id: otherId,
@@ -314,18 +396,22 @@ describe("personal cost attempts and account isolation", () => {
       hasHistory: true,
     });
     expect(summary.totals).toMatchObject({
-      calls: 2,
-      estimatedCostUsd: 0.002,
-      actualCostUsd: 0.001,
-      totalCostUsd: 0.003,
+      calls: 4,
+      providerOperations: 4,
+      unknownAttempts: 1,
     });
+    expect(summary.totals.estimatedCostUsd).toBeCloseTo(0.0032, 8);
+    expect(summary.totals.actualCostUsd).toBeCloseTo(0.004529, 8);
+    expect(summary.totals.totalCostUsd).toBeCloseTo(0.007729, 8);
     expect(summary.byModel.map((row) => row.model)).toEqual([
       "anthropic:claude-sonnet-4-6",
     ]);
     expect(summary.byModel[0]).toMatchObject({
       provider: "anthropic",
-      calls: 2,
-      totalCostUsd: 0.003,
+      calls: 4,
+      estimatedCostUsd: 0.002,
+      actualCostUsd: 0.003929,
+      totalCostUsd: 0.005929,
     });
     expect(summary.byProvider.find((row) => row.provider === "anthropic")).toMatchObject({
       provider: "anthropic",
@@ -336,9 +422,25 @@ describe("personal cost attempts and account isolation", () => {
     expect(summary.byProvider.find((row) => row.provider === "surplus")).toMatchObject({
       provider: "surplus",
       operation: "chat",
-      operations: 1,
-      totalCostUsd: 0.001,
+      operations: 3,
+      unknownOperations: 1,
+      estimatedCostUsd: 0,
+      actualCostUsd: 0.003929,
+      totalCostUsd: 0.003929,
     });
+    expect(summary.byProvider.find((row) => row.provider === "tavily")).toMatchObject({
+      provider: "tavily",
+      operation: "search",
+      operations: 4,
+      unknownOperations: 1,
+      estimatedCostUsd: 0.0012,
+      actualCostUsd: 0.0006,
+      totalCostUsd: 0.0018,
+    });
+    expect(summary.timeSeries).toHaveLength(1);
+    expect(summary.timeSeries[0]?.estimatedCostUsd).toBeCloseTo(0.0032, 8);
+    expect(summary.timeSeries[0]?.actualCostUsd).toBeCloseTo(0.004529, 8);
+    expect(summary.timeSeries[0]?.totalCostUsd).toBeCloseTo(0.007729, 8);
   });
 
   test("requeues blocked recovery only for the exact payer, credential, and revision", async () => {

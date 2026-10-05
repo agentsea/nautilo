@@ -138,6 +138,28 @@ describe("provider cost events", () => {
     }
   });
 
+  test("personal provider estimates include only currently estimated evidence", () => {
+    const offlineDb = drizzle.mock() as unknown as DirectDatabase;
+    const payer = "22222222-2222-4222-8222-222222222222";
+    const personal = Object.values(buildProviderCostsSummaryQueries(
+      RANGE,
+      offlineDb,
+      payer,
+    )).map((query) => query.toSQL().sql.replace(/\s+/g, " ").toLowerCase());
+
+    for (const sqlText of personal) {
+      expect(sqlText).toContain(
+        `when "provider_cost_events"."evidence_state" = 'estimated' then "provider_cost_events"."estimated_cost_usd" else 0 end`,
+      );
+    }
+
+    const administratorTotals = buildProviderCostsSummaryQueries(RANGE, offlineDb).totals
+      .toSQL().sql.replace(/\s+/g, " ").toLowerCase();
+    expect(administratorTotals).toContain(
+      'sum("estimated_cost_usd")',
+    );
+  });
+
   test("merges already-aggregated model and provider costs by user and day", async () => {
     __setLlmUsageDbForTests(mockQueryDb([
       [{ calls: 1, input_tokens: 100, cached_input_tokens: 0, output_tokens: 20, total_tokens: 120, estimated_cost: "0.02000000", actual_cost: "0", total_cost: "0.02000000" }],

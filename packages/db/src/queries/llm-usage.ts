@@ -790,6 +790,13 @@ const KNOWN_ESTIMATED_COST = sql`CASE
   WHEN ${COST_IS_UNRESOLVED} THEN 0
   ELSE ${llmUsageEvents.estimatedCostUsd}
 END`;
+const CURRENT_ESTIMATED_COST = sql`CASE
+  WHEN ${llmUsageEvents.costState} = 'estimated' THEN ${llmUsageEvents.estimatedCostUsd}
+  WHEN ${llmUsageEvents.costState} IS NULL
+    AND ${llmUsageEvents.actualCostUsd} IS NULL
+    THEN ${llmUsageEvents.estimatedCostUsd}
+  ELSE 0
+END`;
 const EFFECTIVE_COST = sql`CASE
   WHEN ${COST_IS_UNRESOLVED} THEN 0
   WHEN ${llmUsageEvents.costState} = 'actual' THEN COALESCE(${llmUsageEvents.actualCostUsd}, 0)
@@ -833,6 +840,13 @@ export function buildCostsSummaryQueries(
           eq(llmUsageEvents.payerHumanId, payerHumanId),
         ]),
   );
+  // Personal summaries expose the currently applicable evidence buckets.
+  // Settled actual rows retain their frozen estimate for audit, but that
+  // superseded estimate must not also appear as current estimated spend.
+  // Administrator summaries keep their existing historical estimate total.
+  const estimatedCost = payerHumanId === undefined
+    ? KNOWN_ESTIMATED_COST
+    : CURRENT_ESTIMATED_COST;
 
   const totals = handle
     .select({
@@ -854,7 +868,7 @@ export function buildCostsSummaryQueries(
       total_tokens:
         sql<number>`COALESCE(SUM(${llmUsageEvents.totalTokens}), 0)::bigint`,
       estimated_cost:
-        sql<string>`COALESCE(SUM(${KNOWN_ESTIMATED_COST}), 0)`,
+        sql<string>`COALESCE(SUM(${estimatedCost}), 0)`,
       actual_cost:
         sql<string>`COALESCE(SUM(${llmUsageEvents.actualCostUsd}), 0)`,
       total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`,
@@ -878,7 +892,7 @@ export function buildCostsSummaryQueries(
       output_tokens:
         sql<number>`COALESCE(SUM(${llmUsageEvents.outputTokens}), 0)::bigint`,
       estimated_cost:
-        sql<string>`COALESCE(SUM(${KNOWN_ESTIMATED_COST}), 0)`,
+        sql<string>`COALESCE(SUM(${estimatedCost}), 0)`,
       actual_cost:
         sql<string>`COALESCE(SUM(${llmUsageEvents.actualCostUsd}), 0)`,
       total_cost:
@@ -918,7 +932,7 @@ export function buildCostsSummaryQueries(
           "total_tokens",
         ),
       estimated_cost:
-        sql<string>`COALESCE(SUM(${KNOWN_ESTIMATED_COST}), 0)`.as(
+        sql<string>`COALESCE(SUM(${estimatedCost}), 0)`.as(
           "estimated_cost",
         ),
       actual_cost:
@@ -956,7 +970,7 @@ export function buildCostsSummaryQueries(
     .select({
       day,
       estimated_cost:
-        sql<string>`COALESCE(SUM(${KNOWN_ESTIMATED_COST}), 0)`,
+        sql<string>`COALESCE(SUM(${estimatedCost}), 0)`,
       actual_cost:
         sql<string>`COALESCE(SUM(${llmUsageEvents.actualCostUsd}), 0)`,
       total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`,
@@ -982,7 +996,7 @@ export function buildPersonalCostsByRouteQuery(
     unknown_operations: sql<number>`COUNT(*) FILTER (
       WHERE ${llmUsageEvents.costState} IN ('pending', 'unknown')
     )::int`,
-    estimated_cost: sql<string>`COALESCE(SUM(${KNOWN_ESTIMATED_COST}), 0)`,
+    estimated_cost: sql<string>`COALESCE(SUM(${CURRENT_ESTIMATED_COST}), 0)`,
     actual_cost: sql<string>`COALESCE(SUM(${llmUsageEvents.actualCostUsd}), 0)`,
     total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`.as("total_cost"),
   }).from(llmUsageEvents).where(and(
