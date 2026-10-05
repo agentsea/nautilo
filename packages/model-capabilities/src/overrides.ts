@@ -25,6 +25,35 @@ type OverrideRow = {
  * Unknown ids fall back to OpenRouter (via alias map + cache) or text-only default.
  */
 export const MODEL_CAPABILITY_OVERRIDES: Readonly<Record<string, OverrideRow>> = {
+  "openai:gpt-6.1-sol": {
+    input: ["text", "image", "file"], output: ["text"], provenance: "override",
+    features: { tools: true, structuredOutputs: true, reasoning: true },
+  },
+  "openrouter:openai/gpt-6.1-sol": {
+    input: ["text", "image", "file"], output: ["text"], provenance: "override",
+    features: { tools: true, structuredOutputs: true, reasoning: true },
+  },
+  "venice:openai-gpt-61-sol": {
+    input: ["text", "image"], output: ["text"], provenance: "override",
+    features: { tools: true, structuredOutputs: true, reasoning: true },
+  },
+  "anthropic:claude-sonnet-5-5": {
+    input: ["text", "image", "file"], output: ["text"], provenance: "override",
+    features: { tools: true, structuredOutputs: true, reasoning: true },
+  },
+  "openrouter:anthropic/claude-sonnet-5.5": {
+    input: ["text", "image", "file"], output: ["text"], provenance: "override",
+    features: { tools: true, structuredOutputs: true, reasoning: true },
+  },
+  "venice:claude-sonnet-5-5": {
+    input: ["text", "image"], output: ["text"], provenance: "override",
+    features: { tools: true, structuredOutputs: true, reasoning: true },
+  },
+  "venice:claude-fable-5-1": {
+    input: ["text", "image"], output: ["text"], provenance: "override",
+    features: { tools: true, structuredOutputs: true, reasoning: true },
+  },
+
   "fireworks:accounts/fireworks/models/kimi-k3": {
     input: ["text", "image"],
     output: ["text"],
@@ -352,6 +381,7 @@ export const MODEL_CAPABILITY_OVERRIDES: Readonly<Record<string, OverrideRow>> =
  */
 export const NAUTILO_ID_TO_OPENROUTER_SLUG: Readonly<Record<string, string>> = {
   "anthropic:claude-sonnet-4-6": "anthropic/claude-sonnet-4.6",
+  "anthropic:claude-sonnet-5-5": "anthropic/claude-sonnet-5.5",
   "anthropic:claude-sonnet-5": "anthropic/claude-sonnet-5",
   "anthropic:claude-fable-5": "anthropic/claude-fable-5",
   "anthropic:claude-opus-5": "anthropic/claude-opus-5",
@@ -364,6 +394,7 @@ export const NAUTILO_ID_TO_OPENROUTER_SLUG: Readonly<Record<string, string>> = {
   "openai:gpt-5.6-sol": "openai/gpt-5.6-sol",
   "openai:gpt-5.6-terra": "openai/gpt-5.6-terra",
   "openai:gpt-5.6-luna": "openai/gpt-5.6-luna",
+  "openai:gpt-6.1-sol": "openai/gpt-6.1-sol",
   "openai:gpt-6-sol": "openai/gpt-6-sol",
   "openai:gpt-6-luna": "openai/gpt-6-luna",
   "google:gemini-2.5-pro": "google/gemini-2.5-pro",

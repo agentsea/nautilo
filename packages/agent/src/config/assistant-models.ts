@@ -22,6 +22,7 @@ export interface AssistantModelConfig {
 
 export const ASSISTANT_MODELS: AssistantModelConfig[] = [
   { id: "anthropic:claude-sonnet-4-6", displayName: "Claude Sonnet 4.6 (Anthropic)", priority: 1, enabled: true, costCoefficient: 1.0 },
+  { id: "anthropic:claude-sonnet-5-5", displayName: "Claude Sonnet 5.5 (Anthropic)", priority: 2, enabled: true, costCoefficient: 0.67 },
   // Claude Sonnet 5 (API id `claude-sonnet-5`, 1M ctx).
   // Enabled + selectable; priority 2 keeps Sonnet 4.6 as the catalog default
   // (global-default flip is a separate call).
@@ -39,6 +40,7 @@ export const ASSISTANT_MODELS: AssistantModelConfig[] = [
   { id: "openai:gpt-5.6-sol", displayName: "GPT-5.6 Sol (OpenAI)", priority: 3, enabled: true, costCoefficient: 2.0 },
   { id: "openai:gpt-5.6-terra", displayName: "GPT-5.6 Terra (OpenAI)", priority: 4, enabled: true, costCoefficient: 1.0 },
   { id: "openai:gpt-5.6-luna", displayName: "GPT-5.6 Luna (OpenAI)", priority: 5, enabled: true, costCoefficient: 0.4 },
+  { id: "openai:gpt-6.1-sol", displayName: "GPT-6.1 Sol (OpenAI)", priority: 3, enabled: true, costCoefficient: 0.67 },
   { id: "openai:gpt-6-sol", displayName: "GPT-6 Sol (OpenAI)", priority: 3, enabled: true, costCoefficient: 0.67 },
   { id: "openai:gpt-6-luna", displayName: "GPT-6 Luna (OpenAI)", priority: 5, enabled: true, costCoefficient: 0.03 },
   { id: "openai:gpt-5.5-2026-04-23", displayName: "GPT-5.5 (OpenAI)", priority: 3, enabled: true, costCoefficient: 2.0 },
@@ -142,7 +144,9 @@ export const ASSISTANT_MODELS: AssistantModelConfig[] = [
     enabled: true,
     costCoefficient: 0.17,
   },
+  { id: "openrouter:anthropic/claude-sonnet-5.5", displayName: "Claude Sonnet 5.5 (OpenRouter)", priority: 2, enabled: true, costCoefficient: 0.67 },
   { id: "openrouter:anthropic/claude-opus-5.5", displayName: "Claude Opus 5.5 (OpenRouter)", priority: 2, enabled: true, costCoefficient: 1.33 },
+  { id: "openrouter:openai/gpt-6.1-sol", displayName: "GPT-6.1 Sol (OpenRouter)", priority: 3, enabled: true, costCoefficient: 0.67 },
   { id: "openrouter:openai/gpt-6-sol", displayName: "GPT-6 Sol (OpenRouter)", priority: 3, enabled: true, costCoefficient: 0.67 },
   { id: "openrouter:openai/gpt-6-luna", displayName: "GPT-6 Luna (OpenRouter)", priority: 5, enabled: true, costCoefficient: 0.03 },
   // --- Venice — curated routes disabled by default; NAUTILO_MODEL or model picker.
@@ -160,7 +164,10 @@ export const ASSISTANT_MODELS: AssistantModelConfig[] = [
   { id: "venice:claude-opus-4-7", displayName: "Claude Opus 4.7 (Venice → Anthropic)", priority: 30, enabled: false, costCoefficient: 3.0, routing: "western-anonymized" },
   { id: "venice:gemini-3-1-pro-preview", displayName: "Gemini 3.1 Pro Preview (Venice → Google)", priority: 31, enabled: false, costCoefficient: 1.5, routing: "western-anonymized" },
   { id: "venice:openai-gpt-55-pro", displayName: "GPT-5.5 Pro (Venice → OpenAI)", priority: 32, enabled: false, costCoefficient: 22.5, routing: "western-anonymized" },
+  { id: "venice:claude-sonnet-5-5", displayName: "Claude Sonnet 5.5 (Venice → Anthropic)", priority: 34, enabled: false, costCoefficient: 0.83, routing: "western-anonymized" },
+  { id: "venice:claude-fable-5-1", displayName: "Claude Fable 5.1 (Venice → Anthropic)", priority: 35, enabled: false, costCoefficient: 4, routing: "western-anonymized" },
   { id: "venice:claude-opus-5-5", displayName: "Claude Opus 5.5 (Venice → Anthropic)", priority: 37, enabled: false, costCoefficient: 1.6, routing: "western-anonymized" },
+  { id: "venice:openai-gpt-61-sol", displayName: "GPT-6.1 Sol (Venice → OpenAI)", priority: 34, enabled: false, costCoefficient: 0.83, routing: "western-anonymized" },
   { id: "venice:openai-gpt-6-sol", displayName: "GPT-6 Sol (Venice → OpenAI)", priority: 34, enabled: false, costCoefficient: 0.83, routing: "western-anonymized" },
   { id: "venice:openai-gpt-6-luna", displayName: "GPT-6 Luna (Venice → OpenAI)", priority: 35, enabled: false, costCoefficient: 0.04, routing: "western-anonymized" },
   { id: "venice:qwen-3-6-plus", displayName: "Qwen 3.6 Plus (Venice → Alibaba)", priority: 33, enabled: false, costCoefficient: 0.38, routing: "china-anonymized" },

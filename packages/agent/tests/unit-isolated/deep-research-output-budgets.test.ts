@@ -158,11 +158,17 @@ test("researcher and compression use their distinct budgets when model IDs match
   expect(fundingAssertion).toHaveBeenCalledTimes(4);
 });
 
-test("Opus 5.5 research routes use automatic tool choice on continuation turns", async () => {
+test("Adaptive Claude research routes use automatic tool choice on continuation turns", async () => {
   const modelIds = [
     "anthropic:claude-opus-5-5",
     "openrouter:anthropic/claude-opus-5.5",
     "venice:claude-opus-5-5",
+    "anthropic:claude-sonnet-5-5",
+    "openrouter:anthropic/claude-sonnet-5.5",
+    "venice:claude-sonnet-5-5",
+    "anthropic:claude-fable-5-1",
+    "openrouter:anthropic/claude-fable-5.1",
+    "venice:claude-fable-5-1",
   ];
 
   for (const modelId of modelIds) {

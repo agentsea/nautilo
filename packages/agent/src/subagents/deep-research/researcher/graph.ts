@@ -96,12 +96,18 @@ async function researcher(
     const firstTurn = existingMessages.length === 0;
     const maxToolMsgs = Math.max(1, cfg.max_tool_messages);
     const windowed = firstTurn ? [] : existingMessages.slice(-maxToolMsgs);
-    // Opus 5.5 rejects forced tool choice. The existing research prompt and
+    // These Claude revisions reject forced tool choice. The existing research prompt and
     // LangGraph loop still request and execute tools with automatic selection.
     const requiresAutomaticToolChoice = [
       "anthropic:claude-opus-5-5",
       "openrouter:anthropic/claude-opus-5.5",
       "venice:claude-opus-5-5",
+      "anthropic:claude-sonnet-5-5",
+      "openrouter:anthropic/claude-sonnet-5.5",
+      "venice:claude-sonnet-5-5",
+      "anthropic:claude-fable-5-1",
+      "openrouter:anthropic/claude-fable-5.1",
+      "venice:claude-fable-5-1",
     ].includes(cfg.research_model);
     let messages: BaseMessageLike[];
 

@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Add GPT-6.1 Sol and Claude Sonnet 5.5 across direct, OpenRouter, and Venice
+  routes, plus Venice Claude Fable 5.1. Preserve supported reasoning effort,
+  full model allowances, and provider-specific pricing through existing adapters.
+
 - Administrators can enable Prefer Surplus for server-funded chat models on
   supported catalogue providers. Nautilo tries Surplus, then the configured
   original provider, then the configured model fallback chain. Costs retains

@@ -19,7 +19,7 @@ import { projectPreparedMessagesForModelCache } from "../../src/utils/model-cont
 beforeAll(async () => {
   await activateModelCatalogForTests([
     { id: "openai:test-non-reasoning", reasoning: false },
-    "openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna",
+    "openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna", "openai:gpt-6.1-sol",
   ]);
 });
 
@@ -145,7 +145,7 @@ describe("shouldUseOpenAIResponsesApi ( transport policy)", () => {
 
 describe("createUniversalModel — OpenAI Responses flag isolation ", () => {
   it("preserves GPT-6 Chat Completions token parameters without disabling reasoning for text utilities", async () => {
-    for (const modelId of ["openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna"]) {
+    for (const modelId of ["openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna", "openai:gpt-6.1-sol"]) {
       const llm = await createUniversalModel(modelId, {
         apiKey: "test-key",
         maxTokens: 8192,
@@ -164,7 +164,7 @@ describe("createUniversalModel — OpenAI Responses flag isolation ", () => {
   });
 
   it("honors direct GPT-6 opt-in independently of output and headroom", async () => {
-    for (const modelId of ["openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna"]) {
+    for (const modelId of ["openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna", "openai:gpt-6.1-sol"]) {
       const options = { modelId, apiKey: "test-key", maxTokens: 128, reasoningOutput: false, useOpenAIResponsesApi: true };
       expect(shouldUseOpenAIResponsesApi(options, 128)).toBe(true);
       expect(shouldUseOpenAIResponsesApi({ ...options, useOpenAIResponsesApi: false }, 128)).toBe(false);
@@ -176,11 +176,11 @@ describe("createUniversalModel — OpenAI Responses flag isolation ", () => {
   });
 
   it("preserves explicit effort and validates deliberate disablement on direct GPT-6", async () => {
-    for (const modelId of ["openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna"]) {
+    for (const modelId of ["openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna", "openai:gpt-6.1-sol"]) {
       const options = { apiKey: "test-key", reasoningOutput: false, useOpenAIResponsesApi: true };
       const llm = await createUniversalModel(modelId, { ...options, reasoningEffort: "high" });
       expect(openAIFields(llm)["reasoning"]).toEqual({ effort: "high" });
-      if (modelId === "openai:gpt-6-astra") {
+      if (modelId === "openai:gpt-6-astra" || modelId === "openai:gpt-6.1-sol") {
         expect(createUniversalModel(modelId, { ...options, reasoningEffort: "off" })).rejects.toThrow("not supported");
       } else {
         const disabled = await createUniversalModel(modelId, { ...options, reasoningEffort: "off" });
@@ -296,5 +296,15 @@ describe("createUniversalModel — OpenAI Responses flag isolation ", () => {
     expect(fields["useResponsesApi"]).toBeUndefined();
     expect(fields["thinking"]).toEqual({ type: "adaptive" });
     expect(fields["outputConfig"]).toEqual({ effort: "medium" });
+  });
+});
+
+describe("GPT-6.1 Sol reasoning contract", () => {
+  it("rejects off and minimal before creating a Responses request", async () => {
+    for (const reasoningEffort of ["off", "minimal"] as const) {
+      expect(createOpenAI({ modelId: "openai:gpt-6.1-sol", apiKey: "test-key",
+        useOpenAIResponsesApi: true, reasoningOutput: false, reasoningEffort,
+      })).rejects.toThrow("not supported");
+    }
   });
 });

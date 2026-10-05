@@ -215,29 +215,32 @@ test("mandatory reasoning survives hidden output and a five-token budget without
   expect(requests[0]?.["max_tokens"] ?? requests[0]?.["max_completion_tokens"]).toBe(5);
 });
 
-test("Opus 5.5 streams its full output limit and serializes every supported effort", async () => {
-  for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
-    requests.length = 0;
-    const model = await createAnthropic({
-      modelId: "anthropic:claude-opus-5-5",
-      apiKey: "synthetic-wire-test-key",
-      maxTokens: 128_000,
-      reasoningOutput: false,
-      reasoningEffort: effort,
-    });
-    const response = await model.invoke([new HumanMessage("Wire contract fixture")]) as AIMessageChunk;
-    expect(JSON.stringify(response.content)).toContain("ok");
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.["max_tokens"]).toBe(128_000);
-    expect(requests[0]?.["stream"]).toBe(true);
-    expect(requests[0]?.["thinking"]).toEqual({ type: "adaptive" });
-    expect(requests[0]?.["output_config"]).toEqual({ effort });
-    expect(requests[0]).not.toHaveProperty("temperature");
-    expect(requests[0]).not.toHaveProperty("top_p");
-    expect(requests[0]).not.toHaveProperty("top_k");
-    expect(requests[0]?.["betas"] ?? []).toEqual([]);
-  }
-});
+for (const modelId of ["anthropic:claude-opus-5-5", "anthropic:claude-sonnet-5-5", "anthropic:claude-fable-5-1"]) {
+  test(`${modelId} streams its full output limit and serializes every supported effort`, async () => {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+      requests.length = 0;
+      const model = await createAnthropic({
+        modelId,
+        apiKey: "synthetic-wire-test-key",
+        maxTokens: 128_000,
+        reasoningOutput: false,
+        reasoningEffort: effort,
+      });
+      const response = await model.invoke([new HumanMessage("Wire contract fixture")]) as AIMessageChunk;
+      expect(JSON.stringify(response.content)).toContain("ok");
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.["max_tokens"]).toBe(128_000);
+      expect(requests[0]?.["stream"]).toBe(true);
+      expect(requests[0]?.["thinking"]).toEqual({ type: "adaptive" });
+      expect(requests[0]?.["output_config"]).toEqual({ effort });
+      expect(requests[0]).not.toHaveProperty("temperature");
+      expect(requests[0]).not.toHaveProperty("top_p");
+      expect(requests[0]).not.toHaveProperty("top_k");
+      expect(requests[0]?.["betas"] ?? []).toEqual([]);
+    }
+  });
+
+}
 
 test("Anthropic streamed max_tokens reaches output-limit preflight through LangChain conversion", async () => {
   anthropicStopReason = "max_tokens";

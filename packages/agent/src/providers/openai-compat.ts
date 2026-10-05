@@ -10,7 +10,7 @@ type InvocationOptions = Parameters<ChatOpenAICompletions["invocationParams"]>[0
 type InvocationExtra = Parameters<ChatOpenAICompletions["invocationParams"]>[1];
 
 export function isDirectGpt6Model(modelId: string): boolean {
-  return /^openai:gpt-6-(astra|sol|luna)$/.test(modelId);
+  return /^openai:gpt-(?:6-(?:astra|sol|luna)|6\.1-sol)$/.test(modelId);
 }
 
 /**

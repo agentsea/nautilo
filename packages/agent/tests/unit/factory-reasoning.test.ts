@@ -374,3 +374,21 @@ describe("OpenAI-compatible reasoning output", () => {
     expect(modelKwargs(llm)["reasoning_effort"]).toBeUndefined();
   });
 });
+
+describe("current Claude adaptive reasoning", () => {
+  for (const modelId of ["anthropic:claude-sonnet-5-5", "anthropic:claude-fable-5-1"]) {
+    it(`preserves effort and the full streaming allowance for ${modelId}`, async () => {
+      const model = await createAnthropic({ modelId, apiKey: "test-key", reasoningOutput: false,
+        reasoningEffort: "max", maxTokens: 128_000 });
+      const fields = anthropicFields(model);
+      expect(fields["streaming"]).toBe(true);
+      expect(fields["maxTokens"]).toBe(128_000);
+      expect(fields["thinking"]).toEqual({ type: "adaptive" });
+      expect(fields["outputConfig"]).toEqual({ effort: "max" });
+      expect(fields["temperature"]).toBeUndefined();
+      expect(fields["betas"]).toBeUndefined();
+      expect(createAnthropic({ modelId, apiKey: "test-key", reasoningEffort: "off" }))
+        .rejects.toThrow("not supported");
+    });
+  }
+});

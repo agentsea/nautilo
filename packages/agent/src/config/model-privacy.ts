@@ -1,12 +1,15 @@
 /** 10 = most private (local / on-prem / TEE); 1 = least (US hyperscaler API). */
 export const MODEL_PRIVACY_GRADE: Record<string, number> = {
+  "openrouter:anthropic/claude-sonnet-5.5": 1,
   // US hyperscaler first-party APIs
   "anthropic:claude-sonnet-4-6": 1,
+  "anthropic:claude-sonnet-5-5": 1,
   "anthropic:claude-sonnet-5": 1,
   "anthropic:claude-fable-5": 1,
   "anthropic:claude-opus-5": 1,
   "anthropic:claude-opus-5-5": 1,
   "openrouter:anthropic/claude-opus-5.5": 1,
+  "openrouter:openai/gpt-6.1-sol": 1,
   "openrouter:openai/gpt-6-sol": 1,
   "openrouter:openai/gpt-6-luna": 1,
   "anthropic:claude-opus-4-8": 1,
@@ -16,6 +19,7 @@ export const MODEL_PRIVACY_GRADE: Record<string, number> = {
   "openai:gpt-5.6-sol": 1,
   "openai:gpt-5.6-terra": 1,
   "openai:gpt-5.6-luna": 1,
+  "openai:gpt-6.1-sol": 1,
   "openai:gpt-6-sol": 1,
   "openai:gpt-6-luna": 1,
   "google:gemini-2.5-pro": 1,
@@ -52,7 +56,10 @@ export const MODEL_PRIVACY_GRADE: Record<string, number> = {
   "venice:claude-opus-4-7": 6,
   "venice:gemini-3-1-pro-preview": 6,
   "venice:openai-gpt-55-pro": 6,
+  "venice:claude-sonnet-5-5": 6,
+  "venice:claude-fable-5-1": 6,
   "venice:claude-opus-5-5": 6,
+  "venice:openai-gpt-61-sol": 6,
   "venice:openai-gpt-6-sol": 6,
   "venice:openai-gpt-6-luna": 6,
 

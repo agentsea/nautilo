@@ -1,7 +1,7 @@
 {
   "version": 6,
-  "catalogVersion": "2026.09.23.1",
-  "publishedAt": "2026-09-23T09:27:38Z",
+  "catalogVersion": "2026.10.05.1",
+  "publishedAt": "2026-10-05T09:26:32Z",
   "entries": [
     {
       "id": "anthropic:claude-sonnet-4-6",
@@ -39,6 +39,62 @@
         "tier": "frontier"
       },
       "capabilityProvenance": "override"
+    },
+    {
+      "id": "anthropic:claude-sonnet-5-5",
+      "displayName": "Claude Sonnet 5.5 (Anthropic)",
+      "provider": "anthropic",
+      "routing": "first-party",
+      "priority": 2,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 0.67
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "high",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-documentation",
+            "provider": "anthropic",
+            "verifiedAt": "2026-10-05T09:26:32Z"
+          }
+        }
+      }
     },
     {
       "id": "anthropic:claude-sonnet-5",
@@ -151,7 +207,26 @@
       "intelligence": {
         "tier": "frontier"
       },
-      "capabilityProvenance": "override"
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "high",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-documentation",
+            "provider": "anthropic",
+            "verifiedAt": "2026-10-05T09:26:32Z"
+          }
+        }
+      }
     },
     {
       "id": "anthropic:claude-opus-4-8",
@@ -243,6 +318,62 @@
             "kind": "provider-documentation",
             "provider": "openai",
             "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "openai:gpt-6.1-sol",
+      "displayName": "GPT-6.1 Sol (OpenAI)",
+      "provider": "openai",
+      "routing": "first-party",
+      "priority": 3,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1050000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 0.67
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "medium",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-documentation",
+            "provider": "openai",
+            "verifiedAt": "2026-10-05T09:26:32Z"
           }
         }
       }
@@ -1135,6 +1266,62 @@
       "capabilityProvenance": "openrouter"
     },
     {
+      "id": "openrouter:anthropic/claude-sonnet-5.5",
+      "displayName": "Claude Sonnet 5.5 (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 2,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 0.67
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "openrouter",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "high",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "openrouter",
+            "verifiedAt": "2026-10-05T09:26:32Z"
+          }
+        }
+      }
+    },
+    {
       "id": "openrouter:anthropic/claude-sonnet-5",
       "displayName": "Claude Sonnet 5 (OpenRouter)",
       "provider": "openrouter",
@@ -1245,7 +1432,26 @@
       "intelligence": {
         "tier": "frontier"
       },
-      "capabilityProvenance": "openrouter"
+      "capabilityProvenance": "openrouter",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "high",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "openrouter",
+            "verifiedAt": "2026-10-05T09:26:32Z"
+          }
+        }
+      }
     },
     {
       "id": "openrouter:anthropic/claude-opus-4.8",
@@ -1393,6 +1599,62 @@
             "kind": "provider-catalog",
             "provider": "openrouter",
             "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "openrouter:openai/gpt-6.1-sol",
+      "displayName": "GPT-6.1 Sol (OpenRouter)",
+      "provider": "openrouter",
+      "routing": "openrouter",
+      "priority": 3,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "file"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1050000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 0.67
+      },
+      "privacy": {
+        "grade": 1
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "openrouter",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "medium",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "openrouter",
+            "verifiedAt": "2026-10-05T09:26:32Z"
           }
         }
       }
@@ -2044,6 +2306,61 @@
       "capabilityProvenance": "openrouter"
     },
     {
+      "id": "venice:claude-sonnet-5-5",
+      "displayName": "Claude Sonnet 5.5 (Venice → Anthropic)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 34,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 0.83
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "medium",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "venice",
+            "verifiedAt": "2026-10-05T09:26:32Z"
+          }
+        }
+      }
+    },
+    {
       "id": "venice:claude-sonnet-5",
       "displayName": "Claude Sonnet 5 (Venice → Anthropic)",
       "provider": "venice",
@@ -2078,6 +2395,61 @@
         "tier": "frontier"
       },
       "capabilityProvenance": "override"
+    },
+    {
+      "id": "venice:claude-fable-5-1",
+      "displayName": "Claude Fable 5.1 (Venice → Anthropic)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 35,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1000000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 4
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "high",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "venice",
+            "verifiedAt": "2026-10-05T09:26:32Z"
+          }
+        }
+      }
     },
     {
       "id": "venice:claude-fable-5",
@@ -2259,6 +2631,61 @@
             "kind": "provider-catalog",
             "provider": "venice",
             "verifiedAt": "2026-09-23T09:27:38Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "venice:openai-gpt-61-sol",
+      "displayName": "GPT-6.1 Sol (Venice → OpenAI)",
+      "provider": "venice",
+      "routing": "western-anonymized",
+      "priority": 34,
+      "defaultEnabled": true,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "features": {
+        "tools": true,
+        "structuredOutputs": true,
+        "reasoning": true
+      },
+      "limits": {
+        "contextTokens": 1050000,
+        "outputTokens": 128000
+      },
+      "cost": {
+        "coefficient": 0.83
+      },
+      "privacy": {
+        "grade": 6
+      },
+      "intelligence": {
+        "tier": "frontier"
+      },
+      "capabilityProvenance": "override",
+      "controls": {
+        "reasoning": {
+          "levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "defaultLevel": "high",
+          "canDisable": false,
+          "mandatory": true,
+          "provenance": {
+            "kind": "provider-catalog",
+            "provider": "venice",
+            "verifiedAt": "2026-10-05T09:26:32Z"
           }
         }
       }
