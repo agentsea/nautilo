@@ -49,6 +49,7 @@
     "@nautilo/logger": "workspace:*",
     "@nautilo/lattice-crypto": "workspace:*",
     "@nautilo/mcp-client": "workspace:*",
+    "@nautilo/model-capabilities": "workspace:*",
     "@nautilo/operator-secrets": "workspace:*",
     "@nautilo/profile-portability": "workspace:*",
     "@nautilo/reflection": "workspace:*",
