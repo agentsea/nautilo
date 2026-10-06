@@ -3,6 +3,22 @@ import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { sanitizeMessageForTranscript, transcriptMetadataForMessage, visibleTranscriptContent } from "../../src/store/session-store";
 
 describe("session transcript reasoning sanitization", () => {
+  test("omits assistant narration attached to skip without mutating the source message", () => {
+    const skip = new AIMessage({
+      content: "I will stay quiet.",
+      tool_calls: [{ id: "skip-1", name: "skip", args: { reason: "not needed" } }],
+    });
+    const ordinary = new AIMessage({
+      content: "I am checking that now.",
+      tool_calls: [{ id: "file-1", name: "file", args: { command: "read", path: "README.md" } }],
+    });
+
+    expect(visibleTranscriptContent(skip)).toBe("");
+    expect(skip.content).toBe("I will stay quiet.");
+    expect(visibleTranscriptContent(ordinary)).toBe("I am checking that now.");
+    expect(ordinary.content).toBe("I am checking that now.");
+  });
+
   test("internal supervision tags tool audit without hiding the Human or final answer", () => {
     const metadata = { originatedBy: "connected_web_operation", operationId: "op-1", controlEpoch: 1 };
     const options = { internalToolMetadata: metadata };

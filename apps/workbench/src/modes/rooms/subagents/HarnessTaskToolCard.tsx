@@ -5,7 +5,6 @@ import type {
   TaskFundingFailureCode,
   TaskFundingSource,
   TaskHarnessActivity,
-  TaskSummary,
 } from "@nautilo/types";
 import { TASK_FUNDING_FAILURE_CODES } from "@nautilo/types";
 import { ApiError } from "@nautilo/api-client/browser";
@@ -129,7 +128,7 @@ export interface NativeTaskFundingState {
 export function nativeTaskFundingState(
   execution: string | undefined,
   detail: TaskDetail | null,
-  liveTask: TaskSummary | undefined,
+  liveTask: Readonly<{ fundingFailure?: TaskFundingFailureCode | null }> | undefined,
 ): NativeTaskFundingState | null {
   if (execution !== "native") return null;
   const latestRun = detail?.runs.at(-1);

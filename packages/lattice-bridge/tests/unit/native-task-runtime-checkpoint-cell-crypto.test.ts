@@ -207,11 +207,11 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
         rows = [
           {
             domain_id: DOMAIN,
-            domain_key_generation: 4,
-            authorization_revision: domain.authorizationRevision,
+            domain_key_generation: "4",
+            authorization_revision: String(domain.authorizationRevision),
             head_digest: domain.headDigest,
             participant_digest: domain.participantDigest,
-            participant_count: 1,
+            participant_count: "1",
           },
         ];
       } else throw new Error(`Unexpected native result query: ${statement}`);

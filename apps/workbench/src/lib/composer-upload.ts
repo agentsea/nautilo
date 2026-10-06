@@ -23,7 +23,7 @@ async function uploadBlob(
     const res = await apiClient.uploadMessageAttachment(blob, filename, {
       ...(opts?.roomId ? { roomId: opts.roomId } : {}),
     });
-    updateAttachment(id, { status: "queued", errorReason: null, attachmentId: res.attachmentId });
+    updateAttachment(id, { status: "queued", errorReason: null, attachmentId: res.attachmentId, mimeType: res.mimeType });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Attachment upload failed";
     updateAttachment(id, { status: "error", errorReason: msg });
@@ -51,7 +51,7 @@ export async function uploadComposerAttachment(
 ): Promise<void> {
   try {
     const result = await uploadPickedAttachment(file, opts);
-    updateAttachment(id, { status: "queued", errorReason: null, attachmentId: result.attachmentId });
+    updateAttachment(id, { status: "queued", errorReason: null, attachmentId: result.attachmentId, mimeType: result.mimeType });
   } catch (error) {
     updateAttachment(id, { status: "error", errorReason: error instanceof Error ? error.message : "Attachment upload failed" });
   }

@@ -137,13 +137,13 @@ function humanRoomCursorSql(
 }
 
 /**
- * Shared Room transcript scope used by ordinary history, D430 search, and
+ * Shared Room transcript scope used by ordinary history, search, and
  * around-message reads. The `dedupe_rank` reproduces ordinary history's
  * newest-first JS dedupe before applying pagination bounds, so continuation
  * facts describe visible rows rather than raw fan-out copies.
  *
  * A NULL `tool_name` remains visible: legacy rows cannot prove whether they
- * were historical `react` tool outputs. Only known `tool_name = 'react'` rows
+ * were historical control tool outputs. Only known `react` and `skip` rows
  * are excluded.
  */
 async function queryVisibleHumanRoomMessages(args: {
@@ -182,6 +182,7 @@ async function queryVisibleHumanRoomMessages(args: {
             AND s.thread_id NOT LIKE 'subagent:%'
             AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'task' AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'connected_web_operation'
             AND sm.tool_name IS DISTINCT FROM 'react'
+            AND sm.tool_name IS DISTINCT FROM 'skip'
             ${candidatePredicate}
         ),`
       : sql``;
@@ -243,6 +244,7 @@ async function queryVisibleHumanRoomMessages(args: {
           AND s.thread_id NOT LIKE 'subagent:%'
           AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'task' AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'connected_web_operation'
           AND sm.tool_name IS DISTINCT FROM 'react'
+          AND sm.tool_name IS DISTINCT FROM 'skip'
       )
       SELECT d.* FROM scoped d
       ${candidateJoin}
@@ -583,6 +585,7 @@ export async function searchChats(args: {
           AND s.thread_id NOT LIKE 'subagent:%'
           AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'task' AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'connected_web_operation'
           AND sm.tool_name IS DISTINCT FROM 'react'
+          AND sm.tool_name IS DISTINCT FROM 'skip'
           AND sm.content_search @@ ${tsquery}
           ${casePredicate}
       ),
@@ -634,6 +637,7 @@ export async function searchChats(args: {
           AND s.thread_id NOT LIKE 'subagent:%'
           AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'task' AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'connected_web_operation'
           AND sm.tool_name IS DISTINCT FROM 'react'
+          AND sm.tool_name IS DISTINCT FROM 'skip'
       ),
       message_probe AS (
         SELECT d.*

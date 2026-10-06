@@ -31,6 +31,7 @@ type ComposerProps = {
   serverUrl?: string;
   placeholder?: string;
   disabled?: boolean;
+  sendDisabled?: boolean;
   /**
    * Compact context control anchored at the start of the stable action row
    * (the screen passes the model selector here). Rendered as-is.
@@ -84,6 +85,7 @@ export function Composer({
   serverUrl,
   placeholder = 'Message',
   disabled = false,
+  sendDisabled = false,
   controls,
   attachSlot,
   attachmentsSlot,
@@ -104,7 +106,7 @@ export function Composer({
   }, [onChangeText, value]);
   const inputRef = useRef<TextInput>(null);
   const trimmed = text.trim();
-  const canSend = !disabled && (trimmed.length > 0 || hasAttachments);
+  const canSend = !disabled && !sendDisabled && (trimmed.length > 0 || hasAttachments);
   const t = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   const activeCommand = activeCommandQuery(text);
@@ -196,11 +198,11 @@ export function Composer({
   const handleSubmitEditing = useCallback(
     async () => {
       const value = text.trim();
-      if (disabled || value.length === 0) return;
+      if (disabled || sendDisabled || value.length === 0) return;
       const sent = await onSend(value);
       if (sent !== false && mountedRef.current) setText('');
     },
-    [disabled, onSend, text],
+    [disabled, sendDisabled, onSend, text],
   );
 
   const handleStop = useCallback(() => {

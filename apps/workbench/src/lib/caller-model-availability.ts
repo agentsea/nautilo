@@ -18,8 +18,9 @@ interface CallerModelClient {
 export async function loadCallerModelRows(
   client: CallerModelClient,
   retainedIds: readonly string[],
+  knownCallerRows?: readonly AssistantModelSummary[],
 ): Promise<AssistantModelSummary[]> {
-  const callerRows = await client.getCallerModels({ includeUnavailable: true });
+  const callerRows = knownCallerRows ?? await client.getCallerModels({ includeUnavailable: true });
   const callerIds = new Set(callerRows.map((model) => model.id));
   const missingIds = [...new Set(retainedIds)].filter((id) => !callerIds.has(id));
   const genericRetained = missingIds.length > 0

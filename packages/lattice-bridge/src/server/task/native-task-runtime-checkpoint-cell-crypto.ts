@@ -34,6 +34,7 @@ import {
 import {
   cryptoTypedDb,
   executeTypedCryptoQuery,
+  readCryptoStorageInteger,
   verifyCryptoPostgresHandle,
 } from "../storage/postgres-lattice-storage.ts";
 
@@ -254,9 +255,9 @@ export function createNativeTaskRuntimeCheckpointCellCrypto(
             rows.length !== 1 ||
             head === undefined ||
             head.domain_id !== domain.domainId ||
-            head.domain_key_generation !== domain.domainKeyGeneration ||
-            head.authorization_revision !== domain.authorizationRevision ||
-            head.participant_count !== domain.participantCount ||
+            readCryptoStorageInteger(head, "domain_key_generation") !== domain.domainKeyGeneration ||
+            readCryptoStorageInteger(head, "authorization_revision") !== domain.authorizationRevision ||
+            readCryptoStorageInteger(head, "participant_count") !== domain.participantCount ||
             !(head.head_digest instanceof Uint8Array) ||
             !sameBytes(head.head_digest, domain.headDigest) ||
             !(head.participant_digest instanceof Uint8Array) ||

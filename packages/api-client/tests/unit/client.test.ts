@@ -14,7 +14,7 @@ import { NautiloApiClient } from "../../src/client";
 describe("NautiloApiClient", () => {
   const client = new NautiloApiClient("http://127.0.0.1:3001");
 
-  test("has getHealth plus D104 account security client methods", () => {
+  test("has getHealth plus account security client methods", () => {
     expect(typeof client.getHealth).toBe("function");
     expect(typeof client.getSetupStatus).toBe("function");
     expect(typeof client.getAccountSecurity).toBe("function");
@@ -66,7 +66,7 @@ describe("NautiloApiClient", () => {
     expect(typeof client.sendMessage).toBe("function");
   });
 
-  test("has downloadArtifact (D144-P2)", () => {
+  test("has downloadArtifact", () => {
     expect(typeof client.downloadArtifact).toBe("function");
   });
 
@@ -266,6 +266,11 @@ describe("NautiloApiClient", () => {
         }),
       });
 
+      const state = await client.getRoomModelControlState("room-1", "agent-1");
+      expect(state.selection?.modelId).toBe("fireworks:accounts/fireworks/models/kimi-k3");
+      expect(state.effectiveModelId).toBeUndefined(); // older server compatibility
+      expect(requests.at(-1)?.url).toEndWith("model-control-selection?includeEffectiveModel=true");
+
       globalThis.fetch = (async () => new Response(JSON.stringify({
         selection: {
           modelId: "fireworks:accounts/fireworks/models/kimi-k3",
@@ -382,13 +387,13 @@ describe("NautiloApiClient", () => {
 });
 
 /**
- * D445 Phase 1 — provider-key admin client calls must ride the normal
+ * provider-key admin client calls must ride the normal
  * session bearer (the routes are no longer in the trust-bypass list).
  * These tests assert the outgoing Authorization header is the latched
  * session token, and that submitted secrets / bootstrap tokens are
  * never echoed back in a response body the client surfaces.
  */
-describe("NautiloApiClient provider-key auth contract (D445)", () => {
+describe("NautiloApiClient provider-key auth contract", () => {
   // getKeySummary / validateKeys expect the raw route shapes:
   //   GET /api/health/keys  -> KeyReport[]
   //   POST /api/health/keys/validate -> { keys, summary }
@@ -415,11 +420,11 @@ describe("NautiloApiClient provider-key auth contract (D445)", () => {
     const originalFetch = globalThis.fetch;
     const headersSeen: string[] = [];
     const c = new NautiloApiClient("http://127.0.0.1:3001");
-    c.setToken("session-bearer-d445");
+    c.setToken("session-bearer-fixture");
     globalThis.fetch = captureFetch(headersSeen);
     try {
       await c.getKeySummary();
-      expect(headersSeen).toEqual(["Bearer session-bearer-d445"]);
+      expect(headersSeen).toEqual(["Bearer session-bearer-fixture"]);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -429,11 +434,11 @@ describe("NautiloApiClient provider-key auth contract (D445)", () => {
     const originalFetch = globalThis.fetch;
     const headersSeen: string[] = [];
     const c = new NautiloApiClient("http://127.0.0.1:3001");
-    c.setToken("session-bearer-d445");
+    c.setToken("session-bearer-fixture");
     globalThis.fetch = captureFetch(headersSeen);
     try {
       await c.validateKeys();
-      expect(headersSeen).toEqual(["Bearer session-bearer-d445"]);
+      expect(headersSeen).toEqual(["Bearer session-bearer-fixture"]);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -443,7 +448,7 @@ describe("NautiloApiClient provider-key auth contract (D445)", () => {
     const originalFetch = globalThis.fetch;
     let requestBody: unknown;
     const c = new NautiloApiClient("http://127.0.0.1:3001");
-    c.setToken("session-bearer-d445");
+    c.setToken("session-bearer-fixture");
     globalThis.fetch = (async (_url, init) => {
       requestBody = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
       return new Response(JSON.stringify({ keys: [], summary: { hasLlm: false } }), {
@@ -497,11 +502,11 @@ describe("NautiloApiClient provider-key auth contract (D445)", () => {
     const headersSeen: string[] = [];
     const bodiesSeen: string[] = [];
     const c = new NautiloApiClient("http://127.0.0.1:3001");
-    c.setToken("session-bearer-d445");
+    c.setToken("session-bearer-fixture");
     globalThis.fetch = captureFetch(headersSeen, bodiesSeen);
     try {
       await c.setupKeys({ ANTHROPIC_API_KEY: "sk-ant-do-not-echo" }, true);
-      expect(headersSeen).toEqual(["Bearer session-bearer-d445"]);
+      expect(headersSeen).toEqual(["Bearer session-bearer-fixture"]);
       // The secret is sent to the server in the request body (write-only)...
       expect(bodiesSeen[0]).toContain("sk-ant-do-not-echo");
     } finally {
@@ -547,7 +552,7 @@ describe("NautiloApiClient provider-key auth contract (D445)", () => {
   test("getKeySummary surfaces the server response without echoing a submitted secret", async () => {
     const originalFetch = globalThis.fetch;
     const c = new NautiloApiClient("http://127.0.0.1:3001");
-    c.setToken("session-bearer-d445");
+    c.setToken("session-bearer-fixture");
     // Server responds with masked keys only — never the raw secret.
     globalThis.fetch = (async () => {
       const payload = JSON.stringify([
@@ -575,7 +580,7 @@ describe("NautiloApiClient provider-key auth contract (D445)", () => {
   test("getKeySummary does not count an unknown provider as LLM readiness", async () => {
     const originalFetch = globalThis.fetch;
     const c = new NautiloApiClient("http://127.0.0.1:3001");
-    c.setToken("session-bearer-d445");
+    c.setToken("session-bearer-fixture");
     globalThis.fetch = (async () => new Response(JSON.stringify([
       {
         id: "retired-provider",

@@ -542,6 +542,8 @@ function rowNumber(row: DatabaseRow, field: string): number {
   return normalized;
 }
 
+export const readCryptoStorageInteger = rowNumber;
+
 function rowString(row: DatabaseRow, field: string): string {
   const value = row[field];
   if (typeof value !== "string") {

@@ -11,8 +11,8 @@ import {
   parseTaskPresentationTimestamp,
   taskPresentationActivityText,
   taskPresentationLifecycleText,
-  type TaskSummary,
 } from "@nautilo/types";
+import type { TaskStateRecord } from "./task-state-content";
 import {
   type RunningSubagent,
   type RunningSubagentStatus,
@@ -49,7 +49,7 @@ export function defaultLine3ForStatus(status: RunningSubagentStatus): string {
 }
 
 export function taskSummaryToRunningSubagent(
-  task: TaskSummary,
+  task: TaskStateRecord,
   statusOverride?: RunningSubagentStatus | null,
 ): RunningSubagent | null {
   const status = statusOverride ?? mapTaskStatusToCardStatus(task.status);
@@ -66,11 +66,11 @@ export function taskSummaryToRunningSubagent(
     modelId: task.lastModelId ?? null,
     kind: mapPresetToKind(task.preset),
     harnessId: task.harnessId ?? null,
-    prompt: task.prompt,
+    prompt: "content" in task ? "Encrypted Task" : task.prompt,
     status,
     // Seed/reconnect has no exact progress event to retain. Use only shared
     // lifecycle copy until a fresh `task.progress.detail` arrives.
-    line3: status === "paused" && (task.lastError === TASK_DESKTOP_WAIT_TEXT || task.lastError === TASK_PROVIDER_WAIT_TEXT) ? task.lastError
+    line3: status === "paused" && !("content" in task) && (task.lastError === TASK_DESKTOP_WAIT_TEXT || task.lastError === TASK_PROVIDER_WAIT_TEXT) ? task.lastError
       : taskPresentationActivityText(status, status === "running" && task.preparation ? taskPreparationText(task.preparation) : undefined),
     researchProgress: task.preparation?.research,
     recentActivity: [],
@@ -100,7 +100,7 @@ export interface RunningSubagentOverlay {
 }
 
 function mergeRunningSubagentProjection(
-  task: TaskSummary,
+  task: TaskStateRecord,
   overlay: RunningSubagentOverlay | undefined,
 ): RunningSubagent | null {
   const canonicalStatus = mapTaskStatusToCardStatus(task.status);
@@ -109,7 +109,7 @@ function mergeRunningSubagentProjection(
   // overlay may still linger a cron Task whose durable status is already pending.
   const status =
     canonicalStatus && (isTerminalTaskPresentationStatus(canonicalStatus)
-      || canonicalStatus === "paused" && (task.lastError === TASK_DESKTOP_WAIT_TEXT || task.lastError === TASK_PROVIDER_WAIT_TEXT))
+      || canonicalStatus === "paused" && !("content" in task) && (task.lastError === TASK_DESKTOP_WAIT_TEXT || task.lastError === TASK_PROVIDER_WAIT_TEXT))
       ? canonicalStatus
       : (overlay?.status ?? canonicalStatus);
   if (!status) return null;
@@ -124,7 +124,7 @@ function mergeRunningSubagentProjection(
     // Terminal lifecycle wins its linger. Stale progress/activity cannot be
     // rendered after completion or error.
     line3: terminal ? defaultLine3ForStatus(status)
-      : status === "paused" && (task.lastError === TASK_DESKTOP_WAIT_TEXT || task.lastError === TASK_PROVIDER_WAIT_TEXT) ? task.lastError
+      : status === "paused" && !("content" in task) && (task.lastError === TASK_DESKTOP_WAIT_TEXT || task.lastError === TASK_PROVIDER_WAIT_TEXT) ? task.lastError
       : (overlay.line3 ?? base.line3),
     researchProgress: overlay.researchProgress !== undefined ? overlay.researchProgress
       : overlay.taskRunId && overlay.taskRunId !== task.preparation?.taskRunId ? null : base.researchProgress,
@@ -145,7 +145,7 @@ function mergeRunningSubagentProjection(
 }
 
 export function buildRunningSubagentsMap(
-  taskMap: Readonly<Record<string, TaskSummary>>,
+  taskMap: Readonly<Record<string, TaskStateRecord>>,
   overlays: Readonly<Record<string, RunningSubagentOverlay>>,
   visibleTaskIds: ReadonlySet<string>,
 ): Readonly<Record<string, RunningSubagent>> {

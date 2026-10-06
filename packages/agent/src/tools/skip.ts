@@ -83,7 +83,7 @@ export const skipToolSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Optional note explaining why you are skipping or redirecting. Tool-call arguments can be persisted in audit records and displayed to Humans, so do not put private or sensitive information here.",
+      "Optional note explaining why you are skipping or redirecting. Tool-call arguments can be persisted in internal audit records, so do not put private or sensitive information here.",
     ),
 });
 

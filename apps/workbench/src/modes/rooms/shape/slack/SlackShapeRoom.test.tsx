@@ -1,6 +1,6 @@
 import { reapplyHappyDomGlobals } from "../../../../../tests/bun-dom-preload";
 import { afterAll, beforeEach, expect, mock, test } from "bun:test";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import type { RoomMemberDto } from "@nautilo/types";
 
@@ -10,6 +10,7 @@ let sessionUserId = "human-one";
 let capabilities = new Set(["invoke_agents", "use_personal_provider_credentials"]);
 let credentials: { requiresReplacement: boolean }[] = [{ requiresReplacement: false }];
 let models: { availability: string }[] = [{ availability: "selectable" }];
+let pendingCredentials: Promise<{ credentials: typeof credentials }> | null = null;
 
 mock.module("../../../../components/conversation", () => ({
   Conversation: () => <div data-testid="conversation">Conversation</div>,
@@ -25,7 +26,7 @@ mock.module("../../../../hooks/use-auth", () => ({
 }));
 mock.module("../../../../lib/api", () => ({
   apiClient: {
-    listProviderCredentials: async () => ({ credentials }),
+    listProviderCredentials: async () => pendingCredentials ?? { credentials },
     getCallerModels: async () => models,
   },
 }));
@@ -45,6 +46,7 @@ beforeEach(() => {
   capabilities = new Set(["invoke_agents", "use_personal_provider_credentials"]);
   credentials = [{ requiresReplacement: false }];
   models = [{ availability: "selectable" }];
+  pendingCredentials = null;
 });
 
 afterAll(cleanup);
@@ -91,4 +93,33 @@ test("a Human-only Room remains usable without any model", () => {
   credentials = [];
   const view = render(<SlackShapeRoom roomId="room-one" members={humanOnly} />);
   expect(view.getByTestId("conversation")).toBeTruthy();
+});
+
+test("focus rechecks keep the mounted chat until a changed access result arrives", async () => {
+  const view = render(<SlackShapeRoom roomId="room-one" members={ownGenie} />);
+  await waitFor(() => expect(view.getByTestId("conversation")).toBeTruthy());
+  const conversation = view.getByTestId("conversation");
+  let finish!: (value: { credentials: typeof credentials }) => void;
+  pendingCredentials = new Promise((resolve) => { finish = resolve; });
+
+  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  expect(view.getByTestId("conversation")).toBe(conversation);
+  expect(view.queryByTestId("personal-provider-setup-empty-state")).toBeNull();
+
+  await act(async () => { finish({ credentials: [{ requiresReplacement: true }] }); });
+  await waitFor(() => expect(view.queryByTestId("conversation")).toBeNull());
+  expect(view.getByRole("link", { name: "Set up your key" })).toBeTruthy();
+});
+
+test("a different Human cannot inherit the previous Human's ready state", async () => {
+  const view = render(<SlackShapeRoom roomId="room-one" members={ownGenie} />);
+  await waitFor(() => expect(view.getByTestId("conversation")).toBeTruthy());
+  let finish!: (value: { credentials: typeof credentials }) => void;
+  pendingCredentials = new Promise((resolve) => { finish = resolve; });
+  sessionUserId = "human-two";
+  view.rerender(<SlackShapeRoom roomId="room-one" members={ownGenie} />);
+  expect(view.queryByTestId("conversation")).toBeNull();
+  expect(view.getByText("Checking chat access")).toBeTruthy();
+  await act(async () => { finish({ credentials: [] }); });
+  await waitFor(() => expect(view.getByRole("link", { name: "Set up your key" })).toBeTruthy());
 });

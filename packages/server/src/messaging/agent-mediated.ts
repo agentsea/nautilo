@@ -1,5 +1,5 @@
 /**
- * D174 Phase 11.2 — agent-mediated room send (foreground job) extracted from the
+ * agent-mediated room send (foreground job) extracted from the
  * legacy `/api/chat` handler. Invoked by `dispatchRoomMessageSend` for rooms with
  * at least one agent member; keeps job input, resolver stamps, and `runWithTurn`
  * wrapping identical to the pre-11.2 `chat.ts` path.
@@ -45,7 +45,8 @@ import type {
   DataOperationPolicyBinding,
   StrictShadowEnforcementPolicy,
 } from "@nautilo/lattice-bridge";
-import { normalizeChatAttachments, retainedAttachmentIdsFromStatuses } from "./attachments";
+import { assertChatAttachmentImageSupport, ImageAttachmentModelError, normalizeChatAttachments, retainedAttachmentIdsFromStatuses } from "./attachments";
+import { resolveForegroundChatPreflightModelId } from "../lib/foreground-chat-preflight";
 import { resolveChatArtifactRefs } from "./artifact-refs";
 import { resolveFocusedResources, type FocusedResourceRelayRegistry } from "./focused-resources";
 import { validateIanaTimezone } from "../lib/timezone";
@@ -98,11 +99,11 @@ export async function executeAgentMediatedRoomMessage(args: {
   activeMiniApp: ActiveMiniAppRequestContext | null;
   liveMiniAppSession?: TrustedLiveMiniAppSessionContext | null;
   attachmentRefs: string[];
-  /** D356 — metadata-only artifact references; resolved against the caller's
+  /** metadata-only artifact references; resolved against the caller's
    *  readable namespaces inside this function and threaded into the job. */
   artifactRefs: ChatArtifactRef[];
   /**
-   * D423 Phase 4 — generic focus refs (workspace artifact / local file).
+   * generic focus refs (workspace artifact / local file).
    * Resolved into a unified `ResolvedFocusedResource[]` manifest inside this
    * function alongside the legacy artifact + attachment lanes, then threaded
    * into the job as `focusedResources`. Local-file refs fail closed this phase.
@@ -116,7 +117,7 @@ export async function executeAgentMediatedRoomMessage(args: {
   ordinaryOrigin?: VerifiedOrdinaryOrigin;
   replyToMessageId?: number;
   /**
-   * D371 R2 — optional per-turn model override. Non-empty string forwarded
+   * optional per-turn model override. Non-empty string forwarded
    * into the graph job input; the executor (`langgraph-executor.ts`) resolves
    * it via `getModelById(...)` and applies it for THIS turn only. Null/absent
    * = no override (agent profile / system default runs).
@@ -131,7 +132,7 @@ export async function executeAgentMediatedRoomMessage(args: {
   canonicalLaneKey?: string;
   canonicalMemoryAccessEnvelope?: MemoryAccessEnvelope;
   /**
-   * D300 follow-up — transcript rows stay attributed to the human sender even
+   * transcript rows stay attributed to the human sender even
    * when a foreign-owned agent runs the turn with its own owner/memory profile.
    */
   transcriptOwnerId?: string;
@@ -158,7 +159,7 @@ export async function executeAgentMediatedRoomMessage(args: {
    */
   serverTimePrefixIso?: string;
   /**
-   * D302 P4 — "wake against an already-persisted human message". When true, the
+   * "wake against an already-persisted human message". When true, the
    * human transcript row already exists (optimistic delivery / ask_user
    * pre-persist); the executor injects the message into the graph for the model
    * to answer but skips re-persisting the human row (no duplicate, no
@@ -183,7 +184,7 @@ export async function executeAgentMediatedRoomMessage(args: {
   /** M282 — trusted virtual Job identity bound before runtime acceptance. */
   preferredVirtualJobId?: string;
   /**
-   * D316 — user explicitly selected this agent from an `ask_user` picker.
+   * user explicitly selected this agent from an `ask_user` picker.
    * Threaded into graph state so the turn withholds `skip` and injects
    * steering prompt text.
    */
@@ -196,7 +197,7 @@ export async function executeAgentMediatedRoomMessage(args: {
    */
   subthreadParentRoomId?: string;
   subthreadAnchorMessageId?: number;
-  /** D426 — child Room id forwarded to runtime transcript persistence. */
+  /** child Room id forwarded to runtime transcript persistence. */
   subthreadRoomId?: string;
   /**
    * M168 R5 — the just-persisted human row id to EXCLUDE from the rebuilt
@@ -208,7 +209,7 @@ export async function executeAgentMediatedRoomMessage(args: {
   /** Canonical Humans covered by a coalesced already-persisted wake. */
   memoryReviewSourceMessageIds?: number[];
   /**
-   * D420 (Wave 2 task 2.2.1) — acceptance authority carried by conductor-wake
+   * acceptance authority carried by conductor-wake
    * continuation paths so the drain gate inside `createForegroundJob` cannot
    * reject a turn whose human row was accepted before drain began. Omitted on
    * the synchronous DM path (the gate re-checks there as a TOCTOU backstop).
@@ -216,10 +217,10 @@ export async function executeAgentMediatedRoomMessage(args: {
   acceptanceAuthority?: MaintenanceAcceptanceAuthority;
   /** M254 — opaque proof of current Human invocation admission. */
   invocationAuthority: AcceptedInvocationAuthority;
-  /** D513 — opaque client session from an ordinary direct foreground send. */
+  /** opaque client session from an ordinary direct foreground send. */
   clientActionSessionId?: unknown;
   /**
-   * D421 Phase 4.2/4.3 — server-authored redirect eligibility authority.
+   * server-authored redirect eligibility authority.
    * True ONLY for a conductor-inferred single-wake group turn (never for
    * explicit mention/reply/UI picks, never for an explicit multi-wake, never
    * for the DM path). Target-bearing `skip` may record a local request, but
@@ -228,7 +229,7 @@ export async function executeAgentMediatedRoomMessage(args: {
    */
   redirectAllowed?: boolean;
   /**
-   * D421 Phase 4.3 — one-hop depth for a redirect target. Forwarded in the
+   * one-hop depth for a redirect target. Forwarded in the
    * job input; the executor seeds the target's distinct per-agent context at
    * execution ingress, before graph/model/tool work.
    */
@@ -278,6 +279,24 @@ export async function executeAgentMediatedRoomMessage(args: {
     ...(roomId ? { roomId } : {}),
   });
 
+  // Room dispatch already checked before publication. The legacy non-room
+  // entrypoint still uses this same admission helper before normalization.
+  if (!args.canonicalRoomId && attachmentRefs.length > 0) {
+    try {
+      const modelId = await resolveForegroundChatPreflightModelId({ humanUserId: sessionUserId,
+        roomId, agentId, turnModelId: model ?? null });
+      const envelope = args.canonicalMemoryAccessEnvelope ?? request.memoryEnvelope;
+      await assertChatAttachmentImageSupport({ attachmentIds: attachmentRefs,
+        uploaderActorId: request.sessionActorId ?? "",
+        writableNamespaceId: envelope ? envelopeWritableNamespaces(envelope)[0] ?? null : null,
+        models: [{ id: modelId }],
+      });
+    } catch (error) {
+      if (!(error instanceof ImageAttachmentModelError)) throw error;
+      throw new AgentMediatedSendError({ code: error.code, httpStatus: 422, message: error.message });
+    }
+  }
+
   const graphThreadId =
     args.canonicalGraphThreadId ?? request.policyContext?.graphThreadId ?? laneKey;
 
@@ -323,7 +342,7 @@ export async function executeAgentMediatedRoomMessage(args: {
           })
         : { textBlocks: [], mediaParts: [], statuses: [] as ChatAttachmentStatus[] };
 
-    // D356 — resolve in-focus artifact refs against the caller's readable
+    // resolve in-focus artifact refs against the caller's readable
     // namespaces (advisory: unresolved refs are dropped, never block the turn).
     const resolvedArtifactRefs =
       artifactRefs.length > 0
@@ -333,14 +352,14 @@ export async function executeAgentMediatedRoomMessage(args: {
           })
         : [];
 
-    // D423 — normalize legacy artifact refs, new generic focus refs, and
-    // authorized D271 attachments into ONE authoritative manifest. The manifest
+    // normalize legacy artifact refs, new generic focus refs, and
+    // authorized attachments into ONE authoritative manifest. The manifest
     // carries private locators (never prompt-prose); pre-model renders a single
     // `## Focused resources` block from it. Local-file refs are validated
     // against the connected-relay registry (sender ownership + protocol v4 +
     // `profile:"desktop-agent"` + `localFileExecution:true`); on any failure
     // the ref is dropped — no read, no upload, no fallback device switch
-    // (matches currentFolder D304 advisory posture: a resolver failure never
+    // (matches currentFolder advisory posture: a resolver failure never
     // blocks the turn).
     const focusedResourceRefs = (focusedResources ?? []).filter(
       (ref) =>
@@ -348,7 +367,7 @@ export async function executeAgentMediatedRoomMessage(args: {
         (localElectronOrigin !== null && ref.relayId === localElectronOrigin.relayId),
     );
     const readableNamespaceIds = attachmentEnv ? envelopeReadableNamespaces(attachmentEnv) : [];
-    // D423 4.1.3 — the connected-relay registry set at server startup. The
+    // the connected-relay registry set at server startup. The
     // runtime instance is an `InMemoryRelayRegistry` whose
     // `snapshotForFocusedResource` structurally satisfies our narrow port.
     const relayRegistry = getRelayRegistry() as unknown as
@@ -390,7 +409,7 @@ export async function executeAgentMediatedRoomMessage(args: {
       `[chat] received message from user ${sessionUserId} (laneKey=${laneKey})${cfTrace}${wpTrace}${attTrace}`,
     );
 
-    // D391 — retained image/audio attachment ids for this turn; the executor
+    // retained image/audio attachment ids for this turn; the executor
     // stamps `turn_id` on them once the human row is persisted so they render
     // from room history (this is the agent-mediated path the 3 synchronous
     // dispatch-side stamp sites don't cover).
@@ -398,7 +417,7 @@ export async function executeAgentMediatedRoomMessage(args: {
       normalizedAttachments.statuses,
     );
 
-    // D513 Phase 3.2 — reserve only after direct request validation and all
+    // reserve only after direct request validation and all
     // expensive admission preparation above. The opaque candidate is held by
     // JobManager before enqueue and never enters its input/DB/transcript.
     const bindingRegistry = args.sharedTurnId || args.foregroundTurnCoalescingContext
@@ -475,7 +494,7 @@ export async function executeAgentMediatedRoomMessage(args: {
       threadId: graphThreadId,
       voiceMode,
       autoApprove: args.autoApprove === true,
-      // D371 R2 — per-turn model override (non-empty string only). The
+      // per-turn model override (non-empty string only). The
       // executor resolves via `getModelById` and applies it for THIS turn.
       ...(model ? { model } : {}),
       memoryAccessEnvelope:
@@ -503,14 +522,14 @@ export async function executeAgentMediatedRoomMessage(args: {
       ...(args.replyToMessageId !== undefined ? { replyToMessageId: args.replyToMessageId } : {}),
       ...(args.humanAlreadyPersisted ? { humanAlreadyPersisted: true } : {}),
       ...(args.metadata ? { metadata: args.metadata } : {}),
-      // D421 Phase 4.2/4.3 — server-authored redirect eligibility. The
+      // server-authored redirect eligibility. The
       // executor reads `input["redirectAllowed"] === true` and threads it
       // onto graph state; server-side redirect completion fails closed unless
       // this is true. Omitted ⇒ false.
       ...(args.redirectAllowed === true ? { redirectAllowed: true } : {}),
       ...(args.redirectDepth === 1 ? { redirectDepth: 1 as const } : {}),
       },
-      // D420 — `executorOverride` (unused here) then `authority`. Conductor-wake
+      // `executorOverride` (unused here) then `authority`. Conductor-wake
       // continuation passes `acceptanceAuthority` so the drain gate bypasses a
       // turn accepted before drain; the synchronous DM path omits it.
       undefined,

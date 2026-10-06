@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractToolProgressDetailFromStreamEvent } from "./run";
+import { extractToolProgressDetailFromStreamEvent, scopeSubagentStreamErrorDetail } from "./run";
 
 describe("scope subagent progress argument projection", () => {
   test("keeps inspect intent while omitting top-level and nested credentials", () => {
@@ -35,5 +35,23 @@ describe("scope subagent progress argument projection", () => {
       name: "inspect_open_design",
       data: { input: { session_token: "only-secret" } },
     })).toBe("inspect_open_design");
+  });
+});
+
+describe("scope subagent stream error custody", () => {
+  test("never formats provider error content on the protected path", () => {
+    const canary = "private-task-provider-error-canary";
+    expect(scopeSubagentStreamErrorDetail(new Error(canary), true))
+      .toBe("Protected Task graph execution failed");
+    const hostileError = { toString() { throw new Error(canary); } };
+    expect(scopeSubagentStreamErrorDetail(hostileError, true))
+      .toBe("Protected Task graph execution failed");
+  });
+
+  test("preserves ordinary Error and non-Error diagnostics", () => {
+    expect(scopeSubagentStreamErrorDetail(new Error("ordinary provider error"), false))
+      .toBe("ordinary provider error");
+    expect(scopeSubagentStreamErrorDetail("ordinary thrown value", false))
+      .toBe("ordinary thrown value");
   });
 });
