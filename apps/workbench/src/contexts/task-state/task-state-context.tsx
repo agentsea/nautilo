@@ -23,6 +23,7 @@ import {
 } from "../../modes/rooms/subagents/running-subagents-model";
 import {
   RunningSubagentsContext,
+  type ConversationEncryptionPolicyMode,
   type RunningSubagentsSnapshot,
 } from "../../adapters/runtime-contexts";
 import {
@@ -75,14 +76,19 @@ export interface TaskStateProviderProps {
   readonly children: ReactNode;
   readonly wsState: WsState;
   readonly bridgeRef: MutableRefObject<TaskStateBridge | null>;
+  readonly policyMode: ConversationEncryptionPolicyMode;
 }
 
 export function TaskStateProvider({
   children,
   wsState,
   bridgeRef,
+  policyMode,
 }: TaskStateProviderProps) {
   const auth = useAuth();
+  const policyModeRef = useRef(policyMode);
+  const previousPolicyModeRef = useRef(policyMode);
+  policyModeRef.current = policyMode;
   const storeRef = useRef<TaskStateStore | null>(null);
   const lastProcessedViewerGenerationRef = useRef<number | null>(null);
   const prevWsStateRef = useRef<WsState>(wsState);
@@ -90,7 +96,7 @@ export function TaskStateProvider({
   if (!storeRef.current) {
     storeRef.current = createTaskStateStore({
       // Include the existing bounded terminal window to discover verified recovery.
-      listActiveTasks: () => listTaskStateSummaries(apiClient),
+      listActiveTasks: () => listTaskStateSummaries(apiClient, policyModeRef.current),
       lifecycle: {
         pauseTask: (taskId) => apiClient.pauseTask(taskId),
         unpauseTask: (taskId) => apiClient.unpauseTask(taskId),
@@ -130,6 +136,13 @@ export function TaskStateProvider({
     store.clearForViewerChange();
     void store.seed("mount");
   }, [auth.viewer.isVerified, auth.viewerGeneration, store]);
+
+  useEffect(() => {
+    if (previousPolicyModeRef.current === policyMode) return;
+    previousPolicyModeRef.current = policyMode;
+    store.clearForViewerChange();
+    if (auth.viewer.isVerified) void store.seed("mount");
+  }, [auth.viewer.isVerified, policyMode, store]);
 
   useEffect(() => {
     const prev = prevWsStateRef.current;

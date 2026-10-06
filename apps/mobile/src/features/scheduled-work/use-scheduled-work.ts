@@ -11,7 +11,29 @@ import {
   type ScheduledWorkFailure,
 } from "./scheduled-work-state";
 import { useTaskWorkScope } from "@/features/task-work/use-task-work-scope";
-import { isMissingTaskContentProjection } from "@/features/task-work/task-content-mobile";
+import { requiresTaskContentProjection } from "@/features/task-work/task-content-mobile";
+import type { NautiloApiClient } from "@nautilo/api-client/browser";
+
+export async function listPlainScheduledWork(
+  client: Pick<NautiloApiClient, "listActiveTasks" | "listTaskContentV1">,
+) {
+  try {
+    return await client.listActiveTasks();
+  } catch (error) {
+    if (!requiresTaskContentProjection(error)) throw error;
+    return [...await client.listTaskContentV1()];
+  }
+}
+
+export function readPlainScheduledWorkDetail(
+  client: Pick<NautiloApiClient, "getTask" | "getTaskContentV1">,
+  taskId: string,
+) {
+  return client.getTask(taskId).catch(error => {
+    if (!requiresTaskContentProjection(error)) throw error;
+    return client.getTaskContentV1(taskId);
+  });
+}
 
 /** Binds scheduled-work data to the active verified owner and nothing else. */
 export function useScheduledWork({
@@ -58,22 +80,12 @@ export function useScheduledWork({
     async list(requestScope) {
       if (!server || server.id !== requestScope.serverId) throw new Error("Active server changed.");
       const client = getApiClient(server.serverUrl);
-      try {
-        return [...await client.listTaskContentV1()];
-      } catch (error) {
-        if (!isMissingTaskContentProjection(error)) throw error;
-        return client.listActiveTasks();
-      }
+      return listPlainScheduledWork(client);
     },
     async detail(requestScope, id) {
       if (!server || server.id !== requestScope.serverId) throw new Error("Active server changed.");
       const client = getApiClient(server.serverUrl);
-      try {
-        return await client.getTaskContentV1(id);
-      } catch (error) {
-        if (!isMissingTaskContentProjection(error)) throw error;
-        return client.getTask(id);
-      }
+      return readPlainScheduledWorkDetail(client, id);
     },
     async pause(requestScope, id) {
       if (!server || server.id !== requestScope.serverId) throw new Error("Active server changed.");

@@ -121,10 +121,37 @@ function jsonObject(row: ConversationProductDatabaseRow, key: string): Protected
 function date(row: ConversationProductDatabaseRow, key: string): Date | null {
   const value = row[key];
   if (value === null) return null;
-  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+  const postgres = typeof value === "string"
+    ? /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?([+-])(\d{2})(?::?(\d{2}))?$/u.exec(value)
+    : null;
+  const parsed = value instanceof Date
+    ? new Date(value.getTime())
+    : typeof value === "string"
+      && Number.isFinite(Date.parse(value))
+      && (new Date(value).toISOString() === value || postgres !== null)
+    ? new Date(value)
+    : null;
+  const postgresOffset = postgres === null ? null
+    : (postgres[8] === "-" ? -1 : 1)
+      * (Number(postgres[9]) * 60 + Number(postgres[10] ?? "0"));
+  const postgresLocal = parsed === null || postgresOffset === null
+    ? null
+    : new Date(parsed.getTime() + postgresOffset * 60_000);
+  if (parsed === null || !Number.isFinite(parsed.getTime())
+    || (postgres !== null && (postgresLocal === null
+      || Number(postgres[9]) > 23
+      || Number(postgres[10] ?? "0") > 59
+      || postgresLocal.getUTCFullYear() !== Number(postgres[1])
+      || postgresLocal.getUTCMonth() + 1 !== Number(postgres[2])
+      || postgresLocal.getUTCDate() !== Number(postgres[3])
+      || postgresLocal.getUTCHours() !== Number(postgres[4])
+      || postgresLocal.getUTCMinutes() !== Number(postgres[5])
+      || postgresLocal.getUTCSeconds() !== Number(postgres[6])
+      || postgresLocal.getUTCMilliseconds()
+        !== Number((postgres[7] ?? "").padEnd(3, "0").slice(0, 3))))) {
     throw new TypeError(`${key} is not a timestamp`);
   }
-  return new Date(value);
+  return parsed;
 }
 
 function bool(row: ConversationProductDatabaseRow, key: string): boolean {

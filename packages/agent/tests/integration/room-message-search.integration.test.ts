@@ -103,6 +103,7 @@ describe("D430 Room message store readers", () => {
           AND s.thread_id NOT LIKE 'subagent:%'
           AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'task'
           AND sm.tool_name IS DISTINCT FROM 'react'
+          AND sm.tool_name IS DISTINCT FROM 'skip'
           AND sm.content_search @@ ${tsquery}
       `;
       const whole = await tx.execute<{ "QUERY PLAN": unknown }>(candidate(sql`plainto_tsquery('english', 'launch')`));
@@ -121,6 +122,7 @@ describe("D430 Room message store readers", () => {
       { sessionId: primary, role: "assistant", content: "", toolCalls: '[{"id":"call-1"}]', createdAt: t(0) },
       { sessionId: primary, role: "tool", content: "needle tool result", toolName: "lookup", createdAt: t(1) },
       { sessionId: primary, role: "tool", content: "needle react hidden", toolName: "react", createdAt: t(2) },
+      { sessionId: primary, role: "tool", content: "needle skip hidden", toolName: "skip", createdAt: t(2) },
       { sessionId: primary, role: "tool", content: "needle legacy visible", toolName: null, createdAt: t(3) },
       { sessionId: primary, role: "user", content: "needle task hidden", metadata: { originatedBy: "task" }, createdAt: t(4) },
       { sessionId: subagent, role: "user", content: "needle subagent hidden", createdAt: t(5) },
@@ -148,6 +150,7 @@ describe("D430 Room message store readers", () => {
     expect(second.hits.map((hit) => hit.snippet)).toEqual(["needle tool result"]);
     expect(second.hasMoreOlder).toBe(false);
     expect([...first.hits, ...second.hits].map((hit) => hit.snippet)).not.toContain("needle react hidden");
+    expect([...first.hits, ...second.hits].map((hit) => hit.snippet)).not.toContain("needle skip hidden");
     expect([...first.hits, ...second.hits].map((hit) => hit.snippet)).not.toContain("needle task hidden");
     expect([...first.hits, ...second.hits].map((hit) => hit.snippet)).not.toContain("needle subagent hidden");
     expect([...first.hits, ...second.hits].map((hit) => hit.snippet)).not.toContain("needle duplicate");
@@ -261,6 +264,7 @@ describe("D470 set-wise Chats search", () => {
             AND s.thread_id NOT LIKE 'subagent:%'
             AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'task'
             AND sm.tool_name IS DISTINCT FROM 'react'
+            AND sm.tool_name IS DISTINCT FROM 'skip'
             AND sm.content_search @@ plainto_tsquery('english', 'needle')
           ORDER BY sm.created_at DESC, sm.id DESC
           LIMIT 51
@@ -426,6 +430,7 @@ describe("D470 set-wise Chats search", () => {
         { sessionId: primary, role: "tool", content: "needle lookup", toolName: "lookup", createdAt: at(2) },
         { sessionId: primary, role: "tool", content: "needle legacy tool", toolName: null, createdAt: at(2) },
         { sessionId: primary, role: "tool", content: "needle reaction", toolName: "react", createdAt: at(3) },
+        { sessionId: primary, role: "tool", content: "needle skip", toolName: "skip", createdAt: at(3) },
         { sessionId: primary, role: "user", content: "needle task row", metadata: { originatedBy: "task" }, createdAt: at(4) },
         { sessionId: subagent, role: "user", content: "needle subagent row", createdAt: at(5) },
         { sessionId: primary, role: "user", content: "needle duplicate old", fingerprint: "d470-duplicate", createdAt: at(6) },
@@ -585,6 +590,7 @@ describe("D470 set-wise Chats search", () => {
       ]);
       expect(all.map((hit) => hit.snippet)).not.toEqual(expect.arrayContaining([
         "needle reaction",
+        "needle skip",
         "needle task row",
         "needle subagent row",
         "needle duplicate old",

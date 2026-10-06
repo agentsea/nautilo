@@ -15,6 +15,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   and repairs derived records from their surviving current evidence. Retry
   cooldowns survive restarts, older failures retain their place in the queue,
   and durable diagnostics distinguish waiting, failed, repaired, and retired work.
+- Successful skips end the agent turn without another model call. Silence and
+  hand-off control activity stays out of chat while rejected hand-offs remain
+  recoverable and already-admitted sibling tools finish normally.
 
 - The text editor serializes first saves of empty documents and preserves edits
   made while a save is in progress. Conflict recovery reports failed latest-version
