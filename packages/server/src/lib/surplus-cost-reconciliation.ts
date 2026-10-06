@@ -6,6 +6,7 @@ import {
 import {
   classifySurplusLlmAttemptRecovery,
   listPendingSurplusAttempts,
+  DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT,
   reconcileSurplusLlmAttemptCost,
   requeueBlockedServerSurplusAttempts,
 } from "@nautilo/db";
@@ -98,7 +99,7 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
       await wakeBlockedServerAttemptsForCurrentCredential();
       if (isStopped()) return;
       const rows = await deps.list({
-        limit: 100,
+        limit: DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT,
         updatedBefore: new Date(deps.now() - 60_000),
       });
       for (const row of rows) {

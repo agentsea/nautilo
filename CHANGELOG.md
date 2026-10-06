@@ -28,6 +28,7 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   saves or stale validation. A safe personal Surplus refusal can continue through
   the configured model fallback chain when the same-model direct key is absent;
   exact-model Tasks retain their selected model.
+  Mobile cost amounts use the same rounding and tiny-amount display as Workbench.
 
 - Text-only chat models reject new image attachments with clear removal/model
   selection guidance. Queued images remain editable after a model switch;

@@ -32,11 +32,14 @@ export class PersonalAttemptInvocationError extends Error {
 }
 
 /**
- * A concrete 4xx response proves that the provider refused this invocation.
- * HTTP 408 remains uncertain because the remote service can time out after
- * accepting work. Transport errors and 5xx responses are likewise not proof
- * that paid execution never began.
+ * Shared request-level refusals documented by every supported personal direct
+ * provider: invalid request, authentication, permission, missing model/route,
+ * and rate/capacity admission. Other 4xx meanings vary by provider and remain
+ * uncertain without stronger structured evidence. In particular, 408 can
+ * follow accepted work and non-standard 499 can represent client cancellation.
  */
+const VERIFIED_PRE_SERVICE_REFUSAL_STATUSES = new Set([400, 401, 403, 404, 429]);
+
 export function classifyPersonalAttemptFailure(
   error: unknown,
   cancelled: boolean,
@@ -46,7 +49,7 @@ export function classifyPersonalAttemptFailure(
     return { outcome: "cancelled", failureCode: "cancelled", disposition: "terminal_cancelled" };
   }
   const status = classifyError(error).statusCode;
-  if (!providerWorkObserved && status !== undefined && status >= 400 && status <= 499 && status !== 408) {
+  if (!providerWorkObserved && status !== undefined && VERIFIED_PRE_SERVICE_REFUSAL_STATUSES.has(status)) {
     return { outcome: "failed", failureCode: "provider_refused", disposition: "safe_refusal" };
   }
   return { outcome: "unknown", failureCode: "outcome_unknown", disposition: "terminal_unknown" };

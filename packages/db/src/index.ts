@@ -790,6 +790,7 @@ export {
   settleSurplusLlmAttempt,
   settlePersonalLlmAttempt,
   listPendingSurplusAttempts,
+  DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT,
   reconcileSurplusLlmAttemptCost,
   classifySurplusLlmAttemptRecovery,
   requeueBlockedPersonalSurplusAttempts,

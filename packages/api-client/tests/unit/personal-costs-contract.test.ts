@@ -72,7 +72,8 @@ describe("personal costs client contract", () => {
   test("parses own-Task attribution and bounded recovery diagnostics", async () => {
     const taskId = "22222222-2222-4222-8222-222222222222";
     const attemptId = "33333333-3333-4333-8333-333333333333";
-    globalThis.fetch = (async () => Response.json({
+    const reason = "upstream_".repeat(12);
+    const response = {
       ...summary,
       byTask: [{
         taskId,
@@ -89,7 +90,7 @@ describe("personal costs client contract", () => {
         attempts: [{
           attemptId,
           status: "unrecoverable",
-          reason: "cost_evidence_unavailable",
+          reason,
           providerRoute: "openrouter",
           requestReference: "req_0123456789ab",
           lastObservedAt: "2026-10-05T00:00:00.000Z",
@@ -97,11 +98,18 @@ describe("personal costs client contract", () => {
           taskId,
         }],
       },
-    })) as unknown as typeof fetch;
+    };
+    globalThis.fetch = (async () => Response.json(response)) as unknown as typeof fetch;
 
     const parsed = await new NautiloApiClient(BASE).getPersonalCosts("30d");
     expect(parsed.byTask[0]?.taskId).toBe(taskId);
-    expect(parsed.recovery.attempts[0]).toMatchObject({ attemptId, taskId });
+    expect(parsed.recovery.attempts[0]).toMatchObject({ attemptId, taskId, reason });
+    for (const invalidReason of ["", "unsafe provider prose", "<provider_error>"]) {
+      response.recovery.attempts[0]!.reason = invalidReason;
+      const failure = await new NautiloApiClient(BASE).getPersonalCosts("30d")
+        .then(() => null, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+    }
   });
 
   test("rejects malformed spend instead of presenting it as zero", async () => {

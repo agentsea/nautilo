@@ -12,6 +12,13 @@ export interface PersonalCostCallTypeRow {
   knownCostUsd: number;
 }
 
+const USD = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
 const CALL_TYPE_LABELS: Record<string, string> = {
   chat: "Chat",
   subagent: "Subagents",
@@ -30,6 +37,11 @@ const CALL_TYPE_LABELS: Record<string, string> = {
   soul: "Soul generation",
   other: "Other",
 };
+
+export function formatPersonalCostUsd(value: number): string {
+  if (value > 0 && value < 0.005) return "<$0.01";
+  return USD.format(value);
+}
 
 export function personalCostsForRequestedRange(
   summary: PersonalCostsSummary | null,

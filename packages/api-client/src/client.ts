@@ -2452,7 +2452,7 @@ const personalCostsSummarySchema: z.ZodType<PersonalCostsSummary> = z.object({
     attempts: z.array(z.object({
       attemptId: z.uuid(),
       status: z.enum(["pending", "retryable", "blocked", "unrecoverable"]),
-      reason: z.string().regex(/^[a-z0-9_]{1,80}$/),
+      reason: z.string().regex(/^[a-z0-9_]+$/),
       providerRoute: z.string().min(1),
       requestReference: z.string().regex(/^req_[0-9a-f]{12}$/).nullable(),
       lastObservedAt: z.string().min(1),

@@ -18,6 +18,7 @@ import {
   type PersonalCostsController,
 } from "@/features/settings/personal-account-controller";
 import {
+  formatPersonalCostUsd,
   personalCostCallTypeRows,
   personalCostDayRows,
   personalCostsForRequestedRange,
@@ -31,8 +32,6 @@ import { useAppTheme } from "@/providers/theme";
 import type { AppTheme } from "@/theme/tokens";
 
 const RANGES: readonly PersonalCostsRangeKey[] = ["7d", "30d", "90d"];
-const usd = (value: number): string =>
-  `$${value.toFixed(value >= 0.01 ? 2 : 6)}`;
 const integer = (value: number): string =>
   new Intl.NumberFormat().format(value);
 
@@ -175,8 +174,8 @@ export default function PersonalCostsScreen() {
             <View style={styles.summary}>
               <Metric
                 label="Known personal-key cost"
-                value={usd(data.totals.totalCostUsd)}
-            detail={`${usd(data.totals.actualCostUsd)} actual · ${usd(data.totals.estimatedCostUsd)} current estimate${unresolved + unknownPaidOperations > 0 ? " · unresolved charges excluded" : ""}`}
+                value={formatPersonalCostUsd(data.totals.totalCostUsd)}
+                detail={`${formatPersonalCostUsd(data.totals.actualCostUsd)} actual · ${formatPersonalCostUsd(data.totals.estimatedCostUsd)} current estimate${unresolved + unknownPaidOperations > 0 ? " · unresolved charges excluded" : ""}`}
               />
               <Metric
                 label="Model attempts"
@@ -238,7 +237,7 @@ export default function PersonalCostsScreen() {
                 {(data.byTask ?? []).map((row) => (
                   <View key={row.taskId} style={styles.card}>
                     <Text selectable style={styles.title}>Task {row.taskId}</Text>
-                    <Text style={styles.help}>{integer(row.calls)} attempts · {usd(row.totalCostUsd)} known spend · {integer(row.pendingAttempts + row.unknownAttempts)} unresolved</Text>
+                    <Text style={styles.help}>{integer(row.calls)} attempts · {formatPersonalCostUsd(row.totalCostUsd)} known spend · {integer(row.pendingAttempts + row.unknownAttempts)} unresolved</Text>
                   </View>
                 ))}
               </>
@@ -255,10 +254,10 @@ export default function PersonalCostsScreen() {
                     key={row.key}
                     style={styles.listRow}
                     accessibilityRole="text"
-                    accessibilityLabel={`${row.label}, ${usd(row.knownCostUsd)} known spend`}
+                    accessibilityLabel={`${row.label}, ${formatPersonalCostUsd(row.knownCostUsd)} known spend`}
                   >
                     <Text style={styles.title}>{row.label}</Text>
-                    <Text style={styles.cost}>{usd(row.knownCostUsd)}</Text>
+                    <Text style={styles.cost}>{formatPersonalCostUsd(row.knownCostUsd)}</Text>
                   </View>
                 ))}
               </View>
@@ -286,7 +285,7 @@ export default function PersonalCostsScreen() {
                         </Text>
                       </View>
                       <Text style={styles.cost}>
-                        {costPending ? "Cost pending" : usd(row.totalCostUsd)}
+                        {costPending ? "Cost pending" : formatPersonalCostUsd(row.totalCostUsd)}
                       </Text>
                     </View>
                     <Text style={styles.help}>
@@ -313,7 +312,7 @@ export default function PersonalCostsScreen() {
                     key={row.key}
                     style={styles.listRow}
                     accessibilityRole="text"
-                    accessibilityLabel={`${row.label}, ${integer(row.calls)} attempts, ${usd(row.knownCostUsd)} known spend`}
+                    accessibilityLabel={`${row.label}, ${integer(row.calls)} attempts, ${formatPersonalCostUsd(row.knownCostUsd)} known spend`}
                   >
                     <View style={styles.modelCopy}>
                       <Text style={styles.title}>{row.label}</Text>
@@ -321,7 +320,7 @@ export default function PersonalCostsScreen() {
                         {integer(row.calls)} attempts
                       </Text>
                     </View>
-                    <Text style={styles.cost}>{usd(row.knownCostUsd)}</Text>
+                    <Text style={styles.cost}>{formatPersonalCostUsd(row.knownCostUsd)}</Text>
                   </View>
                 ))}
               </View>
@@ -357,13 +356,13 @@ export default function PersonalCostsScreen() {
                         </Text>
                       </View>
                       <Text style={styles.cost}>
-                        {costPending ? "Cost pending" : usd(row.totalCostUsd)}
+                        {costPending ? "Cost pending" : formatPersonalCostUsd(row.totalCostUsd)}
                       </Text>
                     </View>
                     <Text style={styles.help}>
                       {costPending
                         ? "Unknown or pending receipt"
-                        : `${usd(row.actualCostUsd)} actual · ${usd(row.estimatedCostUsd)} estimated`}
+                        : `${formatPersonalCostUsd(row.actualCostUsd)} actual · ${formatPersonalCostUsd(row.estimatedCostUsd)} estimated`}
                       {row.unknownOperations > 0
                         ? " · unresolved charges excluded"
                         : ""}

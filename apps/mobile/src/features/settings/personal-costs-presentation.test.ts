@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { PersonalCostsSummary } from "@nautilo/api-client/browser";
 import {
+  formatPersonalCostUsd,
   personalCostCallTypeRows,
   personalCostDayRows,
   personalCostsForRequestedRange,
@@ -33,6 +34,13 @@ const summary = {
   ],
   totals: { unknownProviderOperations: 4 },
 } as unknown as PersonalCostsSummary;
+
+test("formats personal costs consistently with Workbench", () => {
+  expect(formatPersonalCostUsd(0)).toBe("$0.00");
+  expect(formatPersonalCostUsd(0.0001)).toBe("<$0.01");
+  expect(formatPersonalCostUsd(0.006)).toBe("$0.01");
+  expect(formatPersonalCostUsd(1284.57)).toBe("$1,284.57");
+});
 
 test("keeps API time-series order and known totals for the native day list", () => {
   expect(personalCostDayRows(summary)).toEqual([

@@ -168,9 +168,8 @@ export interface ListPendingSurplusAttemptsInput {
   updatedBefore?: Date;
 }
 
-// The runtime receipt pump has always bounded one pass to 100 attempts by
-// default. The account diagnostic uses that same established read bound.
-const DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT = 100;
+// Bound each fair-ranked recovery pass and the corresponding diagnostic list.
+export const DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT = 100;
 
 export interface SurplusPendingAttempt {
   id: string;

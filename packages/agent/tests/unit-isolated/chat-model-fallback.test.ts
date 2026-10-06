@@ -2467,6 +2467,48 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
     expect(rechecks).toEqual([]);
   });
 
+  test("does not retry or fall back after an unverified personal 499 with timeout-shaped wording", async () => {
+    policyState = { enabled: true, chain: [A, B] };
+    const attempts: string[] = [];
+    const rechecks: string[] = [];
+    let invokes = 0;
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt(modelId) { rechecks.push(modelId); },
+      async runAttempt(modelId, callback) {
+        attempts.push(modelId);
+        return callback({
+          personalCredential: { apiKey: `personal-${modelId}` },
+          usageFunding: {
+            kind: "personal", humanUserId: "human-1", payerHumanId: "human-1",
+            providerRoute: modelId.split(":", 1)[0]!, credentialId: `credential-${modelId}`,
+            credentialRevision: 1,
+          },
+        });
+      },
+    };
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          invokes += 1;
+          throw Object.assign(new Error("provider request timed out"), { status: 499 });
+        },
+      }),
+      invoke: async () => new AIMessage("unused"),
+    }));
+
+    const thrown = await invokeChatModelWithFallback(
+      messages, [], A, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session },
+    ).then(() => null, (error: unknown) => error);
+
+    expect(classifyError(thrown).category).toBe("TIMEOUT");
+    expect(attempts).toEqual([A]);
+    expect(invokes).toBe(1);
+    expect(rechecks).toEqual([]);
+    expect(modelIdsFromCalls()).toEqual([A]);
+  });
+
   test("rechecks the pinned session before retrying a definitive personal refusal", async () => {
     const rechecks: string[] = [];
     let invokes = 0;

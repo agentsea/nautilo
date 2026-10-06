@@ -171,9 +171,18 @@ describe("durable personal direct attempts", () => {
 });
 
 describe("personal direct attempt terminal classification", () => {
-  test("uses explicit nested HTTP status and never message wording", () => {
-    expect(classifyPersonalAttemptFailure({ cause: { response: { status: 429 } } }, false))
-      .toEqual({ outcome: "failed", failureCode: "provider_refused", disposition: "safe_refusal" });
+  test("allows only shared documented pre-service refusal statuses", () => {
+    for (const status of [400, 401, 403, 404, 429]) {
+      expect(classifyPersonalAttemptFailure({ cause: { response: { status } } }, false))
+        .toEqual({ outcome: "failed", failureCode: "provider_refused", disposition: "safe_refusal" });
+    }
+
+    for (const status of [402, 405, 409, 413, 415, 418, 422, 499]) {
+      expect(classifyPersonalAttemptFailure(Object.assign(new Error("request timeout"), { status }), false))
+        .toEqual({ outcome: "unknown", failureCode: "outcome_unknown", disposition: "terminal_unknown" });
+    }
+    expect(classifyPersonalAttemptFailure(Object.assign(new Error("rate limit exceeded"), { status: 418 }), false))
+      .toEqual({ outcome: "unknown", failureCode: "outcome_unknown", disposition: "terminal_unknown" });
     expect(classifyPersonalAttemptFailure(new Error("401 unauthorized"), false))
       .toEqual({ outcome: "unknown", failureCode: "outcome_unknown", disposition: "terminal_unknown" });
     expect(classifyPersonalAttemptFailure({ status: 401 }, true))
