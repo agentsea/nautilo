@@ -1314,7 +1314,10 @@ export async function runDurableHierarchySleep(input: {
       }
       if (error instanceof DurableSleepExecutionWindowExhaustedError) {
         pausedForBudget = true;
-        for (const item of batch) await pauseClaim(item.claim);
+        for (const item of batch) {
+          item.outcome = "unavailable";
+          await pauseClaim(item.claim);
+        }
         return;
       }
       if (error instanceof DurableSleepOrganizationUnavailableError) {

@@ -2165,6 +2165,15 @@ test("execution-window exhaustion pauses a non-cooperative model call", async ()
     modelSignal = signal;
     return await new Promise<string>(() => {});
   });
+  semantic.invokeOrganizerBatch = async (_claims, _prompt, signal) => {
+    modelSignal = signal;
+    return await new Promise<string>(() => {});
+  };
+  semantic.openOrganizationAttempt = async () => ({
+    async assertCurrent() {},
+    async publish(publish) { return publish(); },
+    async close(outcome) { events.push(`close:${outcome}`); },
+  });
   const result = await runDurableHierarchySleep({
     work: workHarness([claim("a", "organization")], events).port,
     semantic,
@@ -2184,6 +2193,7 @@ test("execution-window exhaustion pauses a non-cooperative model call", async ()
     budgetExhausted: true,
   });
   expect(events).toContain("pause");
+  expect(events).toContain("close:unavailable");
   expect(events).not.toContain("complete");
 });
 
