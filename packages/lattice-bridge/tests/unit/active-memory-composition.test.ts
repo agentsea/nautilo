@@ -3,8 +3,10 @@ import { describe, expect, test } from "bun:test";
 import {
   createInvocationBoundProtectedAgentMemoryRepository,
   type AgentMemoryEmbedding,
+  type AgentMemorySearchCandidate,
   type ProtectedAgentMemoryCryptoSessionPort,
   type ProtectedAgentMemoryEmbeddingPort,
+  type ProtectedAgentMemoryFallbackSearchPort,
   type ProtectedAgentMemoryProductPort,
   type ProtectedMemoryCandidate,
   type ProtectedMemoryMutationPlan,
@@ -36,6 +38,7 @@ const USER = "11111111-1111-4111-8111-111111111111";
 const AGENT = "22222222-2222-4222-8222-222222222222";
 const MEMORY = "33333333-3333-4333-8333-333333333333";
 const SECOND_MEMORY = "44444444-4444-4444-8444-444444444444";
+const THIRD_MEMORY = "55555555-5555-4555-8555-555555555555";
 const NS_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const NS_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const NS_C = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -128,6 +131,34 @@ function candidate(
     score: 0.95,
     createdAt: new Date("2026-08-10T00:00:00.000Z"),
     ...overrides,
+  });
+}
+
+function fallbackProtectedCandidate(
+  representation: "protected_only" | "dual",
+  overrides: Partial<ProtectedMemoryCandidate> = {},
+): Extract<AgentMemorySearchCandidate, { representation: typeof representation }> {
+  return Object.freeze({
+    ...candidate(overrides),
+    representation,
+  }) as Extract<
+    AgentMemorySearchCandidate,
+    { representation: typeof representation }
+  >;
+}
+
+function fallbackOrdinaryCandidate(
+  overrides: Partial<Omit<ProtectedMemoryCandidate, "cryptoObjectId">> = {},
+): Extract<AgentMemorySearchCandidate, { representation: "ordinary_only" }> {
+  const { cryptoObjectId: _cryptoObjectId, ...base } = candidate({
+    ...overrides,
+    contentRevision: Math.max(1, overrides.contentRevision ?? 1),
+  });
+  return Object.freeze({
+    ...base,
+    ...overrides,
+    representation: "ordinary_only",
+    cryptoObjectId: null,
   });
 }
 
@@ -315,6 +346,404 @@ describe("invocation-bound protected Agent Memory repository", () => {
       value: [{ id: selected.memoryId, content: "exact ordinary body" }] });
   });
 
+  test("Fallback preserves one mixed ranking while preferring protected bodies", async () => {
+    const selected = Object.freeze([
+      fallbackOrdinaryCandidate({ score: 0.99, contentRevision: 0 }),
+      fallbackProtectedCandidate("protected_only", {
+        memoryId: SECOND_MEMORY,
+        score: 0.9,
+      }),
+      fallbackProtectedCandidate("dual", {
+        memoryId: THIRD_MEMORY,
+        score: 0.8,
+      }),
+    ]);
+    const protectedLoads: ProtectedMemoryCandidate[][] = [];
+    const ordinaryLoads: AgentMemorySearchCandidate[][] = [];
+    const value = ports({
+      product: {
+        searchCandidates: async () => {
+          throw new Error("mixed selection owns Fallback ranking");
+        },
+      },
+      crypto: {
+        openMany: async ({ candidates }) => {
+          protectedLoads.push([...candidates]);
+          return success(candidates.map((entry) => ({
+            memoryId: entry.memoryId,
+            contentRevision: entry.contentRevision,
+            type: "fact",
+            content: `protected:${entry.memoryId}`,
+          })));
+        },
+      },
+    });
+    const fallbackSearch: ProtectedAgentMemoryFallbackSearchPort = {
+      searchCandidates: async () => success(selected),
+      loadExactOrdinary: async ({ candidates }) => {
+        ordinaryLoads.push([...candidates]);
+        return success(candidates.map((entry) => ({
+          memoryId: entry.memoryId,
+          contentRevision: entry.contentRevision,
+          type: "fact",
+          content: `ordinary:${entry.memoryId}`,
+        })));
+      },
+    };
+
+    const result = await createInvocationBoundProtectedAgentMemoryRepository({
+      owner,
+      subjectUserId: USER,
+      agentId: AGENT,
+      entrypointId: "subagent.scope",
+      ...value,
+      fallbackSearch,
+      repairExactCandidate: async () => success(undefined),
+      fallbackOrdinary: async ({ reason }) => ({ status: "unavailable", reason }),
+    }).search({ authority, query: "topic", limit: 3,
+      includeArchive: false, mode: "vector" });
+
+    expect(result).toMatchObject({
+      status: "success",
+      value: [
+        { id: MEMORY, score: 0.99, content: `ordinary:${MEMORY}` },
+        { id: SECOND_MEMORY, score: 0.9,
+          content: `protected:${SECOND_MEMORY}` },
+        { id: THIRD_MEMORY, score: 0.8,
+          content: `protected:${THIRD_MEMORY}` },
+      ],
+    });
+    expect(protectedLoads.map((entries) => entries.map((entry) => entry.memoryId)))
+      .toEqual([[SECOND_MEMORY], [THIRD_MEMORY]]);
+    expect(ordinaryLoads.map((entries) => entries.map((entry) => entry.memoryId)))
+      .toEqual([[MEMORY]]);
+  });
+
+  test("Fallback keeps mixed candidate selection and body loading on one owner generation", async () => {
+    let resolutions = 0;
+    const generationOwner = bindEncryptionDataOperationOwner({
+      policy: {
+        resolve: async () => {
+          resolutions += 1;
+          return {
+            policy: {
+              mode: "shadow_encryption" as const,
+              shadowBehavior: "fallback" as const,
+            },
+            revalidationToken: 17,
+          };
+        },
+        revalidate: async () => undefined,
+      },
+    });
+    const selected = fallbackOrdinaryCandidate();
+    const value = ports();
+    const result = await createInvocationBoundProtectedAgentMemoryRepository({
+      owner: generationOwner,
+      subjectUserId: USER,
+      agentId: AGENT,
+      entrypointId: "subagent.scope",
+      ...value,
+      fallbackSearch: {
+        searchCandidates: async () => success([selected]),
+        loadExactOrdinary: async () => success([{
+          memoryId: selected.memoryId,
+          contentRevision: selected.contentRevision,
+          type: "fact",
+          content: "one generation",
+        }]),
+      },
+      repairExactCandidate: async () => success(undefined),
+      fallbackOrdinary: async ({ reason }) => ({ status: "unavailable", reason }),
+    }).search({
+      authority,
+      query: "topic",
+      limit: 1,
+      includeArchive: false,
+      mode: "vector",
+    });
+
+    expect(result).toMatchObject({
+      status: "success",
+      value: [{ id: MEMORY, content: "one generation" }],
+    });
+    expect(resolutions).toBe(1);
+  });
+
+  test("Fallback merges a dual identity once and uses ordinary only after a classified protected failure", async () => {
+    const selected = Object.freeze([
+      fallbackProtectedCandidate("protected_only"),
+      fallbackProtectedCandidate("dual", { memoryId: SECOND_MEMORY }),
+    ]);
+    const ordinaryLoads: string[][] = [];
+    const value = ports({
+      crypto: {
+        openMany: async ({ candidates }) => {
+          if (candidates[0]?.memoryId === SECOND_MEMORY) {
+            return { status: "unavailable", reason: "encryption_pending" };
+          }
+          return success(candidates.map((entry) => ({
+            memoryId: entry.memoryId,
+            contentRevision: entry.contentRevision,
+            type: "fact",
+            content: "protected-only",
+          })));
+        },
+      },
+    });
+    const result = await createInvocationBoundProtectedAgentMemoryRepository({
+      owner,
+      subjectUserId: USER,
+      agentId: AGENT,
+      entrypointId: "subagent.scope",
+      ...value,
+      fallbackSearch: {
+        searchCandidates: async () => success(selected),
+        loadExactOrdinary: async ({ candidates }) => {
+          ordinaryLoads.push(candidates.map((entry) => entry.memoryId));
+          return success(candidates.map((entry) => ({
+            memoryId: entry.memoryId,
+            contentRevision: entry.contentRevision,
+            type: "fact",
+            content: "dual ordinary sibling",
+          })));
+        },
+      },
+      repairExactCandidate: async () => success(undefined),
+      fallbackOrdinary: async ({ reason }) => ({ status: "unavailable", reason }),
+    }).search({ authority, query: "topic", limit: 2,
+      includeArchive: false, mode: "vector" });
+
+    expect(result).toMatchObject({
+      status: "success",
+      value: [
+        { id: MEMORY, content: "protected-only" },
+        { id: SECOND_MEMORY, content: "dual ordinary sibling" },
+      ],
+    });
+    expect(ordinaryLoads).toEqual([[SECOND_MEMORY]]);
+  });
+
+  test("Fallback rejects an unmerged ordinary/protected duplicate", async () => {
+    let bodyLoads = 0;
+    const value = ports({
+      crypto: { openMany: async () => {
+        bodyLoads += 1;
+        return success([]);
+      } },
+    });
+    const result = await createInvocationBoundProtectedAgentMemoryRepository({
+      owner,
+      subjectUserId: USER,
+      agentId: AGENT,
+      entrypointId: "subagent.scope",
+      ...value,
+      fallbackSearch: {
+        searchCandidates: async () => success([
+          fallbackProtectedCandidate("protected_only"),
+          fallbackOrdinaryCandidate(),
+        ]),
+        loadExactOrdinary: async () => {
+          bodyLoads += 1;
+          return success([]);
+        },
+      },
+      repairExactCandidate: async () => success(undefined),
+      fallbackOrdinary: async ({ reason }) => ({ status: "unavailable", reason }),
+    }).search({ authority, query: "topic", limit: 2,
+      includeArchive: false, mode: "vector" });
+    expect(result).toEqual({ status: "unavailable",
+      reason: "integrity_failure" });
+    expect(bodyLoads).toBe(0);
+  });
+
+  test("Fallback retains the complete audience while reading through one admitted Namespace", async () => {
+    const selected = fallbackOrdinaryCandidate({
+      requiredNamespaceIds: [NS_A, NS_C],
+    });
+    let exactCandidates: readonly AgentMemorySearchCandidate[] = [];
+    const value = ports();
+    const result = await createInvocationBoundProtectedAgentMemoryRepository({
+      owner,
+      subjectUserId: USER,
+      agentId: AGENT,
+      entrypointId: "subagent.scope",
+      ...value,
+      fallbackSearch: {
+        searchCandidates: async () => success([selected]),
+        loadExactOrdinary: async ({ candidates }) => {
+          exactCandidates = candidates;
+          return success([{
+            memoryId: selected.memoryId,
+            contentRevision: selected.contentRevision,
+            type: "fact",
+            content: "shared through admitted attachment",
+          }]);
+        },
+      },
+      repairExactCandidate: async () => success(undefined),
+      fallbackOrdinary: async ({ reason }) => ({ status: "unavailable", reason }),
+    }).search({ authority, query: "topic", limit: 1,
+      includeArchive: false, mode: "vector" });
+
+    expect(exactCandidates[0]?.requiredNamespaceIds).toEqual([NS_A, NS_C]);
+    expect(result).toMatchObject({ status: "success", value: [{
+      id: MEMORY,
+      content: "shared through admitted attachment",
+    }] });
+  });
+
+  test("Fallback preserves stale selection and exact-revision failures", async () => {
+    const value = ports();
+    for (const fallbackSearch of [
+      {
+        searchCandidates: async () => ({ status: "unavailable" as const,
+          reason: "stale_revision" as const }),
+        loadExactOrdinary: async () => {
+          throw new Error("must not load");
+        },
+      },
+      {
+        searchCandidates: async () => success([
+          fallbackOrdinaryCandidate({ contentRevision: 4 }),
+        ]),
+        loadExactOrdinary: async () => ({ status: "unavailable" as const,
+          reason: "stale_revision" as const }),
+      },
+    ]) {
+      const result = await createInvocationBoundProtectedAgentMemoryRepository({
+        owner,
+        subjectUserId: USER,
+        agentId: AGENT,
+        entrypointId: "subagent.scope",
+        ...value,
+        fallbackSearch,
+        repairExactCandidate: async () => success(undefined),
+        fallbackOrdinary: async ({ reason }) => ({ status: "unavailable", reason }),
+      }).search({ authority, query: "topic", limit: 1,
+        includeArchive: false, mode: "vector" });
+      expect(result).toEqual({ status: "unavailable", reason: "stale_revision" });
+    }
+
+    const mismatched = await createInvocationBoundProtectedAgentMemoryRepository({
+      owner,
+      subjectUserId: USER,
+      agentId: AGENT,
+      entrypointId: "subagent.scope",
+      ...value,
+      fallbackSearch: {
+        searchCandidates: async () => success([
+          fallbackOrdinaryCandidate({ contentRevision: 4 }),
+        ]),
+        loadExactOrdinary: async () => success([{
+          memoryId: MEMORY,
+          contentRevision: 3,
+          type: "fact",
+          content: "stale body",
+        }]),
+      },
+      repairExactCandidate: async () => success(undefined),
+      fallbackOrdinary: async ({ reason }) => ({ status: "unavailable", reason }),
+    }).search({ authority, query: "topic", limit: 1,
+      includeArchive: false, mode: "vector" });
+    expect(mismatched).toEqual({ status: "unavailable",
+      reason: "integrity_failure" });
+  });
+
+  test("Fallback discards mixed selection when policy changes before body loading", async () => {
+    let revalidations = 0;
+    let selectionCalls = 0;
+    let bodyLoads = 0;
+    const changingOwner = bindEncryptionDataOperationOwner({ policy: {
+      resolve: async () => ({
+        policy: { mode: "shadow_encryption", shadowBehavior: "fallback" },
+        revalidationToken: 7,
+      }),
+      revalidate: async () => {
+        revalidations += 1;
+        if (revalidations === 2) {
+          throw new ClassifiedDataOperationError("authority", "policy changed");
+        }
+      },
+    } });
+    const value = ports();
+    const result = await createInvocationBoundProtectedAgentMemoryRepository({
+      owner: changingOwner,
+      subjectUserId: USER,
+      agentId: AGENT,
+      entrypointId: "subagent.scope",
+      ...value,
+      fallbackSearch: {
+        searchCandidates: async () => {
+          selectionCalls += 1;
+          return success([fallbackOrdinaryCandidate()]);
+        },
+        loadExactOrdinary: async () => {
+          bodyLoads += 1;
+          return success([]);
+        },
+      },
+      repairExactCandidate: async () => success(undefined),
+      fallbackOrdinary: async ({ reason }) => ({ status: "unavailable", reason }),
+    }).search({ authority, query: "topic", limit: 1,
+      includeArchive: false, mode: "vector" });
+
+    expect(result).toEqual({ status: "unavailable",
+      reason: "authorization_required" });
+    expect(selectionCalls).toBe(1);
+    expect(bodyLoads).toBe(0);
+  });
+
+  test("Strict and Full use protected search without invoking mixed fallback ports", async () => {
+    for (const policy of [
+      { mode: "shadow_encryption" as const, shadowBehavior: "strict" as const },
+      { mode: "encrypted_only" as const, shadowBehavior: "fallback" as const },
+    ]) {
+      let fallbackCalls = 0;
+      let cryptoCalls = 0;
+      const strictOwner = bindEncryptionDataOperationOwner({ policy: {
+        resolve: async () => ({ policy, revalidationToken: 1 }),
+        revalidate: async () => undefined,
+      } });
+      const value = ports({
+        product: { searchCandidates: async () => success([candidate()]) },
+        crypto: { openMany: async ({ candidates }) => {
+          cryptoCalls += 1;
+          return success(candidates.map((entry) => ({
+            memoryId: entry.memoryId,
+            contentRevision: entry.contentRevision,
+            type: "fact",
+            content: "protected",
+          })));
+        } },
+      });
+      const result = await createInvocationBoundProtectedAgentMemoryRepository({
+        owner: strictOwner,
+        subjectUserId: USER,
+        agentId: AGENT,
+        entrypointId: "subagent.scope",
+        ...value,
+        fallbackSearch: {
+          searchCandidates: async () => {
+            fallbackCalls += 1;
+            return success([fallbackOrdinaryCandidate()]);
+          },
+          loadExactOrdinary: async () => {
+            fallbackCalls += 1;
+            return success([]);
+          },
+        },
+        repairExactCandidate: async () => success(undefined),
+        fallbackOrdinary: async ({ reason }) => ({ status: "unavailable", reason }),
+      }).search({ authority, query: "topic", limit: 1,
+        includeArchive: false, mode: "vector" });
+      expect(result).toMatchObject({ status: "success",
+        value: [{ id: MEMORY, content: "protected" }] });
+      expect(fallbackCalls).toBe(0);
+      expect(cryptoCalls).toBe(1);
+    }
+  });
+
   test("policy cancellation is rethrown instead of becoming an invalid unavailable reason", async () => {
     const selected = candidate();
     const cancellingOwner = bindEncryptionDataOperationOwner({ policy: {
@@ -424,7 +853,7 @@ describe("invocation-bound protected Agent Memory repository", () => {
     expect(calls).toEqual(["plan", "prepare", "authorize", "publish"]);
   });
 
-  test("repairs the exact selected ordinary semantic candidate before planning its update", async () => {
+  test("uses the exact revision returned by repair when planning the selected candidate update", async () => {
     const calls: string[] = [];
     const selection = Object.freeze({
       memoryId: MEMORY,
@@ -449,12 +878,16 @@ describe("invocation-bound protected Agent Memory repository", () => {
         },
         planSave: async (request) => {
           calls.push("plan");
-          expect(request.selectedCandidate).toBe(selection);
+          expect(request.selectedCandidate).toEqual({
+            ...selection,
+            contentRevision: 2,
+            repairRequired: false,
+          });
           return success(
             plan({
               operationId: "operation-repair-1",
               action: "updated",
-              contentRevision: 2,
+              contentRevision: 3,
               similarity: 0.95,
               mutationCommitment: request.mutationCommitment,
             }),
@@ -471,7 +904,7 @@ describe("invocation-bound protected Agent Memory repository", () => {
       repairExactCandidate: async (request) => {
         calls.push("repair");
         expect(request.selection).toBe(selection);
-        return success(undefined);
+        return success({ memoryId: MEMORY, contentRevision: 2 });
       },
       fallbackOrdinary: async ({ reason }) => ({
         status: "unavailable",
@@ -485,6 +918,55 @@ describe("invocation-bound protected Agent Memory repository", () => {
     });
     expect(result.status).toBe("success");
     expect(calls.slice(0, 3)).toEqual(["select", "repair", "plan"]);
+  });
+
+  test.each([
+    ["a different Memory", SECOND_MEMORY, 2],
+    ["a regressed revision", MEMORY, 0],
+  ])("rejects repair claiming %s", async (_label, memoryId, contentRevision) => {
+    let planCalls = 0;
+    const selection = Object.freeze({
+      memoryId: MEMORY,
+      contentRevision: 1,
+      score: 0.95,
+      repairRequired: true,
+      repair: Object.freeze({
+        representation: "structural" as const,
+        id: MEMORY,
+        type: null,
+        importance: 0.5,
+        tier: 1,
+        createdAt: new Date("2026-08-10T00:00:00.000Z"),
+        score: 0.95,
+      }),
+    });
+    const value = ports({
+      product: {
+        selectSaveCandidate: async () => success(selection),
+        planSave: async ({ mutationCommitment }) => {
+          planCalls += 1;
+          return success(plan({ mutationCommitment }));
+        },
+      },
+    });
+
+    const result = await createInvocationBoundProtectedAgentMemoryRepository({
+      owner,
+      subjectUserId: USER,
+      agentId: AGENT,
+      entrypointId: "foreground.main",
+      ...value,
+      repairExactCandidate: async () => success({ memoryId, contentRevision }),
+      fallbackOrdinary: async ({ reason }) => ({ status: "unavailable", reason }),
+    }).save({
+      operationId: "operation-invalid-repair",
+      authority,
+      type: "preference",
+      content: "tea",
+    });
+
+    expect(result).toEqual({ status: "unavailable", reason: "integrity_failure" });
+    expect(planCalls).toBe(0);
   });
 
   test("uses only the explicit ordinary fallback after a reserved crypto-unavailable save", async () => {

@@ -346,12 +346,12 @@ describe("protected Task native Message publication", () => {
     const value = harness("protected", "mapped");
     await value.publisher(request(value.controller.signal));
 
-    expect(value.calls).toEqual(["append", "mark"]);
+    expect(value.calls).toEqual(["append", "mark", "map"]);
     expect(value.marked()).toMatchObject({
       parityStatus: "server_authenticated",
       cryptoObjectId: "message:v2:exact",
     });
-    expect(value.mapped()).toBeNull();
+    expect(value.mapped()).toMatchObject({ cryptoObjectId: "message:v2:exact" });
     expect(value.authorityChecks()).toBe(0);
   });
 

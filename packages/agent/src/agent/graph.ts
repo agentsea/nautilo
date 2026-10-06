@@ -37,6 +37,10 @@ import { EmptyTerminalResponseError } from "../graph/empty-terminal-response";
 import { researchNoteDraftNodes } from "../tools/security/research-note-draft-nodes";
 import type { ResearchNoteDraft } from "../tools/security/research-note-draft";
 import type { ForegroundChatFundingSession } from "../runtime/foreground-chat-funding";
+import type {
+  ProtectedTaskGraphNodeName,
+  ProtectedTaskNodeSettlementScope,
+} from "../graph/protected-task-node-settlement-scope";
 
 function hasVisibleTerminalContent(content: unknown): boolean {
   if (typeof content === "string") return content.trim().length > 0;
@@ -187,6 +191,18 @@ export interface NautiloGraphDeps extends PostModelDeps {
   readonly protectedMemoryProjectionPortForState?: (
     state: NautiloState,
   ) => ProtectedAgentMemoryProjectionPort | undefined;
+  /** Protected Task only: retain every admitted node body through saver close. */
+  readonly protectedTaskNodeSettlementScope?:
+    ProtectedTaskNodeSettlementScope;
+}
+
+function withProtectedTaskNodeSettlement<Arguments extends unknown[], Result>(
+  scope: ProtectedTaskNodeSettlementScope | undefined,
+  name: ProtectedTaskGraphNodeName,
+  node: (...args: Arguments) => Result,
+): (...args: Arguments) => Result | Promise<Result> {
+  if (scope === undefined) return node;
+  return (...args: Arguments) => scope.run(name, () => node(...args));
 }
 
 export function createNautiloGraph(
@@ -194,6 +210,7 @@ export function createNautiloGraph(
   policyResolver?: PolicyResolver | null,
   deps?: NautiloGraphDeps,
 ): CompiledGraph {
+  const nodeSettlement = deps?.protectedTaskNodeSettlementScope;
   const postModelNode = createPostModelNode(policyResolver, deps);
   const graphProjectionPreflightNode = createProjectionPreflightNode(
     async (state, calls) => {
@@ -271,20 +288,67 @@ export function createNautiloGraph(
       : { fullEncryptionOnlyForState: deps.fullEncryptionOnlyForState }),
   });
 
-  const workflow = new StateGraph(NautiloStateAnnotation)
-    .addNode("pre_model", async (state, config) => ({
+  const graphPreModelNode = async (
+    state: NautiloState,
+    config: Parameters<typeof preModelNode>[1],
+  ) => ({
       ...await draftNodes.prepare(state, config),
       // Ordinary Genie reasoning suspends an unfinished fast segment. The evidence remains checkpointed.
       browserDecision: state.browserDecision ? { ...state.browserDecision, phase: "handoff" as const, pending: null } : null,
-    }))
-    .addNode("browser_decision", createBrowserDecisionNode(deps))
-    .addNode("agent", draftNodes.agent)
-    .addNode("model_output_preflight", modelOutputPreflightNode)
-    .addNode("projection_preflight", graphProjectionPreflightNode)
-    .addNode("ordinary_content_access_preflight", createOrdinaryContentAccessPreflightNode(deps?.ordinaryContentAccessForState, deps?.isPinEnrolled))
-    .addNode("post_model", postModelNode)
-    .addNode("tools", graphToolsNode)
-    .addNode("await_reply", awaitReplyNode)
+    });
+  const browserDecisionNode = createBrowserDecisionNode(deps);
+  const ordinaryContentAccessPreflightNode =
+    createOrdinaryContentAccessPreflightNode(
+      deps?.ordinaryContentAccessForState,
+      deps?.isPinEnrolled,
+    );
+
+  const workflow = new StateGraph(NautiloStateAnnotation)
+    .addNode("pre_model", withProtectedTaskNodeSettlement(
+      nodeSettlement,
+      "pre_model",
+      graphPreModelNode,
+    ))
+    .addNode("browser_decision", withProtectedTaskNodeSettlement(
+      nodeSettlement,
+      "browser_decision",
+      browserDecisionNode,
+    ))
+    .addNode("agent", withProtectedTaskNodeSettlement(
+      nodeSettlement,
+      "agent",
+      draftNodes.agent,
+    ))
+    .addNode("model_output_preflight", withProtectedTaskNodeSettlement(
+      nodeSettlement,
+      "model_output_preflight",
+      modelOutputPreflightNode,
+    ))
+    .addNode("projection_preflight", withProtectedTaskNodeSettlement(
+      nodeSettlement,
+      "projection_preflight",
+      graphProjectionPreflightNode,
+    ))
+    .addNode("ordinary_content_access_preflight", withProtectedTaskNodeSettlement(
+      nodeSettlement,
+      "ordinary_content_access_preflight",
+      ordinaryContentAccessPreflightNode,
+    ))
+    .addNode("post_model", withProtectedTaskNodeSettlement(
+      nodeSettlement,
+      "post_model",
+      postModelNode,
+    ))
+    .addNode("tools", withProtectedTaskNodeSettlement(
+      nodeSettlement,
+      "tools",
+      graphToolsNode,
+    ))
+    .addNode("await_reply", withProtectedTaskNodeSettlement(
+      nodeSettlement,
+      "await_reply",
+      awaitReplyNode,
+    ))
     .setEntryPoint("pre_model")
     .addEdge("pre_model", "agent")
     .addEdge("agent", "model_output_preflight")

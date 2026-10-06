@@ -440,6 +440,8 @@ function runner(rows: unknown[]): ConversationProductCanonicalTransactionRunner 
             where: () => chain,
             limit: () => chain,
             for: () => Promise.resolve(row === undefined ? [] : [row]),
+            then: (resolve: (rows: unknown[]) => unknown) =>
+              Promise.resolve(row === undefined ? [] : [row]).then(resolve),
           };
           return chain;
         },

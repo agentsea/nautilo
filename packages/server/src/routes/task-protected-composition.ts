@@ -82,6 +82,7 @@ import {
 
 import { createHumanProductTransactionContext } from "./human-message-product-store";
 import { importProtectedTaskPublicationV1 } from "./task-protected-publication";
+import { prepareProtectedTaskScope } from "./protected-task-scope-creation";
 import { listProtectedTaskContentV1, toTaskContentSummaryV1 } from "./tasks";
 
 export type ProtectedTaskRouteAuthority = Readonly<{
@@ -344,13 +345,6 @@ function validateCreateShape(task: OperationalCreate): void {
       422,
       "nested_task_unsupported",
       "Protected nested Tasks are not supported",
-    );
-  }
-  if (task.useScope === true && task.scopeId == null) {
-    throw new ProtectedTaskRouteError(
-      422,
-      "protected_scope_requires_existing_scope",
-      "Protected scope Tasks require an existing scope",
     );
   }
   validateSelection(task);
@@ -849,6 +843,14 @@ export function createProductionProtectedTaskComposition(
     try {
       return await dependencies.db.transaction(async (transaction) => {
         const transactionDb = transaction as unknown as DirectDatabase;
+        const scopeId = task.useScope === true
+          ? await prepareProtectedTaskScope(transaction, {
+              taskId,
+              requesterUserId: authority.userId,
+              agentId: authority.agentId,
+              scopeId: task.scopeId ?? null,
+            })
+          : task.scopeId;
         await runtimeCreateTask({
           db: transactionDb,
           observer: { kick() {} },
@@ -858,7 +860,10 @@ export function createProductionProtectedTaskComposition(
             requestedParentTaskId: null,
           }),
           admission: getPlaintextTaskCreationAdmission(),
-        }, taskCreateInput(authority, taskId, task, payload));
+        }, taskCreateInput(authority, taskId, {
+          ...task,
+          ...(scopeId == null ? {} : { scopeId }),
+        }, payload));
         const created = await getTaskByIdWithMutationVersion(transactionDb, taskId);
         if (created === undefined) {
           throw new Error("Protected Task product disappeared");

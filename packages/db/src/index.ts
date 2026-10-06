@@ -904,3 +904,6 @@ export { createEventFeedStorage, listArtifactFeedRecipientUserIds } from "./quer
 
 export { memoryEmbeddingValues, memoryEmbeddingCompatibilityCondition } from "./utils/memory-embedding";
 export { PHYSICAL_FILE_URI_COLUMNS, physicalFileUriBase, rebindPhysicalFileUri } from "./utils/physical-storage-uris";
+
+export * from "./queries/task-run-message-associations";
+export * from "./queries/protected-task-execution-receipts";

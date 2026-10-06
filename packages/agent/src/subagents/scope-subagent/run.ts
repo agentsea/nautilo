@@ -19,6 +19,9 @@ import {
   GraphExecutionMetrics,
   toGraphBudgetOutcome,
 } from "../../graph/execution-policy";
+import {
+  createProtectedTaskNodeSettlementScope,
+} from "../../graph/protected-task-node-settlement-scope";
 import { AgentToolCallTracker, emitAgentEvent } from "../../runtime-hooks";
 import { isScopeMemoryEnvelope } from "@nautilo/trust";
 import {
@@ -860,17 +863,25 @@ async function runScopeSubagentUntilPauseInternal(
   const metrics = new GraphExecutionMetrics();
   const researchNoteDraft = opts.taskRun && opts.toolWhitelist?.includes("security_scan")
     ? createResearchNoteDraft(opts.signal) : undefined;
-  const graph = createNautiloGraph(
-    checkpointSaver,
-    policyResolver,
-    {
-      ...defaultPostModelDeps,
-      ...(researchNoteDraft ? { researchNoteDraft } : {}),
-      ...(opts.foregroundChatFundingSession === undefined
-        ? {}
-        : { foregroundChatFundingSession: opts.foregroundChatFundingSession }),
-    },
-  );
+  const nodeSettlement = opts.taskRunCheckpointSaver === undefined
+    ? undefined
+    : createProtectedTaskNodeSettlementScope(opts.signal);
+
+  try {
+    const graph = createNautiloGraph(
+      checkpointSaver,
+      policyResolver,
+      {
+        ...defaultPostModelDeps,
+        ...(researchNoteDraft ? { researchNoteDraft } : {}),
+        ...(opts.foregroundChatFundingSession === undefined
+          ? {}
+          : { foregroundChatFundingSession: opts.foregroundChatFundingSession }),
+        ...(nodeSettlement === undefined
+          ? {}
+          : { protectedTaskNodeSettlementScope: nodeSettlement }),
+      },
+    );
 
   const subThreadId =
     opts.subagentThreadId ??
@@ -1114,8 +1125,14 @@ async function runScopeSubagentUntilPauseInternal(
     throw err;
   } finally {
     progressTap?.dispose();
-    researchNoteDraft?.dispose();
+    if (nodeSettlement === undefined) researchNoteDraft?.dispose();
     tokenStream?.dispose();
+  }
+
+  // Cancellation can settle LangGraph's stream while an admitted node body
+  // is still returning. Drain it before state reads or saver-owner return.
+  if (nodeSettlement !== undefined) {
+    await nodeSettlement.closeAndWait();
   }
 
   // INVARIANT : this end-of-run `getState` read is OUTPUT EXTRACTION
@@ -1163,6 +1180,14 @@ async function runScopeSubagentUntilPauseInternal(
     securityReportState: securityReportReadiness(messages),
     securityResearchAppendix: securityResearchAppendix(messages),
   };
+  } finally {
+    // Covers graph construction, streaming, publication, and state-read
+    // failures. closeAndWait is idempotent after the normal drain.
+    if (nodeSettlement !== undefined) {
+      await nodeSettlement.closeAndWait();
+      researchNoteDraft?.dispose();
+    }
+  }
 }
 
 async function publishProtectedTaskTranscriptBatch(

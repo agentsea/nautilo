@@ -242,6 +242,22 @@ export type {
   ProtectedAgentBackgroundMemoryOutputPlanInput,
 } from "./memory/postgres-agent-memory-product-port.ts";
 export {
+  PostgresTaskMemoryReadPort,
+  type ProtectedTaskMemoryReadPort,
+  type TaskMemoryReadBinding,
+  type TaskMemoryReadBoundary,
+} from "./memory/postgres-task-memory-read-port.ts";
+export {
+  discoverTaskScopeMemoryMetadata,
+  discoverTaskScopeMemoryNamespaceInventory,
+  readCurrentTaskScopeMemoryMetadata,
+  readCurrentTaskScopeMemoryMutationMetadata,
+  readCurrentTaskScopeMemoryNamespaceInventory,
+  type TaskScopeCoordinates,
+  type TaskScopeMemoryMetadata,
+  type TaskScopeMemoryNamespaceInventory,
+} from "./task/task-scope-memory-metadata.ts";
+export {
   PostgresAgentBackgroundMemoryPublicationReconciler,
 } from "./memory/postgres-agent-background-memory-publication-reconciler.ts";
 export type {

@@ -184,6 +184,8 @@ export {
   type CreateForegroundJobResult,
   type ForegroundExecutionRoute,
   type AbortReason,
+  type ProtectedTaskRunQuiescenceRequest,
+  type ProtectedTaskRunQuiescenceResult,
   type ExecutableJobWorkSummary,
   type WorkAcceptanceSinks,
   type MaintenanceCancellationResult,

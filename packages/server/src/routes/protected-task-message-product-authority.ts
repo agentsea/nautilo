@@ -4,6 +4,7 @@ import {
   eq,
   jobs,
   rooms,
+  recordTaskRunMessageAssociationInTx,
   sessionMessageCryptoRevisions,
   sessions,
   taskRuns,
@@ -95,7 +96,10 @@ async function exactExistingLifecycle(
       eq(sessionMessageCryptoRevisions.sessionId, input.sessionId),
       eq(sessionMessageCryptoRevisions.messageId, input.messageId),
       eq(sessionMessageCryptoRevisions.editRevision, input.revision),
-    )).limit(1).for("share");
+    )).limit(1);
+  // The serializable product transaction validates this snapshot. Mapping
+  // locks the Message before its lifecycle; an early shared lifecycle lock
+  // would invert that order during concurrent replay.
   return lifecycle !== undefined
     && lifecycle.roomId === expected.roomId
     && lifecycle.namespaceIdAtAllocation === expected.namespaceId
@@ -223,6 +227,28 @@ export function createProtectedTaskMessageProductGuard(
         || !await exactExistingLifecycle(tx, input, asserted)) reject();
       asserted.signal.throwIfAborted();
       if (now() >= asserted.authorizationExpiresAt) reject();
+    },
+    async recordMappedPublication(
+      tx: CanonicalTranscriptTx,
+      input: Parameters<NonNullable<ConversationProductPublicationGuard["recordMappedPublication"]>>[1],
+    ): Promise<void> {
+      asserted.signal.throwIfAborted();
+      if (input.sessionId !== asserted.sessionId
+        || input.revision !== 0
+        || input.idempotencyKey?.startsWith(
+          `task-transcript:${asserted.taskRunId}:fp:v1:`,
+        ) !== true) reject();
+      const result = await recordTaskRunMessageAssociationInTx(tx, {
+        taskId: asserted.taskId,
+        taskRunId: asserted.taskRunId,
+        sessionId: input.sessionId,
+        expectedThreadId: asserted.graphThreadId,
+        messageId: input.messageId,
+        publishedRevision: input.revision,
+        kind: "transcript",
+        publicationKey: input.idempotencyKey,
+      });
+      if (result.status === "rejected") reject();
     },
   });
 }

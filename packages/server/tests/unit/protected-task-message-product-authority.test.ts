@@ -103,6 +103,8 @@ function transaction(data: unknown[]): CanonicalTranscriptTx {
         where: () => chain,
         limit: () => chain,
         for: () => Promise.resolve(value === undefined ? [] : [value]),
+        then: (resolve: (rows: unknown[]) => unknown) =>
+          Promise.resolve(value === undefined ? [] : [value]).then(resolve),
       };
       return chain;
     },
@@ -149,6 +151,15 @@ describe("protected Task Message product guard", () => {
     expect(await rejected(guard.assertPublicationAllowed(
       transaction([]), invalid,
     ))).toContain("authority changed");
+  });
+
+  test("rejects unrelated mapping provenance before product access", async () => {
+    const guard = createProtectedTaskMessageProductGuard(authority(), () => 1000);
+    expect(guard.recordMappedPublication).toBeDefined();
+    expect(await rejected(guard.recordMappedPublication!(transaction([]), {
+      sessionId: ids.session, messageId: 41, revision: 0,
+      idempotencyKey: "other-message",
+    }))).toContain("authority changed");
   });
 
   test("rejects a moved Room and expired grant", async () => {
