@@ -1036,6 +1036,41 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
               ne(sessionMessages.toolName, "skip"),
             ),
           ),
+          // Filter skip-only assistant parents before the SQL limit so hidden
+          // control rows cannot consume a visible page slot. `tool_calls` is
+          // historical text. SQL/JSON accepts some values that JSONB rejects
+          // (for example escaped NULs and out-of-range numbers), so guard the
+          // cast with `pg_input_is_valid` first and check array shape only in
+          // its nested branch. Unknown, malformed, empty, and mixed call arrays
+          // remain visible; only a nonempty array whose canonical names all
+          // resolve to `skip` is hidden. Name resolution mirrors transcript
+          // parsing: prefer top-level `name`, then the provider `function.name`
+          // envelope. The raw row remains in the audit transcript.
+          sql`CASE
+            WHEN ${sessionMessages.role} = 'assistant' THEN CASE
+              WHEN pg_input_is_valid(${sessionMessages.toolCalls}, 'jsonb') THEN CASE
+                WHEN ${sessionMessages.toolCalls} IS JSON ARRAY THEN NOT (
+                  jsonb_array_length((${sessionMessages.toolCalls})::jsonb) > 0
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements((${sessionMessages.toolCalls})::jsonb) AS transcript_call(value)
+                    WHERE jsonb_typeof(transcript_call.value) IS DISTINCT FROM 'object'
+                      OR CASE
+                        WHEN jsonb_typeof(transcript_call.value->'name') = 'string'
+                          THEN transcript_call.value->>'name'
+                        WHEN jsonb_typeof(transcript_call.value->'function') = 'object'
+                          AND jsonb_typeof(transcript_call.value->'function'->'name') = 'string'
+                          THEN transcript_call.value->'function'->>'name'
+                        ELSE NULL
+                      END IS DISTINCT FROM 'skip'
+                  )
+                )
+                ELSE TRUE
+              END
+              ELSE TRUE
+            END
+            ELSE TRUE
+          END`,
           sql`(${sessionMessages.createdAt} < ${beforeCreatedAtIso}::timestamptz OR (${sessionMessages.createdAt} = ${beforeCreatedAtIso}::timestamptz AND ${sessionMessages.id} < ${args.beforeId}))`,
         ),
       )

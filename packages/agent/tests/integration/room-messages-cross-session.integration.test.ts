@@ -24,7 +24,7 @@ import {
   inArray,
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
-import { ensureSession, getRoomMessagesAcrossMemberSessions } from "../../src/store/session-store";
+import { ensureSession, getRoomMessagesAcrossMemberSessions, getRoomMessagesAcrossMemberSessionsWithSelection } from "../../src/store/session-store";
 
 
 let db: ReturnType<typeof createDirectDb>;
@@ -239,6 +239,66 @@ describe("getRoomMessagesAcrossMemberSessions (D124)", () => {
     expect(page.messages.map((message) => message.content)).not.toContain("known react");
     expect(page.messages.map((message) => message.content)).not.toContain("known skip");
     expect(page.messages.map((message) => message.content)).toContain("legacy unknown");
+  });
+
+  test("pages past repeated skip invocation/result pairs without losing real history or audit", async () => {
+    const sessionId = await ensureSession({
+      threadId: `room-skip-pagination-${ts}`, ownerId: ownerA, personaId: "owner", roomId,
+    });
+    const epoch = Date.parse("2025-04-01T12:00:00.000Z");
+    const hiddenRows = Array.from({ length: 106 }, (_, index) => [
+      {
+        sessionId, role: "assistant", content: "Staying silent per commitment",
+        toolCalls: JSON.stringify([{ id: `skip-${index}`, name: "skip", args: { reason: "Nothing changed" } }]),
+        createdAt: new Date(epoch + index * 2 + 1),
+      },
+      {
+        sessionId, role: "tool", content: '{"skipped":true}', toolName: "skip",
+        createdAt: new Date(epoch + index * 2 + 2),
+      },
+    ]).flat();
+    await db.insert(sessionMessages).values([
+      { sessionId, role: "user", content: "older real message", createdAt: new Date(epoch) },
+      ...hiddenRows,
+      { sessionId, role: "user", content: "newer real message", createdAt: new Date(epoch + 500) },
+    ]);
+    const args = { ownerId: ownerA, roomId, beforeCreatedAt: new Date(epoch + 1000), beforeId: 9_999_999, limit: 1 };
+    const first = await getRoomMessagesAcrossMemberSessions(args);
+    expect(first.messages.map((message) => message.content)).toEqual(["newer real message"]);
+    expect(first.hasMoreBefore).toBe(true);
+    const cursor = first.messages[0]!;
+    const second = await getRoomMessagesAcrossMemberSessions({ ...args, beforeCreatedAt: cursor.createdAt, beforeId: Number(cursor.id) });
+    expect(second.messages.map((message) => message.content)).toEqual(["older real message"]);
+    expect(second.hasMoreBefore).toBe(false);
+    const structural = await getRoomMessagesAcrossMemberSessionsWithSelection({ ...args, limit: 2, contentRepresentation: "structural" });
+    expect(structural.messages.map((message) => message.id)).toEqual([second.messages[0]!.id, cursor.id]);
+    expect(structural.hasMoreBefore).toBe(false);
+    expect(structural.messages.every((message) => message.content === null && message.toolCalls === null)).toBe(true);
+    const raw = await db.select({ role: sessionMessages.role, content: sessionMessages.content }).from(sessionMessages).where(eq(sessionMessages.sessionId, sessionId));
+    expect(raw).toHaveLength(214);
+    expect(raw.filter((message) => message.content === "Staying silent per commitment")).toHaveLength(106);
+  });
+
+  test("preserves mixed tool batches and unclassifiable legacy assistant rows", async () => {
+    const sessionId = await ensureSession({
+      threadId: `room-skip-mixed-${ts}`, ownerId: ownerA, personaId: "owner", roomId,
+    });
+    const epoch = Date.parse("2025-04-02T12:00:00.000Z");
+    await db.insert(sessionMessages).values([
+      { sessionId, role: "assistant", content: "mixed parent", toolCalls: JSON.stringify([{ id: "skip", name: "skip" }, { id: "lookup", name: "lookup" }]), createdAt: new Date(epoch) },
+      { sessionId, role: "tool", content: "lookup result", toolName: "lookup", createdAt: new Date(epoch + 1) },
+      { sessionId, role: "assistant", content: "legacy null", toolCalls: null, createdAt: new Date(epoch + 2) },
+      { sessionId, role: "assistant", content: "legacy malformed", toolCalls: "not-json", createdAt: new Date(epoch + 3) },
+      { sessionId, role: "assistant", content: "nested argument", toolCalls: JSON.stringify([{ name: "lookup", args: { name: "skip" } }]), createdAt: new Date(epoch + 4) },
+      { sessionId, role: "assistant", content: "provider skip", toolCalls: JSON.stringify([{ id: "provider-skip", function: { name: "skip", arguments: "{}" } }]), createdAt: new Date(epoch + 5) },
+      { sessionId, role: "assistant", content: "unknown sibling", toolCalls: JSON.stringify([{ name: "skip" }, { id: "unknown" }]), createdAt: new Date(epoch + 6) },
+      { sessionId, role: "assistant", content: "escaped null argument", toolCalls: JSON.stringify([{ name: "lookup", args: { query: "\u0000" } }]), createdAt: new Date(epoch + 7) },
+      { sessionId, role: "assistant", content: "huge numeric argument", toolCalls: '[{"name":"lookup","args":{"value":1e1000000}}]', createdAt: new Date(epoch + 8) },
+    ]);
+    const page = await getRoomMessagesAcrossMemberSessions({ ownerId: ownerA, roomId, beforeCreatedAt: new Date(epoch + 100), beforeId: 9_999_999, limit: 20 });
+    expect(page.messages.map((message) => message.content)).toEqual(["mixed parent", "lookup result", "legacy null", "legacy malformed", "nested argument", "unknown sibling", "escaped null argument", "huge numeric argument"]);
+    expect(page.messages[0]?.toolCalls).toContain('"name":"lookup"');
+    expect(page.hasMoreBefore).toBe(false);
   });
 
   test("dedupes fanned-out system audit rows across human member sessions", async () => {
