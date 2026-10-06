@@ -2,6 +2,30 @@ import type { PersonalProviderCredential } from "../providers/types";
 import type { UsageFundingProvenance } from "../usage/usage-context";
 
 /**
+ * The funding owner proved the original personal Surplus admission is still
+ * current, but no separate caller-owned credential exists for the selected
+ * model's direct provider. No direct-provider request was started.
+ */
+export class PersonalDirectFundingUnavailableError extends Error {
+  readonly code = "personal_credential_missing" as const;
+
+  constructor() {
+    super("The admitted personal funding source has no direct-provider credential for this model.");
+    this.name = "PersonalDirectFundingUnavailableError";
+  }
+}
+
+/** A later configured model has no route funded by the pinned personal payer. */
+export class PersonalModelFundingUnavailableError extends Error {
+  readonly code = "personal_credential_missing" as const;
+
+  constructor() {
+    super("The configured fallback model is unavailable with the admitted personal funding source.");
+    this.name = "PersonalModelFundingUnavailableError";
+  }
+}
+
+/**
  * Secret-bearing inputs for one admitted foreground provider attempt.
  * The callback boundary keeps the decrypted credential out of graph state,
  * checkpoints, and caller-owned configuration.

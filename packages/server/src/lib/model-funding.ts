@@ -1,5 +1,7 @@
 import {
   modelHasRunnableCredentials,
+  PersonalDirectFundingUnavailableError,
+  PersonalModelFundingUnavailableError,
   resolveProviderKey,
   resolveOpenRouterTransport,
   resolveSurplusChatServingAvailability,
@@ -257,9 +259,22 @@ export async function resolveModelFunding(
         credentialId: credential.id, credentialRevision: credential.revision,
       };
     }
-    if (prior?.kind === "personal") throw new ModelFundingError("personal_credential_missing");
+    if (prior?.kind === "personal") {
+      // Reaching this branch proves the initially admitted personal credential
+      // still exists at its exact revision and current policy and capability
+      // still admit it. The distinct requested transport or later model's
+      // credential is absent, so invocation may safely consult the configured
+      // same-payer model chain without starting a provider call.
+      if (prior.providerRoute === "surplus" && input.transport === "direct") {
+        throw new PersonalDirectFundingUnavailableError();
+      }
+      if (prior.modelId !== input.modelId) {
+        throw new PersonalModelFundingUnavailableError();
+      }
+      throw new ModelFundingError("personal_credential_missing");
+    }
   }
-  if (prior?.kind === "personal") throw new ModelFundingError("personal_credential_missing");
+  if (prior?.kind === "personal") throw new PersonalModelFundingUnavailableError();
   if (!caps.includes("use_server_provider_credentials")) {
     throw new ModelFundingError(personalAllowed && provider && prior?.kind !== "server"
       ? "personal_credential_missing"

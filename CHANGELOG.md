@@ -24,7 +24,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   recover authenticated original receipts while retaining their original payer.
   Server key repair also resumes blocked receipts; interrupted Surplus
   Tasks retain known charges and expose unresolved recovery. Mobile key errors
-  offer readable recovery guidance.
+  offer readable recovery guidance and refresh saved-key status after uncertain
+  saves or stale validation. A safe personal Surplus refusal can continue through
+  the configured model fallback chain when the same-model direct key is absent;
+  exact-model Tasks retain their selected model.
 
 - The text editor serializes first saves of empty documents and preserves edits
   made while a save is in progress. Conflict recovery reports failed latest-version

@@ -60,9 +60,11 @@ import {
   classifyModelStreamProgress,
   type ResolvedModelAttemptPolicy,
 } from "./model-attempt-policy";
-import type {
-  ForegroundChatFundingAttempt,
-  ForegroundChatFundingSession,
+import {
+  PersonalDirectFundingUnavailableError,
+  PersonalModelFundingUnavailableError,
+  type ForegroundChatFundingAttempt,
+  type ForegroundChatFundingSession,
 } from "../runtime/foreground-chat-funding";
 import {
   runPersonalLlmAttempt,
@@ -124,6 +126,32 @@ class ProviderAttemptError extends Error {
   constructor(override readonly cause: unknown) {
     super("Foreground provider attempt failed");
     this.name = "ProviderAttemptError";
+  }
+}
+
+class PersonalSurplusDirectFallbackUnavailableError extends SurplusDirectFallbackUnavailableError {
+  constructor(
+    reason: "surplus-unavailable" | "request-not-qualified",
+    readonly personalFundingError: PersonalDirectFundingUnavailableError,
+  ) {
+    super(reason);
+    this.name = "PersonalSurplusDirectFallbackUnavailableError";
+  }
+}
+
+async function runPersonalDirectFallback<T>(
+  fundingSession: ForegroundChatFundingSession,
+  modelId: string,
+  run: (attempt: ForegroundChatFundingAttempt) => Promise<T>,
+  reason: "surplus-unavailable" | "request-not-qualified",
+): Promise<T> {
+  try {
+    return await fundingSession.runAttempt(modelId, run, "direct");
+  } catch (error) {
+    if (error instanceof PersonalDirectFundingUnavailableError) {
+      throw new PersonalSurplusDirectFallbackUnavailableError(reason, error);
+    }
+    throw error;
   }
 }
 
@@ -1059,7 +1087,12 @@ export async function invokeChatModelWithFallback(
                 // The funding owner admits the caller's direct credential anew;
                 // the marketplace secret must never reach the original provider.
                 if (!fundingSession) throw new SurplusDirectFallbackUnavailableError();
-                return await fundingSession.runAttempt(currentModelId, runProviderAttempt, "direct");
+                return await runPersonalDirectFallback(
+                  fundingSession,
+                  currentModelId,
+                  runProviderAttempt,
+                  "surplus-unavailable",
+                );
               }
               // A definitive pre-service refusal can switch transports.
               // Its cost stays unknown until a receipt confirms it. Recheck
@@ -1075,7 +1108,12 @@ export async function invokeChatModelWithFallback(
               }
             } else if (usageFunding.kind === "personal" && usageFunding.providerRoute === "surplus") {
               if (!fundingSession) throw new SurplusDirectFallbackUnavailableError("request-not-qualified");
-              return await fundingSession.runAttempt(currentModelId, runProviderAttempt, "direct");
+              return await runPersonalDirectFallback(
+                fundingSession,
+                currentModelId,
+                runProviderAttempt,
+                "request-not-qualified",
+              );
             } else if (surplus.status === "available"
               && !modelHasRunnableCredentials(currentModelId, process.env)) {
               // The route can make the model selectable, but this request is
@@ -1178,6 +1216,22 @@ export async function invokeChatModelWithFallback(
       // Admission, policy, revision, custody, and credential decryption
       // failures are session errors. They must never be classified as a
       // provider failure or unlock another fallback/funding source.
+      if (error instanceof PersonalModelFundingUnavailableError) {
+        const nextModelId = nextInUserChain(
+          currentModelId,
+          policy,
+          needsVision,
+          requiresTools,
+          initialModelId,
+          strictNoChain,
+          personalFunding,
+        );
+        if (!nextModelId) throw error;
+        emitFallbackHop(currentModelId, nextModelId, "bad_request", laneKey);
+        log(`[nautilo/agent] Skipping personally unfunded model ${currentModelId}; trying ${nextModelId}`);
+        currentModelId = nextModelId;
+        continue;
+      }
       if (!(error instanceof ProviderAttemptError)) throw error;
       const providerError = error.cause;
       const personalAttemptError = providerError instanceof PersonalAttemptInvocationError
@@ -1194,6 +1248,7 @@ export async function invokeChatModelWithFallback(
       }
       const classified = classifyError(providerFailure);
       const terminalProviderError = personalFunding
+        && !(providerFailure instanceof SurplusDirectFallbackUnavailableError)
         ? new PersonalProviderInvocationError(classified.category)
         : providerFailure;
       // The short-retry loop preserves this explicit disposition. Honor it
@@ -1240,6 +1295,9 @@ export async function invokeChatModelWithFallback(
       disableReasoningOutput = false;
 
       const surplusDirectUnavailable = providerFailure instanceof SurplusDirectFallbackUnavailableError;
+      const personalDirectUnavailable = providerFailure instanceof PersonalSurplusDirectFallbackUnavailableError
+        ? providerFailure.personalFundingError
+        : undefined;
       // A missing original credential after a safe Surplus refusal does not
       // exhaust the configured chain. A rejected original credential likewise
       // leaves other provider routes usable; personal funding stays separate.
@@ -1251,7 +1309,7 @@ export async function invokeChatModelWithFallback(
         log(
           `[nautilo/agent] Refusing fallback from ${currentModelId} after assistant-visible output this turn`,
         );
-        throw terminalProviderError;
+        throw personalDirectUnavailable ?? terminalProviderError;
       }
 
       const nextModelId = nextInUserChain(currentModelId, policy, needsVision, requiresTools, initialModelId, strictNoChain, personalFunding);
@@ -1259,7 +1317,7 @@ export async function invokeChatModelWithFallback(
         // No more chain entries (or policy disabled). Friendly-error
         // translator in runtime/job.ts picks up the throw and converts it to
         // the bracketed `[MDL00x]` chat message.
-        throw terminalProviderError;
+        throw personalDirectUnavailable ?? terminalProviderError;
       }
       // surface the hop to the user via the room-scoped
       // `model.fallback` WS event so the workbench can render the

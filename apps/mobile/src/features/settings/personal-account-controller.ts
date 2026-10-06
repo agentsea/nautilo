@@ -55,6 +55,17 @@ export function createPersonalCredentialsController(
     async (scope) => { await action(apiForScope(scope)); },
     load,
   );
+  const reconcileFailure = async (
+    result: SettingsMutationResult<PersonalCredentialsData>,
+    shouldReread: (error: unknown) => boolean,
+  ): Promise<SettingsMutationResult<PersonalCredentialsData>> => {
+    if (result.status !== "failed" || !shouldReread(result.error)) return result;
+    const refreshed = await data.load(load);
+    return refreshed.status === "ignored" ? refreshed : result;
+  };
+  const metadataMayBeStale = (error: unknown): boolean =>
+    error instanceof ProviderCredentialApiError
+    && (error.repair === "reread_metadata" || error.error === "credential_not_found");
   const readyData = (): PersonalCredentialsData | null => {
     const state = data.getState();
     return state.data && !state.loading && !state.loadError && !state.mutating
@@ -77,29 +88,25 @@ export function createPersonalCredentialsController(
       return mutate((api) => api.putProviderCredential(provider, {
         apiKey: normalized,
         ...(current ? { expectedRevision: current.revision } : {}),
-      })).finally(() => data.clearDraft());
+      }))
+        // A failed PUT can still have committed before its response was lost.
+        // Reconcile with a GET, but preserve the mutation failure and never
+        // replay the secret-bearing request automatically.
+        .then((result) => reconcileFailure(result, () => true))
+        .finally(() => data.clearDraft());
     },
     validate(provider, current) {
       const currentData = readyData();
       if (!currentData || currentData.allowPersonalProviderKeys === false) {
         return Promise.resolve({ status: "ignored" });
       }
-      return mutate((api) => api.validateProviderCredential(provider, { expectedRevision: current.revision }));
+      return mutate((api) => api.validateProviderCredential(provider, { expectedRevision: current.revision }))
+        .then((result) => reconcileFailure(result, metadataMayBeStale));
     },
     remove(provider, current) {
       if (!readyData()) return Promise.resolve({ status: "ignored" });
       return mutate((api) => api.deleteProviderCredential(provider, { expectedRevision: current.revision }))
-        .then(async (result) => {
-          if (
-            result.status !== "failed"
-            || !(result.error instanceof ProviderCredentialApiError)
-            || (result.error.repair !== "reread_metadata" && result.error.error !== "credential_not_found")
-          ) {
-            return result;
-          }
-          const refreshed = await data.load(load);
-          return refreshed.status === "ignored" ? refreshed : result;
-        });
+        .then((result) => reconcileFailure(result, metadataMayBeStale));
     },
   };
 }

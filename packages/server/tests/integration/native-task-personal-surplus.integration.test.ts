@@ -18,6 +18,7 @@ import {
 } from "@nautilo/agent";
 import { ToolCatalog, clearToolCatalog, getToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import { getPolicyResolver, initPolicyResolver, PersonalPolicyResolver } from "@nautilo/trust";
+import { taskFundingFailureCode } from "@nautilo/runtime";
 import { nativeTaskFundingPort } from "../../src/lib/native-task-funding";
 import { setupOwnerAppFixture, type AppFixture } from "./helpers/app-fixture";
 import { authedInject } from "./helpers/request-helpers";
@@ -47,7 +48,7 @@ function restoreEnvironment(saved: ReadonlyMap<string, string | undefined>): voi
 }
 
 describe.serial("native Task personal Surplus execution", () => {
-  test("admits a Surplus-only signed model and records its exact personal marketplace wire", async () => {
+  test("records exact personal marketplace execution and keeps missing-direct failures repairable", async () => {
     const savedEnv = new Map(PROVIDER_ENV_KEYS.map((key) => [key, process.env[key]]));
     for (const key of PROVIDER_ENV_KEYS) delete process.env[key];
 
@@ -67,6 +68,7 @@ describe.serial("native Task personal Surplus execution", () => {
     let credentialRevision: number | undefined;
     let priorPolicy: Awaited<ReturnType<typeof getServerProviderPolicy>> | undefined;
     let priorPreferSurplus: boolean | undefined;
+    let refuseBeforeService = false;
 
     const testFetch = async (input: string | URL | Request, init?: RequestInit) => {
       const url = typeof input === "string"
@@ -88,6 +90,12 @@ describe.serial("native Task personal Surplus execution", () => {
             ? await request.text()
             : "{}";
         wireRequests.push({ authorization: headers.get("authorization"), body });
+        if (refuseBeforeService) {
+          return Response.json({ error: { code: "no_sellers_for_model" } }, {
+            status: 404,
+            headers: { "x-si-marketplace-attempts": "0" },
+          });
+        }
         const chunks = [
           {
             id: "chatcmpl-personal-surplus-task",
@@ -288,6 +296,25 @@ describe.serial("native Task personal Surplus execution", () => {
         recoveryState: null,
       });
       expect(JSON.stringify({ task, run, attempt })).not.toContain(personalKey);
+
+      // An exact Task cannot change models after a safe marketplace refusal.
+      // Its missing personal direct key must retain Runtime's repair/pause
+      // classification instead of becoming an ordinary terminal Task error.
+      refuseBeforeService = true;
+      const refusal = await runWithUsageContext({
+        callType: "chat", userId: fx.ownerId, roomId: fx.defaultRoomId,
+        metadata: { taskId, taskRunId: run.id },
+      }, () => invokeChatModelWithFallback(
+        [new HumanMessage("Return the deterministic fixture response.")],
+        [], admitted.modelId, fx!.ownerId, fx!.defaultAgentId!, null, undefined,
+        { fundingHumanUserId: fx!.ownerId, fundingSession: session,
+          modelFallbackMode: "none", sameModelRetryMode: "none" },
+      )).then(() => null, (error: unknown) => error);
+      expect(taskFundingFailureCode(refusal)).toBe("personal_credential_missing");
+      expect(wireRequests).toHaveLength(2);
+      expect(JSON.parse(wireRequests[1]?.body ?? "{}")).toMatchObject({
+        model: "moonshotai/kimi-k3", provider: "openrouter",
+      });
     } finally {
       if (fx) {
         await fx.db.delete(llmUsageEvents).where(eq(llmUsageEvents.userId, fx.ownerId));

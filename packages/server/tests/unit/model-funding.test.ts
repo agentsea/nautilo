@@ -6,6 +6,10 @@ import {
   encryptPersonalProviderCredential,
 } from "@nautilo/operator-secrets";
 import {
+  PersonalDirectFundingUnavailableError,
+  PersonalModelFundingUnavailableError,
+} from "@nautilo/agent";
+import {
   ModelFundingError,
   resolveModelFunding,
   resolveServerFundingRoute,
@@ -273,7 +277,7 @@ describe("trusted model funding", () => {
     }, h.deps))).toBe("server_credentials_forbidden");
   });
 
-  test("a personal admission cannot cross to a server-only mixed-provider fallback", async () => {
+  test("a personal admission marks a server-only mixed-provider fallback as unavailable without crossing payer", async () => {
     const h = harness();
     h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
     h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
@@ -281,10 +285,11 @@ describe("trusted model funding", () => {
     expect(admitted.kind).toBe("personal");
 
     h.setFundingPreference("server_first");
-    expect(await code(resolveModelFunding({
+    const unavailable = await resolveModelFunding({
       ...request(ALICE, "openai:synthetic/server-only-fallback"),
       priorDecision: admitted,
-    }, h.deps))).toBe("personal_credential_missing");
+    }, h.deps).then(() => null, (error: unknown) => error);
+    expect(unavailable).toBeInstanceOf(PersonalModelFundingUnavailableError);
   });
 
   test("personal custody failure cannot unlock an eligible server route", async () => {
@@ -462,7 +467,65 @@ describe("personal marketplace transport funding", () => {
     const h = harness(); h.setSurplusEligible(true); h.capabilities.set(ALICE, ["use_personal_provider_credentials", "use_server_provider_credentials"]);
     h.rows.set(`${ALICE}:surplus`, row(ALICE, "surplus"));
     const admitted = await resolveModelFunding(request(ALICE), h.deps);
-    expect(await code(resolveModelFunding({ ...request(ALICE), priorDecision: admitted, transport: "direct" }, h.deps))).toBe("personal_credential_missing");
+    const unavailable = await resolveModelFunding({
+      ...request(ALICE), priorDecision: admitted, transport: "direct",
+    }, h.deps).then(() => null, (error: unknown) => error);
+    expect(unavailable).toBeInstanceOf(PersonalDirectFundingUnavailableError);
+    h.rows.delete(`${ALICE}:surplus`);
+    expect(await code(resolveModelFunding({ ...request(ALICE), priorDecision: admitted, transport: "direct" }, h.deps))).toBe("personal_credential_stale");
+  });
+  test("original marketplace custody failure stays terminal before a missing-direct signal", async () => {
+    const h = harness(); h.setSurplusEligible(true); h.capabilities.set(ALICE, ["use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:surplus`, row(ALICE, "surplus"));
+    const admitted = await resolveModelFunding(request(ALICE), h.deps);
+    if (admitted.kind !== "personal") throw new Error("Expected personal marketplace admission");
+    h.deps.readCustody = async () => { throw new Error("synthetic custody failure"); };
+
+    expect(await code(withAdmittedPersonalProviderKey(admitted, () => {
+      throw new Error("Marketplace transport must not run");
+    }, h.deps))).toBe("personal_credential_unavailable");
+  });
+  test("custody loss after refusal cannot bypass the original marketplace admission through a chain key", async () => {
+    const h = harness(); h.setSurplusEligible(true); h.capabilities.set(ALICE, ["use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:surplus`, row(ALICE, "surplus"));
+    const admitted = await resolveModelFunding(request(ALICE), h.deps);
+    if (admitted.kind !== "personal") throw new Error("Expected personal marketplace admission");
+    const unavailable = await resolveModelFunding({
+      ...request(ALICE), priorDecision: admitted, transport: "direct",
+    }, h.deps).then(() => null, (error: unknown) => error);
+    expect(unavailable).toBeInstanceOf(PersonalDirectFundingUnavailableError);
+
+    h.setSurplusEligible(false);
+    h.rows.set(`${ALICE}:openai`, row(ALICE, "openai"));
+    const chainCandidate = await resolveModelFunding({
+      ...request(ALICE, "openai:synthetic/fallback"),
+      priorDecision: admitted,
+    }, h.deps);
+    if (chainCandidate.kind !== "personal") throw new Error("Expected personal chain candidate");
+    h.deps.readCustody = async () => { throw new Error("synthetic custody loss"); };
+    let invoked = false;
+
+    expect(await code(withAdmittedPersonalProviderKey(chainCandidate, () => {
+      invoked = true;
+    }, h.deps, admitted))).toBe("personal_credential_unavailable");
+    expect(invoked).toBe(false);
+  });
+  test("later models without pinned personal funding are skippable only after original authority is revalidated", async () => {
+    const h = harness(); h.setSurplusEligible(true); h.capabilities.set(ALICE, ["use_personal_provider_credentials", "use_server_provider_credentials"]);
+    h.rows.set(`${ALICE}:surplus`, row(ALICE, "surplus"));
+    const admitted = await resolveModelFunding(request(ALICE), h.deps);
+    if (admitted.kind !== "personal") throw new Error("Expected personal marketplace admission");
+    h.setSurplusEligible(false);
+
+    const unavailable = await resolveModelFunding({
+      ...request(ALICE, "openai:synthetic/no-personal-key"), priorDecision: admitted,
+    }, h.deps).then(() => null, (error: unknown) => error);
+    expect(unavailable).toBeInstanceOf(PersonalModelFundingUnavailableError);
+
+    h.rows.delete(`${ALICE}:surplus`);
+    expect(await code(resolveModelFunding({
+      ...request(ALICE, "openai:synthetic/no-personal-key"), priorDecision: admitted,
+    }, h.deps))).toBe("personal_credential_stale");
   });
   test("a legacy personal Gateway decision is rejected before lookup or decryption", async () => {
     const h = harness(); h.capabilities.set(ALICE, ["use_personal_provider_credentials", "use_server_provider_credentials"]);

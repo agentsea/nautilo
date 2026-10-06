@@ -47,6 +47,10 @@ import {
 import { isEmptyTerminalResponseError } from "../graph/empty-terminal-response";
 import { SurplusOutcomeUnknownError } from "../providers/surplus-transport";
 import { SurplusDirectFallbackUnavailableError } from "../providers/surplus-route";
+import {
+  PersonalDirectFundingUnavailableError,
+  PersonalModelFundingUnavailableError,
+} from "../runtime/foreground-chat-funding";
 
 /**
  * User-visible error categories. Deliberately a thinner re-grouping
@@ -303,6 +307,22 @@ function isProviderToolSchemaRejectionMessage(message: string): boolean {
  * return it`) here — do NOT silently re-classify.
  */
 export function toFriendlyError(error: unknown): FriendlyError {
+  if (error instanceof PersonalDirectFundingUnavailableError) {
+    return {
+      message: "Surplus could not serve this request, and you do not have a matching personal provider key for the selected model. Add that key in your personal provider settings or choose another model available with your keys.",
+      category: "provider_unavailable",
+      code: "MDL006",
+      detailsForLog: error.code,
+    };
+  }
+  if (error instanceof PersonalModelFundingUnavailableError) {
+    return {
+      message: "The configured fallback model is not available with your personal provider keys. Add its provider key in your personal provider settings or choose another model available with your keys.",
+      category: "provider_unavailable",
+      code: "MDL006",
+      detailsForLog: error.code,
+    };
+  }
   if (error instanceof SurplusDirectFallbackUnavailableError) {
     return {
       message: error.reason === "request-not-qualified"

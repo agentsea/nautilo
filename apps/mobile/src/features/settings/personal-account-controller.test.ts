@@ -87,6 +87,150 @@ describe("personal account Settings controllers", () => {
     expect(controller.data.getState().data?.credentials[0]?.revision).toBe(2);
   });
 
+  test("reconciles canonical metadata after a save response is lost without replaying the key", async () => {
+    const lostResponse = new Error("response lost");
+    const putInputs: unknown[] = [];
+    let canonical = credential;
+    const api: PersonalAccountApi = {
+      listProviderCredentials: async () => ({ credentials: [canonical], providers: [] }),
+      putProviderCredential: async (provider, input) => {
+        putInputs.push([provider, input]);
+        canonical = { ...credential, revision: 2, updatedAt: "2026-10-06T00:00:00Z" };
+        throw lostResponse;
+      },
+      validateProviderCredential: async () => {},
+      deleteProviderCredential: async () => {},
+      getPersonalCosts: async () => costs(0),
+    };
+    const controller = createPersonalCredentialsController(() => api);
+    controller.setScope(scopeOne);
+    await controller.load();
+
+    expect(await controller.save("surplus", "new-secret", credential)).toEqual({
+      status: "failed",
+      error: lostResponse,
+    });
+    expect(putInputs).toEqual([["surplus", { apiKey: "new-secret", expectedRevision: 1 }]]);
+    expect(controller.data.getState()).toMatchObject({
+      data: { credentials: [{ revision: 2 }] },
+      draft: null,
+      loadError: null,
+      mutationError: lostResponse,
+    });
+  });
+
+  test("reconciles validation conflicts after another client replaces or deletes the key", async () => {
+    for (const nextCredential of [{ ...credential, revision: 2 }, null]) {
+      const conflict = new ProviderCredentialApiError(
+        nextCredential ? 409 : 404,
+        nextCredential ? "credential_conflict" : "credential_not_found",
+        false,
+        false,
+        nextCredential ? "reread_metadata" : null,
+      );
+      let reads = 0;
+      let validations = 0;
+      const api: PersonalAccountApi = {
+        listProviderCredentials: async () => ({
+          credentials: reads++ === 0 ? [credential] : nextCredential ? [nextCredential] : [],
+          providers: [],
+        }),
+        putProviderCredential: async () => {},
+        validateProviderCredential: async () => {
+          validations += 1;
+          throw conflict;
+        },
+        deleteProviderCredential: async () => {},
+        getPersonalCosts: async () => costs(0),
+      };
+      const controller = createPersonalCredentialsController(() => api);
+      controller.setScope(scopeOne);
+      await controller.load();
+
+      expect(await controller.validate("surplus", credential)).toEqual({ status: "failed", error: conflict });
+      expect(validations).toBe(1);
+      expect(controller.data.getState().data?.credentials).toEqual(nextCredential ? [nextCredential] : []);
+      expect(controller.data.getState().mutationError).toBe(conflict);
+    }
+  });
+
+  test("blocks another save after reconciliation fails until an explicit reload repairs metadata", async () => {
+    const lostResponse = new Error("response lost");
+    let reads = 0;
+    let puts = 0;
+    const refreshed = { ...credential, revision: 2 };
+    const api: PersonalAccountApi = {
+      listProviderCredentials: async () => {
+        reads += 1;
+        if (reads === 2) throw new Error("reload failed");
+        return { credentials: [reads === 1 ? credential : refreshed], providers: [] };
+      },
+      putProviderCredential: async () => {
+        puts += 1;
+        throw lostResponse;
+      },
+      validateProviderCredential: async () => {},
+      deleteProviderCredential: async () => {},
+      getPersonalCosts: async () => costs(0),
+    };
+    const controller = createPersonalCredentialsController(() => api);
+    controller.setScope(scopeOne);
+    await controller.load();
+
+    expect(await controller.save("surplus", "new-secret", credential)).toEqual({ status: "failed", error: lostResponse });
+    expect(controller.data.getState().loadError?.message).toBe("reload failed");
+    expect(controller.data.getState().mutationError).toBe(lostResponse);
+    expect(await controller.save("surplus", "new-secret", credential)).toEqual({ status: "ignored" });
+    expect(puts).toBe(1);
+
+    expect(await controller.retry()).toEqual({
+      status: "applied",
+      data: { credentials: [refreshed], providers: [] },
+    });
+    expect(controller.data.getState()).toMatchObject({ loadError: null, data: { credentials: [{ revision: 2 }] } });
+  });
+
+  test("does not hydrate a replacement scope from an old save reconciliation", async () => {
+    const oldReconciliation = deferred<{ credentials: CredentialMetadata[]; providers: [] }>();
+    const reconciliationStarted = deferred<void>();
+    let oldReads = 0;
+    const oldApi: PersonalAccountApi = {
+      listProviderCredentials: async () => {
+        if (oldReads++ === 0) return { credentials: [credential], providers: [] };
+        reconciliationStarted.resolve();
+        return oldReconciliation.promise;
+      },
+      putProviderCredential: async () => { throw new Error("response lost"); },
+      validateProviderCredential: async () => {},
+      deleteProviderCredential: async () => {},
+      getPersonalCosts: async () => costs(0),
+    };
+    const newCredential = { ...credential, id: "new-scope-credential", revision: 7 };
+    const newApi: PersonalAccountApi = {
+      listProviderCredentials: async () => ({ credentials: [newCredential], providers: [] }),
+      putProviderCredential: async () => {},
+      validateProviderCredential: async () => {},
+      deleteProviderCredential: async () => {},
+      getPersonalCosts: async () => costs(0),
+    };
+    const controller = createPersonalCredentialsController((scope) => scope.serverId === "one" ? oldApi : newApi);
+    controller.setScope(scopeOne);
+    await controller.load();
+
+    const save = controller.save("surplus", "old-scope-secret", credential);
+    await reconciliationStarted.promise;
+    controller.setScope(scopeTwo);
+    await controller.load();
+    oldReconciliation.resolve({ credentials: [{ ...credential, revision: 2 }], providers: [] });
+
+    expect(await save).toEqual({ status: "ignored" });
+    expect(controller.data.getState()).toMatchObject({
+      scope: scopeTwo,
+      data: { credentials: [{ id: "new-scope-credential", revision: 7 }] },
+      mutationError: null,
+    });
+  });
+
   test("denies save and validation locally when the loaded policy is off", async () => {
     const calls: string[] = [];
     const api: PersonalAccountApi = {

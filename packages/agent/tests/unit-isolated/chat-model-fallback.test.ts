@@ -14,7 +14,11 @@ import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { ChatModel } from "../../src/providers/types";
-import type { ForegroundChatFundingSession } from "../../src/runtime/foreground-chat-funding";
+import {
+  PersonalDirectFundingUnavailableError,
+  PersonalModelFundingUnavailableError,
+  type ForegroundChatFundingSession,
+} from "../../src/runtime/foreground-chat-funding";
 import type { ResolvedFallbackPolicy } from "../../src/utils/resolve-fallback-policy";
 import { setAgentEventSink } from "../../src/runtime-hooks";
 import { getOrCreateAgentTurnContextByKey, turnContextKey, _resetAgentTurnContextsForTests } from "../../src/runtime/turn-context";
@@ -32,6 +36,8 @@ import {
   hydrateRuntimeModelCatalog,
   resetRuntimeModelCatalog,
 } from "../../src/config/model-catalog/runtime-catalog";
+
+const actualCanUseQualifiedSurplusChatRoute = canUseQualifiedSurplusChatRoute;
 
 const actualTrust = await import("@nautilo/trust");
 const fundingAdmission = mock(async (_userId: string, _origin?: string) => undefined);
@@ -77,6 +83,7 @@ const invokeSurplusChatAttemptMock = mock(async (_input?: {
 }): Promise<
   { kind: "served"; response: AIMessage } | { kind: "direct_fallback" }
 > => ({ kind: "direct_fallback" }));
+let surplusQualificationOverride: boolean | undefined;
 let cachedServerModelConfig: { preferSurplus: boolean } | null = null;
 
 function modelIdsFromCalls(): string[] {
@@ -166,7 +173,8 @@ beforeAll(() => {
   }));
 
   mock.module("../../src/providers/surplus-attempt", () => ({
-    canUseQualifiedSurplusChatRoute,
+    canUseQualifiedSurplusChatRoute: (...args: Parameters<typeof canUseQualifiedSurplusChatRoute>) =>
+      surplusQualificationOverride ?? actualCanUseQualifiedSurplusChatRoute(...args),
     invokeSurplusChatAttempt: invokeSurplusChatAttemptMock,
   }));
 });
@@ -227,6 +235,7 @@ afterAll(() => {
 
 afterEach(() => {
   cachedServerModelConfig = null;
+  surplusQualificationOverride = undefined;
   invokeSurplusChatAttemptMock.mockReset();
   invokeSurplusChatAttemptMock.mockResolvedValue({ kind: "direct_fallback" });
 });
@@ -2627,10 +2636,15 @@ describe("personal marketplace invocation", () => {
     createUniversalModelMock.mockReset(); invokeSurplusChatAttemptMock.mockReset(); fundingAdmission.mockClear();
     policyState = { enabled: false, chain: [] }; _resetAgentTurnContextsForTests();
   });
-  function session(directAvailable = true): ForegroundChatFundingSession {
+  function session(directAvailable: boolean | ((modelId: string) => boolean) = true): ForegroundChatFundingSession {
     return { kind: "personal", recheckAttempt: async () => {},
       async runAttempt(modelId, run, transport) {
-        if (transport === "direct" && !directAvailable) throw new Error("personal_credential_missing");
+        const hasDirect = typeof directAvailable === "function"
+          ? directAvailable(modelId)
+          : directAvailable;
+        if (transport === "direct" && !hasDirect) {
+          throw new PersonalDirectFundingUnavailableError();
+        }
         const route = transport === "direct" ? modelId.split(":", 1)[0]! : "surplus";
         return run({ usageFunding: { kind: "personal", humanUserId: "payer", payerHumanId: "payer",
           providerRoute: route, credentialId: `caller-${route}`, credentialRevision: 1 },
@@ -2654,15 +2668,92 @@ describe("personal marketplace invocation", () => {
     expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1); expect(createUniversalModelMock).toHaveBeenCalledTimes(1);
     expect(fundingAdmission).not.toHaveBeenCalled();
   });
-  test("uncertain marketplace service never calls direct and missing caller direct never borrows server", async () => {
+  test("uncertain marketplace service never calls direct and an exact native selection stays terminal when caller direct is missing", async () => {
     cachedServerModelConfig = { preferSurplus: true };
     invokeSurplusChatAttemptMock.mockImplementation(async () => { throw new SurplusOutcomeUnknownError(); });
-    expect(invokeChatModelWithFallback([new HumanMessage("text")], [], A, "payer", "agent-1", null,
-      undefined, { fundingSession: session(), modelFallbackMode: "none", sameModelRetryMode: "none" })).rejects.toThrow();
+    const uncertain = await invokeChatModelWithFallback([new HumanMessage("text")], [], A, "payer", "agent-1", null,
+      undefined, { fundingSession: session(), modelFallbackMode: "none", sameModelRetryMode: "none" })
+      .then(() => null, (error: unknown) => error);
+    expect(uncertain).toBeInstanceOf(SurplusOutcomeUnknownError);
     expect(createUniversalModelMock).not.toHaveBeenCalled();
     invokeSurplusChatAttemptMock.mockImplementation(async () => ({ kind: "direct_fallback" }));
-    expect(invokeChatModelWithFallback([new HumanMessage("text")], [], A, "payer", "agent-1", null,
-      undefined, { fundingSession: session(false), modelFallbackMode: "none", sameModelRetryMode: "none" })).rejects.toThrow();
+    const missingDirect = await invokeChatModelWithFallback([new HumanMessage("text")], [], A, "payer", "agent-1", null,
+      undefined, { fundingSession: session(false), modelFallbackMode: "none", sameModelRetryMode: "none" })
+      .then(() => null, (error: unknown) => error);
+    expect(missingDirect).toBeInstanceOf(PersonalDirectFundingUnavailableError);
+    expect((missingDirect as PersonalDirectFundingUnavailableError).code).toBe("personal_credential_missing");
     expect(createUniversalModelMock).not.toHaveBeenCalled(); expect(fundingAdmission).not.toHaveBeenCalled();
+  });
+  test("advances a foreground personal chain when safe Surplus fallback has no direct credential", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    policyState = { enabled: true, chain: [B] };
+    const attemptedRoutes: string[] = [];
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      attemptedRoutes.push(input!.route.catalogModelId);
+      return input!.route.catalogModelId === A
+        ? { kind: "direct_fallback" }
+        : { kind: "served", response: new AIMessage("personal chain answer") };
+    });
+
+    const result = await invokeChatModelWithFallback(
+      [new HumanMessage("text")], [], A, "payer", "agent-1", null,
+      undefined, { fundingSession: session(false), sameModelRetryMode: "none" },
+    );
+
+    expect(result.modelUsed).toBe(B);
+    expect(result.response.content).toBe("personal chain answer");
+    expect(attemptedRoutes).toEqual([A, B]);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+    expect(fundingAdmission).not.toHaveBeenCalled();
+  });
+  test("advances the personal chain when the request is not qualified and only the next model has a direct credential", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    surplusQualificationOverride = false;
+    policyState = { enabled: true, chain: [B] };
+    createUniversalModelMock.mockImplementation(async (modelId) => ({
+      bindTools: () => ({ invoke: async () => new AIMessage(`direct answer from ${modelId}`) }),
+    }) as unknown as AuraModel);
+
+    const result = await invokeChatModelWithFallback(
+      [new HumanMessage("text")], [], A, "payer", "agent-1", null,
+      undefined, {
+        fundingSession: session((modelId) => modelId === B),
+        sameModelRetryMode: "none",
+      },
+    );
+
+    expect(result.modelUsed).toBe(B);
+    expect(result.response.content).toBe(`direct answer from ${B}`);
+    expect(invokeSurplusChatAttemptMock).not.toHaveBeenCalled();
+    expect(modelIdsFromCalls()).toEqual([B]);
+  });
+  test("skips an unfunded personal candidate between a safe refusal and a runnable chain model", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    policyState = { enabled: true, chain: [B, C] };
+    const attemptedRoutes: string[] = [];
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      attemptedRoutes.push(input!.route.catalogModelId);
+      return input!.route.catalogModelId === A
+        ? { kind: "direct_fallback" }
+        : { kind: "served", response: new AIMessage("third model answer") };
+    });
+    const base = session(false);
+    const fundingSession: ForegroundChatFundingSession = {
+      ...base,
+      async recheckAttempt(modelId, transport) {
+        if (modelId === B) throw new PersonalModelFundingUnavailableError();
+        return base.recheckAttempt(modelId, transport);
+      },
+    };
+
+    const result = await invokeChatModelWithFallback(
+      [new HumanMessage("text")], [], A, "payer", "agent-1", null,
+      undefined, { fundingSession, sameModelRetryMode: "none" },
+    );
+
+    expect(result.modelUsed).toBe(C);
+    expect(result.response.content).toBe("third model answer");
+    expect(attemptedRoutes).toEqual([A, C]);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
   });
 });

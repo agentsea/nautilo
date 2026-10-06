@@ -164,9 +164,11 @@ export {
   runWithInitiatingClientSurface,
 } from "./runtime/initiating-client-surface-context";
 export { runWithTaskCausalHuman } from "./runtime/causal-human-context";
-export type {
-  ForegroundChatFundingAttempt,
-  ForegroundChatFundingSession,
+export {
+  PersonalDirectFundingUnavailableError,
+  PersonalModelFundingUnavailableError,
+  type ForegroundChatFundingAttempt,
+  type ForegroundChatFundingSession,
 } from "./runtime/foreground-chat-funding";
 export {
   runScopeSubagentUntilPause,
