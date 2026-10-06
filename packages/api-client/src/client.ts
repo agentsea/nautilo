@@ -10626,6 +10626,19 @@ export class NautiloApiClient {
     return normalizeModelControlSelection(response.selection);
   }
 
+  /** Same authorized selection endpoint, with the executor-resolved model projection. */
+  async getRoomModelControlState(roomId: string, agentId: string): Promise<{
+    selection: ModelControlSelection | null; effectiveModelId?: string;
+  }> {
+    const response = await this.request({
+      path: `/api/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}/model-control-selection?includeEffectiveModel=true`,
+      schema: z.object({ selection: modelControlSelectionSchema.nullable(), effectiveModelId: z.string().optional() }).strict(),
+      defaultErrorPrefix: "GET room model control state",
+    });
+    return { selection: normalizeModelControlSelection(response.selection),
+      ...(response.effectiveModelId ? { effectiveModelId: response.effectiveModelId } : {}) };
+  }
+
   /**
    * write or reset this viewer's Room-scoped model-control override.
    * `null` resets the Room layer and exposes the Agent/default fallback.

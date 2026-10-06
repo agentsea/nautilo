@@ -1,3 +1,5 @@
+import { ApiError } from "@nautilo/api-client/browser";
+import { imageAttachmentModelError } from "@nautilo/attachments/composer-chat-extensions";
 import { describe, expect, test } from "bun:test";
 import { initialThreadRoomControllerState, threadRoomReducer } from "../../src/modes/rooms/thread-drawer/thread-room-controller";
 import { CompanionController } from "../../src/companion/companion-controller";
@@ -520,4 +522,18 @@ test("shared Room history failure becomes visible and cannot overwrite another R
   const failed = threadRoomReducer(opening, { type: "hydrate.failed", roomId: "room-a", error: "History unavailable" });
   expect(failed.phase).toBe("error"); expect(failed.error).toBe("History unavailable");
   expect(threadRoomReducer(opening, { type: "hydrate.failed", roomId: "room-b", error: "Stale" })).toBe(opening);
+});
+
+test("an image capability rejection preserves the companion draft and explains recovery without uncertainty", async () => {
+  const f = fixture({ canAttach: () => true, upload: async () => "upload-a" });
+  f.bridge.pickFiles = async () => [{ name: "photo.png", base64: "YWJj", sizeBytes: 3 }];
+  f.setSend(async () => { throw new ApiError(422, imageAttachmentModelError("Text model")); });
+  await f.controller.enable(binding);
+  await f.controller.action("1", { type: "draft", text: "Keep this draft" });
+  await f.controller.action("1", { type: "attach" });
+  await f.controller.action("1", { type: "send", text: "Keep this draft" });
+  expect(f.snapshot()?.draft).toBe("Keep this draft");
+  expect(f.snapshot()?.attachments).toHaveLength(1);
+  expect(f.snapshot()?.sendUncertain).toBe(false);
+  expect(f.snapshot()?.error).toBe(imageAttachmentModelError("Text model"));
 });

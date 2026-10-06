@@ -13,7 +13,7 @@ describe("pre-model modality sanitization", () => {
     const current = new HumanMessage("continue in text");
     const messages = [historical, new AIMessage("noted"), current];
 
-    const result = sanitizeImagesForModel(messages, "fireworks:accounts/fireworks/models/minimax-m2p7");
+    const result = sanitizeImagesForModel(messages, "fireworks:accounts/fireworks/models/glm-5p3");
 
     expect(result.stripped).toBe(1);
     expect(messages[0]).toBe(historical);

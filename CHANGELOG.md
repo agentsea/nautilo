@@ -7,6 +7,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Text-only chat models reject new image attachments with clear removal/model
+  selection guidance. Queued images remain editable after a model switch;
+  earlier image history stays saved and text conversations can continue with
+  an explicit image-context notice.
+  Returning to the app keeps chat visible while access refreshes, and model
+  changes avoid repeated full-catalog work and temporary raw provider IDs.
+
 - Successful skips end the agent turn without another model call. Silence and
   hand-off control activity stays out of chat while rejected hand-offs remain
   recoverable and already-admitted sibling tools finish normally.

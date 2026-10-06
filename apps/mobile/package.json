@@ -9,6 +9,7 @@
     "@gorhom/bottom-sheet": "^5.2.14",
     "@logto/browser": "3.0.13",
     "@nautilo/api-client": "workspace:*",
+    "@nautilo/attachments": "workspace:*",
     "@nautilo/browser-document-viewer": "workspace:*",
     "@nautilo/config": "workspace:*",
     "@nautilo/realtime-client": "workspace:*",

@@ -71,6 +71,18 @@ describe("getEligibleModels", () => {
     });
   });
 
+  test("exact saved-model projections match discovery across eligibility policies", () => {
+    for (const purpose of ["chat", "chat-tools", "vision", "image-generation"] as const) {
+      for (const allowChinaUpstream of [false, true]) {
+        const options = { purpose, allowChinaUpstream, env: { VENICE_API_KEY: "vk-test", OPENROUTER_API_KEY: "or-test" } };
+        const rows = getEligibleModels({ ...options, includeUnavailable: true });
+        for (const row of rows) {
+          expect(resolveRetainedModels([row.id], options)).toEqual([row]);
+        }
+      }
+    }
+  });
+
   test("purpose qualification distinguishes chat, vision, and image generation", () => {
     const env = { ANTHROPIC_API_KEY: "a-test" };
     const id = "anthropic:claude-sonnet-4-6";
@@ -199,7 +211,7 @@ describe("getEligibleModels", () => {
     );
     expect(sonnet?.capabilities.vision).toBe(true);
     expect(sonnet?.capabilities.tools).toBe(true);
-    // D331 — Anthropic 4.x now carry an explicit reasoning feature.
+    // Anthropic 4.x now carry an explicit reasoning feature.
     expect(sonnet?.capabilities.reasoning).toBe(true);
   });
 

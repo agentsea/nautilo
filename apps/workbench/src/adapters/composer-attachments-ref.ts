@@ -7,7 +7,7 @@ import { MAX_CHAT_ATTACHMENTS_PER_MESSAGE } from "@nautilo/types";
  * send — dragged from the Files/Workspace tree today; `@file` mentions
  * / paperclip picker later. The composer shows them as **chips** above
  * the textarea; the runtime reads them at **send time**, reads each
- * file metadata via the central D066 attachment gate on the server. The typed
+ * file metadata via the central attachment gate on the server. The typed
  * text stays clean and the renderer never inlines raw file contents.
  *
  * Mirrors `file-context-ref.ts` — module-level store + subscribe, not
@@ -29,19 +29,21 @@ export interface ComposerAttachment {
   path: string;
   /** Tree root the chip was dragged from; scopes the relative label
    *  so the chip reads naturally
-   *  ("drafts/foo.md" vs "/Users/…/Documents/Nautilo/drafts/foo.md"). */
+   *  ("drafts/foo.md" vs "/workspace/drafts/foo.md"). */
   rootPath: string;
   /** Display name (basename of path). Cached so chip rendering
    *  doesn't need to re-parse on every render. */
   name: string;
   /** Size captured by native picker or desktop stat. Avoids guarded renderer stat for outside-root files. */
   sizeBytes?: number;
+  /** Server-classified MIME after upload. */
+  mimeType?: string;
   /** Stat `mtimeMs` from native picker when available (desktop). */
   mtimeMs?: number;
-  /** D271 — server attachmentId after the bytes are uploaded. Set when the
+  /** server attachmentId after the bytes are uploaded. Set when the
    *  chip's upload completes; the send path references this. */
   attachmentId?: string;
-  /** UX state. The server-side D066 gate remains authoritative; this is for
+  /** UX state. The server-side gate remains authoritative; this is for
    *  composer feedback only. */
   status?: "pending" | "queued" | "error";
   errorReason?: string;
@@ -71,7 +73,7 @@ export function addAttachment(att: ComposerAttachment): boolean {
 
 export function updateAttachment(
   id: string,
-  patch: { status?: ComposerAttachment["status"]; errorReason?: string | null; attachmentId?: string },
+  patch: { mimeType?: string; status?: ComposerAttachment["status"]; errorReason?: string | null; attachmentId?: string },
 ): void {
   let changed = false;
   state.items = state.items.map((att) => {
@@ -79,6 +81,7 @@ export function updateAttachment(
     changed = true;
     const next: ComposerAttachment = {
       ...att,
+      ...(patch.mimeType !== undefined ? { mimeType: patch.mimeType } : {}),
       ...(patch.status !== undefined ? { status: patch.status } : {}),
       ...(typeof patch.errorReason === "string" ? { errorReason: patch.errorReason } : {}),
       ...(patch.attachmentId !== undefined ? { attachmentId: patch.attachmentId } : {}),
