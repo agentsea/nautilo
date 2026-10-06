@@ -72,7 +72,7 @@
 # `COPY apps apps` + rely on `.dockerignore` to filter, because that
 # re-introduces the source-edit cache-bust this stage is built to
 # avoid.
-FROM oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS manifests
+FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS manifests
 WORKDIR /repo
 COPY package.json bun.lock ./
 # Root `patchedDependencies` are install inputs just like the lockfile. Keep the
@@ -211,7 +211,7 @@ RUN /usr/local/bin/bun -e 'const fs=require("fs");const p=JSON.parse(fs.readFile
 #   - /root/.cache/node-gyp → node-gyp's headers/binaries cache.
 #     Without this, argon2 redownloads node headers on every native
 #     build.
-FROM oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS deps
+FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS deps
 WORKDIR /repo
 # Preserve the exact prepared manifests in one layer. Inheriting their many
 # individual COPY layers exhausts overlay depth in the Workbench build stage.
@@ -281,7 +281,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache,sharing=locked \
 # edges only, projected manifests without dev inputs, reviewed root overrides,
 # and a dedicated frozen lockfile. The invariant suite reconstructs the
 # projection and rejects drift.
-FROM oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS runtime-deps
+FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS runtime-deps
 WORKDIR /repo
 COPY packaging/docker/runtime-install/ ./
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -513,7 +513,7 @@ RUN mkdir -p /out/board \
 
 # ─── Stage 4: runtime ────────────────────────────────────────────────────────
 # Same base as deps so the compiled .node files are ABI-compatible.
-FROM oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS runtime
+FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS runtime
 COPY --from=pg16-client /usr/lib/postgresql/16/bin/pg_dump /usr/local/bin/pg_dump16
 COPY --from=pg16-client /usr/lib/postgresql/16/bin/pg_restore /usr/local/bin/pg_restore16
 COPY --from=pg16-client /usr/lib/postgresql/16/bin/psql /usr/local/bin/psql16
