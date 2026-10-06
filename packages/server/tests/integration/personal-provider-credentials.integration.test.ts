@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import { getAllKeyDefinitions } from "@nautilo/config-guard";
+import { orderProviderKeys } from "@nautilo/types";
 import {
   createDirectDb,
   ensureDatabase,
   eq,
   getPersonalProviderCredential,
+  personalProviderCredentials,
   users,
   type DirectDatabase,
 } from "@nautilo/db";
@@ -58,6 +60,14 @@ beforeAll(async () => {
   await app.ready();
 });
 
+afterEach(async () => {
+  if (!db) return;
+  for (const userId of [userA, userB]) {
+    if (userId) await db.delete(personalProviderCredentials)
+      .where(eq(personalProviderCredentials.userId, userId));
+  }
+});
+
 afterAll(async () => {
   await app?.close();
   if (db) {
@@ -93,10 +103,10 @@ describe("personal credential API with migrated database", () => {
     });
     const body = responseBody(listed);
     const providers = body["providers"] as Array<{ id: string; personalCapabilities: string[] }>;
-    expect(providers.map((provider) => provider.id)).toEqual(registry.map((provider) => provider.id));
+    expect(providers.map((provider) => provider.id)).toEqual(orderProviderKeys(registry).map((provider) => provider.id));
     expect(providers.filter((provider) => provider.personalCapabilities.includes("chat"))
       .map((provider) => provider.id).sort())
-      .toEqual(["anthropic", "fireworks", "google", "openai", "openrouter", "venice"]);
+      .toEqual(["anthropic", "fireworks", "google", "openai", "openrouter", "surplus", "together", "venice", "xai"]);
     expect((body["credentials"] as unknown[]).length).toBe(registry.length);
     expect(listed.body).not.toContain(SENTINEL);
     expect(listed.body).not.toContain("ciphertextBase64");
@@ -123,7 +133,8 @@ describe("personal credential API with migrated database", () => {
     const row = await getPersonalProviderCredential(db, userA, "openai");
     expect(row).not.toBeNull();
     expect(row!.envelope.ciphertextBase64).not.toContain(SENTINEL);
-    expect(row!.validationStatus).toBe("unverified");
+    expect(row!.validationStatus).toBe("accepted");
+    expect(row!.validatedAt).not.toBeNull();
 
     const listed = await app.inject({
       method: "GET", url: "/api/account/provider-credentials", headers: auth(userA),
@@ -148,10 +159,10 @@ describe("personal credential API with migrated database", () => {
       headers: auth(userA), payload: { apiKey: "replacement-integration-secret", expectedRevision: 1 },
     });
     expect(replaced.statusCode).toBe(200);
-    expect(replaced.body).toContain('"validationStatus":"unverified"');
+    expect(replaced.body).toContain('"validationStatus":"accepted"');
     expect(replaced.body).toContain('"revision":2');
     expect((responseBody(replaced)["credential"] as { masked: string }).masked).toBe("replacem...");
-    expect((await getPersonalProviderCredential(db, userA, "openai"))?.validatedAt).toBeNull();
+    expect((await getPersonalProviderCredential(db, userA, "openai"))?.validatedAt).not.toBeNull();
 
     const deleted = await app.inject({
       method: "DELETE", url: "/api/account/provider-credentials/openai",
@@ -187,6 +198,6 @@ describe("personal credential API with migrated database", () => {
     expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 409]);
     const current = await getPersonalProviderCredential(db, userB, "anthropic");
     expect(current?.revision).toBe(2);
-    expect(current?.validationStatus).toBe("unverified");
+    expect(current?.validationStatus).toBe("accepted");
   });
 });

@@ -43,6 +43,10 @@ test("personal API keys have a permanent Settings destination", () => {
     .toBe("/account/costs");
 });
 
+test("personal costs deep-link through the personal API key area", () => {
+  expect(activeSectionForHash("personal-costs")).toBe("personal-provider-keys");
+});
+
 test("self-service invitations expose only bounded ladder targets", () => {
   expect(inviteRoleOptions(false)).toEqual(["member", "contributor", "community", "guest"]);
   expect(inviteRoleOptions(true)).toEqual([

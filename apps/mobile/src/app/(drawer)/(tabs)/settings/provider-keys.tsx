@@ -1,12 +1,13 @@
 import { Stack, router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import type { CredentialMetadata } from "@nautilo/api-client/browser";
 
 import { AppBar, AppBarBackButton } from "@/components/app-bar";
 import { Screen } from "@/components/screen";
 import { SettingsStatus } from "@/components/settings/settings-status";
-import { createPersonalCredentialsController, personalAccountErrorMessage, type PersonalCredentialsController } from "@/features/settings/personal-account-controller";
+import { createPersonalCredentialsController, personalAccountErrorMessage, personalCredentialLoadKind, type PersonalCredentialsController } from "@/features/settings/personal-account-controller";
+import { personalProviderKeyRows } from "@/features/settings/personal-provider-key-presentation";
 import { settingsScopeForVerifiedViewer } from "@/features/settings/settings-data-state";
 import { getApiClient } from "@/lib/api";
 import { useAuth } from "@/providers/auth";
@@ -35,23 +36,36 @@ export default function PersonalProviderKeysScreen() {
   const [editing, setEditing] = useState<string | null>(null);
   const [secret, setSecret] = useState("");
   const [success, setSuccess] = useState<string | null>(null);
+  const focusedRef = useRef(false);
 
   useEffect(() => { setEditing(null); setSecret(""); setSuccess(null); }, [scope?.serverId, scope?.userId]);
   useFocusEffect(useCallback(() => {
+    focusedRef.current = true;
     controller.setScope(scope);
     if (scope) void controller.load();
-    return () => controller.setScope(null);
+    return () => { focusedRef.current = false; controller.setScope(null); };
   }, [controller, scope]));
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active" && focusedRef.current && scope) {
+        controller.setScope(scope);
+        void controller.load();
+      }
+    });
+    return () => subscription.remove();
+  }, [controller, scope]);
 
   const byProvider = useMemo(() => new Map(state.data?.credentials.map((item) => [item.provider, item]) ?? []), [state.data]);
-  const providers = useMemo(() => {
-    const credentialIds = new Set(state.data?.credentials.map((credential) => credential.provider) ?? []);
-    const catalog = [...(state.data?.providers ?? [])]
-      .filter((provider) => provider.id !== "nautilo-gateway" || credentialIds.has(provider.id));
-    const known = new Set(catalog.map((provider) => provider.id));
-    for (const credential of state.data?.credentials ?? []) if (!known.has(credential.provider)) catalog.push({ id: credential.provider, name: credential.provider, purpose: "Saved provider outside the current catalogue", personalCapabilities: [], destination: credential.destination });
-    return catalog;
-  }, [state.data]);
+  const providers = useMemo(() => personalProviderKeyRows(state.data), [state.data]);
+  const loadKind = state.loadError ? personalCredentialLoadKind(state.loadError) : null;
+  const loadAllowsActions = Boolean(scope && state.data && !state.loading && !state.loadError);
+  useEffect(() => {
+    if (loadKind === "disabled" || loadKind === "forbidden" || loadKind === "signedOut") {
+      setEditing(null);
+      setSecret("");
+      setSuccess(null);
+    }
+  }, [loadKind]);
 
   const save = async (provider: string, current?: CredentialMetadata): Promise<void> => {
     setSuccess(null);
@@ -74,27 +88,27 @@ export default function PersonalProviderKeysScreen() {
       <Text style={styles.intro}>Add your own key for eligible personal chat and native text Tasks. Save checks the key without making a paid request. Embeddings stay server-managed.</Text>
       {!scope ? <SettingsStatus tone="warning">Sign in and reconnect before managing personal keys.</SettingsStatus> : null}
       {state.loading ? <ActivityIndicator color={t.color.brand.accent} accessibilityLabel="Loading personal API keys" /> : null}
-      {state.loadError ? <><SettingsStatus tone="error">{personalAccountErrorMessage(state.loadError)}</SettingsStatus><ActionButton label="Retry" onPress={() => void controller.retry()} /></> : null}
+      {state.loadError ? <><SettingsStatus tone={loadKind === "error" ? "error" : "warning"}>{personalAccountErrorMessage(state.loadError)}</SettingsStatus>{loadKind === "error" ? <ActionButton label="Retry" onPress={() => void controller.retry()} /> : null}</> : null}
       {state.mutationError ? <SettingsStatus tone="error">{personalAccountErrorMessage(state.mutationError)}</SettingsStatus> : null}
-      {state.data && providers.length === 0 ? <SettingsStatus tone="warning">Provider choices are temporarily unavailable.</SettingsStatus> : null}
       {providers.map((provider) => {
         const current = byProvider.get(provider.id);
         const isEditing = editing === provider.id;
+        const actionsEnabled = loadAllowsActions && provider.available;
+        const deleteEnabled = loadAllowsActions && Boolean(current);
         return <View key={provider.id} style={styles.card}>
-          <View style={styles.cardHeader}><View style={styles.cardCopy}><Text style={styles.provider}>{provider.name}</Text><Text style={styles.help}>{provider.purpose}</Text></View><Text style={[styles.badge, current && !current.requiresReplacement && current.validationStatus !== "rejected" ? styles.good : styles.muted]}>{current ? current.validationStatus : "Not added"}</Text></View>
-          <Text style={styles.help}>{provider.personalCapabilities.includes("chat") ? "Enables personal text models. Eligible charges are paid by you." : "Saved for a later supported capability; this key does not enable text work yet."}</Text>
-          {provider.destination ? <Text style={styles.destination} selectable>Fixed destination: {provider.destination}</Text> : provider.id === "gateway" ? <SettingsStatus tone="warning">The server has not published a Gateway destination. You cannot enroll this key yet.</SettingsStatus> : null}
+          <View style={styles.cardHeader}><View style={styles.cardCopy}><Text style={styles.provider}>{provider.name}</Text><Text style={styles.help}>{provider.purpose}</Text></View><Text style={[styles.badge, current && !current.requiresReplacement && current.validationStatus !== "rejected" ? styles.good : styles.muted]}>{state.data ? current ? current.validationStatus : "Not added" : "Checking status…"}</Text></View>
+          <Text style={styles.help}>{provider.catalogued && !provider.personalCapabilities.includes("chat") ? "Not used by personal chat or native text Tasks in this release." : "Capability availability is shown in model selection."}</Text>
           {current?.masked ? <Text style={styles.masked}>{current.masked}</Text> : null}
           {current?.requiresReplacement ? <SettingsStatus tone="error">Replace this key before it can be used.</SettingsStatus> : null}
-          {current?.receiptReadStatus === "unavailable" ? <SettingsStatus tone="warning">This key can run requests, but cannot read cost receipts. Grant receipt-read permission to this key, then use Check again. Receipts from a removed or replaced key may remain unresolved.</SettingsStatus> : null}
-          {success === provider.id ? <SettingsStatus tone="success">Key saved and checked. Choose a model for your Agent, then review charges in Your costs.</SettingsStatus> : null}
-          {isEditing ? <>
-            <TextInput value={secret} onChangeText={setSecret} secureTextEntry autoCapitalize="none" autoCorrect={false} autoComplete="new-password" textContentType="newPassword" editable={!state.mutating} style={styles.input} placeholder={provider.formatHint ?? "Provider API key"} placeholderTextColor={t.color.text.muted} accessibilityLabel={`${current ? "Replacement" : "New"} ${provider.name} API key`} />
-            <View style={styles.actions}><ActionButton label={state.mutating ? "Saving…" : current ? "Replace key" : "Save key"} disabled={state.mutating || !secret.trim() || (provider.id === "gateway" && !provider.destination)} onPress={() => void save(provider.id, current)} primary /><ActionButton label="Cancel" disabled={state.mutating} onPress={() => { setEditing(null); setSecret(""); }} /></View>
+          {current?.receiptReadStatus === "unavailable" ? <Text style={styles.help}>This key can run eligible requests. Some costs may appear later because it cannot currently read cost receipts.</Text> : null}
+          {success === provider.id ? <SettingsStatus tone="success">{provider.personalCapabilities.includes("chat") ? "Key saved and checked. Choose a model for your Genie, then review charges in Your costs." : "Key saved and checked. Not used by personal chat or native text Tasks in this release."}</SettingsStatus> : null}
+          {isEditing && provider.catalogued ? <>
+            <TextInput value={secret} onChangeText={setSecret} secureTextEntry autoCapitalize="none" autoCorrect={false} autoComplete="new-password" textContentType="newPassword" editable={actionsEnabled && !state.mutating} style={styles.input} placeholder={provider.formatHint ?? "Provider API key"} placeholderTextColor={t.color.text.muted} accessibilityLabel={`${current ? "Replacement" : "New"} ${provider.name} API key`} />
+            <View style={styles.actions}><ActionButton label={state.mutating ? "Saving…" : current ? "Replace key" : "Save key"} disabled={!actionsEnabled || state.mutating || !secret.trim()} onPress={() => void save(provider.id, current)} primary /><ActionButton label="Cancel" disabled={state.mutating} onPress={() => { setEditing(null); setSecret(""); }} /></View>
           </> : <View style={styles.actions}>
-            <ActionButton label={current ? "Replace" : "Add key"} disabled={state.mutating || (provider.id === "gateway" && !provider.destination)} onPress={() => { setEditing(provider.id); setSecret(""); setSuccess(null); }} primary={!current} />
-            {current && (current.validationStatus === "unavailable" || current.validationStatus === "unverified" || current.receiptReadStatus === "unavailable") ? <ActionButton label="Check again" disabled={state.mutating} onPress={() => void controller.validate(provider.id, current)} /> : null}
-            {current ? <ActionButton label="Delete" disabled={state.mutating} onPress={() => remove(provider.id, current)} /> : null}
+            {provider.catalogued && (!state.data || provider.available) ? <ActionButton label={current ? "Replace" : "Add key"} disabled={!actionsEnabled || state.mutating} onPress={() => { setEditing(provider.id); setSecret(""); setSuccess(null); }} primary={!current} /> : null}
+            {current && provider.catalogued && (current.validationStatus === "unavailable" || current.validationStatus === "unverified" || current.receiptReadStatus === "unavailable") ? <ActionButton label="Check again" disabled={!actionsEnabled || state.mutating} onPress={() => void controller.validate(provider.id, current)} /> : null}
+            {current ? <ActionButton label={provider.catalogued && provider.available ? "Delete" : "Delete saved key"} disabled={!deleteEnabled || state.mutating} onPress={() => remove(provider.id, current)} /> : null}
           </View>}
         </View>;
       })}

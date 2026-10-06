@@ -11,6 +11,7 @@ export interface PersonalCostsEntryState {
 export interface PersonalCostsTotals {
   calls: number;
   providerOperations: number;
+  unknownProviderOperations: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -57,6 +58,16 @@ export interface PersonalCostsByProviderRow {
   totalCostUsd: number;
 }
 
+export interface PersonalCostsByTaskRow {
+  taskId: string;
+  calls: number;
+  estimatedCostUsd: number;
+  actualCostUsd: number;
+  totalCostUsd: number;
+  pendingAttempts: number;
+  unknownAttempts: number;
+}
+
 export interface PersonalCostsTimeSeriesPoint {
   /** UTC calendar day in YYYY-MM-DD form. */
   day: string;
@@ -70,6 +81,25 @@ export interface PersonalCostsRecoverySummary {
   retryableAttempts: number;
   blockedAttempts: number;
   unknownAttempts: number;
+  attempts: PersonalCostsRecoveryAttempt[];
+}
+
+export interface PersonalCostsRecoveryAttempt {
+  /** Local attempt reference suitable for support correlation. */
+  attemptId: string;
+  status: "pending" | "retryable" | "blocked" | "unrecoverable";
+  reason: string;
+  providerRoute: string;
+  /** One-way, content-free reference for correlating a provider receipt. */
+  requestReference: string | null;
+  lastObservedAt: string;
+  repairAction:
+    | "wait_for_receipt"
+    | "retry_receipt_read"
+    | "check_receipt_access"
+    | "contact_operator"
+    | "review_cost";
+  taskId: string | null;
 }
 
 export interface PersonalCostsSummary {
@@ -85,6 +115,7 @@ export interface PersonalCostsSummary {
   byModel: PersonalCostsByModelRow[];
   byCallType: PersonalCostsByCallTypeRow[];
   byProvider: PersonalCostsByProviderRow[];
+  byTask: PersonalCostsByTaskRow[];
   timeSeries: PersonalCostsTimeSeriesPoint[];
   recovery: PersonalCostsRecoverySummary;
 }

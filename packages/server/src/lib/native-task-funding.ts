@@ -10,7 +10,6 @@ import { parseTaskFundingBinding, type TaskFundingBinding, type TaskFundingFailu
 import { isOwnPrivateGenieRoom, usageFundingFor } from "./foreground-chat-funding";
 import { ModelFundingError, resolveModelFunding, withAdmittedPersonalProviderKey, type ModelFundingDecision } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
-import { currentPersonalGatewayDestination } from "./personal-provider-destination";
 
 import { callerTaskModelEnvironment, callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
 
@@ -227,8 +226,7 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
         const usageFunding = usageFundingFor(decision);
         if (decision.kind === "server") return await runAttempt({ usageFunding });
         return await withAdmittedPersonalProviderKey(decision,
-          (apiKey) => runAttempt({ usageFunding, personalCredential: { apiKey, ...(decision.providerRoute === "gateway"
-          ? { destination: currentPersonalGatewayDestination() ?? undefined } : {}) } }), undefined, admitted);
+          (apiKey) => runAttempt({ usageFunding, personalCredential: { apiKey } }), undefined, admitted);
       } catch (error) {
         const reason = taskFundingFailureCode(error);
         if (wake && run.status === "completed" && reason) {

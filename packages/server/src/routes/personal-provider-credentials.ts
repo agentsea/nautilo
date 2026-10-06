@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { resolveNautiloRootDir } from "@nautilo/config";
-import { getAllKeyDefinitions, maskValue } from "@nautilo/config-guard";
+import { maskValue } from "@nautilo/config-guard";
 import {
   PERSONAL_PROVIDER_IDS,
   createPersonalProviderCredentialIdentity,
@@ -24,10 +24,12 @@ import {
   type PersonalProviderCustody,
 } from "@nautilo/operator-secrets";
 import { getUserCapabilities } from "@nautilo/trust";
-import { PERSONAL_CHAT_PROVIDER_IDS } from "../lib/model-funding";
+import {
+  PERSONAL_PROVIDER_KEY_CATALOGUE,
+  orderProviderKeys,
+} from "@nautilo/types";
 import { readPersonalProviderCustody } from "../lib/personal-provider-custody";
 import {
-  currentPersonalGatewayDestination,
   validatePersonalGatewayDestination,
 } from "../lib/personal-provider-destination";
 import { validatePersonalProviderCredential } from "../lib/personal-provider-validation";
@@ -41,27 +43,16 @@ type ErrorCode =
   | "credential_conflict" | "credential_not_found"
   | "credential_destination_unavailable" | "credential_destination_changed";
 
-const personalChatProviderIds = new Set<string>(PERSONAL_CHAT_PROVIDER_IDS);
-const removedPersonalProviderIds = new Set(["nautilo-gateway"]);
-const personalProviderDefinitions = getAllKeyDefinitions()
-  .filter((definition) => !removedPersonalProviderIds.has(definition.id));
-const canonicalPersonalProviderIds = new Set(personalProviderDefinitions.map(({ id }) => id));
+const canonicalPersonalProviderIds = new Set(PERSONAL_PROVIDER_KEY_CATALOGUE.map(({ id }) => id));
 
 function personalProviderCatalog() {
-  return personalProviderDefinitions.map((definition) => ({
+  return orderProviderKeys(PERSONAL_PROVIDER_KEY_CATALOGUE).map((definition) => ({
     id: definition.id,
     name: definition.name,
-    purpose: definition.id === "surplus"
-      ? "Marketplace serving for qualified personal model routes"
-      : definition.id === "openai"
-        ? "OpenAI text models; embeddings remain server-managed"
-      : definition.purpose,
+    purpose: definition.purpose,
     ...(definition.signupUrl ? { signupUrl: definition.signupUrl } : {}),
     ...(definition.formatHint ? { formatHint: definition.formatHint } : {}),
-    personalCapabilities: personalChatProviderIds.has(definition.id) ? ["chat"] : [],
-    ...(definition.id === "gateway"
-      ? { destination: currentPersonalGatewayDestination() }
-      : {}),
+    personalCapabilities: definition.personalCapabilities,
   }));
 }
 
@@ -298,12 +289,10 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
     const provider = parseProvider(request);
     const body = parseWrite(request.body);
     if (!provider || !body) return reply.code(422).send(failure(provider ? "invalid_credential_request" : "invalid_provider"));
-    const destination = provider === "gateway" ? currentPersonalGatewayDestination() : null;
-    if (provider === "gateway" && destination === null) {
-      return reply.code(409).send(failure(
-        "credential_destination_unavailable", false, false, "contact_operator",
-      ));
-    }
+    // Gateway remains a server-admin provider. Historical personal rows are
+    // listed so their owners can remove them, but they cannot be renewed.
+    if (provider === "gateway") return reply.code(422).send(failure("invalid_provider"));
+    const destination = null;
     const custody = await readCustody(reply);
     if (!custody) return;
     try {
@@ -318,12 +307,6 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
           request, provider, body.apiKey, destination, true,
         );
         if (!await admit(request, reply)) return;
-        if (provider === "gateway"
-          && destination !== currentPersonalGatewayDestination()) {
-          return reply.code(409).send(failure(
-            "credential_destination_changed", false, false, "retry",
-          ));
-        }
         const envelope = encryptPersonalProviderCredential(custody, body.apiKey, {
           userId, provider, id: current.id, revision: current.revision + 1,
           destination,
@@ -351,12 +334,6 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
         request, provider, body.apiKey, destination, true,
       );
       if (!await admit(request, reply)) return;
-      if (provider === "gateway"
-        && destination !== currentPersonalGatewayDestination()) {
-        return reply.code(409).send(failure(
-          "credential_destination_changed", false, false, "retry",
-        ));
-      }
       const identity = createPersonalProviderCredentialIdentity();
       const envelope = encryptPersonalProviderCredential(custody, body.apiKey, {
         userId, provider, ...identity, destination,
@@ -383,6 +360,7 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
     const provider = parseProvider(request);
     const expectedRevision = parseRevisionBody(request.body);
     if (!provider || expectedRevision === null) return reply.code(422).send(failure(provider ? "invalid_credential_request" : "invalid_provider"));
+    if (provider === "gateway") return reply.code(422).send(failure("invalid_provider"));
     const custody = await readCustody(reply);
     if (!custody) return;
     try {

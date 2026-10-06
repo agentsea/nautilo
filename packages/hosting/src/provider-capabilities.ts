@@ -19,7 +19,9 @@ export const HOSTING_PROVIDER_ENV_VARS = {
   openrouter: "OPENROUTER_API_KEY",
   gateway: "NAUTILO_GATEWAY_API_KEY",
   google: "GOOGLE_API_KEY",
+  xai: "XAI_API_KEY",
   fireworks: "FIREWORKS_API_KEY",
+  together: "TOGETHER_API_KEY",
   venice: "VENICE_API_KEY",
   surplus: "SURPLUS_API_KEY",
   typesafe: "TYPESAFE_API_KEY",
@@ -110,10 +112,9 @@ interface ProviderDefinition {
 
 /**
  * Current, code-grounded coverage only. OpenRouter and Venice support chat and
- * qualified memory embeddings, but not search/TTS/STT. Surplus credentials are deployable, but credential presence alone cannot
- * prove chat readiness: the server must enable Prefer Surplus and admit a
- * signed route. Runtime-qualified chat may be supplied through the existing
- * qualifiedBaselineCapabilities input.
+ * qualified memory embeddings, but not search/TTS/STT. A configured Surplus
+ * credential provides the marketplace chat rail; runtime still enforces the
+ * Prefer Surplus policy and admits only signed routes.
  * CloudConvert is recognized for selection but is not a V0 core capability.
  */
 const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
@@ -122,8 +123,10 @@ const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = [
   { provider: "openrouter", name: "OpenRouter", coverage: { chat: "baseline", embeddings: "baseline" } },
   { provider: "gateway", name: "OpenAI-Compatible Gateway", coverage: { chat: "baseline" } },
   { provider: "google", name: "Google", coverage: { chat: "baseline" } },
+  { provider: "xai", name: "xAI", coverage: { chat: "baseline" } },
   { provider: "fireworks", name: "Fireworks", coverage: { chat: "baseline" } },
-  { provider: "surplus", name: "Surplus Intelligence", coverage: {} },
+  { provider: "together", name: "Together AI", coverage: { chat: "baseline" } },
+  { provider: "surplus", name: "Surplus Intelligence", coverage: { chat: "baseline" } },
   { provider: "typesafe", name: "TypeSafe", coverage: {} },
   { provider: "venice", name: "Venice", coverage: { chat: "baseline", embeddings: "baseline" } },
   { provider: "elevenlabs", name: "ElevenLabs", coverage: { tts: "enhanced", stt: "enhanced" } },

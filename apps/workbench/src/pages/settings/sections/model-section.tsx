@@ -39,16 +39,16 @@ type ChoiceMode = "default" | "catalog" | "unavailable";
 // runtime here (its `index.ts` transitively pulls `node:path` via
 // `@nautilo/config`, which Vite externalizes and crashes the renderer on
 // first evaluation). Keep in sync with `LLM_KEY_IDS` in
-// `packages/api-client/src/client.ts`. Providers not in `key-registry.ts`
-// (e.g. xai, together) won't surface a key hint here until they are added
-// to the registry — that's the consolidation trade-off (D086 Phase 5.2).
+// `packages/api-client/src/client.ts`.
 const LLM_KEY_IDS = new Set<string>([
   "anthropic",
   "openai",
   "openrouter",
   "gateway",
   "google",
+  "xai",
   "fireworks",
+  "together",
   "venice",
   "surplus",
 ]);

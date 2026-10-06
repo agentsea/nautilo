@@ -20,7 +20,9 @@ const PASSING_VALUES: Record<string, string> = {
   openrouter: `sk-or-v1-${"a".repeat(40)}`,
   gateway: "opaque-gateway-key-1234",
   google: `AIzaSy${"a".repeat(34)}`,
+  xai: "opaque-xai-key",
   fireworks: `fw_${"a".repeat(20)}`,
+  together: "opaque-together-key",
   venice: "a".repeat(48),
   surplus: "surplus-test-key",
 };

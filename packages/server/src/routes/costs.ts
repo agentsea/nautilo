@@ -158,6 +158,7 @@ export function costsRoutes(app: FastifyInstance, deps: CostsRoutesDeps = {}): v
           : row.name ?? (row.userId ? "unknown user" : "system / background"),
       })),
       timeSeries: summary.timeSeries,
+      recovery: summary.recovery,
     });
   });
 }

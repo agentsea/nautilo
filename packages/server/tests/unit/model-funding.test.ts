@@ -41,7 +41,6 @@ function harness() {
   let fundingPreference: "personal_first" | "server_first" = "personal_first";
   let serverRoute: string | null = "openrouter";
   let surplusEligible = false;
-  let destinationMatches = true;
   const deps: ModelFundingDeps = {
     getPolicy: async () => ({ allowPersonalProviderKeys: enabled, fundingPreference }),
     getCapabilities: async (userId) => capabilities.get(userId) ?? [],
@@ -51,14 +50,12 @@ function harness() {
     },
     serverRoute: (modelId) => modelId.startsWith("gateway:") ? "gateway" : serverRoute,
     personalSurplusRoute: () => surplusEligible,
-    validateDestination: (record) => record.provider !== "gateway" || destinationMatches,
     readCustody: async () => custody,
     decrypt: decryptPersonalProviderCredential,
   };
   return {
     deps, rows, capabilities, reads,
     setSurplusEligible(value: boolean) { surplusEligible = value; },
-    setDestinationMatches(value: boolean) { destinationMatches = value; },
     setEnabled(value: boolean) { enabled = value; },
     setFundingPreference(value: "personal_first" | "server_first") { fundingPreference = value; },
     setServerRoute(value: string | null) { serverRoute = value; },
@@ -131,15 +128,12 @@ describe("trusted model funding", () => {
   test("stored service keys do not expand personal chat execution", async () => {
     const h = harness();
     h.capabilities.set(ALICE, ["use_personal_provider_credentials"]);
-    for (const provider of ["typesafe", "nautilo-gateway", "elevenlabs", "groq", "tavily", "browser-use", "cloudconvert"] as const) {
+    for (const provider of ["typesafe", "nautilo-gateway", "elevenlabs", "groq", "tavily", "browser-use", "cloudconvert", "gateway"] as const) {
       h.rows.set(`${ALICE}:${provider}`, row(ALICE, provider));
       expect(await code(resolveModelFunding(request(ALICE, `${provider}:example`), h.deps)))
         .toBe("unsupported_provider");
     }
-    h.rows.set(`${ALICE}:gateway`, row(ALICE, "gateway"));
-    expect(await resolveModelFunding(request(ALICE, "gateway:example"), h.deps))
-      .toMatchObject({ kind: "personal", providerRoute: "gateway" });
-    expect(h.reads).toEqual([`${ALICE}:gateway`]);
+    expect(h.reads).toEqual([]);
   });
 
   test("off switch preserves server route without inspecting personal records", async () => {
@@ -392,7 +386,7 @@ describe("trusted model funding", () => {
     expect(h.reads).toEqual([`${ALICE}:openrouter`]);
   });
 
-  test("generic Gateway requires a caller credential for personal fallback", async () => {
+  test("generic Gateway remains server-only and never changes a pinned personal payer", async () => {
     const h = harness();
     h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
     expect(await resolveModelFunding(request(ALICE, "gateway:example/model"), h.deps))
@@ -401,7 +395,7 @@ describe("trusted model funding", () => {
     const personal = await resolveModelFunding(request(ALICE), h.deps);
     expect(await code(resolveModelFunding({
       ...request(ALICE, "gateway:example/model"), priorDecision: personal,
-    }, h.deps))).toBe("personal_credential_missing");
+    }, h.deps))).toBe("unsupported_provider");
   });
 
   test("personal fallback to another provider stays personal and checks the original revision", async () => {
@@ -470,14 +464,23 @@ describe("personal marketplace transport funding", () => {
     const admitted = await resolveModelFunding(request(ALICE), h.deps);
     expect(await code(resolveModelFunding({ ...request(ALICE), priorDecision: admitted, transport: "direct" }, h.deps))).toBe("personal_credential_missing");
   });
-  test("changed Gateway destination blocks before decryption and never changes payer", async () => {
+  test("a legacy personal Gateway decision is rejected before lookup or decryption", async () => {
     const h = harness(); h.capabilities.set(ALICE, ["use_personal_provider_credentials", "use_server_provider_credentials"]);
     h.rows.set(`${ALICE}:gateway`, row(ALICE, "gateway"));
-    const admitted = await resolveModelFunding(request(ALICE, "gateway:example"), h.deps);
-    h.setDestinationMatches(false);
+    const admitted = {
+      kind: "personal" as const,
+      humanUserId: ALICE,
+      payerHumanId: ALICE,
+      modelId: "gateway:example",
+      providerRoute: "gateway",
+      workload: "foreground_text_chat" as const,
+      credentialId: "30000000-0000-4000-8000-000000000003",
+      credentialRevision: 1,
+    };
     let invoked = false;
-    if (admitted.kind !== "personal") throw new Error("Expected personal admission");
-    expect(await code(withAdmittedPersonalProviderKey(admitted, () => { invoked = true; }, h.deps))).toBe("personal_credential_unavailable");
+    expect(await code(withAdmittedPersonalProviderKey(admitted, () => { invoked = true; }, h.deps)))
+      .toBe("unsupported_provider");
     expect(invoked).toBe(false);
+    expect(h.reads).toEqual([]);
   });
 });

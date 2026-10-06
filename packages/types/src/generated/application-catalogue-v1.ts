@@ -167,7 +167,6 @@ const GENERATED_APPLICATION_CATALOGUE_METADATA_V1 = [
     "label": "Your costs",
     "menuPath": [
       "Settings",
-      "Personal API keys",
       "Your costs"
     ],
     "description": "Review charges and estimates for work paid with your personal provider keys.",

@@ -14,7 +14,6 @@ import {
   type ModelFundingDecision,
 } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
-import { currentPersonalGatewayDestination } from "./personal-provider-destination";
 import { callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
 
 type FundingPortInput = Readonly<{
@@ -163,8 +162,7 @@ export async function openForegroundChatFundingSession(
       if (decision.kind === "server") return run({ usageFunding });
       return withAdmittedPersonalProviderKey(
         decision,
-        (apiKey) => run({ usageFunding, personalCredential: { apiKey, ...(decision.providerRoute === "gateway"
-          ? { destination: currentPersonalGatewayDestination() ?? undefined } : {}) } }),
+        (apiKey) => run({ usageFunding, personalCredential: { apiKey } }),
         undefined,
         admitted,
       );

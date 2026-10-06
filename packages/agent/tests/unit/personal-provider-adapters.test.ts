@@ -190,34 +190,13 @@ describe("personal OpenRouter transport", () => {
 });
 
 
-describe("personal generic Gateway destination", () => {
-  test("injects only the bound endpoint and caller key, then rejects destination changes", async () => {
-    const previousBase = process.env["NAUTILO_GATEWAY_BASE_URL"];
-    const previousKey = process.env["NAUTILO_GATEWAY_API_KEY"];
-    try {
-      process.env["NAUTILO_GATEWAY_BASE_URL"] = "https://gateway.invalid/tenant-a/v1";
-      process.env["NAUTILO_GATEWAY_API_KEY"] = "server-gateway-secret";
-      const credential = { apiKey: "personal-gateway-secret", destination: process.env["NAUTILO_GATEWAY_BASE_URL"] };
-      const model = await createUnmeteredEvaluationModel("gateway:local-model", {
-        personalCredential: credential, baseUrl: "https://wrong.invalid", apiKey: "wrong-key",
-      });
-      expect(modelUsesExactApiKey(model, credential.apiKey)).toBe(true);
-      const originalFetch = globalThis.fetch;
-      const requests: Array<{ url: string; redirect: "error" | "follow" | "manual" | undefined }> = [];
-      globalThis.fetch = (async (input, init) => {
-        requests.push({ url: typeof input === "string" ? input : input instanceof URL ? input.href : input.url, redirect: init?.redirect });
-        return Response.json({ error: { message: "redirect refused" } }, { status: 503 });
-      }) as typeof fetch;
-      try {
-        try { await model.invoke([new HumanMessage("synthetic")]); } catch { /* Expected provider refusal. */ }
-        expect(requests).toEqual([{ url: "https://gateway.invalid/tenant-a/v1/chat/completions", redirect: "error" }]);
-      } finally { globalThis.fetch = originalFetch; }
-      process.env["NAUTILO_GATEWAY_BASE_URL"] = "https://gateway.invalid/tenant-b/v1";
-      expect(createUnmeteredEvaluationModel("gateway:local-model", { personalCredential: credential }))
-        .rejects.toThrow("destination changed");
-    } finally {
-      if (previousBase === undefined) delete process.env["NAUTILO_GATEWAY_BASE_URL"]; else process.env["NAUTILO_GATEWAY_BASE_URL"] = previousBase;
-      if (previousKey === undefined) delete process.env["NAUTILO_GATEWAY_API_KEY"]; else process.env["NAUTILO_GATEWAY_API_KEY"] = previousKey;
-    }
+describe("personal generic Gateway retirement", () => {
+  test("rejects a personal Gateway credential before creating a provider client", async () => {
+    expect(createUnmeteredEvaluationModel("gateway:local-model", {
+      personalCredential: {
+        apiKey: "personal-gateway-secret",
+        destination: "https://gateway.invalid/tenant-a/v1",
+      },
+    })).rejects.toThrow('Personal credentials are not supported for model provider "gateway".');
   });
 });

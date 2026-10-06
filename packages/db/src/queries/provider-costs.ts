@@ -129,11 +129,9 @@ export function buildProviderCostsSummaryQueries(
           eq(providerCostEvents.payerHumanId, payerHumanId),
         ]),
   );
-  // Actual provider evidence may retain its earlier estimate for audit. The
-  // personal ledger reports only estimates that remain the current evidence.
-  const estimatedCost = payerHumanId === undefined
-    ? providerCostEvents.estimatedCostUsd
-    : CURRENT_ESTIMATED_COST;
+  // Actual provider evidence may retain its earlier estimate for audit. Every
+  // dashboard reports only estimates that remain the current evidence.
+  const estimatedCost = CURRENT_ESTIMATED_COST;
   const totals = handle
     .select({
       operations: sql<number>`COUNT(*)::int`,

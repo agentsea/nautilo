@@ -108,7 +108,7 @@ export function personalAccountErrorMessage(error: unknown): string {
     if (error.error === "credential_destination_changed") return "The server's provider destination changed. Replace this key before using it again.";
     if (error.error === "credential_custody_unavailable") return "Your saved keys cannot be opened safely right now. Contact the Server operator.";
     if (error.error === "credential_reenrollment_required") return "This key must be replaced before it can be used again.";
-    if (error.error === "personal_credentials_disabled") return "Personal keys are disabled on this server.";
+    if (error.error === "personal_credentials_disabled") return "Personal API keys are disabled on this server. Your saved keys are retained but won’t be used.";
     if (error.error === "personal_credentials_forbidden") return "You are not allowed to manage personal keys.";
   }
   const status = error !== null && typeof error === "object" && "status" in error
@@ -118,4 +118,20 @@ export function personalAccountErrorMessage(error: unknown): string {
   if (status === 403) return "This server does not allow you to manage personal provider keys.";
   if (error instanceof Error && error.message) return error.message;
   return "This account information could not be loaded. Try again.";
+}
+
+export type PersonalCredentialLoadKind = "disabled" | "forbidden" | "signedOut" | "error";
+
+export function personalCredentialLoadKind(error: unknown): PersonalCredentialLoadKind {
+  if (error instanceof ProviderCredentialApiError) {
+    if (error.error === "personal_credentials_disabled") return "disabled";
+    if (error.error === "personal_credentials_forbidden") return "forbidden";
+    if (error.status === 401) return "signedOut";
+  }
+  const status = error !== null && typeof error === "object" && "status" in error
+    ? (error as { status?: unknown }).status
+    : null;
+  if (status === 401) return "signedOut";
+  if (status === 403) return "forbidden";
+  return "error";
 }

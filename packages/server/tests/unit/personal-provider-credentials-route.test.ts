@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
-import { getAllKeyDefinitions } from "@nautilo/config-guard";
 import {
   type PersonalProviderCredentialRecord,
   type PersonalProviderId,
@@ -11,6 +10,10 @@ import {
   encryptPersonalProviderCredential,
   type PersonalProviderCustody,
 } from "@nautilo/operator-secrets";
+import {
+  PERSONAL_PROVIDER_KEY_CATALOGUE,
+  orderProviderKeys,
+} from "@nautilo/types";
 import {
   personalProviderCredentialRoutes,
   type PersonalProviderCredentialRouteDeps,
@@ -278,24 +281,15 @@ describe("personal provider credential routes", () => {
     const result = body(response);
     expect(result["credentials"]).toEqual([]);
     const providers = result["providers"] as Array<Record<string, unknown>>;
-    const definitions = getAllKeyDefinitions().filter(
-      ({ id }) => id !== "nautilo-gateway",
-    );
+    const definitions = orderProviderKeys(PERSONAL_PROVIDER_KEY_CATALOGUE);
     expect(providers.map(({ id }) => id)).toEqual(definitions.map(({ id }) => id));
     expect(providers).toEqual(definitions.map((definition) => ({
       id: definition.id,
       name: definition.name,
-      purpose: definition.id === "surplus"
-        ? "Marketplace serving for qualified personal model routes"
-        : definition.id === "openai"
-          ? "OpenAI text models; embeddings remain server-managed"
-        : definition.purpose,
+      purpose: definition.purpose,
       ...(definition.signupUrl ? { signupUrl: definition.signupUrl } : {}),
       ...(definition.formatHint ? { formatHint: definition.formatHint } : {}),
-      personalCapabilities: (PERSONAL_CHAT_PROVIDER_IDS as readonly string[]).includes(definition.id)
-        ? ["chat"]
-        : [],
-      ...(definition.id === "gateway" ? { destination: null } : {}),
+      personalCapabilities: definition.personalCapabilities,
     })));
     const serializedProviders = JSON.stringify(providers);
     expect(serializedProviders).not.toContain("envVar");
@@ -303,6 +297,15 @@ describe("personal provider credential routes", () => {
     expect(serializedProviders).not.toContain("doctorHints");
     expect(providers.find(({ id }) => id === "openai")?.["purpose"]).toBe(
       "OpenAI text models; embeddings remain server-managed",
+    );
+    expect(providers.some(({ id }) => id === "gateway" || id === "nautilo-gateway")).toBe(false);
+    const personalChatIds = definitions
+      .filter(({ personalCapabilities }) => personalCapabilities.includes("chat"))
+      .map(({ id }) => id);
+    expect([...personalChatIds].sort()).toEqual(
+      (PERSONAL_CHAT_PROVIDER_IDS as readonly string[])
+        .filter((id) => definitions.some((definition) => definition.id === id))
+        .sort(),
     );
     for (const definition of definitions) {
       expect(serializedProviders).not.toContain(definition.envVar);
@@ -559,24 +562,16 @@ describe("personal provider credential routes", () => {
     }]);
   });
 
-  test("binds Gateway enrollment to the current full path and flags later changes", async () => {
+  test("lists a legacy Gateway row, flags destination changes, and permits safe deletion", async () => {
     process.env["NAUTILO_GATEWAY_BASE_URL"] = "https://gateway.example/tenant-a/v1///";
-    const harness = await makeHarness();
-    const saved = await harness.app.inject({
-      method: "PUT", url: "/api/account/provider-credentials/gateway",
-      headers: auth(), payload: { apiKey: SENTINEL },
+    const custody = createPersonalProviderCustody();
+    const existing = credential(custody, {
+      userId: USER_A,
+      provider: "gateway",
+      plaintext: SENTINEL,
+      destination: "https://gateway.example/tenant-a/v1",
     });
-    expect(saved.statusCode).toBe(200);
-    expect(body(saved)).toMatchObject({
-      credential: {
-        provider: "gateway",
-        destination: "https://gateway.example/tenant-a/v1",
-        requiresReplacement: false,
-      },
-    });
-    expect(harness.validatedDestinations).toEqual([
-      "https://gateway.example/tenant-a/v1",
-    ]);
+    const harness = await makeHarness({ custody, records: [existing] });
 
     process.env["NAUTILO_GATEWAY_BASE_URL"] = "https://gateway.example/tenant-b/v1";
     const listed = await harness.app.inject({
@@ -591,45 +586,49 @@ describe("personal provider credential routes", () => {
       }],
     });
     const providerRows = listedBody["providers"] as Array<Record<string, unknown>>;
-    expect(providerRows.find(({ id }) => id === "gateway")).toMatchObject({
-      id: "gateway",
-      destination: "https://gateway.example/tenant-b/v1",
-    });
+    expect(providerRows.some(({ id }) => id === "gateway")).toBe(false);
     const validation = await harness.app.inject({
       method: "POST", url: "/api/account/provider-credentials/gateway/validate",
       headers: auth(), payload: { expectedRevision: 1 },
     });
-    expect(validation.statusCode).toBe(409);
+    expect(validation.statusCode).toBe(422);
     expect(body(validation)).toEqual({
-      error: "credential_destination_changed", committed: false,
-      retryable: false, repair: "replace_credential",
+      error: "invalid_provider", committed: false, retryable: false, repair: null,
     });
+    const deleted = await harness.app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/gateway",
+      headers: auth(), payload: { expectedRevision: 1 },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(harness.records.has(key(USER_A, "gateway"))).toBe(false);
   });
 
-  test("does not commit a Gateway key when the admin destination changes during validation", async () => {
+  test("does not replace a retained personal Gateway key", async () => {
     process.env["NAUTILO_GATEWAY_BASE_URL"] = "https://gateway.example/tenant-a/v1";
+    const custody = createPersonalProviderCustody();
+    const existing = credential(custody, {
+      userId: USER_A, provider: "gateway", plaintext: `${SENTINEL}-old`,
+      destination: "https://gateway.example/tenant-a/v1",
+    });
     const harness = await makeHarness({
-      validate: async () => {
-        process.env["NAUTILO_GATEWAY_BASE_URL"] = "https://gateway.example/tenant-b/v1";
-        return { status: "accepted", receiptReadStatus: "unknown" };
-      },
+      custody,
+      records: [existing],
     });
     const response = await harness.app.inject({
       method: "PUT", url: "/api/account/provider-credentials/gateway",
-      headers: auth(), payload: { apiKey: SENTINEL },
+      headers: auth(), payload: { apiKey: SENTINEL, expectedRevision: 1 },
     });
-    expect(response.statusCode).toBe(409);
+    expect(response.statusCode).toBe(422);
     expect(body(response)).toEqual({
-      error: "credential_destination_changed", committed: false,
-      retryable: false, repair: "retry",
+      error: "invalid_provider", committed: false, retryable: false, repair: null,
     });
-    expect(harness.records.size).toBe(0);
+    expect(harness.records.get(key(USER_A, "gateway"))).toEqual(existing);
     expect(harness.auditEvents).toEqual([]);
   });
 
   test("rejects new removed or unavailable providers while preserving revision conflict semantics", async () => {
     const harness = await makeHarness();
-    for (const provider of ["xai", "together", "nautilo-gateway"] as const) {
+    for (const provider of ["nautilo-gateway", "gateway"] as const) {
       const response = await harness.app.inject({
         method: "PUT", url: `/api/account/provider-credentials/${provider}`,
         headers: auth(), payload: { apiKey: SENTINEL },
@@ -639,16 +638,6 @@ describe("personal provider credential routes", () => {
         error: "invalid_provider", committed: false, retryable: false, repair: null,
       });
     }
-
-    const gateway = await harness.app.inject({
-      method: "PUT", url: "/api/account/provider-credentials/gateway",
-      headers: auth(), payload: { apiKey: SENTINEL },
-    });
-    expect(gateway.statusCode).toBe(409);
-    expect(body(gateway)).toEqual({
-      error: "credential_destination_unavailable", committed: false,
-      retryable: false, repair: "contact_operator",
-    });
 
     const fencedRetry = await harness.app.inject({
       method: "PUT", url: "/api/account/provider-credentials/xai",
@@ -663,9 +652,8 @@ describe("personal provider credential routes", () => {
     expect(harness.auditEvents).toEqual([]);
   });
 
-  test("allows actor-scoped replacement of retained provider rows", async () => {
-    process.env["NAUTILO_GATEWAY_BASE_URL"] = "https://gateway.example/v1";
-    for (const provider of ["xai", "together", "nautilo-gateway", "gateway"] as const) {
+  test("keeps supported creation and retained-row replacement actor-scoped", async () => {
+    for (const provider of ["xai", "together", "nautilo-gateway"] as const) {
       const custody = createPersonalProviderCustody();
       const existing = credential(custody, {
         userId: USER_A, provider, plaintext: `${SENTINEL}-old-${provider}`,
@@ -696,14 +684,18 @@ describe("personal provider credential routes", () => {
       userId: USER_B, provider: "xai", plaintext: `${SENTINEL}-foreign-xai`,
     });
     const foreignHarness = await makeHarness({ custody, records: [foreign] });
-    const rejected = await foreignHarness.app.inject({
+    const created = await foreignHarness.app.inject({
       method: "PUT", url: "/api/account/provider-credentials/xai",
       headers: auth(USER_A), payload: { apiKey: `${SENTINEL}-actor-a` },
     });
-    expect(rejected.statusCode).toBe(422);
-    expect(body(rejected)["error"]).toBe("invalid_provider");
+    expect(created.statusCode).toBe(200);
+    expect(body(created)).toMatchObject({
+      committed: true,
+      credential: { provider: "xai", revision: 1 },
+    });
+    expect(foreignHarness.records.has(key(USER_A, "xai"))).toBe(true);
     expect(foreignHarness.records.get(key(USER_B, "xai"))).toEqual(foreign);
-    expect(foreignHarness.auditEvents).toEqual([]);
+    expect(foreignHarness.auditEvents).toHaveLength(1);
   });
 
   test("derives ownership exclusively from the session and never probes another Human's row", async () => {

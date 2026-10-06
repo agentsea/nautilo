@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { PROVIDER_KEY_CATALOGUE } from "@nautilo/types";
 import { getKeyByEnvVar, KEY_REGISTRY } from "../../src/key-registry";
 
 test("provider descriptions avoid recommendations and explain gateway prerequisites", () => {
@@ -15,8 +16,17 @@ describe("key-registry", () => {
     expect(getKeyByEnvVar("NAUTILO_GATEWAY_API_KEY")?.signupUrl).toBe("");
   });
 
-  test("registry has fourteen keys", () => {
-    expect(KEY_REGISTRY.length).toBe(14);
+  test("registry has sixteen keys", () => {
+    expect(KEY_REGISTRY.length).toBe(16);
+  });
+
+  test("uses the shared presentation catalogue without metadata drift", () => {
+    expect(KEY_REGISTRY.map(({ formatCheck: _formatCheck, doctorHints: _doctorHints, healthCheck: _healthCheck, ...entry }) => entry))
+      .toEqual(PROVIDER_KEY_CATALOGUE.map((entry) => ({
+        ...entry,
+        signupUrl: entry.signupUrl ?? "",
+        formatHint: entry.formatHint ?? "",
+      })));
   });
 
   test("Surplus accepts an opaque single-line buyer key without a Bearer prefix", () => {
@@ -30,6 +40,21 @@ describe("key-registry", () => {
     expect(key?.doctorHints.some((hint) => hint.condition("short"))).toBe(false);
     expect(key?.formatCheck("Bearer inf_12345678901234567890")).toBe(false);
     expect(key?.formatCheck("inf_12345678901234567890\n")).toBe(false);
+  });
+
+  test("xAI and Together accept raw opaque single-line keys", () => {
+    for (const envVar of ["XAI_API_KEY", "TOGETHER_API_KEY"] as const) {
+      const key = getKeyByEnvVar(envVar);
+      expect(key).toMatchObject({
+        category: "llm",
+        signupUrl: "",
+        healthCheck: "format_only",
+      });
+      expect(key?.formatCheck("opaque-key-value")).toBe(true);
+      expect(key?.formatCheck("Bearer opaque-key-value")).toBe(false);
+      expect(key?.formatCheck(" opaque-key-value")).toBe(false);
+      expect(key?.formatCheck("opaque key value")).toBe(false);
+    }
   });
 
   test("getKeyByEnvVar resolves Venice", () => {

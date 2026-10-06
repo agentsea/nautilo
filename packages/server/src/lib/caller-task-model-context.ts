@@ -3,14 +3,13 @@ import { getServerProviderPolicy, listPersonalProviderCredentials, getCachedServ
 import { getUserCapabilities } from "@nautilo/trust";
 import { getServerDirectDb } from "./server-direct-db";
 import { resolveServerFundingRoute } from "./model-funding";
-import { validatePersonalGatewayDestination, currentPersonalGatewayDestination } from "./personal-provider-destination";
 
 /** Presence-only selection data. No credential plaintext crosses model discovery. */
 const PERSONAL_CHAT_ENV: Readonly<Record<string, string>> = {
   anthropic: "ANTHROPIC_API_KEY", openai: "OPENAI_API_KEY", openrouter: "OPENROUTER_API_KEY",
   google: "GOOGLE_API_KEY", xai: "XAI_API_KEY", fireworks: "FIREWORKS_API_KEY",
   together: "TOGETHER_API_KEY", venice: "VENICE_API_KEY",
-  surplus: "SURPLUS_API_KEY", gateway: "NAUTILO_GATEWAY_API_KEY",
+  surplus: "SURPLUS_API_KEY",
 };
 
 export async function callerTaskModelEnvironment(humanUserId: string): Promise<NodeJS.ProcessEnv> {
@@ -21,9 +20,8 @@ export async function callerTaskModelEnvironment(humanUserId: string): Promise<N
     && (await getServerProviderPolicy(getServerDirectDb())).allowPersonalProviderKeys) {
     for (const credential of await listPersonalProviderCredentials(getServerDirectDb(), humanUserId)) {
       const key = PERSONAL_CHAT_ENV[credential.provider];
-      if (key && validatePersonalGatewayDestination(credential)) {
+      if (key) {
         env[key] = "configured";
-        if (credential.provider === "gateway") env["NAUTILO_GATEWAY_BASE_URL"] = currentPersonalGatewayDestination()!;
       }
     }
   }

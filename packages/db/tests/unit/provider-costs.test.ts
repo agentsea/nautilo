@@ -156,7 +156,7 @@ describe("provider cost events", () => {
     const administratorTotals = buildProviderCostsSummaryQueries(RANGE, offlineDb).totals
       .toSQL().sql.replace(/\s+/g, " ").toLowerCase();
     expect(administratorTotals).toContain(
-      'sum("estimated_cost_usd")',
+      `when "provider_cost_events"."evidence_state" = 'estimated' then "provider_cost_events"."estimated_cost_usd" else 0 end`,
     );
   });
 

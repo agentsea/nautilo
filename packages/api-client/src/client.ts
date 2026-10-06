@@ -1561,7 +1561,9 @@ const LLM_KEY_IDS = new Set<string>([
   "openrouter",
   "gateway",
   "google",
+  "xai",
   "fireworks",
+  "together",
   "venice",
   "surplus",
 ]);
@@ -2382,6 +2384,7 @@ const personalCostsSummarySchema: z.ZodType<PersonalCostsSummary> = z.object({
   totals: z.object({
     calls: personalCostsCountSchema,
     providerOperations: personalCostsCountSchema,
+    unknownProviderOperations: personalCostsCountSchema.optional().default(0),
     inputTokens: personalCostsCountSchema,
     cachedInputTokens: personalCostsCountSchema,
     outputTokens: personalCostsCountSchema,
@@ -2424,6 +2427,15 @@ const personalCostsSummarySchema: z.ZodType<PersonalCostsSummary> = z.object({
     actualCostUsd: personalCostsMoneySchema,
     totalCostUsd: personalCostsMoneySchema,
   }).strict()),
+  byTask: z.array(z.object({
+    taskId: z.uuid(),
+    calls: personalCostsCountSchema,
+    estimatedCostUsd: personalCostsMoneySchema,
+    actualCostUsd: personalCostsMoneySchema,
+    totalCostUsd: personalCostsMoneySchema,
+    pendingAttempts: personalCostsCountSchema,
+    unknownAttempts: personalCostsCountSchema,
+  }).strict()).optional().default([]),
   timeSeries: z.array(z.object({
     day: z.string().min(1),
     estimatedCostUsd: personalCostsMoneySchema,
@@ -2435,6 +2447,22 @@ const personalCostsSummarySchema: z.ZodType<PersonalCostsSummary> = z.object({
     retryableAttempts: personalCostsCountSchema,
     blockedAttempts: personalCostsCountSchema,
     unknownAttempts: personalCostsCountSchema,
+    attempts: z.array(z.object({
+      attemptId: z.uuid(),
+      status: z.enum(["pending", "retryable", "blocked", "unrecoverable"]),
+      reason: z.string().regex(/^[a-z0-9_]{1,80}$/),
+      providerRoute: z.string().min(1),
+      requestReference: z.string().regex(/^req_[0-9a-f]{12}$/).nullable(),
+      lastObservedAt: z.string().min(1),
+      repairAction: z.enum([
+        "wait_for_receipt",
+        "retry_receipt_read",
+        "check_receipt_access",
+        "contact_operator",
+        "review_cost",
+      ]),
+      taskId: z.uuid().nullable(),
+    }).strict()).optional().default([]),
   }).strict(),
 }).strict();
 

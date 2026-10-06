@@ -1,4 +1,19 @@
-import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import { llmUsageEvents } from "../schema/llm-usage";
 import { users } from "../schema/users";
 import { getSharedDirectDb } from "../config/direct-database";
@@ -10,6 +25,9 @@ import type {
   PersonalCostsByCallTypeRow,
   PersonalCostsByModelRow,
   PersonalCostsByProviderRow,
+  PersonalCostsByTaskRow,
+  PersonalCostsRecoveryAttempt,
+  PersonalCostsRecoverySummary,
   PersonalCostsSummary,
   PersonalCostsTimeSeriesPoint,
 } from "@nautilo/types";
@@ -147,6 +165,10 @@ export interface ListPendingSurplusAttemptsInput {
   limit?: number;
   updatedBefore?: Date;
 }
+
+// The runtime receipt pump has always bounded one pass to 100 attempts by
+// default. The account diagnostic uses that same established read bound.
+const DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT = 100;
 
 export interface SurplusPendingAttempt {
   id: string;
@@ -526,7 +548,7 @@ export async function settlePersonalLlmAttempt(
 export async function listPendingSurplusAttempts(
   input: ListPendingSurplusAttemptsInput = {},
 ): Promise<SurplusPendingAttempt[]> {
-  const limit = input.limit === undefined ? 100 : input.limit;
+  const limit = input.limit === undefined ? DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT : input.limit;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
     throw new RangeError("limit must be an integer between 1 and 1000");
   }
@@ -769,6 +791,7 @@ export interface CostsSummary {
   byProvider: CostsByProviderRow[];
   byUser: CostsByUserRow[];
   timeSeries: CostsTimeSeriesPoint[];
+  recovery: PersonalCostsRecoverySummary;
 }
 
 function n(v: unknown): number {
@@ -786,10 +809,6 @@ function s(v: unknown): string | null {
  * "total spend" convention used everywhere in the dashboard.
  */
 const COST_IS_UNRESOLVED = sql`${llmUsageEvents.costState} IN ('pending', 'unknown')`;
-const KNOWN_ESTIMATED_COST = sql`CASE
-  WHEN ${COST_IS_UNRESOLVED} THEN 0
-  ELSE ${llmUsageEvents.estimatedCostUsd}
-END`;
 const CURRENT_ESTIMATED_COST = sql`CASE
   WHEN ${llmUsageEvents.costState} = 'estimated' THEN ${llmUsageEvents.estimatedCostUsd}
   WHEN ${llmUsageEvents.costState} IS NULL
@@ -840,13 +859,9 @@ export function buildCostsSummaryQueries(
           eq(llmUsageEvents.payerHumanId, payerHumanId),
         ]),
   );
-  // Personal summaries expose the currently applicable evidence buckets.
   // Settled actual rows retain their frozen estimate for audit, but that
-  // superseded estimate must not also appear as current estimated spend.
-  // Administrator summaries keep their existing historical estimate total.
-  const estimatedCost = payerHumanId === undefined
-    ? KNOWN_ESTIMATED_COST
-    : CURRENT_ESTIMATED_COST;
+  // superseded estimate is not current estimated spend for either audience.
+  const estimatedCost = CURRENT_ESTIMATED_COST;
 
   const totals = handle
     .select({
@@ -1008,6 +1023,153 @@ export function buildPersonalCostsByRouteQuery(
     .orderBy(({ total_cost }) => desc(total_cost));
 }
 
+/** Personal model spend grouped by Task, without joining protected Task content. */
+export function buildPersonalCostsByTaskQuery(
+  range: CostsRange,
+  handle: Pick<DirectDatabase, "select">,
+  payerHumanId: string,
+) {
+  return handle.select({
+    task_id: llmUsageEvents.taskId,
+    calls: sql<number>`COUNT(*)::int`,
+    pending_attempts:
+      sql<number>`COUNT(*) FILTER (WHERE ${llmUsageEvents.costState} = 'pending')::int`,
+    unknown_attempts:
+      sql<number>`COUNT(*) FILTER (WHERE ${llmUsageEvents.costState} = 'unknown')::int`,
+    estimated_cost: sql<string>`COALESCE(SUM(${CURRENT_ESTIMATED_COST}), 0)`,
+    actual_cost: sql<string>`COALESCE(SUM(${llmUsageEvents.actualCostUsd}), 0)`,
+    total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`.as("total_cost"),
+  }).from(llmUsageEvents).where(and(
+    gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
+    lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
+    eq(llmUsageEvents.fundingKind, "personal"),
+    eq(llmUsageEvents.payerHumanId, payerHumanId),
+    isNotNull(llmUsageEvents.taskId),
+  )).groupBy(llmUsageEvents.taskId)
+    .orderBy(({ total_cost }) => desc(total_cost));
+}
+
+/** Bounded, content-free unresolved-attempt diagnostics for one audience. */
+export function buildCostsRecoveryAttemptsQuery(
+  range: CostsRange,
+  handle: Pick<DirectDatabase, "select">,
+  payerHumanId?: string,
+) {
+  return handle.select({
+    id: llmUsageEvents.id,
+    taskId: llmUsageEvents.taskId,
+    providerRoute: llmUsageEvents.providerRoute,
+    providerRequestId: llmUsageEvents.providerRequestId,
+    costState: llmUsageEvents.costState,
+    recoveryState: llmUsageEvents.recoveryState,
+    failureCode: llmUsageEvents.failureCode,
+    updatedAt: llmUsageEvents.updatedAt,
+  }).from(llmUsageEvents).where(and(
+    gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
+    lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
+    inArray(llmUsageEvents.costState, ["pending", "unknown"]),
+    ...(payerHumanId === undefined
+      ? [or(isNull(llmUsageEvents.fundingKind), ne(llmUsageEvents.fundingKind, "personal"))]
+      : [
+          eq(llmUsageEvents.fundingKind, "personal"),
+          eq(llmUsageEvents.payerHumanId, payerHumanId),
+        ]),
+  )).orderBy(desc(llmUsageEvents.updatedAt), desc(llmUsageEvents.id))
+    .limit(DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT);
+}
+
+const SAFE_RECOVERY_REASONS = new Set([
+  "adapted_parameters",
+  "cancelled",
+  "credential_custody_unavailable",
+  "credential_fingerprint_mismatch",
+  "credential_lookup_failed",
+  "credential_missing",
+  "credential_replaced",
+  "incomplete_response",
+  "no_sellers_for_model",
+  "outcome_unknown",
+  "pre_service_refusal",
+  "provider_refused",
+  "provider_route_mismatch",
+  "receipt_binding_invalid",
+  "receipt_binding_missing",
+  "receipt_binding_pending",
+  "receipt_endpoint_unsupported",
+  "receipt_not_confirmed",
+  "receipt_not_found",
+  "receipt_rate_limited",
+  "receipt_read_failed",
+  "receipt_read_unauthorized",
+  "receipt_read_unavailable",
+  "receipt_request_rejected",
+  "receipt_service_unavailable",
+  "truncated_response",
+]);
+
+function safeRecoveryReason(value: string | null, fallback: string): string {
+  return value !== null && SAFE_RECOVERY_REASONS.has(value) ? value : fallback;
+}
+
+// A 48-bit display tag is compact enough to copy while distinguishing the at
+// most 100 recent rows in this diagnostic. It is correlation, not identity or
+// a security boundary; the raw provider receipt remains server-side.
+const SAFE_REQUEST_REFERENCE_HEX_LENGTH = 12;
+
+function safeRequestReference(providerRequestId: string | null): string | null {
+  if (providerRequestId === null) return null;
+  const digest = createHash("sha256").update(providerRequestId, "utf8").digest("hex");
+  return `req_${digest.slice(0, SAFE_REQUEST_REFERENCE_HEX_LENGTH)}`;
+}
+
+function personalRecoveryAttempt(row: {
+  id: string;
+  taskId: string | null;
+  providerRoute: string | null;
+  providerRequestId: string | null;
+  costState: "actual" | "estimated" | "pending" | "unknown" | null;
+  recoveryState: "pending" | "retryable" | "blocked_repair" | null;
+  failureCode: string | null;
+  updatedAt: Date;
+}): PersonalCostsRecoveryAttempt {
+  const status = row.recoveryState === "blocked_repair"
+    ? "blocked"
+    : row.recoveryState === "retryable"
+      ? "retryable"
+      : row.recoveryState === "pending" || row.costState === "pending"
+        ? "pending"
+        : "unrecoverable";
+  const fallbackReason = status === "blocked"
+    ? "receipt_recovery_blocked"
+    : status === "retryable"
+      ? "receipt_read_retry_scheduled"
+      : status === "pending"
+        ? "awaiting_provider_receipt"
+        : "cost_evidence_unavailable";
+  const reason = safeRecoveryReason(row.failureCode, fallbackReason);
+  const repairAction = status === "blocked"
+    ? reason === "receipt_read_unavailable" || reason === "receipt_read_unauthorized"
+      ? "check_receipt_access"
+      : reason === "credential_custody_unavailable"
+        ? "contact_operator"
+        : "review_cost"
+    : status === "retryable"
+      ? "retry_receipt_read"
+      : status === "pending"
+        ? "wait_for_receipt"
+        : "review_cost";
+  return {
+    attemptId: row.id,
+    status,
+    reason,
+    providerRoute: row.providerRoute ?? "unknown",
+    requestReference: safeRequestReference(row.providerRequestId),
+    lastObservedAt: row.updatedAt.toISOString(),
+    repairAction,
+    taskId: row.taskId,
+  };
+}
+
 export async function getCostsSummary(range: CostsRange): Promise<CostsSummary> {
   const since = range.sinceIso;
   const until = range.untilIso;
@@ -1022,6 +1184,7 @@ export async function getCostsSummary(range: CostsRange): Promise<CostsSummary> 
   const byProvider = await providerQueries.byProvider;
   const providerByUser = await providerQueries.byUser;
   const providerTimeSeries = await providerQueries.timeSeries;
+  const recoveryRows = await buildCostsRecoveryAttemptsQuery(range, db());
 
   const providerOperations = n(providerTotalsRow?.["operations"]);
   const providerEstimatedCostUsd = n(providerTotalsRow?.["estimated_cost"]);
@@ -1128,6 +1291,13 @@ export async function getCostsSummary(range: CostsRange): Promise<CostsSummary> 
     })),
     byUser: [...usersById.values()].sort((left, right) => right.totalCostUsd - left.totalCostUsd),
     timeSeries: [...days.values()].sort((left, right) => left.day.localeCompare(right.day)),
+    recovery: {
+      pendingAttempts: n(totalsRow?.["pending_model_attempts"]),
+      retryableAttempts: n(totalsRow?.["retryable_model_attempts"]),
+      blockedAttempts: n(totalsRow?.["blocked_model_attempts"]),
+      unknownAttempts: n(totalsRow?.["unknown_model_attempts"]),
+      attempts: recoveryRows.map(personalRecoveryAttempt),
+    },
   };
 }
 
@@ -1145,10 +1315,11 @@ export async function getPersonalCostsSummary(input: {
   const queries = buildCostsSummaryQueries(input.range, db(), payerHumanId);
   const providerQueries = buildProviderCostsSummaryQueries(input.range, db(), payerHumanId);
   const modelByRouteQuery = buildPersonalCostsByRouteQuery(input.range, db(), payerHumanId);
+  const modelByTaskQuery = buildPersonalCostsByTaskQuery(input.range, db(), payerHumanId);
   const [
     [totalsRow], byModelRows, byCallTypeRows, modelTimeSeriesRows,
     [providerTotalsRow], byProviderRows, providerTimeSeriesRows, modelByRouteRows,
-    credentialRows, llmHistoryRows, providerHistoryRows,
+    modelByTaskRows, recoveryRows, credentialRows, llmHistoryRows, providerHistoryRows,
   ] = await Promise.all([
     queries.totals,
     queries.byModel,
@@ -1158,6 +1329,8 @@ export async function getPersonalCostsSummary(input: {
     providerQueries.byProvider,
     providerQueries.timeSeries,
     modelByRouteQuery,
+    modelByTaskQuery,
+    buildCostsRecoveryAttemptsQuery(input.range, db(), payerHumanId),
     db().select({ id: personalProviderCredentials.id })
       .from(personalProviderCredentials)
       .where(eq(personalProviderCredentials.userId, payerHumanId))
@@ -1227,6 +1400,15 @@ export async function getPersonalCostsSummary(input: {
     totalCostUsd: n(row["total_cost"]),
   })));
   byProvider.sort((left, right) => right.totalCostUsd - left.totalCostUsd);
+  const byTask: PersonalCostsByTaskRow[] = modelByTaskRows.map((row) => ({
+    taskId: String(row["task_id"]),
+    calls: n(row["calls"]),
+    estimatedCostUsd: n(row["estimated_cost"]),
+    actualCostUsd: n(row["actual_cost"]),
+    totalCostUsd: n(row["total_cost"]),
+    pendingAttempts: n(row["pending_attempts"]),
+    unknownAttempts: n(row["unknown_attempts"]),
+  }));
   const days = new Map<string, PersonalCostsTimeSeriesPoint>();
   for (const row of modelTimeSeriesRows) {
     const day = String(row["day"]);
@@ -1258,6 +1440,7 @@ export async function getPersonalCostsSummary(input: {
     totals: {
       calls: n(totalsRow?.["calls"]),
       providerOperations,
+      unknownProviderOperations: n(providerTotalsRow?.["unknown_operations"]),
       inputTokens: n(totalsRow?.["input_tokens"]),
       cachedInputTokens: n(totalsRow?.["cached_input_tokens"]),
       outputTokens: n(totalsRow?.["output_tokens"]),
@@ -1273,7 +1456,14 @@ export async function getPersonalCostsSummary(input: {
     byModel,
     byCallType,
     byProvider,
+    byTask,
     timeSeries: [...days.values()].sort((left, right) => left.day.localeCompare(right.day)),
-    recovery: { pendingAttempts, retryableAttempts, blockedAttempts, unknownAttempts },
+    recovery: {
+      pendingAttempts,
+      retryableAttempts,
+      blockedAttempts,
+      unknownAttempts,
+      attempts: recoveryRows.map(personalRecoveryAttempt),
+    },
   };
 }

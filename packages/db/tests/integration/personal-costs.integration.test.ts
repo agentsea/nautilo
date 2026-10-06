@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   attachSurplusRequestReceipt,
+  agents,
   beginPersonalLlmAttempt,
   beginSurplusLlmAttempt,
   classifySurplusLlmAttemptRecovery,
   createDirectDb,
   ensureDatabase,
   eq,
+  getCostsSummary,
   getPersonalCostsSummary,
   inArray,
   insertProviderCostEventWith,
@@ -19,6 +21,7 @@ import {
   reconcileSurplusLlmAttemptCost,
   settlePersonalLlmAttempt,
   settleSurplusLlmAttempt,
+  tasks,
   users,
   type DirectDatabase,
 } from "@nautilo/db";
@@ -28,6 +31,8 @@ const FIXTURE_PREFIX = "personal-costs-integration";
 const attemptIds: string[] = [];
 const providerCostKeys: string[] = [];
 const userIds: string[] = [];
+const agentIds: string[] = [];
+const taskIds: string[] = [];
 let db: DirectDatabase;
 
 async function createUser(label: string): Promise<string> {
@@ -43,6 +48,23 @@ function attemptId(): string {
   const id = randomUUID();
   attemptIds.push(id);
   return id;
+}
+
+async function createTask(ownerId: string): Promise<string> {
+  const [agent] = await db.insert(agents).values({
+    handle: `${FIXTURE_PREFIX}-${randomUUID()}`,
+  }).returning({ id: agents.id });
+  if (!agent) throw new Error("Personal costs fixture Agent was not created");
+  agentIds.push(agent.id);
+  const [task] = await db.insert(tasks).values({
+    ownerId,
+    requestorId: ownerId,
+    agentId: agent.id,
+    prompt: `${FIXTURE_PREFIX} content-free attribution fixture`,
+  }).returning({ id: tasks.id });
+  if (!task) throw new Error("Personal costs fixture Task was not created");
+  taskIds.push(task.id);
+  return task.id;
 }
 
 async function expectRejected(operation: () => Promise<unknown>): Promise<void> {
@@ -68,6 +90,12 @@ afterAll(async () => {
     await db?.delete(providerCostEvents).where(
       inArray(providerCostEvents.idempotencyKey, providerCostKeys),
     );
+  }
+  if (taskIds.length > 0) {
+    await db?.delete(tasks).where(inArray(tasks.id, taskIds));
+  }
+  if (agentIds.length > 0) {
+    await db?.delete(agents).where(inArray(agents.id, agentIds));
   }
   for (const userId of userIds) {
     await db?.delete(users).where(eq(users.id, userId));
@@ -238,6 +266,7 @@ describe("personal cost attempts and account isolation", () => {
   test("aggregates only the session payer and excludes another Human and server spend", async () => {
     const payer = await createUser("aggregate-owner");
     const other = await createUser("aggregate-other");
+    const taskId = await createTask(payer);
     const since = new Date(Date.now() - 60_000).toISOString();
     const directId = attemptId();
     await beginPersonalLlmAttempt({
@@ -285,6 +314,7 @@ describe("personal cost attempts and account isolation", () => {
       id: unknownId,
       userId: payer,
       payerHumanId: payer,
+      taskId,
       callType: "chat",
       provider: "anthropic",
       model: "anthropic:claude-sonnet-4-6",
@@ -295,6 +325,7 @@ describe("personal cost attempts and account isolation", () => {
     });
     await settleSurplusLlmAttempt({
       attemptId: unknownId,
+      providerRequestId: `req-${randomUUID()}`,
       outcome: "succeeded",
       costState: "unknown",
       estimatedCostUsd: 0.007,
@@ -398,6 +429,7 @@ describe("personal cost attempts and account isolation", () => {
     expect(summary.totals).toMatchObject({
       calls: 4,
       providerOperations: 4,
+      unknownProviderOperations: 1,
       unknownAttempts: 1,
     });
     expect(summary.totals.estimatedCostUsd).toBeCloseTo(0.0032, 8);
@@ -437,10 +469,144 @@ describe("personal cost attempts and account isolation", () => {
       actualCostUsd: 0.0006,
       totalCostUsd: 0.0018,
     });
+    expect(summary.byTask).toEqual([{
+      taskId,
+      calls: 1,
+      estimatedCostUsd: 0,
+      actualCostUsd: 0,
+      totalCostUsd: 0,
+      pendingAttempts: 0,
+      unknownAttempts: 1,
+    }]);
+    expect(summary.recovery.attempts).toHaveLength(1);
+    expect(summary.recovery.attempts[0]).toMatchObject({
+      attemptId: unknownId,
+      status: "pending",
+      reason: "awaiting_provider_receipt",
+      providerRoute: "surplus",
+      repairAction: "wait_for_receipt",
+      taskId,
+    });
+    expect(summary.recovery.attempts[0]?.requestReference).toMatch(/^req_[0-9a-f]{12}$/);
+    expect(summary.recovery.attempts[0]?.requestReference).not.toContain("req-");
     expect(summary.timeSeries).toHaveLength(1);
     expect(summary.timeSeries[0]?.estimatedCostUsd).toBeCloseTo(0.0032, 8);
     expect(summary.timeSeries[0]?.actualCostUsd).toBeCloseTo(0.004529, 8);
     expect(summary.timeSeries[0]?.totalCostUsd).toBeCloseTo(0.007729, 8);
+  });
+
+  test("admin costs show current estimates and only non-personal recovery diagnostics", async () => {
+    const occurredAt = new Date("2099-04-02T12:00:00.000Z");
+    const range = {
+      sinceIso: "2099-04-02T00:00:00.000Z",
+      untilIso: "2099-04-03T00:00:00.000Z",
+    };
+    const actualId = attemptId();
+    await beginSurplusLlmAttempt({
+      id: actualId,
+      occurredAt,
+      callType: "chat",
+      provider: "openai",
+      model: "openai:gpt-5.5",
+      endpoint: "/v1/chat/completions",
+      fundingKind: "server",
+    });
+    await settleSurplusLlmAttempt({
+      attemptId: actualId,
+      outcome: "succeeded",
+      costState: "actual",
+      estimatedCostUsd: 0.9,
+      actualCostUsd: 0.4,
+    });
+    const estimatedId = attemptId();
+    await beginSurplusLlmAttempt({
+      id: estimatedId,
+      occurredAt,
+      callType: "chat",
+      provider: "openai",
+      model: "openai:gpt-5.5",
+      endpoint: "/v1/chat/completions",
+      fundingKind: "server",
+    });
+    await settleSurplusLlmAttempt({
+      attemptId: estimatedId,
+      outcome: "succeeded",
+      costState: "estimated",
+      estimatedCostUsd: 0.2,
+    });
+    const unresolvedServerId = attemptId();
+    await beginSurplusLlmAttempt({
+      id: unresolvedServerId,
+      occurredAt,
+      callType: "chat",
+      provider: "openai",
+      model: "openai:gpt-5.5",
+      endpoint: "/v1/chat/completions",
+      fundingKind: "server",
+    });
+    await settleSurplusLlmAttempt({
+      attemptId: unresolvedServerId,
+      providerRequestId: `req-${randomUUID()}`,
+      outcome: "succeeded",
+      costState: "unknown",
+    });
+    const personalPayer = await createUser("admin-diagnostic-personal");
+    const unresolvedPersonalId = attemptId();
+    await beginSurplusLlmAttempt({
+      id: unresolvedPersonalId,
+      occurredAt,
+      userId: personalPayer,
+      payerHumanId: personalPayer,
+      callType: "chat",
+      provider: "openai",
+      model: "openai:gpt-5.5",
+      endpoint: "/v1/chat/completions",
+      fundingKind: "personal",
+      credentialId: randomUUID(),
+      credentialRevision: 1,
+    });
+    await settleSurplusLlmAttempt({
+      attemptId: unresolvedPersonalId,
+      outcome: "succeeded",
+      costState: "unknown",
+    });
+
+    for (const [label, evidence] of Object.entries({
+      actual: {
+        evidenceState: "actual" as const,
+        estimatedCostUsd: "0.80000000",
+        actualCostUsd: "0.30000000",
+      },
+      estimated: {
+        evidenceState: "estimated" as const,
+        estimatedCostUsd: "0.10000000",
+      },
+    })) {
+      const idempotencyKey = providerCostIdempotencyKey(
+        `${FIXTURE_PREFIX}:admin-current:${label}:${randomUUID()}`,
+      );
+      providerCostKeys.push(idempotencyKey);
+      await insertProviderCostEventWith(db, {
+        occurredAt,
+        provider: "tavily",
+        operation: "search",
+        fundingKind: "server",
+        providerRoute: "tavily",
+        idempotencyKey,
+        ...evidence,
+      });
+    }
+
+    const summary = await getCostsSummary(range);
+    expect(summary.totals.estimatedCostUsd).toBeCloseTo(0.3, 8);
+    expect(summary.totals.actualCostUsd).toBeCloseTo(0.7, 8);
+    expect(summary.totals.totalCostUsd).toBeCloseTo(1, 8);
+    expect(summary.recovery.attempts.map((attempt) => attempt.attemptId)).toContain(
+      unresolvedServerId,
+    );
+    expect(summary.recovery.attempts.map((attempt) => attempt.attemptId)).not.toContain(
+      unresolvedPersonalId,
+    );
   });
 
   test("requeues blocked recovery only for the exact payer, credential, and revision", async () => {

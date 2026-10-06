@@ -77,7 +77,6 @@ const PERSONAL_CHAT_PROVIDERS: ReadonlySet<string> = new Set([
   "fireworks",
   "together",
   "venice",
-  "gateway",
 ]);
 
 /**
@@ -530,17 +529,7 @@ async function createUniversalModelInternal(
       );
     }
     case "gateway": {
-      if (personalCredential && (!personalCredential.destination
-        || personalCredential.destination !== normalizeGatewayBaseUrl(process.env["NAUTILO_GATEWAY_BASE_URL"]))) {
-        throw new Error("The personal Gateway destination changed; enroll the key for the current endpoint.");
-      }
-      const gateway = buildGatewayCreateModelOptions(id, personalCredential
-        ? { apiKey: personalCredential.apiKey, baseUrl: personalCredential.destination }
-        : cleanOptions, usageCallbacks);
-      if (personalCredential) {
-        gateway.options.forbidRedirects = true;
-        gateway.options.maxRetries = 0;
-      }
+      const gateway = buildGatewayCreateModelOptions(id, cleanOptions, usageCallbacks);
       if (resolvedMaxTokens !== undefined) gateway.options.maxTokens = resolvedMaxTokens;
       if (resolvedTimeoutMs !== undefined) gateway.options.timeoutMs = resolvedTimeoutMs;
       gateway.options.reasoningOutput = reasoningOutput;

@@ -14,6 +14,7 @@ import {
   BROWSER_USE_API_KEY_ENV_VAR,
   type KeyReport,
 } from "@nautilo/config-guard";
+import { PROVIDER_KEY_CATALOGUE, orderProviderKeys } from "@nautilo/types";
 import type { SetupKeysResult } from "@nautilo/api-client/browser";
 import { ProviderCredentialsEditor } from "../../src/pages/admin/sections/provider-credentials-section";
 
@@ -102,13 +103,13 @@ async function renderEditor(): Promise<HTMLDivElement> {
       viewerIsVerified
     />,
   );
-  await flushUntil(() => view.container.textContent?.includes("Add key") ?? false);
+  await flushUntil(() => view.container.querySelector("[aria-label=\"Add OpenAI key\"]")?.hasAttribute("disabled") === false || view.container.querySelector("[aria-label=\"Add Browser Use key\"]")?.hasAttribute("disabled") === false);
   return view.container;
 }
 
 async function beginEdit(container: HTMLElement): Promise<HTMLButtonElement> {
-  const addButton = [...container.querySelectorAll("button")].find(
-    (button) => button.textContent === "Add key",
+  const addButton = container.querySelector<HTMLButtonElement>(
+    'button[aria-label="Add OpenAI key"]',
   );
   expect(addButton).toBeDefined();
   await act(async () => {
@@ -167,9 +168,10 @@ describe("KeysSection provider recovery", () => {
       hasLlm: false,
     }));
     const container = await renderEditor();
-    const links = [...container.querySelectorAll("a")].filter((link) => link.textContent === "Get a key");
-    expect(links).toHaveLength(1);
-    expect(links[0]?.getAttribute("href")).toBe(keyReport.signupUrl);
+    const gatewayRow = container.querySelector('label[for="settings-key-gateway"]')?.parentElement?.parentElement;
+    expect(gatewayRow?.querySelector("a")).toBeNull();
+    const openaiRow = container.querySelector('label[for="settings-key-openai"]')?.parentElement?.parentElement;
+    expect(openaiRow?.querySelector("a")?.getAttribute("href")).toBe(keyReport.signupUrl);
     expect(container.textContent).toContain("NAUTILO_GATEWAY_API_KEY");
   });
 
@@ -184,21 +186,10 @@ describe("KeysSection provider recovery", () => {
     apiStub.getKeySummary.mockImplementation(async () => ({ keys, hasLlm: false }));
     const container = await renderEditor();
     expect([...container.querySelectorAll("code")].map((el) => el.textContent)).toEqual(
-      [
-        "venice_API_KEY",
-        "openrouter_API_KEY",
-        "elevenlabs_API_KEY",
-        "openai_API_KEY",
-        "anthropic_API_KEY",
-        "google_API_KEY",
-        "fireworks_API_KEY",
-        "groq_API_KEY",
-        "cloudconvert_API_KEY",
-        "tavily_API_KEY",
-        "browser-use_API_KEY",
-        "gateway_API_KEY",
-      ],
+      orderProviderKeys(PROVIDER_KEY_CATALOGUE).map((key) => key.envVar),
     );
+    const providerIds = [...container.querySelectorAll("label[for]")].map((label) => label.getAttribute("for")?.replace("settings-key-", ""));
+    expect(providerIds.indexOf("surplus")).toBe(providerIds.indexOf("openrouter") + 1);
     expect([...container.querySelectorAll("label")].at(-1)?.textContent).toBe("OpenAI-Compatible Gateway");
     expect(keys.map((key) => key.id)).toEqual(ids);
   });

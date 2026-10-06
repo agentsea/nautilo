@@ -9,10 +9,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 - Members can use personal Surplus keys for supported text chat and native text
   Tasks under the administrator's funding priority and Prefer Surplus setting.
-  Generic Gateway keys are bound to the administrator's exact endpoint.
+  Personal key setup excludes custom OpenAI-compatible Gateway routes.
   Saving a key checks it without a paid request and reports receipt-read access
   separately. Workbench and Mobile show the selected payer and personal costs,
   including estimates, delayed receipts, and charges that remain unknown.
+  Administrator and personal costs share the summary and dashboard layout. Key
+  lists render immediately while saved status loads, and personal-key settings
+  clearly explain disabled server policy without treating it as a key failure.
 
 - The text editor serializes first saves of empty documents and preserves edits
   made while a save is in progress. Conflict recovery reports failed latest-version

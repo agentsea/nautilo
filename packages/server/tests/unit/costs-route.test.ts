@@ -97,6 +97,13 @@ function fakeSummary(): CostsSummary {
     timeSeries: [
       { day: "2026-07-08", estimatedCostUsd: 0.02, actualCostUsd: 0.005, totalCostUsd: 0.021 },
     ],
+    recovery: {
+      pendingAttempts: 1,
+      retryableAttempts: 0,
+      blockedAttempts: 0,
+      unknownAttempts: 1,
+      attempts: [],
+    },
   };
 }
 
@@ -104,7 +111,7 @@ function fakePersonalSummary(): PersonalCostsData {
   return {
     entry: { available: true, hasPersonalCredentials: false, hasHistory: true },
     totals: {
-      calls: 1, providerOperations: 0, inputTokens: 100, cachedInputTokens: 0,
+      calls: 1, providerOperations: 0, unknownProviderOperations: 0, inputTokens: 100, cachedInputTokens: 0,
       outputTokens: 25, totalTokens: 125, estimatedCostUsd: 0,
       actualCostUsd: 0.000283, totalCostUsd: 0.000283,
       pendingAttempts: 0, unknownAttempts: 0, retryableAttempts: 0, blockedAttempts: 0,
@@ -117,8 +124,15 @@ function fakePersonalSummary(): PersonalCostsData {
     }],
     byCallType: [{ callType: "chat", calls: 1, totalCostUsd: 0.000283 }],
     byProvider: [],
+    byTask: [],
     timeSeries: [{ day: "2026-07-08", estimatedCostUsd: 0, actualCostUsd: 0.000283, totalCostUsd: 0.000283 }],
-    recovery: { pendingAttempts: 0, retryableAttempts: 0, blockedAttempts: 0, unknownAttempts: 0 },
+    recovery: {
+      pendingAttempts: 0,
+      retryableAttempts: 0,
+      blockedAttempts: 0,
+      unknownAttempts: 0,
+      attempts: [],
+    },
   };
 }
 
