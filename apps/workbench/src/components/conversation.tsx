@@ -1,3 +1,6 @@
+import type { AssistantModelSummary } from "@nautilo/api-client/browser";
+import { COMPOSER_CHAT_ATTACHMENT_EXTENSIONS, isComposerImageAttachment, IMAGE_ATTACHMENT_SELECTION_HINT, IMAGE_HISTORY_NOTICE,
+  imageAttachmentModelError } from "@nautilo/attachments/composer-chat-extensions";
 import { hasVisibleAssistantContent } from "./conversation-visible-content";
 import { UserText } from "./conversation-message-text";
 export { UserText } from "./conversation-message-text";
@@ -2096,6 +2099,20 @@ function Composer({
       ring: focus.ring,
     });
   }, [canInvokeAgents, focus.ring, profileResponse, roomMembers]);
+  const [composerModelState, setComposerModelState] = useState<{
+    roomId: string | null; agentId: string | null; model: AssistantModelSummary | null;
+  } | null>(null);
+  const [modelPickerRequest, setModelPickerRequest] = useState<{ roomId: string | null; agentId: string | null; revision: number } | null>(null);
+  const modelPickerOpenRequest = modelPickerRequest?.roomId === activeRoomId
+    && modelPickerRequest?.agentId === activeRoomAgentId ? modelPickerRequest.revision : 0;
+  const onComposerModelChange = useCallback((model: AssistantModelSummary | null) => {
+    setComposerModelState({ roomId: activeRoomId, agentId: activeRoomAgentId, model });
+  }, [activeRoomId, activeRoomAgentId]);
+  const composerModel = composerModelState?.roomId === activeRoomId
+    && composerModelState?.agentId === activeRoomAgentId ? composerModelState.model : null;
+  const imageInputUnsupported = !directHumanRoom && canInvokeAgents && composerModel?.capabilities?.vision === false;
+  const imageInputUnsupportedRef = useRef(imageInputUnsupported);
+  imageInputUnsupportedRef.current = imageInputUnsupported;
   const threadMessages = useThread((s) => s.messages);
   const lastSpokeAtMs = useMemo(
     () =>
@@ -2324,17 +2341,6 @@ function Composer({
     setHasText(composerText.length > 0);
   }, [composerText]);
 
-  useEffect(() => {
-    if (!speech.isListening && speech.transcript && speech.transcript !== prevTranscriptRef.current) {
-      prevTranscriptRef.current = speech.transcript;
-      // Policy: a deliberate local send resumes live-edge following.
-      reply?.returnToLatest();
-      void resolveContextualFocusedResources().then((contextualFocusedResources) =>
-        voice.sendText(speech.transcript, { contextualFocusedResources }),
-      );
-    }
-  }, [reply, resolveContextualFocusedResources, speech.isListening, speech.transcript, voice]);
-
   const handleMicToggle = useCallback(() => {
     if (speech.isListening) {
       speech.stopListening();
@@ -2392,11 +2398,45 @@ function Composer({
     getAttachmentsSnapshot,
   );
 
+  const imageAttachmentConflict = imageInputUnsupported
+    && attachments.some((attachment) => isComposerImageAttachment(attachment.name, attachment.mimeType));
+  const imageAttachmentError = imageAttachmentConflict
+    ? imageAttachmentModelError(composerModel?.displayName ?? "This model") : null;
+  const imageSelectionRejected = attachmentError === IMAGE_ATTACHMENT_SELECTION_HINT;
+  const [imageHistoryDismissed, setImageHistoryDismissed] = useState(false);
+  useEffect(() => {
+    setImageHistoryDismissed(false);
+  }, [activeRoomId, activeRoomAgentId, composerModel?.id]);
+  useEffect(() => {
+    if (!speech.isListening && speech.transcript && speech.transcript !== prevTranscriptRef.current) {
+      prevTranscriptRef.current = speech.transcript;
+      if (imageAttachmentConflict) {
+        composerRuntime.setText([composerTextRef.current, speech.transcript].filter(Boolean).join("\n"));
+        return;
+      }
+      // Policy: a deliberate local send resumes live-edge following.
+      reply?.returnToLatest();
+      void resolveContextualFocusedResources().then((contextualFocusedResources) =>
+        voice.sendText(speech.transcript, { contextualFocusedResources }),
+      );
+    }
+  }, [composerRuntime, imageAttachmentConflict, reply, resolveContextualFocusedResources, speech.isListening, speech.transcript, voice]);
+  const hasImageHistory = threadMessages.some((message) => {
+    const stored = message.metadata?.custom?.messageAttachments;
+    return (Array.isArray(stored) && stored.some((attachment: { mimeType?: string }) =>
+      attachment.mimeType?.startsWith("image/"))) || message.content.some((part) => part.type === "image");
+  });
+
   const focusedResources = useSyncExternalStore(
     subscribeFocusedResources,
     getFocusedResourcesSnapshot,
     getFocusedResourcesSnapshot,
   );
+  useLayoutEffect(() => {
+    setAttachmentError((previous) =>
+      previous === IMAGE_ATTACHMENT_SELECTION_HINT ? null : previous);
+  }, [activeRoomId, activeRoomAgentId, composerModel?.id, imageAttachmentConflict]);
+
   const showMic = speech.isSupported && !hasText
     && attachments.length === 0 && focusedResources.length === 0;
 
@@ -2471,7 +2511,7 @@ function Composer({
   /** Bypass assistant-ui Send/Enter when `isRunning && !queue` (external-store defaults queue=false). */
   const canSubmitComposer =
     canSend &&
-    !composerSendPending &&
+    !composerSendPending && !imageAttachmentConflict &&
     (composerText.trim().length > 0 || attachments.length > 0 || focusedResources.length > 0);
 
   const submitComposer = useCallback(async () => {
@@ -2513,6 +2553,7 @@ function Composer({
         submittedRoomId,
       });
       if (stillOwnsPresentation) {
+        setAttachmentError(null);
         // Post-submit cleanup. The `setHasText(false)` step inside the
         // helper is load-bearing for the mic-button gate (`showMic =
         // speech.isSupported && !hasText`) — see
@@ -2657,6 +2698,10 @@ function Composer({
     if (!uploadRoomId || (expectedRoomId !== undefined && uploadRoomId !== expectedRoomId)) return;
     const skipped: ComposerChatAttachmentSkip[] = [];
     for (const file of files) {
+      if (imageInputUnsupportedRef.current && isComposerImageAttachment(file.name, "type" in file && typeof file.type === "string" ? file.type : undefined)) {
+        setAttachmentError(IMAGE_ATTACHMENT_SELECTION_HINT);
+        continue;
+      }
       const pf = preflightComposerChatAttachment(file.name);
       if (!pf.ok) {
         skipped.push(pf.skip);
@@ -2787,6 +2832,10 @@ function Composer({
 
     const skipped: ComposerChatAttachmentSkip[] = [];
     for (const file of pickedFiles) {
+      if (imageInputUnsupportedRef.current && isComposerImageAttachment(file.name, "type" in file && typeof file.type === "string" ? file.type : undefined)) {
+        setAttachmentError(IMAGE_ATTACHMENT_SELECTION_HINT);
+        continue;
+      }
       const pf = preflightComposerChatAttachment(file.name);
       if (!pf.ok) {
         skipped.push(pf.skip);
@@ -2875,12 +2924,71 @@ function Composer({
           <span className="flex-1">{speech.sttError}</span>
         </div>
       )}
+      {imageAttachmentError && (
+        <div
+          role="alert"
+          className="mb-2 rounded-md border border-l-4 border-error bg-error/20 px-3 py-2 text-xs text-error"
+          data-testid="image-attachment-model-error"
+        >
+          <p className="font-medium">{imageAttachmentError}</p>
+          <button
+            type="button"
+            className="underline"
+            onClick={() => {
+              setAttachmentError((previous) => previous === IMAGE_ATTACHMENT_SELECTION_HINT ? null : previous);
+              for (const attachment of attachments) {
+                if (isComposerImageAttachment(attachment.name, attachment.mimeType)) {
+                  removeAttachment(attachment.id);
+                }
+              }
+            }}
+          >
+            Remove images
+          </button>
+          {" · "}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => setModelPickerRequest({
+              roomId: activeRoomId,
+              agentId: activeRoomAgentId,
+              revision: modelPickerOpenRequest + 1,
+            })}
+          >
+            Choose a model that supports images
+          </button>
+        </div>
+      )}
+      {imageInputUnsupported && !imageAttachmentConflict && imageSelectionRejected && (
+        <div role="alert" className="mb-2 flex items-start gap-3 rounded-md border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-3 py-2 text-xs text-[var(--warning)]">
+          <p className="flex-1 font-medium">{IMAGE_ATTACHMENT_SELECTION_HINT}</p>
+          <button type="button" className="shrink-0 underline"
+            aria-label="Dismiss image attachment warning" onClick={() => setAttachmentError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {imageInputUnsupported && hasImageHistory && !imageHistoryDismissed && !imageAttachmentConflict && !imageSelectionRejected && (
+        <div role="status" className="mb-2 flex items-start gap-3 px-1 text-xs text-foreground-muted">
+          <p className="flex-1">{IMAGE_HISTORY_NOTICE}</p>
+          <button type="button" className="shrink-0 underline"
+            aria-label="Dismiss image history notice" onClick={() => setImageHistoryDismissed(true)}>
+            Dismiss
+          </button>
+        </div>
+      )}
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <ComposerPrimitive.Root
         ref={composerRootRef}
         className={`relative flex flex-col gap-2 rounded-xl border border-border bg-background-element ${composerChromePad}`}
         onDragOver={handleComposerDragOver}
         onDrop={handleComposerDrop}
+        onPasteCapture={(event) => {
+          const files = Array.from(event.clipboardData.files);
+          if (files.length === 0 || !messageAttachmentRoomIdRef.current) return;
+          event.preventDefault();
+          queueBrowserComposerFiles(files);
+        }}
       >
         <RoomMentionTriggerPopover
           adapter={mentionAdapter}
@@ -2946,8 +3054,8 @@ function Composer({
         {attachments.length > 0 && (
           <AttachmentChipRow attachments={attachments} />
         )}
-        {attachmentError && (
-          <div className="text-[11px] text-error">
+        {attachmentError && !imageSelectionRejected && (
+          <div role="alert" className="text-[11px] text-error">
             {attachmentError}
           </div>
         )}
@@ -2983,7 +3091,8 @@ function Composer({
         <div className="flex items-center justify-between gap-2">
           <div data-testid="composer-left-cluster" className="flex items-center gap-2">
             {canInvokeAgents && !directHumanRoom ? (
-              <ModelSwitcher roomId={activeRoomId} agentId={activeRoomAgentId} compact={tightLayout} />
+              <ModelSwitcher key={`${activeRoomId}:${activeRoomAgentId}`} roomId={activeRoomId} agentId={activeRoomAgentId}
+                compact={tightLayout} onModelChange={onComposerModelChange} openRequest={modelPickerOpenRequest} />
             ) : null}
             {canInvokeAgents && !directHumanRoom ? (
               <CompanionTarget binding={(() => {
@@ -3001,6 +3110,8 @@ function Composer({
             ref={browserAttachmentInputRef}
             type="file"
             multiple
+            accept={imageInputUnsupported ? [...COMPOSER_CHAT_ATTACHMENT_EXTENSIONS]
+              .filter((extension) => !isComposerImageAttachment(`file${extension}`)).join(",") : undefined}
             hidden
             onChange={handleBrowserAttachmentChange}
             aria-label="Choose files to attach"
@@ -3009,7 +3120,7 @@ function Composer({
             type="button"
             disabled={pickingAttachments}
             onClick={() => void handlePaperclipClick()}
-            title="Attach files"
+            title={imageInputUnsupported ? "Attach files (images unavailable for this model)" : "Attach files"}
             aria-label="Attach files"
             className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background text-foreground-muted hover:bg-background-element hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
           >

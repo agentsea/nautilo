@@ -20,10 +20,10 @@ import { RoomSilenceBanner } from "../RoomSilenceBanner";
  * Slack-shape room (mixed humans + agents). The legacy `Conversation`
  * component renders the rooms-tab strip + room header + chat surface.
  *
- * D302 follow-up: conductor routing status lives in the docked Members panel
+ * conductor routing status lives in the docked Members panel
  * under Smart routing, not in this chat surface.
  *
- * D193 / Stack 74 Phase D: room management (members, rename, visibility,
+ * room management (members, rename, visibility,
  * archive) lives in the explorer row `⋯` menu → `MembersPanel`. This shell
  * no longer hosts a members trigger or panel.
  */
@@ -67,7 +67,12 @@ export function SlackShapeRoom({
   useEffect(() => {
     if (!checkPersonalReadiness || !viewer.sessionUserId) return;
     let cancelled = false;
-    setReadiness({ userId: viewer.sessionUserId, state: "checking" });
+    // Rechecking the same Human must not unmount a usable chat, its draft or
+    // the open model picker. Apply a changed access result when it arrives;
+    // a different Human still starts with no inherited readiness.
+    setReadiness((current) => current.userId === viewer.sessionUserId
+      ? current
+      : { userId: viewer.sessionUserId, state: "checking" });
     void (async () => {
       const next = await readPersonalChatReadiness({
         listCredentials: () => apiClient.listProviderCredentials(),
@@ -100,7 +105,7 @@ export function SlackShapeRoom({
   );
   const showForeignGenieNotice = foreignGenie && !can("invoke_other_agents");
 
-  // D193 follow-up (Smoke-3) / D352 — author/member context for multi-human
+  // author/member context for multi-human
   // labels + the @-mention picker + agent identity. The label map is built
   // once per `members` change inside `RoomAuthorScope` (shared with the
   // reader-rail mount in `workbench-shell`, so there is one builder).

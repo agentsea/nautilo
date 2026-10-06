@@ -2,7 +2,7 @@ import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, TEXT_EXTENSIONS } from "./policy";
 
 /**
  * File extensions the Workbench composer may queue for chat, matching the
- * D066 server gate (text, image, audio). Keep in sync with `classifyAttachment`
+ * server gate (text, image, audio). Keep in sync with `classifyAttachment`
  * branch order in `classify.ts` — documents/archives/scripts are never allowed here.
  */
 export const COMPOSER_CHAT_ATTACHMENT_EXTENSIONS: ReadonlySet<string> = new Set([
@@ -31,4 +31,18 @@ export function isComposerChatAttachmentPathAllowed(pathOrName: string): boolean
     return false;
   }
   return COMPOSER_CHAT_ATTACHMENT_EXTENSIONS.has(ext);
+}
+
+/** Client hint only; upload admission classifies the actual bytes. */
+export function isComposerImageAttachment(name: string, mimeType?: string): boolean {
+  return mimeType?.toLowerCase().startsWith("image/") === true
+    || IMAGE_EXTENSIONS.has(extensionOfBasename(name));
+}
+
+export const IMAGE_ATTACHMENT_SELECTION_HINT =
+  "This model can’t read images. Select a model that supports images to attach one.";
+export const IMAGE_HISTORY_NOTICE =
+  "This model can’t view earlier images. Previous text and answers are still available.";
+export function imageAttachmentModelError(modelLabel: string): string {
+  return `${modelLabel} can’t read the images attached to this message. Remove them or choose a model that supports images.`;
 }

@@ -1,3 +1,4 @@
+import { ApiError } from "@nautilo/api-client/browser";
 import { MAX_CHAT_ATTACHMENTS_PER_MESSAGE, type ServerEvent } from "@nautilo/types";
 import { initialThreadRoomControllerState, reconcileThreadRoomHistory, threadRoomReducer, type ThreadRoomControllerState } from "../modes/rooms/thread-drawer/thread-room-controller";
 import { emptyCompanionSnapshot, type CompanionPickedFile } from "../../../desktop/electron/companion-contract";
@@ -289,12 +290,14 @@ export class CompanionController {
       // The submitted draft was cleared at dispatch. Leave any new typing alone.
       bound.snapshot.attachments = bound.snapshot.attachments.filter(a => !sentAttachments.includes(a));
       for (const attachment of sentAttachments) bound.uploaded.delete(attachment.id);
-    } catch {
+    } catch (error) {
       if (!this.current(bound)) return;
-      sendUncertain = true;
-      bound.snapshot.sendUncertain = true;
+      const imageRejected = error instanceof ApiError && error.status === 422
+        && error.message.includes("can’t read the images attached to this message");
+      sendUncertain = !imageRejected;
+      bound.snapshot.sendUncertain = sendUncertain;
       if (voiceOnly) this.appendDictation(bound, text);
-      bound.snapshot.error = "Send could not be confirmed. Check the Room before sending again.";
+      bound.snapshot.error = imageRejected ? error.message : "Send could not be confirmed. Check the Room before sending again.";
       if (clearedDraft && bound.snapshot.draft === "" && bound.snapshot.draftRevision === sendDraftRevision) {
         bound.snapshot.draftBase = ""; bound.snapshot.draft = text; ++bound.snapshot.draftRevision;
       }

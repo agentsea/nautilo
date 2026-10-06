@@ -1,5 +1,5 @@
 /**
- * D271 — chat attachment normalization (upload model).
+ * chat attachment normalization (upload model).
  *
  * The client uploads bytes first (`POST /api/message-attachments`) and sends
  * only `attachmentId`s. At send time we resolve each id to a PENDING upload
@@ -7,14 +7,16 @@
  * read the stored bytes, run the central attachment gate on them, and:
  *   - text  → inline content block into the turn; resolve `consumed`; release blob.
  *   - image → base64 multimodal part; resolve `consumed`; release blob.
- *   - audio → metadata-only (NO auto-transcribe, by design — ISSUE-D271);
+ *   - audio → metadata-only (NO auto-transcribe, by design);
  *             resolve `retained`; keep blob for an explicit transcribe-by-id.
  *   - anything else / rejected → reject status; cancel + release blob.
  *
- * No filesystem path from the client is ever read (supersedes the D066 path-ref
+ * No filesystem path from the client is ever read (supersedes the path-ref
  * ingestion). `validateClientPath` remains for `currentFolder` / `workspacePath`
  * prompt context, which are still client-supplied strings.
  */
+import { modelSupportsInput } from "@nautilo/model-capabilities";
+import { imageAttachmentModelError } from "@nautilo/attachments/composer-chat-extensions";
 import { readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type {
@@ -43,7 +45,7 @@ import {
 } from "@nautilo/db";
 
 /**
- * D079 Phase 2 — validate a client-supplied folder path before it enters the
+ * validate a client-supplied folder path before it enters the
  * server's trust boundary (prompt context only; not an attachment source).
  * Absolute-path shape, no control chars, a few protected roots blocked.
  */
@@ -67,7 +69,7 @@ export function validateClientPath(
     throw new Error(`${label} contains control characters`);
   }
   const low = trimmed.toLowerCase();
-  // D304 — macOS firmlinks all user-accessible storage under /System/Volumes/
+  // macOS firmlinks all user-accessible storage under /System/Volumes/
   // (the APFS data volume): e.g. ~/Documents resolves to
   // `/System/Volumes/Data/.../Documents`. That is normal USER space, not a
   // protected system path — the broad `/system/` rule below must not catch it,
@@ -89,7 +91,7 @@ export function validateClientPath(
 }
 
 /**
- * D304 — best-effort variant for ADVISORY prompt-context paths
+ * best-effort variant for ADVISORY prompt-context paths
  * (`currentFolder` / `workspacePath`). These are never an attachment source and
  * never read from disk — they only flavor the prompt. So an invalid, weird, or
  * blocked value must NEVER block the user's message: we just drop it to null
@@ -138,7 +140,7 @@ export function parseChatAttachmentRefs(raw: unknown): string[] {
 }
 
 /**
- * D391 — extract the ids of attachments that were retained (blob kept) from a
+ * extract the ids of attachments that were retained (blob kept) from a
  * normalization result's `statuses`. Images and audio resolve `retained`; text
  * resolves `consumed` (no blob). The send seam (dispatch.ts) stamps `turn_id`
  * on exactly these rows after the human message is persisted.
@@ -152,9 +154,9 @@ export function retainedAttachmentIdsFromStatuses(
 }
 
 /**
- * D423 Phase 4 — compatibility adapter: mirror already-normalized D271
+ * compatibility adapter: mirror already-normalized
  * attachments into the common `ResolvedFocusedResource` manifest as
- * `kind:"message-attachment"` entries. This does NOT replace D271 upload,
+ * `kind:"message-attachment"` entries. This does NOT replace upload,
  * storage, scanning, or lifecycle — it only surfaces accepted attachments in
  * the unified manifest so the model sees ONE `## Focused resources` block.
  *
@@ -179,7 +181,7 @@ export function adaptNormalizedAttachments(
       location: "server",
       lifetime: "message",
       capabilities,
-      // D271 attachments are already materialized into the turn (image
+      // attachments are already materialized into the turn (image
       // multimodal part, text content block, or retained-audio metadata);
       // they do not map to a `file` tool target.
       locator: { attachmentId: status.id },
@@ -211,7 +213,7 @@ async function releaseBlob(storageUri: string): Promise<void> {
 }
 
 /**
- * D391 R8 — cascade cleanup for a deleted turn. Marks the turn's `retained`
+ * cascade cleanup for a deleted turn. Marks the turn's `retained`
  * attachments `deleted` and removes their blobs (no orphaned files). Called
  * from the message-delete route when the LAST per-bot copy of a turn is gone
  * (see `deleteMessageHard`'s `orphanedTurnId`). Best-effort by contract: the
@@ -350,7 +352,7 @@ export async function normalizeChatAttachments(args: {
         base64: Buffer.from(bytes).toString("base64"),
       });
       statuses.push({ id: row.id, filename: row.filename, decision: "accept", kind: "image" });
-      // D391 — retain the image blob (mirror the audio path) so the image
+      // retain the image blob (mirror the audio path) so the image
       // persists across reload and renders for other room members from the
       // authed byte route. The base64 still feeds the model in-turn; the
       // blob is now kept, not released. `turn_id` is stamped by the send
@@ -393,4 +395,30 @@ export async function normalizeChatAttachments(args: {
   }
 
   return { textBlocks, mediaParts, statuses };
+}
+
+export class ImageAttachmentModelError extends Error {
+  readonly code = "image_input_unsupported";
+}
+
+/** Read only the sender-scoped upload metadata, already classified from bytes
+ * at upload admission. Reject the whole send without consuming any attachment. */
+export async function assertChatAttachmentImageSupport(
+  args: {
+    attachmentIds: readonly string[];
+    uploaderActorId: string;
+    writableNamespaceId: string | null;
+    models: readonly { id: string; label?: string }[];
+  },
+  findPending = findPendingMessageAttachmentForSender,
+): Promise<void> {
+  const unsupported = args.models.find((model) => !modelSupportsInput(model.id, "image"));
+  if (!unsupported || !args.writableNamespaceId) return;
+  for (const attachmentId of args.attachmentIds) {
+    const row = await findPending({ attachmentId, uploaderActorId: args.uploaderActorId,
+      namespaceId: args.writableNamespaceId });
+    if (row?.mimeType.startsWith("image/")) {
+      throw new ImageAttachmentModelError(imageAttachmentModelError(unsupported.label ?? unsupported.id));
+    }
+  }
 }
