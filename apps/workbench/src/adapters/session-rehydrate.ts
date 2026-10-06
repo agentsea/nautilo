@@ -687,11 +687,12 @@ export function restoreSessionMessages(
         ...(Object.keys(custom).length > 0 ? { metadata: { custom } } : {}),
       });
     } else if (m.role === "assistant") {
+      const calls = parseToolCalls(m.toolCalls);
       const availablePendingSlots = MAX_PENDING_TOOL_CALLS_PER_PAGE - pendingToolCalls.length;
       if (availablePendingSlots > 0) {
-        pendingToolCalls.push(...parseToolCalls(m.toolCalls).slice(0, availablePendingSlots));
+        pendingToolCalls.push(...calls.filter((call) => call.name !== "skip").slice(0, availablePendingSlots));
       }
-      if (m.content.trim()) {
+      if (m.content.trim() && !calls.some((call) => call.name === "skip")) {
         const custom: Record<string, unknown> = { ...(m.createdAt ? { sentAt: m.createdAt } : {}) };
         if (typeof m.authorAgentId === "string" && m.authorAgentId.length > 0) {
           custom.authorAgentId = m.authorAgentId;
@@ -743,6 +744,11 @@ export function restoreSessionMessages(
         ...(Object.keys(custom).length > 0 ? { metadata: { custom } } : {}),
       });
     } else if (m.role === "tool") {
+      const storedToolName = (typeof m.toolName === "string" && m.toolName.trim().length > 0
+        ? m.toolName.trim() : undefined) ?? toolNameFromSessionsDisplayLine(m.displayContent);
+      // Skip calls are never queued for presentation, including when Room
+      // history already omitted their result. Do not consume a sibling slot.
+      if (storedToolName === "skip") continue;
       // Consume before every skip so empty/react results cannot leave a stale
       // call behind. Protected rows use their locally authenticated exact id;
       // legacy ordinary rows retain the prior FIFO behavior.
@@ -751,13 +757,7 @@ export function restoreSessionMessages(
         m.authenticatedToolCallId,
       );
       if (!m.content.trim()) continue;
-      const toolName =
-        (typeof m.toolName === "string" && m.toolName.trim().length > 0
-          ? m.toolName.trim()
-          : undefined) ??
-        toolNameFromSessionsDisplayLine(m.displayContent) ??
-        call?.name ??
-        "tool result";
+      const toolName = storedToolName ?? call?.name ?? "tool result";
       // D212 P0 — reactions render as a strip on the target message, not
       // as a restored tool card. Consume the pairing (above) then skip.
       if (toolName === "react") continue;

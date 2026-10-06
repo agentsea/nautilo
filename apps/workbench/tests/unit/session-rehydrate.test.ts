@@ -64,6 +64,28 @@ function restoredToolParts(rows: readonly HydrationRow[]): Record<string, unknow
   );
 }
 
+describe("restoreSessionMessages — intentional silence", () => {
+  test("omits saved skip narration and result cards", () => {
+    expect(restoreSessionMessages([
+      { ...assistantToolCalls("a", [{ id: "silent", name: "skip", args: {} }]), content: "Staying silent." },
+      toolResult("s", "skip", '{"skipped":true}'),
+      { id: "recovery", role: "assistant", content: "The requested hand-off was unavailable." },
+    ])).toMatchObject([{ id: "recovery", content: [{ type: "text", text: "The requested hand-off was unavailable." }] }]);
+  });
+
+  test("preserves sibling tool pairing whether the skip result is present or filtered", () => {
+    const assistant = { ...assistantToolCalls("a", [
+      { id: "silent", name: "skip", args: { reason: "Quiet" } },
+      { id: "lookup", name: "lookup", args: { query: "weather" } },
+    ]), content: "Staying silent." };
+    for (const skipRows of [[], [toolResult("s", "skip", '{"skipped":true}')]]) {
+      expect(restoredToolParts([assistant, ...skipRows, toolResult("result", "lookup", "Sunny")])).toMatchObject([
+        { type: "tool-call", toolCallId: "lookup", toolName: "lookup", args: { query: "weather" }, result: "Sunny" },
+      ]);
+    }
+  });
+});
+
 describe("restoreSessionMessages — sealed Computer Use receipt", () => {
   test("preserves a successful partial receipt through history restoration", () => {
     const receipt = JSON.stringify({
