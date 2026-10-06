@@ -23,13 +23,22 @@ const available = (apiKey = key) => ({
   receiptReadStatus: "available" as const,
 });
 
+function createRecovery(
+  overrides: Parameters<typeof createSurplusCostRecovery>[0],
+) {
+  return createSurplusCostRecovery({
+    resolveServerCredential: () => null,
+    ...overrides,
+  });
+}
+
 describe("Surplus automatic financial recovery", () => {
   test("restart uses durable request binding and settles the same row once", async () => {
     let resolveSettled!: () => void;
     const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
     const seen: unknown[] = [];
     let remaining = true;
-    const recovery = createSurplusCostRecovery({
+    const recovery = createRecovery({
       now: () => 120_000, resolveCredential: () => available(),
       list: async () => remaining ? [row] : [],
       fetchCost: async (input) => {
@@ -51,7 +60,7 @@ describe("Surplus automatic financial recovery", () => {
   test("recovers a Google attempt using its persisted Surplus provider spelling", async () => {
     let reads = 0;
     const writes: unknown[] = [];
-    const recovery = createSurplusCostRecovery({
+    const recovery = createRecovery({
       resolveCredential: () => available(),
       list: async () => [{ ...row, provider: "google", model: "google:gemini-3.8-pro", metadata: {
         ...row.metadata, catalogModelId: "google:gemini-3.8-pro",
@@ -71,13 +80,19 @@ describe("Surplus automatic financial recovery", () => {
     expect(writes).toHaveLength(1);
   });
 
-  test("classifies unbound and rotated credentials without guessing zero", async () => {
+  test("classifies unbound and unauthorized personal credentials without guessing zero", async () => {
     let reads = 0;
     let writes = 0;
     const classifications: unknown[] = [];
-    const recovery = createSurplusCostRecovery({
+    const recovery = createRecovery({
       resolveCredential: () => available("rotated-key"),
-      list: async () => [row, { ...row, providerRequestId: null }, { ...row, metadata: null }],
+      list: async () => [{
+        ...row,
+        fundingKind: "personal",
+        payerHumanId: "payer-a",
+        credentialId: "credential-a",
+        credentialRevision: 1,
+      }, { ...row, providerRequestId: null }, { ...row, metadata: null }],
       fetchCost: async () => { reads++; return { status: "settled", costMicro: 0 }; },
       settle: async () => { writes++; return true; },
       classify: async (input) => { classifications.push(input); return true; },
@@ -97,7 +112,7 @@ describe("Surplus automatic financial recovery", () => {
       const classifications: unknown[] = [];
       const personalRow = { ...row, fundingKind: "personal" as const,
         payerHumanId: "payer-a", credentialId: "original-credential", credentialRevision: 1 };
-      const recovery = createSurplusCostRecovery({
+      const recovery = createRecovery({
         list: async () => [personalRow],
         resolveCredential: () => ({ ...available("replacement-key"), replacement: true, receiptReadStatus: "unavailable" }),
         fetchCost: async (input) => {
@@ -129,7 +144,7 @@ describe("Surplus automatic financial recovery", () => {
 
   test("list denial does not block the creating key's exact receipt", async () => {
     let reads = 0;
-    const recovery = createSurplusCostRecovery({
+    const recovery = createRecovery({
       list: async () => [row],
       resolveCredential: () => ({ ...available(), receiptReadStatus: "unavailable" }),
       fetchCost: async () => { reads++; return { status: "settled", costMicro: 0 }; },
@@ -151,7 +166,7 @@ describe("Surplus automatic financial recovery", () => {
       row,
     ];
     let lists = 0;
-    const recovery = createSurplusCostRecovery({
+    const recovery = createRecovery({
       resolveCredential: () => available(),
       list: async (input) => {
         lists++;
@@ -170,7 +185,7 @@ describe("Surplus automatic financial recovery", () => {
 
   test("keeps a transient credential lookup failure retryable", async () => {
     let classified: unknown;
-    const recovery = createSurplusCostRecovery({
+    const recovery = createRecovery({
       list: async () => [row],
       resolveCredential: () => { throw new Error("database unavailable"); },
       classify: async (input) => { classified = input; return true; },
@@ -189,7 +204,7 @@ describe("Surplus automatic financial recovery", () => {
     let resolveReading!: () => void;
     const reading = new Promise<void>((resolve) => { resolveReading = resolve; });
     let writes = 0;
-    const recovery = createSurplusCostRecovery({
+    const recovery = createRecovery({
       resolveCredential: () => available(), list: async () => [row],
       fetchCost: async (input) => new Promise((resolve) => {
         input.signal.addEventListener("abort", () => resolve({
@@ -204,5 +219,64 @@ describe("Surplus automatic financial recovery", () => {
     await reading;
     await recovery.stop();
     expect(writes).toBe(0);
+  });
+
+  test("wakes blocked server receipts once at startup and once per changed current key", async () => {
+    let currentKey: string | null = key;
+    const requeues: string[] = [];
+    const recovery = createRecovery({
+      resolveServerCredential: () => currentKey,
+      requeueBlockedServer: async () => {
+        requeues.push(currentKey ?? "missing");
+        return 0;
+      },
+      list: async () => [],
+    });
+
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    currentKey = "replacement-key";
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    currentKey = null;
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    currentKey = "replacement-key";
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await recovery.stop();
+
+    expect(requeues).toEqual([key, "replacement-key", "replacement-key"]);
+  });
+
+  test("server replacement must prove its exact receipt before settlement", async () => {
+    for (const outcome of ["settled", "blocked_repair", "retryable"] as const) {
+      let reads = 0;
+      const writes: unknown[] = [];
+      const classifications: unknown[] = [];
+      const recovery = createRecovery({
+        list: async () => [row],
+        resolveCredential: () => available("replacement-key"),
+        fetchCost: async () => {
+          reads++;
+          return outcome === "settled" ? { status: outcome, costMicro: 283 }
+            : outcome === "blocked_repair" ? { status: outcome, failureCode: "receipt_read_unauthorized" }
+            : { status: outcome, failureCode: "receipt_not_found" };
+        },
+        settle: async (input) => { writes.push(input); return true; },
+        classify: async (input) => { classifications.push(input); return true; },
+      });
+      recovery.wake();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await recovery.stop();
+      expect(reads).toBe(1);
+      expect(writes).toHaveLength(outcome === "settled" ? 1 : 0);
+      if (outcome === "retryable") expect(classifications[0]).toMatchObject({
+        recoveryState: "blocked_repair",
+        failureCode: "receipt_account_unproven",
+      });
+    }
   });
 });

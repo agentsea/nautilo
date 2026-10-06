@@ -291,17 +291,57 @@ describe("funding-denied Task claim pause", () => {
   });
 
   test("terminalizes a latest interrupted run and parks a non-recurring Task", async () => {
-    const harness = aggregateHarness({ task, run });
+    const credentialId = "50000000-0000-4000-8000-000000000005";
+    const personalRun = {
+      ...run,
+      fundingBinding: {
+        kind: "personal",
+        providerRoute: "anthropic",
+        credentialId,
+        credentialRevision: 4,
+      },
+    } as TaskRun;
+    const harness = aggregateHarness({ task, run: personalRun });
     const result = await reconcileCallerFundedTaskRunAfterRestart(harness.db, {
       taskId: task.id,
-      taskRunId: run.id,
+      taskRunId: personalRun.id,
     });
     expect(result.transitioned).toBe(true);
     const interruptedUsage = harness.writes.find((write) => write.table === llmUsageEvents)!;
-    expect(interruptedUsage.patch).toMatchObject({ attemptOutcome: "interrupted", costState: "unknown", failureCode: "execution_interrupted" });
+    expect(interruptedUsage.patch).toMatchObject({
+      attemptOutcome: "interrupted",
+    });
+    const dialect = new PgDialect();
+    const costState = dialect.sqlToQuery(
+      interruptedUsage.patch["costState"] as Parameters<PgDialect["sqlToQuery"]>[0],
+    );
+    expect(costState.sql).toContain('when "llm_usage_events"."provider_route" =');
+    expect(costState.sql).toContain('and "llm_usage_events"."cost_state" =');
+    expect(costState.sql).toContain('then "llm_usage_events"."cost_state"');
+    expect(costState.params).toEqual(["surplus", "actual", "unknown"]);
+    const recoveryState = dialect.sqlToQuery(
+      interruptedUsage.patch["recoveryState"] as Parameters<PgDialect["sqlToQuery"]>[0],
+    );
+    expect(recoveryState.sql).toContain('coalesce("llm_usage_events"."recovery_state"');
+    expect(recoveryState.params).toEqual(["surplus", "actual", "pending"]);
+    const failureCode = dialect.sqlToQuery(
+      interruptedUsage.patch["failureCode"] as Parameters<PgDialect["sqlToQuery"]>[0],
+    );
+    expect(failureCode.sql).toContain('and "llm_usage_events"."recovery_state" =');
+    expect(failureCode.sql).toContain('coalesce("llm_usage_events"."failure_code"');
+    expect(failureCode.params).toEqual([
+      "surplus",
+      "blocked_repair",
+      "execution_interrupted",
+      "execution_interrupted",
+    ]);
     const usageCondition = new PgDialect().sqlToQuery(interruptedUsage.condition as Parameters<PgDialect["sqlToQuery"]>[0]);
-    expect(usageCondition.params).toContain(task.id); expect(usageCondition.params).toContain(run.id);
-    expect(usageCondition.params).toContain("personal"); expect(usageCondition.params).toContain("surplus");
+    expect(usageCondition.params).toContain(task.id); expect(usageCondition.params).toContain(personalRun.id);
+    expect(usageCondition.params).toContain("personal");
+    expect(usageCondition.params).toContain(task.requestorId);
+    expect(usageCondition.params).not.toContain("anthropic");
+    expect(usageCondition.params).not.toContain(credentialId);
+    expect(usageCondition.params).not.toContain(4);
     expect(harness.writes.find((write) => write.table === taskRuns)?.patch).toMatchObject({
       status: "errored",
       lastError: "funding_interrupted_uncertain",
@@ -312,6 +352,50 @@ describe("funding-denied Task claim pause", () => {
       fireLockId: null,
       fireLockedAt: null,
     });
+  });
+
+  test("terminalizes exact-run server Surplus attempts from a validated server binding", async () => {
+    const harness = aggregateHarness({ task, run });
+    const result = await reconcileCallerFundedTaskRunAfterRestart(harness.db, {
+      taskId: task.id,
+      taskRunId: run.id,
+    });
+
+    expect(result.transitioned).toBe(true);
+    const interruptedUsage = harness.writes.find((write) => write.table === llmUsageEvents)!;
+    expect(interruptedUsage.patch).toMatchObject({ attemptOutcome: "interrupted" });
+    const dialect = new PgDialect();
+    const costState = dialect.sqlToQuery(
+      interruptedUsage.patch["costState"] as Parameters<PgDialect["sqlToQuery"]>[0],
+    );
+    expect(costState.params).toEqual(["surplus", "actual", "unknown"]);
+    const recoveryState = dialect.sqlToQuery(
+      interruptedUsage.patch["recoveryState"] as Parameters<PgDialect["sqlToQuery"]>[0],
+    );
+    expect(recoveryState.params).toEqual(["surplus", "actual", "pending"]);
+    const usageCondition = dialect.sqlToQuery(
+      interruptedUsage.condition as Parameters<PgDialect["sqlToQuery"]>[0],
+    );
+    expect(usageCondition.params).toContain(task.id);
+    expect(usageCondition.params).toContain(run.id);
+    expect(usageCondition.params).toContain("server");
+    expect(usageCondition.params).toContain("surplus");
+    expect(usageCondition.params).not.toContain("openai");
+    expect(usageCondition.params).not.toContain("personal");
+    expect(usageCondition.params).not.toContain("service");
+  });
+
+  test("does not broaden usage interruption from a malformed funding binding", async () => {
+    const malformedRun = {
+      ...run,
+      fundingBinding: { kind: "server", providerRoute: "OpenAI" },
+    } as unknown as TaskRun;
+    const harness = aggregateHarness({ task, run: malformedRun });
+    expect((await reconcileCallerFundedTaskRunAfterRestart(harness.db, {
+      taskId: task.id,
+      taskRunId: malformedRun.id,
+    })).transitioned).toBe(true);
+    expect(harness.writes.some((write) => write.table === llmUsageEvents)).toBe(false);
   });
 
   test("keeps a cron definition pending at its future fire while settling its interrupted run", async () => {

@@ -7,6 +7,7 @@ import {
   classifySurplusLlmAttemptRecovery,
   listPendingSurplusAttempts,
   reconcileSurplusLlmAttemptCost,
+  requeueBlockedServerSurplusAttempts,
 } from "@nautilo/db";
 import type {
   ListPendingSurplusAttemptsInput,
@@ -25,6 +26,8 @@ interface SurplusCostRecoveryDependencies {
   settle(input: Parameters<typeof reconcileSurplusLlmAttemptCost>[0]): Promise<boolean>;
   classify(input: Parameters<typeof classifySurplusLlmAttemptRecovery>[0]): Promise<boolean>;
   resolveCredential(row: SurplusPendingAttempt): Promise<RecoveryCredential> | RecoveryCredential;
+  resolveServerCredential(): string | null;
+  requeueBlockedServer(): Promise<number>;
   fetchCost: typeof fetchSurplusSettlement;
   now(): number;
 }
@@ -53,11 +56,28 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
     settle: reconcileSurplusLlmAttemptCost,
     classify: classifySurplusLlmAttemptRecovery,
     resolveCredential: defaultCredential,
+    resolveServerCredential: () => resolveProviderKey("surplus"),
+    requeueBlockedServer: requeueBlockedServerSurplusAttempts,
     fetchCost: fetchSurplusSettlement,
     now: Date.now,
     ...overrides,
   };
   const shutdown = new AbortController();
+  let observedServerCredentialFingerprint: string | null | undefined;
+
+  async function wakeBlockedServerAttemptsForCurrentCredential(): Promise<void> {
+    const apiKey = deps.resolveServerCredential();
+    const currentFingerprint = apiKey === null ? null : surplusCredentialFingerprint(apiKey);
+    if (currentFingerprint === observedServerCredentialFingerprint) return;
+    if (currentFingerprint === null) {
+      observedServerCredentialFingerprint = null;
+      return;
+    }
+    await deps.requeueBlockedServer();
+    // Retain only the one-way fingerprint. A failed wake remains eligible for
+    // the next pass; a successful wake runs once per continuous observation.
+    observedServerCredentialFingerprint = currentFingerprint;
+  }
 
   async function classify(
     row: SurplusPendingAttempt,
@@ -75,6 +95,8 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
 
   const pump = createReceiptRecoveryPump({
     async runPass(isStopped) {
+      await wakeBlockedServerAttemptsForCurrentCredential();
+      if (isStopped()) return;
       const rows = await deps.list({
         limit: 100,
         updatedBefore: new Date(deps.now() - 60_000),
@@ -123,9 +145,10 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
         // List-scope denial does not prove exact-request denial. Surplus may
         // authorize the creating key or a replacement with account log access.
         // Only the fixed authenticated exact-receipt endpoint can establish it.
+        const fingerprintMismatch = binding["surplusCredentialFingerprint"]
+          !== surplusCredentialFingerprint(credential.apiKey);
         const personalReplacement = row.fundingKind === "personal" && credential.replacement === true;
-        if (!personalReplacement
-          && binding["surplusCredentialFingerprint"] !== surplusCredentialFingerprint(credential.apiKey)) {
+        if (row.fundingKind === "personal" && !personalReplacement && fingerprintMismatch) {
           await classify(row, "blocked_repair", "credential_fingerprint_mismatch");
           continue;
         }
@@ -147,8 +170,7 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
             // A different key with no exact receipt has not established account
             // authority. Keep the charge unknown and let a credential repair
             // explicitly retry proof; do not poll the wrong account forever.
-            const accountUnproven = personalReplacement
-              && binding["surplusCredentialFingerprint"] !== surplusCredentialFingerprint(credential.apiKey)
+            const accountUnproven = fingerprintMismatch
               && result.failureCode === "receipt_not_found";
             await classify(row, accountUnproven ? "blocked_repair" : "retryable",
               accountUnproven ? "receipt_account_unproven" : result.failureCode);

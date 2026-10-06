@@ -22,6 +22,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Uncertain personal requests stop automatic retries; transient accounting
   writes retry without repeating inference. Repaired personal Surplus keys can
   recover authenticated original receipts while retaining their original payer.
+  Server key repair also resumes blocked receipts; interrupted Surplus
+  Tasks retain known charges and expose unresolved recovery. Mobile key errors
+  offer readable recovery guidance.
 
 - The text editor serializes first saves of empty documents and preserves edits
   made while a save is in progress. Conflict recovery reports failed latest-version

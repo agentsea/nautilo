@@ -144,20 +144,27 @@ export function createPersonalCostsController(
 
 export function personalAccountErrorMessage(error: unknown): string {
   if (error instanceof ProviderCredentialApiError) {
-    if (error.error === "credential_conflict") return "This key changed elsewhere. Try again after current key details have loaded.";
-    if (error.error === "credential_not_found") return "This key no longer exists.";
-    if (error.error === "credential_destination_unavailable") return "This provider destination is not configured on the server. Contact the Server operator.";
-    if (error.error === "credential_destination_changed") return "The server's provider destination changed. Replace this key before using it again.";
-    if (error.error === "credential_custody_unavailable") return "Your saved keys cannot be opened safely right now. Contact the Server operator.";
-    if (error.error === "credential_reenrollment_required") return "This key must be replaced before it can be used again.";
-    if (error.error === "personal_credentials_disabled") return "Personal API keys are disabled on this server.";
-    if (error.error === "personal_credentials_forbidden") return "You are not allowed to manage personal keys.";
+    switch (error.error) {
+      case "authentication_required": return "Your session ended. Sign in again.";
+      case "personal_credentials_forbidden": return "You are not allowed to manage personal keys.";
+      case "personal_credentials_disabled": return "Personal API keys are disabled on this server.";
+      case "personal_credentials_unavailable": return "Personal API keys are temporarily unavailable. Try again.";
+      case "credential_custody_unavailable": return "Your saved keys cannot be opened safely right now. Contact the Server operator.";
+      case "credential_reenrollment_required": return "This key must be replaced before it can be used again.";
+      case "invalid_provider": return "This provider does not support personal API keys.";
+      case "invalid_credential_request": return "This key request is invalid. Reload these settings and try again.";
+      case "credential_conflict": return "This key changed elsewhere. Try again after current key details have loaded.";
+      case "credential_not_found": return "This key no longer exists.";
+      case "credential_destination_unavailable": return "This provider destination is not configured on the server. Contact the Server operator.";
+      case "credential_destination_changed": return "The server's provider destination changed. Replace this key before using it again.";
+    }
   }
   const status = error !== null && typeof error === "object" && "status" in error
     ? (error as { status?: unknown }).status
     : null;
   if (status === 401) return "Your session ended. Sign in again.";
   if (status === 403) return "This server does not allow you to manage personal provider keys.";
+  if (error instanceof ProviderCredentialApiError) return "This provider key request could not be completed. Try again.";
   if (error instanceof Error && error.message) return error.message;
   return "This account information could not be loaded. Try again.";
 }

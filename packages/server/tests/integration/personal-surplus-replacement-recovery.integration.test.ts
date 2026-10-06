@@ -102,6 +102,8 @@ async function createBlockedAttempt(input: {
 
 function recoveryWith(fetchImpl: typeof fetch) {
   return createSurplusCostRecovery({
+    resolveServerCredential: () => null,
+    requeueBlockedServer: async () => 0,
     now: () => Date.now() + 120_000,
     list: async (input) => (await listPendingSurplusAttempts(input))
       .filter((row) => attemptIds.includes(row.id)),

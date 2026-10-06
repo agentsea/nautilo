@@ -40,6 +40,37 @@ describe("personal account Settings controllers", () => {
     expect(personalCredentialLoadKind({ status: 503 })).toBe("error");
   });
 
+  test("maps every structured credential error to safe actionable copy", () => {
+    const expectedMessages: ReadonlyArray<[string, number, string]> = [
+      ["authentication_required", 401, "Your session ended. Sign in again."],
+      ["personal_credentials_forbidden", 403, "You are not allowed to manage personal keys."],
+      ["personal_credentials_disabled", 404, "Personal API keys are disabled on this server."],
+      ["personal_credentials_unavailable", 503, "Personal API keys are temporarily unavailable. Try again."],
+      ["credential_custody_unavailable", 503, "Your saved keys cannot be opened safely right now. Contact the Server operator."],
+      ["credential_reenrollment_required", 409, "This key must be replaced before it can be used again."],
+      ["invalid_provider", 422, "This provider does not support personal API keys."],
+      ["invalid_credential_request", 422, "This key request is invalid. Reload these settings and try again."],
+      ["credential_conflict", 409, "This key changed elsewhere. Try again after current key details have loaded."],
+      ["credential_not_found", 404, "This key no longer exists."],
+      ["credential_destination_unavailable", 422, "This provider destination is not configured on the server. Contact the Server operator."],
+      ["credential_destination_changed", 409, "The server's provider destination changed. Replace this key before using it again."],
+    ];
+
+    for (const [code, status, expected] of expectedMessages) {
+      expect(personalAccountErrorMessage(new ProviderCredentialApiError(status, code, false, false, null))).toBe(expected);
+    }
+  });
+
+  test("does not expose unknown structured credential codes while preserving ordinary errors and status semantics", () => {
+    expect(personalAccountErrorMessage(new ProviderCredentialApiError(500, "future_credential_failure", false, false, null)))
+      .toBe("This provider key request could not be completed. Try again.");
+    expect(personalAccountErrorMessage(new ProviderCredentialApiError(401, "future_credential_failure", false, false, null)))
+      .toBe("Your session ended. Sign in again.");
+    expect(personalAccountErrorMessage(new ProviderCredentialApiError(403, "future_credential_failure", false, false, null)))
+      .toBe("This server does not allow you to manage personal provider keys.");
+    expect(personalAccountErrorMessage(new Error("Network request failed"))).toBe("Network request failed");
+  });
+
   test("credential writes use the current revision and reload canonical metadata", async () => {
     const calls: unknown[] = [];
     const api: PersonalAccountApi = {

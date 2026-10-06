@@ -4561,6 +4561,15 @@ export async function reconcileCallerFundedTaskRunAfterRestart(
     if (!run || run.id !== input.taskRunId || run.status !== "running") {
       return { task, run, transitioned: false };
     }
+    let fundingBinding: TaskFundingBinding | null = null;
+    if (run.fundingBinding !== null) {
+      try {
+        fundingBinding = parseTaskFundingBinding(run.fundingBinding);
+      } catch {
+        // The run still must be terminalized, but malformed funding facts must
+        // never broaden which financial attempts this restart can close.
+      }
+    }
 
     const [newerRun] = await tx.select({ id: taskRuns.id }).from(taskRuns)
       .where(and(
@@ -4591,14 +4600,50 @@ export async function reconcileCallerFundedTaskRunAfterRestart(
       eq(taskRuns.taskId, input.taskId),
       eq(taskRuns.status, "running"),
     )).returning();
-    if (updatedRun) {
+    const interruptedFundingPredicate = fundingBinding?.kind === "personal"
+      ? and(
+          eq(llmUsageEvents.fundingKind, "personal"),
+          eq(llmUsageEvents.payerHumanId, task.requestorId),
+        )
+      : fundingBinding?.kind === "server"
+        ? and(
+            eq(llmUsageEvents.fundingKind, "server"),
+            eq(llmUsageEvents.providerRoute, "surplus"),
+          )
+        : undefined;
+    if (updatedRun && interruptedFundingPredicate) {
       // The restart owner proved this exact run can no longer publish. Preserve
-      // uncertain spend without closing another concurrent schedule occurrence.
-      await tx.update(llmUsageEvents).set({ attemptOutcome: "interrupted", costState: "unknown",
-        failureCode: "execution_interrupted", settledAt: completedAt, updatedAt: completedAt,
-      }).where(and(eq(llmUsageEvents.taskId, input.taskId), eq(llmUsageEvents.fundingKind, "personal"),
+      // known financial evidence while leaving unresolved Surplus charges in
+      // the receipt-recovery queue. This only closes attempts attributed to the
+      // exact run; it never sends or replays an inference request.
+      await tx.update(llmUsageEvents).set({
+        attemptOutcome: "interrupted",
+        costState: sql`case
+          when ${llmUsageEvents.providerRoute} = ${"surplus"}
+            and ${llmUsageEvents.costState} = ${"actual"}
+            then ${llmUsageEvents.costState}
+          else ${"unknown"}
+        end`,
+        recoveryState: sql`case
+          when ${llmUsageEvents.providerRoute} <> ${"surplus"} then null
+          when ${llmUsageEvents.costState} = ${"actual"} then null
+          else coalesce(${llmUsageEvents.recoveryState}, ${"pending"})
+        end`,
+        failureCode: sql`case
+          when ${llmUsageEvents.providerRoute} = ${"surplus"}
+            and ${llmUsageEvents.recoveryState} = ${"blocked_repair"}
+            then coalesce(${llmUsageEvents.failureCode}, ${"execution_interrupted"})
+          else ${"execution_interrupted"}
+        end`,
+        settledAt: sql`case
+          when ${llmUsageEvents.providerRoute} = ${"surplus"}
+            and ${llmUsageEvents.costState} = ${"actual"}
+            then coalesce(${llmUsageEvents.settledAt}, ${completedAt.toISOString()}::timestamptz)
+          else ${completedAt.toISOString()}::timestamptz
+        end`,
+        updatedAt: completedAt,
+      }).where(and(eq(llmUsageEvents.taskId, input.taskId), interruptedFundingPredicate,
         eq(llmUsageEvents.attemptOutcome, "in_progress"),
-        sql`${llmUsageEvents.providerRoute} <> ${"surplus"}`,
         sql`${llmUsageEvents.metadata} ->> 'taskRunId' = ${input.taskRunId}`,
       )).returning({ id: llmUsageEvents.id });
     }

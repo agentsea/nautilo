@@ -10,6 +10,7 @@ import {
   listPendingSurplusAttempts,
   reconcileSurplusLlmAttemptCost,
   requeueBlockedPersonalSurplusAttempts,
+  requeueBlockedServerSurplusAttempts,
   settlePersonalLlmAttempt,
   settleSurplusLlmAttempt,
   type SurplusPendingAttempt,
@@ -317,6 +318,25 @@ describe("Surplus durable LLM attempts", () => {
     expect(predicate.sql).toContain("exists (select 1 where");
     expect(predicate.sql).toContain('"personal_provider_credentials"."id"');
     expect(predicate.sql).not.toContain('"llm_usage_events"."credential_id"');
+  });
+
+  test("requeues only repairable blocked server and service receipts", async () => {
+    const fake = mutationDb({ returning: [{ id: ATTEMPT_ID }] });
+    __setLlmUsageDbForTests(fake.handle);
+    expect(await requeueBlockedServerSurplusAttempts()).toBe(1);
+    expect(fake.updated[0]).toMatchObject({
+      recoveryState: "retryable",
+      failureCode: null,
+    });
+    const predicate = new PgDialect().sqlToQuery(fake.updatePredicates[0]!);
+    expect(predicate.params).toContain("server");
+    expect(predicate.params).toContain("service");
+    expect(predicate.params).not.toContain("personal");
+    expect(predicate.params).toContain("credential_missing");
+    expect(predicate.params).toContain("credential_fingerprint_mismatch");
+    expect(predicate.params).toContain("receipt_account_unproven");
+    expect(predicate.params).toContain("receipt_read_unauthorized");
+    expect(predicate.params).not.toContain("receipt_binding_invalid");
   });
 
   test("terminal completion preserves recovered actual cost while retrying its observed request receipt", async () => {

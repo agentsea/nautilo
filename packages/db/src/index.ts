@@ -793,6 +793,7 @@ export {
   reconcileSurplusLlmAttemptCost,
   classifySurplusLlmAttemptRecovery,
   requeueBlockedPersonalSurplusAttempts,
+  requeueBlockedServerSurplusAttempts,
   getCostsSummary,
   getPersonalCostsSummary,
   buildPersonalCostsByRouteQuery,

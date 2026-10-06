@@ -705,6 +705,32 @@ export async function requeueBlockedPersonalSurplusAttempts(input: {
   return rows.length;
 }
 
+/**
+ * Wake server-owned receipts after the process observes an available server
+ * credential at startup or a different credential while running. Permanent
+ * binding/protocol defects stay blocked; the exact authenticated receipt read
+ * decides whether the current credential can repair these access failures.
+ */
+export async function requeueBlockedServerSurplusAttempts(): Promise<number> {
+  const rows = await db().update(llmUsageEvents).set({
+    recoveryState: "retryable",
+    failureCode: null,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(llmUsageEvents.providerRoute, "surplus"),
+    inArray(llmUsageEvents.fundingKind, ["server", "service"]),
+    eq(llmUsageEvents.recoveryState, "blocked_repair"),
+    inArray(llmUsageEvents.costState, ["pending", "unknown"]),
+    inArray(llmUsageEvents.failureCode, [
+      "credential_missing",
+      "credential_fingerprint_mismatch",
+      "receipt_account_unproven",
+      "receipt_read_unauthorized",
+    ]),
+  )).returning({ id: llmUsageEvents.id });
+  return rows.length;
+}
+
 /** Conditional late financial settlement: never replace a newer local outcome or known cost. */
 export async function reconcileSurplusLlmAttemptCost(input: {
   attemptId: string;
