@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { DirectDatabase } from "../../src/config/direct-database";
 import { PgDialect } from "drizzle-orm/pg-core";
-import type { SQL } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import {
   __setLlmUsageDbForTests,
   attachSurplusRequestReceipt,
@@ -17,9 +17,10 @@ import {
 
 const ATTEMPT_ID = "11111111-1111-4111-8111-111111111111";
 
-function mutationDb(options: { returning?: unknown[] } = {}) {
+function mutationDb(options: { returning?: unknown[]; selected?: unknown[] } = {}) {
   const inserted: Record<string, unknown>[] = [];
   const updated: Record<string, unknown>[] = [];
+  const updatePredicates: SQL[] = [];
   const insertBuilder = {
     values(value: Record<string, unknown>) {
       inserted.push(value);
@@ -30,19 +31,34 @@ function mutationDb(options: { returning?: unknown[] } = {}) {
     set(value: Record<string, unknown>) {
       updated.push(value);
       return {
-        where: () => ({
+        where: (predicate: SQL) => {
+          updatePredicates.push(predicate);
+          return {
           returning: async () => options.returning ?? [{ id: ATTEMPT_ID }],
-        }),
+          };
+        },
       };
     },
   };
+  let selectPredicate: SQL | undefined;
+  const selectBuilder: Record<string, unknown> = {
+    getSQL: () => sql`select 1${selectPredicate ? sql` where ${selectPredicate}` : sql``}`,
+  };
+  selectBuilder["from"] = () => selectBuilder;
+  selectBuilder["where"] = (predicate: SQL) => {
+    selectPredicate = predicate;
+    return selectBuilder;
+  };
+  selectBuilder["limit"] = async () => options.selected ?? [];
   return {
     handle: {
       insert: () => insertBuilder,
       update: () => updateBuilder,
+      select: () => selectBuilder,
     } as unknown as DirectDatabase,
     inserted,
     updated,
+    updatePredicates,
   };
 }
 
@@ -178,6 +194,53 @@ describe("Surplus durable LLM attempts", () => {
     expect(fake.updated[0]).not.toHaveProperty("settledAt");
   });
 
+  test("accepts an exact ordinary direct settlement replay after a lost commit acknowledgement", async () => {
+    const settledAt = new Date("2026-10-06T10:00:00.000Z");
+    const committed = {
+      attemptOutcome: "succeeded",
+      costState: "estimated",
+      providerRequestId: "request-1",
+      metadata: { receipt: { source: "callback" }, retained: true },
+      inputTokens: 100,
+      outputTokens: 20,
+      reasoningTokens: 3,
+      cachedInputTokens: 4,
+      totalTokens: 120,
+      estimatedCostUsd: "0.00120000",
+      actualCostUsd: null,
+      pricingVersion: "test-pricing-v1",
+      servingProvider: "anthropic",
+      failureCode: null,
+      settledAt,
+    };
+    const fake = mutationDb({ returning: [], selected: [committed] });
+    __setLlmUsageDbForTests(fake.handle);
+    await settlePersonalLlmAttempt({
+      attemptId: ATTEMPT_ID,
+      outcome: "succeeded",
+      costState: "estimated",
+      providerRequestId: "request-1",
+      metadata: { receipt: { source: "callback" } },
+      inputTokens: 100,
+      outputTokens: 20,
+      reasoningTokens: 3,
+      cachedInputTokens: 4,
+      estimatedCostUsd: 0.0012,
+      pricingVersion: "test-pricing-v1",
+      servingProvider: "anthropic",
+      settledAt,
+    });
+    expect(settlePersonalLlmAttempt({
+      attemptId: ATTEMPT_ID,
+      outcome: "failed",
+      costState: "estimated",
+      inputTokens: 100,
+      outputTokens: 20,
+      estimatedCostUsd: 0.0012,
+      pricingVersion: "test-pricing-v1",
+    })).rejects.toThrow("conflicts with durable state");
+  });
+
   test("rejects absent actual evidence and conflicting receipt updates", async () => {
     const fake = mutationDb({ returning: [] });
     __setLlmUsageDbForTests(fake.handle);
@@ -238,7 +301,7 @@ describe("Surplus durable LLM attempts", () => {
     expect(fake.updated[0]?.["attemptOutcome"]).not.toBe("cancelled");
   });
 
-  test("requeues only an exact repaired personal credential", async () => {
+  test("requeues a payer's old blocked receipts only behind a current-key guard", async () => {
     const fake = mutationDb({ returning: [{ id: ATTEMPT_ID }] });
     __setLlmUsageDbForTests(fake.handle);
     expect(await requeueBlockedPersonalSurplusAttempts({
@@ -250,6 +313,10 @@ describe("Surplus durable LLM attempts", () => {
       recoveryState: "retryable",
       failureCode: null,
     });
+    const predicate = new PgDialect().sqlToQuery(fake.updatePredicates[0]!);
+    expect(predicate.sql).toContain("exists (select 1 where");
+    expect(predicate.sql).toContain('"personal_provider_credentials"."id"');
+    expect(predicate.sql).not.toContain('"llm_usage_events"."credential_id"');
   });
 
   test("terminal completion preserves recovered actual cost while retrying its observed request receipt", async () => {
@@ -265,10 +332,13 @@ describe("Surplus durable LLM attempts", () => {
     const dialect = new PgDialect();
     const cost = dialect.sqlToQuery(fake.updated[0]?.["actualCostUsd"] as SQL);
     const state = dialect.sqlToQuery(fake.updated[0]?.["costState"] as SQL);
+    const recovery = dialect.sqlToQuery(fake.updated[0]?.["recoveryState"] as SQL);
     expect(cost.sql).toContain('else "llm_usage_events"."actual_cost_usd" end');
     expect(state.sql).toContain('else "llm_usage_events"."cost_state" end');
     expect(cost.params).toContain("pending");
     expect(cost.params).toContain("unknown");
     expect(cost.params).not.toContain("actual");
+    expect(recovery.sql).toContain("then coalesce");
+    expect(recovery.sql).toContain("else null");
   });
 });

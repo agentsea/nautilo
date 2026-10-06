@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   classifyPersonalAttemptFailure,
   runPersonalLlmAttempt,
+  PersonalAttemptInvocationError,
   PersonalAttemptLedgerUnavailableError,
 } from "../../src/usage/personal-llm-attempt";
 import { getUsageContext, runWithUsageContext } from "../../src/usage/usage-context";
@@ -92,19 +93,24 @@ describe("durable personal direct attempts", () => {
   });
   test("a cancelled or failed wire still has the original payer record", async () => {
     const h = harness(); const cancellation = new AbortController();
-    expect(scope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions", signal: cancellation.signal,
-      invoke: async () => { cancellation.abort(); throw new Error("cancelled"); } }, h.deps))).rejects.toThrow("cancelled");
+    const providerError = new Error("cancelled");
+    const thrown = await scope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions", signal: cancellation.signal,
+      invoke: async () => { cancellation.abort(); throw providerError; } }, h.deps)).then(() => null, (error: unknown) => error);
+    expect(thrown).toBeInstanceOf(PersonalAttemptInvocationError);
+    expect(thrown).toMatchObject({ disposition: "terminal_cancelled", cause: providerError });
     expect(h.begun[0]).toMatchObject({ userId: funding.humanUserId, credentialId: funding.credentialId });
     expect(h.settled[0]).toMatchObject({ outcome: "cancelled", costState: "unknown" });
   });
   test("records explicit provider refusals as failed but leaves uncertain errors unknown", async () => {
     const rejected = harness();
-    expect(scope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions",
-      invoke: async () => { throw Object.assign(new Error("rejected"), {
-        status: 401,
-        headers: new Headers({ "x-request-id": "request-rejected" }),
-      }); } }, rejected.deps)))
-      .rejects.toThrow("rejected");
+    const rejectedError = Object.assign(new Error("rejected"), {
+      status: 401,
+      headers: new Headers({ "x-request-id": "request-rejected" }),
+    });
+    const rejectedThrown = await scope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions",
+      invoke: async () => { throw rejectedError; } }, rejected.deps)).then(() => null, (error: unknown) => error);
+    expect(rejectedThrown).toBeInstanceOf(PersonalAttemptInvocationError);
+    expect(rejectedThrown).toMatchObject({ disposition: "safe_refusal", cause: rejectedError });
     expect(rejected.settled[0]).toMatchObject({
       outcome: "failed",
       costState: "unknown",
@@ -119,8 +125,10 @@ describe("durable personal direct attempts", () => {
       Object.assign(new Error("socket lost"), { code: "ECONNRESET" }),
     ]) {
       const uncertain = harness();
-      expect(scope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions",
-        invoke: async () => { throw error; } }, uncertain.deps))).rejects.toBe(error);
+      const thrown = await scope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions",
+        invoke: async () => { throw error; } }, uncertain.deps)).then(() => null, (caught: unknown) => caught);
+      expect(thrown).toBeInstanceOf(PersonalAttemptInvocationError);
+      expect(thrown).toMatchObject({ disposition: "terminal_unknown", cause: error });
       expect(uncertain.settled[0]).toMatchObject({
         outcome: "unknown",
         costState: "unknown",
@@ -138,15 +146,39 @@ describe("durable personal direct attempts", () => {
       { ...h.deps, settle: async () => { throw new Error("settlement unavailable"); } }));
     expect(answer).toBe("answer"); expect(calls).toBe(1); expect(h.begun).toHaveLength(1);
   });
+  test("retries one exact immutable settlement after acknowledgement loss without replaying inference", async () => {
+    const h = harness();
+    const settlements: SettlePersonalLlmAttemptInput[] = [];
+    let invokes = 0;
+    const answer = await scope(() => runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      invoke: async () => { invokes += 1; return "answer"; },
+    }, {
+      begin: h.deps.begin,
+      settle: async (input) => {
+        settlements.push(input);
+        if (settlements.length === 1) throw new Error("acknowledgement lost");
+      },
+    }));
+    expect(answer).toBe("answer");
+    expect(invokes).toBe(1);
+    expect(settlements).toHaveLength(2);
+    expect(settlements[1]).toBe(settlements[0]);
+    expect(Object.isFrozen(settlements[0])).toBe(true);
+    expect(settlements[0]?.settledAt).toBeInstanceOf(Date);
+  });
 });
 
 describe("personal direct attempt terminal classification", () => {
   test("uses explicit nested HTTP status and never message wording", () => {
     expect(classifyPersonalAttemptFailure({ cause: { response: { status: 429 } } }, false))
-      .toEqual({ outcome: "failed", failureCode: "provider_refused" });
+      .toEqual({ outcome: "failed", failureCode: "provider_refused", disposition: "safe_refusal" });
     expect(classifyPersonalAttemptFailure(new Error("401 unauthorized"), false))
-      .toEqual({ outcome: "unknown", failureCode: "outcome_unknown" });
+      .toEqual({ outcome: "unknown", failureCode: "outcome_unknown", disposition: "terminal_unknown" });
     expect(classifyPersonalAttemptFailure({ status: 401 }, true))
-      .toEqual({ outcome: "cancelled", failureCode: "cancelled" });
+      .toEqual({ outcome: "cancelled", failureCode: "cancelled", disposition: "terminal_cancelled" });
+    expect(classifyPersonalAttemptFailure({ status: 429 }, false, true))
+      .toEqual({ outcome: "unknown", failureCode: "outcome_unknown", disposition: "terminal_unknown" });
   });
 });

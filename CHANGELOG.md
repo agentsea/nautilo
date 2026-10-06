@@ -19,6 +19,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   When personal keys are disabled, members see only the warning if no keys are
   saved, or their saved keys with Delete controls. Cleanup remains available
   without permission to spend or access to the credential encryption key.
+  Uncertain personal requests stop automatic retries; transient accounting
+  writes retry without repeating inference. Repaired personal Surplus keys can
+  recover authenticated original receipts while retaining their original payer.
 
 - The text editor serializes first saves of empty documents and preserves edits
   made while a save is in progress. Conflict recovery reports failed latest-version

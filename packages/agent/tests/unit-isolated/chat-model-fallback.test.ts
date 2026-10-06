@@ -2316,7 +2316,7 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
     _resetAgentTurnContextsForTests();
   });
 
-  test("keeps fallback personal, binds zero tools, and attributes each exact attempt", async () => {
+  test("keeps definitive-refusal fallback personal, binds zero tools, and attributes each exact attempt", async () => {
     delete process.env["ANTHROPIC_API_KEY"];
     delete process.env["OPENAI_API_KEY"];
     policyState = { enabled: true, chain: [A, B] };
@@ -2349,7 +2349,7 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
           invoke: async () => {
             observedFunding.push(getUsageContext()?.funding);
             if (modelId === A) {
-              throw Object.assign(new Error("provider unavailable"), { status: 503 });
+              throw Object.assign(new Error("provider rate limited"), { status: 429 });
             }
             return new AIMessage("personal success");
           },
@@ -2380,7 +2380,49 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
     expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
   });
 
-  test("rechecks the pinned session before a same-model short retry", async () => {
+  test("does not widen an uncertain personal 503 after partial output into chain fallback", async () => {
+    policyState = { enabled: true, chain: [A, B] };
+    const turnId = "personal-unknown-after-partial-output";
+    const attempts: string[] = [];
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt() { throw new Error("must not recheck for fallback"); },
+      async runAttempt(modelId, callback) {
+        attempts.push(modelId);
+        return callback({
+          personalCredential: { apiKey: `personal-${modelId}` },
+          usageFunding: {
+            kind: "personal", humanUserId: "human-1", payerHumanId: "human-1",
+            providerRoute: modelId.split(":", 1)[0]!, credentialId: `credential-${modelId}`,
+            credentialRevision: 1,
+          },
+        });
+      },
+    };
+    let invokes = 0;
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          invokes += 1;
+          getOrCreateAgentTurnContextByKey(turnContextKey(turnId, "agent-1")).assistantVisibleOutput = true;
+          throw Object.assign(new Error("provider unavailable"), { status: 503 });
+        },
+      }),
+      invoke: async () => new AIMessage("unused"),
+    }));
+
+    const thrown = await runWithTurn(turnId, () => invokeChatModelWithFallback(
+      messages, [], A, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session, sameModelRetryMode: "none" },
+    )).then(() => null, (error: unknown) => error);
+
+    expect(classifyError(thrown).category).toBe("SERVICE_ERROR");
+    expect(attempts).toEqual([A]);
+    expect(invokes).toBe(1);
+    expect(modelIdsFromCalls()).toEqual([A]);
+  });
+
+  test("does not short-retry an uncertain personal 503", async () => {
     const rechecks: string[] = [];
     let invokes = 0;
     const session: ForegroundChatFundingSession = {
@@ -2400,9 +2442,43 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
       bindTools: () => ({
         invoke: async () => {
           invokes += 1;
-          if (invokes === 1) {
-            throw Object.assign(new Error("retry me"), { status: 503 });
-          }
+          throw Object.assign(new Error("outcome unknown"), { status: 503 });
+        },
+      }),
+      invoke: async () => new AIMessage("unused"),
+    }));
+
+    const thrown = await invokeChatModelWithFallback(
+      messages, [], A, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session },
+    ).then(() => null, (error: unknown) => error);
+
+    expect(classifyError(thrown).category).toBe("SERVICE_ERROR");
+    expect(invokes).toBe(1);
+    expect(rechecks).toEqual([]);
+  });
+
+  test("rechecks the pinned session before retrying a definitive personal refusal", async () => {
+    const rechecks: string[] = [];
+    let invokes = 0;
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt(modelId) { rechecks.push(modelId); },
+      async runAttempt(_modelId, callback) {
+        return callback({
+          personalCredential: { apiKey: "personal-key" },
+          usageFunding: {
+            kind: "personal", humanUserId: "human-1", payerHumanId: "human-1",
+            providerRoute: "anthropic", credentialId: "credential-1", credentialRevision: 1,
+          },
+        });
+      },
+    };
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          invokes += 1;
+          if (invokes === 1) throw Object.assign(new Error("rate limited"), { status: 429 });
           return new AIMessage("retried");
         },
       }),
@@ -2417,6 +2493,44 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
     expect(result.modelUsed).toBe(A);
     expect(invokes).toBe(2);
     expect(rechecks).toEqual([A]);
+  });
+
+  test("does not retry a personal refusal after assistant-visible partial output", async () => {
+    const turnId = "personal-refusal-after-partial-output";
+    const rechecks: string[] = [];
+    let invokes = 0;
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt(modelId) { rechecks.push(modelId); },
+      async runAttempt(_modelId, callback) {
+        return callback({
+          personalCredential: { apiKey: "personal-key" },
+          usageFunding: {
+            kind: "personal", humanUserId: "human-1", payerHumanId: "human-1",
+            providerRoute: "anthropic", credentialId: "credential-1", credentialRevision: 1,
+          },
+        });
+      },
+    };
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          invokes += 1;
+          getOrCreateAgentTurnContextByKey(turnContextKey(turnId, "agent-1")).assistantVisibleOutput = true;
+          throw Object.assign(new Error("late rate limit"), { status: 429 });
+        },
+      }),
+      invoke: async () => new AIMessage("unused"),
+    }));
+
+    const thrown = await runWithTurn(turnId, () => invokeChatModelWithFallback(
+      messages, [], A, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session },
+    )).then(() => null, (error: unknown) => error);
+
+    expect(classifyError(thrown).category).toBe("RATE_LIMIT");
+    expect(invokes).toBe(1);
+    expect(rechecks).toEqual([]);
   });
 
   test("does not classify an injected funding failure as a provider fallback", async () => {

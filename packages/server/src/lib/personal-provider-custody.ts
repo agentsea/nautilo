@@ -39,6 +39,7 @@ export type PersonalSurplusReceiptCredentialResult =
       status: "available";
       apiKey: string;
       receiptReadStatus: PersonalProviderCredentialReceiptReadStatus;
+      replacement: boolean;
     }>
   | Readonly<{
       status: "blocked_repair";
@@ -52,9 +53,10 @@ interface PersonalSurplusReceiptCredentialDeps {
 }
 
 /**
- * Resolves only the exact personal Surplus credential that created an attempt.
- * Current spending policy and inference validation never block later financial
- * settlement, while replacement or lost custody can never substitute a key.
+ * Resolves the payer-owned key for a read of an already bound exact receipt.
+ * A replacement is only a lookup candidate: the provider must authorize access
+ * to that original request before any financial settlement. This never admits
+ * inference or changes the attempt's original credential provenance.
  */
 export async function resolvePersonalSurplusReceiptCredential(
   input: Readonly<{
@@ -72,9 +74,8 @@ export async function resolvePersonalSurplusReceiptCredential(
   // they must not be persisted as a credential repair requirement.
   const record = await getCredential(getDb(), input.userId, "surplus");
   if (!record) return { status: "blocked_repair", reason: "missing" };
-  if (record.id !== input.credentialId
-    || record.revision !== input.credentialRevision) {
-    return { status: "blocked_repair", reason: "replaced" };
+  if (record.userId !== input.userId || record.provider !== "surplus") {
+    return { status: "blocked_repair", reason: "missing" };
   }
 
   try {
@@ -91,6 +92,8 @@ export async function resolvePersonalSurplusReceiptCredential(
         record,
       ),
       receiptReadStatus: record.receiptReadStatus,
+      replacement: record.id !== input.credentialId
+        || record.revision !== input.credentialRevision,
     };
   } catch {
     return { status: "blocked_repair", reason: "custody_unavailable" };

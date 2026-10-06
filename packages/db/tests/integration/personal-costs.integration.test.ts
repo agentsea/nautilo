@@ -15,6 +15,7 @@ import {
   insertProviderCostEventWith,
   llmUsageEvents,
   listPendingSurplusAttempts,
+  personalProviderCredentials,
   providerCostEvents,
   providerCostIdempotencyKey,
   requeueBlockedPersonalSurplusAttempts,
@@ -183,6 +184,96 @@ describe("personal cost attempts and account isolation", () => {
       failureCode: "execution_interrupted",
       settledAt: terminalAt,
       totalTokens: 90,
+    });
+  });
+
+  test("accepts an exact ordinary direct settlement replay without weakening terminal evidence", async () => {
+    const payerHumanId = await createUser("direct-settlement-replay");
+    const id = attemptId();
+    const settledAt = new Date("2026-10-06T10:00:00.000Z");
+    await beginPersonalLlmAttempt({
+      id,
+      userId: payerHumanId,
+      callType: "chat",
+      provider: "anthropic",
+      model: "anthropic:claude-sonnet-4-6",
+      providerRoute: "anthropic",
+      credentialId: randomUUID(),
+      credentialRevision: 1,
+      endpoint: "/v1/messages",
+    });
+    const settlement = {
+      attemptId: id,
+      outcome: "succeeded" as const,
+      costState: "estimated" as const,
+      inputTokens: 120,
+      outputTokens: 30,
+      estimatedCostUsd: 0.0015,
+      pricingVersion: "integration-price-v1",
+      settledAt,
+    };
+    await settlePersonalLlmAttempt(settlement);
+    await settlePersonalLlmAttempt(settlement);
+    await expectRejected(() => settlePersonalLlmAttempt({
+      ...settlement,
+      outcome: "failed",
+      failureCode: "provider_refused",
+    }));
+    const [row] = await db.select().from(llmUsageEvents).where(eq(llmUsageEvents.id, id));
+    expect(row).toMatchObject({
+      attemptOutcome: "succeeded",
+      costState: "estimated",
+      estimatedCostUsd: "0.00150000",
+      failureCode: null,
+      settledAt,
+      totalTokens: 150,
+    });
+  });
+
+  test("terminal settlement preserves an actual cost recovered before a pending completion", async () => {
+    const payerHumanId = await createUser("surplus-recovery-race");
+    const id = attemptId();
+    const requestId = `req-${randomUUID()}`;
+    await beginSurplusLlmAttempt({
+      id,
+      userId: payerHumanId,
+      payerHumanId,
+      callType: "chat",
+      provider: "venice",
+      model: "venice:openai-gpt-55",
+      endpoint: "/v1/chat/completions",
+      fundingKind: "personal",
+      credentialId: randomUUID(),
+      credentialRevision: 1,
+    });
+    await attachSurplusRequestReceipt({ attemptId: id, providerRequestId: requestId });
+    const queued = (await listPendingSurplusAttempts({
+      updatedBefore: new Date(Date.now() + 60_000),
+    })).find((row) => row.id === id);
+    if (!queued) throw new Error("Surplus recovery race fixture was not listed");
+    expect(await reconcileSurplusLlmAttemptCost({
+      attemptId: id,
+      providerRequestId: requestId,
+      expectedUpdatedAtToken: queued.updatedAtToken,
+      actualCostUsd: 0.000283,
+    })).toBe(true);
+    await settleSurplusLlmAttempt({
+      attemptId: id,
+      providerRequestId: requestId,
+      outcome: "succeeded",
+      costState: "pending",
+      inputTokens: 11,
+      outputTokens: 17,
+    });
+    const [row] = await db.select().from(llmUsageEvents).where(eq(llmUsageEvents.id, id));
+    expect(row).toMatchObject({
+      attemptOutcome: "succeeded",
+      costState: "actual",
+      recoveryState: null,
+      actualCostUsd: "0.00028300",
+      inputTokens: 11,
+      outputTokens: 17,
+      totalTokens: 28,
     });
   });
 
@@ -609,9 +700,22 @@ describe("personal cost attempts and account isolation", () => {
     );
   });
 
-  test("requeues blocked recovery only for the exact payer, credential, and revision", async () => {
+  test("a current replacement key requeues old blocked receipts only for its payer", async () => {
     const payerHumanId = await createUser("requeue-owner");
-    const credentialId = randomUUID();
+    const oldCredentialId = randomUUID();
+    const currentCredentialId = randomUUID();
+    const currentCredentialRevision = 4;
+    await db.insert(personalProviderCredentials).values({
+      id: currentCredentialId,
+      userId: payerHumanId,
+      provider: "surplus",
+      revision: currentCredentialRevision,
+      formatVersion: 1,
+      keyId: randomUUID(),
+      nonceBase64: "fixture-nonce",
+      ciphertextBase64: "fixture-ciphertext",
+      authTagBase64: "fixture-auth-tag",
+    });
     const id = attemptId();
     await beginSurplusLlmAttempt({
       id,
@@ -622,7 +726,7 @@ describe("personal cost attempts and account isolation", () => {
       model: "venice:openai-gpt-55",
       endpoint: "/v1/chat/completions",
       fundingKind: "personal",
-      credentialId,
+      credentialId: oldCredentialId,
       credentialRevision: 3,
     });
     const created = (await listPendingSurplusAttempts({
@@ -638,24 +742,34 @@ describe("personal cost attempts and account isolation", () => {
 
     expect(await requeueBlockedPersonalSurplusAttempts({
       payerHumanId,
-      credentialId,
-      credentialRevision: 2,
+      credentialId: oldCredentialId,
+      credentialRevision: 3,
     })).toBe(0);
     expect(await requeueBlockedPersonalSurplusAttempts({
       payerHumanId: await createUser("requeue-other"),
-      credentialId,
-      credentialRevision: 3,
+      credentialId: currentCredentialId,
+      credentialRevision: currentCredentialRevision,
     })).toBe(0);
     expect(await requeueBlockedPersonalSurplusAttempts({
       payerHumanId,
-      credentialId,
-      credentialRevision: 3,
+      credentialId: currentCredentialId,
+      credentialRevision: currentCredentialRevision,
     })).toBe(1);
     const [requeued] = await db.select({
       recoveryState: llmUsageEvents.recoveryState,
       failureCode: llmUsageEvents.failureCode,
     }).from(llmUsageEvents).where(eq(llmUsageEvents.id, id));
     expect(requeued).toEqual({ recoveryState: "retryable", failureCode: null });
+    const [attempt] = await db.select({
+      payerHumanId: llmUsageEvents.payerHumanId,
+      credentialId: llmUsageEvents.credentialId,
+      credentialRevision: llmUsageEvents.credentialRevision,
+    }).from(llmUsageEvents).where(eq(llmUsageEvents.id, id));
+    expect(attempt).toEqual({
+      payerHumanId,
+      credentialId: oldCredentialId,
+      credentialRevision: 3,
+    });
   });
 
   test("database constraints reject incomplete personal attempt provenance", async () => {

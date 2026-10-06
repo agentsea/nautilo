@@ -3,10 +3,16 @@ import type { PersonalCostsSummary } from "@nautilo/api-client/browser";
 import {
   personalCostCallTypeRows,
   personalCostDayRows,
+  personalCostsForRequestedRange,
   personalUnknownProviderOperations,
 } from "./personal-costs-presentation";
 
 const summary = {
+  range: {
+    key: "30d",
+    since: "2026-09-05T00:00:00Z",
+    until: "2026-10-05T00:00:00Z",
+  },
   timeSeries: [
     {
       day: "2026-10-03",
@@ -46,4 +52,10 @@ test("labels known call types and preserves unknown semantic identifiers", () =>
     },
   ]);
   expect(personalUnknownProviderOperations(summary)).toBe(4);
+});
+
+test("hides retained cost data that does not match the requested range", () => {
+  expect(personalCostsForRequestedRange(summary, "30d")).toBe(summary);
+  expect(personalCostsForRequestedRange(summary, "7d")).toBeNull();
+  expect(personalCostsForRequestedRange(null, "7d")).toBeNull();
 });

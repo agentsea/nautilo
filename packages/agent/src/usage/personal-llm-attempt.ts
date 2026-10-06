@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { beginPersonalLlmAttempt, settlePersonalLlmAttempt } from "@nautilo/db";
+import { beginPersonalLlmAttempt, settlePersonalLlmAttempt, type SettlePersonalLlmAttemptInput } from "@nautilo/db";
 import { warn } from "@nautilo/logger";
 import { estimateCostFromPrice, resolveModelPrice, PRICING_VERSION } from "../config/model-pricing";
 import { getUsageContext, normalizeUsageRoomId, runWithUsageContext } from "./usage-context";
@@ -11,6 +11,26 @@ export class PersonalAttemptLedgerUnavailableError extends Error {
   constructor() { super("Personal model attempt accounting is unavailable; retry later."); }
 }
 
+export type PersonalAttemptErrorDisposition =
+  | "safe_refusal"
+  | "terminal_unknown"
+  | "terminal_cancelled";
+
+/**
+ * Keeps replay safety explicit without exposing the raw provider failure.
+ * Callers may classify `cause` for sanitized reporting, but only a proven
+ * pre-service refusal may enter another inference attempt.
+ */
+export class PersonalAttemptInvocationError extends Error {
+  constructor(
+    readonly disposition: PersonalAttemptErrorDisposition,
+    override readonly cause: unknown,
+  ) {
+    super("Personal model attempt did not complete.");
+    this.name = "PersonalAttemptInvocationError";
+  }
+}
+
 /**
  * A concrete 4xx response proves that the provider refused this invocation.
  * HTTP 408 remains uncertain because the remote service can time out after
@@ -20,13 +40,33 @@ export class PersonalAttemptLedgerUnavailableError extends Error {
 export function classifyPersonalAttemptFailure(
   error: unknown,
   cancelled: boolean,
-): { outcome: "cancelled" | "failed" | "unknown"; failureCode: string } {
-  if (cancelled) return { outcome: "cancelled", failureCode: "cancelled" };
-  const status = classifyError(error).statusCode;
-  if (status !== undefined && status >= 400 && status <= 499 && status !== 408) {
-    return { outcome: "failed", failureCode: "provider_refused" };
+  providerWorkObserved = false,
+): { outcome: "cancelled" | "failed" | "unknown"; failureCode: string; disposition: PersonalAttemptErrorDisposition } {
+  if (cancelled) {
+    return { outcome: "cancelled", failureCode: "cancelled", disposition: "terminal_cancelled" };
   }
-  return { outcome: "unknown", failureCode: "outcome_unknown" };
+  const status = classifyError(error).statusCode;
+  if (!providerWorkObserved && status !== undefined && status >= 400 && status <= 499 && status !== 408) {
+    return { outcome: "failed", failureCode: "provider_refused", disposition: "safe_refusal" };
+  }
+  return { outcome: "unknown", failureCode: "outcome_unknown", disposition: "terminal_unknown" };
+}
+
+type SettlePersonalAttempt = (input: SettlePersonalLlmAttemptInput) => Promise<void>;
+
+/** Retry one exact idempotent settlement without replaying inference. */
+async function settlePersonalAttemptWithRetry(
+  persist: SettlePersonalAttempt,
+  input: SettlePersonalLlmAttemptInput,
+): Promise<void> {
+  const settlement = Object.freeze({ ...input, settledAt: input.settledAt ?? new Date() });
+  try {
+    await persist(settlement);
+  } catch {
+    // The first write may have committed before its acknowledgement was lost.
+    // Reusing the same frozen update is safe once settlement is idempotent.
+    await persist(settlement);
+  }
 }
 
 function hasKnownFinancialEvidence(evidence: ExtractedUsage | undefined): boolean {
@@ -81,6 +121,7 @@ export async function runPersonalLlmAttempt<T>(input: {
   modelId: string;
   endpoint: string;
   signal?: AbortSignal | undefined;
+  hasObservedProviderWork?: (() => boolean) | undefined;
   invoke: () => Promise<T>;
 }, deps = { begin: beginPersonalLlmAttempt, settle: settlePersonalLlmAttempt }): Promise<T> {
   const context = getUsageContext();
@@ -107,6 +148,7 @@ export async function runPersonalLlmAttempt<T>(input: {
   let initialSettlementDone = false;
   let initialSettlementSucceeded = false;
   let knownCostSettled = false;
+  let knownCostSettlementInFlight = false;
   const settle = async (
     outcome: "succeeded" | "cancelled" | "failed" | "unknown",
     preserveOutcome = false,
@@ -120,7 +162,7 @@ export async function runPersonalLlmAttempt<T>(input: {
       : hasTokenEvidence ? "estimated" as const : "unknown" as const;
     const providerRequestId = evidence?.providerRequestId ?? terminalProviderRequestId;
     try {
-      await deps.settle({ attemptId: id, outcome, costState,
+      await settlePersonalAttemptWithRetry(deps.settle, { attemptId: id, outcome, costState,
         ...(preserveOutcome ? { preserveOutcome: true } : {}),
         ...(evidence && (hasTokenEvidence || evidence.actualCostUsd !== null)
           ? { inputTokens: evidence.inputTokens, outputTokens: evidence.outputTokens,
@@ -162,19 +204,26 @@ export async function runPersonalLlmAttempt<T>(input: {
       onAttemptUsage: (observed) => {
         usage = observed;
         if (terminalOutcome && initialSettlementDone && !knownCostSettled
+          && !knownCostSettlementInFlight
           && hasKnownFinancialEvidence(observed)) {
           // A late financial callback cannot turn a cancelled/unknown answer into success.
-          void settle(terminalOutcome, initialSettlementSucceeded);
+          knownCostSettlementInFlight = true;
+          void settle(terminalOutcome, initialSettlementSucceeded)
+            .finally(() => { knownCostSettlementInFlight = false; });
         }
       },
     }, input.invoke);
     await finish("succeeded");
     return result;
   } catch (error) {
-    const failure = classifyPersonalAttemptFailure(error, input.signal?.aborted === true);
+    const failure = classifyPersonalAttemptFailure(
+      error,
+      input.signal?.aborted === true,
+      hasKnownFinancialEvidence(usage) || input.hasObservedProviderWork?.() === true,
+    );
     terminalFailureCode = failure.failureCode;
     terminalProviderRequestId = providerRequestIdFromError(error);
     await finish(failure.outcome);
-    throw error;
+    throw new PersonalAttemptInvocationError(failure.disposition, error);
   }
 }

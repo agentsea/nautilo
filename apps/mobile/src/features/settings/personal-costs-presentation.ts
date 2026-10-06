@@ -1,4 +1,4 @@
-import type { PersonalCostsSummary } from "@nautilo/api-client/browser";
+import type { PersonalCostsRangeKey, PersonalCostsSummary } from "@nautilo/api-client/browser";
 
 export interface PersonalCostDayRow {
   key: string;
@@ -30,6 +30,13 @@ const CALL_TYPE_LABELS: Record<string, string> = {
   soul: "Soul generation",
   other: "Other",
 };
+
+export function personalCostsForRequestedRange(
+  summary: PersonalCostsSummary | null,
+  requestedRange: PersonalCostsRangeKey,
+): PersonalCostsSummary | null {
+  return summary?.range.key === requestedRange ? summary : null;
+}
 
 export function personalCostDayRows(
   summary: Pick<PersonalCostsSummary, "timeSeries">,

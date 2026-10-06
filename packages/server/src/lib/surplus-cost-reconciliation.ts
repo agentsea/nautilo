@@ -17,7 +17,7 @@ import { resolvePersonalSurplusReceiptCredential } from "./personal-provider-cus
 import { createReceiptRecoveryPump } from "./receipt-recovery";
 
 type RecoveryCredential =
-  | { status: "available"; apiKey: string; receiptReadStatus: "available" | "unavailable" | "unknown" }
+  | { status: "available"; apiKey: string; receiptReadStatus: "available" | "unavailable" | "unknown"; replacement?: boolean }
   | { status: "blocked_repair"; reason: "missing" | "replaced" | "custody_unavailable" };
 
 interface SurplusCostRecoveryDependencies {
@@ -120,11 +120,12 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
           await classify(row, "blocked_repair", `credential_${credential.reason}`);
           continue;
         }
-        if (credential.receiptReadStatus === "unavailable") {
-          await classify(row, "blocked_repair", "receipt_read_unavailable");
-          continue;
-        }
-        if (binding["surplusCredentialFingerprint"] !== surplusCredentialFingerprint(credential.apiKey)) {
+        // List-scope denial does not prove exact-request denial. Surplus may
+        // authorize the creating key or a replacement with account log access.
+        // Only the fixed authenticated exact-receipt endpoint can establish it.
+        const personalReplacement = row.fundingKind === "personal" && credential.replacement === true;
+        if (!personalReplacement
+          && binding["surplusCredentialFingerprint"] !== surplusCredentialFingerprint(credential.apiKey)) {
           await classify(row, "blocked_repair", "credential_fingerprint_mismatch");
           continue;
         }
@@ -143,7 +144,14 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
           if (result.status === "blocked_repair") {
             await classify(row, "blocked_repair", result.failureCode);
           } else if (result.status === "retryable") {
-            await classify(row, "retryable", result.failureCode);
+            // A different key with no exact receipt has not established account
+            // authority. Keep the charge unknown and let a credential repair
+            // explicitly retry proof; do not poll the wrong account forever.
+            const accountUnproven = personalReplacement
+              && binding["surplusCredentialFingerprint"] !== surplusCredentialFingerprint(credential.apiKey)
+              && result.failureCode === "receipt_not_found";
+            await classify(row, accountUnproven ? "blocked_repair" : "retryable",
+              accountUnproven ? "receipt_account_unproven" : result.failureCode);
           } else {
             await deps.settle({
               attemptId: row.id,

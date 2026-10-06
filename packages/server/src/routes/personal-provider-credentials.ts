@@ -207,6 +207,18 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
     auditEvent: overrides.auditEvent ?? audit,
   };
 
+  async function requeueReceipts(userId: string, record: PersonalProviderCredentialRecord): Promise<void> {
+    try {
+      await deps.requeueBlockedSurplusAttempts({
+        payerHumanId: userId, credentialId: record.id, credentialRevision: record.revision,
+      });
+    } catch {
+      // Enrollment has already committed. A later Check again retries this wake;
+      // never tell the caller to replay a successful credential replacement.
+      warn("[personal-provider-credentials] receipt recovery wake failed; validate the saved key again");
+    }
+  }
+
   function emitAudit(request: FastifyRequest, event: Omit<PersonalProviderCredentialAuditEvent, "ts" | "ip" | "userAgent">): void {
     try {
       deps.auditEvent(request, event);
@@ -321,7 +333,7 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
     if (!provider || !body) return reply.code(422).send(failure(provider ? "invalid_credential_request" : "invalid_provider"));
     // Gateway remains a server-admin provider. Historical personal rows are
     // listed so their owners can remove them, but they cannot be renewed.
-    if (provider === "gateway") return reply.code(422).send(failure("invalid_provider"));
+    if (provider === "gateway" || provider === "nautilo-gateway") return reply.code(422).send(failure("invalid_provider"));
     const destination = null;
     const custody = await readCustody(reply);
     if (!custody) return;
@@ -352,6 +364,9 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
           return reply.code(409).send(failure("credential_conflict", false, false, "reread_metadata"));
         }
         emitAudit(request, { kind: "personal_provider_credential_changed", actorId: userId, provider, credentialId: result.credential.id, revision: result.credential.revision, action: "replaced" });
+        if (provider === "surplus" && observation.status === "accepted") {
+          await requeueReceipts(userId, result.credential);
+        }
         return reply.send({ credential: metadata(result.credential, credentialAccess(result.credential, custody)), committed: true });
       }
       if (body.expectedRevision !== undefined) {
@@ -378,6 +393,9 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
         return reply.code(409).send(failure("credential_conflict", false, false, "reread_metadata"));
       }
       emitAudit(request, { kind: "personal_provider_credential_changed", actorId: userId, provider, credentialId: result.credential.id, revision: result.credential.revision, action: "created" });
+      if (provider === "surplus" && observation.status === "accepted") {
+        await requeueReceipts(userId, result.credential);
+      }
       return reply.send({ credential: metadata(result.credential, credentialAccess(result.credential, custody)), committed: true });
     } catch (error) {
       return unavailableAfter(error, reply, "reread_metadata");
@@ -391,7 +409,7 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
     const provider = parseProvider(request);
     const expectedRevision = parseRevisionBody(request.body);
     if (!provider || expectedRevision === null) return reply.code(422).send(failure(provider ? "invalid_credential_request" : "invalid_provider"));
-    if (provider === "gateway") return reply.code(422).send(failure("invalid_provider"));
+    if (provider === "gateway" || provider === "nautilo-gateway") return reply.code(422).send(failure("invalid_provider"));
     const custody = await readCustody(reply);
     if (!custody) return;
     try {
@@ -423,13 +441,8 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
       }
       emitAudit(request, { kind: "personal_provider_credential_changed", actorId: userId, provider, credentialId: record.id, revision: expectedRevision, action: "validated", validationStatus: observation.status });
       if (provider === "surplus"
-        && observation.status === "accepted"
-        && observation.receiptReadStatus === "available") {
-        await deps.requeueBlockedSurplusAttempts({
-          payerHumanId: userId,
-          credentialId: record.id,
-          credentialRevision: expectedRevision,
-        });
+        && observation.status === "accepted") {
+        await requeueReceipts(userId, result.credential);
       }
       return reply.send({ credential: metadata(result.credential, access), committed: false });
     } catch (error) {

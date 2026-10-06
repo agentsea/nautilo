@@ -154,6 +154,28 @@ describe("PersonalProviderKeysSection", () => {
     await waitFor(() => expect(keyApi.deleteProviderCredential).toHaveBeenLastCalledWith("openai", { expectedRevision: 5 }));
   });
 
+  test("invalidates delete confirmation when focus refresh replaces the credential", async () => {
+    let resolveRefresh!: (value: ReturnType<typeof listResponse>) => void;
+    let reads = 0;
+    const keyApi = api({
+      listProviderCredentials: mock(() => reads++ === 0
+        ? Promise.resolve(listResponse([saved]))
+        : new Promise<ReturnType<typeof listResponse>>((resolve) => { resolveRefresh = resolve; })),
+    });
+    const view = render(<PersonalProviderKeysSection credentialApi={keyApi} />);
+    fireEvent.click(await view.findByRole("button", { name: "Delete OpenAI key" }));
+    expect(view.getByRole("button", { name: "Delete key" })).toBeTruthy();
+
+    fireEvent(window, new Event("focus"));
+    await act(async () => resolveRefresh(listResponse([{ ...saved, id: "credential-2", revision: 5, updatedAt: "2026-09-30T12:00:00.000Z" }])));
+
+    expect(view.queryByRole("button", { name: "Delete key" })).toBeNull();
+    expect(keyApi.deleteProviderCredential).not.toHaveBeenCalled();
+    fireEvent.click(view.getByRole("button", { name: "Delete OpenAI key" }));
+    fireEvent.click(view.getByRole("button", { name: "Delete key" }));
+    await waitFor(() => expect(keyApi.deleteProviderCredential).toHaveBeenCalledWith("openai", { expectedRevision: 5 }));
+  });
+
   test("offers retry only for transient load failures", async () => {
     const view = render(<PersonalProviderKeysSection credentialApi={api({ listProviderCredentials: mock(async () => { throw new ProviderCredentialApiError(503, "credential_custody_unavailable", false, true, "contact_operator"); }) })} />);
     expect((await view.findByRole("alert")).textContent).toContain("Contact the Server operator");

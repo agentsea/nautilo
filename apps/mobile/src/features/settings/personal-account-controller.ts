@@ -10,6 +10,7 @@ import { ProviderCredentialApiError } from "@nautilo/api-client/browser";
 
 import {
   createSettingsDataState,
+  sameSettingsDataScope,
   type SettingsDataScope,
   type SettingsDataStateController,
   type SettingsLoadResult,
@@ -116,12 +117,20 @@ export function createPersonalCostsController(
 ): PersonalCostsController {
   const data = createSettingsDataState<PersonalCostsSummary, { range: PersonalCostsRangeKey }>();
   let range: PersonalCostsRangeKey = "30d";
+  let scope: SettingsDataScope | null = null;
   const load = (scope: SettingsDataScope): Promise<PersonalCostsSummary> => apiForScope(scope).getPersonalCosts(range);
   return {
     data,
-    setScope: (scope) => data.setScope(scope),
+    setScope(nextScope) {
+      if (!sameSettingsDataScope(scope, nextScope)) range = "30d";
+      scope = nextScope;
+      data.setScope(nextScope);
+    },
     load(nextRange) {
-      if (nextRange) range = nextRange;
+      if (nextRange) {
+        range = nextRange;
+        data.setDraft({ range });
+      }
       return data.load(load);
     },
     retry: () => data.retryLoad(load),

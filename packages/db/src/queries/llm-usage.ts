@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   and,
   asc,
   desc,
   eq,
+  exists,
   gte,
   inArray,
   isNotNull,
@@ -429,7 +431,13 @@ export async function settleSurplusLlmAttempt(
       ...(input.pricingVersion === undefined ? {} : { pricingVersion: input.pricingVersion }),
       recoveryState: input.costState === "actual" || input.costState === "estimated"
         ? null
-        : sql`coalesce(${llmUsageEvents.recoveryState}, 'pending')`,
+        : mayReplaceCost
+          ? sql`case
+              when ${mayReplaceCost}
+                then coalesce(${llmUsageEvents.recoveryState}, 'pending')
+              else null
+            end`
+          : sql`coalesce(${llmUsageEvents.recoveryState}, 'pending')`,
       ...(input.servingProvider === undefined
         ? {}
         : { servingProvider: input.servingProvider?.trim() || null }),
@@ -480,12 +488,21 @@ export async function settlePersonalLlmAttempt(
       ? inputTokens + outputTokens : undefined;
   const providerRequestId = input.providerRequestId === undefined
     ? undefined : assertNonEmpty(input.providerRequestId, "providerRequestId");
+  const metadataPatch = input.metadata === undefined
+    ? undefined
+    : JSON.parse(JSON.stringify(input.metadata)) as Record<string, unknown>;
+  const pricingVersion = input.pricingVersion?.trim() || null;
+  const servingProvider = input.servingProvider === undefined
+    ? undefined
+    : input.servingProvider?.trim() || null;
+  const failureCode = input.failureCode?.trim() || null;
+  const settledAt = input.settledAt ?? new Date();
   const rows = await db().update(llmUsageEvents).set({
     ...(input.preserveOutcome ? {} : { attemptOutcome: input.outcome }),
     costState: input.costState,
     ...(providerRequestId === undefined ? {} : { providerRequestId }),
-    ...(input.metadata === undefined ? {} : {
-      metadata: sql`coalesce(${llmUsageEvents.metadata}, '{}'::jsonb) || ${JSON.stringify(input.metadata)}::jsonb`,
+    ...(metadataPatch === undefined ? {} : {
+      metadata: sql`coalesce(${llmUsageEvents.metadata}, '{}'::jsonb) || ${JSON.stringify(metadataPatch)}::jsonb`,
     }),
     ...(inputTokens === undefined ? {} : { inputTokens }),
     ...(outputTokens === undefined ? {} : { outputTokens }),
@@ -496,11 +513,10 @@ export async function settlePersonalLlmAttempt(
     ...(totalTokens === undefined ? {} : { totalTokens }),
     estimatedCostUsd: estimatedCostUsd ?? "0.00000000",
     actualCostUsd,
-    pricingVersion: input.pricingVersion?.trim() || null,
-    ...(input.servingProvider === undefined
-      ? {} : { servingProvider: input.servingProvider?.trim() || null }),
-    ...(input.preserveOutcome ? {} : { failureCode: input.failureCode?.trim() || null }),
-    ...(input.preserveOutcome ? {} : { settledAt: input.settledAt ?? new Date() }),
+    pricingVersion,
+    ...(servingProvider === undefined ? {} : { servingProvider }),
+    ...(input.preserveOutcome ? {} : { failureCode }),
+    ...(input.preserveOutcome ? {} : { settledAt }),
     updatedAt: new Date(),
   }).where(and(
     eq(llmUsageEvents.id, input.attemptId),
@@ -511,36 +527,52 @@ export async function settlePersonalLlmAttempt(
       : [eq(llmUsageEvents.attemptOutcome, "in_progress")]),
   )).returning({ id: llmUsageEvents.id });
   if (rows.length === 1) return;
-  if (input.preserveOutcome) {
-    const [current] = await db().select({
-      costState: llmUsageEvents.costState,
-      inputTokens: llmUsageEvents.inputTokens,
-      outputTokens: llmUsageEvents.outputTokens,
-      reasoningTokens: llmUsageEvents.reasoningTokens,
-      cachedInputTokens: llmUsageEvents.cachedInputTokens,
-      totalTokens: llmUsageEvents.totalTokens,
-      estimatedCostUsd: llmUsageEvents.estimatedCostUsd,
-      actualCostUsd: llmUsageEvents.actualCostUsd,
-      pricingVersion: llmUsageEvents.pricingVersion,
-    }).from(llmUsageEvents).where(and(
-      eq(llmUsageEvents.id, input.attemptId),
-      eq(llmUsageEvents.fundingKind, "personal"),
-      ne(llmUsageEvents.providerRoute, "surplus"),
-    )).limit(1);
-    const sameEvidence = current?.costState === input.costState
-      && (inputTokens === undefined || current.inputTokens === inputTokens)
-      && (outputTokens === undefined || current.outputTokens === outputTokens)
-      && (input.reasoningTokens === undefined
-        || current.reasoningTokens === nonnegativeInteger(input.reasoningTokens))
-      && (input.cachedInputTokens === undefined
-        || current.cachedInputTokens === nonnegativeInteger(input.cachedInputTokens))
-      && (totalTokens === undefined || current.totalTokens === totalTokens)
-      && (estimatedCostUsd === null || current.estimatedCostUsd === estimatedCostUsd)
-      && (actualCostUsd === null || current.actualCostUsd === actualCostUsd)
-      && (input.pricingVersion === undefined
-        || current.pricingVersion === (input.pricingVersion?.trim() || null));
-    if (sameEvidence) return;
-  }
+  const [current] = await db().select({
+    attemptOutcome: llmUsageEvents.attemptOutcome,
+    costState: llmUsageEvents.costState,
+    providerRequestId: llmUsageEvents.providerRequestId,
+    metadata: llmUsageEvents.metadata,
+    inputTokens: llmUsageEvents.inputTokens,
+    outputTokens: llmUsageEvents.outputTokens,
+    reasoningTokens: llmUsageEvents.reasoningTokens,
+    cachedInputTokens: llmUsageEvents.cachedInputTokens,
+    totalTokens: llmUsageEvents.totalTokens,
+    estimatedCostUsd: llmUsageEvents.estimatedCostUsd,
+    actualCostUsd: llmUsageEvents.actualCostUsd,
+    pricingVersion: llmUsageEvents.pricingVersion,
+    servingProvider: llmUsageEvents.servingProvider,
+    failureCode: llmUsageEvents.failureCode,
+    settledAt: llmUsageEvents.settledAt,
+  }).from(llmUsageEvents).where(and(
+    eq(llmUsageEvents.id, input.attemptId),
+    eq(llmUsageEvents.fundingKind, "personal"),
+    ne(llmUsageEvents.providerRoute, "surplus"),
+  )).limit(1);
+  const sameMetadata = metadataPatch === undefined
+    || Object.entries(metadataPatch).every(([key, value]) => (
+      isDeepStrictEqual(current?.metadata?.[key], value)
+    ));
+  const sameEvidence = current?.costState === input.costState
+    && (providerRequestId === undefined || current.providerRequestId === providerRequestId)
+    && sameMetadata
+    && (inputTokens === undefined || current.inputTokens === inputTokens)
+    && (outputTokens === undefined || current.outputTokens === outputTokens)
+    && (input.reasoningTokens === undefined
+      || current.reasoningTokens === nonnegativeInteger(input.reasoningTokens))
+    && (input.cachedInputTokens === undefined
+      || current.cachedInputTokens === nonnegativeInteger(input.cachedInputTokens))
+    && (totalTokens === undefined || current.totalTokens === totalTokens)
+    && current.estimatedCostUsd === (estimatedCostUsd ?? "0.00000000")
+    && current.actualCostUsd === actualCostUsd
+    && current.pricingVersion === pricingVersion
+    && (servingProvider === undefined || current.servingProvider === servingProvider);
+  const sameTerminalState = input.preserveOutcome || (
+    current?.attemptOutcome === input.outcome
+    && current.failureCode === failureCode
+    && (input.settledAt === undefined
+      || current.settledAt?.getTime() === input.settledAt.getTime())
+  );
+  if (sameEvidence && sameTerminalState) return;
   throw new Error("Personal attempt settlement conflicts with durable state");
 }
 
@@ -642,7 +674,7 @@ export async function classifySurplusLlmAttemptRecovery(input: {
   return rows.length === 1;
 }
 
-/** Requeue only the exact repaired personal credential's unresolved receipts. */
+/** Requeue one payer's blocked receipts after proving the supplied key is still current. */
 export async function requeueBlockedPersonalSurplusAttempts(input: {
   payerHumanId: string;
   credentialId: string;
@@ -659,10 +691,16 @@ export async function requeueBlockedPersonalSurplusAttempts(input: {
     eq(llmUsageEvents.providerRoute, "surplus"),
     eq(llmUsageEvents.fundingKind, "personal"),
     eq(llmUsageEvents.payerHumanId, input.payerHumanId),
-    eq(llmUsageEvents.credentialId, input.credentialId),
-    eq(llmUsageEvents.credentialRevision, input.credentialRevision),
     eq(llmUsageEvents.recoveryState, "blocked_repair"),
     inArray(llmUsageEvents.costState, ["pending", "unknown"]),
+    exists(db().select({ id: personalProviderCredentials.id })
+      .from(personalProviderCredentials)
+      .where(and(
+        eq(personalProviderCredentials.userId, input.payerHumanId),
+        eq(personalProviderCredentials.provider, "surplus"),
+        eq(personalProviderCredentials.id, input.credentialId),
+        eq(personalProviderCredentials.revision, input.credentialRevision),
+      ))),
   )).returning({ id: llmUsageEvents.id });
   return rows.length;
 }
@@ -1092,6 +1130,7 @@ const SAFE_RECOVERY_REASONS = new Set([
   "pre_service_refusal",
   "provider_refused",
   "provider_route_mismatch",
+  "receipt_account_unproven",
   "receipt_binding_invalid",
   "receipt_binding_missing",
   "receipt_binding_pending",
@@ -1148,7 +1187,7 @@ function personalRecoveryAttempt(row: {
         : "cost_evidence_unavailable";
   const reason = safeRecoveryReason(row.failureCode, fallbackReason);
   const repairAction = status === "blocked"
-    ? reason === "receipt_read_unavailable" || reason === "receipt_read_unauthorized"
+    ? reason === "receipt_read_unavailable" || reason === "receipt_read_unauthorized" || reason === "receipt_account_unproven"
       ? "check_receipt_access"
       : reason === "credential_custody_unavailable"
         ? "contact_operator"

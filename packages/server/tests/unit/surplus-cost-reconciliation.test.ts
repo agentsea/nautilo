@@ -90,6 +90,57 @@ describe("Surplus automatic financial recovery", () => {
     expect(classifications).toHaveLength(3);
   });
 
+  test("reads a payer-owned replacement's exact receipt despite unavailable list scope", async () => {
+    for (const outcome of ["settled", "blocked_repair", "retryable"] as const) {
+      let reads = 0;
+      const writes: unknown[] = [];
+      const classifications: unknown[] = [];
+      const personalRow = { ...row, fundingKind: "personal" as const,
+        payerHumanId: "payer-a", credentialId: "original-credential", credentialRevision: 1 };
+      const recovery = createSurplusCostRecovery({
+        list: async () => [personalRow],
+        resolveCredential: () => ({ ...available("replacement-key"), replacement: true, receiptReadStatus: "unavailable" }),
+        fetchCost: async (input) => {
+          reads++;
+          expect(input.apiKey).toBe("replacement-key");
+          expect(input.binding.requestId).toBe(row.providerRequestId!);
+          return outcome === "settled" ? { status: outcome, costMicro: 283 }
+            : outcome === "blocked_repair" ? { status: outcome, failureCode: "receipt_read_unauthorized" }
+            : { status: outcome, failureCode: "receipt_not_found" };
+        },
+        settle: async (input) => { writes.push(input); return true; },
+        classify: async (input) => { classifications.push(input); return true; },
+      });
+      recovery.wake();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await recovery.stop();
+      expect(reads).toBe(1);
+      expect(writes).toHaveLength(outcome === "settled" ? 1 : 0);
+      expect(classifications).toHaveLength(outcome === "settled" ? 0 : 1);
+      if (outcome === "retryable") expect(classifications[0]).toMatchObject({
+        recoveryState: "blocked_repair", failureCode: "receipt_account_unproven",
+      });
+      if (outcome === "settled") expect(writes[0]).toEqual({
+        attemptId: row.id, providerRequestId: row.providerRequestId,
+        expectedUpdatedAtToken: row.updatedAtToken, actualCostUsd: 0.000283,
+      });
+    }
+  });
+
+  test("list denial does not block the creating key's exact receipt", async () => {
+    let reads = 0;
+    const recovery = createSurplusCostRecovery({
+      list: async () => [row],
+      resolveCredential: () => ({ ...available(), receiptReadStatus: "unavailable" }),
+      fetchCost: async () => { reads++; return { status: "settled", costMicro: 0 }; },
+      settle: async () => true,
+    });
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await recovery.stop();
+    expect(reads).toBe(1);
+  });
+
   test("a bounded fair-ranked page reaches a later account receipt", async () => {
     let resolveSettled!: () => void;
     const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });

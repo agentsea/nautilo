@@ -56,7 +56,9 @@ export type SurplusSettlementReadResult =
 export function readConfirmedSurplusSettlement(value: unknown, binding: SurplusSettlementBinding): number | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
-  // The creating key and exact request ID bind this charge to its attempt.
+  // The authenticated account-scoped exact-request read and matching ID bind
+  // this charge to its original attempt, including an authorized replacement
+  // key. Never use list results or a caller-supplied request ID as evidence.
   // Surplus resolves provider aliases to a canonical model in request detail;
   // that spelling change must not discard a confirmed financial receipt.
   // Model/answer correctness is a separate execution concern.

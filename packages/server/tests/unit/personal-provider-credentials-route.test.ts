@@ -642,10 +642,10 @@ describe("personal provider credential routes", () => {
       },
     });
     expect(response.body).not.toContain(SENTINEL);
-    expect(harness.requeuedCredentials).toEqual([]);
+    expect(harness.requeuedCredentials).toMatchObject([{ payerHumanId: USER_A, credentialRevision: 1 }]);
   });
 
-  test("requeues only the exact Surplus credential revision after receipt access is repaired", async () => {
+  test("requeues the payer receipts using the current repaired Surplus credential", async () => {
     let validationCount = 0;
     const harness = await makeHarness({
       validate: async () => {
@@ -671,11 +671,38 @@ describe("personal provider credential routes", () => {
       headers: auth(), payload: { expectedRevision: 1 },
     });
     expect(validated.statusCode).toBe(200);
-    expect(harness.requeuedCredentials).toEqual([{
-      payerHumanId: USER_A,
-      credentialId,
-      credentialRevision: 1,
-    }]);
+    expect(harness.requeuedCredentials).toEqual(Array.from({ length: 2 }, () => ({
+      payerHumanId: USER_A, credentialId, credentialRevision: 1,
+    })));
+    const replaced = await harness.app.inject({
+      method: "PUT", url: "/api/account/provider-credentials/surplus",
+      headers: auth(), payload: { apiKey: `${SENTINEL}-replacement`, expectedRevision: 1 },
+    });
+    expect(replaced.statusCode).toBe(200);
+    expect(harness.requeuedCredentials.at(-1)).toEqual({
+      payerHumanId: USER_A, credentialId, credentialRevision: 2,
+    });
+  });
+
+  test("does not report a committed key replacement as failed when receipt wake is unavailable", async () => {
+    const custody = createPersonalProviderCustody();
+    const existing = credential(custody, { userId: USER_A, provider: "surplus", plaintext: SENTINEL });
+    const harness = await makeHarness({ custody, records: [existing],
+      validate: async () => ({ status: "accepted" }),
+      fail: new Set(["requeueBlockedSurplusAttempts"]),
+    });
+    const response = await harness.app.inject({
+      method: "PUT", url: "/api/account/provider-credentials/surplus",
+      headers: auth(), payload: { apiKey: `${SENTINEL}-replacement`, expectedRevision: 1 },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(body(response)).toMatchObject({ committed: true, credential: { revision: 2 } });
+    const validated = await harness.app.inject({
+      method: "POST", url: "/api/account/provider-credentials/surplus/validate",
+      headers: auth(), payload: { expectedRevision: 2 },
+    });
+    expect(validated.statusCode).toBe(200);
+    expect(body(validated)).toMatchObject({ credential: { revision: 2, validationStatus: "accepted" } });
   });
 
   test("lists a legacy Gateway row, flags destination changes, and permits safe deletion", async () => {
@@ -742,6 +769,31 @@ describe("personal provider credential routes", () => {
     expect(harness.auditEvents).toEqual([]);
   });
 
+  test("retired gateway rows remain readable and removable but cannot be renewed", async () => {
+    for (const provider of ["gateway", "nautilo-gateway"] as const) {
+      const custody = createPersonalProviderCustody();
+      const existing = credential(custody, { userId: USER_A, provider, plaintext: SENTINEL });
+      const harness = await makeHarness({ custody, records: [existing] });
+      for (const method of ["PUT", "POST"] as const) {
+        const response = await harness.app.inject({
+          method, url: `/api/account/provider-credentials/${provider}${method === "POST" ? "/validate" : ""}`,
+          headers: auth(), payload: method === "PUT"
+            ? { apiKey: SENTINEL, expectedRevision: 1 } : { expectedRevision: 1 },
+        });
+        expect(response.statusCode).toBe(422);
+        expect(body(response)["error"]).toBe("invalid_provider");
+      }
+      expect(harness.calls).not.toContain("custody");
+      expect(harness.validatedSecrets).toEqual([]);
+      expect(harness.records.get(key(USER_A, provider))).toEqual(existing);
+      const listed = await harness.app.inject({ method: "GET", url: "/api/account/provider-credentials", headers: auth() });
+      expect(body(listed)["credentials"]).toMatchObject([{ provider, revision: 1 }]);
+      const removed = await harness.app.inject({ method: "DELETE", url: `/api/account/provider-credentials/${provider}`, headers: auth(), payload: { expectedRevision: 1 } });
+      expect(removed.statusCode).toBe(200);
+      expect(harness.records.has(key(USER_A, provider))).toBe(false);
+    }
+  });
+
   test("rejects new removed or unavailable providers while preserving revision conflict semantics", async () => {
     const harness = await makeHarness();
     for (const provider of ["nautilo-gateway", "gateway"] as const) {
@@ -769,7 +821,7 @@ describe("personal provider credential routes", () => {
   });
 
   test("keeps supported creation and retained-row replacement actor-scoped", async () => {
-    for (const provider of ["xai", "together", "nautilo-gateway"] as const) {
+    for (const provider of ["xai", "together"] as const) {
       const custody = createPersonalProviderCustody();
       const existing = credential(custody, {
         userId: USER_A, provider, plaintext: `${SENTINEL}-old-${provider}`,

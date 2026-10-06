@@ -20,6 +20,7 @@ import {
 import {
   personalCostCallTypeRows,
   personalCostDayRows,
+  personalCostsForRequestedRange,
   personalUnknownProviderOperations,
 } from "@/features/settings/personal-costs-presentation";
 import { settingsScopeForVerifiedViewer } from "@/features/settings/settings-data-state";
@@ -73,8 +74,8 @@ export default function PersonalCostsScreen() {
       return () => controller.setScope(null);
     }, [controller, scope]),
   );
-  const range = state.data?.range.key ?? state.draft?.range ?? "30d";
-  const data = state.data;
+  const range = state.draft?.range ?? state.data?.range.key ?? "30d";
+  const data = personalCostsForRequestedRange(state.data, range);
   const unresolved = data
     ? data.recovery.pendingAttempts + data.recovery.unknownAttempts
     : 0;

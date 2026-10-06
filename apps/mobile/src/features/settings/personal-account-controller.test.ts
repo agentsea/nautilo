@@ -21,9 +21,9 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function costs(totalCostUsd: number): PersonalCostsSummary {
+function costs(totalCostUsd: number, range: PersonalCostsSummary["range"]["key"] = "30d"): PersonalCostsSummary {
   return {
-    currency: "USD", range: { key: "30d", since: "2026-09-05T00:00:00Z", until: "2026-10-05T00:00:00Z" }, pricingVersion: "v1",
+    currency: "USD", range: { key: range, since: "2026-09-05T00:00:00Z", until: "2026-10-05T00:00:00Z" }, pricingVersion: "v1",
     entry: { available: true, hasPersonalCredentials: true, hasHistory: totalCostUsd > 0 },
     totals: { calls: 1, providerOperations: 0, unknownProviderOperations: 0, inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, totalTokens: 2, estimatedCostUsd: 0, actualCostUsd: totalCostUsd, totalCostUsd, pendingAttempts: 0, unknownAttempts: 0, retryableAttempts: 0, blockedAttempts: 0 },
     byModel: [], byCallType: [], byProvider: [], byTask: [], timeSeries: [], recovery: { attempts: [], pendingAttempts: 0, retryableAttempts: 0, blockedAttempts: 0, unknownAttempts: 0 },
@@ -198,5 +198,49 @@ describe("personal account Settings controllers", () => {
     first.resolve(costs(1));
     expect(await oldLoad).toEqual({ status: "ignored" });
     expect(controller.data.getState().data?.totals.totalCostUsd).toBe(2);
+  });
+
+  test("keeps a failed range request authoritative through retry", async () => {
+    const requested: string[] = [];
+    let failSevenDays = true;
+    const controller = createPersonalCostsController(() => ({
+      getPersonalCosts: async (range) => {
+        requested.push(range);
+        if (range === "7d" && failSevenDays) {
+          failSevenDays = false;
+          throw new Error("offline");
+        }
+        return costs(range === "7d" ? 7 : 30, range);
+      },
+    }));
+    controller.setScope(scopeOne);
+
+    await controller.load();
+    expect(controller.data.getState().data?.range.key).toBe("30d");
+    expect(await controller.setRange("7d")).toMatchObject({ status: "failed" });
+    expect(controller.data.getState().draft).toEqual({ range: "7d" });
+    expect(controller.data.getState().data?.range.key).toBe("30d");
+
+    expect(await controller.retry()).toMatchObject({ status: "applied" });
+    expect(controller.data.getState().data?.range.key).toBe("7d");
+    expect(requested).toEqual(["30d", "7d", "7d"]);
+  });
+
+  test("resets the requested cost range when identity scope changes", async () => {
+    const requested: Array<[string, string]> = [];
+    const controller = createPersonalCostsController((scope) => ({
+      getPersonalCosts: async (range) => {
+        requested.push([scope.serverId, range]);
+        return costs(scope.serverId === "one" ? 1 : 2, range);
+      },
+    }));
+    controller.setScope(scopeOne);
+    await controller.setRange("7d");
+    controller.setScope(scopeTwo);
+
+    expect(controller.data.getState().draft).toBeNull();
+    await controller.load();
+    expect(controller.data.getState().data?.range.key).toBe("30d");
+    expect(requested).toEqual([["one", "7d"], ["two", "30d"]]);
   });
 });

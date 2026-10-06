@@ -41,6 +41,12 @@ type RowAction =
   | { kind: "busy"; action: "save" | "validate" | "delete" }
   | { kind: "error"; message: string };
 
+interface DeleteConfirmation {
+  provider: string;
+  credential: CredentialMetadata;
+  allowPersonalProviderKeys: boolean;
+}
+
 type ProviderRow = PersonalProviderKeyCatalogueEntry & {
   catalogued: boolean;
   available: boolean;
@@ -99,6 +105,20 @@ function credentialChanged(): void {
   window.dispatchEvent(new Event(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT));
 }
 
+function sameCredentialMetadata(left: CredentialMetadata, right: CredentialMetadata): boolean {
+  return left.provider === right.provider
+    && left.id === right.id
+    && left.revision === right.revision
+    && left.createdAt === right.createdAt
+    && left.updatedAt === right.updatedAt
+    && left.validationStatus === right.validationStatus
+    && left.validatedAt === right.validatedAt
+    && left.requiresReplacement === right.requiresReplacement
+    && left.masked === right.masked
+    && left.destination === right.destination
+    && left.receiptReadStatus === right.receiptReadStatus;
+}
+
 export interface PersonalProviderKeysSectionProps {
   credentialApi?: CredentialApi;
   showServerAdminLink?: boolean;
@@ -111,7 +131,7 @@ export function PersonalProviderKeysSection({
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
   const [secret, setSecret] = useState("");
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<DeleteConfirmation | null>(null);
   const [rowActions, setRowActions] = useState<Record<string, RowAction>>({});
   const [savedProvider, setSavedProvider] = useState<string | null>(null);
   const mountedRef = useRef(true);
@@ -139,11 +159,17 @@ export function PersonalProviderKeysSection({
         setSavedProvider(null);
         setRowActions({});
       }
+      const allowPersonalProviderKeys = result.allowPersonalProviderKeys !== false;
+      setConfirmDelete((confirmation) => {
+        if (!confirmation || confirmation.allowPersonalProviderKeys !== allowPersonalProviderKeys) return null;
+        const current = result.credentials.find((credential) => credential.provider === confirmation.provider);
+        return current && sameCredentialMetadata(current, confirmation.credential) ? confirmation : null;
+      });
       setState({
         kind: "ready",
         credentials: result.credentials,
         providers: result.providers,
-        allowPersonalProviderKeys: result.allowPersonalProviderKeys !== false,
+        allowPersonalProviderKeys,
       });
       return "ready" as const;
     } catch (error) {
@@ -373,10 +399,11 @@ export function PersonalProviderKeysSection({
     }
   };
 
-  const remove = async (provider: string, current: CredentialMetadata) => {
+  const remove = async (confirmation: DeleteConfirmation) => {
+    const { provider, credential } = confirmation;
     setRowAction(provider, { kind: "busy", action: "delete" });
     try {
-      await credentialApi.deleteProviderCredential(provider, { expectedRevision: current.revision });
+      await credentialApi.deleteProviderCredential(provider, { expectedRevision: credential.revision });
       if (!mountedRef.current) return;
       setState((previous) => previous.kind === "ready"
         ? {
@@ -529,10 +556,10 @@ export function PersonalProviderKeysSection({
                         </Button>
                       </div>
                     </div>
-                  ) : confirmDelete === provider.id && current ? (
+                  ) : confirmDelete?.provider === provider.id && current ? (
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-xs text-foreground-muted">Delete this saved key?</span>
-                      <Button loading={busy} disabled={!deletionEnabled || busy} onClick={() => void remove(provider.id, current)}>Delete key</Button>
+                      <Button loading={busy} disabled={!deletionEnabled || busy} onClick={() => void remove(confirmDelete)}>Delete key</Button>
                       <Button variant="ghost" disabled={busy} onClick={() => setConfirmDelete(null)}>Cancel</Button>
                     </div>
                   ) : (
@@ -561,7 +588,11 @@ export function PersonalProviderKeysSection({
                           variant="ghost"
                           disabled={!deletionEnabled || busy}
                           ariaLabel={provider.available || (personalKeysDisabled && provider.catalogued) ? `Delete ${provider.name} key` : `Delete legacy ${provider.name} key`}
-                          onClick={() => setConfirmDelete(provider.id)}
+                          onClick={() => setConfirmDelete({
+                            provider: provider.id,
+                            credential: { ...current },
+                            allowPersonalProviderKeys: state.kind === "ready" && state.allowPersonalProviderKeys,
+                          })}
                         >Delete</Button>
                       ) : null}
                     </div>

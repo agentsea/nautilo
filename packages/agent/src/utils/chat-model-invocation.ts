@@ -64,7 +64,11 @@ import type {
   ForegroundChatFundingAttempt,
   ForegroundChatFundingSession,
 } from "../runtime/foreground-chat-funding";
-import { runPersonalLlmAttempt, PersonalAttemptLedgerUnavailableError } from "../usage/personal-llm-attempt";
+import {
+  runPersonalLlmAttempt,
+  PersonalAttemptInvocationError,
+  PersonalAttemptLedgerUnavailableError,
+} from "../usage/personal-llm-attempt";
 import { filterPersonalTaskControlTools } from "../runtime/personal-task-controls";
 
 /**
@@ -485,18 +489,26 @@ async function invokeOnceWithShortRetries(
       return await runPersonalLlmAttempt({ modelId,
         endpoint,
         signal: llmCallConfig.signal,
+        hasObservedProviderWork: () => hasAssistantVisibleOutputForCurrentTurn(agentId),
         invoke: () => invokeModelWithAttemptSupervisor(modelWithTools, messages, llmCallConfig, agentId, attemptPolicy, attemptPolicyOptions.isolatedProgress),
       });
     } catch (error) {
+      const personalAttemptError = error instanceof PersonalAttemptInvocationError ? error : undefined;
+      const providerError = personalAttemptError?.cause ?? error;
       // Caller cancellation is a terminal control-flow outcome, not a model
       // failure. Never turn it into a same-model retry because a provider's
       // cooperative AbortError happens to resemble a timeout.
       if (llmCallConfig.signal?.aborted) throw error;
       // Unknown/visible timeout outcomes cannot be replayed. Safe supervised timeouts
       // use the existing bounded same-model retry policy, including strict model mode.
-      if (isProviderTimeoutError(error) && (!isSafelyRetryableProviderTimeout(error)
+      if (isProviderTimeoutError(providerError) && (!isSafelyRetryableProviderTimeout(providerError)
         || hasAssistantVisibleOutputForCurrentTurn(agentId))) throw error;
-      const classified = classifyError(error);
+      if (personalAttemptError && hasAssistantVisibleOutputForCurrentTurn(agentId)) throw error;
+      // Personal unknown/cancelled attempts are terminal even when the raw
+      // transport shape (503, 408, ECONNRESET) would normally be retryable.
+      if (personalAttemptError?.disposition !== undefined
+        && personalAttemptError.disposition !== "safe_refusal") throw error;
+      const classified = classifyError(providerError);
       if (attempt >= maximumAttempts || !classified.retryable) throw error;
       const strategy = getRetryStrategy(classified);
       if (!strategy.shouldRetry) throw error;
@@ -1168,19 +1180,28 @@ export async function invokeChatModelWithFallback(
       // provider failure or unlock another fallback/funding source.
       if (!(error instanceof ProviderAttemptError)) throw error;
       const providerError = error.cause;
-      if (providerError instanceof SurplusOutcomeUnknownError) throw providerError;
+      const personalAttemptError = providerError instanceof PersonalAttemptInvocationError
+        ? providerError : undefined;
+      const providerFailure = personalAttemptError?.cause ?? providerError;
+      if (providerFailure instanceof SurplusOutcomeUnknownError) throw providerFailure;
       // The caller owns this cancellation. It must bypass error
       // classification, health cooldown, reasoning retries, and chain
       // fallback even if the provider surfaced a timeout-shaped AbortError.
       if (invocationConfig?.signal?.aborted) {
         throw personalFunding
           ? invocationConfig.signal.reason ?? new Error("Model invocation cancelled by caller")
-          : providerError;
+          : providerFailure;
       }
-      const classified = classifyError(providerError);
+      const classified = classifyError(providerFailure);
       const terminalProviderError = personalFunding
         ? new PersonalProviderInvocationError(classified.category)
-        : providerError;
+        : providerFailure;
+      // The short-retry loop preserves this explicit disposition. Honor it
+      // again at the chain boundary before reasoning, recovery, or fallback.
+      if (personalAttemptError?.disposition !== undefined
+        && personalAttemptError.disposition !== "safe_refusal") {
+        throw terminalProviderError;
+      }
       if (classified.category === "TOKEN_LIMIT" && invokeOptions?.recoverContext) {
         // Never retry after visible partial output, or echo a provider error
         // that could include the rejected source payload.
@@ -1218,7 +1239,7 @@ export async function invokeChatModelWithFallback(
       }
       disableReasoningOutput = false;
 
-      const surplusDirectUnavailable = providerError instanceof SurplusDirectFallbackUnavailableError;
+      const surplusDirectUnavailable = providerFailure instanceof SurplusDirectFallbackUnavailableError;
       // A missing original credential after a safe Surplus refusal does not
       // exhaust the configured chain. A rejected original credential likewise
       // leaves other provider routes usable; personal funding stays separate.

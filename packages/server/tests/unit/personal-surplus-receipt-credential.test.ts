@@ -35,7 +35,7 @@ function fixture(
 }
 
 describe("personal Surplus receipt credential resolution", () => {
-  test("returns only the exact creating credential regardless of later policy state", async () => {
+  test("returns the creating credential regardless of later policy state", async () => {
     const { custody, record } = fixture({
       validationStatus: "unavailable",
       receiptReadStatus: "unknown",
@@ -53,10 +53,11 @@ describe("personal Surplus receipt credential resolution", () => {
       status: "available",
       apiKey: API_KEY,
       receiptReadStatus: "unknown",
+      replacement: false,
     });
   });
 
-  test("does not substitute a missing or replaced credential", async () => {
+  test("distinguishes a missing key from a payer-owned replacement receipt candidate", async () => {
     const { custody, record } = fixture();
     const common = {
       getDb: () => ({}) as never,
@@ -75,9 +76,22 @@ describe("personal Surplus receipt credential resolution", () => {
       credentialId: CREDENTIAL_ID,
       credentialRevision: 2,
     }, { ...common, getCredential: async () => record })).toEqual({
-      status: "blocked_repair",
-      reason: "replaced",
+      status: "available",
+      apiKey: API_KEY,
+      receiptReadStatus: "available",
+      replacement: true,
     });
+  });
+
+  test("rejects a record belonging to another payer before decrypting", async () => {
+    const { custody, record } = fixture({ userId: "foreign-payer" });
+    const result = await resolvePersonalSurplusReceiptCredential({
+      userId: USER_ID, credentialId: CREDENTIAL_ID, credentialRevision: 2,
+    }, {
+      getDb: () => ({}) as never, getCredential: async () => record,
+      readCustody: async () => { throw new Error(`must not read ${custody.keyId}`); },
+    });
+    expect(result).toEqual({ status: "blocked_repair", reason: "missing" });
   });
 
   test("reduces custody failures to content-free repair state", async () => {
