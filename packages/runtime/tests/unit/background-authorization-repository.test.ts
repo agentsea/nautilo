@@ -37,6 +37,7 @@ import {
   BACKGROUND_AUTHORIZATION_TERMINAL_RETENTION_MS,
   BackgroundAuthorizationRepositoryConflictError,
   InMemoryBackgroundAuthorizationRepository,
+  buildUnclaimedTaskRuntimeAuthorityReplacement,
   buildAcceptedBackgroundAuthorizationResponse,
   assertBackgroundAuthorizationCasSuccessor,
   parseBackgroundAuthorizationRecord,
@@ -73,7 +74,7 @@ function taskRuntimeRecordV3(): BackgroundAuthorizationTaskRuntimeRecordV3 {
   return {
     snapshot: snapshot as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
     workIdentityHash: new Uint8Array(32).fill(0x75),
-    idempotencyKey: "task_runtime_idempotency_v3",
+    idempotencyKey: `task-runtime-stable-v1:${initial.workId}:${"a".repeat(43)}`,
     workKind: "task.execute",
     purpose: "task.execute",
     domainId: "task_runtime_domain_a",
@@ -564,6 +565,129 @@ describe("background authorization repository contract", () => {
       },
       START + 2,
     )).toThrow("does not match current durable authorization");
+  });
+
+  test("gives exactly one winner to Task inventory replacement versus claim", async () => {
+    const waiting = taskRuntimeRecordV3();
+    const response = verifiedTaskRuntimeResponseV3(waiting);
+    const replacement: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...waiting,
+      snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
+        requestId: waiting.snapshot.requestId,
+        workId: waiting.snapshot.workId,
+        namespaceId: waiting.snapshot.namespaceId,
+        now: START + 3,
+      }),
+      workIdentityHash: new Uint8Array(32).fill(0x76),
+      descriptorBytes: null,
+      acceptedMaterial: null,
+      authoritySet: {
+        ...waiting.authoritySet,
+        namespaceRequirements: [
+          ...waiting.authoritySet.namespaceRequirements,
+          {
+            ordinal: 1,
+            namespaceId: "z_scope_inventory_namespace",
+            domainId: waiting.domainId,
+            operations: ["decrypt"],
+            expectedAccessRevision: 8,
+            expectedPolicyRevision: waiting.expectedPolicyRevision,
+          },
+        ],
+      },
+    };
+    const readyRepository = async () => {
+      const repository = new InMemoryBackgroundAuthorizationRepository();
+      await repository.create(waiting);
+      const accepted = await repository.acceptVerifiedResponse({
+        response,
+        acceptedAt: START + 2,
+      });
+      if (accepted.status !== "accepted") throw new Error("grant not ready");
+      return {
+        repository,
+        ready: accepted.record as BackgroundAuthorizationTaskRuntimeRecordV3,
+      };
+    };
+
+    const claimFirst = await readyRepository();
+    const claimed = {
+      ...claimFirst.ready,
+      snapshot: claimBackgroundAuthorizationRequest(
+        claimFirst.ready.snapshot,
+        "inventory-race-claim",
+        START + 3,
+        START + 30_000,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    };
+    expect((await claimFirst.repository.compareAndSwap({
+      expectedRequestRevision: claimFirst.ready.snapshot.requestRevision,
+      next: claimed,
+    })).status).toBe("updated");
+    const lostReplacement = await claimFirst.repository
+      .replaceUnclaimedTaskRuntimeAuthority({
+        expected: claimFirst.ready,
+        replacement,
+        now: START + 3,
+      });
+    expect(lostReplacement).toMatchObject({
+      status: "stale",
+      current: { snapshot: { state: "claimed" } },
+    });
+
+    const replacementFirst = await readyRepository();
+    const wonReplacement = await replacementFirst.repository
+      .replaceUnclaimedTaskRuntimeAuthority({
+        expected: replacementFirst.ready,
+        replacement,
+        now: START + 3,
+      });
+    expect(wonReplacement).toMatchObject({
+      status: "replaced",
+      record: {
+        snapshot: {
+          state: "awaiting_recipient",
+          recipientGeneration: 1,
+          requestRevision: replacementFirst.ready.snapshot.requestRevision + 1,
+        },
+        descriptorBytes: null,
+        acceptedMaterial: null,
+      },
+    });
+    expect((await replacementFirst.repository.compareAndSwap({
+      expectedRequestRevision: replacementFirst.ready.snapshot.requestRevision,
+      next: {
+        ...replacementFirst.ready,
+        snapshot: claimBackgroundAuthorizationRequest(
+          replacementFirst.ready.snapshot,
+          "inventory-race-losing-claim",
+          START + 3,
+          START + 30_000,
+        ),
+      },
+    })).status).toBe("stale");
+  });
+
+  test("refuses an unversioned Task identity at the replacement boundary", () => {
+    const expected = {
+      ...taskRuntimeRecordV3(),
+      idempotencyKey: "legacy-task-runtime-request",
+    };
+    const replacement = {
+      ...expected,
+      snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
+        requestId: expected.snapshot.requestId,
+        workId: expected.snapshot.workId,
+        namespaceId: expected.snapshot.namespaceId,
+        now: START + 3,
+      }),
+      descriptorBytes: null,
+    };
+    expect(() => buildUnclaimedTaskRuntimeAuthorityReplacement({
+      expected,
+      replacement,
+      now: START + 3,
+    })).toThrow("changed stable work identity");
   });
 
   test("accepts only the exact semantic Reflection V2 work-purpose pairs", () => {

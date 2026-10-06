@@ -23,8 +23,10 @@ import type {
 } from "@nautilo/db";
 import {
   createBackgroundAuthorizationTaskRuntimeRequestV3,
+  taskRuntimeStableIdempotencyKey,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
   type TaskRuntimeGrantClaimPlan,
+  type TaskRuntimeGrantStableIdentity,
   type ProtectedTaskPredispatchPlan,
   type ProtectedTaskOccurrence,
 } from "@nautilo/runtime";
@@ -363,6 +365,36 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       || output.binding.acceptedPolicyRevision !== authority.policyRevision) {
       throw new TypeError("Protected Task output binding is unavailable");
     }
+    const stableIdentity: TaskRuntimeGrantStableIdentity = Object.freeze({
+      taskId: occurrence.task.id,
+      taskRunId: occurrence.run.id,
+      ownerId: occurrence.task.ownerId,
+      requestorId: occurrence.task.requestorId,
+      agentId: occurrence.task.agentId,
+      callingRoomId: occurrence.task.callingRoomId,
+      scheduleKind: occurrence.task.scheduleKind,
+      graphThreadId: occurrence.run.graphThreadId,
+      startedAt: occurrence.run.startedAt.getTime(),
+      sourceRoomId: resolvedAuthority.sourceRoomId,
+      targetRoomId: prepared.target.roomId,
+      targetUserIds: Object.freeze(
+        [...prepared.target.targetUserIds].sort(),
+      ),
+      outputRoomId: outputDestination?.roomId ?? null,
+      outputNamespaceId: outputDestination?.namespaceId ?? null,
+      memoryMode: prepared.memory.mode,
+      scopeId: prepared.memory.envelope.memoryMode === "scope"
+        ? prepared.memory.envelope.scopeId
+        : null,
+      contentRepresentation: occurrence.task.contentRepresentation,
+      contentNamespaceId: occurrence.task.contentNamespaceId,
+      contentRevision: occurrence.task.contentRevision,
+      contentObjectId: occurrence.task.cryptoObjectId,
+      contentAccessRevision: occurrence.task.cryptoAccessRevision,
+      requiredNamespaceFingerprint: Buffer.from(
+        occurrence.task.cryptoRequiredNamespaceFingerprint,
+      ).toString("base64url"),
+    });
     const initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3 = Object.freeze({
       snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
         requestId,
@@ -391,7 +423,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
         namespaces: authority.namespaces,
         domains: authority.domains,
       })).digest(),
-      idempotencyKey: `task-run:${occurrence.run.id}`,
+      idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity),
       workKind: "task.execute",
       purpose: "task.execute",
       domainId: contentAuthority.domainId,
@@ -440,6 +472,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
     }
 
     return Object.freeze({
+      stableIdentity,
       initialRecord,
       reference,
       scheduling: prepared.scheduling,

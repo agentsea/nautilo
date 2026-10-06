@@ -31,6 +31,30 @@ function envelope(): MemoryAccessEnvelope {
   };
 }
 
+function memoryHandoff(): NonNullable<
+  RunScopeSubagentOpts["protectedTaskMemoryHandoff"]
+> {
+  const unavailable = async () => ({
+    status: "unavailable" as const,
+    reason: "authorization_required" as const,
+  });
+  return Object.freeze({
+    search: Object.freeze({ search: unavailable }),
+    repository: Object.freeze({
+      search: unavailable,
+      save: unavailable,
+      replace: unavailable,
+      setTier: unavailable,
+    }),
+    access: Object.freeze({ change: unavailable }),
+    projection: Object.freeze({
+      prepare: unavailable,
+      publish: unavailable,
+    }),
+    fullEncryptionOnly: false,
+  });
+}
+
 function fixture(
   overrides: Partial<RunProtectedTaskNativeSegmentInput> = {},
 ) {
@@ -44,6 +68,7 @@ function fixture(
       published.push(payload);
     },
   });
+  const protectedMemory = memoryHandoff();
   const input = {
     mode: "native" as const,
     taskId: TASK_ID,
@@ -52,6 +77,7 @@ function fixture(
     signal: new AbortController().signal,
     checkpointSaver: checkpointSaver as never,
     transcriptPort,
+    memoryHandoff: protectedMemory,
     transientInput: {
       taskId: TASK_ID,
       currentTaskId: TASK_ID,
@@ -94,6 +120,7 @@ function fixture(
     checkpointSaver,
     transcriptPort,
     resultPublication,
+    protectedMemory,
     published,
   };
 }
@@ -162,6 +189,9 @@ describe("protected Task native runner", () => {
     );
     expect(captured?.protectedTaskTranscriptPort).toBe(
       scenario.transcriptPort,
+    );
+    expect(captured?.protectedTaskMemoryHandoff).toBe(
+      scenario.protectedMemory,
     );
     expect(captured?.signal).toBe(scenario.input.signal);
     expect("invocationCheckpointSaver" in captured!).toBe(false);
@@ -340,6 +370,16 @@ describe("protected Task native runner", () => {
     }), "result publication authority");
     expect(graphStarted).toBe(false);
     expect(missingPublication.published).toEqual([]);
+
+    const missingMemory = fixture({ memoryHandoff: undefined as never });
+    await expectRejected(runProtectedTaskNativeSegment(missingMemory.input, {
+      runScopeSubagent: async () => {
+        graphStarted = true;
+        throw new Error("must not run");
+      },
+    }), "exact supported segment");
+    expect(graphStarted).toBe(false);
+    expect(missingMemory.published).toEqual([]);
 
     const disguisedResearch = fixture({
       execution: {

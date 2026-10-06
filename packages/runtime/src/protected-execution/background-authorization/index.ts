@@ -25,6 +25,7 @@ export {
   markBackgroundAuthorizationPublicationReconciliation,
   markBackgroundAuthorizationRunning,
   parseBackgroundAuthorizationRequestSnapshot,
+  replaceBackgroundAuthorizationPreclaimAuthority,
   scheduleBackgroundAuthorizationPublicationRetry,
   restartBackgroundAuthorizationAfterUncommittedPublication,
   type BackgroundAuthorizationAgentSubject,
@@ -52,8 +53,10 @@ export {
   BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_LIMITS,
   BACKGROUND_AUTHORIZATION_TERMINAL_RETENTION_MS,
   BACKGROUND_AUTHORIZATION_WORK_KINDS,
+  TASK_RUNTIME_STABLE_IDEMPOTENCY_PREFIX,
   BackgroundAuthorizationRepositoryConflictError,
   InMemoryBackgroundAuthorizationRepository,
+  isTaskRuntimeStableIdempotencyKey,
   type BackgroundAuthorizationAcceptResponseResult,
   type BackgroundAuthorizationAcceptedMaterial,
   type BackgroundAuthorizationAuthoritySetV2,
@@ -68,6 +71,8 @@ export {
   type BackgroundAuthorizationRecordV1,
   type BackgroundAuthorizationAgentRecordV2,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
+  type BackgroundAuthorizationTaskRuntimeReplacementRepository,
+  type BackgroundAuthorizationTaskRuntimeReplacementResult,
   type BackgroundAuthorizationVerifiedRuntimeResponseV3,
   type BackgroundAuthorizationRecordV2,
   type BackgroundAuthorizationProcessorRecordV2,
@@ -126,4 +131,8 @@ export {
   type RunDarkBackgroundSyntheticWorkInput,
 } from "./dark-background-family-adapter";
 
-export type { TaskRuntimeGrantClaimPlan } from "./task-runtime-grant-claim";
+export {
+  taskRuntimeStableIdempotencyKey,
+  type TaskRuntimeGrantClaimPlan,
+  type TaskRuntimeGrantStableIdentity,
+} from "./task-runtime-grant-claim";

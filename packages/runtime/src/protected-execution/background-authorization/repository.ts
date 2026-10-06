@@ -24,6 +24,7 @@ import {
   cancelBackgroundAuthorizationRequest,
   markBackgroundAuthorizationGrantReady,
   parseBackgroundAuthorizationRequestSnapshot,
+  replaceBackgroundAuthorizationPreclaimAuthority,
   restartBackgroundAuthorizationAfterUncommittedPublication,
   scheduleBackgroundAuthorizationPublicationRetry,
   type BackgroundAuthorizationRequestSnapshot,
@@ -52,6 +53,20 @@ export const BACKGROUND_AUTHORIZATION_WORK_KINDS = Object.freeze([
   "task.await_reply_resume",
   "task.approval_resume",
 ] as const);
+
+export const TASK_RUNTIME_STABLE_IDEMPOTENCY_PREFIX =
+  "task-runtime-stable-v1";
+
+export function isTaskRuntimeStableIdempotencyKey(
+  value: string,
+  taskRunId: string,
+): boolean {
+  const prefix = `${TASK_RUNTIME_STABLE_IDEMPOTENCY_PREFIX}:${taskRunId}:`;
+  const digest = value.slice(prefix.length);
+  return value.startsWith(prefix)
+    && digest.length === 43
+    && /^[A-Za-z0-9_-]{43}$/u.test(digest);
+}
 
 export type BackgroundAuthorizationWorkKind =
   (typeof BACKGROUND_AUTHORIZATION_WORK_KINDS)[number];
@@ -348,6 +363,16 @@ export type BackgroundAuthorizationSupersedeResult =
   | Readonly<{status: "superseded" | "existing"; record: BackgroundAuthorizationRecord}>
   | Readonly<{status: "stale"; current: BackgroundAuthorizationRecord | null}>;
 
+export type BackgroundAuthorizationTaskRuntimeReplacementResult =
+  | Readonly<{
+    status: "replaced";
+    record: BackgroundAuthorizationTaskRuntimeRecordV3;
+  }>
+  | Readonly<{
+    status: "stale";
+    current: BackgroundAuthorizationRecord | null;
+  }>;
+
 export interface BackgroundAuthorizationRepository {
   /** Product owner holds current policy, exact source and live lease before this atomic handoff. */
   supersedeUnstartedProcessorRequest?(input: Readonly<{
@@ -397,6 +422,16 @@ export interface BackgroundAuthorizationRepository {
     readonly now: number;
     readonly limit?: number;
   }>): Promise<number>;
+}
+
+/** Task-only authority inventory replacement; ordinary repositories stay unchanged. */
+export interface BackgroundAuthorizationTaskRuntimeReplacementRepository
+  extends BackgroundAuthorizationRepository {
+  replaceUnclaimedTaskRuntimeAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult>;
 }
 
 export type BackgroundAuthorizationRepositoryConflictReason =
@@ -2175,8 +2210,120 @@ export function sameProcessorSupersessionPlan(current: BackgroundAuthorizationRe
     && current.processorAuthorizationRevision === initial.processorAuthorizationRevision;
 }
 
+function exactTaskRuntimeAuthorityAnchor(
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+): boolean {
+  const namespaces = record.authoritySet.namespaceRequirements.filter(
+    (requirement) =>
+      requirement.namespaceId === record.snapshot.namespaceId,
+  );
+  const namespace = namespaces[0];
+  const domains = namespace === undefined
+    ? []
+    : record.authoritySet.domainRequirements.filter(
+      (requirement) => requirement.domainId === namespace.domainId,
+    );
+  const domain = domains[0];
+  return namespaces.length === 1
+    && namespace !== undefined
+    && namespace.domainId === record.domainId
+    && namespace.operations.length === 2
+    && namespace.operations[0] === "decrypt"
+    && namespace.operations[1] === "encrypt"
+    && namespace.expectedAccessRevision
+      === record.expectedNamespaceAccessRevision
+    && namespace.expectedPolicyRevision === record.expectedPolicyRevision
+    && record.authoritySet.namespaceRequirements.every(
+      (requirement) =>
+        requirement.expectedPolicyRevision === record.expectedPolicyRevision,
+    )
+    && domains.length === 1
+    && domain !== undefined
+    && domain.expectedEpoch === record.expectedDomainEpoch;
+}
+
+/**
+ * Build the sole legal successor for a changed, unclaimed Task Runtime
+ * inventory. Stable work identity stays bound by request/work/idempotency;
+ * only the canonical current authority plan is replaced.
+ */
+export function buildUnclaimedTaskRuntimeAuthorityReplacement(input: Readonly<{
+  expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+  replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+  now: number;
+}>): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  timestamp("Task Runtime authority replacement time", input.now);
+  const expected = parseBackgroundAuthorizationRecord(input.expected);
+  const replacement = parseBackgroundAuthorizationRecord(input.replacement);
+  if (
+    expected.snapshot.formatVersion !== 3
+    || expected.snapshot.credentialSubject.kind !== "runtime"
+    || expected.snapshot.credentialSubject.runtimeKind !== "task"
+    || expected.snapshot.credentialSubject.runtimeVersion !== 1
+    || expected.authoritySet === undefined
+    || replacement.snapshot.formatVersion !== 3
+    || replacement.snapshot.credentialSubject.kind !== "runtime"
+    || replacement.snapshot.credentialSubject.runtimeKind !== "task"
+    || replacement.snapshot.credentialSubject.runtimeVersion !== 1
+    || replacement.authoritySet === undefined
+  ) throw new TypeError("Task Runtime authority replacement requires V3 Task records");
+  const current = expected as BackgroundAuthorizationTaskRuntimeRecordV3;
+  const nextPlan = replacement as BackgroundAuthorizationTaskRuntimeRecordV3;
+  if (
+    !["awaiting_recipient", "awaiting_device", "grant_ready"]
+      .includes(current.snapshot.state)
+    || current.finishedAt !== null
+    || nextPlan.snapshot.state !== "awaiting_recipient"
+    || nextPlan.snapshot.recipientGeneration !== 0
+    || nextPlan.snapshot.recipient !== null
+    || nextPlan.snapshot.acceptedResponse !== null
+    || nextPlan.snapshot.claimId !== null
+    || nextPlan.snapshot.claimExpiresAt !== null
+    || nextPlan.snapshot.requestRevision !== 0
+    || nextPlan.snapshot.retryCount !== 0
+    || nextPlan.snapshot.lastRetryReason !== null
+    || nextPlan.snapshot.nextAttemptAt !== null
+    || nextPlan.descriptorBytes !== null
+    || nextPlan.acceptedMaterial !== null
+    || nextPlan.finishedAt !== null
+    || current.snapshot.requestId !== nextPlan.snapshot.requestId
+    || current.snapshot.workId !== nextPlan.snapshot.workId
+    || current.snapshot.namespaceId !== nextPlan.snapshot.namespaceId
+    || JSON.stringify(current.snapshot.credentialSubject)
+      !== JSON.stringify(nextPlan.snapshot.credentialSubject)
+    || current.idempotencyKey !== nextPlan.idempotencyKey
+    || !isTaskRuntimeStableIdempotencyKey(
+      current.idempotencyKey,
+      current.snapshot.workId,
+    )
+    || current.workKind !== "task.execute"
+    || nextPlan.workKind !== current.workKind
+    || current.purpose !== "task.execute"
+    || nextPlan.purpose !== current.purpose
+    || current.processorAuthorizationRevision !== null
+    || nextPlan.processorAuthorizationRevision !== null
+    || !exactTaskRuntimeAuthorityAnchor(current)
+    || !exactTaskRuntimeAuthorityAnchor(nextPlan)
+  ) {
+    throw new TypeError(
+      "Task Runtime authority replacement changed stable work identity",
+    );
+  }
+  const snapshot = replaceBackgroundAuthorizationPreclaimAuthority(
+    current.snapshot,
+    input.now,
+  );
+  return parseBackgroundAuthorizationRecord({
+    ...nextPlan,
+    snapshot,
+    descriptorBytes: null,
+    acceptedMaterial: null,
+    finishedAt: null,
+  }) as BackgroundAuthorizationTaskRuntimeRecordV3;
+}
+
 export class InMemoryBackgroundAuthorizationRepository
-  implements BackgroundAuthorizationRepository {
+  implements BackgroundAuthorizationTaskRuntimeReplacementRepository {
   readonly #records = new Map<string, BackgroundAuthorizationRecord>();
   readonly #evidence = new Map<string, ProcessorSignerAuthorizationEvidence>();
 
@@ -2286,6 +2433,41 @@ export class InMemoryBackgroundAuthorizationRepository
     portable("Background idempotency key", idempotencyKey);
     const record = [...this.#records.values()].find((value) => value.idempotencyKey === idempotencyKey);
     return record === undefined ? null : parseBackgroundAuthorizationRecord(record);
+  }
+
+  async replaceUnclaimedTaskRuntimeAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    await Promise.resolve();
+    const expected = parseBackgroundAuthorizationRecord(input.expected);
+    const current = this.#records.get(expected.snapshot.requestId) ?? null;
+    if (current === null || !sameBackgroundAuthorizationRecord(current, expected)) {
+      return {
+        status: "stale",
+        current: current === null
+          ? null
+          : parseBackgroundAuthorizationRecord(current),
+      };
+    }
+    const next = buildUnclaimedTaskRuntimeAuthorityReplacement(input);
+    const collision = [...this.#records.values()].find((record) =>
+      record.snapshot.requestId !== next.snapshot.requestId
+      && equalBytes(record.workIdentityHash, next.workIdentityHash)
+    );
+    if (collision !== undefined) {
+      throw new BackgroundAuthorizationRepositoryConflictError(
+        "create_conflict",
+      );
+    }
+    this.#records.set(next.snapshot.requestId, next);
+    return {
+      status: "replaced",
+      record: parseBackgroundAuthorizationRecord(
+        next,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3,
+    };
   }
 
   async compareAndSwap(input: Readonly<{

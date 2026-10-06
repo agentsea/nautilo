@@ -11,6 +11,9 @@ type TaskRunCheckpointSaver = NonNullable<
 type ProtectedTaskTranscriptPort = NonNullable<
   RunScopeSubagentOpts["protectedTaskTranscriptPort"]
 >;
+type ProtectedTaskMemoryHandoff = NonNullable<
+  RunScopeSubagentOpts["protectedTaskMemoryHandoff"]
+>;
 
 /** Closed classification supplied by protected dispatch before graph work. */
 export type ProtectedTaskNativeSegmentMode =
@@ -70,6 +73,8 @@ export type RunProtectedTaskNativeSegmentInput = Readonly<{
   signal: AbortSignal;
   checkpointSaver: TaskRunCheckpointSaver;
   transcriptPort: ProtectedTaskTranscriptPort;
+  /** Process-local Memory authority opened by this protected Task grant. */
+  memoryHandoff: ProtectedTaskMemoryHandoff;
   /** One-shot input opened by ProtectedTaskExecutionCandidate.run. */
   transientInput: Record<string, unknown>;
   execution: ProtectedTaskNativeExecution;
@@ -110,6 +115,8 @@ function exactIdentity(input: RunProtectedTaskNativeSegmentInput): void {
     || !(input.signal instanceof AbortSignal)
     || input.checkpointSaver === undefined
     || typeof input.transcriptPort?.publishBatch !== "function"
+    || typeof input.memoryHandoff !== "object"
+    || input.memoryHandoff === null
     || input.execution.toolWhitelist?.includes("security_scan") === true
     || input.transientInput["taskId"] !== input.taskId
     || input.transientInput["currentTaskId"] !== input.taskId
@@ -279,6 +286,7 @@ function runnerOptions(
     approvalLaneKey: `task:${input.taskId}`,
     taskRunCheckpointSaver: input.checkpointSaver,
     protectedTaskTranscriptPort: input.transcriptPort,
+    protectedTaskMemoryHandoff: input.memoryHandoff,
     signal: input.signal,
   };
 }

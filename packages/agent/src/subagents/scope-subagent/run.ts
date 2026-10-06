@@ -22,6 +22,10 @@ import {
 import {
   createProtectedTaskNodeSettlementScope,
 } from "../../graph/protected-task-node-settlement-scope";
+import {
+  createProtectedTaskMemoryGraphDeps,
+  type ProtectedTaskMemoryGraphHandoff,
+} from "../protected-task-memory-graph-deps";
 import { AgentToolCallTracker, emitAgentEvent } from "../../runtime-hooks";
 import { isScopeMemoryEnvelope } from "@nautilo/trust";
 import {
@@ -656,6 +660,8 @@ export type RunScopeSubagentOpts = {
    * are bypassed while this port is present.
    */
   protectedTaskTranscriptPort?: ProtectedTaskTranscriptPublicationPort;
+  /** Process-local Memory authority opened by one accepted protected Task grant. */
+  protectedTaskMemoryHandoff?: ProtectedTaskMemoryGraphHandoff;
   /** Resume payload after a bridged interrupt (same shape as HTTP resume) */
   resume?: unknown;
   /** When resuming, reuse the same subagent thread */
@@ -877,6 +883,20 @@ async function runScopeSubagentUntilPauseInternal(
         ...(opts.foregroundChatFundingSession === undefined
           ? {}
           : { foregroundChatFundingSession: opts.foregroundChatFundingSession }),
+        ...createProtectedTaskMemoryGraphDeps({
+          taskId: opts.currentTaskId ?? "",
+          taskRunId: opts.currentTaskRunId ?? "",
+          graphThreadId: opts.subagentThreadId ?? "",
+          ownerId: opts.parentOwnerId,
+          causalHumanUserId: opts.causalHumanUserId ?? "",
+          agentId: opts.subEnvelope.agentId,
+          roomId: opts.roomId,
+          callingRoomId: opts.callingRoomId ?? "",
+          turnId: opts.parentTurnId,
+          approvalLaneKey: opts.approvalLaneKey ?? opts.subagentThreadId ?? "",
+          actorRole: opts.actorRole,
+          envelope: opts.subEnvelope,
+        }, opts.protectedTaskMemoryHandoff),
         ...(nodeSettlement === undefined
           ? {}
           : { protectedTaskNodeSettlementScope: nodeSettlement }),

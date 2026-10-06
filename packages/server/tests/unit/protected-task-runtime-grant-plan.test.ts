@@ -191,6 +191,7 @@ function outputPorts(namespaceId: string = CONTENT) {
 function builder(
   authorityFacts: readonly ProtectedTaskRuntimeNamespaceAuthorityFact[] = facts(),
   sourceNamespaceId: string = CONTENT,
+  sourceRoomId: string = SOURCE_ROOM,
 ) {
   const crypto = new LatticeCrypto();
   const executor = async function* () { yield* []; };
@@ -206,7 +207,7 @@ function builder(
     resolveNamespaceAuthority: async ({ namespaceIds }) => {
       expect(namespaceIds).toEqual([CONTENT, READABLE].sort());
       return {
-        sourceRoomId: SOURCE_ROOM,
+        sourceRoomId,
         sourceNamespaceId,
         facts: authorityFacts,
       };
@@ -251,6 +252,23 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
     executionSegment: 1,
   });
   expect(plan.scheduling.roomId).toBe(ROOM);
+  expect(plan.stableIdentity).toMatchObject({
+    taskId: TASK,
+    taskRunId: RUN,
+    ownerId: OWNER,
+    requestorId: REQUESTOR,
+    agentId: AGENT,
+    sourceRoomId: SOURCE_ROOM,
+    targetRoomId: ROOM,
+    targetUserIds: [REQUESTOR],
+    outputRoomId: ROOM,
+    outputNamespaceId: CONTENT,
+    memoryMode: "namespace",
+    scopeId: null,
+    contentObjectId: value.task.cryptoObjectId,
+  });
+  expect(plan.initialRecord.idempotencyKey)
+    .toMatch(/^task-runtime-stable-v1:/u);
 
   const recipient = plan.recipientAttempt({ record: plan.initialRecord, now: NOW });
   const attempt = Object.freeze({
@@ -295,6 +313,25 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
     recipientKeyId: recipient.recipientKeyId,
     domainCount: 2,
   });
+});
+
+test("commits stable Task identity while excluding current authority epochs", async () => {
+  const value = occurrence();
+  const initial = await builder()(value);
+  const refreshed = await builder(facts().map(fact => ({
+    ...fact,
+    expectedAccessRevision: fact.expectedAccessRevision + 10,
+    expectedDomainEpoch: fact.expectedDomainEpoch + 10,
+    expectedAuthorizationRevision: fact.expectedAuthorizationRevision + 10,
+  })))(value);
+  expect(refreshed.initialRecord.idempotencyKey)
+    .toBe(initial.initialRecord.idempotencyKey);
+  expect(refreshed.initialRecord.workIdentityHash)
+    .not.toEqual(initial.initialRecord.workIdentityHash);
+
+  const changedSource = await builder(facts(), CONTENT, ROOM)(value);
+  expect(changedSource.initialRecord.idempotencyKey)
+    .not.toBe(initial.initialRecord.idempotencyKey);
 });
 
 test("binds distinct per-occurrence executors and transient openers", async () => {
@@ -488,6 +525,10 @@ test("includes the exact Scope origin and distinct output Namespaces", async () 
     expect.objectContaining({ namespaceId: READABLE, operations: ["decrypt", "encrypt"] }),
     expect.objectContaining({ namespaceId: OUTPUT, operations: ["decrypt", "encrypt"] }),
   ]);
+  expect(plan.stableIdentity).toMatchObject({
+    memoryMode: "scope",
+    scopeId: scopeEnvelope.scopeId,
+  });
 });
 
 test("grants decrypt and encrypt only to the exact distinct output Namespace", async () => {

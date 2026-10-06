@@ -23,6 +23,7 @@ import {
   BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH,
   BackgroundAuthorizationRepositoryConflictError,
   InMemoryBackgroundAuthorizationRepository,
+  buildUnclaimedTaskRuntimeAuthorityReplacement,
   type BackgroundAuthorizationRecord,
   type BackgroundAuthorizationAgentRecordV2,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
@@ -717,6 +718,95 @@ describe("Postgres background authorization repository", () => {
     expect(await loaded.repository.get(record.snapshot.requestId)).toEqual(
       record,
     );
+  });
+
+  test("replaces Task Runtime authority children under the exact request lock", async () => {
+    const fixture = initialTaskRuntimeV3();
+    const expected: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...fixture,
+      idempotencyKey:
+        `task-runtime-stable-v1:${fixture.snapshot.workId}:${"a".repeat(43)}`,
+      authoritySet: {
+        ...fixture.authoritySet,
+        namespaceRequirements: fixture.authoritySet.namespaceRequirements.map(
+          (requirement) => ({
+            ...requirement,
+            expectedPolicyRevision: fixture.expectedPolicyRevision,
+          }),
+        ),
+      },
+    };
+    const replacement: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...expected,
+      snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
+        requestId: expected.snapshot.requestId,
+        workId: expected.snapshot.workId,
+        namespaceId: expected.snapshot.namespaceId,
+        now: START + 1,
+      }),
+      workIdentityHash: new Uint8Array(32).fill(5),
+      authoritySet: {
+        ...expected.authoritySet,
+        namespaceRequirements: [
+          ...expected.authoritySet.namespaceRequirements,
+          {
+            ordinal: 2,
+            namespaceId: "namespace_scope_retained",
+            domainId: "domain_ab",
+            operations: ["decrypt"],
+            expectedAccessRevision: 12,
+            expectedPolicyRevision: 5,
+          },
+        ],
+      },
+    };
+    const next = buildUnclaimedTaskRuntimeAuthorityReplacement({
+      expected,
+      replacement,
+      now: START + 2,
+    });
+    const value = await setup([
+      [recordRow(expected)],
+      taskRuntimeDomainRows(expected),
+      namespaceRows(expected),
+      [recordRow(next)],
+      [],
+      [],
+      [],
+      [],
+      taskRuntimeDomainRows(next),
+      namespaceRows(next),
+    ]);
+
+    expect(await value.repository.replaceUnclaimedTaskRuntimeAuthority({
+      expected,
+      replacement,
+      now: START + 2,
+    })).toEqual({ status: "replaced", record: next });
+    expect(value.connection.transactions).toBe(1);
+    const statements = value.connection.statements.map(normalizedSql);
+    const lock = statements.findIndex(statement => statement.includes(
+      "FOR UPDATE",
+    ));
+    expect(lock).toBeGreaterThanOrEqual(0);
+    const update = statements.findIndex(statement => statement.startsWith(
+      "UPDATE BACKGROUND_CRYPTO_AUTHORIZATION_REQUESTS",
+    ));
+    const namespaceDelete = statements.findIndex(statement => statement
+      .startsWith("DELETE FROM BACKGROUND_CRYPTO_AUTHORIZATION_NAMESPACE_REQUIREMENTS"));
+    const domainDelete = statements.findIndex(statement => statement
+      .startsWith("DELETE FROM BACKGROUND_CRYPTO_AUTHORIZATION_DOMAIN_REQUIREMENTS"));
+    const domainInsert = statements.findIndex(statement => statement
+      .startsWith("INSERT INTO BACKGROUND_CRYPTO_AUTHORIZATION_DOMAIN_REQUIREMENTS"));
+    const namespaceInsert = statements.findIndex(statement => statement
+      .startsWith("INSERT INTO BACKGROUND_CRYPTO_AUTHORIZATION_NAMESPACE_REQUIREMENTS"));
+    expect(update).toBeGreaterThan(lock);
+    expect(namespaceDelete).toBeGreaterThan(update);
+    expect(domainDelete).toBeGreaterThan(namespaceDelete);
+    expect(domainInsert).toBeGreaterThan(domainDelete);
+    expect(namespaceInsert).toBeGreaterThan(domainInsert);
+    expect(statements[update]).toContain("REQUEST_REVISION");
+    expect(statements[update]).toContain("WORK_IDENTITY_HASH");
   });
 
   test("create has the same exact-idempotency result as the in-memory port", async () => {

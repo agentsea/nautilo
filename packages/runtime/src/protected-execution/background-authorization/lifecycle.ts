@@ -1066,6 +1066,39 @@ export function claimBackgroundAuthorizationRequest(
   });
 }
 
+/**
+ * Fence a changed Task Runtime authority inventory before a claim can consume
+ * it. This is deliberately narrower than ordinary retry rotation: inventory
+ * replacement is valid only while no execution lease exists and does not
+ * spend or rewrite execution retry history.
+ */
+export function replaceBackgroundAuthorizationPreclaimAuthority(
+  value: BackgroundAuthorizationTaskRuntimeRequestSnapshotV3,
+  now: number,
+): BackgroundAuthorizationTaskRuntimeRequestSnapshotV3 {
+  assertActive(value);
+  assertState(value, [
+    "awaiting_recipient",
+    "awaiting_device",
+    "grant_ready",
+  ]);
+  assertTime(value, now);
+  if (value.recipientGeneration >= BACKGROUND_AUTHORIZATION_MAX_GENERATION) {
+    throw new BackgroundAuthorizationTransitionError("counter_exhausted");
+  }
+  return update(value, {
+    recipientGeneration: value.recipientGeneration + 1,
+    descriptorDigest: null,
+    recipient: null,
+    acceptedResponse: null,
+    state: "awaiting_recipient",
+    claimId: null,
+    claimExpiresAt: null,
+    updatedAt: now,
+    nextAttemptAt: value.lastRetryReason === null ? null : now,
+  }) as BackgroundAuthorizationTaskRuntimeRequestSnapshotV3;
+}
+
 export function markBackgroundAuthorizationRunning(
   value: BackgroundAuthorizationRequestSnapshot,
   now: number,

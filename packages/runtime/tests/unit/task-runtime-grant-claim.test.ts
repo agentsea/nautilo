@@ -34,11 +34,12 @@ import {
   InMemoryBackgroundAuthorizationRepository,
   type BackgroundAuthorizationCasResult,
   type BackgroundAuthorizationRecord,
-  type BackgroundAuthorizationRepository,
+  type BackgroundAuthorizationTaskRuntimeReplacementRepository,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
 } from "../../src/protected-execution/background-authorization/repository";
 import {
   createTaskRuntimeGrantClaim,
+  taskRuntimeStableIdempotencyKey,
   type TaskRuntimeRecipientDeviceBinding,
   type TaskRuntimeGrantClaimPlan,
 } from "../../src/protected-execution/background-authorization/task-runtime-grant-claim";
@@ -132,6 +133,35 @@ function occurrence(callingRoomId: string | null = ROOM): ProtectedTaskOccurrenc
   });
 }
 
+function stableIdentity(value = occurrence()): TaskRuntimeGrantClaimPlan["stableIdentity"] {
+  return Object.freeze({
+    taskId: value.task.id,
+    taskRunId: value.run.id,
+    ownerId: value.task.ownerId,
+    requestorId: value.task.requestorId,
+    agentId: value.task.agentId,
+    callingRoomId: value.task.callingRoomId,
+    scheduleKind: value.task.scheduleKind,
+    graphThreadId: value.run.graphThreadId,
+    startedAt: value.run.startedAt.getTime(),
+    sourceRoomId: ROOM,
+    targetRoomId: ROOM,
+    targetUserIds: Object.freeze([value.task.requestorId]),
+    outputRoomId: value.task.callingRoomId,
+    outputNamespaceId: value.task.callingRoomId === null ? null : NAMESPACE,
+    memoryMode: "namespace",
+    scopeId: null,
+    contentRepresentation: value.task.contentRepresentation,
+    contentNamespaceId: value.task.contentNamespaceId,
+    contentRevision: value.task.contentRevision,
+    contentObjectId: value.task.cryptoObjectId,
+    contentAccessRevision: value.task.cryptoAccessRevision,
+    requiredNamespaceFingerprint: Buffer.from(
+      value.task.cryptoRequiredNamespaceFingerprint,
+    ).toString("base64url"),
+  });
+}
+
 function initialRecord(): BackgroundAuthorizationTaskRuntimeRecordV3 {
   return Object.freeze({
     snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
@@ -141,7 +171,7 @@ function initialRecord(): BackgroundAuthorizationTaskRuntimeRecordV3 {
       now: NOW,
     }),
     workIdentityHash: bytes(10),
-    idempotencyKey: `task-run:${RUN}`,
+    idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity()),
     workKind: "task.execute" as const,
     purpose: "task.execute" as const,
     domainId: DOMAIN,
@@ -206,6 +236,7 @@ async function fixture() {
     .authoritySet.namespaceRequirements;
   let grantPlan: DomainForegroundAuthorizationPlanV2 | null = null;
   let claimCasCount = 0;
+  let replacementCasCount = 0;
   let recipientCasBarrier: ReturnType<typeof Promise.withResolvers<void>>
     | null = null;
   let recipientCasArrivals = 0;
@@ -218,7 +249,7 @@ async function fixture() {
   const startInputs: StartProtectedTaskRunInput[] = [];
   const publishedResults: string[] = [];
   let startResult: "started" | "stale" = "started";
-  const trackedRepository: BackgroundAuthorizationRepository = {
+  const trackedRepository: BackgroundAuthorizationTaskRuntimeReplacementRepository = {
     create: (record) => repository.create(record),
     get: async (requestId) => {
       const record = await repository.get(requestId);
@@ -238,6 +269,10 @@ async function fixture() {
       }
       return repository.compareAndSwap(input);
     },
+    replaceUnclaimedTaskRuntimeAuthority: (input) => {
+      replacementCasCount += 1;
+      return repository.replaceUnclaimedTaskRuntimeAuthority(input);
+    },
     acceptVerifiedResponse: (input) => repository.acceptVerifiedResponse(input),
     listEligible: (input) => repository.listEligible(input),
     listAwaitingDevicePage: (input) => repository.listAwaitingDevicePage(input),
@@ -247,8 +282,14 @@ async function fixture() {
   const builtRecipientKeys: string[] = [];
   const basePlan = (
     value: ProtectedTaskOccurrence,
-  ): TaskRuntimeGrantClaimPlan => ({
-    initialRecord: initialRecord(),
+  ): TaskRuntimeGrantClaimPlan => {
+    const identity = stableIdentity(value);
+    return {
+    stableIdentity: identity,
+    initialRecord: Object.freeze({
+      ...initialRecord(),
+      idempotencyKey: taskRuntimeStableIdempotencyKey(identity),
+    }),
     reference: {
       kind: "protected_task_run_v1",
       taskId: TASK,
@@ -353,7 +394,8 @@ async function fixture() {
       expect(evidence.result.taskRunId).toBe(RUN);
       if (payload.resultText !== null) publishedResults.push(payload.resultText);
     },
-  });
+  };
+  };
   const plan = (value: ProtectedTaskOccurrence): TaskRuntimeGrantClaimPlan => {
     const prepared = basePlan(value);
     return substitutePlan === null ? prepared : substitutePlan(prepared);
@@ -422,6 +464,7 @@ async function fixture() {
     getPlan: () => grantPlan,
     getCurrent: () => currentAuthority,
     claimCasCount: () => claimCasCount,
+    replacementCasCount: () => replacementCasCount,
     authorityLocksHeld: () => authorityLocksHeld,
     startInputs,
     publishedResults,
@@ -500,6 +543,24 @@ async function prepareAndBind(value: Fixture): Promise<void> {
 }
 
 describe("Task Runtime grant claim", () => {
+  test("canonicalizes target ordering in the immutable plan commitment", () => {
+    const identity = stableIdentity();
+    const forward = taskRuntimeStableIdempotencyKey({
+      ...identity,
+      targetUserIds: [OWNER, REQUESTOR],
+    });
+    const reversed = taskRuntimeStableIdempotencyKey({
+      ...identity,
+      targetUserIds: [REQUESTOR, OWNER],
+    });
+    expect(reversed).toBe(forward);
+    expect(taskRuntimeStableIdempotencyKey({
+      ...identity,
+      ownerId: REQUESTOR,
+      targetUserIds: [OWNER, REQUESTOR],
+    })).not.toBe(forward);
+  });
+
   test("claims an exact read-only Memory Namespace without widening its operations", async () => {
     const value = await fixture();
     const memoryRequirement = Object.freeze({
@@ -533,6 +594,105 @@ describe("Task Runtime grant claim", () => {
     expect((await value.repository.get(REQUEST))?.authoritySet?.namespaceRequirements[1]
       ?.operations).toEqual(["decrypt"]);
     if (claimed.status === "claimed") claimed.dispatch.candidate.onIneligible();
+  });
+
+  test("atomically replaces a changed preclaim inventory and wipes the winning old recipient", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    expect(value.recipients.size).toBe(1);
+    const current = initialRecord();
+    const namespaceRequirements = Object.freeze([
+      ...current.authoritySet.namespaceRequirements,
+      Object.freeze({
+        ordinal: 1,
+        namespaceId: "z-scope-retained-namespace",
+        domainId: DOMAIN,
+        operations: Object.freeze(["decrypt"] as const),
+        expectedAccessRevision: 9,
+        expectedPolicyRevision: 7,
+      }),
+    ]);
+    value.setCurrentNamespaceRequirements(namespaceRequirements);
+    value.setSubstitutePlan((plan) => Object.freeze({
+      ...plan,
+      initialRecord: Object.freeze({
+        ...plan.initialRecord,
+        workIdentityHash: bytes(11),
+        authoritySet: Object.freeze({
+          ...plan.initialRecord.authoritySet,
+          namespaceRequirements,
+        }),
+      }),
+    }));
+
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    const replaced = await value.repository.get(REQUEST);
+    expect(replaced?.snapshot).toMatchObject({
+      state: "awaiting_recipient",
+      recipientGeneration: 1,
+      requestRevision: 3,
+      retryCount: 0,
+    });
+    expect(replaced?.descriptorBytes).toBeNull();
+    expect(replaced?.acceptedMaterial).toBeNull();
+    expect(replaced?.authoritySet?.namespaceRequirements)
+      .toEqual(namespaceRequirements);
+    expect(value.recipients.size).toBe(0);
+    expect(value.replacementCasCount()).toBe(1);
+
+    const rebound = await value.bindRecipient();
+    expect(rebound?.record.snapshot.recipientGeneration).toBe(1);
+    expect(rebound?.record.snapshot.state).toBe("awaiting_device");
+  });
+
+  test("retains a same-plan legacy dark request but refuses to replace it without a stable commitment", async () => {
+    const value = await fixture();
+    await value.repository.create(Object.freeze({
+      ...initialRecord(),
+      idempotencyKey: `task-run:${RUN}`,
+    }));
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(value.replacementCasCount()).toBe(0);
+    value.setSubstitutePlan((plan) => Object.freeze({
+      ...plan,
+      initialRecord: Object.freeze({
+        ...plan.initialRecord,
+        workIdentityHash: bytes(12),
+      }),
+    }));
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+      .rejects.toThrow("changed stable identity");
+    expect((await value.repository.get(REQUEST))?.snapshot.requestRevision)
+      .toBe(0);
+  });
+
+  test("rejects coherent source identity substitution before inventory replacement", async () => {
+    const value = await fixture();
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    value.setSubstitutePlan((plan) => {
+      const stable = Object.freeze({
+        ...plan.stableIdentity,
+        sourceRoomId: PRIVATE_TASK_ROOM,
+      });
+      return Object.freeze({
+        ...plan,
+        stableIdentity: stable,
+        initialRecord: Object.freeze({
+          ...plan.initialRecord,
+          idempotencyKey: taskRuntimeStableIdempotencyKey(stable),
+          workIdentityHash: bytes(13),
+        }),
+      });
+    });
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+      .rejects.toThrow("changed stable identity");
+    expect(value.replacementCasCount()).toBe(0);
   });
 
   test("does not weaken the Task definition and result Namespace to read-only", async () => {

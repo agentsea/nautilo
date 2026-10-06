@@ -19,6 +19,7 @@ import {
   markBackgroundAuthorizationPublicationReconciliation,
   parseBackgroundAuthorizationRequestSnapshot,
   restartBackgroundAuthorizationAfterUncommittedPublication,
+  replaceBackgroundAuthorizationPreclaimAuthority,
   scheduleBackgroundAuthorizationPublicationRetry,
   type BackgroundAuthorizationCredentialSubject,
 } from "../../src/protected-execution/background-authorization/lifecycle";
@@ -350,6 +351,64 @@ describe("Wave 10 background authorization lifecycle", () => {
       now: NOW + 5,
       nextAttemptAt: NOW + 6,
     }).retryCount).toBe(1);
+  });
+
+  test("replaces only preclaim Task authority without spending retry history", () => {
+    const ready = grantReady();
+    const claimedWithRetry = claimBackgroundAuthorizationRequest(
+      ready,
+      "claim-before-retry",
+      NOW + 3,
+      NOW + 30_000,
+    );
+    const withRetryHistory = advanceBackgroundAuthorizationGeneration(
+      markBackgroundAuthorizationRunning(claimedWithRetry, NOW + 4),
+      {
+        reason: "provider_transient_failure",
+        now: NOW + 5,
+        nextAttemptAt: NOW + 6,
+      },
+    );
+    const replaced = replaceBackgroundAuthorizationPreclaimAuthority({
+      ...withRetryHistory,
+      formatVersion: 3,
+      credentialSubject: {
+        kind: "runtime",
+        runtimeKind: "task",
+        runtimeVersion: 1,
+      },
+    }, NOW + 6);
+    expect(replaced).toMatchObject({
+      state: "awaiting_recipient",
+      recipientGeneration: 2,
+      requestRevision: withRetryHistory.requestRevision + 1,
+      descriptorDigest: null,
+      recipient: null,
+      acceptedResponse: null,
+      claimId: null,
+      claimExpiresAt: null,
+      retryCount: 1,
+      lastRetryReason: "provider_transient_failure",
+      nextAttemptAt: NOW + 6,
+    });
+    const claimed = claimBackgroundAuthorizationRequest(
+      ready,
+      "claimed-before-replacement",
+      NOW + 3,
+      NOW + 30_000,
+    );
+    expect(() => replaceBackgroundAuthorizationPreclaimAuthority(
+      {
+        ...claimed,
+        formatVersion: 3,
+        credentialSubject: {
+          kind: "runtime",
+          runtimeKind: "task",
+          runtimeVersion: 1,
+        },
+      },
+      NOW + 4,
+    )).toThrow("illegal_transition");
   });
 
   test("offline waiting preserves already spent retries without exhausting them", () => {
