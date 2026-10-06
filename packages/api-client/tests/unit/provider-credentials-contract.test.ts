@@ -74,7 +74,13 @@ describe("personal provider credentials client contract", () => {
         authorization: new Headers(init?.headers).get("authorization"),
         body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
       });
-      if (method === "GET") return json(200, { credentials: [credential], providers });
+      if (method === "GET") {
+        return json(200, {
+          allowPersonalProviderKeys: false,
+          credentials: [credential],
+          providers,
+        });
+      }
       if (method === "PUT") return json(200, { credential, committed: true });
       if (url.endsWith("/validate")) {
         return json(200, { credential, committed: false });
@@ -85,7 +91,11 @@ describe("personal provider credentials client contract", () => {
     const client = new NautiloApiClient(BASE);
     client.setToken("human-session");
 
-    expect(await client.listProviderCredentials()).toEqual({ credentials: [credential], providers });
+    expect(await client.listProviderCredentials()).toEqual({
+      allowPersonalProviderKeys: false,
+      credentials: [credential],
+      providers,
+    });
     expect(await client.putProviderCredential("openai/custom", {
       apiKey: "sk-request-only",
       expectedRevision: 1,
@@ -132,6 +142,7 @@ describe("personal provider credentials client contract", () => {
 
     const client = new NautiloApiClient(BASE);
     expect(await client.listProviderCredentials()).toEqual({
+      allowPersonalProviderKeys: true,
       credentials: [credential],
       providers: [],
     });

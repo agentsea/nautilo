@@ -1,6 +1,6 @@
 import { Stack, router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Alert, AppState, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, AppState, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import type { CredentialMetadata } from "@nautilo/api-client/browser";
 
 import { AppBar, AppBarBackButton } from "@/components/app-bar";
@@ -14,6 +14,17 @@ import { useAuth } from "@/providers/auth";
 import { useServers } from "@/providers/server-registry";
 import { useAppTheme } from "@/providers/theme";
 import type { AppTheme } from "@/theme/tokens";
+
+function readableTime(value: string): string | null {
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? null : date.toLocaleString();
+}
+
+interface CredentialDeleteConfirmation {
+  readonly provider: string;
+  readonly credential: CredentialMetadata;
+  readonly policyEnabled: boolean;
+}
 
 export default function PersonalProviderKeysScreen() {
   const { activeServer } = useServers();
@@ -36,18 +47,21 @@ export default function PersonalProviderKeysScreen() {
   const [editing, setEditing] = useState<string | null>(null);
   const [secret, setSecret] = useState("");
   const [success, setSuccess] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<CredentialDeleteConfirmation | null>(null);
   const focusedRef = useRef(false);
 
-  useEffect(() => { setEditing(null); setSecret(""); setSuccess(null); }, [scope?.serverId, scope?.userId]);
+  useEffect(() => { setEditing(null); setSecret(""); setSuccess(null); setConfirmDelete(null); }, [scope?.actorId, scope?.serverId, scope?.userId]);
   useFocusEffect(useCallback(() => {
     focusedRef.current = true;
+    setConfirmDelete(null);
     controller.setScope(scope);
     if (scope) void controller.load();
-    return () => { focusedRef.current = false; controller.setScope(null); };
+    return () => { focusedRef.current = false; setConfirmDelete(null); controller.setScope(null); };
   }, [controller, scope]));
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
       if (next === "active" && focusedRef.current && scope) {
+        setConfirmDelete(null);
         controller.setScope(scope);
         void controller.load();
       }
@@ -55,17 +69,31 @@ export default function PersonalProviderKeysScreen() {
     return () => subscription.remove();
   }, [controller, scope]);
 
-  const byProvider = useMemo(() => new Map(state.data?.credentials.map((item) => [item.provider, item]) ?? []), [state.data]);
-  const providers = useMemo(() => personalProviderKeyRows(state.data), [state.data]);
   const loadKind = state.loadError ? personalCredentialLoadKind(state.loadError) : null;
+  const policyDisabled = loadKind === "disabled" || state.data?.allowPersonalProviderKeys === false;
+  const byProvider = useMemo(() => new Map(state.data?.credentials.map((item) => [item.provider, item]) ?? []), [state.data]);
+  const providers = useMemo(() => loadKind === "disabled" ? [] : personalProviderKeyRows(state.data), [loadKind, state.data]);
   const loadAllowsActions = Boolean(scope && state.data && !state.loading && !state.loadError);
   useEffect(() => {
-    if (loadKind === "disabled" || loadKind === "forbidden" || loadKind === "signedOut") {
+    if (!confirmDelete) return;
+    const current = state.data?.credentials.find((credential) => credential.provider === confirmDelete.provider);
+    if (
+      state.loadError
+      || !current
+      || current.id !== confirmDelete.credential.id
+      || current.revision !== confirmDelete.credential.revision
+      || (state.data?.allowPersonalProviderKeys !== false) !== confirmDelete.policyEnabled
+    ) {
+      setConfirmDelete(null);
+    }
+  }, [confirmDelete, state.data, state.loadError]);
+  useEffect(() => {
+    if (policyDisabled || loadKind === "forbidden" || loadKind === "signedOut") {
       setEditing(null);
       setSecret("");
       setSuccess(null);
     }
-  }, [loadKind]);
+  }, [loadKind, policyDisabled]);
 
   const save = async (provider: string, current?: CredentialMetadata): Promise<void> => {
     setSuccess(null);
@@ -76,39 +104,57 @@ export default function PersonalProviderKeysScreen() {
       // Empty input remains local and never reaches the client.
     }
   };
-  const remove = (provider: string, current: CredentialMetadata): void => Alert.alert("Delete personal key?", "Eligible work will stop using this provider key. Your historical costs remain available.", [
-    { text: "Cancel", style: "cancel" },
-    { text: "Delete", style: "destructive", onPress: () => { setSuccess(null); void controller.remove(provider, current); } },
-  ]);
+  const remove = async (confirmation: CredentialDeleteConfirmation): Promise<void> => {
+    setSuccess(null);
+    await controller.remove(confirmation.provider, confirmation.credential);
+    setConfirmDelete((current) => current
+      && current.provider === confirmation.provider
+      && current.credential.id === confirmation.credential.id
+      && current.credential.revision === confirmation.credential.revision
+      ? null
+      : current);
+  };
   const goBack = (): void => router.canGoBack() ? router.back() : router.replace("/(drawer)/(tabs)/settings");
 
   return <View style={styles.container}>
     <Stack.Screen options={{ header: () => <AppBar title="Personal API keys" left={<AppBarBackButton onPress={goBack} />} /> }} />
     <Screen edgeTop={false} contentStyle={styles.content}>
-      <Text style={styles.intro}>Add your own key for eligible personal chat and native text Tasks. Save checks the key without making a paid request. Embeddings stay server-managed.</Text>
+      {!policyDisabled ? <Text style={styles.intro}>Add your own key for eligible personal chat and native text Tasks. Save checks the key without making a paid request. Embeddings stay server-managed.</Text> : null}
       {!scope ? <SettingsStatus tone="warning">Sign in and reconnect before managing personal keys.</SettingsStatus> : null}
       {state.loading ? <ActivityIndicator color={t.color.brand.accent} accessibilityLabel="Loading personal API keys" /> : null}
       {state.loadError ? <><SettingsStatus tone={loadKind === "error" ? "error" : "warning"}>{personalAccountErrorMessage(state.loadError)}</SettingsStatus>{loadKind === "error" ? <ActionButton label="Retry" onPress={() => void controller.retry()} /> : null}</> : null}
+      {!state.loadError && state.data?.allowPersonalProviderKeys === false ? <SettingsStatus tone="warning">{`Personal API keys are disabled on this server.${state.data.credentials.length > 0 ? " Your saved keys won’t be used. You can delete them below." : ""}`}</SettingsStatus> : null}
       {state.mutationError ? <SettingsStatus tone="error">{personalAccountErrorMessage(state.mutationError)}</SettingsStatus> : null}
       {providers.map((provider) => {
         const current = byProvider.get(provider.id);
         const isEditing = editing === provider.id;
-        const actionsEnabled = loadAllowsActions && provider.available;
+        const actionsEnabled = loadAllowsActions && !provider.deleteOnly && provider.available;
         const deleteEnabled = loadAllowsActions && Boolean(current);
+        const savedAt = current ? readableTime(current.updatedAt) : null;
+        const confirmingDelete = Boolean(
+          current
+          && confirmDelete?.provider === provider.id
+          && confirmDelete.credential.id === current.id
+          && confirmDelete.credential.revision === current.revision
+          && confirmDelete.policyEnabled === (state.data?.allowPersonalProviderKeys !== false),
+        );
         return <View key={provider.id} style={styles.card}>
-          <View style={styles.cardHeader}><View style={styles.cardCopy}><Text style={styles.provider}>{provider.name}</Text><Text style={styles.help}>{provider.purpose}</Text></View><Text style={[styles.badge, current && !current.requiresReplacement && current.validationStatus !== "rejected" ? styles.good : styles.muted]}>{state.data ? current ? current.validationStatus : "Not added" : "Checking status…"}</Text></View>
-          <Text style={styles.help}>{provider.catalogued && !provider.personalCapabilities.includes("chat") ? "Not used by personal chat or native text Tasks in this release." : "Capability availability is shown in model selection."}</Text>
-          {current?.masked ? <Text style={styles.masked}>{current.masked}</Text> : null}
-          {current?.requiresReplacement ? <SettingsStatus tone="error">Replace this key before it can be used.</SettingsStatus> : null}
-          {current?.receiptReadStatus === "unavailable" ? <Text style={styles.help}>This key can run eligible requests. Some costs may appear later because it cannot currently read cost receipts.</Text> : null}
-          {success === provider.id ? <SettingsStatus tone="success">{provider.personalCapabilities.includes("chat") ? "Key saved and checked. Choose a model for your Genie, then review charges in Your costs." : "Key saved and checked. Not used by personal chat or native text Tasks in this release."}</SettingsStatus> : null}
-          {isEditing && provider.catalogued ? <>
+          <View style={styles.cardHeader}><View style={styles.cardCopy}><Text style={styles.provider}>{provider.name}</Text>{provider.deleteOnly ? <Text style={styles.help}>{savedAt ? `Saved ${savedAt}` : "Saved"}</Text> : <Text style={styles.help}>{provider.purpose}</Text>}</View>{!provider.deleteOnly ? <Text style={[styles.badge, current && !current.requiresReplacement && current.validationStatus !== "rejected" ? styles.good : styles.muted]}>{state.data ? current ? current.validationStatus : "Not added" : "Checking status…"}</Text> : null}</View>
+          {!provider.deleteOnly ? <Text style={styles.help}>{provider.catalogued && !provider.personalCapabilities.includes("chat") ? "Not used by personal chat or native text Tasks in this release." : "Capability availability is shown in model selection."}</Text> : null}
+          {!provider.deleteOnly && current?.masked ? <Text style={styles.masked}>{current.masked}</Text> : null}
+          {!provider.deleteOnly && current?.requiresReplacement ? <SettingsStatus tone="error">Replace this key before it can be used.</SettingsStatus> : null}
+          {!provider.deleteOnly && current?.receiptReadStatus === "unavailable" ? <Text style={styles.help}>This key can run eligible requests. Some costs may appear later because it cannot currently read cost receipts.</Text> : null}
+          {!provider.deleteOnly && success === provider.id ? <SettingsStatus tone="success">{provider.personalCapabilities.includes("chat") ? "Key saved and checked. Choose a model for your Genie, then review charges in Your costs." : "Key saved and checked. Not used by personal chat or native text Tasks in this release."}</SettingsStatus> : null}
+          {confirmingDelete && confirmDelete ? <>
+            <Text style={styles.help}>Delete personal key? Eligible work will stop using this provider key. Your historical costs remain available.</Text>
+            <View style={styles.actions}><ActionButton label="Delete key" accessibilityLabel={`Delete ${provider.name} key now`} disabled={!deleteEnabled || state.mutating} onPress={() => void remove(confirmDelete)} /><ActionButton label="Cancel" accessibilityLabel={`Cancel deleting ${provider.name} key`} disabled={!deleteEnabled || state.mutating} onPress={() => setConfirmDelete(null)} /></View>
+          </> : isEditing && provider.catalogued && !provider.deleteOnly ? <>
             <TextInput value={secret} onChangeText={setSecret} secureTextEntry autoCapitalize="none" autoCorrect={false} autoComplete="new-password" textContentType="newPassword" editable={actionsEnabled && !state.mutating} style={styles.input} placeholder={provider.formatHint ?? "Provider API key"} placeholderTextColor={t.color.text.muted} accessibilityLabel={`${current ? "Replacement" : "New"} ${provider.name} API key`} />
             <View style={styles.actions}><ActionButton label={state.mutating ? "Saving…" : current ? "Replace key" : "Save key"} disabled={!actionsEnabled || state.mutating || !secret.trim()} onPress={() => void save(provider.id, current)} primary /><ActionButton label="Cancel" disabled={state.mutating} onPress={() => { setEditing(null); setSecret(""); }} /></View>
           </> : <View style={styles.actions}>
-            {provider.catalogued && (!state.data || provider.available) ? <ActionButton label={current ? "Replace" : "Add key"} disabled={!actionsEnabled || state.mutating} onPress={() => { setEditing(provider.id); setSecret(""); setSuccess(null); }} primary={!current} /> : null}
-            {current && provider.catalogued && (current.validationStatus === "unavailable" || current.validationStatus === "unverified" || current.receiptReadStatus === "unavailable") ? <ActionButton label="Check again" disabled={!actionsEnabled || state.mutating} onPress={() => void controller.validate(provider.id, current)} /> : null}
-            {current ? <ActionButton label={provider.catalogued && provider.available ? "Delete" : "Delete saved key"} disabled={!deleteEnabled || state.mutating} onPress={() => remove(provider.id, current)} /> : null}
+            {!provider.deleteOnly && provider.catalogued && (!state.data || provider.available) ? <ActionButton label={current ? "Replace" : "Add key"} disabled={!actionsEnabled || state.mutating} onPress={() => { setEditing(provider.id); setSecret(""); setSuccess(null); }} primary={!current} /> : null}
+            {!provider.deleteOnly && current && provider.catalogued && (current.validationStatus === "unavailable" || current.validationStatus === "unverified" || current.receiptReadStatus === "unavailable") ? <ActionButton label="Check again" disabled={!actionsEnabled || state.mutating} onPress={() => void controller.validate(provider.id, current)} /> : null}
+            {current ? <ActionButton label="Delete" accessibilityLabel={`Delete ${provider.name} key`} disabled={!deleteEnabled || state.mutating} onPress={() => setConfirmDelete({ provider: provider.id, credential: current, policyEnabled: state.data?.allowPersonalProviderKeys !== false })} /> : null}
           </View>}
         </View>;
       })}
@@ -116,9 +162,9 @@ export default function PersonalProviderKeysScreen() {
   </View>;
 }
 
-function ActionButton({ label, onPress, disabled = false, primary = false }: { label: string; onPress: () => void; disabled?: boolean; primary?: boolean }) {
+function ActionButton({ label, onPress, accessibilityLabel, disabled = false, primary = false }: { label: string; onPress: () => void; accessibilityLabel?: string; disabled?: boolean; primary?: boolean }) {
   const t = useAppTheme(); const styles = useMemo(() => createStyles(t), [t]);
-  return <Pressable style={({ pressed }) => [styles.button, primary && styles.primaryButton, (disabled || pressed) && styles.dimmed]} disabled={disabled} onPress={onPress} accessibilityRole="button" accessibilityState={{ disabled }}><Text style={[styles.buttonText, primary && styles.primaryButtonText]}>{label}</Text></Pressable>;
+  return <Pressable style={({ pressed }) => [styles.button, primary && styles.primaryButton, (disabled || pressed) && styles.dimmed]} disabled={disabled} onPress={onPress} accessibilityRole="button" accessibilityLabel={accessibilityLabel} accessibilityState={{ disabled }}><Text style={[styles.buttonText, primary && styles.primaryButtonText]}>{label}</Text></Pressable>;
 }
 
 function createStyles(t: AppTheme) { return StyleSheet.create({

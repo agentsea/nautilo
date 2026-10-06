@@ -16,6 +16,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Administrator and personal costs share the summary and dashboard layout. Key
   lists render immediately while saved status loads, and personal-key settings
   clearly explain disabled server policy without treating it as a key failure.
+  When personal keys are disabled, members see only the warning if no keys are
+  saved, or their saved keys with Delete controls. Cleanup remains available
+  without permission to spend or access to the credential encryption key.
 
 - The text editor serializes first saves of empty documents and preserves edits
   made while a save is in progress. Conflict recovery reports failed latest-version

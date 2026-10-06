@@ -3,7 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { ProviderCredentialApiError, type CredentialMetadata, type PersonalCostsSummary } from "@nautilo/api-client/browser";
 
-import { createPersonalCostsController, createPersonalCredentialsController, personalCredentialLoadKind, type PersonalAccountApi } from "./personal-account-controller";
+import { createPersonalCostsController, createPersonalCredentialsController, personalAccountErrorMessage, personalCredentialLoadKind, type PersonalAccountApi } from "./personal-account-controller";
 
 const scopeOne = { serverId: "one", userId: "human-one", actorId: "actor-one" };
 const scopeTwo = { serverId: "two", userId: "human-two", actorId: "actor-two" };
@@ -32,7 +32,9 @@ function costs(totalCostUsd: number): PersonalCostsSummary {
 
 describe("personal account Settings controllers", () => {
   test("classifies policy, permission, session, and transient credential reads separately", () => {
-    expect(personalCredentialLoadKind(new ProviderCredentialApiError(404, "personal_credentials_disabled", false, false, null))).toBe("disabled");
+    const disabled = new ProviderCredentialApiError(404, "personal_credentials_disabled", false, false, null);
+    expect(personalCredentialLoadKind(disabled)).toBe("disabled");
+    expect(personalAccountErrorMessage(disabled)).toBe("Personal API keys are disabled on this server.");
     expect(personalCredentialLoadKind(new ProviderCredentialApiError(403, "personal_credentials_forbidden", false, false, null))).toBe("forbidden");
     expect(personalCredentialLoadKind({ status: 401 })).toBe("signedOut");
     expect(personalCredentialLoadKind({ status: 503 })).toBe("error");
@@ -52,6 +54,136 @@ describe("personal account Settings controllers", () => {
     await controller.save("surplus", " si-secret ", credential);
     expect(calls).toEqual([["surplus", { apiKey: "si-secret", expectedRevision: 1 }]]);
     expect(controller.data.getState().data?.credentials[0]?.revision).toBe(2);
+  });
+
+  test("denies save and validation locally when the loaded policy is off", async () => {
+    const calls: string[] = [];
+    const api: PersonalAccountApi = {
+      listProviderCredentials: async () => ({ allowPersonalProviderKeys: false, credentials: [credential], providers: [] }),
+      putProviderCredential: async () => { calls.push("save"); },
+      validateProviderCredential: async () => { calls.push("validate"); },
+      deleteProviderCredential: async () => { calls.push("delete"); },
+      getPersonalCosts: async () => costs(0),
+    };
+    const controller = createPersonalCredentialsController(() => api);
+    controller.setScope(scopeOne);
+
+    expect(await controller.save("surplus", "si-secret", credential)).toEqual({ status: "ignored" });
+    expect(await controller.validate("surplus", credential)).toEqual({ status: "ignored" });
+    expect(await controller.remove("surplus", credential)).toEqual({ status: "ignored" });
+    await controller.load();
+
+    expect(await controller.save("surplus", "si-secret", credential)).toEqual({ status: "ignored" });
+    expect(await controller.validate("surplus", credential)).toEqual({ status: "ignored" });
+    expect(calls).toEqual([]);
+  });
+
+  test("deletes a stored key by revision while policy is off and reloads the compact state", async () => {
+    const calls: unknown[] = [];
+    let reads = 0;
+    const api: PersonalAccountApi = {
+      listProviderCredentials: async () => ({
+        allowPersonalProviderKeys: false,
+        credentials: reads++ === 0 ? [credential] : [],
+        providers: [],
+      }),
+      putProviderCredential: async () => {},
+      validateProviderCredential: async () => {},
+      deleteProviderCredential: async (provider, input) => { calls.push([provider, input]); },
+      getPersonalCosts: async () => costs(0),
+    };
+    const controller = createPersonalCredentialsController(() => api);
+    controller.setScope(scopeOne);
+    await controller.load();
+
+    expect(await controller.remove("surplus", credential)).toMatchObject({ status: "applied" });
+    expect(calls).toEqual([["surplus", { expectedRevision: 1 }]]);
+    expect(controller.data.getState().data).toEqual({
+      allowPersonalProviderKeys: false,
+      credentials: [],
+      providers: [],
+    });
+  });
+
+  test("rereads a delete conflict without replaying and retries with the refreshed revision", async () => {
+    const deleteInputs: unknown[] = [];
+    let reads = 0;
+    let deletes = 0;
+    const api: PersonalAccountApi = {
+      listProviderCredentials: async () => ({
+        allowPersonalProviderKeys: false,
+        credentials: reads++ < 2 ? [{ ...credential, revision: reads === 1 ? 4 : 5 }] : [],
+        providers: [],
+      }),
+      putProviderCredential: async () => {},
+      validateProviderCredential: async () => {},
+      deleteProviderCredential: async (_provider, input) => {
+        deleteInputs.push(input);
+        if (deletes++ === 0) {
+          throw new ProviderCredentialApiError(409, "credential_conflict", false, false, "reread_metadata");
+        }
+      },
+      getPersonalCosts: async () => costs(0),
+    };
+    const controller = createPersonalCredentialsController(() => api);
+    controller.setScope(scopeOne);
+    await controller.load();
+
+    expect(await controller.remove("surplus", { ...credential, revision: 4 })).toMatchObject({ status: "failed" });
+    expect(deleteInputs).toEqual([{ expectedRevision: 4 }]);
+    expect(controller.data.getState().data?.credentials[0]?.revision).toBe(5);
+    expect(personalAccountErrorMessage(controller.data.getState().mutationError)).toBe("This key changed elsewhere. Try again after current key details have loaded.");
+
+    const refreshed = controller.data.getState().data?.credentials[0];
+    if (!refreshed) throw new Error("Expected refreshed credential metadata");
+    expect(await controller.remove("surplus", refreshed)).toMatchObject({ status: "applied" });
+    expect(deleteInputs).toEqual([{ expectedRevision: 4 }, { expectedRevision: 5 }]);
+    expect(controller.data.getState().data?.credentials).toEqual([]);
+  });
+
+  test("rereads a missing delete target and leaves canonical disappearance inert", async () => {
+    let reads = 0;
+    const api: PersonalAccountApi = {
+      listProviderCredentials: async () => ({
+        allowPersonalProviderKeys: false,
+        credentials: reads++ === 0 ? [{ ...credential, revision: 4 }] : [],
+        providers: [],
+      }),
+      putProviderCredential: async () => {},
+      validateProviderCredential: async () => {},
+      deleteProviderCredential: async () => { throw new ProviderCredentialApiError(404, "credential_not_found", false, false, null); },
+      getPersonalCosts: async () => costs(0),
+    };
+    const controller = createPersonalCredentialsController(() => api);
+    controller.setScope(scopeOne);
+    await controller.load();
+
+    expect(await controller.remove("surplus", { ...credential, revision: 4 })).toMatchObject({ status: "failed" });
+    expect(controller.data.getState().data?.credentials).toEqual([]);
+    expect(personalAccountErrorMessage(controller.data.getState().mutationError)).toBe("This key no longer exists.");
+  });
+
+  test("keeps delete conflict and reload errors visible when reconciliation fails", async () => {
+    let reads = 0;
+    const api: PersonalAccountApi = {
+      listProviderCredentials: async () => {
+        if (reads++ > 0) throw new Error("reload failed");
+        return { allowPersonalProviderKeys: false, credentials: [{ ...credential, revision: 4 }], providers: [] };
+      },
+      putProviderCredential: async () => {},
+      validateProviderCredential: async () => {},
+      deleteProviderCredential: async () => { throw new ProviderCredentialApiError(409, "credential_conflict", false, false, "reread_metadata"); },
+      getPersonalCosts: async () => costs(0),
+    };
+    const controller = createPersonalCredentialsController(() => api);
+    controller.setScope(scopeOne);
+    await controller.load();
+
+    expect(await controller.remove("surplus", { ...credential, revision: 4 })).toMatchObject({ status: "failed" });
+    expect(controller.data.getState().data?.credentials[0]?.revision).toBe(4);
+    expect(controller.data.getState().loadError?.message).toBe("reload failed");
+    expect(await controller.remove("surplus", { ...credential, revision: 4 })).toEqual({ status: "ignored" });
+    expect(personalAccountErrorMessage(controller.data.getState().mutationError)).toBe("This key changed elsewhere. Try again after current key details have loaded.");
   });
 
   test("late cost reads cannot cross an account switch", async () => {

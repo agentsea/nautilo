@@ -17,6 +17,7 @@ import {
 } from "./settings-data-state";
 
 export interface PersonalCredentialsData {
+  readonly allowPersonalProviderKeys?: boolean;
   readonly credentials: readonly CredentialMetadata[];
   readonly providers: readonly PersonalProviderCatalogEntry[];
 }
@@ -26,7 +27,7 @@ export interface PersonalCredentialsDraft {
 }
 
 export interface PersonalAccountApi {
-  listProviderCredentials(): Promise<{ credentials: CredentialMetadata[]; providers: PersonalProviderCatalogEntry[] }>;
+  listProviderCredentials(): Promise<{ allowPersonalProviderKeys?: boolean; credentials: CredentialMetadata[]; providers: PersonalProviderCatalogEntry[] }>;
   putProviderCredential(provider: string, input: PutProviderCredentialInput): Promise<unknown>;
   validateProviderCredential(provider: string, input: ProviderCredentialRevisionInput): Promise<unknown>;
   deleteProviderCredential(provider: string, input: ProviderCredentialRevisionInput): Promise<unknown>;
@@ -53,12 +54,22 @@ export function createPersonalCredentialsController(
     async (scope) => { await action(apiForScope(scope)); },
     load,
   );
+  const readyData = (): PersonalCredentialsData | null => {
+    const state = data.getState();
+    return state.data && !state.loading && !state.loadError && !state.mutating
+      ? state.data
+      : null;
+  };
   return {
     data,
     setScope: (scope) => data.setScope(scope),
     load: () => data.load(load),
     retry: () => data.retryLoad(load),
     save(provider, apiKey, current) {
+      const currentData = readyData();
+      if (!currentData || currentData.allowPersonalProviderKeys === false) {
+        return Promise.resolve({ status: "ignored" });
+      }
       const normalized = apiKey.trim();
       if (!normalized) return Promise.reject(new Error("Enter a provider API key."));
       data.setDraft({ provider });
@@ -67,8 +78,28 @@ export function createPersonalCredentialsController(
         ...(current ? { expectedRevision: current.revision } : {}),
       })).finally(() => data.clearDraft());
     },
-    validate: (provider, current) => mutate((api) => api.validateProviderCredential(provider, { expectedRevision: current.revision })),
-    remove: (provider, current) => mutate((api) => api.deleteProviderCredential(provider, { expectedRevision: current.revision })),
+    validate(provider, current) {
+      const currentData = readyData();
+      if (!currentData || currentData.allowPersonalProviderKeys === false) {
+        return Promise.resolve({ status: "ignored" });
+      }
+      return mutate((api) => api.validateProviderCredential(provider, { expectedRevision: current.revision }));
+    },
+    remove(provider, current) {
+      if (!readyData()) return Promise.resolve({ status: "ignored" });
+      return mutate((api) => api.deleteProviderCredential(provider, { expectedRevision: current.revision }))
+        .then(async (result) => {
+          if (
+            result.status !== "failed"
+            || !(result.error instanceof ProviderCredentialApiError)
+            || (result.error.repair !== "reread_metadata" && result.error.error !== "credential_not_found")
+          ) {
+            return result;
+          }
+          const refreshed = await data.load(load);
+          return refreshed.status === "ignored" ? refreshed : result;
+        });
+    },
   };
 }
 
@@ -104,11 +135,13 @@ export function createPersonalCostsController(
 
 export function personalAccountErrorMessage(error: unknown): string {
   if (error instanceof ProviderCredentialApiError) {
+    if (error.error === "credential_conflict") return "This key changed elsewhere. Try again after current key details have loaded.";
+    if (error.error === "credential_not_found") return "This key no longer exists.";
     if (error.error === "credential_destination_unavailable") return "This provider destination is not configured on the server. Contact the Server operator.";
     if (error.error === "credential_destination_changed") return "The server's provider destination changed. Replace this key before using it again.";
     if (error.error === "credential_custody_unavailable") return "Your saved keys cannot be opened safely right now. Contact the Server operator.";
     if (error.error === "credential_reenrollment_required") return "This key must be replaced before it can be used again.";
-    if (error.error === "personal_credentials_disabled") return "Personal API keys are disabled on this server. Your saved keys are retained but won’t be used.";
+    if (error.error === "personal_credentials_disabled") return "Personal API keys are disabled on this server.";
     if (error.error === "personal_credentials_forbidden") return "You are not allowed to manage personal keys.";
   }
   const status = error !== null && typeof error === "object" && "status" in error

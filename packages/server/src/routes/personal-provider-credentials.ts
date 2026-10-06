@@ -138,6 +138,22 @@ function metadata(record: PersonalProviderCredentialRecord, access: CredentialAc
   };
 }
 
+function disabledMetadata(record: PersonalProviderCredentialRecord) {
+  return {
+    provider: record.provider,
+    id: record.id,
+    revision: record.revision,
+    createdAt: record.createdAt.toISOString(),
+    updatedAt: record.updatedAt.toISOString(),
+    validationStatus: record.validationStatus,
+    validatedAt: record.validatedAt?.toISOString() ?? null,
+    destination: record.destination,
+    receiptReadStatus: record.receiptReadStatus,
+    requiresReplacement: false,
+    masked: null,
+  };
+}
+
 function unavailableAfter(error: unknown, reply: { code: (status: number) => { send: (body: unknown) => unknown } }, repair: string) {
   return error instanceof PersonalProviderCustodyError
     ? reply.code(503).send(failure("credential_custody_unavailable", false, false, "contact_operator"))
@@ -199,7 +215,11 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
     }
   }
 
-  async function admit(request: FastifyRequest, reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
+  async function admit(
+    request: FastifyRequest,
+    reply: { code: (status: number) => { send: (body: unknown) => unknown } },
+    options: { allowDisabled?: boolean } = {},
+  ): Promise<{ userId: string; allowPersonalProviderKeys: boolean } | null> {
     const userId = request.sessionUserId;
     if (!userId) {
       reply.code(401).send(failure("authentication_required"));
@@ -213,6 +233,7 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
       return null;
     }
     if (!policy.allowPersonalProviderKeys) {
+      if (options.allowDisabled) return { userId, allowPersonalProviderKeys: false };
       reply.code(404).send(failure("personal_credentials_disabled"));
       return null;
     }
@@ -226,7 +247,7 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
       reply.code(503).send(failure("personal_credentials_unavailable", false, true, "retry"));
       return null;
     }
-    return userId;
+    return { userId, allowPersonalProviderKeys: true };
   }
 
   async function readCustody(reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
@@ -268,13 +289,21 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
   }
 
   app.get("/api/account/provider-credentials", { logLevel: "silent" }, async (request, reply) => {
-    const userId = await admit(request, reply);
-    if (!userId) return;
-    const custody = await readCustody(reply);
-    if (!custody) return;
+    const admission = await admit(request, reply, { allowDisabled: true });
+    if (!admission) return;
     try {
-      const records = await deps.listCredentials(deps.getDb(), userId);
+      const records = await deps.listCredentials(deps.getDb(), admission.userId);
+      if (!admission.allowPersonalProviderKeys) {
+        return reply.send({
+          allowPersonalProviderKeys: false,
+          credentials: records.map(disabledMetadata),
+          providers: personalProviderCatalog(),
+        });
+      }
+      const custody = await readCustody(reply);
+      if (!custody) return;
       return reply.send({
+        allowPersonalProviderKeys: true,
         credentials: records.map((record) => metadata(record, credentialAccess(record, custody))),
         providers: personalProviderCatalog(),
       });
@@ -284,8 +313,9 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
   });
 
   app.put("/api/account/provider-credentials/:provider", { logLevel: "silent" }, async (request, reply) => {
-    const userId = await admit(request, reply);
-    if (!userId) return;
+    const admission = await admit(request, reply);
+    if (!admission) return;
+    const { userId } = admission;
     const provider = parseProvider(request);
     const body = parseWrite(request.body);
     if (!provider || !body) return reply.code(422).send(failure(provider ? "invalid_credential_request" : "invalid_provider"));
@@ -355,8 +385,9 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
   });
 
   app.post("/api/account/provider-credentials/:provider/validate", { logLevel: "silent" }, async (request, reply) => {
-    const userId = await admit(request, reply);
-    if (!userId) return;
+    const admission = await admit(request, reply);
+    if (!admission) return;
+    const { userId } = admission;
     const provider = parseProvider(request);
     const expectedRevision = parseRevisionBody(request.body);
     if (!provider || expectedRevision === null) return reply.code(422).send(failure(provider ? "invalid_credential_request" : "invalid_provider"));
@@ -407,19 +438,20 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
   });
 
   app.delete("/api/account/provider-credentials/:provider", { logLevel: "silent" }, async (request, reply) => {
-    const userId = await admit(request, reply);
-    if (!userId) return;
+    const admission = await admit(request, reply, { allowDisabled: true });
+    if (!admission) return;
+    const { userId } = admission;
     const provider = parseProvider(request);
     const expectedRevision = parseRevisionBody(request.body);
     if (!provider || expectedRevision === null) return reply.code(422).send(failure(provider ? "invalid_credential_request" : "invalid_provider"));
-    const custody = await readCustody(reply);
-    if (!custody) return;
+    const custody = admission.allowPersonalProviderKeys ? await readCustody(reply) : null;
+    if (admission.allowPersonalProviderKeys && !custody) return;
     try {
       const db = deps.getDb();
       const record = await deps.getCredential(db, userId, provider);
       if (!record) return reply.send({ deleted: true, committed: true });
       if (record.revision !== expectedRevision) return reply.code(409).send(failure("credential_conflict", false, false, "reread_metadata"));
-      credentialAccess(record, custody);
+      if (custody) credentialAccess(record, custody);
       const result = await deps.deleteCredential(db, { userId, provider, id: record.id, expectedRevision });
       if (result.status === "conflict") return reply.code(409).send(failure("credential_conflict", false, false, "reread_metadata"));
       if (result.status === "deleted") {

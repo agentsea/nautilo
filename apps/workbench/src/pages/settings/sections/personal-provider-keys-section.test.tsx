@@ -53,12 +53,105 @@ describe("PersonalProviderKeysSection", () => {
 
   test("distinguishes disabled policy and permission denial without retry actions", async () => {
     const disabled = render(<PersonalProviderKeysSection credentialApi={api({ listProviderCredentials: mock(async () => { throw new ProviderCredentialApiError(404, "personal_credentials_disabled", false, false, null); }) })} />);
-    expect(await disabled.findByText("Personal API keys are disabled on this server. Your saved keys are retained but won’t be used.")).toBeTruthy();
+    expect(await disabled.findByText("Personal API keys are disabled on this server.")).toBeTruthy();
     expect(disabled.queryByRole("button", { name: "Retry" })).toBeNull();
     cleanup();
     const forbidden = render(<PersonalProviderKeysSection credentialApi={api({ listProviderCredentials: mock(async () => { throw new ProviderCredentialApiError(403, "personal_credentials_forbidden", false, false, null); }) })} />);
     expect(await forbidden.findByText("You do not have permission to manage personal API keys.")).toBeTruthy();
     expect(forbidden.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  test("shows only the warning and costs link when off without saved keys", async () => {
+    const view = render(<PersonalProviderKeysSection showServerAdminLink credentialApi={api({
+      listProviderCredentials: mock(async () => ({ ...listResponse(), allowPersonalProviderKeys: false })),
+    })} />);
+    await view.findByText("Personal API keys are disabled on this server.");
+    expect(view.container.querySelectorAll("label").length).toBe(0);
+    expect(view.queryByTestId("personal-provider-key-coverage")).toBeNull();
+    expect(view.queryAllByRole("button")).toHaveLength(0);
+    expect(view.queryByText("Get a key")).toBeNull();
+    expect(view.queryByRole("link", { name: "Server Admin" })).toBeNull();
+    expect(view.getByRole("link", { name: "View your costs" })).toBeTruthy();
+  });
+
+  test("shows saved rows only when off and removes the last key by confirmed revision", async () => {
+    const keyApi = api({ listProviderCredentials: mock(async () => ({
+      ...listResponse([{ ...saved, masked: null, requiresReplacement: true, receiptReadStatus: "unavailable" as const }]),
+      allowPersonalProviderKeys: false,
+    })) });
+    const view = render(<PersonalProviderKeysSection credentialApi={keyApi} />);
+    const remove = await view.findByRole("button", { name: "Delete OpenAI key" });
+    expect((remove as HTMLButtonElement).disabled).toBeFalse();
+    expect([...view.container.querySelectorAll("label")].map((node) => node.textContent)).toEqual(["OpenAI"]);
+    expect(view.queryByTestId("personal-provider-key-coverage")).toBeNull();
+    expect(view.queryByText("Get a key")).toBeNull();
+    expect(view.queryByText("Replacement required")).toBeNull();
+    expect(view.container.textContent).not.toContain("can run eligible requests");
+    expect(view.queryByRole("button", { name: /Add|Replace|Validate/ })).toBeNull();
+    fireEvent.click(remove);
+    expect(keyApi.deleteProviderCredential).not.toHaveBeenCalled();
+    fireEvent.click(view.getByRole("button", { name: "Delete key" }));
+    await waitFor(() => expect(keyApi.deleteProviderCredential).toHaveBeenCalledWith("openai", { expectedRevision: 4 }));
+    await view.findByText("Personal API keys are disabled on this server.");
+    expect(view.container.querySelectorAll("label").length).toBe(0);
+    expect(keyApi.putProviderCredential).not.toHaveBeenCalled();
+    expect(keyApi.validateProviderCredential).not.toHaveBeenCalled();
+  });
+
+  test("clears a draft on a successful off response and keeps refresh compact", async () => {
+    let resolveRefresh!: (value: ReturnType<typeof listResponse> & { allowPersonalProviderKeys: boolean }) => void;
+    const pending = new Promise<ReturnType<typeof listResponse> & { allowPersonalProviderKeys: boolean }>((resolve) => { resolveRefresh = resolve; });
+    let reads = 0;
+    const keyApi = api({ listProviderCredentials: mock(() => {
+      if (reads++ === 0) return Promise.resolve(listResponse([saved]));
+      if (reads === 2) return Promise.resolve({ ...listResponse([saved]), allowPersonalProviderKeys: false });
+      return pending;
+    }) });
+    const view = render(<PersonalProviderKeysSection credentialApi={keyApi} />);
+    fireEvent.click(await view.findByRole("button", { name: "Add Anthropic key" }));
+    await enterSecret(view.getByLabelText("New Anthropic API key"), "discard-on-policy-off");
+    fireEvent(window, new Event("focus"));
+    await view.findByText("Personal API keys are disabled on this server. Your saved keys won’t be used. You can delete them below.");
+    expect(view.queryByDisplayValue("discard-on-policy-off")).toBeNull();
+    fireEvent(window, new Event("focus"));
+    expect(view.container.querySelectorAll("label").length).toBe(1);
+    expect(view.queryByTestId("personal-provider-key-coverage")).toBeNull();
+    expect((view.getByRole("button", { name: "Delete OpenAI key" }) as HTMLButtonElement).disabled).toBeTrue();
+    await act(async () => resolveRefresh({ ...listResponse(), allowPersonalProviderKeys: false }));
+    await view.findByText("Personal API keys are disabled on this server.");
+    expect(view.container.querySelectorAll("label").length).toBe(0);
+  });
+
+  test("drops an old validation error after a successful off-policy refresh", async () => {
+    let reads = 0;
+    const keyApi = api({
+      listProviderCredentials: mock(async () => ({ ...listResponse([saved]), allowPersonalProviderKeys: reads++ === 0 })),
+      validateProviderCredential: mock(async () => { throw new Error("temporary validation failure"); }),
+    });
+    const view = render(<PersonalProviderKeysSection credentialApi={keyApi} />);
+    fireEvent.click(await view.findByRole("button", { name: "Validate OpenAI key" }));
+    await view.findByRole("alert");
+    fireEvent(window, new Event("focus"));
+    await view.findByText("Personal API keys are disabled on this server. Your saved keys won’t be used. You can delete them below.");
+    expect(view.queryByRole("alert")).toBeNull();
+    expect((view.getByRole("button", { name: "Delete OpenAI key" }) as HTMLButtonElement).disabled).toBeFalse();
+  });
+
+  test("rereads an off-state deletion conflict without replaying and uses the new revision", async () => {
+    let reads = 0;
+    const keyApi = api({
+      listProviderCredentials: mock(async () => ({ ...listResponse([{ ...saved, revision: reads++ === 0 ? 4 : 5 }]), allowPersonalProviderKeys: false })),
+      deleteProviderCredential: mock(async () => { throw new ProviderCredentialApiError(409, "credential_conflict", false, true, "reread_metadata"); }),
+    });
+    const view = render(<PersonalProviderKeysSection credentialApi={keyApi} />);
+    fireEvent.click(await view.findByRole("button", { name: "Delete OpenAI key" }));
+    fireEvent.click(view.getByRole("button", { name: "Delete key" }));
+    expect(await view.findByRole("alert")).toBeTruthy();
+    expect(keyApi.listProviderCredentials).toHaveBeenCalledTimes(2);
+    expect(keyApi.deleteProviderCredential).toHaveBeenCalledTimes(1);
+    fireEvent.click(view.getByRole("button", { name: "Delete OpenAI key" }));
+    fireEvent.click(view.getByRole("button", { name: "Delete key" }));
+    await waitFor(() => expect(keyApi.deleteProviderCredential).toHaveBeenLastCalledWith("openai", { expectedRevision: 5 }));
   });
 
   test("offers retry only for transient load failures", async () => {
@@ -105,9 +198,9 @@ describe("PersonalProviderKeysSection", () => {
     const list = mock(() => reads++ === 0 ? first : Promise.reject(new ProviderCredentialApiError(404, "personal_credentials_disabled", false, false, null)));
     const view = render(<PersonalProviderKeysSection credentialApi={api({ listProviderCredentials: list })} />);
     act(() => window.dispatchEvent(new Event(PERSONAL_PROVIDER_POLICY_CHANGED_EVENT)));
-    await view.findByText("Personal API keys are disabled on this server. Your saved keys are retained but won’t be used.");
+    await view.findByText("Personal API keys are disabled on this server.");
     await act(async () => finishFirst({ credentials: [], providers }));
-    expect((view.getByRole("button", { name: "Add OpenAI key" }) as HTMLButtonElement).disabled).toBeTrue();
+    expect(view.queryByRole("button", { name: "Add OpenAI key" })).toBeNull();
   });
 
   test("preserves an open secret draft during focus refresh and clears it only after policy denial", async () => {
@@ -122,7 +215,7 @@ describe("PersonalProviderKeysSection", () => {
     fireEvent(window, new Event("focus"));
     expect((view.getByDisplayValue("keep-until-policy-known") as HTMLInputElement).disabled).toBeTrue();
     await act(async () => rejectRefresh(new ProviderCredentialApiError(404, "personal_credentials_disabled", false, false, null)));
-    await view.findByText("Personal API keys are disabled on this server. Your saved keys are retained but won’t be used.");
+    await view.findByText("Personal API keys are disabled on this server.");
     expect(view.queryByDisplayValue("keep-until-policy-known")).toBeNull();
   });
 
@@ -207,8 +300,8 @@ describe("PersonalProviderKeysSection", () => {
     const validate = mock(async () => { throw new ProviderCredentialApiError(404, "personal_credentials_disabled", false, false, null); });
     const view = render(<PersonalProviderKeysSection credentialApi={api({ listProviderCredentials: list, validateProviderCredential: validate })} />);
     fireEvent.click(await view.findByRole("button", { name: "Validate OpenAI key" }));
-    await view.findByText("Personal API keys are disabled on this server. Your saved keys are retained but won’t be used.");
-    expect((view.getByRole("button", { name: "Add OpenAI key" }) as HTMLButtonElement).disabled).toBeTrue();
+    await view.findByText("Personal API keys are disabled on this server.");
+    expect(view.queryByRole("button", { name: "Add OpenAI key" })).toBeNull();
     expect(validate).toHaveBeenCalledTimes(1);
   });
 

@@ -2346,6 +2346,8 @@ const personalProviderCatalogEntrySchema: z.ZodType<PersonalProviderCatalogEntry
 }).strict();
 
 const listProviderCredentialsResponseSchema = z.object({
+  // Older enabled servers do not project the policy state yet.
+  allowPersonalProviderKeys: z.boolean().optional().default(true),
   credentials: z.array(credentialMetadataSchema),
   // During a rolling upgrade an older server may not project its registry yet.
   providers: z.array(personalProviderCatalogEntrySchema).optional().default([]),
@@ -5887,6 +5889,7 @@ export class NautiloApiClient {
   }
 
   async listProviderCredentials(): Promise<{
+    allowPersonalProviderKeys?: boolean;
     credentials: CredentialMetadata[];
     providers: PersonalProviderCatalogEntry[];
   }> {

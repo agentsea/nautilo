@@ -21,6 +21,7 @@ let db: DirectDatabase;
 let app: FastifyInstance;
 let userA: string;
 let userB: string;
+let allowPersonalProviderKeys = true;
 
 function responseBody(response: { body: string }): Record<string, unknown> {
   return JSON.parse(response.body) as Record<string, unknown>;
@@ -51,7 +52,7 @@ beforeAll(async () => {
   });
   personalProviderCredentialRoutes(app, {
     getDb: () => db,
-    getPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference: "personal_first" }),
+    getPolicy: async () => ({ allowPersonalProviderKeys, fundingPreference: "personal_first" }),
     getCapabilities: async () => ["use_personal_provider_credentials"],
     readCustody: async () => custody,
     validate: async () => ({ status: "accepted" }),
@@ -61,6 +62,7 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
+  allowPersonalProviderKeys = true;
   if (!db) return;
   for (const userId of [userA, userB]) {
     if (userId) await db.delete(personalProviderCredentials)
@@ -79,6 +81,77 @@ afterAll(async () => {
 });
 
 describe("personal credential API with migrated database", () => {
+  test("keeps policy-off cleanup owner-scoped and revision-fenced", async () => {
+    allowPersonalProviderKeys = false;
+    const empty = await app.inject({
+      method: "GET", url: "/api/account/provider-credentials", headers: auth(userA),
+    });
+    expect(empty.statusCode).toBe(200);
+    expect(responseBody(empty)).toMatchObject({
+      allowPersonalProviderKeys: false,
+      credentials: [],
+    });
+
+    allowPersonalProviderKeys = true;
+    for (const [userId, provider] of [[userA, "openai"], [userB, "anthropic"]] as const) {
+      const created = await app.inject({
+        method: "PUT", url: `/api/account/provider-credentials/${provider}`,
+        headers: auth(userId), payload: { apiKey: `${SENTINEL}-${provider}` },
+      });
+      expect(created.statusCode).toBe(200);
+    }
+
+    allowPersonalProviderKeys = false;
+    const listed = await app.inject({
+      method: "GET", url: "/api/account/provider-credentials", headers: auth(userA),
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(responseBody(listed)).toMatchObject({
+      allowPersonalProviderKeys: false,
+      credentials: [{ provider: "openai", revision: 1, masked: null }],
+    });
+    expect(listed.body).not.toContain(SENTINEL);
+    expect(listed.body).not.toContain("ciphertextBase64");
+
+    const stale = await app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/openai",
+      headers: auth(userA), payload: { expectedRevision: 2 },
+    });
+    expect(stale.statusCode).toBe(409);
+
+    const foreign = await app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/openai",
+      headers: auth(userB), payload: { expectedRevision: 1 },
+    });
+    expect(foreign.statusCode).toBe(200);
+    expect(await getPersonalProviderCredential(db, userA, "openai")).not.toBeNull();
+
+    const deleted = await app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/openai",
+      headers: auth(userA), payload: { expectedRevision: 1 },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(await getPersonalProviderCredential(db, userA, "openai")).toBeNull();
+    expect(await getPersonalProviderCredential(db, userB, "anthropic")).not.toBeNull();
+
+    for (const request of [
+      {
+        method: "PUT",
+        url: "/api/account/provider-credentials/openai",
+        payload: { apiKey: `${SENTINEL}-blocked` },
+      },
+      {
+        method: "POST",
+        url: "/api/account/provider-credentials/anthropic/validate",
+        payload: { expectedRevision: 1 },
+      },
+    ] as const) {
+      const response = await app.inject({ ...request, headers: auth(userB) });
+      expect(response.statusCode).toBe(404);
+      expect(responseBody(response)["error"]).toBe("personal_credentials_disabled");
+    }
+  });
+
   test("personal providers follow the server registry without its server-owned gateways", async () => {
     const registry = getAllKeyDefinitions().filter((provider) =>
       provider.id !== "gateway" && provider.id !== "nautilo-gateway");

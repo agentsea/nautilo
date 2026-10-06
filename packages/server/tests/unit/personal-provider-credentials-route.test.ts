@@ -279,6 +279,7 @@ describe("personal provider credential routes", () => {
 
     expect(response.statusCode).toBe(200);
     const result = body(response);
+    expect(result["allowPersonalProviderKeys"]).toBe(true);
     expect(result["credentials"]).toEqual([]);
     const providers = result["providers"] as Array<Record<string, unknown>>;
     const definitions = orderProviderKeys(PERSONAL_PROVIDER_KEY_CATALOGUE);
@@ -373,6 +374,121 @@ describe("personal provider credential routes", () => {
       capable = true;
       const admitted = await harness.app.inject({ ...request, headers: auth() });
       expect(admitted.statusCode).toBe(200);
+    }
+  });
+
+  test("lists an empty account while personal keys are disabled without capability or custody", async () => {
+    const harness = await makeHarness({
+      policy: () => false,
+      fail: new Set(["capabilities", "custody", "validate"]),
+    });
+
+    const response = await harness.app.inject({
+      method: "GET", url: "/api/account/provider-credentials", headers: auth(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(body(response)).toMatchObject({
+      allowPersonalProviderKeys: false,
+      credentials: [],
+    });
+    expect(harness.calls).toEqual(["policy", "list"]);
+  });
+
+  test("lists and deletes only the session owner's saved metadata while personal keys are disabled", async () => {
+    const sourceCustody = createPersonalProviderCustody();
+    const own = credential(sourceCustody, {
+      userId: USER_A,
+      provider: "openai",
+      plaintext: SENTINEL,
+      revision: 2,
+      validationStatus: "accepted",
+      validatedAt: UPDATED_AT,
+    });
+    const foreign = credential(sourceCustody, {
+      userId: USER_B,
+      provider: "anthropic",
+      plaintext: `${SENTINEL}-foreign`,
+    });
+    const harness = await makeHarness({
+      custody: createPersonalProviderCustody(),
+      records: [own, foreign],
+      policy: () => false,
+      fail: new Set(["capabilities", "custody", "validate"]),
+    });
+
+    const listed = await harness.app.inject({
+      method: "GET", url: "/api/account/provider-credentials", headers: auth(USER_A),
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(body(listed)).toMatchObject({
+      allowPersonalProviderKeys: false,
+      credentials: [{
+        provider: "openai",
+        id: own.id,
+        revision: 2,
+        validationStatus: "accepted",
+        validatedAt: UPDATED_AT.toISOString(),
+        destination: null,
+        receiptReadStatus: "unknown",
+        requiresReplacement: false,
+        masked: null,
+      }],
+    });
+    expect(listed.body).not.toContain(SENTINEL);
+    expect(listed.body).not.toContain(own.envelope.ciphertextBase64);
+    expect(harness.calls).toEqual(["policy", "list"]);
+
+    const staleDelete = await harness.app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/openai",
+      headers: auth(USER_A), payload: { expectedRevision: 1 },
+    });
+    expect(staleDelete.statusCode).toBe(409);
+    expect(body(staleDelete)["error"]).toBe("credential_conflict");
+    expect(harness.records.get(key(USER_A, "openai"))).toEqual(own);
+
+    const otherSessionDelete = await harness.app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/openai",
+      headers: auth(USER_B), payload: { expectedRevision: 2 },
+    });
+    expect(otherSessionDelete.statusCode).toBe(200);
+    expect(harness.records.get(key(USER_A, "openai"))).toEqual(own);
+
+    const deleted = await harness.app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/openai",
+      headers: auth(USER_A), payload: { expectedRevision: 2 },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(body(deleted)).toEqual({ deleted: true, committed: true });
+    expect(harness.records.has(key(USER_A, "openai"))).toBe(false);
+    expect(harness.records.get(key(USER_B, "anthropic"))).toEqual(foreign);
+    expect(harness.auditEvents).toHaveLength(1);
+    expect(harness.auditEvents[0]).toMatchObject({
+      actorId: USER_A,
+      provider: "openai",
+      credentialId: own.id,
+      revision: 2,
+      action: "deleted",
+    });
+    expect(harness.calls).not.toContain("capabilities");
+    expect(harness.calls).not.toContain("custody");
+    expect(harness.calls).not.toContain("validate");
+
+    for (const request of [
+      {
+        method: "PUT",
+        url: "/api/account/provider-credentials/anthropic",
+        payload: { apiKey: `${SENTINEL}-new` },
+      },
+      {
+        method: "POST",
+        url: "/api/account/provider-credentials/anthropic/validate",
+        payload: { expectedRevision: 1 },
+      },
+    ] as const) {
+      const response = await harness.app.inject({ ...request, headers: auth(USER_B) });
+      expect(response.statusCode).toBe(404);
+      expect(body(response)["error"]).toBe("personal_credentials_disabled");
     }
   });
 

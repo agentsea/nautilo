@@ -32,6 +32,8 @@ type LoadState =
     kind: "ready";
     credentials: CredentialMetadata[];
     providers: PersonalProviderCatalogEntry[];
+    allowPersonalProviderKeys: boolean;
+    refreshing?: boolean;
   };
 
 type RowAction =
@@ -124,14 +126,24 @@ export function PersonalProviderKeysSection({
 
   const load = useCallback(async (preserveMessage = false) => {
     const generation = ++loadGenerationRef.current;
-    if (!preserveMessage) setState({ kind: "loading" });
+    if (!preserveMessage) setState((previous) => previous.kind === "ready" && !previous.allowPersonalProviderKeys
+      ? { ...previous, refreshing: true }
+      : previous.kind === "disabled" ? previous : { kind: "loading" });
     try {
       const result = await credentialApi.listProviderCredentials();
       if (!mountedRef.current || generation !== loadGenerationRef.current) return null;
+      if (result.allowPersonalProviderKeys === false) {
+        setSecret("");
+        setEditingProvider(null);
+        setConfirmDelete(null);
+        setSavedProvider(null);
+        setRowActions({});
+      }
       setState({
         kind: "ready",
         credentials: result.credentials,
         providers: result.providers,
+        allowPersonalProviderKeys: result.allowPersonalProviderKeys !== false,
       });
       return "ready" as const;
     } catch (error) {
@@ -170,6 +182,9 @@ export function PersonalProviderKeysSection({
   useEffect(() => {
     void load();
   }, [load]);
+
+  const personalKeysDisabled = state.kind === "disabled"
+    || (state.kind === "ready" && !state.allowPersonalProviderKeys);
 
   useEffect(() => {
     const reloadAfterPolicyChange = () => {
@@ -215,7 +230,7 @@ export function PersonalProviderKeysSection({
         .map((credential) => credential.provider)
         .filter((provider) => !cataloguedIds.has(provider) && !responseIds.has(provider)),
     );
-    return orderProviderKeys([
+    const rows = orderProviderKeys([
       ...PERSONAL_PROVIDER_KEY_CATALOGUE.map((provider) => ({
         ...provider,
         destination: responseProviders.get(provider.id)?.destination ?? null,
@@ -246,7 +261,8 @@ export function PersonalProviderKeysSection({
         available: false,
       })),
     ]);
-  }, [byProvider, state]);
+    return personalKeysDisabled ? rows.filter((provider) => byProvider.has(provider.id)) : rows;
+  }, [byProvider, personalKeysDisabled, state]);
 
   const personalChatProviders = useMemo(() => orderProviderKeys(providerRows)
     .filter((provider) => provider.catalogued && provider.personalCapabilities.includes("chat"))
@@ -382,14 +398,14 @@ export function PersonalProviderKeysSection({
     <SectionCard
       id="personal-provider-keys"
       title="Personal API keys"
-      description="Add your own provider keys to use supported models for personal chat and native tool-free text Tasks. Keys belong to your account on this Server; after saving, only a masked preview is shown."
+      description={personalKeysDisabled ? undefined : "Add your own provider keys to use supported models for personal chat and native tool-free text Tasks. Keys belong to your account on this Server; after saving, only a masked preview is shown."}
       actions={<a className="text-sm font-medium text-primary hover:underline" href="/account/costs">View your costs</a>}
     >
       <div>
-          {state.kind === "loading" ? <p className="mb-4 text-sm text-foreground-muted">Loading saved key status…</p> : null}
-          {state.kind === "disabled" ? (
+          {state.kind === "loading" || (state.kind === "ready" && state.refreshing) ? <p className="mb-4 text-sm text-foreground-muted">Loading saved key status…</p> : null}
+          {personalKeysDisabled ? (
             <p role="status" className="mb-4 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm font-medium text-foreground">
-              Personal API keys are disabled on this server. Your saved keys are retained but won’t be used.
+              Personal API keys are disabled on this server.{byProvider.size > 0 ? " Your saved keys won’t be used. You can delete them below." : ""}
             </p>
           ) : null}
           {state.kind === "forbidden" ? (
@@ -404,7 +420,7 @@ export function PersonalProviderKeysSection({
               <Button onClick={() => void load()}>Retry</Button>
             </div>
           ) : null}
-          <section className="mb-5 border-b border-border pb-5" aria-labelledby="personal-provider-key-coverage-title" data-testid="personal-provider-key-coverage">
+          {!personalKeysDisabled ? <><section className="mb-5 border-b border-border pb-5" aria-labelledby="personal-provider-key-coverage-title" data-testid="personal-provider-key-coverage">
             <h3 id="personal-provider-key-coverage-title" className="text-sm font-semibold">API key coverage</h3>
             <p className="mt-1 text-xs text-foreground-muted">Shows which saved keys can fund personal chat. Provider and key status remain pending until the server confirms them.</p>
             <ProviderKeyCoverageTable
@@ -417,13 +433,14 @@ export function PersonalProviderKeysSection({
           </section>
           <p className="mb-4 text-xs text-foreground-muted">
             Provider capability details are shown in model selection. Saving a key here only makes it available for eligible personal requests.
-          </p>
+          </p></> : null}
           {providerRows.map((provider) => {
             const current = byProvider.get(provider.id);
             const action = rowActions[provider.id] ?? { kind: "idle" };
             const busy = action.kind === "busy";
             const editing = editingProvider === provider.id;
-            const actionsEnabled = state.kind === "ready";
+            const deletionEnabled = state.kind === "ready" && !state.refreshing;
+            const actionsEnabled = deletionEnabled && !personalKeysDisabled;
             const savedAt = readableTime(current?.updatedAt ?? null);
             const validatedAt = readableTime(current?.validatedAt ?? null);
             return (
@@ -431,7 +448,7 @@ export function PersonalProviderKeysSection({
                 key={provider.id}
                 label={provider.name}
                 htmlFor={`personal-provider-key-${provider.id}`}
-                hint={(
+                hint={personalKeysDisabled ? `Saved${savedAt ? ` ${savedAt}` : ""}` : (
                   <span>
                     {provider.purpose}
                     {provider.signupUrl ? (
@@ -460,7 +477,7 @@ export function PersonalProviderKeysSection({
                 <div className="flex flex-col gap-2">
                   {state.kind !== "ready" ? (
                     <StatusPill tone="muted">{state.kind === "loading" ? "Checking status…" : "Status unavailable"}</StatusPill>
-                  ) : current ? (
+                  ) : current && !personalKeysDisabled ? (
                     <div className="flex flex-wrap items-center gap-2 text-xs text-foreground-muted">
                       {statusPill(current.validationStatus)}
                       {current.masked ? (
@@ -480,7 +497,7 @@ export function PersonalProviderKeysSection({
                     </div>
                   ) : null}
 
-                  {editing && provider.catalogued ? (
+                  {editing && provider.catalogued && !personalKeysDisabled ? (
                     <div className="flex flex-col gap-2">
                       <TextInput
                         id={`personal-provider-key-${provider.id}`}
@@ -515,12 +532,12 @@ export function PersonalProviderKeysSection({
                   ) : confirmDelete === provider.id && current ? (
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-xs text-foreground-muted">Delete this saved key?</span>
-                      <Button loading={busy} disabled={!actionsEnabled} onClick={() => void remove(provider.id, current)}>Delete key</Button>
+                      <Button loading={busy} disabled={!deletionEnabled || busy} onClick={() => void remove(provider.id, current)}>Delete key</Button>
                       <Button variant="ghost" disabled={busy} onClick={() => setConfirmDelete(null)}>Cancel</Button>
                     </div>
                   ) : (
                     <div className="flex flex-wrap gap-2">
-                      {provider.catalogued && (state.kind !== "ready" || provider.available) ? (
+                      {!personalKeysDisabled && provider.catalogued && (state.kind !== "ready" || provider.available) ? (
                         <Button disabled={!actionsEnabled || busy} onClick={() => {
                           setEditingProvider(provider.id);
                           setSecret("");
@@ -529,8 +546,7 @@ export function PersonalProviderKeysSection({
                           {current ? "Replace" : "Add key"}
                         </Button>
                       ) : null}
-                      {current && provider.catalogued && provider.available ? (
-                        <>
+                      {!personalKeysDisabled && current && provider.catalogued && provider.available ? (
                           <Button
                             loading={busy && action.action === "validate"}
                             disabled={!actionsEnabled || busy}
@@ -539,20 +555,14 @@ export function PersonalProviderKeysSection({
                           >
                             Check again
                           </Button>
-                          <Button
-                            variant="ghost"
-                            disabled={!actionsEnabled || busy}
-                            ariaLabel={`Delete ${provider.name} key`}
-                            onClick={() => setConfirmDelete(provider.id)}
-                          >Delete</Button>
-                        </>
-                      ) : current ? (
+                      ) : null}
+                      {current ? (
                         <Button
                           variant="ghost"
-                          disabled={!actionsEnabled || busy}
-                          ariaLabel={`Delete legacy ${provider.name} key`}
+                          disabled={!deletionEnabled || busy}
+                          ariaLabel={provider.available || (personalKeysDisabled && provider.catalogued) ? `Delete ${provider.name} key` : `Delete legacy ${provider.name} key`}
                           onClick={() => setConfirmDelete(provider.id)}
-                        >Delete saved key</Button>
+                        >Delete</Button>
                       ) : null}
                     </div>
                   )}
@@ -560,7 +570,7 @@ export function PersonalProviderKeysSection({
                   {action.kind === "error" ? (
                     <p role="alert" className="text-xs text-error">{action.message}</p>
                   ) : null}
-                  {savedProvider === provider.id ? (
+                  {!personalKeysDisabled && savedProvider === provider.id ? (
                     <p role="status" className="text-xs text-foreground-muted">
                       Key saved and checked without making a paid request.{" "}
                       {provider.catalogued
@@ -572,7 +582,7 @@ export function PersonalProviderKeysSection({
                         : null}
                     </p>
                   ) : null}
-                  {provider.catalogued
+                  {!personalKeysDisabled && provider.catalogued
                     && !provider.personalCapabilities.includes("chat")
                     && savedProvider !== provider.id ? (
                     <p className="text-xs text-foreground-muted">
@@ -583,7 +593,7 @@ export function PersonalProviderKeysSection({
               </FieldRow>
             );
           })}
-          {showServerAdminLink ? (
+          {showServerAdminLink && !personalKeysDisabled ? (
             <p className="mt-4 border-t border-border pt-4 text-xs text-foreground-muted">
               Server-funded keys are managed separately in{" "}
               <a className="text-primary hover:underline" href="/admin#provider-credentials">Server Admin</a>.
