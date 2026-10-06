@@ -287,8 +287,6 @@ export function RoomChatComposer({
           capabilities.attachments ? (
             <Pressable
               style={styles.attachButton}
-              disabled={c.imageInputUnsupported}
-              accessibilityState={{ disabled: c.imageInputUnsupported }}
               onPress={() => void c.handleAttach()}
               accessibilityRole="button"
               accessibilityLabel="Attach image">

@@ -9,6 +9,7 @@
     "body-parser",
     "hono",
     "jose",
+    "proxy-addr",
     "qs"
   ],
   "runtimeOnlyOverrides": {
@@ -59,6 +60,11 @@
       "kind": "root-override",
       "name": "qs",
       "reason": "Keep the shipped Express query parser on the audited patched release."
+    },
+    {
+      "kind": "root-override",
+      "name": "proxy-addr",
+      "reason": "Keep the shipped Express proxy address parser on the patched 2.0.8 release."
     }
   ]
 }
