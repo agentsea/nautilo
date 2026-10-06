@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { getTableName } from "drizzle-orm";
 import { getTableConfig } from "drizzle-orm/pg-core";
 
@@ -143,6 +144,8 @@ describe("Reflection durable Record schema", () => {
     const forbidden = /statement|excerpt|anchor|source_(id|ref|revision|type|kind)|message|artifact|prompt|model_output|content_hash/u;
     for (const table of REFLECTION_RECORD_TABLES) {
       for (const column of columnNames(table)) {
+        // An HMAC commitment is an opaque equality coordinate, not a Room anchor.
+        if (column === "room_anchor_commitment") continue;
         expect(column, getTableName(table)).not.toMatch(forbidden);
       }
     }
@@ -228,11 +231,16 @@ describe("Reflection durable Record schema", () => {
       "claim_generation",
       "attempt_count",
       "quarantine_round",
+      "recovery_policy_version",
+      "projection_refresh_only",
       "lease_token",
       "lease_expires_at",
       "next_attempt_at",
       "recover_after",
       "failure_code",
+      "failure_detail",
+      "waiting_reason",
+      "completion_outcome",
       "ordinary_fallback_reason",
       "due_since",
       "started_at",
@@ -309,6 +317,7 @@ describe("Reflection durable Record schema", () => {
       "embedding_canonical_model",
       "embedding_dimensions",
       "embedding_contract_version",
+      "room_anchor_commitment",
       "embedding",
       "created_at",
       "updated_at",
@@ -328,6 +337,23 @@ describe("Reflection durable Record schema", () => {
       "reflection_record_search_projections_model_bounded",
       "reflection_record_search_projections_dimensions_v1",
       "reflection_record_search_projections_contract_v1",
+      "reflection_record_search_projections_room_anchor_commitment_portable",
     ]);
+  });
+
+  test("replaces the installed semantic-work guard trigger under its durable name", () => {
+    const migration = readFileSync(
+      new URL("../../src/migrations/0318_sticky_scarlet_witch.sql", import.meta.url),
+      "utf8",
+    );
+    expect(migration).toContain(
+      'DROP TRIGGER IF EXISTS "reflection_record_semantic_work_update_guard"',
+    );
+    expect(migration).toContain(
+      'CREATE TRIGGER "reflection_record_semantic_work_update_guard"',
+    );
+    expect(migration).not.toContain(
+      'CREATE TRIGGER "reflection_record_semantic_work_guard_update"',
+    );
   });
 });

@@ -29,6 +29,11 @@ const provenance = {
   dimensions: 1_536 as const,
   contractVersion: 1 as const,
 };
+const selection = {
+  selectedRepresentation: "protected" as const,
+  migrationGeneration: 1,
+};
+const ROOM_COMMITMENT = `h1.${"a".repeat(43)}`;
 
 function connectionFor(input: Readonly<{
   calls: string[];
@@ -50,6 +55,7 @@ function connectionFor(input: Readonly<{
         const row = {
           record_id: RECORD,
           processing_generation: 2,
+          structural_height: 0,
           producer_policy_version: "policy:v1",
           lifecycle: "current",
           disposition: "available",
@@ -145,6 +151,7 @@ describe("production protected Reflection search composition", () => {
     const product = connectionFor({ calls: sql });
     const semantic = await createProductionProtectedReflectionSearchComposition({
       db: {} as DirectDatabase,
+      selection,
       commitmentKey: new Uint8Array(32).fill(7),
       runSemantic: semanticOperation({ product, events }),
       embedding: {
@@ -165,6 +172,10 @@ describe("production protected Reflection search composition", () => {
     }, {
       connect: () => product,
       configuredEmbedding: () => provenance,
+      resolveRoomAnchorCommitment: async (_metadata, payload) => {
+        expect(payload.statement).toBe("Protected launch is Tuesday.");
+        return ROOM_COMMITMENT;
+      },
     });
 
     expect(await semantic.ensureSearchProjection(claim)).toEqual({ status: "ready" });
@@ -185,6 +196,7 @@ describe("production protected Reflection search composition", () => {
     const product = connectionFor({ calls: sql, duplicateMetadata: true });
     const semantic = await createProductionProtectedReflectionSearchComposition({
       db: {} as DirectDatabase,
+      selection,
       commitmentKey: new Uint8Array(32).fill(8),
       runSemantic: semanticOperation({ product, events }),
       embedding: {
@@ -195,6 +207,9 @@ describe("production protected Reflection search composition", () => {
     }, {
       connect: () => product,
       configuredEmbedding: () => provenance,
+      resolveRoomAnchorCommitment: async () => {
+        throw new Error("Room binding must remain unreachable");
+      },
     });
 
     expect(await semantic.ensureSearchProjection(claim)).toEqual({

@@ -10,6 +10,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Reflection allows up to ten minutes per poll, preserves completed batch results
   when repair runs out of time, and gives other eligible records a turn after
   timed-out work yields.
+- Reflection automatically reassesses older quarantined work after an upgrade,
+  clears obsolete or already-covered work, rebuilds missing search projections,
+  and repairs derived records from their surviving current evidence. Retry
+  cooldowns survive restarts, older failures retain their place in the queue,
+  and durable diagnostics distinguish waiting, failed, repaired, and retired work.
 
 - The text editor serializes first saves of empty documents and preserves edits
   made while a save is in progress. Conflict recovery reports failed latest-version

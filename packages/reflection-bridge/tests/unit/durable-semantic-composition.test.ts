@@ -124,6 +124,12 @@ describe("same-Room durable semantic composition", () => {
           modelCalls: 1,
           remainingChildRecordRefs: ["record:b"],
           remainingSourceDependencies: [],
+          remainingModelExposureDependencies: [{
+            kind: "record",
+            recordRef: "record:b",
+            observedProcessingGeneration: 1,
+            terminalAuthorityLeafHandles: ["namespace:one"],
+          }],
         }); },
       },
       crossRoom: {
@@ -136,6 +142,12 @@ describe("same-Room durable semantic composition", () => {
             operation: "supersede_parent",
             childRecordRefs: ["record:b"],
           });
+          expect(input.modelExposureDependencies).toEqual([{
+            kind: "record",
+            recordRef: "record:b",
+            observedProcessingGeneration: 1,
+            terminalAuthorityLeafHandles: ["namespace:one"],
+          }]);
           return Promise.resolve({
             status: "planned",
             plan: { applicationPlanToken: planned } as never,
@@ -192,7 +204,7 @@ describe("same-Room durable semantic composition", () => {
     expect(appliedPlan).toMatchObject({ applicationPlanToken: planned });
   });
 
-  test("preserves same-Room authored-source dependency repair without a cross-Room plan", async () => {
+  test("plans the exact same-Room authored-source evidence used by dependency repair", async () => {
     const predecessor = {
       ...record("record:changed", "A parent with authored support."),
       structuralHeight: 1,
@@ -234,12 +246,33 @@ describe("same-Room durable semantic composition", () => {
           modelCalls: 1,
           remainingChildRecordRefs: ["record:a"],
           remainingSourceDependencies: [authoredDependency],
+          remainingModelExposureDependencies: [{
+            kind: "record",
+            recordRef: "record:a",
+            observedProcessingGeneration: 1,
+            terminalAuthorityLeafHandles: ["namespace:one"],
+          }, {
+            kind: "source",
+            sourceKind: authoredDependency.sourceKind,
+            logicalSourceRef: authoredDependency.logicalSourceRef,
+            observedRevision: authoredDependency.observedRevision,
+            observedContentFingerprint: authoredDependency.observedContentFingerprint,
+            terminalAuthorityLeafHandle: authoredDependency.terminalAuthorityLeafHandle,
+          }],
         }),
       },
       crossRoom: {
         augment: () => Promise.reject(new Error("not reached")),
         planPublication: () => Promise.reject(new Error("not reached")),
-        planDependencyLoss: () => Promise.reject(new Error("same-Room source repair replanned")),
+        planDependencyLoss: (input) => {
+          expect(input.modelExposureDependencies).toHaveLength(2);
+          return Promise.resolve({
+            status: "planned",
+            plan: {
+              applicationPlanToken: crossRoomApplicationPlanToken("same-room-source-plan"),
+            } as never,
+          });
+        },
       },
       proposals: {
         apply(input) {
@@ -281,7 +314,9 @@ describe("same-Room durable semantic composition", () => {
     });
 
     expect(result).toMatchObject({ status: "applied", outcome: "partial_replacement" });
-    expect(appliedPlan).toBeUndefined();
+    expect(appliedPlan).toMatchObject({
+      applicationPlanToken: crossRoomApplicationPlanToken("same-room-source-plan"),
+    });
   });
 
   test.each([
@@ -327,6 +362,12 @@ describe("same-Room durable semantic composition", () => {
           modelCalls: 1,
           remainingChildRecordRefs: ["record:b"],
           remainingSourceDependencies: [],
+          remainingModelExposureDependencies: [{
+            kind: "record",
+            recordRef: "record:b",
+            observedProcessingGeneration: 1,
+            terminalAuthorityLeafHandles: ["namespace:one"],
+          }],
         }),
       },
       crossRoom: {

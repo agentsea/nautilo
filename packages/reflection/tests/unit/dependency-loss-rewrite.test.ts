@@ -9,7 +9,6 @@ describe("grounded dependency-loss rewrite", () => {
   test("rewrites only from remaining untrusted support", async () => {
     let prompt = "";
     const result = await runDependencyLossRewrite({
-      previousStatement: "Postgres was chosen for portability and cost.",
       remainingSupportStatements: ["The team required portable SQL."],
       invoke: (value) => {
         prompt = value;
@@ -25,12 +24,31 @@ describe("grounded dependency-loss rewrite", () => {
     });
     expect(prompt.startsWith(DEPENDENCY_LOSS_REWRITE_CONTRACT)).toBe(true);
     expect(prompt).toContain("[Untrusted remaining support]");
+    expect(prompt).not.toContain("Postgres was chosen for portability and cost.");
+  });
+
+  test("propagates invocation failure without attempting a repair call", async () => {
+    const failure = new Error("provider outcome unknown");
+    let calls = 0;
+    let thrown: unknown;
+    try {
+      await runDependencyLossRewrite({
+        remainingSupportStatements: ["Remaining evidence"],
+        invoke: () => {
+          calls += 1;
+          return Promise.reject(failure);
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBe(failure);
+    expect(calls).toBe(1);
   });
 
   test("repairs once and rejects unsupported response fields", async () => {
     let calls = 0;
     const result = await runDependencyLossRewrite({
-      previousStatement: "Old statement",
       remainingSupportStatements: ["Remaining evidence"],
       invoke: () => {
         calls += 1;
@@ -49,7 +67,6 @@ describe("grounded dependency-loss rewrite", () => {
   test("rejects empty support without invoking a model", async () => {
     let calls = 0;
     const result = await runDependencyLossRewrite({
-      previousStatement: "Old statement",
       remainingSupportStatements: [],
       invoke: () => {
         calls += 1;

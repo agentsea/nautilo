@@ -20,10 +20,10 @@ const RECORD_NON_RUNTIME_INVENTORY_REFERENCES = new Set([
   "packages/reflection-bridge/tests/unit/postgres-current-record-publication-binding.test.ts",
   "packages/reflection-bridge/tests/unit/postgres-record-product-store.test.ts",
   "packages/reflection-bridge/tests/unit/protected-stenographer-record-attachment.test.ts",
-  // M327 fixtures inspect real bridge-owned publication/reconciliation receipts;
+  // Protected Reflection fixtures inspect real bridge-owned publication/reconciliation receipts;
   // none is a production data-access caller.
   "packages/reflection-bridge/tests/unit/postgres-authority-receipts.test.ts",
-  "packages/server/tests/lattice-integration/m327-protected-reflection-composition.integration.test.ts",
+  "packages/server/tests/lattice-integration/protected-reflection-composition.integration.test.ts",
   // M327 lifecycle fixtures characterize bridge-owned publication settlement
   // SQL; production Server code reaches that owner through bridge composition.
   "packages/server/tests/unit/reflection-semantic-commit-settlement.test.ts",

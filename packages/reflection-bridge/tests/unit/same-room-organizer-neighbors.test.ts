@@ -14,6 +14,7 @@ import {
 } from "../../src/server";
 
 const HUMAN = "11111111-1111-4111-8111-111111111111";
+const ROOM_COMMITMENT = `h1.${"a".repeat(43)}`;
 
 function record(
   recordRef: string,
@@ -82,6 +83,7 @@ describe("same-Room Organizer neighbor adapter", () => {
     const directParent = coordinate("record:direct-parent", 0, 1);
     const adapter = new PostgresSameRoomOrganizerNeighbors({
       selection: { selectedRepresentation: "ordinary", migrationGeneration: 1 },
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
       projections: {
         async readCurrentEmbedding(recordRef) {
           return {
@@ -90,6 +92,7 @@ describe("same-Room Organizer neighbor adapter", () => {
             projectionVersion: 1,
             projectionGeneration: 1,
             embedding: EMBEDDING,
+            roomAnchorCommitment: ROOM_COMMITMENT,
           } as const;
         },
       },
@@ -150,6 +153,7 @@ describe("same-Room Organizer neighbor adapter", () => {
     const parentB = coordinate("record:parent-b", 0.8, 2);
     const adapter = new PostgresSameRoomOrganizerNeighbors({
       selection: { selectedRepresentation: "protected", migrationGeneration: 3 },
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
       projections: {
         async readCurrentEmbedding(recordRef) {
           return {
@@ -158,6 +162,7 @@ describe("same-Room Organizer neighbor adapter", () => {
             projectionVersion: 1,
             projectionGeneration: 1,
             embedding: EMBEDDING,
+            roomAnchorCommitment: ROOM_COMMITMENT,
           } as const;
         },
       },
@@ -208,6 +213,7 @@ describe("same-Room Organizer neighbor adapter", () => {
     const highestParent = coordinate("record:q", 0, 2);
     const adapter = new PostgresSameRoomOrganizerNeighbors({
       selection: { selectedRepresentation: "ordinary", migrationGeneration: 1 },
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
       projections: {
         async readCurrentEmbedding(recordRef) {
           return {
@@ -216,6 +222,7 @@ describe("same-Room Organizer neighbor adapter", () => {
             projectionVersion: 1,
             projectionGeneration: 1,
             embedding: EMBEDDING,
+            roomAnchorCommitment: ROOM_COMMITMENT,
           } as const;
         },
       },
@@ -267,6 +274,7 @@ describe("same-Room Organizer neighbor adapter", () => {
     const descendant = coordinate("record:descendant", 0.91);
     const adapter = new PostgresSameRoomOrganizerNeighbors({
       selection: { selectedRepresentation: "ordinary", migrationGeneration: 1 },
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
       projections: {
         async readCurrentEmbedding(recordRef) {
           return {
@@ -275,6 +283,7 @@ describe("same-Room Organizer neighbor adapter", () => {
             projectionVersion: 1,
             projectionGeneration: 1,
             embedding: EMBEDDING,
+            roomAnchorCommitment: ROOM_COMMITMENT,
           } as const;
         },
       },
@@ -329,6 +338,7 @@ describe("same-Room Organizer neighbor adapter", () => {
     const leaf = coordinate("record:leaf", 0.91);
     const adapter = new PostgresSameRoomOrganizerNeighbors({
       selection: { selectedRepresentation: "ordinary", migrationGeneration: 1 },
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
       projections: {
         async readCurrentEmbedding(recordRef) {
           return {
@@ -337,6 +347,7 @@ describe("same-Room Organizer neighbor adapter", () => {
             projectionVersion: 1,
             projectionGeneration: 1,
             embedding: EMBEDDING,
+            roomAnchorCommitment: ROOM_COMMITMENT,
           } as const;
         },
       },
@@ -385,6 +396,7 @@ describe("same-Room Organizer neighbor adapter", () => {
     let fenced: readonly RankedRecordCoordinate[] = [];
     const adapter = new PostgresSameRoomOrganizerNeighbors({
       selection: { selectedRepresentation: "ordinary", migrationGeneration: 1 },
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
       projections: {} as never,
       store: {
         async fence(input: Parameters<PostgresSameRoomOrganizerStore["fence"]>[0]) {
@@ -411,6 +423,7 @@ describe("same-Room Organizer neighbor adapter", () => {
     let opens = 0;
     const adapter = new PostgresSameRoomOrganizerNeighbors({
       selection: { selectedRepresentation: "ordinary", migrationGeneration: 1 },
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
       projections: {} as never,
       store: {
         async fence() {
@@ -430,5 +443,61 @@ describe("same-Room Organizer neighbor adapter", () => {
       coordinates: [coordinate("record:selected", 0.9)],
     })).toEqual({ status: "unavailable", reason: "candidate_fence_stale" });
     expect(opens).toBe(0);
+  });
+
+  test("rejects a changed Record projection bound to another exact Room", async () => {
+    let ranks = 0;
+    const adapter = new PostgresSameRoomOrganizerNeighbors({
+      selection: { selectedRepresentation: "protected", migrationGeneration: 1 },
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
+      projections: {
+        async readCurrentEmbedding() {
+          return {
+            recordRef: "record:changed",
+            recordProcessingGeneration: 1,
+            projectionVersion: 1,
+            projectionGeneration: 1,
+            embedding: EMBEDDING,
+            roomAnchorCommitment: `h1.${"b".repeat(43)}`,
+          } as const;
+        },
+      },
+      store: {
+        async rank() {
+          ranks += 1;
+          return { status: "available", coordinates: [], rowsConsidered: 0 } as const;
+        },
+      } as never,
+      repository: {} as never,
+    });
+
+    expect(await adapter.discover({
+      changed: record("record:changed"),
+      binding,
+      intent: "attachment",
+    })).toEqual({ status: "unavailable", reason: "candidate_projection_stale" });
+    expect(ranks).toBe(0);
+  });
+
+  test("fails closed when an exact-Room anchor changes after the metadata fence", async () => {
+    const adapter = new PostgresSameRoomOrganizerNeighbors({
+      selection: { selectedRepresentation: "protected", migrationGeneration: 1 },
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
+      projections: {} as never,
+      store: { async fence() { return { status: "current" } as const; } } as never,
+      repository: {
+        async read(input: DurableRecordReadRequest) {
+          return {
+            status: "available",
+            record: record(input.recordRef, 0, "room:other"),
+          } as const;
+        },
+      } as never,
+    });
+
+    expect(await adapter.openSelected({
+      binding,
+      coordinates: [coordinate("record:selected", 0.9)],
+    })).toEqual({ status: "unavailable", reason: "candidate_record_changed" });
   });
 });

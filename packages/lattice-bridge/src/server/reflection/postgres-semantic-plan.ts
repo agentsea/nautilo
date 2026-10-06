@@ -46,7 +46,7 @@ export async function readPostgresReflectionSemanticSourcePlan(input: Readonly<{
   coordinates: ReflectionSemanticPlanCoordinates;
   lock?: boolean;
 }>): Promise<ReflectionSemanticSourcePlan | null> {
-  const c = {...input.coordinates, inputBindings: input.coordinates.inputBindings.map(binding => ({...binding})), outputNamespaceIds: [...input.coordinates.outputNamespaceIds]};
+  const c = {...input.coordinates, workKind: input.coordinates.workKind ?? "reflection.organization", inputBindings: input.coordinates.inputBindings.map(binding => ({...binding})), outputNamespaceIds: [...input.coordinates.outputNamespaceIds]};
   try {
     for (const value of [c.recordRef, ...c.inputBindings.flatMap(binding => [binding.objectId, binding.namespaceId]), ...c.outputNamespaceIds]) assertPortableId("Reflection semantic coordinate", value);
   } catch {return null;}
@@ -66,6 +66,7 @@ export async function readPostgresReflectionSemanticSourcePlan(input: Readonly<{
     || claim.state === "complete" || claim.state === "quarantined") return null;
   const facts: unknown[] = [];
   const terminalLeaves: string[] = [];
+  const outputTerminalLeaves: string[] = [];
   const recordAudiences: {namespaceId: string; leaves: string[]; includesPublicBoundary: boolean}[] = [];
   const namespaceIds = sorted([...c.inputBindings.map(entry => entry.namespaceId), ...c.outputNamespaceIds]);
   let anchorPresent = false;
@@ -128,6 +129,10 @@ export async function readPostgresReflectionSemanticSourcePlan(input: Readonly<{
       if (alternatives.length !== 1 || alternative === undefined || alternative.access_namespace_id !== binding.namespaceId) return null;
       recordAudiences.push({namespaceId: binding.namespaceId, leaves: handles, includesPublicBoundary: alternative.includes_public_boundary});
       terminalLeaves.push(...handles);
+      // The predecessor is a granted structural/CAS input, never rewrite evidence.
+      if (c.workKind !== "reflection.dependency_rewrite" || record.record_id !== c.recordRef) {
+        outputTerminalLeaves.push(...handles);
+      }
       facts.push([binding, record, handles, [alternative.access_namespace_id, alternative.includes_public_boundary, Array.from(alternative.alternative_commitment)], Array.from(head[0]!.manifest_hash), head[0]!.access_revision]);
     } else if (binding.objectType === "nautilo-message-v2") {
       if (c.workKind !== "reflection.dependency_rewrite" || claim.change_reason !== "dependency_lost") return null;
@@ -135,6 +140,7 @@ export async function readPostgresReflectionSemanticSourcePlan(input: Readonly<{
         .resolveMessageObject({objectId: binding.objectId, namespaceId: binding.namespaceId});
       if (message === null) return null;
       terminalLeaves.push(binding.namespaceId);
+      outputTerminalLeaves.push(binding.namespaceId);
       facts.push([binding, message, Array.from(head[0]!.manifest_hash), head[0]!.access_revision]);
     } else {
       const rows = await executeTypedCryptoQuery(input.product, cryptoTypedDb.select({
@@ -166,6 +172,7 @@ export async function readPostgresReflectionSemanticSourcePlan(input: Readonly<{
       // A Memory can have several attachment alternatives. This attempt uses
       // the exact selected Namespace; all attachments still enter its fence.
       terminalLeaves.push(binding.namespaceId);
+      outputTerminalLeaves.push(binding.namespaceId);
       facts.push([binding, memory, handles, scopes, Array.from(head[0]!.manifest_hash), head[0]!.access_revision]);
     }
   }
@@ -194,10 +201,14 @@ export async function readPostgresReflectionSemanticSourcePlan(input: Readonly<{
       || selected.kind !== "access" || JSON.stringify(sorted(selected.effective_human_actor_ids)) !== JSON.stringify(current.outcome.alternatives[0]!.humanRefs)
       || record.includesPublicBoundary !== current.outcome.alternatives[0]!.includesPublicBoundary) return null;
   }
-  const authority = advanceAuthorityAlternatives({leaves: leaves.map(leaf => {
+  // Full input leaves above still own decrypt authority, block checks and locks.
+  // Only the replacement audience excludes the structural predecessor. An empty
+  // survivor set may reserve the old slot for the no-output retirement operation.
+  const outputLeaves = sorted(outputTerminalLeaves.length === 0 ? terminalLeaves : outputTerminalLeaves);
+  const authority = advanceAuthorityAlternatives({leaves: outputLeaves.map(leaf => {
     const room = byNamespace.get(leaf)!;
     return {terminalAuthorityLeafHandle: leaf, alternatives: [{humanRefs: sorted(room.effective_human_actor_ids), includesPublicBoundary: room.kind === "open"}]};
-  }), budget: {maxOperations: leaves.length * 2}});
+  }), budget: {maxOperations: outputLeaves.length * 2}});
   if (authority.status !== "complete" || authority.outcome.kind !== "available" || authority.outcome.alternatives.length !== 1) return null;
   const audience = authority.outcome.alternatives[0]!;
   for (const output of c.outputNamespaceIds) {
@@ -205,7 +216,7 @@ export async function readPostgresReflectionSemanticSourcePlan(input: Readonly<{
     if (room.kind !== "access" || JSON.stringify(sorted(room.effective_human_actor_ids)) !== JSON.stringify(audience.humanRefs)) return null;
   }
   const canonical = new TextEncoder().encode(JSON.stringify([
-    "nautilo/reflection/semantic-source/v2", c.recordRef, c.claimGeneration, claim.stage, facts,
+    "nautilo/reflection/semantic-source/v3", c.workKind, c.recordRef, c.claimGeneration, claim.stage, facts, outputLeaves,
     c.outputNamespaceIds, roomRows,
   ]));
   try {
@@ -274,7 +285,8 @@ export async function withPostgresReflectionSemanticSourcePlan<Value>(input: Rea
           .select({ revision: rooms.namespaceAccessRevision }).from(rooms)
           .where(and(eq(rooms.id, coordinate.roomId), eq(rooms.namespaceId, coordinate.namespaceId))));
         if (current.status !== "ready" || authorityRows.length !== 1
-          || authorityRows[0]!.namespace_access_revision !== current.namespaceAccessRevision) {
+          || String(authorityRows[0]!.namespace_access_revision)
+            !== String(current.namespaceAccessRevision)) {
           if (current.status === "ready") {
             for (const digest of [current.namespaceHeadDigest, current.namespacePublicationDigest,
               current.namespacePublicationSetDigest, current.namespaceAudienceFingerprint,

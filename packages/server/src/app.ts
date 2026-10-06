@@ -2042,7 +2042,7 @@ export async function createApp(options?: CreateAppOptions) {
               const authority = await reflectionAuthority();
               const db = getServerDirectDb();
               const commitmentKey = getReflectionCommitmentKey();
-              const search = await createProductionProtectedReflectionSearchComposition({db, commitmentKey, embedding, runSemantic: authority.runSemantic});
+              const search = await createProductionProtectedReflectionSearchComposition({db, selection: {...recordRepositorySelection, selectedRepresentation: "protected"}, commitmentKey, embedding, runSemantic: authority.runSemantic});
               return createProductionProtectedReflectionSemantics({db,
                 productHandle: await verifyRecordProductPostgresHandle(createPostgresJsBridgeConnection(db)),
                 selection: {...recordRepositorySelection, selectedRepresentation: "protected"}, commitmentKey,

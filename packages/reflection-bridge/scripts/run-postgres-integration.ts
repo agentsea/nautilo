@@ -15,6 +15,7 @@ import {
   PostgresRecordSearchProjectionStore,
   PostgresSameRoomOrganizerStore,
   PostgresSemanticWorkStore,
+  createHmacRecordSearchCommitmentPort,
   createHmacRecordSemanticCommitmentPort,
   readOrdinaryStenographerJournalEventsWithHandle,
   verifyRecordProductPostgresHandle,
@@ -696,6 +697,7 @@ try {
   // mutating or draining real cloned work. The suite owns this timestamp.
   let semanticNow = new Date("2000-01-01T00:00:00.000Z");
   const semanticCommitments = createHmacRecordSemanticCommitmentPort(randomBytes(32));
+  const searchCommitments = createHmacRecordSearchCommitmentPort(randomBytes(32));
   const semanticWork = new PostgresSemanticWorkStore({
     handle,
     commitments: semanticCommitments,
@@ -1525,7 +1527,7 @@ try {
       },
       vector: deterministicVector,
     },
-  }) === "published", "search projection publication failed");
+  }, searchCommitments.roomAnchor("room:integration")) === "published", "search projection publication failed");
   const reusableProjection = await searchProjection.readCurrentEmbedding(recordId);
   assert(
     reusableProjection !== null
@@ -1645,7 +1647,7 @@ try {
         },
         vector: deterministicVector,
       },
-    }) === "published", `${name}: search projection failed`);
+    }, searchCommitments.roomAnchor(publicationBindingRef)) === "published", `${name}: search projection failed`);
     return candidateId;
   }
 
@@ -1680,6 +1682,7 @@ try {
       publicationBindingRef: "binding:integration",
       changedRecordRef: exactRoomLeafId,
       intent: "attachment",
+      roomAnchorCommitment: searchCommitments.roomAnchor("binding:integration"),
       limit: 8,
     });
     assert(ranked.status === "available", "exact-Room Organizer ranking was unavailable");
@@ -1692,6 +1695,7 @@ try {
       publicationBindingRef: "binding:integration",
       changedRecordRef: exactRoomLeafId,
       intent: "attachment",
+      roomAnchorCommitment: searchCommitments.roomAnchor("binding:integration"),
       rankedCoordinates: ranked.coordinates.filter(
         (entry) => entry.recordRef === exactRoomCandidateId,
       ),
@@ -1718,6 +1722,7 @@ try {
       invocationAudience: { humanRefs: [humanActorId], includesPublicBoundary },
       selection: { selectedRepresentation: "ordinary", migrationGeneration: 1 },
       publicationBindingRef: "binding:integration",
+      roomAnchorCommitment: searchCommitments.roomAnchor("binding:integration"),
       coordinates: [selected],
     })).status === "current", "exact-Room Organizer final fence failed");
   }
@@ -1745,6 +1750,7 @@ try {
   try {
     assert(await searchProjection.replace({
       expectedProjectionGeneration: 1,
+      roomAnchorCommitment: searchCommitments.roomAnchor("binding:integration"),
       projection: {
         recordRef: exactRoomCandidateId,
         recordProcessingGeneration: 3,
@@ -1776,6 +1782,7 @@ try {
       publicationBindingRef: "binding:integration",
       changedRecordRef: exactRoomLeafId,
       intent: "attachment",
+      roomAnchorCommitment: searchCommitments.roomAnchor("binding:integration"),
       limit: 16,
     });
     assert(legacyOrganizerRank.status === "available", "legacy Organizer rank failed");
@@ -1789,6 +1796,7 @@ try {
         publicationBindingRef: "binding:integration",
         changedRecordRef: exactRoomLeafId,
         intent: "attachment",
+        roomAnchorCommitment: searchCommitments.roomAnchor("binding:integration"),
         rankedCoordinates: legacyOrganizerRank.coordinates,
       })).status === "unavailable",
       "legacy multi-parent Organizer topology did not fail closed",
@@ -1900,7 +1908,7 @@ try {
         },
         vector: deterministicVector,
       },
-    }) === "published", `${input.name}: search projection failed`);
+    }, searchCommitments.roomAnchor("binding:search-conformance")) === "published", `${input.name}: search projection failed`);
     await handle.transaction(async (transaction) => {
       await transaction.query(
         `INSERT INTO reflection_record_payload_representations (
@@ -2045,6 +2053,7 @@ try {
     publicationBindingRef: changedCrossRoomBinding,
     changedRecordRef: crossRoomChangedId,
     intent: "attachment",
+    roomAnchorCommitment: searchCommitments.roomAnchor(changedCrossRoomBinding),
     limit: 16,
   });
   assert(sameBindingRank.status === "available", "cross-parent seed rank failed");
@@ -2061,6 +2070,7 @@ try {
     publicationBindingRef: changedCrossRoomBinding,
     changedRecordRef: crossRoomChangedId,
     intent: "attachment",
+    roomAnchorCommitment: searchCommitments.roomAnchor(changedCrossRoomBinding),
     rankedCoordinates: [sameBindingSeedCoordinate],
   });
   assert(

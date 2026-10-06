@@ -11,6 +11,8 @@ import {
 } from "../../src/server/product-postgres";
 import { PostgresRecordSearchProjectionStore } from "../../src/server/postgres-record-search-projection-store";
 
+const ROOM_COMMITMENT = `h1.${"a".repeat(43)}`;
+
 type Query = Readonly<{
   statement: string;
   parameters?: readonly RecordProductPostgresScalar[];
@@ -80,6 +82,7 @@ describe("PostgreSQL Record search projection store", () => {
       embedding_canonical_model: "text-embedding-3-small",
       embedding_dimensions: 1_536,
       embedding_contract_version: 1,
+      room_anchor_commitment: ROOM_COMMITMENT,
     }]]);
     expect(await value.store.readCurrent("record-one")).toEqual({
       recordRef: "record-one",
@@ -90,6 +93,7 @@ describe("PostgreSQL Record search projection store", () => {
       embeddingCanonicalModel: "text-embedding-3-small",
       embeddingDimensions: 1_536,
       embeddingContractVersion: 1,
+      roomAnchorCommitment: ROOM_COMMITMENT,
     });
     expect(value.queries[0]?.statement).not.toContain("embedding,");
   });
@@ -105,11 +109,33 @@ describe("PostgreSQL Record search projection store", () => {
       embedding_canonical_model: expected.embedding.provenance.canonicalModel,
       embedding_dimensions: expected.embedding.provenance.dimensions,
       embedding_contract_version: expected.embedding.provenance.contractVersion,
+      room_anchor_commitment: ROOM_COMMITMENT,
       embedding: JSON.stringify(expected.embedding.vector),
     }]]);
 
-    expect(await value.store.readCurrentEmbedding(expected.recordRef)).toEqual(expected);
+    expect(await value.store.readCurrentEmbedding(expected.recordRef)).toEqual({
+      ...expected,
+      roomAnchorCommitment: ROOM_COMMITMENT,
+    });
     expect(value.queries[0]?.statement).toContain('"embedding"');
+  });
+
+  test("withholds a legacy vector that has no exact-Room commitment", async () => {
+    const expected = projection(4);
+    const value = await storeWithResponses([[{
+      record_id: expected.recordRef,
+      record_processing_generation: expected.recordProcessingGeneration,
+      projection_version: expected.projectionVersion,
+      projection_generation: expected.projectionGeneration,
+      embedding_provider: expected.embedding.provenance.provider,
+      embedding_canonical_model: expected.embedding.provenance.canonicalModel,
+      embedding_dimensions: expected.embedding.provenance.dimensions,
+      embedding_contract_version: expected.embedding.provenance.contractVersion,
+      room_anchor_commitment: null,
+      embedding: JSON.stringify(expected.embedding.vector),
+    }]]);
+
+    expect(await value.store.readCurrentEmbedding(expected.recordRef)).toBeNull();
   });
 
   test("rejects malformed or oversized returned vector text", async () => {
@@ -139,7 +165,7 @@ describe("PostgreSQL Record search projection store", () => {
 
   test("publishes a validated first projection", async () => {
     const value = await storeWithResponses([[], [{ accepted: 1 }], []]);
-    expect(await value.store.publish(projection())).toBe("published");
+    expect(await value.store.publish(projection(), ROOM_COMMITMENT)).toBe("published");
     expect(value.queries.at(-1)?.statement).toContain(
       "INSERT INTO reflection_record_search_projections",
     );
@@ -163,7 +189,7 @@ describe("PostgreSQL Record search projection store", () => {
     };
     const published = await storeWithResponses([[], [{ accepted: 1 }], []]);
 
-    expect(await published.store.publish(expected)).toBe("published");
+    expect(await published.store.publish(expected, ROOM_COMMITMENT)).toBe("published");
     const parameters = published.queries.at(-1)?.parameters;
     expect(parameters?.slice(4, 8)).toEqual([
       "venice",
@@ -203,9 +229,13 @@ describe("PostgreSQL Record search projection store", () => {
       embedding_canonical_model: embeddingCanonicalModel,
       embedding_dimensions: embeddingDimensions,
       embedding_contract_version: embeddingContractVersion,
+      room_anchor_commitment: ROOM_COMMITMENT,
       embedding,
     }]]);
-    expect(await read.store.readCurrentEmbedding(expected.recordRef)).toEqual(expected);
+    expect(await read.store.readCurrentEmbedding(expected.recordRef)).toEqual({
+      ...expected,
+      roomAnchorCommitment: ROOM_COMMITMENT,
+    });
   });
 
   test("exact replay is idempotent and differing bytes conflict", async () => {
@@ -213,13 +243,13 @@ describe("PostgreSQL Record search projection store", () => {
       projection_generation: 1,
       exact_match: true,
     }]]);
-    expect(await replay.store.publish(projection())).toBe("replayed");
+    expect(await replay.store.publish(projection(), ROOM_COMMITMENT)).toBe("replayed");
 
     const conflict = await storeWithResponses([[{
       projection_generation: 1,
       exact_match: false,
     }]]);
-    expect(await conflict.store.publish(projection())).toBe("conflict");
+    expect(await conflict.store.publish(projection(), ROOM_COMMITMENT)).toBe("conflict");
   });
 
   test("replacement requires the exact current generation", async () => {
@@ -230,6 +260,7 @@ describe("PostgreSQL Record search projection store", () => {
     expect(await stale.store.replace({
       expectedProjectionGeneration: 1,
       projection: projection(2, 0.5),
+      roomAnchorCommitment: ROOM_COMMITMENT,
     })).toBe("replaced");
 
     const conflict = await storeWithResponses([[{
@@ -239,6 +270,7 @@ describe("PostgreSQL Record search projection store", () => {
     expect(await conflict.store.replace({
       expectedProjectionGeneration: 1,
       projection: projection(2, 0.5),
+      roomAnchorCommitment: ROOM_COMMITMENT,
     })).toBe("conflict");
   });
 

@@ -134,7 +134,7 @@ export async function queryReflectionAdminStatus(
     SELECT
       (SELECT count(*)::integer FROM reflection_records) AS total_records,
       count(*) FILTER (
-        WHERE state IN ('due', 'claimed', 'checkpointed', 'deferred')
+        WHERE state IN ('due', 'claimed', 'checkpointed', 'deferred', 'quarantined')
       )::integer AS backlog,
       count(*) FILTER (WHERE state = 'due')::integer AS due,
       count(*) FILTER (WHERE state = 'claimed')::integer AS claimed,
@@ -169,6 +169,7 @@ export async function queryReflectionAdminStatus(
           state IN ('due', 'checkpointed', 'deferred')
           AND next_attempt_at <= ${now}
         ) OR (state = 'claimed' AND lease_expires_at <= ${now})
+          OR (state = 'quarantined' AND recover_after <= ${now})
       ) AS oldest_overdue_at,
       count(*) FILTER (WHERE stage = 'authority_projection')::integer
         AS authority_projection,

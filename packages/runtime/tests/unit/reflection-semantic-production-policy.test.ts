@@ -90,6 +90,7 @@ describe("production Reflection semantic policy", () => {
                 ? { status: "claimed" as const, claim }
                 : { status: "empty" as const };
             };
+            if (property === "settleCurrentState") return async () => ({status: "active" as const});
             if (property === "checkpoint") return async () => {
               checkpointCalls += 1;
               return { status: "accepted" as const };
@@ -180,7 +181,7 @@ describe("production Reflection semantic policy", () => {
     const stageGate = source.indexOf(
       'pageInput.stageAdmission.maximumStage !== "organization"',
     );
-    const candidateRecovery = source.indexOf("recoverCandidatePolicyQuarantinesPage");
+    const candidateRecovery = source.indexOf("admitMissingRoomProjectionPage");
     expect(stageGate).toBeGreaterThan(-1);
     expect(candidateRecovery).toBeGreaterThan(stageGate);
     expect(source.slice(stageGate, candidateRecovery)).toContain(

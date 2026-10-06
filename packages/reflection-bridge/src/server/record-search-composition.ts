@@ -64,6 +64,8 @@ export interface RecordEvidenceTraversalCheckpointPort {
 
 export interface RecordSearchCommitmentPort {
   commit(kind: string, value: unknown): string;
+  /** Keyed, content-free equality coordinate for one canonical Room anchor. */
+  roomAnchor(roomAnchorRef: string): string;
 }
 
 export interface RecordSearchTraversalCheckpoint {
@@ -95,6 +97,16 @@ export function createHmacRecordSearchCommitmentPort(
         .digest("base64url");
       // Raw base64url may begin with '-' or '_', while Reflection's opaque
       // identifier contract deliberately requires an alphanumeric prefix.
+      return `h1.${digest}`;
+    },
+    roomAnchor(roomAnchorRef: string): string {
+      if (roomAnchorRef.length === 0) {
+        throw new TypeError("Record search Room anchor is empty");
+      }
+      const digest = createHmac("sha256", owned)
+        .update("nautilo-reflection-record-search-room-anchor-v1\0", "utf8")
+        .update(roomAnchorRef, "utf8")
+        .digest("base64url");
       return `h1.${digest}`;
     },
   });

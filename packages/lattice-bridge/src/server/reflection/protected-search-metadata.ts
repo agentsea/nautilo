@@ -40,6 +40,7 @@ export class PostgresProtectedReflectionSearchMetadata {
       cryptoTypedDb.select({
         recordId: reflectionRecords.recordId,
         processingGeneration: reflectionRecords.processingGeneration,
+        structuralHeight: reflectionRecords.structuralHeight,
         producerPolicyVersion: reflectionRecords.producerPolicyVersion,
         lifecycle: reflectionRecords.lifecycle,
         disposition: reflectionRecords.disposition,
@@ -119,6 +120,8 @@ export class PostgresProtectedReflectionSearchMetadata {
       || typeof row.access_namespace_id !== "string"
       || row.access_namespace_id.length === 0
       || !positiveInteger(row.processing_generation)
+      || !Number.isSafeInteger(row.structural_height)
+      || row.structural_height < 0
       || !positiveInteger(row.representation_generation)
     ) return null;
 
@@ -136,6 +139,8 @@ export class PostgresProtectedReflectionSearchMetadata {
         embeddingDimensions: reflectionRecordSearchProjections.embeddingDimensions,
         embeddingContractVersion:
           reflectionRecordSearchProjections.embeddingContractVersion,
+        roomAnchorCommitment:
+          reflectionRecordSearchProjections.roomAnchorCommitment,
       })
         .from(reflectionRecordSearchProjections)
         .where(eq(reflectionRecordSearchProjections.recordId, claim.recordRef))
@@ -160,6 +165,15 @@ export class PostgresProtectedReflectionSearchMetadata {
           && projection.embedding_canonical_model.length > 0
           && projection.embedding_dimensions === 1_536
           && projection.embedding_contract_version === 1
+          && (
+            projection.room_anchor_commitment === null
+            || (
+              typeof projection.room_anchor_commitment === "string"
+              && /^h1\.[A-Za-z0-9_-]{43}$/u.test(
+                projection.room_anchor_commitment,
+              )
+            )
+          )
             ? Object.freeze({
                 recordRef: claim.recordRef,
                 recordProcessingGeneration:
@@ -170,6 +184,7 @@ export class PostgresProtectedReflectionSearchMetadata {
                 embeddingCanonicalModel: projection.embedding_canonical_model,
                 embeddingDimensions: 1_536,
                 embeddingContractVersion: 1,
+                roomAnchorCommitment: projection.room_anchor_commitment,
               })
             : null
         );
@@ -177,6 +192,7 @@ export class PostgresProtectedReflectionSearchMetadata {
     return Object.freeze({
       recordRef: claim.recordRef,
       processingGeneration: row.processing_generation,
+      structuralHeight: row.structural_height,
       representationGeneration: row.representation_generation,
       producerPolicyVersion: row.producer_policy_version,
       lifecycle: "current" as const,

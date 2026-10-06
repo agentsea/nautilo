@@ -163,7 +163,7 @@ function databaseHarness(state = initialState()) {
           target_access_namespace_ids: receipt.targetAccessNamespaceIds,
         }]) as unknown as readonly Row[];
       }
-      if (sql.startsWith("select namespace_access_revision from rooms")) return [{namespace_access_revision: 11}] as unknown as readonly Row[];
+      if (sql.startsWith("select namespace_access_revision from rooms")) return [{namespace_access_revision: "11"}] as unknown as readonly Row[];
       else if (sql.includes("from rooms")) {
         return state.rooms.map(room => ({...room, effective_human_actor_ids: room.human_actor_ids}))
           .sort((left, right) => left.id.localeCompare(right.id)) as unknown as readonly Row[];
@@ -518,7 +518,7 @@ describe("PostgreSQL Reflection authority source planning", () => {
     plan?.sourceManifestHash.fill(0);
   });
 
-  test.each(["ready", "missing", "stale"])("holds preparation fences and wakes missing or stale bundles after release (%s)", async mode => {
+  test.each(["ready", "missing", "stale"])("accepts PostgreSQL bigint text while holding preparation fences (%s)", async mode => {
     const missingBundle = mode !== "ready";
     const crypto = new LatticeCrypto();
     const harness = databaseHarness();

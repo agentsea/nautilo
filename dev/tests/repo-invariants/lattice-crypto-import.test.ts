@@ -1306,9 +1306,9 @@ const reviewedCryptoProductConsumerInventory = [
   "packages/server/tests/unit/reflection-authority-composition.test.ts -> @nautilo/lattice-crypto",
   "packages/server/tests/unit/reflection-authority-composition.test.ts -> @nautilo/lattice-crypto/background",
   // Real device/processor/foreground integration proof against an isolated clone.
-  "packages/server/tests/lattice-integration/m327-protected-reflection-composition.integration.test.ts -> @nautilo/lattice-crypto",
-  "packages/server/tests/lattice-integration/m327-protected-reflection-composition.integration.test.ts -> @nautilo/lattice-crypto/background",
-  "packages/server/tests/lattice-integration/m327-protected-reflection-composition.integration.test.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/tests/lattice-integration/protected-reflection-composition.integration.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/lattice-integration/protected-reflection-composition.integration.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/tests/lattice-integration/protected-reflection-composition.integration.test.ts -> @nautilo/lattice-crypto/wire",
   // Protected Task runtime authorization uses Lattice-owned request, grant,
   // authority, and publication formats. The API schema and scope bounds use
   // provider-free limits; focused tests exercise the same signed contracts.
@@ -1414,9 +1414,9 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/server/tests/unit-isolated/task-protected-composition.test.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/unit/task-summary-mapper.test.ts -> @nautilo/lattice-bridge",
   // Real admitted-device, storage, and foreground integration proof.
-  "packages/server/tests/lattice-integration/m327-protected-reflection-composition.integration.test.ts -> @nautilo/lattice-bridge",
-  "packages/server/tests/lattice-integration/m327-protected-reflection-composition.integration.test.ts -> @nautilo/lattice-bridge/client/background",
-  "packages/server/tests/lattice-integration/m327-protected-reflection-composition.integration.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/lattice-integration/protected-reflection-composition.integration.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/lattice-integration/protected-reflection-composition.integration.test.ts -> @nautilo/lattice-bridge/client/background",
+  "packages/server/tests/lattice-integration/protected-reflection-composition.integration.test.ts -> @nautilo/lattice-bridge/server",
   // Sharing continuation uses provider-free bridge contracts/errors. Server
   // recovery composes the existing protected checkpoint and recipient owners;
   // its exact server-side fixtures verify these boundaries without new stores.
