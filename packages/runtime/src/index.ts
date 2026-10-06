@@ -31,6 +31,9 @@ export type {
 // for consumers that previously imported it from @nautilo/runtime.
 export type { RuntimePolicyContext } from "@nautilo/trust";
 export {
+  createDomainMemoryCryptoSession,
+} from "./memory/domain-memory-crypto-session";
+export {
   createForegroundDomainMemoryCryptoSession,
 } from "./memory/foreground-domain-memory-crypto-session";
 
