@@ -155,6 +155,7 @@ const MOBILE_WEB_BUILD_COPY_CLOSURE = [
   "apps/mobile",
   "dev/fixtures/assistant-response-gfm-table.ts",
   "packages/api-client",
+  "packages/attachments",
   "packages/browser-document-viewer",
   "packages/config",
   "packages/config-guard",
