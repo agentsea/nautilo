@@ -86,7 +86,7 @@
         "src/object/task-runtime-agent-access-manifest-set-v1.ts",
         "src/object/task-runtime-agent-storage-coordinator-v1.ts"
       ],
-      "command": "bun test --bail=1 --timeout 60000 tests/unit/task-runtime-recipient-registry-v1.test.ts tests/integration/task-runtime-object-v1.test.ts tests/unit/task-runtime-agent-object-access-set-v1.test.ts tests/property/task-runtime-agent-object-access-set-v1.property.test.ts"
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/task-runtime-recipient-registry-v1.test.ts tests/integration/task-runtime-object-v1.test.ts tests/unit/task-runtime-agent-object-access-set-v1.test.ts tests/property/task-runtime-agent-object-access-set-v1.property.test.ts tests/unit/task-runtime-execution-evidence-v1.test.ts tests/integration/task-runtime-result-preparation-v1.test.ts tests/unit/task-runtime-checkpoint-namespace-v1.test.ts"
     },
     {
       "name": "background-work-manifest",

@@ -204,6 +204,54 @@ async function createPort(
 }
 
 describe("PostgresTaskMemoryReadPort", () => {
+  test("lends the exact canonical transaction and executor to the held boundary", async () => {
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [identity],
+      [],
+    ]);
+    const handle = await verifyConversationProductPostgresHandle(connection);
+    const canonical = {
+      execute: () => Promise.resolve([{
+        current_user: "nautilo",
+        session_user: "nautilo",
+      }]),
+    } as unknown as CanonicalTranscriptTx;
+    const canonicalRunner = bindConversationProductCanonicalTransactionRunner(
+      handle,
+      {
+        transaction: (callback, options) => {
+          connection.isolationLevels.push(options.isolationLevel);
+          return callback(canonical, connection);
+        },
+      },
+    );
+    let boundaryCalls = 0;
+    const port = new PostgresTaskMemoryReadPort({
+      handle,
+      canonicalRunner,
+      binding: { mode: "namespace", authority: namespaceAuthority },
+      boundary: {
+        withCurrentRead: ({ transaction, executor, use }) => {
+          boundaryCalls += 1;
+          expect(transaction).toBe(canonical);
+          expect(executor).toBe(connection);
+          return use();
+        },
+      },
+    });
+
+    expect(await port.searchCandidates({
+      authority: namespaceAuthority,
+      embedding,
+      limit: 1,
+      includeArchive: false,
+    })).toEqual({ status: "success", value: [] });
+    expect(boundaryCalls).toBe(1);
+    expect(connection.isolationLevels).toEqual(["serializable"]);
+    connection.assertExhausted();
+  });
+
   test("keeps one ranked mixed list and preserves a hidden complete audience", async () => {
     const dual = verifiedRow({
       memoryId: MEMORY_A,

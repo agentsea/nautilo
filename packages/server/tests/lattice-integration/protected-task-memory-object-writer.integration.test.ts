@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import {
   __resetSharedDirectCryptoDbForTests,
+  __resetSharedDirectAgentDbForTests,
   __resetSharedDirectDbForTests,
   actors,
   agentCryptoRuntimeChallenges,
@@ -26,6 +27,7 @@ import {
   encryptionTransitionPolicy,
   eq,
   getSharedDirectCryptoDb,
+  getSharedDirectAgentDb,
   getSharedDirectDb,
   humanCryptoCustodies,
   humanCryptoDeviceGroupAcknowledgements,
@@ -38,6 +40,8 @@ import {
   humanCryptoRecoveryKeys,
   inArray,
   jobs,
+  memories,
+  memoryNamespaces,
   namespaceDomainKeyBindings,
   namespaceDomainKeyHeads,
   namespaces,
@@ -100,6 +104,7 @@ import {
   verifyDomainForegroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/wire";
 import {
+  bindEncryptionDataOperationOwner,
   deriveMemoryCryptoObjectIdV1,
   deriveTaskContentCryptoObjectIdV1,
   encodeMemoryPayloadV1,
@@ -115,6 +120,7 @@ import {
   PostgresNamespaceProductAuthority,
   verifyCryptoPostgresHandle,
   type ConversationProductCanonicalTransactionRunner,
+  type CryptoPostgresHandle,
 } from "@nautilo/lattice-bridge/server";
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
@@ -139,7 +145,17 @@ import {
   createForegroundProductTransactionContext,
 } from "../../src/routes/foreground-message-product-store.ts";
 import {
+  withProtectedTaskNativeMemoryRepository,
+} from "../../src/routes/protected-task-native-memory-repository.ts";
+import {
+  requireHeldProtectedTaskMemoryWriterAuthority,
+  withCurrentProtectedTaskMemoryAuthority,
+  type HeldProtectedTaskMemoryAuthority,
+} from "../../src/routes/current-protected-task-memory-authority.ts";
+import {
   persistProtectedTaskMemoryObject,
+  persistProtectedTaskMemoryObjectUnderHeld,
+  type ProtectedTaskMemoryObjectWrite,
   type ProtectedTaskMemoryObjectWriterInput,
 } from "../../src/routes/protected-task-memory-object-writer.ts";
 
@@ -272,10 +288,13 @@ function observeCanonicalRunner(
 ): Readonly<{
   runner: ConversationProductCanonicalTransactionRunner;
   pid: Promise<number>;
+  transactionCalls(): number;
 }> {
   const backend = Promise.withResolvers<number>();
+  let transactionCalls = 0;
   return Object.freeze({
     pid: backend.promise,
+    transactionCalls: () => transactionCalls,
     runner: Object.freeze({
       ...base,
       transaction: <Result>(
@@ -285,7 +304,9 @@ function observeCanonicalRunner(
         options: Parameters<
           ConversationProductCanonicalTransactionRunner["transaction"]
         >[1],
-      ): Promise<Result> => base.transaction(async (tx, executor) => {
+      ): Promise<Result> => {
+        transactionCalls += 1;
+        return base.transaction(async (tx, executor) => {
         try {
           const rows = await executor.query<{ pid: number }>(
             "SELECT pg_backend_pid()::integer AS pid",
@@ -300,7 +321,8 @@ function observeCanonicalRunner(
           backend.reject(error);
           throw error;
         }
-      }, options),
+        }, options);
+      },
     }),
   });
 }
@@ -377,6 +399,7 @@ async function createBaseFixture() {
   let domainIdValue: string | null = null;
   let runtime: Awaited<ReturnType<typeof prepareAgentRuntimeInitialization>> | null = null;
   const objectIds = new Set<string>();
+  const memoryIds = new Set<string>();
   const requestIds = new Set<string>();
   const taskIds = new Set<string>();
   const jobIds = new Set<string>();
@@ -387,7 +410,26 @@ async function createBaseFixture() {
   const policyRevision = originalPolicy.revision + 1;
 
   const cleanup = async (): Promise<void> => {
-    const writtenObjectIds = [...objectIds];
+    const attachedObjects = await admin.select({
+      objectId: objectCryptoNamespaceEnvelopes.objectId,
+    }).from(objectCryptoNamespaceEnvelopes).where(eq(
+      objectCryptoNamespaceEnvelopes.namespaceId,
+      namespaceValue,
+    ));
+    const writtenObjectIds = [...new Set([
+      ...objectIds,
+      ...attachedObjects.map(row => row.objectId),
+    ])];
+    const attachedMemories = await admin.select({
+      memoryId: memoryNamespaces.memoryId,
+    }).from(memoryNamespaces).where(eq(
+      memoryNamespaces.namespaceId,
+      namespaceValue,
+    ));
+    const writtenMemoryIds = [...new Set([
+      ...memoryIds,
+      ...attachedMemories.map(row => row.memoryId),
+    ])];
     const createdTaskIds = [...taskIds];
     const createdJobIds = [...jobIds];
     const createdRequestIds = [...requestIds];
@@ -493,6 +535,11 @@ async function createBaseFixture() {
       if (createdJobIds.length > 0) {
         await admin.delete(jobs).where(inArray(jobs.id, createdJobIds));
       }
+      if (writtenMemoryIds.length > 0) {
+        await admin.delete(memories).where(
+          inArray(memories.id, writtenMemoryIds),
+        );
+      }
       if (writtenObjectIds.length > 0) {
         await admin.delete(cryptoObjects).where(
           inArray(cryptoObjects.objectId, writtenObjectIds),
@@ -525,6 +572,7 @@ async function createBaseFixture() {
         await admin.end();
         await Promise.all([
           __resetSharedDirectCryptoDbForTests(),
+          __resetSharedDirectAgentDbForTests(),
           __resetSharedDirectDbForTests(),
         ]);
       }
@@ -629,7 +677,7 @@ async function createBaseFixture() {
         revision: 1,
       });
       await tx.update(encryptionTransitionPolicy).set({
-        mode: "shadow_encryption",
+        mode: "encrypted_only",
         shadowBehavior: "strict",
         revision: policyRevision,
         shadowEncryptionStartedAt: new Date(NOW),
@@ -681,6 +729,10 @@ async function createBaseFixture() {
     const product = await createForegroundProductTransactionContext(
       { userId, agentId: productAgentId },
       productDb,
+    );
+    const agentProduct = await createForegroundProductTransactionContext(
+      { userId, agentId: productAgentId },
+      getSharedDirectAgentDb(),
     );
     const productAuthority = new PostgresNamespaceProductAuthority(
       canonicalProductConnection(product.canonicalRunner),
@@ -975,6 +1027,7 @@ async function createBaseFixture() {
       currentDevice,
       policyRevision,
       product,
+      agentProduct,
       domainAuthority,
       domainSecret: Object.freeze({
         ...domainAuthority.domains[0]!,
@@ -1002,6 +1055,7 @@ async function createBaseFixture() {
       }),
       runtime,
       objectIds,
+      memoryIds,
       requestIds,
       taskIds,
       jobIds,
@@ -1434,8 +1488,13 @@ async function createScenario(base: BaseFixture) {
       now,
       signal: new AbortController().signal,
     });
-    const execute = (
+    const withPreparedWrite = <Value>(
       now: () => number,
+      use: (input: Readonly<{
+        evidence: TaskRuntimeExecutionEvidence;
+        writer: ProtectedTaskMemoryObjectWriterInput;
+        write: ProtectedTaskMemoryObjectWrite;
+      }>) => Promise<Value>,
       restricted = base.restricted,
       runner = base.product.canonicalRunner,
     ) => withTaskRuntimeExecutionEvidenceV1({
@@ -1449,9 +1508,10 @@ async function createScenario(base: BaseFixture) {
           content: `sealed Task Memory ${memoryId}`,
         });
         try {
-          return await persistProtectedTaskMemoryObject(
-            writerInput(evidence, now, restricted, runner),
-            {
+          return await use(Object.freeze({
+            evidence,
+            writer: writerInput(evidence, now, restricted, runner),
+            write: Object.freeze({
               memoryId,
               contentRevision: 1,
               operationId: `task-memory-object-write:${memoryId}`,
@@ -1470,19 +1530,30 @@ async function createScenario(base: BaseFixture) {
                   base.currentDevice.signingPublicKey,
                 agentAuthorizationRevision: 7,
               }),
-            },
-          );
+            }),
+          }));
         } finally {
           plaintextBytes.fill(0);
         }
       },
     });
+    const execute = (
+      now: () => number,
+      restricted = base.restricted,
+      runner = base.product.canonicalRunner,
+    ) => withPreparedWrite(
+      now,
+      ({ writer, write }) => persistProtectedTaskMemoryObject(writer, write),
+      restricted,
+      runner,
+    );
     return Object.freeze({
       taskId,
       taskRunId,
       memoryObjectId,
       requestId,
       execute,
+      withPreparedWrite,
     });
   } finally {
     recipient.privateKey.fill(0);
@@ -1542,6 +1613,293 @@ describePostgres("sealed protected Task Memory object writer", () => {
         manifest: 1,
         envelope: 1,
       });
+
+      // Full is the first qualified native vertical. Shadow remains NOT
+      // QUALIFIED by this integration receipt.
+      const nativeMemory = await createScenario(base);
+      const nativeContent = `native Task Memory ${randomUUID()}`;
+      const nativeResult = await nativeMemory.withPreparedWrite(
+        () => NOW + 5,
+        async ({ writer }) => withProtectedTaskNativeMemoryRepository({
+          authority: Object.freeze({
+            mode: "namespace",
+            subjectUserId: base.userId,
+            agentId: base.productAgentId,
+            readableNamespaceIds: Object.freeze([base.namespaceValue]),
+            mutableNamespaceIds: Object.freeze([base.namespaceValue]),
+            writableNamespaceId: base.namespaceValue,
+          }),
+          policy: Object.freeze({
+            mode: "encrypted_only",
+            shadowBehavior: "strict",
+            revision: base.policyRevision,
+          }),
+          current: writer,
+          domains: Object.freeze([base.domainSecret]),
+          signer: Object.freeze({
+            agentAuthorizationRevision: 7,
+            runtime: base.runtime.runtime,
+            signerPublication: base.runtime.signerPublication,
+          }),
+          resolveHistoricalSignerPublicationManager: () =>
+            base.currentDevice.signingPublicKey,
+          product: base.product,
+          agentProduct: base.agentProduct,
+          owner: bindEncryptionDataOperationOwner({
+            policy: {
+              resolve: async () => Object.freeze({
+                policy: Object.freeze({
+                  mode: "encrypted_only" as const,
+                  shadowBehavior: "strict" as const,
+                }),
+                revalidationToken: base.policyRevision,
+              }),
+              revalidate: async token => {
+                if (token !== base.policyRevision) {
+                  throw new TypeError("Task Memory policy token changed");
+                }
+              },
+            },
+          }),
+          embedding: Object.freeze({
+            embed: async () => Object.freeze({
+              status: "success" as const,
+              value: Object.freeze({
+                vector: Object.freeze(new Array<number>(1536).fill(0.25)),
+                provider: "openai",
+                canonicalModel: "text-embedding-3-small",
+                dimensions: 1536 as const,
+                contractVersion: 1,
+              }),
+            }),
+          }),
+          repairExactCandidate: async () => {
+            throw new Error("Full native Memory must not repair ordinary data");
+          },
+          fallbackOrdinary: async () => {
+            throw new Error("Full native Memory must not load ordinary data");
+          },
+          execute: async repository => {
+            const saved = await repository.save({
+              operationId: `native-task-memory-save:${randomUUID()}`,
+              authority: Object.freeze({
+                mode: "namespace",
+                subjectUserId: base.userId,
+                agentId: base.productAgentId,
+                readableNamespaceIds: Object.freeze([base.namespaceValue]),
+                mutableNamespaceIds: Object.freeze([base.namespaceValue]),
+                writableNamespaceId: base.namespaceValue,
+              }),
+              type: "fact",
+              content: nativeContent,
+              importance: 0.8,
+            });
+            if (saved.status !== "success") {
+              throw new Error(`Native Task Memory save failed: ${saved.reason}`);
+            }
+            base.memoryIds.add(saved.value.id);
+            base.objectIds.add(deriveMemoryCryptoObjectIdV1({
+              memoryId: saved.value.id,
+              contentRevision: 1,
+            }));
+            const searched = await repository.search({
+              authority: Object.freeze({
+                mode: "namespace",
+                subjectUserId: base.userId,
+                agentId: base.productAgentId,
+                readableNamespaceIds: Object.freeze([base.namespaceValue]),
+                mutableNamespaceIds: Object.freeze([base.namespaceValue]),
+                writableNamespaceId: base.namespaceValue,
+              }),
+              query: nativeContent,
+              limit: 5,
+              includeArchive: false,
+              mode: "vector",
+            });
+            return Object.freeze({ saved, searched });
+          },
+        }),
+      );
+      expect(nativeResult.saved.value).toMatchObject({ action: "created" });
+      const nativeObjectId = deriveMemoryCryptoObjectIdV1({
+        memoryId: nativeResult.saved.value.id,
+        contentRevision: 1,
+      });
+      const [nativeMemoryAtRest] = await base.admin.select({
+        content: memories.content,
+        type: memories.type,
+        contentRevision: memories.contentRevision,
+        cryptoAccessRevision: memories.cryptoAccessRevision,
+        cryptoObjectId: memories.cryptoObjectId,
+        cryptoMappingState: memories.cryptoMappingState,
+      }).from(memories).where(eq(
+        memories.id,
+        nativeResult.saved.value.id,
+      ));
+      expect(nativeMemoryAtRest).toEqual({
+        content: null,
+        type: null,
+        contentRevision: 1,
+        cryptoAccessRevision: 0,
+        cryptoObjectId: nativeObjectId,
+        cryptoMappingState: "verified",
+      });
+      const [nativeCiphertextAtRest] = await base.admin.select({
+        objectId: cryptoObjects.objectId,
+        payloadBytes: cryptoObjects.payloadBytes,
+        payloadHash: cryptoObjects.payloadHash,
+      }).from(cryptoObjects).where(eq(
+        cryptoObjects.objectId,
+        nativeObjectId,
+      ));
+      expect(nativeCiphertextAtRest?.objectId).toBe(nativeObjectId);
+      expect(nativeCiphertextAtRest?.payloadBytes.byteLength).toBeGreaterThan(0);
+      expect(nativeCiphertextAtRest?.payloadHash.byteLength).toBe(32);
+      expect(nativeResult.searched).toMatchObject({
+        status: "success",
+        value: [expect.objectContaining({
+          id: nativeResult.saved.value.id,
+          type: "fact",
+          content: nativeContent,
+        })],
+      });
+
+      const heldSuccess = await createScenario(base);
+      const heldSuccessRunner = observeCanonicalRunner(
+        base.product.canonicalRunner,
+      );
+      let escapedHeld: HeldProtectedTaskMemoryAuthority | null = null;
+      let escapedAssertCurrent: (() => Promise<void>) | null = null;
+      let escapedRestricted: PostgresJsBridgeConnection | null = null;
+      let escapedRestrictedHandle: CryptoPostgresHandle | null = null;
+      let restrictedQueryCalls = 0;
+      const observedRestricted = observeRestrictedConnection(
+        base.restricted,
+        () => {
+          restrictedQueryCalls += 1;
+        },
+      );
+      const heldSuccessStatus = await heldSuccess.withPreparedWrite(
+        () => NOW + 5,
+        async ({ evidence, writer, write }) => {
+          const result = await withCurrentProtectedTaskMemoryAuthority(
+            writer,
+            async held => {
+              escapedHeld = held;
+              const binding = requireHeldProtectedTaskMemoryWriterAuthority(
+                held,
+              );
+              expect(binding.evidence).toBe(evidence);
+              await binding.assertCurrent();
+              escapedAssertCurrent = binding.assertCurrent;
+              escapedRestricted = binding.restricted;
+              escapedRestrictedHandle = binding.restrictedHandle;
+              return persistProtectedTaskMemoryObjectUnderHeld(held, write);
+            },
+          );
+          expect(result).toBe("created");
+          const closedHeld = escapedHeld;
+          const closedAssertCurrent = escapedAssertCurrent as
+            (() => Promise<void>) | null;
+          if (closedHeld === null || closedAssertCurrent === null) {
+            throw new Error("Held Task Memory authority was not observed");
+          }
+          const closedRestricted = escapedRestricted;
+          const closedRestrictedHandle = escapedRestrictedHandle;
+          if (closedRestricted === null || closedRestrictedHandle === null) {
+            throw new Error("Held Task Memory restricted authority was not observed");
+          }
+          const queriesBeforeClosedUse = restrictedQueryCalls;
+          expect(() => requireHeldProtectedTaskMemoryWriterAuthority(
+            closedHeld,
+          )).toThrow("Task Memory authority is not active");
+          for (const assertCurrent of [
+            closedHeld.assertCurrent,
+            closedAssertCurrent,
+          ]) {
+            let rejection: unknown;
+            try {
+              await assertCurrent();
+            } catch (error) {
+              rejection = error;
+            }
+            expect(rejection).toBeInstanceOf(TypeError);
+            expect((rejection as Error).message).toBe(
+              "Task Memory authority is not active",
+            );
+          }
+          let restrictedRejection: unknown;
+          try {
+            await closedRestricted.query(
+              "SELECT pg_backend_pid()::integer AS pid",
+            );
+          } catch (error) {
+            restrictedRejection = error;
+          }
+          expect(restrictedRejection).toBeInstanceOf(TypeError);
+          expect((restrictedRejection as Error).message).toBe(
+            "Task Memory authority is not active",
+          );
+          let repositoryRejection: unknown;
+          try {
+            await new PostgresLatticeStorage(closedRestrictedHandle).getGrant(
+              "closed-task-memory-held-authority",
+            );
+          } catch (error) {
+            repositoryRejection = error;
+          }
+          expect(repositoryRejection).toBeInstanceOf(TypeError);
+          expect((repositoryRejection as Error).message).toBe(
+            "Task Memory authority is not active",
+          );
+          expect(restrictedQueryCalls).toBe(queriesBeforeClosedUse);
+          return result;
+        },
+        observedRestricted,
+        heldSuccessRunner.runner,
+      );
+      expect(heldSuccessStatus).toBe("created");
+      expect(heldSuccessRunner.transactionCalls()).toBe(1);
+      expect(await objectRowCounts(base, heldSuccess.memoryObjectId)).toEqual({
+        payload: 1,
+        head: 1,
+        manifest: 1,
+        envelope: 1,
+      });
+
+      const callbackFailure = await createScenario(base);
+      const callbackFailureRunner = observeCanonicalRunner(
+        base.product.canonicalRunner,
+      );
+      const intendedFailure = new Error("held callback failed after CAS");
+      let observedFailure: unknown;
+      try {
+        await callbackFailure.withPreparedWrite(
+          () => NOW + 5,
+          async ({ writer, write }) => {
+            await withCurrentProtectedTaskMemoryAuthority(
+              writer,
+              async held => {
+                expect(await persistProtectedTaskMemoryObjectUnderHeld(
+                  held,
+                  write,
+                )).toBe("created");
+                throw intendedFailure;
+              },
+            );
+          },
+          base.restricted,
+          callbackFailureRunner.runner,
+        );
+      } catch (error) {
+        observedFailure = error;
+      }
+      expect(observedFailure).toBe(intendedFailure);
+      expect(callbackFailureRunner.transactionCalls()).toBe(1);
+      expect(await objectRowCounts(
+        base,
+        callbackFailure.memoryObjectId,
+      )).toEqual({ payload: 0, head: 0, manifest: 0, envelope: 0 });
 
       // The writer has already taken policy -> Task -> Run -> Job when the
       // restricted gate opens. A canonical Stop submitted at that point must

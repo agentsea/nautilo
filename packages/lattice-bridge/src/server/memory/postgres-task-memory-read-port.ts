@@ -69,6 +69,9 @@ type ScopeAuthority = Extract<ProtectedMemoryAuthority, { mode: "scope" }>;
 type CanonicalTransaction = Parameters<
   Parameters<ConversationProductCanonicalTransactionRunner["transaction"]>[0]
 >[0];
+type CanonicalExecutor = Parameters<
+  Parameters<ConversationProductCanonicalTransactionRunner["transaction"]>[0]
+>[1];
 
 const taskMemoryReadReceipt = Symbol("task-memory-read-receipt");
 
@@ -85,6 +88,7 @@ type TaskMemoryReadReceipt<Value> = Readonly<{
 export type TaskMemoryReadBoundary = Readonly<{
   withCurrentRead<Value>(input: Readonly<{
     transaction: CanonicalTransaction;
+    executor: CanonicalExecutor;
     authority: ProtectedMemoryAuthority;
     use(): Promise<TaskMemoryReadReceipt<Value>>;
   }>): Promise<TaskMemoryReadReceipt<Value>>;
@@ -549,6 +553,7 @@ export class PostgresTaskMemoryReadPort implements ProtectedTaskMemoryReadPort {
       try {
         ownerReceipt = await this.#boundary.withCurrentRead({
           transaction: canonical,
+          executor: transaction,
           authority: input.authority,
           use: async () => {
             useCalls += 1;

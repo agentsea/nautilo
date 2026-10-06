@@ -33,9 +33,13 @@ import {
 
 import {
   persistProtectedTaskMemoryObject,
+  persistProtectedTaskMemoryObjectUnderHeld,
   taskMemoryWriteAuthorityMatchesEvidence,
   type ProtectedTaskMemoryObjectWriterInput,
 } from "../../src/routes/protected-task-memory-object-writer";
+import type {
+  HeldProtectedTaskMemoryAuthority,
+} from "../../src/routes/current-protected-task-memory-authority";
 
 const NOW = 2_220_000_000_000;
 const USER_ID = "10000000-0000-4000-8000-000000000001";
@@ -248,6 +252,13 @@ async function fixture() {
         expectedAuthorizationRevision: domain.authorizationRevision,
       })),
     },
+    acceptedMaterial: {
+      responseBytes: bytes(0x62),
+      credentialId: plan.authorizationId,
+      issuingDeviceAuthorizationRevision: plan.hostAuthorizationRevision,
+      issuerSigningPublicKeyHash: bytes(0x63),
+      authorizationExpiresAt: NOW + 60_000,
+    },
   } as unknown as BackgroundAuthorizationTaskRuntimeRecordV3;
   const authority: CurrentTaskRuntimeAuthority = {
     device: {
@@ -356,7 +367,7 @@ describe("protected Task Memory object writer", () => {
     });
   });
 
-  test("refuses forged, expired, wrong-record, and wrong-coordinate input before database use", async () => {
+  test("rejects invalid entry and maps expired accepted authority to stale before database use", async () => {
     const value = await fixture();
     let databaseUse = 0;
     let now = NOW;
@@ -461,8 +472,64 @@ describe("protected Task Memory object writer", () => {
           input(evidence),
           write(`${expectedObjectId}-wrong`),
         )).rejects.toThrow("Task Memory object coordinate is not exact"));
+
+        const expiredAccepted = {
+          ...value.record,
+          acceptedMaterial: {
+            ...value.record.acceptedMaterial!,
+            authorizationExpiresAt: NOW,
+          },
+        } as BackgroundAuthorizationTaskRuntimeRecordV3;
+        expect(await persistProtectedTaskMemoryObject(
+          input(evidence, expiredAccepted),
+          write(),
+        )).toBe("stale");
+
+        now = NOW - 1;
+        await Promise.resolve(expect(persistProtectedTaskMemoryObject(
+          input(evidence),
+          write(),
+        )).rejects.toBeInstanceOf(Error));
+        now = NOW;
+
+        const failure = new Error("authority runner failed");
+        let failingRunnerUses = 0;
+        const failingRunner = {
+          role: "nautilo",
+          transaction: async () => {
+            failingRunnerUses += 1;
+            throw failure;
+          },
+        } as unknown as ConversationProductCanonicalTransactionRunner;
+        await Promise.resolve(expect(persistProtectedTaskMemoryObject(
+          {...input(evidence), runner: failingRunner},
+          write(),
+        )).rejects.toBe(failure));
+        expect(failingRunnerUses).toBe(1);
       },
     });
     expect(databaseUse).toBe(0);
+  });
+
+  test("refuses a fabricated held authority before object persistence", async () => {
+    const fabricated = Object.freeze({
+      policy: Object.freeze({
+        mode: "encrypted_only",
+        shadowBehavior: "strict",
+        revision: 1,
+      }),
+      currentRuntime: Object.freeze({}),
+      assertCurrent: async () => {},
+    }) as unknown as HeldProtectedTaskMemoryAuthority;
+
+    await Promise.resolve(expect(persistProtectedTaskMemoryObjectUnderHeld(
+      fabricated,
+      {
+        memoryId: MEMORY_ID,
+        contentRevision: 1,
+        operationId: "task-memory-write",
+        prepared: Object.freeze({}) as PreparedTaskRuntimeAgentObject,
+      },
+    )).rejects.toThrow("Task Memory authority is not active"));
   });
 });
