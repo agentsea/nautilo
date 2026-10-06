@@ -109,6 +109,30 @@ describe("turbo cross-package cache-correctness guard", () => {
     });
   }
 
+  test("Agent typecheck waits for generated Office declarations used by integration imports", () => {
+    const run = Bun.spawnSync([
+      join(repoRoot, "node_modules/.bin/turbo"),
+      "run", "typecheck", "--filter=@nautilo/agent", "--dry=json",
+    ], { cwd: repoRoot });
+    expect(run.exitCode).toBe(0);
+    const graph = JSON.parse(run.stdout.toString()) as {
+      tasks: { taskId: string; dependencies: string[] }[];
+    };
+    const tasks = new Map(graph.tasks.map(task => [task.taskId, task]));
+    const pending = ["@nautilo/agent#typecheck"];
+    const ancestors = new Set<string>();
+    while (pending.length > 0) {
+      const id = pending.pop()!;
+      if (ancestors.has(id)) continue;
+      ancestors.add(id);
+      pending.push(...(tasks.get(id)?.dependencies ?? []));
+    }
+    // Agent integration tests import server adapters and transitively Writer.
+    // A clean checkout needs Office's exported declarations before tsc starts.
+    expect(ancestors).toContain("@nautilo/office-docs#build");
+    expect(ancestors).toContain("@nautilo/agent#transit");
+  });
+
   test("lint task hashes the root configs that change its result", () => {
     const turbo = readTurbo();
     const inputs = turbo.tasks.lint?.inputs ?? [];
