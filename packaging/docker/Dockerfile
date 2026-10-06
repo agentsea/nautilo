@@ -372,6 +372,7 @@ COPY tsconfig.base.json tsconfig.base.json
 COPY apps/mobile apps/mobile
 COPY dev/fixtures/assistant-response-gfm-table.ts dev/fixtures/assistant-response-gfm-table.ts
 COPY packages/api-client packages/api-client
+COPY packages/attachments packages/attachments
 COPY packages/browser-document-viewer packages/browser-document-viewer
 COPY packages/config packages/config
 COPY packages/config-guard packages/config-guard
