@@ -25,6 +25,7 @@ import {
 } from "@nautilo/lattice-crypto/wire";
 import type { StartProtectedTaskRunInput } from "@nautilo/db";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+import type { TaskScopeMemoryBinding } from "@nautilo/lattice-bridge/server";
 
 import type { JobExecutor } from "../../src/job";
 import {
@@ -54,7 +55,13 @@ const PRIVATE_TASK_ROOM = "40000000-0000-4000-8000-000000000014";
 const OPEN_ROOM = "40000000-0000-4000-8000-000000000024";
 const TASK = "50000000-0000-4000-8000-000000000005";
 const RUN = "60000000-0000-4000-8000-000000000006";
-const NAMESPACE = "task-runtime-namespace";
+const NAMESPACE = "70000000-0000-4000-8000-000000000007";
+const SCOPE = "80000000-0000-4000-8000-000000000008";
+const MEMORY_ROOM = "90000000-0000-4000-8000-000000000009";
+const SCOPE_ORIGIN = "a0000000-0000-4000-8000-00000000000a";
+const SCOPE_SEED = "b0000000-0000-4000-8000-00000000000b";
+const SCOPE_FOREIGN_READ = "c0000000-0000-4000-8000-00000000000c";
+const OUTPUT_NAMESPACE = "d0000000-0000-4000-8000-00000000000d";
 const DOMAIN = "task-runtime-domain";
 const REQUEST = `task-run-authorization:${RUN}`;
 const INPUT_OBJECT = deriveTaskContentCryptoObjectIdV1({
@@ -197,6 +204,58 @@ function initialRecord(): BackgroundAuthorizationTaskRuntimeRecordV3 {
         expectedEpoch: 2,
         expectedAuthorizationRevision: 3,
       })]),
+    }),
+  });
+}
+
+function scopeBinding(
+  readableNamespaceIds: readonly string[] = [SCOPE_ORIGIN],
+): TaskScopeMemoryBinding {
+  return Object.freeze({
+    scopeId: SCOPE,
+    memoryRoomId: MEMORY_ROOM,
+    originWritableNamespaceId: SCOPE_ORIGIN,
+    readableNamespaceIds: Object.freeze([...readableNamespaceIds]),
+  });
+}
+
+function scopePlan(
+  plan: TaskRuntimeGrantClaimPlan,
+  binding: TaskScopeMemoryBinding,
+  workIdentityFill: number,
+): TaskRuntimeGrantClaimPlan {
+  const stableIdentity = Object.freeze({
+    ...plan.stableIdentity,
+    memoryMode: "scope" as const,
+    scopeId: binding.scopeId,
+  });
+  const namespaceRequirements = Object.freeze([
+    plan.initialRecord.authoritySet.namespaceRequirements[0]!,
+    ...binding.readableNamespaceIds
+      .filter(namespaceId => namespaceId !== NAMESPACE)
+      .map((namespaceId, index) => Object.freeze({
+        ordinal: index + 1,
+        namespaceId,
+        domainId: DOMAIN,
+        operations: namespaceId === binding.originWritableNamespaceId
+          ? Object.freeze(["decrypt", "encrypt"] as const)
+          : Object.freeze(["decrypt"] as const),
+        expectedAccessRevision: 4 + index,
+        expectedPolicyRevision: 7,
+      })),
+  ]);
+  return Object.freeze({
+    ...plan,
+    stableIdentity,
+    scopeMemory: binding,
+    initialRecord: Object.freeze({
+      ...plan.initialRecord,
+      workIdentityHash: bytes(workIdentityFill),
+      idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity),
+      authoritySet: Object.freeze({
+        ...plan.initialRecord.authoritySet,
+        namespaceRequirements,
+      }),
     }),
   });
 }
@@ -427,10 +486,13 @@ async function fixture() {
     owner = coordinator,
     currentBinding: TaskRuntimeRecipientDeviceBinding = binding,
     currentOccurrence: ProtectedTaskOccurrence = occurrence(),
+    currentScopeMemory?: TaskScopeMemoryBinding,
   ) => owner.bindAwaitingRecipientForDevice({
     occurrence: currentOccurrence,
     binding: currentBinding,
-    withCurrentAuthority: async ({ use }) => use({
+    withCurrentAuthority: async ({ scopeMemory, targetRoomId, use }) => {
+      expect(targetRoomId).toBe(ROOM);
+      return use({
       device: {
         userId: binding.userId,
         humanActorId: binding.humanActorId,
@@ -447,7 +509,11 @@ async function fixture() {
       namespaceRequirements: currentNamespaceRequirements,
       policyRevision: 7,
       sourceRoomId: provenSourceRoomId,
-    }),
+      ...((currentScopeMemory ?? scopeMemory) === undefined
+        ? {}
+        : { scopeMemory: currentScopeMemory ?? scopeMemory }),
+      });
+    },
   });
   return {
     crypto,
@@ -645,6 +711,142 @@ describe("Task Runtime grant claim", () => {
     const rebound = await value.bindRecipient();
     expect(rebound?.record.snapshot.recipientGeneration).toBe(1);
     expect(rebound?.record.snapshot.state).toBe("awaiting_device");
+  });
+
+  test("replaces changed fixed Scope inventory and binds only its exact current copy", async () => {
+    const value = await fixture();
+    const initialBinding = scopeBinding();
+    value.setSubstitutePlan(plan => scopePlan(plan, initialBinding, 21));
+    value.setCurrentNamespaceRequirements(
+      scopePlan(value.plan(occurrence()), initialBinding, 21)
+        .initialRecord.authoritySet.namespaceRequirements,
+    );
+    await prepareAndBind(value);
+    expect(value.recipients.size).toBe(1);
+
+    const addedNamespace = "b0000000-0000-4000-8000-00000000000b";
+    const changedBinding = scopeBinding([SCOPE_ORIGIN, addedNamespace]);
+    value.setSubstitutePlan(plan => scopePlan(plan, changedBinding, 22));
+    const changedPlan = value.plan(occurrence());
+    value.setCurrentNamespaceRequirements(
+      changedPlan.initialRecord.authoritySet.namespaceRequirements,
+    );
+
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(value.recipients.size).toBe(0);
+    expect(value.replacementCasCount()).toBe(1);
+
+    expect(await value.bindRecipient(
+      value.coordinator,
+      value.binding,
+      occurrence(),
+      initialBinding,
+    )).toBeNull();
+    expect(value.recipients.size).toBe(0);
+
+    const rebound = await value.bindRecipient();
+    expect(rebound?.record.snapshot.state).toBe("awaiting_device");
+    expect(value.recipients.size).toBe(1);
+  });
+
+  test("rejects omitted or extra fixed Scope grant Namespaces", async () => {
+    for (const change of ["omitted", "extra"] as const) {
+      const value = await fixture();
+      value.setSubstitutePlan(plan => {
+        const scoped = scopePlan(plan, scopeBinding(), 23);
+        const requirements = change === "omitted"
+          ? scoped.initialRecord.authoritySet.namespaceRequirements.slice(0, 1)
+          : [
+              ...scoped.initialRecord.authoritySet.namespaceRequirements,
+              Object.freeze({
+                ordinal: 2,
+                namespaceId: "c0000000-0000-4000-8000-00000000000c",
+                domainId: DOMAIN,
+                operations: Object.freeze(["decrypt"] as const),
+                expectedAccessRevision: 8,
+                expectedPolicyRevision: 7,
+              }),
+            ];
+        return Object.freeze({
+          ...scoped,
+          initialRecord: Object.freeze({
+            ...scoped.initialRecord,
+            authoritySet: Object.freeze({
+              ...scoped.initialRecord.authoritySet,
+              namespaceRequirements: Object.freeze(requirements),
+            }),
+          }),
+        });
+      });
+
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+        .rejects.toThrow("disagrees with its occurrence");
+      expect(await value.repository.get(REQUEST)).toBeNull();
+    }
+  });
+
+  test("rejects a write upgrade for Scope seed or foreign read authority", async () => {
+    for (const upgradedNamespace of [SCOPE_SEED, SCOPE_FOREIGN_READ]) {
+      const value = await fixture();
+      const binding = scopeBinding([SCOPE_ORIGIN, upgradedNamespace]);
+      value.setSubstitutePlan(plan => {
+        const scoped = scopePlan(plan, binding, 24);
+        return Object.freeze({
+          ...scoped,
+          initialRecord: Object.freeze({
+            ...scoped.initialRecord,
+            authoritySet: Object.freeze({
+              ...scoped.initialRecord.authoritySet,
+              namespaceRequirements: Object.freeze(
+                scoped.initialRecord.authoritySet.namespaceRequirements.map(
+                  requirement => requirement.namespaceId === upgradedNamespace
+                    ? Object.freeze({
+                        ...requirement,
+                        operations: Object.freeze(
+                          ["decrypt", "encrypt"] as const,
+                        ),
+                      })
+                    : requirement,
+                ),
+              ),
+            }),
+          }),
+        });
+      });
+
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+        .rejects.toThrow("disagrees with its occurrence");
+      expect(await value.repository.get(REQUEST)).toBeNull();
+      expect(value.replacementCasCount()).toBe(0);
+    }
+  });
+
+  test("rejects an omitted distinct Scope output Namespace", async () => {
+    const value = await fixture();
+    value.setSubstitutePlan(plan => {
+      const scoped = scopePlan(plan, scopeBinding(), 25);
+      const stable = Object.freeze({
+        ...scoped.stableIdentity,
+        outputNamespaceId: OUTPUT_NAMESPACE,
+      });
+      return Object.freeze({
+        ...scoped,
+        stableIdentity: stable,
+        initialRecord: Object.freeze({
+          ...scoped.initialRecord,
+          idempotencyKey: taskRuntimeStableIdempotencyKey(stable),
+        }),
+      });
+    });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+      .rejects.toThrow("disagrees with its occurrence");
+    expect(await value.repository.get(REQUEST)).toBeNull();
+    expect(value.replacementCasCount()).toBe(0);
   });
 
   test("retains a same-plan legacy dark request but refuses to replace it without a stable commitment", async () => {

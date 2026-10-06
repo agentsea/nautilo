@@ -19,6 +19,8 @@ const ids = {
   room: "77777777-7777-4777-8777-777777777777",
   namespace: "88888888-8888-4888-8888-888888888888",
   memoryNamespace: "99999999-9999-4999-8999-999999999999",
+  scope: "99999999-9999-4999-8999-999999999998",
+  privateRoom: "99999999-9999-4999-8999-999999999997",
   peer: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   peerActor: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 };
@@ -201,7 +203,7 @@ describe("production protected Task predispatch composition", () => {
       `converge:${ids.peer}`,
       `memory:${ids.peer}`,
     ]);
-    expect(taskReads).toBe(2);
+    expect(taskReads).toBe(3);
     expect(plan.target).toEqual({
       roomId: ids.room,
       targetUserIds: [ids.requestor, ids.peer],
@@ -284,7 +286,7 @@ describe("production protected Task predispatch composition", () => {
         },
       })(occurrence());
 
-      expect(taskReads).toBe(3);
+      expect(taskReads).toBe(4);
       expect(writes).toEqual([`${ids.task}:${ids.room}`]);
       expect(plan.target.roomId).toBe(ids.room);
     }
@@ -409,6 +411,156 @@ describe("production protected Task predispatch composition", () => {
 
     await Promise.resolve(expect(predispatch(occurrence())).rejects.toThrow(
       "Protected Task Memory authority is not exact",
+    ));
+  });
+
+  test("uses the existing requester-private origin for an orphan Scope", async () => {
+    const current = task({
+      preset: "task",
+      targetChat: "orphan",
+      targetChatHandle: null,
+      targetRoomId: ids.room,
+      useScope: true,
+      scopeId: ids.scope,
+    });
+    let privateRoomReads = 0;
+    let memoryResolutions = 0;
+    const plan = await createProductionProtectedTaskPredispatch({
+      db,
+      resolver,
+      convergeCreatedRoomCatalog: async () => {},
+      getTaskById: async () => current,
+      getTaskRunForTask: async () => run(),
+      assertCanInvokeAgent: async () => {},
+      assertCanUseServerProviderCredentials: async () => {},
+      resolveTargetRoom: async () => ({
+        roomId: ids.room,
+        graphThreadId: "ignored-target-thread",
+      }),
+      findAgentOwnerPrivateRoom: async (userId, agentId) => {
+        privateRoomReads += 1;
+        expect([userId, agentId]).toEqual([ids.requestor, ids.agent]);
+        return { roomId: ids.privateRoom, namespaceId: ids.namespace };
+      },
+      resolveTaskMemoryEnvelope: async input => {
+        memoryResolutions += 1;
+        expect(input.sessionRoomId).toBe(ids.privateRoom);
+        return {
+          envelope: {
+            memoryMode: "scope",
+            ownerId: ids.requestor,
+            actorId: ids.actor,
+            agentId: ids.agent,
+            roomId: ids.privateRoom,
+            scopeId: ids.scope,
+            originWritableNamespaceId: ids.namespace,
+            toolPolicy: {},
+          },
+          mode: "scope",
+          authorityStatus: "exact",
+          provenance: "scope_existing",
+        };
+      },
+    })(occurrence({
+      preset: "task",
+      targetChat: "orphan",
+      targetChatHandle: null,
+      targetRoomId: ids.room,
+      useScope: true,
+      scopeId: ids.scope,
+    }));
+
+    expect(plan.memory.envelope).toMatchObject({
+      memoryMode: "scope",
+      roomId: ids.privateRoom,
+      scopeId: ids.scope,
+      originWritableNamespaceId: ids.namespace,
+    });
+    expect(privateRoomReads).toBe(1);
+    expect(memoryResolutions).toBe(1);
+  });
+
+  test("rejects an orphan Scope origin mismatch and post-resolution drift", async () => {
+    const current = task({
+      preset: "task",
+      targetChat: "orphan",
+      targetChatHandle: null,
+      targetRoomId: ids.room,
+      useScope: true,
+      scopeId: ids.scope,
+    });
+    const inputOccurrence = occurrence({
+      preset: "task",
+      targetChat: "orphan",
+      targetChatHandle: null,
+      targetRoomId: ids.room,
+      useScope: true,
+      scopeId: ids.scope,
+    });
+    let memoryResolutions = 0;
+    const mismatch = createProductionProtectedTaskPredispatch({
+      db,
+      resolver,
+      convergeCreatedRoomCatalog: async () => {},
+      getTaskById: async () => current,
+      getTaskRunForTask: async () => run(),
+      assertCanInvokeAgent: async () => {},
+      assertCanUseServerProviderCredentials: async () => {},
+      resolveTargetRoom: async () => ({
+        roomId: ids.room,
+        graphThreadId: "ignored-target-thread",
+      }),
+      findAgentOwnerPrivateRoom: async () => ({
+        roomId: ids.privateRoom,
+        namespaceId: ids.memoryNamespace,
+      }),
+      resolveTaskMemoryEnvelope: async () => {
+        memoryResolutions += 1;
+        throw new Error("unreachable");
+      },
+    });
+    await Promise.resolve(expect(mismatch(inputOccurrence)).rejects.toThrow(
+      "Scope Memory origin is unavailable",
+    ));
+    expect(memoryResolutions).toBe(0);
+
+    let taskReads = 0;
+    const drifted = createProductionProtectedTaskPredispatch({
+      db,
+      resolver,
+      convergeCreatedRoomCatalog: async () => {},
+      getTaskById: async () => ++taskReads < 3
+        ? current
+        : task({ ...current, status: "cancelled" }),
+      getTaskRunForTask: async () => run(),
+      assertCanInvokeAgent: async () => {},
+      assertCanUseServerProviderCredentials: async () => {},
+      resolveTargetRoom: async () => ({
+        roomId: ids.room,
+        graphThreadId: "ignored-target-thread",
+      }),
+      findAgentOwnerPrivateRoom: async () => ({
+        roomId: ids.privateRoom,
+        namespaceId: ids.namespace,
+      }),
+      resolveTaskMemoryEnvelope: async () => ({
+        envelope: {
+          memoryMode: "scope",
+          ownerId: ids.requestor,
+          actorId: ids.actor,
+          agentId: ids.agent,
+          roomId: ids.privateRoom,
+          scopeId: ids.scope,
+          originWritableNamespaceId: ids.namespace,
+          toolPolicy: {},
+        },
+        mode: "scope",
+        authorityStatus: "exact",
+        provenance: "scope_existing",
+      }),
+    });
+    await Promise.resolve(expect(drifted(inputOccurrence)).rejects.toThrow(
+      "Memory resolution drifted",
     ));
   });
 });

@@ -249,12 +249,14 @@ export {
   type TaskMemoryReadBoundary,
 } from "./memory/postgres-task-memory-read-port.ts";
 export {
+  copyTaskScopeMemoryBinding,
   discoverTaskScopeMemoryMetadata,
   discoverTaskScopeMemoryNamespaceInventory,
   readCurrentTaskScopeMemoryMetadata,
   readCurrentTaskScopeMemoryMutationMetadata,
   readCurrentTaskScopeMemoryNamespaceInventory,
   type TaskScopeCoordinates,
+  type TaskScopeMemoryBinding,
   type TaskScopeMemoryMetadata,
   type TaskScopeMemoryNamespaceInventory,
 } from "./task/task-scope-memory-metadata.ts";
@@ -992,10 +994,12 @@ export {PostgresProtectedReflectionMessageMetadata, type ProtectedReflectionMess
 
 export {
   inspectInitialTaskRuntimeNamespaceAuthority,
+  inspectTaskContentNamespaceAuthority,
   withInitialTaskRuntimeRecipientAuthority,
   type InitialTaskRuntimeRecipientAuthority,
   type InitialTaskRuntimeNamespaceAuthority,
   type InitialTaskRuntimeNamespaceFact,
+  type TaskContentNamespaceAuthorityInput,
 } from "./task/initial-task-runtime-namespace-authority.ts";
 
 export {

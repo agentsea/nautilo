@@ -11,6 +11,7 @@ import {
   agentCryptoRuntimeDomainEnvelopes,
   agentCryptoRuntimeSigners,
   agentCryptoRuntimeStates,
+  agentScopes,
   agents,
   backgroundCryptoAuthorizationDomainRequirements,
   backgroundCryptoAuthorizationNamespaceRequirements,
@@ -42,6 +43,7 @@ import {
   jobs,
   memories,
   memoryNamespaces,
+  memoryScopes,
   namespaceDomainKeyBindings,
   namespaceDomainKeyHeads,
   namespaces,
@@ -118,9 +120,12 @@ import {
   PostgresHumanDeviceGroupRepository,
   PostgresLatticeStorage,
   PostgresNamespaceProductAuthority,
+  inspectInitialTaskRuntimeNamespaceAuthority,
+  inspectTaskContentNamespaceAuthority,
   verifyCryptoPostgresHandle,
   type ConversationProductCanonicalTransactionRunner,
   type CryptoPostgresHandle,
+  type TaskScopeMemoryBinding,
 } from "@nautilo/lattice-bridge/server";
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
@@ -384,7 +389,9 @@ async function createBaseFixture() {
   const agentActorId = randomUUID();
   const productAgentId = randomUUID();
   const namespaceValue = randomUUID();
+  const seedNamespaceValue = randomUUID();
   const roomId = randomUUID();
+  const seedRoomId = randomUUID();
   const deviceId = `task-memory-device-${randomUUID()}`;
   const signing = crypto.generateSigningKeyPair();
   const encryption = await crypto.generateEncryptionKeyPair();
@@ -395,6 +402,7 @@ async function createBaseFixture() {
     crypto.randomBytes(32),
   );
   let namespaceKey: Uint8Array | null = null;
+  let seedNamespaceKey: Uint8Array | null = null;
   let domainKey: Uint8Array | null = null;
   let domainIdValue: string | null = null;
   let runtime: Awaited<ReturnType<typeof prepareAgentRuntimeInitialization>> | null = null;
@@ -403,6 +411,7 @@ async function createBaseFixture() {
   const requestIds = new Set<string>();
   const taskIds = new Set<string>();
   const jobIds = new Set<string>();
+  const scopeIds = new Set<string>();
 
   const [originalPolicy] = await admin.select().from(encryptionTransitionPolicy)
     .where(eq(encryptionTransitionPolicy.id, "server"));
@@ -475,12 +484,14 @@ async function createBaseFixture() {
           inArray(backgroundCryptoAuthorizationRequests.requestId, createdRequestIds),
         );
       }
-      await admin.delete(namespaceDomainKeyHeads).where(
-        eq(namespaceDomainKeyHeads.namespaceId, namespaceValue),
-      );
-      await admin.delete(namespaceDomainKeyBindings).where(
-        eq(namespaceDomainKeyBindings.namespaceId, namespaceValue),
-      );
+      await admin.delete(namespaceDomainKeyHeads).where(inArray(
+        namespaceDomainKeyHeads.namespaceId,
+        [namespaceValue, seedNamespaceValue],
+      ));
+      await admin.delete(namespaceDomainKeyBindings).where(inArray(
+        namespaceDomainKeyBindings.namespaceId,
+        [namespaceValue, seedNamespaceValue],
+      ));
       await admin.delete(domainKeyEnvelopeAcknowledgements).where(
         eq(domainKeyEnvelopeAcknowledgements.recipientDeviceId, deviceId),
       );
@@ -536,18 +547,36 @@ async function createBaseFixture() {
         await admin.delete(jobs).where(inArray(jobs.id, createdJobIds));
       }
       if (writtenMemoryIds.length > 0) {
+        await admin.delete(memoryScopes).where(
+          inArray(memoryScopes.memoryId, writtenMemoryIds),
+        );
         await admin.delete(memories).where(
           inArray(memories.id, writtenMemoryIds),
         );
+      }
+      if (scopeIds.size > 0) {
+        await admin.delete(agentScopes).where(inArray(
+          agentScopes.id,
+          [...scopeIds],
+        ));
       }
       if (writtenObjectIds.length > 0) {
         await admin.delete(cryptoObjects).where(
           inArray(cryptoObjects.objectId, writtenObjectIds),
         );
       }
-      await admin.delete(roomMembers).where(eq(roomMembers.roomId, roomId));
-      await admin.delete(rooms).where(eq(rooms.id, roomId));
-      await admin.delete(namespaces).where(eq(namespaces.id, namespaceValue));
+      await admin.delete(roomMembers).where(inArray(
+        roomMembers.roomId,
+        [roomId, seedRoomId],
+      ));
+      await admin.delete(rooms).where(inArray(
+        rooms.id,
+        [roomId, seedRoomId],
+      ));
+      await admin.delete(namespaces).where(inArray(
+        namespaces.id,
+        [namespaceValue, seedNamespaceValue],
+      ));
       await admin.delete(actors).where(eq(actors.ownerId, userId));
       await admin.delete(agents).where(eq(agents.id, productAgentId));
       await admin.delete(serverAdmission).where(eq(serverAdmission.userId, userId));
@@ -563,6 +592,7 @@ async function createBaseFixture() {
         }).where(eq(encryptionTransitionPolicy.id, "server"));
       } finally {
         namespaceKey?.fill(0);
+        seedNamespaceKey?.fill(0);
         domainKey?.fill(0);
         runtime?.runtime.key.fill(0);
         signing.privateKey.fill(0);
@@ -604,25 +634,51 @@ async function createBaseFixture() {
           agentId: productAgentId,
         },
       ]);
-      await tx.insert(namespaces).values({
-        id: namespaceValue,
-        scope: "room",
-        label: "Task Memory writer Namespace",
-      });
-      await tx.insert(rooms).values({
-        id: roomId,
-        ownerId: userId,
-        type: "private",
-        label: "Task Memory writer private Room",
-        graphThreadId: `task-memory-writer:${roomId}`,
-        namespaceId: namespaceValue,
-        humanActorIds: [humanActorId],
-        kind: "private",
-      });
+      await tx.insert(namespaces).values([
+        {
+          id: namespaceValue,
+          scope: "room",
+          label: "Task Memory writer Namespace",
+        },
+        {
+          id: seedNamespaceValue,
+          scope: "room",
+          label: "Task Memory seed Namespace",
+        },
+      ]);
+      await tx.insert(rooms).values([
+        {
+          id: roomId,
+          ownerId: userId,
+          type: "private",
+          label: "Task Memory writer private Room",
+          graphThreadId: `task-memory-writer:${roomId}`,
+          namespaceId: namespaceValue,
+          humanActorIds: [humanActorId],
+          kind: "private",
+        },
+        {
+          id: seedRoomId,
+          ownerId: userId,
+          type: "group",
+          label: "Task Memory seed Room",
+          graphThreadId: `task-memory-seed:${seedRoomId}`,
+          namespaceId: seedNamespaceValue,
+          humanActorIds: [humanActorId],
+          kind: "group",
+        },
+      ]);
       await tx.insert(roomMembers).values([
         { roomId, actorId: humanActorId, roomRole: "admin" },
         {
           roomId,
+          actorId: agentActorId,
+          roomRole: "member",
+          agentResponseMode: "active",
+        },
+        { roomId: seedRoomId, actorId: humanActorId, roomRole: "admin" },
+        {
+          roomId: seedRoomId,
           actorId: agentActorId,
           roomRole: "member",
           agentResponseMode: "active",
@@ -855,89 +911,121 @@ async function createBaseFixture() {
       }),
     }))?.status).toBe("published");
 
-    const bundlePlan = await productAuthority.withCurrentPrivateRoom({
-      subjectUserId: userId,
-      subjectHumanId: humanActorId,
-      roomId,
-      namespaceId: namespaceValue,
-      use: (authority) => domainRepository.planNamespaceBundle({
-        authority,
-        keyClass: "ai",
-        clientDeviceId: deviceId,
-      }),
-    });
-    if (bundlePlan?.status !== "create_required") {
-      throw new Error("Task Memory Namespace bundle plan was unavailable");
-    }
-    namespaceKey = crypto.randomBytes(32);
-    const namespaceHeadDigest = domainNamespaceGenerationHeadDigest(crypto, {
-      serverId: SERVER_SCOPE,
-      namespaceId: namespaceId(bundlePlan.namespaceId),
-      keyClass: bundlePlan.keyClass,
-      accessRevision: accessRevision(bundlePlan.namespaceAccessRevision),
-      generation: namespaceGeneration(0),
-      previousHeadDigest: null,
-      generationKey: namespaceKey,
-    });
-    const retained = [Object.freeze({
-      generation: namespaceGeneration(0),
-      accessRevision: accessRevision(bundlePlan.namespaceAccessRevision),
-      headDigest: namespaceHeadDigest,
-      generationKey: namespaceKey,
-    })];
-    const retainedDigest = domainNamespaceRetainedAuthoritySetDigest(
-      crypto,
-      retained,
-    );
-    const bundle = prepareDomainNamespaceBundle(crypto, {
-      operationId: `task-memory-domain-bundle:${randomUUID()}`,
-      bundle: {
-        formatVersion: 2,
-        purpose: "domain_key.namespace_bundle",
+    const currentDomainKey = domainKey;
+    const publishNamespaceBundle = async (
+      targetRoomId: string,
+      targetNamespaceId: string,
+    ) => {
+      const bundlePlan = await productAuthority.withCurrentHumanAiReadableRoom({
+        subjectUserId: userId,
+        subjectHumanId: humanActorId,
+        roomId: targetRoomId,
+        namespaceId: targetNamespaceId,
+        use: (authority) => domainRepository.planNamespaceBundle({
+          authority,
+          keyClass: "ai",
+          clientDeviceId: deviceId,
+        }),
+      });
+      if (bundlePlan?.status !== "create_required") {
+        throw new Error("Task Memory Namespace bundle plan was unavailable");
+      }
+      const key = crypto.randomBytes(32);
+      const namespaceHeadDigest = domainNamespaceGenerationHeadDigest(crypto, {
         serverId: SERVER_SCOPE,
-        cryptoDomainId: cryptoDomainId(bundlePlan.domainId),
-        participantDigest: bundlePlan.participantDigest,
-        participantCount: bundlePlan.participantCount,
+        namespaceId: namespaceId(bundlePlan.namespaceId),
         keyClass: bundlePlan.keyClass,
+        accessRevision: accessRevision(bundlePlan.namespaceAccessRevision),
+        generation: namespaceGeneration(0),
+        previousHeadDigest: null,
+        generationKey: key,
+      });
+      const retained = [Object.freeze({
+        generation: namespaceGeneration(0),
+        accessRevision: accessRevision(bundlePlan.namespaceAccessRevision),
+        headDigest: namespaceHeadDigest,
+        generationKey: key,
+      })];
+      const retainedDigest = domainNamespaceRetainedAuthoritySetDigest(
+        crypto,
+        retained,
+      );
+      const bundle = prepareDomainNamespaceBundle(crypto, {
+        operationId: `task-memory-domain-bundle:${randomUUID()}`,
+        bundle: {
+          formatVersion: 2,
+          purpose: "domain_key.namespace_bundle",
+          serverId: SERVER_SCOPE,
+          cryptoDomainId: cryptoDomainId(bundlePlan.domainId),
+          participantDigest: bundlePlan.participantDigest,
+          participantCount: bundlePlan.participantCount,
+          keyClass: bundlePlan.keyClass,
+          domainKeyGeneration: bundlePlan.domainKeyGeneration,
+          domainAuthorizationRevision: authorizationRevision(
+            bundlePlan.domainAuthorizationRevision,
+          ),
+          domainHeadDigest: bundlePlan.domainHeadDigest,
+          namespaceId: namespaceId(bundlePlan.namespaceId),
+          namespaceAccessRevision: accessRevision(
+            bundlePlan.namespaceAccessRevision,
+          ),
+          namespaceCurrentGeneration: namespaceGeneration(0),
+          bundleRevision: bundlePlan.bundleRevision,
+          retainedGenerationCount: retained.length,
+          retainedAuthoritySetDigest: retainedDigest,
+          retainedGenerations: retained,
+        },
+        previousBindingDigest: bundlePlan.previousBindingDigest,
+        issuerHumanId: humanId(bundlePlan.issuerHumanId),
+        issuerDeviceId: cryptoDeviceId(bundlePlan.issuerDeviceId),
+        issuerDeviceSigningGeneration: bundlePlan.issuerDeviceSigningGeneration,
+        issuerSigningPrivateKey: signing.privateKey,
+        issuerSigningPublicKey: signing.publicKey,
+        domainKey: currentDomainKey,
+        issuedAt: NOW + 3,
+      });
+      expect((await productAuthority.withCurrentHumanAiReadableRoom({
+        subjectUserId: userId,
+        subjectHumanId: humanActorId,
+        roomId: targetRoomId,
+        namespaceId: targetNamespaceId,
+        use: (authority) => domainRepository.publishNamespaceBundle({
+          authority,
+          keyClass: "ai",
+          clientDeviceId: deviceId,
+          operationId: bundle.binding.operationId,
+          idempotencyKey: `task-memory-domain-bundle-request:${randomUUID()}`,
+          bindingBytes: bundle.bytes,
+          now: NOW + 4,
+        }),
+      }))?.status).toBe("published");
+      return Object.freeze({
+        namespaceId: targetNamespaceId,
+        accessRevision: accessRevision(bundlePlan.namespaceAccessRevision),
+        keyGeneration: namespaceGeneration(0),
+        domainId: bundlePlan.domainId,
         domainKeyGeneration: bundlePlan.domainKeyGeneration,
         domainAuthorizationRevision: authorizationRevision(
           bundlePlan.domainAuthorizationRevision,
         ),
-        domainHeadDigest: bundlePlan.domainHeadDigest,
-        namespaceId: namespaceId(bundlePlan.namespaceId),
-        namespaceAccessRevision: accessRevision(
-          bundlePlan.namespaceAccessRevision,
-        ),
-        namespaceCurrentGeneration: namespaceGeneration(0),
-        bundleRevision: bundlePlan.bundleRevision,
-        retainedGenerationCount: retained.length,
-        retainedAuthoritySetDigest: retainedDigest,
-        retainedGenerations: retained,
-      },
-      previousBindingDigest: bundlePlan.previousBindingDigest,
-      issuerHumanId: humanId(bundlePlan.issuerHumanId),
-      issuerDeviceId: cryptoDeviceId(bundlePlan.issuerDeviceId),
-      issuerDeviceSigningGeneration: bundlePlan.issuerDeviceSigningGeneration,
-      issuerSigningPrivateKey: signing.privateKey,
-      issuerSigningPublicKey: signing.publicKey,
-      domainKey,
-      issuedAt: NOW + 3,
-    });
-    expect((await productAuthority.withCurrentPrivateRoom({
-      subjectUserId: userId,
-      subjectHumanId: humanActorId,
+        domainHeadDigest: bundlePlan.domainHeadDigest.slice(),
+        headDigest: retainedDigest.slice(),
+        publicationDigest: retainedDigest.slice(),
+        publicationSetDigest: retainedDigest.slice(),
+        audienceFingerprint: retainedDigest.slice(),
+        key,
+      });
+    };
+    const originNamespace = await publishNamespaceBundle(
       roomId,
-      namespaceId: namespaceValue,
-      use: (authority) => domainRepository.publishNamespaceBundle({
-        authority,
-        keyClass: "ai",
-        clientDeviceId: deviceId,
-        operationId: bundle.binding.operationId,
-        idempotencyKey: `task-memory-domain-bundle-request:${randomUUID()}`,
-        bindingBytes: bundle.bytes,
-        now: NOW + 4,
-      }),
-    }))?.status).toBe("published");
+      namespaceValue,
+    );
+    namespaceKey = originNamespace.key;
+    const seedNamespace = await publishNamespaceBundle(
+      seedRoomId,
+      seedNamespaceValue,
+    );
+    seedNamespaceKey = seedNamespace.key;
     const domainAuthority = await domainRepository.inspectForegroundAuthority({
       namespaceIds: [namespaceValue],
       keyClass: "ai",
@@ -1020,7 +1108,9 @@ async function createBaseFixture() {
       humanActorId,
       productAgentId,
       namespaceValue,
+      seedNamespaceValue,
       roomId,
+      seedRoomId,
       deviceId,
       signingPrivateKey: signing.privateKey,
       subject,
@@ -1038,20 +1128,13 @@ async function createBaseFixture() {
         domainKey: domainKey.slice(),
       }) satisfies DomainForegroundSecretEntry,
       namespace: Object.freeze({
-        namespaceId: namespaceValue,
-        accessRevision: accessRevision(bundlePlan.namespaceAccessRevision),
-        keyGeneration: namespaceGeneration(0),
-        domainId: bundlePlan.domainId,
-        domainKeyGeneration: bundlePlan.domainKeyGeneration,
-        domainAuthorizationRevision: authorizationRevision(
-          bundlePlan.domainAuthorizationRevision,
-        ),
-        domainHeadDigest: bundlePlan.domainHeadDigest.slice(),
-        headDigest: retainedDigest.slice(),
-        publicationDigest: retainedDigest.slice(),
-        publicationSetDigest: retainedDigest.slice(),
-        audienceFingerprint: retainedDigest.slice(),
-        key: namespaceKey.slice(),
+        ...originNamespace,
+        domainHeadDigest: originNamespace.domainHeadDigest.slice(),
+        headDigest: originNamespace.headDigest.slice(),
+        publicationDigest: originNamespace.publicationDigest.slice(),
+        publicationSetDigest: originNamespace.publicationSetDigest.slice(),
+        audienceFingerprint: originNamespace.audienceFingerprint.slice(),
+        key: originNamespace.key.slice(),
       }),
       runtime,
       objectIds,
@@ -1059,6 +1142,7 @@ async function createBaseFixture() {
       requestIds,
       taskIds,
       jobIds,
+      scopeIds,
       cleanup,
     };
   } catch (error) {
@@ -1600,6 +1684,293 @@ describePostgres("sealed protected Task Memory object writer", () => {
     const base = await createBaseFixture();
     let testError: unknown;
     try {
+      const scopeId = randomUUID();
+      const scopeTaskId = randomUUID();
+      const scopeTaskObjectId = deriveTaskContentCryptoObjectIdV1({
+        kind: "definition",
+        taskId: scopeTaskId,
+        contentRevision: 1,
+      });
+      const scopeTaskFingerprint = fingerprintRequiredMemoryNamespaces([
+        base.namespaceValue,
+      ]);
+      const seedMemoryId = randomUUID();
+      base.scopeIds.add(scopeId);
+      base.taskIds.add(scopeTaskId);
+      base.objectIds.add(scopeTaskObjectId);
+      base.memoryIds.add(seedMemoryId);
+      try {
+        await base.admin.transaction(async (tx) => {
+          await tx.insert(agentScopes).values({
+            id: scopeId,
+            parentAgentId: base.productAgentId,
+            speakerUserId: base.userId,
+            name: `task-memory-scope-${scopeId}`,
+          });
+          await tx.insert(cryptoObjects).values({
+            objectId: scopeTaskObjectId,
+            payloadHash: digest(`task-scope-payload:${scopeTaskId}`),
+            payloadBytes: Uint8Array.of(1),
+          });
+          await tx.insert(tasks).values({
+            id: scopeTaskId,
+            ownerId: base.userId,
+            requestorId: base.userId,
+            agentId: base.productAgentId,
+            prompt: "",
+            scheduleKind: "now",
+            callingRoomId: base.roomId,
+            targetRoomId: base.roomId,
+            targetUserIds: [base.userId],
+            status: "pending",
+            useScope: true,
+            scopeId,
+          });
+          await tx.insert(taskDefinitionCryptoRevisions).values({
+            taskId: scopeTaskId,
+            contentNamespaceId: base.namespaceValue,
+            contentRevision: 1,
+            operationId: `task-scope-definition:${randomUUID()}`,
+            requestDigest: digest(`task-scope-request:${scopeTaskId}`),
+            authorityFingerprint: digest(`task-scope-authority:${scopeTaskId}`),
+            requesterHumanId: base.humanActorId,
+            anchorNamespaceId: base.namespaceValue,
+            cryptoObjectId: scopeTaskObjectId,
+            representation: "protected",
+            requiredNamespaceFingerprint: scopeTaskFingerprint,
+            completion: "complete",
+            disposition: "mapped",
+            cryptoCompletedAt: new Date(NOW),
+          });
+          await tx.update(tasks).set({
+            contentRepresentation: "protected",
+            contentNamespaceId: base.namespaceValue,
+            contentRevision: 1,
+            cryptoObjectId: scopeTaskObjectId,
+            cryptoAccessRevision: 0,
+            cryptoRequiredNamespaceFingerprint: scopeTaskFingerprint,
+            cryptoMappingState: "verified",
+          }).where(eq(tasks.id, scopeTaskId));
+          await tx.insert(memories).values({
+            id: seedMemoryId,
+            type: "fact",
+            content: "Unattached Scope seed Memory",
+            importance: 0.7,
+            tier: 1,
+            createdAt: new Date(NOW),
+          });
+          await tx.insert(memoryNamespaces).values({
+            memoryId: seedMemoryId,
+            namespaceId: base.seedNamespaceValue,
+          });
+        });
+      } finally {
+        scopeTaskFingerprint.fill(0);
+      }
+
+      const originReadableIds = Object.freeze([base.namespaceValue]);
+      const expandedReadableIds = Object.freeze([
+        base.namespaceValue,
+        base.seedNamespaceValue,
+      ].sort());
+      const scopeBinding = Object.freeze({
+        scopeId,
+        memoryRoomId: base.roomId,
+        originWritableNamespaceId: base.namespaceValue,
+        readableNamespaceIds: originReadableIds,
+      }) satisfies TaskScopeMemoryBinding;
+      const scopeAuthorityInput = (
+        restricted: PostgresJsBridgeConnection,
+        runner: ConversationProductCanonicalTransactionRunner,
+        scopeMemory: TaskScopeMemoryBinding | undefined,
+        namespaceIds: readonly string[],
+      ) => ({
+        runner,
+        restricted,
+        crypto: base.crypto,
+        serverScope: SERVER_SCOPE,
+        taskId: scopeTaskId,
+        requesterUserId: base.userId,
+        requesterHumanId: base.humanActorId,
+        agentId: base.productAgentId,
+        contentNamespaceId: base.namespaceValue,
+        sourceRoomId: base.roomId,
+        targetRoomId: base.roomId,
+        namespaceIds,
+        ...(scopeMemory === undefined ? {} : { scopeMemory }),
+        expectedPolicyRevision: base.policyRevision,
+      });
+      const initialScopeAuthority = await inspectInitialTaskRuntimeNamespaceAuthority(
+        scopeAuthorityInput(
+          base.restricted,
+          base.product.canonicalRunner,
+          scopeBinding,
+          originReadableIds,
+        ),
+      );
+      expect(initialScopeAuthority).toMatchObject({
+        sourceRoomId: base.roomId,
+        sourceNamespaceId: base.namespaceValue,
+        facts: [{
+          namespaceId: base.namespaceValue,
+          expectedPolicyRevision: base.policyRevision,
+        }],
+      });
+      const contentAuthority = await inspectTaskContentNamespaceAuthority({
+        runner: base.product.canonicalRunner,
+        restricted: base.restricted,
+        crypto: base.crypto,
+        serverScope: SERVER_SCOPE,
+        taskId: scopeTaskId,
+        requesterUserId: base.userId,
+        requesterHumanId: base.humanActorId,
+        agentId: base.productAgentId,
+        contentNamespaceId: base.namespaceValue,
+        sourceRoomId: base.roomId,
+        expectedPolicyRevision: base.policyRevision,
+      });
+      expect(contentAuthority?.sourceRoomId).toBe(base.roomId);
+      expect(contentAuthority?.sourceNamespaceId).toBe(base.namespaceValue);
+      expect(contentAuthority?.facts).toHaveLength(1);
+      expect(contentAuthority?.facts[0]).toEqual({
+        namespaceId: base.namespaceValue,
+        domainId: base.namespace.domainId,
+        expectedAccessRevision: base.namespace.accessRevision,
+        expectedPolicyRevision: base.policyRevision,
+        expectedDomainEpoch: base.namespace.domainKeyGeneration,
+        expectedAuthorizationRevision:
+          base.namespace.domainAuthorizationRevision,
+      });
+      expect(await inspectInitialTaskRuntimeNamespaceAuthority(
+        scopeAuthorityInput(
+          base.restricted,
+          base.product.canonicalRunner,
+          undefined,
+          originReadableIds,
+        ),
+      )).toBeNull();
+      expect(await inspectInitialTaskRuntimeNamespaceAuthority(
+        scopeAuthorityInput(
+          base.restricted,
+          base.product.canonicalRunner,
+          Object.freeze({ ...scopeBinding, scopeId: randomUUID() }),
+          originReadableIds,
+        ),
+      )).toBeNull();
+      expect(await inspectInitialTaskRuntimeNamespaceAuthority(
+        scopeAuthorityInput(
+          base.restricted,
+          base.product.canonicalRunner,
+          Object.freeze({ ...scopeBinding, memoryRoomId: base.seedRoomId }),
+          originReadableIds,
+        ),
+      )).toBeNull();
+      expect(await inspectInitialTaskRuntimeNamespaceAuthority(
+        scopeAuthorityInput(
+          base.restricted,
+          base.product.canonicalRunner,
+          Object.freeze({
+            ...scopeBinding,
+            readableNamespaceIds: expandedReadableIds,
+          }),
+          expandedReadableIds,
+        ),
+      )).toBeNull();
+
+      // This is the canonical Scope mutation lock contract: take Scope UPDATE
+      // before inserting a seed edge. The authority reader's Scope SHARE fence
+      // must hold the empty inventory stable until its restricted proof ends.
+      const scopeGate = gatedRestrictedConnection(base.restricted);
+      const observedScopeReader = observeCanonicalRunner(
+        base.product.canonicalRunner,
+      );
+      let lockedScopeAuthority: ReturnType<
+        typeof inspectInitialTaskRuntimeNamespaceAuthority
+      > | null = null;
+      let attachSeed: Promise<readonly string[]> | null = null;
+      try {
+        lockedScopeAuthority = inspectInitialTaskRuntimeNamespaceAuthority(
+          scopeAuthorityInput(
+            scopeGate.connection,
+            observedScopeReader.runner,
+            scopeBinding,
+            originReadableIds,
+          ),
+        );
+        const admission = await Promise.race([
+          scopeGate.entered.then(() => "entered" as const),
+          lockedScopeAuthority.then(() => "completed" as const),
+        ]);
+        if (admission !== "entered") {
+          throw new Error(
+            "Initial Scope authority ended before restricted admission",
+          );
+        }
+        attachSeed = base.agentProduct.canonicalRunner.transaction(
+          async (tx) => {
+            const currentScopes = await tx.select({
+              id: agentScopes.id,
+              parentAgentId: agentScopes.parentAgentId,
+              speakerUserId: agentScopes.speakerUserId,
+              lifecycleState: agentScopes.lifecycleState,
+            }).from(agentScopes).where(eq(agentScopes.id, scopeId))
+              .limit(2).for("update");
+            const currentScope = currentScopes[0];
+            if (currentScopes.length !== 1 || currentScope === undefined
+              || currentScope.id !== scopeId
+              || currentScope.parentAgentId !== base.productAgentId
+              || currentScope.speakerUserId !== base.userId
+              || currentScope.lifecycleState !== "open") {
+              throw new Error("Scope seed attach authority changed");
+            }
+            const inserted = await tx.insert(memoryScopes).values({
+              memoryId: seedMemoryId,
+              scopeId,
+              origin: "seed",
+            }).returning({ memoryId: memoryScopes.memoryId });
+            return Object.freeze(inserted.map(row => row.memoryId));
+          }, { isolationLevel: "serializable" });
+        await waitForBlockedContender(base, await observedScopeReader.pid);
+        scopeGate.release();
+        const [lockedAuthority, attachedIds] = await Promise.all([
+          lockedScopeAuthority,
+          attachSeed,
+        ]);
+        expect(lockedAuthority).toMatchObject({
+          facts: [{ namespaceId: base.namespaceValue }],
+        });
+        expect(attachedIds).toEqual([seedMemoryId]);
+      } catch (error) {
+        scopeGate.release();
+        await Promise.allSettled([
+          ...(lockedScopeAuthority === null ? [] : [lockedScopeAuthority]),
+          ...(attachSeed === null ? [] : [attachSeed]),
+        ]);
+        throw error;
+      }
+      expect(await inspectInitialTaskRuntimeNamespaceAuthority(
+        scopeAuthorityInput(
+          base.restricted,
+          base.product.canonicalRunner,
+          scopeBinding,
+          originReadableIds,
+        ),
+      )).toBeNull();
+      const expandedScopeBinding = Object.freeze({
+        ...scopeBinding,
+        readableNamespaceIds: expandedReadableIds,
+      }) satisfies TaskScopeMemoryBinding;
+      const expandedScopeAuthority =
+        await inspectInitialTaskRuntimeNamespaceAuthority(scopeAuthorityInput(
+          base.restricted,
+          base.product.canonicalRunner,
+          expandedScopeBinding,
+          expandedReadableIds,
+        ));
+      expect(expandedScopeAuthority?.facts.map(fact => fact.namespaceId)).toEqual(
+        [...expandedReadableIds],
+      );
+
       const successful = await createScenario(base);
       const successfulStatus = await successful.execute(() => NOW + 5);
       if (successfulStatus !== "created") {

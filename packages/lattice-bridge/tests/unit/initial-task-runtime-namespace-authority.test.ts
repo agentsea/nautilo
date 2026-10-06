@@ -1,7 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import type { PostgresJsBridgeConnection, PostgresJsBridgeExecutor, PostgresJsBridgeRow, PostgresJsBridgeScalar } from "@nautilo/db";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
-import { inspectInitialTaskRuntimeNamespaceAuthority, withInitialTaskRuntimeRecipientAuthority } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
+import { inspectInitialTaskRuntimeNamespaceAuthority, inspectTaskContentNamespaceAuthority, withInitialTaskRuntimeRecipientAuthority } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
 
 import { PostgresDeviceAdmissionRepository, type CurrentDeviceAdmissionAuthority } from "../../src/server/device/postgres-device-admission-repository.ts";
 
@@ -14,6 +14,8 @@ const TASK = "10000000-0000-4000-8000-000000000005";
 const ROOMS = ["20000000-0000-4000-8000-000000000001", "20000000-0000-4000-8000-000000000002"] as const;
 const NAMESPACES = ["30000000-0000-4000-8000-000000000001", "30000000-0000-4000-8000-000000000002"] as const;
 const DOMAINS = ["40000000-0000-4000-8000-000000000001", "40000000-0000-4000-8000-000000000002"] as const;
+const SCOPE = "50000000-0000-4000-8000-000000000001";
+const MEMORY_ROOM = "50000000-0000-4000-8000-000000000002";
 
 type Input = Parameters<typeof inspectInitialTaskRuntimeNamespaceAuthority>[0];
 type Rows = readonly PostgresJsBridgeRow[];
@@ -30,7 +32,7 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
     effective_human_actor_ids: [HUMAN],
   }));
   const executor: PostgresJsBridgeExecutor = {
-    query: async <Row extends PostgresJsBridgeRow>(statement: string) => {
+    query: async <Row extends PostgresJsBridgeRow>(statement: string, parameters: readonly PostgresJsBridgeScalar[] = []) => {
       expect(productLocked).toBe(true);
       expect(restrictedLocked).toBe(false);
       let stage: string;
@@ -38,7 +40,20 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
       if (statement.includes('from "tasks"')) {
         stage = "task";
         rows = [{ id: TASK, requestor_id: USER, agent_id: AGENT,
-          content_namespace_id: NAMESPACES[0], content_representation: "protected" }];
+          content_namespace_id: NAMESPACES[0], content_representation: "protected",
+          use_scope: false, scope_id: null, target_chat: "last_in_namespace",
+          target_room_id: MEMORY_ROOM }];
+      } else if (statement.includes("identity_probe")) {
+        stage = "scope-identity";
+        rows = [{ current_user: "nautilo", session_user: "nautilo",
+          current_user_id: USER, current_agent_id: AGENT }];
+      } else if (statement.includes('from "agent_scopes"')) {
+        stage = "scope";
+        rows = [{ id: SCOPE, parent_agent_id: AGENT, speaker_user_id: USER,
+          lifecycle_state: "open", revision: 1 }];
+      } else if (statement.includes('from "memory_scopes"')) {
+        stage = "scope-bag";
+        rows = [];
       } else if (statement.includes("m291_namespace_key_readable_set_target_candidates")) {
         stage = "candidates";
         rows = targetRows;
@@ -63,15 +78,21 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
         rows = ROOMS.flatMap((roomId) => productMembers.map((member) => ({ ...member, room_id: roomId })));
       } else if (statement.includes('inner join "rooms" "namespace_source_room"')) {
         stage = "readable-policy";
-        rows = NAMESPACES.map((namespace_id) => ({ namespace_id }));
+        const requested = parameters.find((value): value is readonly string[] =>
+          Array.isArray(value));
+        rows = (requested ?? NAMESPACES).map((namespace_id) => ({ namespace_id }));
       } else if (statement.includes('from "room_members"')) {
         stage = "exact-members";
         rows = [{ id: HUMAN, kind: "user", owner_id: USER, agent_id: null },
           { id: AGENT_ACTOR, kind: "agent", owner_id: USER, agent_id: AGENT }];
       } else if (statement.includes('from "rooms"')) {
-        stage = "exact-source";
-        rows = [{ id: ROOMS[0], namespace_id: NAMESPACES[0], type: "private", kind: "private",
-          parent_room_id: null, archived_at: null, human_actor_ids: [HUMAN] }];
+        const memoryRoom = parameters.includes(MEMORY_ROOM);
+        stage = memoryRoom ? "memory-room" : "exact-source";
+        rows = memoryRoom
+          ? [{ id: MEMORY_ROOM, namespace_id: NAMESPACES[1],
+            parent_room_id: null, archived_at: null }]
+          : [{ id: ROOMS[0], namespace_id: NAMESPACES[0], type: "private", kind: "private",
+            parent_room_id: null, archived_at: null, human_actor_ids: [HUMAN] }];
       } else throw new Error(`Unexpected product query: ${statement}`);
       events.push(stage);
       return adjust(stage, rows) as readonly Row[];
@@ -150,7 +171,8 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
   };
   const input = { runner, restricted, crypto: new LatticeCrypto(), serverScope: "https://nautilo.example",
     taskId: TASK, requesterUserId: USER, requesterHumanId: HUMAN, agentId: AGENT,
-    contentNamespaceId: NAMESPACES[0], sourceRoomId: ROOMS[0], namespaceIds: NAMESPACES,
+    contentNamespaceId: NAMESPACES[0], sourceRoomId: ROOMS[0], targetRoomId: MEMORY_ROOM,
+    namespaceIds: NAMESPACES,
     expectedPolicyRevision: 7 } as unknown as Input;
   return { input, events };
 }
@@ -182,6 +204,24 @@ describe("initial Task Runtime Namespace authority", () => {
     expect(events.filter((event) => event === "domain")).toHaveLength(1);
   });
 
+  test("normalizes PostgreSQL bigint Domain heads without accepting malformed revisions", async () => {
+    const { input } = fixture((stage, rows) => stage === "domain"
+      ? rows.map(row => ({ ...row, domain_key_generation: "2", authorization_revision: "3" }))
+      : rows);
+    expect((await inspectInitialTaskRuntimeNamespaceAuthority(input))?.facts)
+      .toHaveLength(2);
+
+    const malformed = fixture(substitute("domain", "authorization_revision", "3x"));
+    const error = await inspectInitialTaskRuntimeNamespaceAuthority(malformed.input)
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(TypeError);
+    expect(error).toMatchObject({
+      message: "Crypto storage column authorization_revision must be a safe integer",
+    });
+    expect(malformed.events.slice(-2))
+      .toEqual(["restricted-released", "product-released"]);
+  });
+
   test("rejects an additional Agent in the purported private pair", async () => {
     const { input, events } = fixture((stage, rows) => stage === "exact-members"
       ? [...rows, { id: TASK, kind: "agent", agent_id: TASK, owner_id: USER }] : rows);
@@ -196,10 +236,158 @@ describe("initial Task Runtime Namespace authority", () => {
     expect(await inspectInitialTaskRuntimeNamespaceAuthority(input)).not.toBeNull();
   });
 
+  test("holds and revalidates one exact fixed Scope inventory before Domain work", async () => {
+    const { input, events } = fixture((stage, rows) => stage === "task"
+      ? rows.map((row) => ({ ...row, use_scope: true, scope_id: SCOPE }))
+      : rows);
+    const result = await inspectInitialTaskRuntimeNamespaceAuthority({
+      ...input,
+      scopeMemory: {
+        scopeId: SCOPE,
+        memoryRoomId: MEMORY_ROOM,
+        originWritableNamespaceId: NAMESPACES[1],
+        readableNamespaceIds: [NAMESPACES[1]],
+      },
+    });
+
+    expect(result).not.toBeNull();
+    expect(events.filter((event) => event === "task")).toHaveLength(2);
+    expect(events.indexOf("scope")).toBeGreaterThan(
+      events.indexOf("exact-source"),
+    );
+    expect(events.indexOf("restricted")).toBeGreaterThan(
+      events.indexOf("scope-bag"),
+    );
+  });
+
+  test("requires the exact fixed binding only for a locked Scope Task", async () => {
+    const binding = {
+      scopeId: SCOPE,
+      memoryRoomId: MEMORY_ROOM,
+      originWritableNamespaceId: NAMESPACES[1],
+      readableNamespaceIds: [NAMESPACES[1]],
+    } as const;
+    const missing = fixture((stage, rows) => stage === "task"
+      ? rows.map((row) => ({ ...row, use_scope: true, scope_id: SCOPE }))
+      : rows);
+    expect(await inspectInitialTaskRuntimeNamespaceAuthority(missing.input))
+      .toBeNull();
+
+    const unexpected = fixture();
+    expect(await inspectInitialTaskRuntimeNamespaceAuthority({
+      ...unexpected.input,
+      scopeMemory: binding,
+    })).toBeNull();
+
+    const substituted = fixture((stage, rows) => stage === "task"
+      ? rows.map((row) => ({ ...row, use_scope: true, scope_id: TASK }))
+      : rows);
+    expect(await inspectInitialTaskRuntimeNamespaceAuthority({
+      ...substituted.input,
+      scopeMemory: binding,
+    })).toBeNull();
+
+    const retained = fixture((stage, rows) => stage === "task"
+      ? rows.map((row) => ({ ...row, use_scope: false, scope_id: SCOPE }))
+      : rows);
+    expect(await inspectInitialTaskRuntimeNamespaceAuthority(retained.input))
+      .not.toBeNull();
+  });
+
+  test("keeps requester-private content authority independent of Scope and routing", async () => {
+    const scoped = fixture((stage, rows) => {
+      if (stage === "task") return rows.map((row) => ({ ...row,
+        use_scope: true, scope_id: SCOPE, target_chat: "orphan",
+        target_room_id: ROOMS[1] }));
+      if (["candidates", "room-locks", "targets"].includes(stage)) {
+        return rows.slice(0, 1);
+      }
+      if (stage === "target-members") {
+        return rows.filter((row) => row["room_id"] === ROOMS[0]);
+      }
+      return rows;
+    });
+    const { targetRoomId: _targetRoomId, namespaceIds: _namespaceIds,
+      ...contentInput } = scoped.input;
+
+    expect(await inspectTaskContentNamespaceAuthority(contentInput)).toEqual({
+      sourceRoomId: ROOMS[0],
+      sourceNamespaceId: NAMESPACES[0],
+      facts: [{
+        namespaceId: NAMESPACES[0],
+        domainId: DOMAINS[0],
+        expectedAccessRevision: 9,
+        expectedPolicyRevision: 7,
+        expectedDomainEpoch: 2,
+        expectedAuthorizationRevision: 3,
+      }],
+    });
+    expect(await inspectInitialTaskRuntimeNamespaceAuthority(scoped.input))
+      .toBeNull();
+  });
+
+  test("rejects an archived exact Scope origin Room before restricted work", async () => {
+    const { input, events } = fixture((stage, rows) => stage === "task"
+      ? rows.map((row) => ({ ...row, use_scope: true, scope_id: SCOPE }))
+      : stage === "memory-room"
+        ? rows.map((row) => ({ ...row, archived_at: new Date() }))
+        : rows);
+    expect(await inspectInitialTaskRuntimeNamespaceAuthority({
+      ...input,
+      scopeMemory: {
+        scopeId: SCOPE,
+        memoryRoomId: MEMORY_ROOM,
+        originWritableNamespaceId: NAMESPACES[1],
+        readableNamespaceIds: [NAMESPACES[1]],
+      },
+    })).toBeNull();
+    expect(events).not.toContain("restricted");
+  });
+
+  test("pins the current Task target and derives the Scope origin by target mode", async () => {
+    const binding = {
+      scopeId: SCOPE,
+      memoryRoomId: MEMORY_ROOM,
+      originWritableNamespaceId: NAMESPACES[1],
+      readableNamespaceIds: [NAMESPACES[1]],
+    } as const;
+    const staleTarget = fixture((stage, rows) => stage === "task"
+      ? rows.map((row) => ({ ...row, use_scope: true, scope_id: SCOPE,
+        target_room_id: ROOMS[1] }))
+      : rows);
+    expect(await inspectInitialTaskRuntimeNamespaceAuthority({
+      ...staleTarget.input,
+      scopeMemory: binding,
+    })).toBeNull();
+
+    const substitutedOrigin = fixture((stage, rows) => stage === "task"
+      ? rows.map((row) => ({ ...row, use_scope: true, scope_id: SCOPE }))
+      : rows);
+    expect(await inspectInitialTaskRuntimeNamespaceAuthority({
+      ...substitutedOrigin.input,
+      scopeMemory: { ...binding, memoryRoomId: ROOMS[1] },
+    })).toBeNull();
+
+    const orphan = fixture((stage, rows) => stage === "task"
+      ? rows.map((row) => ({ ...row, use_scope: true, scope_id: SCOPE,
+        target_chat: "orphan" }))
+      : rows);
+    expect(await inspectInitialTaskRuntimeNamespaceAuthority({
+      ...orphan.input,
+      scopeMemory: {
+        scopeId: SCOPE,
+        memoryRoomId: ROOMS[0],
+        originWritableNamespaceId: NAMESPACES[0],
+        readableNamespaceIds: [NAMESPACES[0]],
+      },
+    })).not.toBeNull();
+  });
+
   for (const [stage, field, value] of [
     ["policy", "mode", "plaintext_only"], ["policy", "revision", 8],
     ["task", "id", AGENT], ["task", "requestor_id", HUMAN], ["task", "agent_id", HUMAN],
     ["task", "content_namespace_id", NAMESPACES[1]], ["task", "content_representation", "ordinary"],
+    ["task", "target_chat", "unknown"], ["task", "target_room_id", ROOMS[1]],
     ["subject", "subject_user_id", HUMAN],
     ["exact-source", "id", ROOMS[1]], ["exact-source", "namespace_id", NAMESPACES[1]],
     ["exact-source", "type", "shared"], ["exact-source", "kind", "group"],

@@ -13,10 +13,12 @@ import {
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import {
+  copyTaskScopeMemoryBinding,
   conversationProductTypedDb,
   executeTypedConversationProductQuery,
   withInitialTaskRuntimeRecipientAuthority,
   type InitialTaskRuntimeRecipientAuthority,
+  type TaskScopeMemoryBinding,
 } from "@nautilo/lattice-bridge/server";
 import {
   isCurrentProtectedTaskRunForGrant,
@@ -78,6 +80,7 @@ export type ProtectedTaskRuntimeRecipientCurrentAuthority = Readonly<{
   namespaceRequirements: InitialTaskRuntimeRecipientAuthority["namespaceRequirements"];
   policyRevision: number;
   sourceRoomId: string;
+  scopeMemory?: TaskScopeMemoryBinding;
 }>;
 
 export type ProtectedTaskRuntimeRecipientAuthorityPort = <Value>(
@@ -85,6 +88,8 @@ export type ProtectedTaskRuntimeRecipientAuthorityPort = <Value>(
     occurrence: ProtectedTaskOccurrence;
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     binding: ProtectedTaskRuntimeRecipientDeviceBinding;
+    targetRoomId: string;
+    scopeMemory?: TaskScopeMemoryBinding;
     use(
       current: ProtectedTaskRuntimeRecipientCurrentAuthority,
     ): Value | Promise<Value>;
@@ -145,6 +150,19 @@ function sameNamespaceRequirements(
       );
     })
   );
+}
+
+function sameTaskScopeMemoryBinding(
+  left: TaskScopeMemoryBinding,
+  right: TaskScopeMemoryBinding,
+): boolean {
+  return left.scopeId === right.scopeId
+    && left.memoryRoomId === right.memoryRoomId
+    && left.originWritableNamespaceId === right.originWritableNamespaceId
+    && left.readableNamespaceIds.length === right.readableNamespaceIds.length
+    && left.readableNamespaceIds.every(
+      (id, index) => id === right.readableNamespaceIds[index],
+    );
 }
 
 function exactAwaitingRecord(
@@ -250,11 +268,16 @@ function exactBorrowedAuthority(
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     sourceRoomId: string;
     contentNamespaceId: string;
+    scopeMemory?: TaskScopeMemoryBinding;
   }>,
 ): boolean {
   return (
     authority.sourceRoomId === input.sourceRoomId &&
     authority.sourceNamespaceId === input.contentNamespaceId &&
+    (input.scopeMemory === undefined
+      ? authority.scopeMemory === undefined
+      : authority.scopeMemory !== undefined
+        && sameTaskScopeMemoryBinding(input.scopeMemory, authority.scopeMemory)) &&
     authority.policyRevision === input.record.expectedPolicyRevision &&
     authority.device.userId === input.binding.userId &&
     authority.device.humanActorId === input.binding.humanActorId &&
@@ -413,6 +436,10 @@ export function createProtectedTaskRuntimeRecipientAuthorityPort(
     overrides.withAuthority ?? withInitialTaskRuntimeRecipientAuthority;
 
   return async (input) => {
+    const targetRoomId = input.targetRoomId;
+    const scopeMemory = input.scopeMemory === undefined
+      ? undefined
+      : copyTaskScopeMemoryBinding(input.scopeMemory);
     if (
       input.binding.userId !== input.occurrence.task.requestorId ||
       input.binding.humanActorId.length === 0 ||
@@ -451,9 +478,11 @@ export function createProtectedTaskRuntimeRecipientAuthorityPort(
       agentId: input.occurrence.task.agentId,
       contentNamespaceId: input.occurrence.task.contentNamespaceId,
       sourceRoomId: room.roomId,
+      targetRoomId,
       namespaceIds: Object.freeze(
         namespaceRequirements.map((requirement) => requirement.namespaceId),
       ),
+      ...(scopeMemory === undefined ? {} : { scopeMemory }),
       expectedPolicyRevision: input.record.expectedPolicyRevision,
       deviceId: input.binding.deviceId,
       namespaceRequirements,
@@ -471,6 +500,7 @@ export function createProtectedTaskRuntimeRecipientAuthorityPort(
             record: input.record,
             sourceRoomId: room.roomId,
             contentNamespaceId: input.occurrence.task.contentNamespaceId,
+            ...(scopeMemory === undefined ? {} : { scopeMemory }),
           })
         )
           return null;
@@ -481,6 +511,9 @@ export function createProtectedTaskRuntimeRecipientAuthorityPort(
             namespaceRequirements: authority.namespaceRequirements,
             policyRevision: authority.policyRevision,
             sourceRoomId: authority.sourceRoomId,
+            ...(authority.scopeMemory === undefined
+              ? {}
+              : { scopeMemory: authority.scopeMemory }),
           }),
         );
       },

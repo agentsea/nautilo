@@ -69,6 +69,39 @@ export interface TaskScopeMemoryNamespaceInventory {
   readonly readableNamespaceIds: readonly string[];
 }
 
+export interface TaskScopeMemoryBinding {
+  readonly scopeId: string;
+  readonly memoryRoomId: string;
+  readonly originWritableNamespaceId: string;
+  readonly readableNamespaceIds: readonly string[];
+}
+
+/** Copy one exact fixed Scope inventory before it crosses an async boundary. */
+export function copyTaskScopeMemoryBinding(
+  value: TaskScopeMemoryBinding,
+): TaskScopeMemoryBinding {
+  const readable = value.readableNamespaceIds;
+  if (Object.keys(value).sort().join(",")
+      !== "memoryRoomId,originWritableNamespaceId,readableNamespaceIds,scopeId"
+    || !UUID.test(value.scopeId)
+    || !UUID.test(value.memoryRoomId)
+    || !UUID.test(value.originWritableNamespaceId)
+    || !Array.isArray(readable as unknown)
+    || readable.length === 0
+    || readable.some((namespaceId, index) =>
+      !UUID.test(namespaceId)
+      || index > 0 && readable[index - 1]! >= namespaceId)
+    || !readable.includes(value.originWritableNamespaceId)) {
+    throw new TypeError("Task Scope Memory binding is invalid");
+  }
+  return Object.freeze({
+    scopeId: value.scopeId,
+    memoryRoomId: value.memoryRoomId,
+    originWritableNamespaceId: value.originWritableNamespaceId,
+    readableNamespaceIds: Object.freeze([...readable]),
+  });
+}
+
 type TaskScopeMemoryNamespaceInventoryInput = Readonly<{
   transaction: ConversationProductPostgresTransaction;
   coordinates: TaskScopeCoordinates;
@@ -311,8 +344,7 @@ async function queryTaskScopeMemoryMetadata(
       edge.scopeId === coordinates.scopeId);
     if (currentEdges.length !== 1 || currentEdges[0]!.origin !== row.origin
       || row.origin === "scope"
-        && row.scope_origin_namespace_id
-          !== coordinates.originWritableNamespaceId) return null;
+        && row.scope_origin_namespace_id === null) return null;
 
     const ordinaryNamespaceIds = canonicalIds(
       ordinaryByMemory.get(row.id) ?? [],
@@ -436,16 +468,21 @@ async function queryTaskScopeMemoryNamespaceInventory(
   }, locked);
   if (metadata === null) return null;
 
-  // Scope-authored Memories already use the exact Scope origin. Only seed
-  // ordinary edges contribute additional read candidates; their complete
-  // required audience remains in metadata for the later locked comparison.
+  // A Scope can be reused across Tasks whose current writable origins differ.
+  // Each Scope-authored Memory retains its own durable origin as a read
+  // candidate. Seed Memories remain selected only through ordinary edges;
+  // their complete required audience stays in metadata for locked comparison.
   const candidates = new Set<string>([
     input.coordinates.originWritableNamespaceId,
   ]);
   for (const memory of metadata) {
-    if (memory.origin !== "seed") continue;
-    for (const namespaceId of memory.ordinaryNamespaceIds) {
-      candidates.add(namespaceId);
+    if (memory.origin === "scope") {
+      if (memory.scopeOriginNamespaceId === null) return null;
+      candidates.add(memory.scopeOriginNamespaceId);
+    } else {
+      for (const namespaceId of memory.ordinaryNamespaceIds) {
+        candidates.add(namespaceId);
+      }
     }
   }
   const candidateIds = [...candidates].sort();

@@ -7,8 +7,10 @@ import {
 } from "@nautilo/db";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import {
+  copyTaskScopeMemoryBinding,
   inspectInitialTaskRuntimeNamespaceAuthority,
   type InitialTaskRuntimeNamespaceAuthority,
+  type TaskScopeMemoryBinding,
 } from "@nautilo/lattice-bridge/server";
 import type {
   ProtectedTaskOccurrence,
@@ -27,6 +29,7 @@ type ResolverInput = Readonly<{
   occurrence: ProtectedTaskOccurrence;
   predispatch: ProtectedTaskPredispatchPlan;
   namespaceIds: readonly string[];
+  scopeMemory?: TaskScopeMemoryBinding;
 }>;
 
 type ProductContext = Awaited<ReturnType<
@@ -115,7 +118,11 @@ export function createProtectedTaskRuntimeNamespaceAuthorityResolver(
 
   return async (input) => {
     const { occurrence, predispatch } = input;
+    const targetRoomId = predispatch.target.roomId;
     const namespaceIds = Object.freeze([...input.namespaceIds]);
+    const scopeMemory = input.scopeMemory === undefined
+      ? undefined
+      : copyTaskScopeMemoryBinding(input.scopeMemory);
     if (!sameOccurrence(occurrence, predispatch.occurrence)
       || namespaceIds.length < 1
       || !namespaceIds.includes(occurrence.task.contentNamespaceId)
@@ -156,7 +163,9 @@ export function createProtectedTaskRuntimeNamespaceAuthorityResolver(
       agentId: occurrence.task.agentId,
       contentNamespaceId: occurrence.task.contentNamespaceId,
       sourceRoomId: sourceRoom.roomId,
+      targetRoomId,
       namespaceIds,
+      ...(scopeMemory === undefined ? {} : { scopeMemory }),
       expectedPolicyRevision: policy.revision,
     });
     if (authority === null

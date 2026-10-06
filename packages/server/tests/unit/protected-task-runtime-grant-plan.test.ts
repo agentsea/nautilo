@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { expect, test } from "bun:test";
 
 import {
@@ -37,6 +39,7 @@ const DEVICE = "80000000-0000-4000-8000-000000000008";
 const CONTENT = "90000000-0000-4000-8000-000000000009";
 const READABLE = "a0000000-0000-4000-8000-00000000000a";
 const OUTPUT = "a1000000-0000-4000-8000-00000000000a";
+const SEED = "a2000000-0000-4000-8000-00000000000a";
 const DOMAIN_A = "b0000000-0000-4000-8000-00000000000b";
 const DOMAIN_B = "c0000000-0000-4000-8000-00000000000c";
 const SOURCE_ROOM = "d0000000-0000-4000-8000-00000000000d";
@@ -332,6 +335,27 @@ test("commits stable Task identity while excluding current authority epochs", as
   const changedSource = await builder(facts(), CONTENT, ROOM)(value);
   expect(changedSource.initialRecord.idempotencyKey)
     .not.toBe(initial.initialRecord.idempotencyKey);
+
+  const expectedNamespaceHash = createHash("sha256").update(JSON.stringify({
+    taskId: value.task.id,
+    taskRunId: value.run.id,
+    scheduleKind: value.task.scheduleKind,
+    sourceRoomId: SOURCE_ROOM,
+    targetRoomId: ROOM,
+    outputRoomId: ROOM,
+    outputNamespaceId: CONTENT,
+    targetUserIds: [REQUESTOR],
+    memoryMode: "namespace",
+    scopeId: null,
+    inputObjectId: value.task.cryptoObjectId,
+    contentRevision: value.task.contentRevision,
+    fingerprint: Buffer.from(value.task.cryptoRequiredNamespaceFingerprint)
+      .toString("base64url"),
+    policyRevision: initial.initialRecord.expectedPolicyRevision,
+    namespaces: initial.initialRecord.authoritySet.namespaceRequirements,
+    domains: initial.initialRecord.authoritySet.domainRequirements,
+  })).digest();
+  expect(initial.initialRecord.workIdentityHash).toEqual(expectedNamespaceHash);
 });
 
 test("binds distinct per-occurrence executors and transient openers", async () => {
@@ -487,14 +511,28 @@ test("includes the exact Scope origin and distinct output Namespaces", async () 
     originWritableNamespaceId: READABLE,
     toolPolicy: {},
   };
+  const scopeMemory = Object.freeze({
+    scopeId: scopeEnvelope.scopeId,
+    memoryRoomId: scopeEnvelope.roomId,
+    originWritableNamespaceId: READABLE,
+    readableNamespaceIds: Object.freeze([READABLE, SEED].sort()),
+  });
+  const seedFact = {
+    namespaceId: SEED,
+    domainId: "c2000000-0000-4000-8000-00000000000c",
+    expectedAccessRevision: 5,
+    expectedPolicyRevision: 7,
+    expectedDomainEpoch: 4,
+    expectedAuthorizationRevision: 12,
+  };
   const scoped: ProtectedTaskPredispatchPlan = {
     ...predispatch(value),
     memory: {
       mode: "scope",
       authorityStatus: "exact",
       provenance: "scope_existing",
-      // Dynamic retained Scope reads acquire their own operation-time
-      // authority; the initial grant binds only this proven origin + content.
+      // The initial grant fixes current Scope origin, seed, and Task content
+      // inventory. Later Scope growth acquires separate operation-time authority.
       envelope: scopeEnvelope,
     },
   };
@@ -504,18 +542,27 @@ test("includes the exact Scope origin and distinct output Namespaces", async () 
     now: () => NOW,
     predispatch: async () => scoped,
     ...outputPorts(OUTPUT),
-    resolveNamespaceAuthority: async ({ namespaceIds }) => {
-      expect(namespaceIds).toEqual([CONTENT, READABLE, OUTPUT].sort());
+    resolveScopeMemoryInventory: async ({ occurrence: current, predispatch: plan }) => {
+      expect(current).toBe(value);
+      expect(plan).toBe(scoped);
+      return scopeMemory;
+    },
+    resolveNamespaceAuthority: async ({ namespaceIds, scopeMemory: binding }) => {
+      expect(namespaceIds).toEqual([CONTENT, READABLE, OUTPUT, SEED].sort());
+      expect(binding).toEqual(scopeMemory);
       return {
         sourceRoomId: SOURCE_ROOM,
         sourceNamespaceId: CONTENT,
-        facts: [...facts(), outputFact],
+        facts: [...facts(), outputFact, seedFact],
       };
     },
-    prepareExecution: async () => ({
-      executor: async function* () { yield* []; },
-      openTransientInput: async () => ({}),
-    }),
+    prepareExecution: async ({ scopeMemory: binding }) => {
+      expect(binding).toEqual(scopeMemory);
+      return {
+        executor: async function* () { yield* []; },
+        openTransientInput: async () => ({}),
+      };
+    },
     startProtectedTaskRun: async () => ({ status: "started" }),
     publishResult: async () => {},
   })(value);
@@ -524,11 +571,105 @@ test("includes the exact Scope origin and distinct output Namespaces", async () 
     expect.objectContaining({ namespaceId: CONTENT, operations: ["decrypt", "encrypt"] }),
     expect.objectContaining({ namespaceId: READABLE, operations: ["decrypt", "encrypt"] }),
     expect.objectContaining({ namespaceId: OUTPUT, operations: ["decrypt", "encrypt"] }),
+    expect.objectContaining({ namespaceId: SEED, operations: ["decrypt"] }),
   ]);
   expect(plan.stableIdentity).toMatchObject({
     memoryMode: "scope",
     scopeId: scopeEnvelope.scopeId,
   });
+  expect(plan.scopeMemory).toEqual(scopeMemory);
+
+  const reduced = await createProtectedTaskRuntimeGrantPlanBuilder({
+    crypto: new LatticeCrypto(),
+    recipientTtlMs: 60_000,
+    now: () => NOW,
+    predispatch: async () => scoped,
+    ...outputPorts(OUTPUT),
+    resolveScopeMemoryInventory: async () => ({
+      ...scopeMemory,
+      readableNamespaceIds: [READABLE],
+    }),
+    resolveNamespaceAuthority: async () => ({
+      sourceRoomId: SOURCE_ROOM,
+      sourceNamespaceId: CONTENT,
+      facts: [...facts(), outputFact],
+    }),
+    prepareExecution: async () => ({
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+    }),
+    startProtectedTaskRun: async () => ({ status: "started" }),
+    publishResult: async () => {},
+  })(value);
+  expect(reduced.initialRecord.idempotencyKey)
+    .toBe(plan.initialRecord.idempotencyKey);
+  expect(reduced.initialRecord.workIdentityHash)
+    .not.toEqual(plan.initialRecord.workIdentityHash);
+});
+
+test("requires and pins an exact Scope inventory", async () => {
+  const value = occurrence();
+  const scopeEnvelope: ScopeMemoryEnvelopeWithOrigin = {
+    memoryMode: "scope",
+    ownerId: REQUESTOR,
+    actorId: HUMAN,
+    agentId: AGENT,
+    roomId: ROOM,
+    scopeId: "e0000000-0000-4000-8000-00000000000e",
+    originWritableNamespaceId: READABLE,
+    toolPolicy: {},
+  };
+  const scoped: ProtectedTaskPredispatchPlan = {
+    ...predispatch(value),
+    memory: {
+      mode: "scope",
+      authorityStatus: "exact",
+      provenance: "scope_existing",
+      envelope: scopeEnvelope,
+    },
+  };
+  const base = {
+    crypto: new LatticeCrypto(),
+    recipientTtlMs: 60_000,
+    now: () => NOW,
+    predispatch: async () => scoped,
+    ...outputPorts(),
+    resolveNamespaceAuthority: async () => ({
+      sourceRoomId: SOURCE_ROOM,
+      sourceNamespaceId: CONTENT,
+      facts: facts(),
+    }),
+    prepareExecution: async () => ({
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+    }),
+    startProtectedTaskRun: async () => ({ status: "started" as const }),
+    publishResult: async () => {},
+  };
+  await Promise.resolve(
+    expect(createProtectedTaskRuntimeGrantPlanBuilder(base)(value))
+      .rejects.toThrow("inventory resolver is unavailable"),
+  );
+
+  let namespaceAuthorityUses = 0;
+  await Promise.resolve(expect(createProtectedTaskRuntimeGrantPlanBuilder({
+    ...base,
+    resolveScopeMemoryInventory: async () => ({
+      scopeId: scopeEnvelope.scopeId,
+      memoryRoomId: SOURCE_ROOM,
+      originWritableNamespaceId: READABLE,
+      readableNamespaceIds: [READABLE],
+    }),
+    resolveNamespaceAuthority: async () => {
+      namespaceAuthorityUses += 1;
+      return {
+        sourceRoomId: SOURCE_ROOM,
+        sourceNamespaceId: CONTENT,
+        facts: facts(),
+      };
+    },
+  })(value)).rejects.toThrow("inventory is not exact"));
+  expect(namespaceAuthorityUses).toBe(0);
 });
 
 test("grants decrypt and encrypt only to the exact distinct output Namespace", async () => {

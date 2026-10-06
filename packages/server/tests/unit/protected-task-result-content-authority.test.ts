@@ -160,9 +160,11 @@ test("resolves current result repository authority after TaskRun terminalization
     agentId: AGENT,
     contentNamespaceId: CONTENT,
     sourceRoomId: ROOM,
-    namespaceIds: [CONTENT],
     expectedPolicyRevision: 11,
   });
+  expect(inspected).not.toHaveProperty("targetRoomId");
+  expect(inspected).not.toHaveProperty("scopeMemory");
+  expect(inspected).not.toHaveProperty("namespaceIds");
 });
 
 test("does not require a live execution grant or running TaskRun", async () => {

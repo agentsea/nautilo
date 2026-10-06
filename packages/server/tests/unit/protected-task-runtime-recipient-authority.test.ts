@@ -7,7 +7,10 @@ import type {
 } from "@nautilo/db";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
-import type { InitialTaskRuntimeRecipientAuthority } from "@nautilo/lattice-bridge/server";
+import type {
+  InitialTaskRuntimeRecipientAuthority,
+  TaskScopeMemoryBinding,
+} from "@nautilo/lattice-bridge/server";
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
   ProtectedTaskOccurrence,
@@ -31,6 +34,8 @@ const READABLE = "a0000000-0000-4000-8000-00000000000a";
 const DOMAIN_A = "b0000000-0000-4000-8000-00000000000b";
 const DOMAIN_B = "c0000000-0000-4000-8000-00000000000c";
 const SOURCE_ROOM = "d0000000-0000-4000-8000-00000000000d";
+const SCOPE = "e0000000-0000-4000-8000-00000000000e";
+const MEMORY_ROOM = "f0000000-0000-4000-8000-00000000000f";
 
 function bytes(fill: number): Uint8Array {
   return new Uint8Array(32).fill(fill);
@@ -250,10 +255,11 @@ test("lends exact awaiting recipient authority to the Runtime callback", async (
     }),
   );
 
-  const result = await port({
+  const request: Parameters<typeof port>[0] = {
     occurrence: value,
     record: durable,
     binding,
+    targetRoomId: MEMORY_ROOM,
     use: (current) => {
       calls += 1;
       expect(current).toMatchObject({
@@ -266,7 +272,10 @@ test("lends exact awaiting recipient authority to the Runtime callback", async (
       );
       return "bound";
     },
-  });
+  };
+  const pending = port(request);
+  (request as { targetRoomId: string }).targetRoomId = SOURCE_ROOM;
+  const result = await pending;
 
   expect(result).toBe("bound");
   expect(calls).toBe(1);
@@ -278,10 +287,59 @@ test("lends exact awaiting recipient authority to the Runtime callback", async (
     agentId: AGENT,
     contentNamespaceId: CONTENT,
     sourceRoomId: SOURCE_ROOM,
+    targetRoomId: MEMORY_ROOM,
     namespaceIds: [CONTENT, READABLE],
     expectedPolicyRevision: 7,
     deviceId: DEVICE,
   });
+});
+
+test("passes and returns only the exact current fixed Scope binding", async () => {
+  const value = occurrence();
+  const durable = record(value);
+  const scopeMemory = Object.freeze({
+    scopeId: SCOPE,
+    memoryRoomId: MEMORY_ROOM,
+    originWritableNamespaceId: READABLE,
+    readableNamespaceIds: Object.freeze([READABLE]),
+  });
+  let inspectedScope: TaskScopeMemoryBinding | undefined;
+  const port = createProtectedTaskRuntimeRecipientAuthorityPort(
+    dependencies({
+      borrowed: Object.freeze({ ...authority(), scopeMemory }),
+      inspect: input => {
+        inspectedScope = input.scopeMemory;
+      },
+    }),
+  );
+
+  const result = await port({
+    occurrence: value,
+    record: durable,
+    binding,
+    targetRoomId: MEMORY_ROOM,
+    scopeMemory,
+    use: current => current.scopeMemory,
+  });
+  expect(result).toEqual(scopeMemory);
+  expect(inspectedScope).toEqual(scopeMemory);
+
+  const stale = createProtectedTaskRuntimeRecipientAuthorityPort(
+    dependencies({
+      borrowed: Object.freeze({
+        ...authority(),
+        scopeMemory: Object.freeze({ ...scopeMemory, scopeId: TASK }),
+      }),
+    }),
+  );
+  expect(await stale({
+    occurrence: value,
+    record: durable,
+    binding,
+    targetRoomId: MEMORY_ROOM,
+    scopeMemory,
+    use: () => "unsafe",
+  })).toBeNull();
 });
 
 test("rejects stale Human and private Room before lattice use", async () => {
@@ -310,6 +368,7 @@ test("rejects stale Human and private Room before lattice use", async () => {
           occurrence: value,
           record: record(value),
           binding,
+          targetRoomId: MEMORY_ROOM,
           use: () => "unsafe",
         }),
       ).resolves.toBeNull(),
@@ -336,6 +395,7 @@ test("validates the locked TaskRun inside lattice authority before Runtime use",
         occurrence: occurrence(),
         record: record(),
         binding,
+        targetRoomId: MEMORY_ROOM,
         use: () => {
           runtimeUses += 1;
           return "unsafe";
@@ -369,6 +429,7 @@ test("locks exact production Task and TaskRun rows before recipient construction
     occurrence: occurrence(),
     record: record(),
     binding,
+    targetRoomId: MEMORY_ROOM,
     use: () => "unused",
   });
   expect(captured).not.toBeNull();
@@ -486,6 +547,7 @@ test("rejects non-awaiting and substituted durable records before lattice use", 
           occurrence: value,
           record: changed as BackgroundAuthorizationTaskRuntimeRecordV3,
           binding,
+          targetRoomId: MEMORY_ROOM,
           use: () => "unsafe",
         }),
       ).resolves.toBeNull(),
@@ -531,6 +593,7 @@ test("rejects substituted device, policy, Namespace, or Domain authority", async
           occurrence: occurrence(),
           record: record(),
           binding,
+          targetRoomId: MEMORY_ROOM,
           use: () => {
             used = true;
             return "unsafe";

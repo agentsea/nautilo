@@ -14,7 +14,7 @@ import {
   type TaskContentCoordinateV1,
 } from "@nautilo/lattice-bridge";
 import {
-  inspectInitialTaskRuntimeNamespaceAuthority,
+  inspectTaskContentNamespaceAuthority,
 } from "@nautilo/lattice-bridge/server";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import {
@@ -86,7 +86,7 @@ export type ProtectedTaskResultContentAuthorityDependencies = Readonly<{
     userId: string,
     database: DirectDatabase,
   ): Promise<ProductContext>;
-  inspectAuthority: typeof inspectInitialTaskRuntimeNamespaceAuthority;
+  inspectAuthority: typeof inspectTaskContentNamespaceAuthority;
 }>;
 
 function sameNullableBytes(
@@ -260,7 +260,7 @@ export function createProtectedTaskResultContentAuthorityResolver(
   const createProductContext = overrides.createProductContext
     ?? createHumanProductTransactionContext;
   const inspectAuthority = overrides.inspectAuthority
-    ?? inspectInitialTaskRuntimeNamespaceAuthority;
+    ?? inspectTaskContentNamespaceAuthority;
 
   if (coordinate.kind !== "run_result"
     || coordinate.contentRevision < 1) {
@@ -298,7 +298,6 @@ export function createProtectedTaskResultContentAuthorityResolver(
       agentId: task.agentId,
       contentNamespaceId: task.contentNamespaceId,
       sourceRoomId: room.roomId,
-      namespaceIds: Object.freeze([task.contentNamespaceId]),
       expectedPolicyRevision: policy.revision,
     });
     if (inspected === null

@@ -29,6 +29,10 @@ import {
 import type {
   CurrentTaskRuntimeAuthority,
 } from "@nautilo/lattice-bridge/server";
+import {
+  copyTaskScopeMemoryBinding,
+  type TaskScopeMemoryBinding,
+} from "@nautilo/lattice-bridge/server";
 
 import type { JobExecutor } from "../../job";
 import type {
@@ -86,12 +90,15 @@ export type TaskRuntimeRecipientCurrentAuthority = Readonly<{
   namespaceRequirements: CurrentTaskRuntimeAuthority["namespaceRequirements"];
   policyRevision: number;
   sourceRoomId: string;
+  scopeMemory?: TaskScopeMemoryBinding;
 }>;
 
 export type TaskRuntimeRecipientAuthorityPort = <Value>(input: Readonly<{
   occurrence: ProtectedTaskOccurrence;
   record: BackgroundAuthorizationTaskRuntimeRecordV3;
   binding: TaskRuntimeRecipientDeviceBinding;
+  targetRoomId: string;
+  scopeMemory?: TaskScopeMemoryBinding;
   use(
     current: TaskRuntimeRecipientCurrentAuthority,
   ): Value | Promise<Value>;
@@ -123,6 +130,7 @@ export type TaskRuntimeGrantClaimPlan = Readonly<{
   reference: ProtectedTaskJobReferenceV1;
   scheduling: ProtectedTaskJobSchedulingFacts;
   executor: JobExecutor;
+  scopeMemory?: TaskScopeMemoryBinding;
   modelAttribution?: "external";
   startProtectedTaskRun(
     input: StartProtectedTaskRunInput,
@@ -273,6 +281,7 @@ function recipientAuthorityIsCurrent(input: Readonly<{
   occurrence: ProtectedTaskOccurrence;
   record: BackgroundAuthorizationTaskRuntimeRecordV3;
   binding: TaskRuntimeRecipientDeviceBinding;
+  scopeMemory?: TaskScopeMemoryBinding;
   authority: TaskRuntimeRecipientCurrentAuthority;
 }>): boolean {
   const { binding, authority, record } = input;
@@ -280,6 +289,10 @@ function recipientAuthorityIsCurrent(input: Readonly<{
   const durableNamespaces = record.authoritySet.namespaceRequirements;
   const durableDomains = record.authoritySet.domainRequirements;
   return binding.userId === input.occurrence.task.requestorId
+    && (input.scopeMemory === undefined
+      ? authority.scopeMemory === undefined
+      : authority.scopeMemory !== undefined
+        && sameTaskScopeMemoryBinding(input.scopeMemory, authority.scopeMemory))
     && authority.device.userId === binding.userId
     && authority.device.humanActorId === binding.humanActorId
     && authority.device.deviceId === binding.deviceId
@@ -306,6 +319,19 @@ function recipientAuthorityIsCurrent(input: Readonly<{
         && current.authorizationRevision
           === durable.expectedAuthorizationRevision;
     });
+}
+
+function sameTaskScopeMemoryBinding(
+  left: TaskScopeMemoryBinding,
+  right: TaskScopeMemoryBinding,
+): boolean {
+  return left.scopeId === right.scopeId
+    && left.memoryRoomId === right.memoryRoomId
+    && left.originWritableNamespaceId === right.originWritableNamespaceId
+    && left.readableNamespaceIds.length === right.readableNamespaceIds.length
+    && left.readableNamespaceIds.every(
+      (namespaceId, index) => namespaceId === right.readableNamespaceIds[index],
+    );
 }
 
 function exactOccurrenceRecord(
@@ -410,9 +436,44 @@ function stableIdentityMatchesOccurrence(
       === taskRuntimeStableIdempotencyKey(identity);
 }
 
+function exactScopeNamespaceRequirements(
+  plan: TaskRuntimeGrantClaimPlan,
+  scopeMemory: TaskScopeMemoryBinding,
+): boolean {
+  const contentNamespaceId = plan.stableIdentity.contentNamespaceId;
+  const outputNamespaceId = plan.stableIdentity.outputNamespaceId;
+  const expectedIds = [...new Set([
+    ...scopeMemory.readableNamespaceIds,
+    contentNamespaceId,
+    ...(outputNamespaceId === null ? [] : [outputNamespaceId]),
+  ])].sort();
+  const encryptable = new Set([
+    scopeMemory.originWritableNamespaceId,
+    contentNamespaceId,
+    ...(outputNamespaceId === null ? [] : [outputNamespaceId]),
+  ]);
+  const requirements = plan.initialRecord.authoritySet.namespaceRequirements;
+  return requirements.length === expectedIds.length
+    && requirements.every((requirement, index) => {
+      const namespaceId = expectedIds[index];
+      if (namespaceId === undefined) return false;
+      const expectedOperations = encryptable.has(namespaceId)
+        ? (["decrypt", "encrypt"] as const)
+        : (["decrypt"] as const);
+      return requirement.ordinal === index
+        && requirement.namespaceId === namespaceId
+        && requirement.operations.length === expectedOperations.length
+        && requirement.operations.every(
+          (operation, operationIndex) =>
+            operation === expectedOperations[operationIndex],
+        );
+    });
+}
+
 function assertPlan(
   occurrence: ProtectedTaskOccurrence,
   plan: TaskRuntimeGrantClaimPlan,
+  scopeMemory: TaskScopeMemoryBinding | undefined,
 ): TaskRuntimeResultBinding {
   const initial = plan.initialRecord;
   const resultObjectId = deriveTaskContentCryptoObjectIdV1({
@@ -436,6 +497,11 @@ function assertPlan(
     !isTaskRuntimeRecord(initial)
     || !exactOccurrenceRecord(occurrence, initial)
     || !stableIdentityMatchesOccurrence(occurrence, plan)
+    || (plan.stableIdentity.memoryMode === "scope"
+      ? scopeMemory === undefined
+        || scopeMemory.scopeId !== plan.stableIdentity.scopeId
+        || !exactScopeNamespaceRequirements(plan, scopeMemory)
+      : scopeMemory !== undefined)
     || initial.snapshot.state !== "awaiting_recipient"
     || initial.snapshot.recipientGeneration !== 0
     || initial.snapshot.recipient !== null
@@ -1063,7 +1129,11 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       return null;
     }
     const plan = await this.dependencies.plan(input.occurrence);
-    assertPlan(input.occurrence, plan);
+    const scopeMemory = plan.scopeMemory === undefined
+      ? undefined
+      : copyTaskScopeMemoryBinding(plan.scopeMemory);
+    const targetRoomId = plan.stableIdentity.targetRoomId;
+    assertPlan(input.occurrence, plan, scopeMemory);
     const durable = await this.dependencies.repository.get(
       plan.initialRecord.snapshot.requestId,
     );
@@ -1089,6 +1159,8 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       occurrence: input.occurrence,
       record: durable,
       binding: input.binding,
+      targetRoomId,
+      ...(scopeMemory === undefined ? {} : { scopeMemory }),
       use: async (authority) => {
         if (used) throw new TypeError("Task Runtime recipient binder is one-use");
         used = true;
@@ -1096,6 +1168,7 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
           occurrence: input.occurrence,
           record: durable,
           binding: input.binding,
+          ...(scopeMemory === undefined ? {} : { scopeMemory }),
           authority,
         })) return null;
         const now = this.#now();
@@ -1195,7 +1268,10 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
     occurrence: ProtectedTaskOccurrence,
   ): Promise<ClaimProtectedTaskOccurrenceResult> {
     const plan = await this.dependencies.plan(occurrence);
-    const result = assertPlan(occurrence, plan);
+    const scopeMemory = plan.scopeMemory === undefined
+      ? undefined
+      : copyTaskScopeMemoryBinding(plan.scopeMemory);
+    const result = assertPlan(occurrence, plan, scopeMemory);
     const existing = await this.dependencies.repository.get(
       plan.initialRecord.snapshot.requestId,
     );

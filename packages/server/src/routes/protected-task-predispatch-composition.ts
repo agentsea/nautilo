@@ -27,6 +27,7 @@ import {
 import {
   assertCanInvokeAgent,
   assertCanUseServerProviderCredentials,
+  findAgentOwnerPrivateRoom,
   type PolicyResolver,
 } from "@nautilo/trust";
 
@@ -59,6 +60,7 @@ export type ProductionProtectedTaskPredispatchDependencies = Readonly<{
   validateMemoizedNamespaceTarget?: ValidateMemoizedNamespaceTarget;
   resolveTargetRoom?: ResolveTarget;
   resolveTaskMemoryEnvelope?: ResolveMemory;
+  findAgentOwnerPrivateRoom?: typeof findAgentOwnerPrivateRoom;
   assertCanInvokeAgent?: typeof assertCanInvokeAgent;
   assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
 }>;
@@ -217,6 +219,8 @@ export function createProductionProtectedTaskPredispatch(
     ?? validateMemoizedNamespaceTarget;
   const memoryResolver = dependencies.resolveTaskMemoryEnvelope
     ?? resolveTaskMemoryEnvelope;
+  const resolveRequesterPrivateRoom = dependencies.findAgentOwnerPrivateRoom
+    ?? findAgentOwnerPrivateRoom;
   const assertInvocation = dependencies.assertCanInvokeAgent
     ?? assertCanInvokeAgent;
   const assertFunding = dependencies.assertCanUseServerProviderCredentials
@@ -325,14 +329,62 @@ export function createProductionProtectedTaskPredispatch(
           if (!targetResolved) {
             throw new TypeError("Protected Task target is unresolved");
           }
-          return memoryResolver({
+          let sessionRoomId = input.sessionRoomId;
+          let scopeOrigin: Readonly<{
+            roomId: string;
+            namespaceId: string;
+          }> | null = null;
+          if (currentTask.useScope
+            && currentTask.targetChat === "orphan"
+            && sessionRoomId.length === 0) {
+            scopeOrigin = await resolveRequesterPrivateRoom(
+              currentTask.requestorId,
+              currentTask.agentId,
+            );
+            if (scopeOrigin === null
+              || scopeOrigin.namespaceId !== currentTask.contentNamespaceId) {
+              throw new TypeError(
+                "Protected Task Scope Memory origin is unavailable",
+              );
+            }
+            sessionRoomId = scopeOrigin.roomId;
+          }
+          const resolved = await memoryResolver({
             task: currentTask,
             db: dependencies.db,
             resolver: dependencies.resolver,
             laneKey: input.laneKey,
-            sessionRoomId: input.sessionRoomId,
+            sessionRoomId,
             targetUserIds: input.targetUserIds,
           });
+          if (scopeOrigin !== null
+            && (resolved.envelope.memoryMode !== "scope"
+              || resolved.envelope.roomId !== scopeOrigin.roomId
+              || !("originWritableNamespaceId" in resolved.envelope)
+              || resolved.envelope.originWritableNamespaceId
+                !== scopeOrigin.namespaceId)) {
+            throw new TypeError(
+              "Protected Task Scope Memory origin changed",
+            );
+          }
+          const [refreshedTask, refreshedRun] = await Promise.all([
+            readTask(dependencies.db, occurrence.task.id),
+            readRun(dependencies.db, occurrence.task.id, occurrence.run.id),
+          ]);
+          if (refreshedTask === undefined || refreshedRun === undefined
+            || !isExactAwaitingOccurrence(
+              occurrence,
+              refreshedTask,
+              refreshedRun,
+            )
+            || !sameTargetAndMemoryInputs(
+              currentTask,
+              refreshedTask,
+              currentTask.targetRoomId!,
+            )) {
+            throw new TypeError("Protected Task Memory resolution drifted");
+          }
+          return resolved;
         },
       },
     });

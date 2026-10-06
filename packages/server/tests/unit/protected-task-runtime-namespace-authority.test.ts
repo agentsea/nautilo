@@ -24,6 +24,8 @@ const READABLE = "70000000-0000-4000-8000-000000000007";
 const SOURCE_ROOM = "80000000-0000-4000-8000-000000000008";
 const DOMAIN_A = "90000000-0000-4000-8000-000000000009";
 const DOMAIN_B = "a0000000-0000-4000-8000-00000000000a";
+const SCOPE = "b0000000-0000-4000-8000-00000000000b";
+const MEMORY_ROOM = "c0000000-0000-4000-8000-00000000000c";
 
 function occurrence(
   representation: "dual" | "protected" = "protected",
@@ -60,7 +62,7 @@ function predispatch(
   return {
     occurrence: value,
     scheduling: {} as ProtectedTaskPredispatchPlan["scheduling"],
-    target: {} as ProtectedTaskPredispatchPlan["target"],
+    target: { roomId: MEMORY_ROOM, targetUserIds: [REQUESTER] },
     memory: {} as ProtectedTaskPredispatchPlan["memory"],
   };
 }
@@ -132,11 +134,14 @@ test("passes exact discovered Task authority into the locked bridge owner", asyn
     }),
   );
 
-  await Promise.resolve(expect(resolver({
+  const plan = predispatch(value);
+  const resolving = resolver({
     occurrence: value,
-    predispatch: predispatch(value),
+    predispatch: plan,
     namespaceIds: [CONTENT, READABLE],
-  })).resolves.toBe(current));
+  });
+  (plan.target as { roomId: string }).roomId = SOURCE_ROOM;
+  await Promise.resolve(expect(resolving).resolves.toBe(current));
   expect(inspected).toMatchObject({
     serverScope: "https://server.example.test",
     taskId: TASK,
@@ -145,9 +150,49 @@ test("passes exact discovered Task authority into the locked bridge owner", asyn
     agentId: AGENT,
     contentNamespaceId: CONTENT,
     sourceRoomId: SOURCE_ROOM,
+    targetRoomId: MEMORY_ROOM,
     namespaceIds: [CONTENT, READABLE],
     expectedPolicyRevision: 7,
   });
+});
+
+test("copies and passes a fixed Scope inventory into the locked bridge owner", async () => {
+  const value = occurrence();
+  let inspected: Parameters<
+    ProtectedTaskRuntimeNamespaceAuthorityResolverDependencies["inspectAuthority"]
+  >[0] | null = null;
+  const current = authority();
+  const resolver = createProtectedTaskRuntimeNamespaceAuthorityResolver(
+    dependencies(async input => {
+      inspected = input;
+      return current;
+    }),
+  );
+  const readableNamespaceIds = [READABLE];
+  const resolving = resolver({
+    occurrence: value,
+    predispatch: predispatch(value),
+    namespaceIds: [CONTENT, READABLE],
+    scopeMemory: {
+      scopeId: SCOPE,
+      memoryRoomId: MEMORY_ROOM,
+      originWritableNamespaceId: READABLE,
+      readableNamespaceIds,
+    },
+  });
+  readableNamespaceIds[0] = CONTENT;
+
+  await Promise.resolve(expect(resolving).resolves.toBe(current));
+  const captured = inspected as Parameters<
+    ProtectedTaskRuntimeNamespaceAuthorityResolverDependencies["inspectAuthority"]
+  >[0] | null;
+  expect(captured?.scopeMemory).toEqual({
+    scopeId: SCOPE,
+    memoryRoomId: MEMORY_ROOM,
+    originWritableNamespaceId: READABLE,
+    readableNamespaceIds: [READABLE],
+  });
+  expect(Object.isFrozen(captured?.scopeMemory?.readableNamespaceIds)).toBe(true);
 });
 
 test("admits a dual Task in Shadow and parks it after transition to Full", async () => {

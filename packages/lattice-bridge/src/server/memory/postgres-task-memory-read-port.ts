@@ -760,12 +760,14 @@ export class PostgresTaskMemoryReadPort implements ProtectedTaskMemoryReadPort {
       if (required === null || ordinary === null) return null;
       let readNamespaceId: string | undefined;
       if (entry.origin === "scope") {
-        if (entry.scopeOriginNamespaceId
-            !== binding.authority.originWritableNamespaceId
-          || !required.includes(binding.authority.originWritableNamespaceId)) {
+        if (entry.scopeOriginNamespaceId === null
+          || !binding.readableNamespaceIds.includes(
+            entry.scopeOriginNamespaceId,
+          )
+          || !required.includes(entry.scopeOriginNamespaceId)) {
           continue;
         }
-        readNamespaceId = binding.authority.originWritableNamespaceId;
+        readNamespaceId = entry.scopeOriginNamespaceId;
       } else {
         readNamespaceId = ordinary.find(id =>
           binding.readableNamespaceIds.includes(id));

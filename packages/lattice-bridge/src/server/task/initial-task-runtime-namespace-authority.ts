@@ -32,6 +32,7 @@ import {
 import {
   cryptoTypedDb,
   executeTypedCryptoQuery,
+  readCryptoStorageInteger,
   verifyCryptoPostgresHandle,
 } from "../storage/postgres-lattice-storage.ts";
 
@@ -39,6 +40,11 @@ import type {
   TaskRuntimeDomainAuthorityRequirement,
   TaskRuntimeNamespaceAuthorityRequirement,
 } from "./current-task-runtime-authority.ts";
+import {
+  copyTaskScopeMemoryBinding,
+  readCurrentTaskScopeMemoryNamespaceInventory,
+  type TaskScopeMemoryBinding,
+} from "./task-scope-memory-metadata.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
@@ -67,7 +73,7 @@ function inTransaction(
   };
 }
 
-type InitialTaskRuntimeNamespaceInput = Readonly<{
+type TaskNamespaceAuthorityCommonInput = Readonly<{
   runner: ConversationProductCanonicalTransactionRunner;
   restricted: PostgresJsBridgeConnection;
   crypto: LatticeCrypto;
@@ -78,12 +84,35 @@ type InitialTaskRuntimeNamespaceInput = Readonly<{
   agentId: string;
   contentNamespaceId: string;
   sourceRoomId: string;
-  namespaceIds: readonly string[];
   expectedPolicyRevision: number;
 }>;
 
+type InitialTaskRuntimeNamespaceInput = TaskNamespaceAuthorityCommonInput &
+  Readonly<{
+  targetRoomId: string;
+  namespaceIds: readonly string[];
+  scopeMemory?: TaskScopeMemoryBinding;
+}>;
+
+export type TaskContentNamespaceAuthorityInput =
+  TaskNamespaceAuthorityCommonInput;
+
+type TaskRuntimeProductAuthorityInput =
+  | (InitialTaskRuntimeNamespaceInput & Readonly<{
+      purpose: "initial_execution";
+    }>)
+  | (TaskContentNamespaceAuthorityInput & Readonly<{
+      purpose: "content_only";
+      namespaceIds: readonly [string];
+    }>);
+
+function sameIds(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length
+    && left.every((entry, index) => entry === right[index]);
+}
+
 async function withInitialTaskRuntimeProductAuthority<Value>(
-  input: InitialTaskRuntimeNamespaceInput,
+  input: TaskRuntimeProductAuthorityInput,
   use: (
     restricted: PostgresJsBridgeConnection,
     accessRevisions: readonly number[],
@@ -94,11 +123,26 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
   ) => Promise<boolean>,
 ): Promise<Value | null> {
   // Snapshot caller-owned coordinates before the first asynchronous boundary.
-  const request = Object.freeze({ ...input,
-    namespaceIds: Object.freeze([...input.namespaceIds]),
-  });
-  if ([request.taskId, request.requesterUserId, request.requesterHumanId,
-    request.agentId, request.contentNamespaceId, request.sourceRoomId]
+  const scopeMemory = input.purpose !== "initial_execution"
+    || input.scopeMemory === undefined
+    ? undefined
+    : copyTaskScopeMemoryBinding(input.scopeMemory);
+  const request: TaskRuntimeProductAuthorityInput = input.purpose
+    === "initial_execution"
+    ? Object.freeze({ ...input,
+        namespaceIds: Object.freeze([...input.namespaceIds]),
+        ...(scopeMemory === undefined ? {} : { scopeMemory }),
+      })
+    : Object.freeze({ ...input,
+        namespaceIds: Object.freeze([input.contentNamespaceId] as const),
+      });
+  const coordinateIds = [request.taskId, request.requesterUserId,
+    request.requesterHumanId, request.agentId, request.contentNamespaceId,
+    request.sourceRoomId,
+    ...(request.purpose === "initial_execution"
+      ? [request.targetRoomId]
+      : [])];
+  if (coordinateIds
     .some((value) => !UUID.test(value))
     || !Number.isSafeInteger(request.expectedPolicyRevision)
     || request.expectedPolicyRevision < 0
@@ -121,6 +165,10 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
         agent_id: tasks.agentId,
         content_namespace_id: tasks.contentNamespaceId,
         content_representation: tasks.contentRepresentation,
+        use_scope: tasks.useScope,
+        scope_id: tasks.scopeId,
+        target_chat: tasks.targetChat,
+        target_room_id: tasks.targetRoomId,
       }).from(tasks).where(eq(tasks.id, request.taskId)).limit(2).for("update"));
     const task = taskRows[0];
     if (taskRows.length !== 1 || task === undefined
@@ -128,6 +176,23 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
       || task.requestor_id !== request.requesterUserId
       || task.agent_id !== request.agentId
       || task.content_namespace_id !== request.contentNamespaceId
+      || request.purpose === "initial_execution" && (
+        !["last_in_namespace", "new_in_namespace", "last_dm", "new_dm",
+          "orphan"].includes(task.target_chat)
+        || task.target_room_id !== request.targetRoomId
+        || (task.use_scope !== true && task.use_scope !== false)
+        || (task.use_scope
+          ? task.scope_id === null
+            || request.scopeMemory === undefined
+            || request.scopeMemory.scopeId !== task.scope_id
+            || request.scopeMemory.memoryRoomId
+              !== (task.target_chat === "orphan"
+                ? request.sourceRoomId
+                : task.target_room_id)
+            || request.scopeMemory.readableNamespaceIds.some(
+              namespaceId => !request.namespaceIds.includes(namespaceId),
+            )
+          : request.scopeMemory !== undefined))
       || (task.content_representation !== "protected"
         && task.content_representation !== "dual")) return null;
     // Recipient binding starts before a signed request exists. Hold the exact
@@ -190,6 +255,53 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
               snapshot.audienceFingerprint.fill(0);
             }
           }
+          if (request.purpose === "initial_execution"
+            && request.scopeMemory !== undefined) {
+            const memoryRoomRows = await executeTypedConversationProductQuery(
+              product,
+              conversationProductTypedDb.select({
+                id: rooms.id,
+                namespace_id: rooms.namespaceId,
+                archived_at: rooms.archivedAt,
+              }).from(rooms).where(eq(
+                rooms.id,
+                request.scopeMemory.memoryRoomId,
+              )).limit(2).for("share"),
+            );
+            const memoryRoom = memoryRoomRows[0];
+            if (memoryRoomRows.length !== 1 || memoryRoom === undefined
+              || memoryRoom.id !== request.scopeMemory.memoryRoomId
+              || memoryRoom.namespace_id
+                !== request.scopeMemory.originWritableNamespaceId
+              || memoryRoom.archived_at !== null) return null;
+
+            // Namespace/source locks precede the Scope SHARE fence. Scope attach
+            // and detach take Scope UPDATE, so this locked inventory remains
+            // fixed through the later restricted Domain work.
+            const currentScopeMemory =
+              await readCurrentTaskScopeMemoryNamespaceInventory({
+                transaction: product,
+                coordinates: {
+                  taskId: task.id,
+                  requesterUserId: task.requestor_id,
+                  agentId: task.agent_id,
+                  scopeId: request.scopeMemory.scopeId,
+                  memoryRoomId: request.scopeMemory.memoryRoomId,
+                  originWritableNamespaceId:
+                    request.scopeMemory.originWritableNamespaceId,
+                },
+                sourceRoomId: request.sourceRoomId,
+                requesterHumanId: request.requesterHumanId,
+              });
+            if (currentScopeMemory === null
+              || currentScopeMemory.scopeId !== request.scopeMemory.scopeId
+              || currentScopeMemory.originWritableNamespaceId
+                !== request.scopeMemory.originWritableNamespaceId
+              || !sameIds(
+                currentScopeMemory.readableNamespaceIds,
+                request.scopeMemory.readableNamespaceIds,
+              )) return null;
+          }
           return request.restricted.transactionOnce(async (restrictedTx) => {
             const restricted = inTransaction(restrictedTx);
             await verifyCryptoPostgresHandle(restricted);
@@ -200,14 +312,22 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
   }, { isolationLevel: "read committed" });
 }
 
-/** Detached planning facts; never a substitute for operation-time authority. */
-export async function inspectInitialTaskRuntimeNamespaceAuthority(
-  input: InitialTaskRuntimeNamespaceInput,
+async function inspectTaskRuntimeNamespaceAuthority(
+  input: TaskRuntimeProductAuthorityInput,
 ): Promise<InitialTaskRuntimeNamespaceAuthority | null> {
-  const request = Object.freeze({
-    ...input,
-    namespaceIds: Object.freeze([...input.namespaceIds]),
-  });
+  const request: TaskRuntimeProductAuthorityInput = input.purpose
+    === "initial_execution"
+    ? Object.freeze({
+        ...input,
+        namespaceIds: Object.freeze([...input.namespaceIds]),
+        ...(input.scopeMemory === undefined
+          ? {}
+          : { scopeMemory: copyTaskScopeMemoryBinding(input.scopeMemory) }),
+      })
+    : Object.freeze({
+        ...input,
+        namespaceIds: Object.freeze([input.contentNamespaceId] as const),
+      });
   return withInitialTaskRuntimeProductAuthority(
     request,
     async (restricted, accessRevisions, policyRevision) => {
@@ -248,9 +368,11 @@ export async function inspectInitialTaskRuntimeNamespaceAuthority(
           if (heads.length !== 1 || head === undefined
             || head.domain_id !== domainId
             || !(head.head_digest instanceof Uint8Array)) return null;
+          const generation = readCryptoStorageInteger(head, "domain_key_generation");
+          const authorizationRevision = readCryptoStorageInteger(head, "authorization_revision");
           for (const authority of byDomain.get(domainId)!) {
-            if (head.domain_key_generation !== authority.domainKeyGeneration
-              || head.authorization_revision !== authority.domainAuthorizationRevision
+            if (generation !== authority.domainKeyGeneration
+              || authorizationRevision !== authority.domainAuthorizationRevision
               || head.head_digest.length !== authority.domainHeadDigest.length
               || !head.head_digest.every((byte, offset) =>
                 byte === authority.domainHeadDigest[offset])) return null;
@@ -281,6 +403,27 @@ export async function inspectInitialTaskRuntimeNamespaceAuthority(
   );
 }
 
+/** Detached planning facts; never a substitute for operation-time authority. */
+export async function inspectInitialTaskRuntimeNamespaceAuthority(
+  input: InitialTaskRuntimeNamespaceInput,
+): Promise<InitialTaskRuntimeNamespaceAuthority | null> {
+  return inspectTaskRuntimeNamespaceAuthority(Object.freeze({
+    ...input,
+    purpose: "initial_execution" as const,
+  }));
+}
+
+/** Current requester-private Task content authority, independent of Memory. */
+export async function inspectTaskContentNamespaceAuthority(
+  input: TaskContentNamespaceAuthorityInput,
+): Promise<InitialTaskRuntimeNamespaceAuthority | null> {
+  return inspectTaskRuntimeNamespaceAuthority(Object.freeze({
+    ...input,
+    purpose: "content_only" as const,
+    namespaceIds: Object.freeze([input.contentNamespaceId] as const),
+  }));
+}
+
 export type InitialTaskRuntimeRecipientAuthority = Readonly<{
   sourceRoomId: string;
   sourceNamespaceId: string;
@@ -288,6 +431,7 @@ export type InitialTaskRuntimeRecipientAuthority = Readonly<{
   domains: readonly DomainForegroundAuthorityEntry[];
   namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
   policyRevision: number;
+  scopeMemory?: TaskScopeMemoryBinding;
 }>;
 
 function sameDevice(left: CurrentDeviceAdmissionAuthority, right: CurrentDeviceAdmissionAuthority): boolean {
@@ -318,7 +462,13 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: Ini
     ...entry, operations: Object.freeze([...entry.operations]),
   })));
   const domains = Object.freeze(input.domainRequirements.map((entry) => Object.freeze({ ...entry })));
-  const request = Object.freeze({ ...input, namespaceIds: Object.freeze([...input.namespaceIds]) });
+  const request = Object.freeze({
+    ...input,
+    namespaceIds: Object.freeze([...input.namespaceIds]),
+    ...(input.scopeMemory === undefined
+      ? {}
+      : { scopeMemory: copyTaskScopeMemoryBinding(input.scopeMemory) }),
+  });
   if (typeof request.validateCurrentTaskRun !== "function"
     || request.deviceId.length === 0 || namespaces.length !== request.namespaceIds.length
     || namespaces.some((entry, index) => entry.ordinal !== index
@@ -340,7 +490,10 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: Ini
     throw new TypeError("Initial Task Runtime recipient requirements are invalid");
   }
   request.signal?.throwIfAborted();
-  return withInitialTaskRuntimeProductAuthority(request, async (restricted, accessRevisions, policyRevision) => {
+  return withInitialTaskRuntimeProductAuthority(Object.freeze({
+    ...request,
+    purpose: "initial_execution" as const,
+  }), async (restricted, accessRevisions, policyRevision) => {
     if (namespaces.some((entry, index) => entry.expectedAccessRevision !== accessRevisions[index])) return null;
     const subject = { userId: request.requesterUserId, humanActorId: request.requesterHumanId, deviceId: request.deviceId };
     const admission = new PostgresDeviceAdmissionRepository(await verifyCryptoPostgresHandle(restricted), request.crypto);
@@ -393,7 +546,10 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: Ini
       request.signal?.throwIfAborted();
       const value = await request.use(Object.freeze({ sourceRoomId: request.sourceRoomId,
         sourceNamespaceId: request.contentNamespaceId, device: Object.freeze(lockedDevice),
-        domains: inspected.domains, namespaceRequirements: namespaces, policyRevision }));
+        domains: inspected.domains, namespaceRequirements: namespaces, policyRevision,
+        ...(request.scopeMemory === undefined
+          ? {}
+          : { scopeMemory: request.scopeMemory }) }));
       request.signal?.throwIfAborted();
       return value;
     } finally { for (const bytes of owned) bytes.fill(0); }
