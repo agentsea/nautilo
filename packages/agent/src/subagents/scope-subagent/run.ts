@@ -80,6 +80,16 @@ function extractPersistedMessagesFromChainEnd(ev: unknown): BaseMessage[] {
   return [];
 }
 
+/** Provider errors can include prompts, tool arguments, or returned content. */
+export function scopeSubagentStreamErrorDetail(
+  error: unknown,
+  protectedContent: boolean,
+): string {
+  return protectedContent
+    ? "Protected Task graph execution failed"
+    : error instanceof Error ? error.message : String(error);
+}
+
 const TASK_PROGRESS_THROTTLE_MS = 500;
 
 function summarizeToolArgsForProgress(args: unknown, maxLength = 200): string {
@@ -1098,7 +1108,7 @@ async function runScopeSubagentUntilPauseInternal(
       );
     } else {
       log(
-        `[scope-subagent] stream error: ${err instanceof Error ? err.message : String(err)} thread=${subThreadId} ${metrics.formatLogToken()}`,
+        `[scope-subagent] stream error: ${scopeSubagentStreamErrorDetail(err, opts.protectedTaskTranscriptPort !== undefined)} thread=${subThreadId} ${metrics.formatLogToken()}`,
       );
     }
     throw err;

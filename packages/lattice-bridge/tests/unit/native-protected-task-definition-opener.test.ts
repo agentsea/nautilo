@@ -114,9 +114,9 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
           domain_authorization_revision: 9, domain_head_digest: domain.headDigest, bundle_revision: 1,
           retained_generation_count: 1, retained_authority_set_digest: retainedDigest, binding_digest: native.bindingDigest }];
       } else if (statement.includes('from "domain_key_heads"')) {
-        stage = "domain"; rows = [{ domain_id: DOMAIN, domain_key_generation: 4,
-          authorization_revision: 9, head_digest: domain.headDigest,
-          participant_digest: domain.participantDigest, participant_count: 1 }];
+        stage = "domain"; rows = [{ domain_id: DOMAIN, domain_key_generation: "4",
+          authorization_revision: "9", head_digest: domain.headDigest,
+          participant_digest: domain.participantDigest, participant_count: "1" }];
       } else if (statement.includes('from "crypto_objects"')) {
         stage = "object"; rows = [{ object_id: occurrence.objectId, payload_bytes: payloadBytes, payload_hash: crypto.hash(payloadBytes) }];
       } else if (statement.includes('from "object_crypto_access_heads"')) {

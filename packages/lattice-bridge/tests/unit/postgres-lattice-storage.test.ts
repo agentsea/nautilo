@@ -36,11 +36,44 @@ import {
   type CryptoPostgresConnection,
   type CryptoPostgresHandle,
 } from "@nautilo/lattice-bridge/server";
+import { readCryptoStorageInteger } from "../../src/server/storage/postgres-lattice-storage.ts";
+import type { DatabaseRow } from "../../src/server/storage/postgres-record-codecs.ts";
 
 type Query = Readonly<{
   statement: string;
   parameters: readonly unknown[];
 }>;
+
+describe("crypto storage integer decoding", () => {
+  test.each([
+    [0, 0],
+    [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
+    [0n, 0],
+    [BigInt(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER],
+    ["0", 0],
+    [String(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER],
+  ] as const)("accepts safe storage integer %p", (stored, expected) => {
+    expect(readCryptoStorageInteger({ value: stored } as DatabaseRow, "value"))
+      .toBe(expected);
+  });
+
+  test.each([
+    -1,
+    -1n,
+    "-1",
+    "01",
+    "1.0",
+    "",
+    BigInt(Number.MAX_SAFE_INTEGER) + 1n,
+    String(BigInt(Number.MAX_SAFE_INTEGER) + 1n),
+    Number.MAX_SAFE_INTEGER + 1,
+  ])("rejects malformed or unsafe storage integer %p", (stored) => {
+    expect(() => readCryptoStorageInteger(
+      { value: stored } as DatabaseRow,
+      "value",
+    )).toThrow("Crypto storage column value must be a safe integer");
+  });
+});
 
 class ScriptedCryptoHandle implements CryptoPostgresConnection {
   readonly queries: Query[] = [];

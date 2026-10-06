@@ -8105,7 +8105,11 @@ export function NautiloRuntimeProvider({
   });
 
   return (
-    <TaskStateProvider wsState={wsState} bridgeRef={taskStateBridgeRef}>
+    <TaskStateProvider
+      wsState={wsState}
+      bridgeRef={taskStateBridgeRef}
+      policyMode={shadowPolicyMode}
+    >
     <RunningSubagentsFromTaskState>
     <WsStateContext.Provider value={{ state: wsState, lastOpenAt }}>
       <ProtectedRoomAccessContext.Provider value={protectedRoomAccess}>
