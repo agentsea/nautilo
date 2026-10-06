@@ -554,6 +554,16 @@ export interface DurableSleepRunBudget {
   readonly maxWorkItems: number;
 }
 
+/**
+ * Process-local wall-clock fence supplied by the owning worker. The settlement
+ * reserve is unavailable to model calls so already-produced answers retain time
+ * for durable publication or cooperative lease release.
+ */
+export interface DurableSleepExecutionWindow {
+  readonly remainingMilliseconds: () => number;
+  readonly settlementReserveMilliseconds: number;
+}
+
 export interface DurableSleepRunResult {
   readonly usage: HierarchyBudgetUsage;
   /** Scheduler delay after a transient provider-lane failure or cooldown. */
@@ -653,6 +663,76 @@ function assertRunBudget(budget: DurableSleepRunBudget): void {
     if (!Number.isSafeInteger(value) || value < 0) {
       throw new RangeError(`durable Sleep ${name} must be a non-negative safe integer`);
     }
+  }
+}
+
+class DurableSleepExecutionWindowExhaustedError extends Error {
+  constructor() {
+    super("durable Sleep execution window is exhausted");
+    this.name = "DurableSleepExecutionWindowExhaustedError";
+  }
+}
+
+function assertExecutionWindow(window: DurableSleepExecutionWindow | undefined): void {
+  if (window === undefined) return;
+  if (
+    !Number.isSafeInteger(window.settlementReserveMilliseconds)
+    || window.settlementReserveMilliseconds < 0
+  ) {
+    throw new RangeError("durable Sleep settlement reserve must be a non-negative safe integer");
+  }
+  executionWindowRemaining(window);
+}
+
+function executionWindowRemaining(window: DurableSleepExecutionWindow): number {
+  const remaining = window.remainingMilliseconds();
+  if (!Number.isFinite(remaining) || remaining < 0) {
+    throw new RangeError("durable Sleep remaining execution time must be finite and non-negative");
+  }
+  return remaining;
+}
+
+function modelWindowRemaining(window: DurableSleepExecutionWindow | undefined): number {
+  return window === undefined
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, executionWindowRemaining(window) - window.settlementReserveMilliseconds);
+}
+
+async function runWithinModelWindow<Value>(input: Readonly<{
+  window?: DurableSleepExecutionWindow;
+  parentSignal?: AbortSignal;
+  invoke(signal?: AbortSignal): Promise<Value>;
+}>): Promise<Value> {
+  input.parentSignal?.throwIfAborted();
+  if (input.window === undefined) return input.invoke(input.parentSignal);
+  const remaining = modelWindowRemaining(input.window);
+  if (remaining <= 0) throw new DurableSleepExecutionWindowExhaustedError();
+
+  const controller = new AbortController();
+  let rejectInterruption!: (reason: unknown) => void;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    rejectInterruption = reject;
+  });
+  const abortFromParent = () => {
+    const reason = new Error("durable Sleep model invocation aborted");
+    rejectInterruption(reason);
+    controller.abort(reason);
+  };
+  input.parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  const timer = setTimeout(() => {
+    const error = new DurableSleepExecutionWindowExhaustedError();
+    rejectInterruption(error);
+    controller.abort(error);
+  }, remaining);
+  timer.unref?.();
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => input.invoke(controller.signal)),
+      interrupted,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    input.parentSignal?.removeEventListener("abort", abortFromParent);
   }
 }
 
@@ -874,10 +954,12 @@ export async function runDurableHierarchySleep(input: {
   readonly budget: DurableSleepRunBudget;
   readonly stageAdmission?: DurableSleepStageAdmission;
   readonly signal?: AbortSignal;
+  readonly executionWindow?: DurableSleepExecutionWindow;
   /** Deterministic test seam; production uses the process clock. */
   readonly now?: () => number;
 }): Promise<DurableSleepRunResult> {
   assertRunBudget(input.budget);
+  assertExecutionWindow(input.executionWindow);
   const admittedMaximumStage = input.stageAdmission?.maximumStage
     ?? DURABLE_SLEEP_ALL_STAGE_ADMISSION.maximumStage;
   requireDurableSleepStage(admittedMaximumStage, "stage admission maximum");
@@ -1005,6 +1087,7 @@ export async function runDurableHierarchySleep(input: {
   let superseded = 0;
   let leaseLost = 0;
   let pausedForBudget = false;
+  let maximumPreparationElapsedMs = 0;
   let modelRetryAfterMilliseconds: number | undefined;
   const operations = operationCounts();
   const failures: Partial<Record<DurableSleepFailureCode, number>> = {};
@@ -1064,6 +1147,7 @@ export async function runDurableHierarchySleep(input: {
     outcome: DurableSleepOrganizationOutcome;
   };
   const pendingOrganizer: PendingOrganizerItem[] = [];
+  const executionWindowExhausted = () => modelWindowRemaining(input.executionWindow) <= 0;
   const pauseClaim = async (
     claim: DurableSleepClaim,
     nextAttemptAt?: number,
@@ -1139,41 +1223,50 @@ export async function runDurableHierarchySleep(input: {
       signal?: AbortSignal,
     ): Promise<string> => {
       for (const item of invocationItems) await item.attempt?.assertCurrent();
-      diagnostics.modelAttempts += 1;
-      usage = addUsage(usage, {
-        modelCalls: 1,
-        visitedRecords: 0,
-        createdRecords: 0,
-        traversalWork: 0,
-      });
       const startedAt = now();
-      for (const item of invocationItems) {
-        if (item.accumulator === undefined) continue;
-        item.accumulator.promptConstructionElapsedMs += Math.max(
-          0,
-          Math.round(startedAt - organizerModelFinishedAt),
-        );
-        item.accumulator.promptInputCount =
-          1 + item.view.candidates.length + item.view.existingParents.length;
-        item.accumulator.promptCodePoints = Array.from(prompt).length;
-        item.accumulator.modelAttempts += 1;
-      }
       try {
-        return usesBatchPort
-          ? await input.semantic.invokeOrganizerBatch!(
-              invocationItems.map((item) => item.claim),
-              prompt,
-              signal,
-            )
-          : await input.semantic.invokeOrganizer(
-              invocationItems[0]!.claim,
-              prompt,
-              signal,
-            );
+        return await runWithinModelWindow({
+          ...(input.executionWindow === undefined ? {} : { window: input.executionWindow }),
+          ...(signal === undefined ? {} : { parentSignal: signal }),
+          invoke: (modelSignal) => {
+            modelSignal?.throwIfAborted();
+            diagnostics.modelAttempts += 1;
+            usage = addUsage(usage, {
+              modelCalls: 1,
+              visitedRecords: 0,
+              createdRecords: 0,
+              traversalWork: 0,
+            });
+            for (const item of invocationItems) {
+              if (item.accumulator === undefined) continue;
+              item.accumulator.promptConstructionElapsedMs += Math.max(
+                0,
+                Math.round(startedAt - organizerModelFinishedAt),
+              );
+              item.accumulator.promptInputCount =
+                1 + item.view.candidates.length + item.view.existingParents.length;
+              item.accumulator.promptCodePoints = Array.from(prompt).length;
+              item.accumulator.modelAttempts += 1;
+            }
+            return usesBatchPort
+              ? input.semantic.invokeOrganizerBatch!(
+                invocationItems.map((item) => item.claim),
+                prompt,
+                modelSignal,
+              )
+              : input.semantic.invokeOrganizer(
+                invocationItems[0]!.claim,
+                prompt,
+                modelSignal,
+              );
+          },
+        });
       } catch (error) {
-        diagnostics.modelFailures += 1;
-        for (const item of invocationItems) {
-          if (item.accumulator !== undefined) item.accumulator.modelFailures += 1;
+        if (!(error instanceof DurableSleepExecutionWindowExhaustedError)) {
+          diagnostics.modelFailures += 1;
+          for (const item of invocationItems) {
+            if (item.accumulator !== undefined) item.accumulator.modelFailures += 1;
+          }
         }
         throw error;
       } finally {
@@ -1217,6 +1310,11 @@ export async function runDurableHierarchySleep(input: {
             item.view.applicationPlanToken === undefined ? "same_room" : "cross_room",
           );
         }
+        return;
+      }
+      if (error instanceof DurableSleepExecutionWindowExhaustedError) {
+        pausedForBudget = true;
+        for (const item of batch) await pauseClaim(item.claim);
         return;
       }
       if (error instanceof DurableSleepOrganizationUnavailableError) {
@@ -1284,6 +1382,10 @@ export async function runDurableHierarchySleep(input: {
           await pauseClaim(item.claim);
         } else if (error instanceof DurableSleepProviderOutcomeUnknownError) {
           await completeTerminalClaim(item.claim, "provider_outcome_unknown");
+        } else if (error instanceof DurableSleepExecutionWindowExhaustedError) {
+          item.outcome = "unavailable";
+          pausedForBudget = true;
+          await pauseClaim(item.claim);
         } else {
           await deferClaim(item.claim, "unexpected_failure", "unexpected_model_invocation_failure");
         }
@@ -1432,6 +1534,17 @@ export async function runDurableHierarchySleep(input: {
   try {
   while (claimed < input.budget.maxWorkItems) {
     if (input.signal?.aborted) break;
+    if (
+      pendingOrganizer.length > 0
+      && maximumPreparationElapsedMs > 0
+      && modelWindowRemaining(input.executionWindow) <= maximumPreparationElapsedMs
+    ) {
+      await flushOrganizerBatch();
+    }
+    if (executionWindowExhausted()) {
+      pausedForBudget = true;
+      break;
+    }
     if (
       admittedMaximumStage === "organization"
       && modelRetryAfterMilliseconds === undefined
@@ -1708,19 +1821,26 @@ export async function runDurableHierarchySleep(input: {
         break;
       }
 
-      attempt = await input.semantic.openOrganizationAttempt?.(claim, input.signal);
-      await attempt?.assertCurrent();
       unexpectedFailureDetail = "unexpected_candidate_stage_failure";
-      const candidateStartedAt = now();
+      const preparationStartedAt = now();
       let loaded: DurableSleepOrganizerViewResult;
       try {
+        attempt = await input.semantic.openOrganizationAttempt?.(claim, input.signal);
+        await attempt?.assertCurrent();
+        if (executionWindowExhausted()) {
+          attemptOutcome = "unavailable";
+          await pauseClaim(claim);
+          pausedForBudget = true;
+          break;
+        }
         loaded = await input.semantic.loadOrganizerView(claim, input.signal);
       } finally {
         const elapsed = Math.max(
           0,
-          Math.round(now() - candidateStartedAt),
+          Math.round(now() - preparationStartedAt),
         );
         diagnostics.candidateElapsedMs += elapsed;
+        maximumPreparationElapsedMs = Math.max(maximumPreparationElapsedMs, elapsed);
         if (itemAccumulator !== undefined) {
           itemAccumulator.sameRoomCandidateElapsedMs = elapsed;
         }
@@ -1833,6 +1953,12 @@ export async function runDurableHierarchySleep(input: {
         await completeTerminalClaim(claim, "provider_outcome_unknown");
         attemptOutcome = "failed";
         continue;
+      }
+      if (error instanceof DurableSleepExecutionWindowExhaustedError) {
+        attemptOutcome = "unavailable";
+        pausedForBudget = true;
+        await pauseClaim(claim);
+        break;
       }
       if (input.signal?.aborted) break;
       if (error instanceof DurableSleepOrganizationUnavailableError) {

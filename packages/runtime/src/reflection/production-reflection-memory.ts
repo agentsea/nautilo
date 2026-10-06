@@ -101,6 +101,7 @@ import {
 } from "./canonical-room-sources";
 import {
   REFLECTION_SEMANTIC_PRESSURE_POLICY_V1,
+  REFLECTION_SEMANTIC_SETTLEMENT_RESERVE_MS,
   ReflectionSemanticWorker,
 } from "./semantic-sleep-worker";
 import { AuthoredMemorySemanticChangeAdapter } from "./authored-memory-semantic-change-adapter";
@@ -141,13 +142,15 @@ export const REFLECTION_SEMANTIC_RUNTIME_POLICY_V1 = Object.freeze({
   modelInvocation: Object.freeze({
     // Reflection has a durable retry queue. One slow provider attempt must not
     // be mistaken for a failed batch on a populated instance. The independent
-    // two-minute worker watchdog still fences the whole poll and pauses any
-    // repair or later batch that would exceed its lease-safe wall-clock bound.
-    maximumElapsedMilliseconds: 60_000,
+    // worker watchdog fences the whole poll. Each invocation is also bounded
+    // by the remaining poll time, reserving time to settle valid results.
+    maximumElapsedMilliseconds: REFLECTION_SEMANTIC_PRESSURE_POLICY_V1.maxPollElapsedMs,
     modelFallbackMode: "none",
     sameModelRetryMode: "none",
   }),
   pressure: REFLECTION_SEMANTIC_PRESSURE_POLICY_V1,
+  leaseMilliseconds: REFLECTION_SEMANTIC_PRESSURE_POLICY_V1.maxPollElapsedMs
+    + REFLECTION_SEMANTIC_SETTLEMENT_RESERVE_MS,
   sourceRepairPageMaximum: 256,
   budget: Object.freeze({
     // Consume the executor-owned ceiling directly so production cannot drift
@@ -282,6 +285,7 @@ export async function createProductionReflectionMemoryRuntime(
   const semanticWork = new PostgresSemanticWorkStore({
     handle,
     commitments: semanticCommitments,
+    leaseMilliseconds: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.leaseMilliseconds,
   });
   const product = new PostgresRecordProductStore(handle, semanticWork);
   const repository = new DualModeRecordRepository({

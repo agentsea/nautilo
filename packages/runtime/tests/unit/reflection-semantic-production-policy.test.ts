@@ -207,10 +207,14 @@ describe("production Reflection semantic policy", () => {
     );
   });
 
-  test("allows a slow Reflection batch sixty seconds within the independent poll watchdog", () => {
+  test("shares the 600-second deadline and keeps the lease through settlement", () => {
     expect(
       REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.modelInvocation.maximumElapsedMilliseconds,
-    ).toBe(60_000);
+    ).toBe(600_000);
+    expect(REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.leaseMilliseconds).toBe(610_000);
+    expect(REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.leaseMilliseconds).toBeGreaterThan(
+      REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.pressure.maxPollElapsedMs,
+    );
   });
 
   test("keeps legacy same-Room publication single-leaf", () => {

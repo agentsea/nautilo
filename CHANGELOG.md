@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Reflection allows up to ten minutes per poll, preserves completed batch results
+  when repair runs out of time, and gives other eligible records a turn after
+  timed-out work yields.
+
 - The text editor serializes first saves of empty documents and preserves edits
   made while a save is in progress. Conflict recovery reports failed latest-version
   reads with a retry action, accepts empty latest content, and saves merged drafts

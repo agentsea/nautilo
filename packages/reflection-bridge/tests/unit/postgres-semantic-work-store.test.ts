@@ -507,7 +507,7 @@ describe("PostgreSQL semantic work leases", () => {
       "when work.change_reason = 'parent_conflict' then 0 else 1 end asc",
     );
     expect(normalizedSql(claimSql?.statement ?? "")).toContain(
-      "work.attempt_count asc, case work.change_reason when 'dependency_lost' then 2 when 'revised' then 1 else 0 end desc, work.due_since",
+      "work.attempt_count asc, case work.change_reason when 'dependency_lost' then 2 when 'revised' then 1 else 0 end desc, greatest(work.due_since, work.updated_at), work.record_id",
     );
     expect(normalizedSql(claimSql?.statement ?? "")).not.toContain(
       "when 'created' then",
@@ -562,6 +562,10 @@ describe("PostgreSQL semantic work leases", () => {
     expect(statement).toContain("attempt_count = greatest(");
     expect(statement).toContain("attempt_count -");
     expect(statement).toContain("next_attempt_at =");
+    expect(statement).toContain(
+      "updated_at = greatest(reflection_record_semantic_work.updated_at,",
+    );
+    expect(statement).not.toContain("due_since =");
     expect(pause.parameters).toContain(new Date(retryAt).toISOString());
   });
 

@@ -1137,7 +1137,7 @@ export class PostgresSemanticWorkStore
                        WHEN 'revised' THEN 1
                        ELSE 0
                      END DESC,
-                     work.due_since,
+                     GREATEST(work.due_since, work.updated_at),
                      work.record_id
             FOR UPDATE OF work SKIP LOCKED
             LIMIT 1

@@ -2098,3 +2098,252 @@ for (const mode of ["revoked_invalid", "revoked_only_repair", "revoked_valid", "
     expect(events).toContain(mode === "repair_provider_failure" ? "close:b:failed" : "close:a:unavailable");
   });
 }
+
+test("an exhausted execution window claims no new work", async () => {
+  let claims = 0;
+  const events: string[] = [];
+  const work = workHarness([claim("a", "organization")], events).port;
+  const claimNext = work.claimNext.bind(work);
+  work.claimNext = (...input) => {
+    claims += 1;
+    return claimNext(...input);
+  };
+  const result = await runDurableHierarchySleep({
+    work,
+    semantic: semanticHarness(events),
+    budget: { hierarchy: hierarchyBudget, maxWorkItems: 1 },
+    executionWindow: {
+      remainingMilliseconds: () => 10,
+      settlementReserveMilliseconds: 10,
+    },
+  });
+  expect(claims).toBe(0);
+  expect(result).toMatchObject({
+    claimed: 0,
+    paused: 0,
+    usage: { modelCalls: 0 },
+    failures: {},
+    budgetExhausted: true,
+  });
+});
+
+test("measured preparation cost flushes a pending batch before another claim", async () => {
+  const events: string[] = [];
+  let elapsed = 0;
+  const semantic = semanticHarness(events);
+  semantic.loadOrganizerView = async () => {
+    elapsed += 30;
+    return { status: "ready", view: mixedView() };
+  };
+  semantic.invokeOrganizerBatch = async claims => {
+    events.push(`batch:${claims.map((current) => current.recordRef).join(",")}`);
+    elapsed += 30;
+    return JSON.stringify({ answers: claims.map((_, index) => ({
+      question: `Q${index + 1}`,
+      proposal: { operation: "no_change" },
+    })) });
+  };
+  const result = await runDurableHierarchySleep({
+    work: workHarness([claim("a", "organization"), claim("b", "organization")], events).port,
+    semantic,
+    budget: { hierarchy: hierarchyBudget, maxWorkItems: 2 },
+    executionWindow: {
+      remainingMilliseconds: () => Math.max(0, 70 - elapsed),
+      settlementReserveMilliseconds: 10,
+    },
+    now: () => elapsed,
+  });
+  expect(events.filter((event) => event.startsWith("claim:"))).toEqual(["claim:a"]);
+  expect(events).toContain("batch:a");
+  expect(result).toMatchObject({ claimed: 1, completed: 1, failures: {}, budgetExhausted: true });
+});
+
+test("execution-window exhaustion pauses a non-cooperative model call", async () => {
+  const events: string[] = [];
+  let modelSignal: AbortSignal | undefined;
+  const semantic = semanticHarness(events, mixedView(), undefined, async (_claim, _prompt, signal) => {
+    modelSignal = signal;
+    return await new Promise<string>(() => {});
+  });
+  const result = await runDurableHierarchySleep({
+    work: workHarness([claim("a", "organization")], events).port,
+    semantic,
+    budget: { hierarchy: hierarchyBudget, maxWorkItems: 1 },
+    executionWindow: {
+      remainingMilliseconds: () => 15,
+      settlementReserveMilliseconds: 10,
+    },
+  });
+  expect(modelSignal?.aborted).toBeTrue();
+  expect(result).toMatchObject({
+    claimed: 1,
+    paused: 1,
+    deferred: 0,
+    quarantined: 0,
+    failures: {},
+    budgetExhausted: true,
+  });
+  expect(events).toContain("pause");
+  expect(events).not.toContain("complete");
+});
+
+test("repair window exhaustion preserves valid first-pass batch siblings", async () => {
+  const events: string[] = [];
+  const semantic = semanticHarness(events);
+  let remaining = 100;
+  let calls = 0;
+  semantic.invokeOrganizerBatch = async claims => {
+    calls += 1;
+    remaining = 10;
+    return JSON.stringify({
+      answers: claims.map((current, index) => ({
+        question: `Q${index + 1}`,
+        proposal: current.recordRef === "a"
+          ? { operation: "no_change" }
+          : { operation: "invalid" },
+      })),
+    });
+  };
+  const applied: string[] = [];
+  semantic.applyProposal = async ({ claim: current }) => {
+    applied.push(current.recordRef);
+    return {
+      status: "applied",
+      operation: "no_change",
+      replayed: false,
+      usage: { modelCalls: 0, visitedRecords: 0, createdRecords: 0, traversalWork: 0 },
+    };
+  };
+  const result = await runDurableHierarchySleep({
+    work: workHarness([claim("a", "organization"), claim("b", "organization")], events).port,
+    semantic,
+    budget: { hierarchy: hierarchyBudget, maxWorkItems: 2 },
+    executionWindow: {
+      remainingMilliseconds: () => remaining,
+      settlementReserveMilliseconds: 10,
+    },
+  });
+  expect(calls).toBe(1);
+  expect(applied).toEqual(["a"]);
+  expect(result).toMatchObject({
+    completed: 1,
+    paused: 1,
+    usage: { modelCalls: 1 },
+    deferred: 0,
+    quarantined: 0,
+    failures: {},
+    budgetExhausted: true,
+  });
+});
+
+test("a timed-out noncooperative repair preserves valid first-pass batch siblings", async () => {
+  const events: string[] = [];
+  const parent = new AbortController();
+  const semantic = semanticHarness(events);
+  let remaining = 100;
+  const modelSignals: AbortSignal[] = [];
+  semantic.invokeOrganizerBatch = async (claims, _prompt, modelSignal) => {
+    if (modelSignal === undefined) throw new Error("expected bounded model signal");
+    modelSignals.push(modelSignal);
+    if (modelSignals.length === 1) {
+      remaining = 20;
+      return JSON.stringify({
+        answers: claims.map((current, index) => ({
+          question: `Q${index + 1}`,
+          proposal: current.recordRef === "a"
+            ? { operation: "no_change" }
+            : { operation: "invalid" },
+        })),
+      });
+    }
+    return await new Promise<string>(() => {});
+  };
+  const applied: string[] = [];
+  semantic.applyProposal = async ({ claim: current }) => {
+    applied.push(current.recordRef);
+    return {
+      status: "applied",
+      operation: "no_change",
+      replayed: false,
+      usage: { modelCalls: 0, visitedRecords: 0, createdRecords: 0, traversalWork: 0 },
+    };
+  };
+  const result = await runDurableHierarchySleep({
+    work: workHarness([claim("a", "organization"), claim("b", "organization")], events).port,
+    semantic,
+    signal: parent.signal,
+    budget: { hierarchy: hierarchyBudget, maxWorkItems: 2 },
+    executionWindow: {
+      remainingMilliseconds: () => remaining,
+      settlementReserveMilliseconds: 10,
+    },
+  });
+  expect(modelSignals).toHaveLength(2);
+  expect(modelSignals[0]?.aborted).toBeFalse();
+  expect(modelSignals[1]?.aborted).toBeTrue();
+  expect(parent.signal.aborted).toBeFalse();
+  expect(applied).toEqual(["a"]);
+  expect(result).toMatchObject({
+    completed: 1,
+    paused: 1,
+    usage: { modelCalls: 2 },
+    deferred: 0,
+    quarantined: 0,
+    failures: {},
+    budgetExhausted: true,
+  });
+});
+
+test("successful model invocation removes its parent listener and deadline timer", async () => {
+  const events: string[] = [];
+  const parent = new AbortController();
+  let modelSignal: AbortSignal | undefined;
+  const semantic = semanticHarness(events, mixedView(), undefined, async (_claim, _prompt, signal) => {
+    modelSignal = signal;
+    return '{"operation":"no_change"}';
+  });
+  const result = await runDurableHierarchySleep({
+    work: workHarness([claim("a", "organization")], events).port,
+    semantic,
+    signal: parent.signal,
+    budget: { hierarchy: hierarchyBudget, maxWorkItems: 1 },
+    executionWindow: {
+      remainingMilliseconds: () => 40,
+      settlementReserveMilliseconds: 10,
+    },
+  });
+  expect(result.completed).toBe(1);
+  parent.abort();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  expect(modelSignal?.aborted).toBeFalse();
+});
+
+test("parent cancellation never publishes a returned model answer", async () => {
+  const events: string[] = [];
+  const parent = new AbortController();
+  let publications = 0;
+  const semantic = semanticHarness(events, mixedView(), async () => {
+    publications += 1;
+    return {
+      status: "applied",
+      operation: "no_change",
+      replayed: false,
+      usage: { modelCalls: 0, visitedRecords: 0, createdRecords: 0, traversalWork: 0 },
+    };
+  }, async () => {
+    parent.abort();
+    return '{"operation":"no_change"}';
+  });
+  const result = await runDurableHierarchySleep({
+    work: workHarness([claim("a", "organization")], events).port,
+    semantic,
+    signal: parent.signal,
+    budget: { hierarchy: hierarchyBudget, maxWorkItems: 1 },
+    executionWindow: {
+      remainingMilliseconds: () => 100,
+      settlementReserveMilliseconds: 10,
+    },
+  });
+  expect(publications).toBe(0);
+  expect(result).toMatchObject({ completed: 0, paused: 1, failures: {} });
+});

@@ -10,6 +10,10 @@ import {
   PostgresSemanticWorkStore,
   createHmacRecordSemanticCommitmentPort,
   verifyRecordProductPostgresHandle,
+  type RecordProductPostgresConnection,
+  type RecordProductPostgresExecutor,
+  type RecordProductPostgresRow,
+  type RecordProductPostgresScalar,
 } from "@nautilo/reflection-bridge/server";
 
 import { createReflectionOrganizationAttemptOpener } from "../../src/reflection/organization-attempt";
@@ -47,6 +51,71 @@ async function waitForFirstPoll(worker: ReflectionSemanticWorker): Promise<void>
   while (worker.getHealth().lastPoll === null) {
     if (Date.now() >= deadline) throw new Error("Reflection worker did not finish its first poll");
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function withIsolatedRecordProductTransaction<Result>(
+  use: (input: Readonly<{
+    handle: Awaited<ReturnType<typeof verifyRecordProductPostgresHandle>>;
+    executor: RecordProductPostgresExecutor;
+  }>) => Promise<Result>,
+): Promise<Result> {
+  const db = getDirectDb();
+  const rollback = new Error("rollback isolated reflection integration transaction");
+  let result: Result | undefined;
+  try {
+    await db.$client.begin(async (transaction) => {
+      const executor: RecordProductPostgresExecutor = {
+        async query<Row extends RecordProductPostgresRow = RecordProductPostgresRow>(
+          statement: string,
+          parameters: readonly RecordProductPostgresScalar[] = [],
+        ): Promise<readonly Row[]> {
+          const serialized = parameters.map((parameter) =>
+            parameter instanceof Date ? parameter.toISOString() : parameter
+          );
+          const rows = await transaction.unsafe(statement, serialized as never[]);
+          return rows as unknown as readonly Row[];
+        },
+      };
+      const connection: RecordProductPostgresConnection = {
+        query: executor.query.bind(executor),
+        async transaction(callback) {
+          return callback(executor);
+        },
+      };
+      result = await use({
+        handle: await verifyRecordProductPostgresHandle(connection),
+        executor,
+      });
+      throw rollback;
+    });
+  } catch (error) {
+    if (error !== rollback) throw error;
+  }
+  return result as Result;
+}
+
+async function assertNoEligibleParentConflict(
+  executor: RecordProductPostgresExecutor,
+  now: Date,
+): Promise<void> {
+  const rows = await executor.query(
+    `SELECT work.record_id
+       FROM reflection_record_semantic_work AS work
+       JOIN reflection_records AS record ON record.record_id = work.record_id
+      WHERE record.disposition = 'available'
+        AND work.change_reason = 'parent_conflict'
+        AND (
+          (work.state IN ('due', 'checkpointed', 'deferred')
+            AND work.next_attempt_at <= $1)
+          OR (work.state = 'claimed' AND work.lease_expires_at <= $1)
+          OR (work.state = 'quarantined' AND work.recover_after <= $1)
+        )
+      LIMIT 1`,
+    [now],
+  );
+  if (rows.length !== 0) {
+    throw new Error("Reflection fairness fixture has a competing parent-conflict row");
   }
 }
 
@@ -215,6 +284,133 @@ describePostgres("Reflection semantic worker PostgreSQL liveness", () => {
         [recordRefs],
       );
     }
+  }, 15_000);
+
+  test("yielded work rotates behind an untouched peer without losing backlog age", async () => {
+    if (connectionString === undefined) throw new Error("missing integration database URL");
+    process.env["DB_DIRECT_CONNECTION"] = connectionString;
+    await withIsolatedRecordProductTransaction(async ({ handle, executor }) => {
+      const admittedAt = new Date("1900-01-01T00:00:00.000Z");
+      let now = admittedAt;
+      const semanticWork = new PostgresSemanticWorkStore({
+        handle,
+        commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(29)),
+        clock: () => now,
+      });
+      const fixturePrefix = `runtime-integration:reflection-fairness:${randomUUID()}`;
+      const firstRecordRef = `${fixturePrefix}:first`;
+      const secondRecordRef = `${fixturePrefix}:second`;
+      const recordRefs = [firstRecordRef, secondRecordRef];
+
+      await assertNoEligibleParentConflict(executor, now);
+      for (const recordRef of recordRefs) {
+        await executor.query(
+          `INSERT INTO reflection_records (
+             record_id, lifecycle, structural_height, producer_policy_version,
+             processing_generation, payload_version, disposition,
+             created_at, updated_at
+           ) VALUES ($1, 'current', 0, 'runtime-integration', 1, 1,
+                     'available', $2, $2)`,
+          [recordRef, now.toISOString()],
+        );
+        await semanticWork.enqueue({
+          logicalObjectRef: recordRef,
+          generation: 1,
+          recordRef,
+          changeReason: "parent_conflict",
+        });
+        now = new Date(now.getTime() + 1);
+      }
+
+      const first = await semanticWork.claimNext();
+      expect(first).toMatchObject({
+        status: "claimed",
+        claim: { recordRef: firstRecordRef },
+      });
+      if (first.status !== "claimed") throw new Error("expected first fairness claim");
+      const preservedDueSince = first.claim.timing?.admittedAtEpochMs ?? Number.NaN;
+      expect(preservedDueSince).toBe(admittedAt.getTime());
+
+      now = new Date(now.getTime() + 1);
+      expect(await semanticWork.pause({
+        claim: first.claim,
+        nextAttemptAt: now.getTime() + 1,
+      })).toMatchObject({ status: "accepted" });
+      now = new Date(now.getTime() + 1);
+
+      const untouched = await semanticWork.claimNext();
+      expect(untouched).toMatchObject({
+        status: "claimed",
+        claim: { recordRef: secondRecordRef },
+      });
+      if (untouched.status !== "claimed") throw new Error("expected untouched fairness claim");
+      expect(await semanticWork.pause({
+        claim: untouched.claim,
+        nextAttemptAt: now.getTime() + 1,
+      })).toMatchObject({ status: "accepted" });
+      now = new Date(now.getTime() + 1);
+
+      const rotated = await semanticWork.claimNext();
+      expect(rotated).toMatchObject({
+        status: "claimed",
+        claim: { recordRef: firstRecordRef },
+      });
+      if (rotated.status !== "claimed") throw new Error("expected rotated fairness claim");
+      expect(rotated.claim.timing?.admittedAtEpochMs).toBe(preservedDueSince);
+
+      const [row] = await executor.query(
+        `SELECT due_since FROM reflection_record_semantic_work WHERE record_id = $1`,
+        [firstRecordRef],
+      );
+      expect(new Date(String(row?.["due_since"])).getTime()).toBe(preservedDueSince);
+    });
+  }, 15_000);
+
+  test("a 610-second semantic lease stays current beyond two minutes and expires exactly", async () => {
+    if (connectionString === undefined) throw new Error("missing integration database URL");
+    process.env["DB_DIRECT_CONNECTION"] = connectionString;
+    await withIsolatedRecordProductTransaction(async ({ handle, executor }) => {
+      const claimedAt = new Date("1900-01-02T00:00:00.000Z");
+      const leaseMilliseconds = 600_000 + 10_000;
+      let now = claimedAt;
+      const semanticWork = new PostgresSemanticWorkStore({
+        handle,
+        commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(31)),
+        clock: () => now,
+        leaseMilliseconds,
+      });
+      const recordRef = `runtime-integration:reflection-lease:${randomUUID()}`;
+
+      await assertNoEligibleParentConflict(executor, now);
+      await executor.query(
+        `INSERT INTO reflection_records (
+           record_id, lifecycle, structural_height, producer_policy_version,
+           processing_generation, payload_version, disposition,
+           created_at, updated_at
+         ) VALUES ($1, 'current', 0, 'runtime-integration', 1, 1,
+                   'available', $2, $2)`,
+        [recordRef, claimedAt.toISOString()],
+      );
+      await semanticWork.enqueue({
+        logicalObjectRef: recordRef,
+        generation: 1,
+        recordRef,
+        changeReason: "parent_conflict",
+      });
+      const claimed = await semanticWork.claimNext();
+      expect(claimed).toMatchObject({
+        status: "claimed",
+        claim: { recordRef },
+      });
+      if (claimed.status !== "claimed") throw new Error("expected lease-boundary claim");
+
+      now = new Date(claimedAt.getTime() + 120_001);
+      expect(await semanticWork.isClaimCurrent(claimed.claim)).toBe(true);
+      now = new Date(claimedAt.getTime() + leaseMilliseconds - 1);
+      expect(await semanticWork.isClaimCurrent(claimed.claim)).toBe(true);
+      now = new Date(claimedAt.getTime() + leaseMilliseconds);
+      expect(await semanticWork.isClaimCurrent(claimed.claim)).toBe(false);
+    });
   }, 15_000);
 
   test("a full bootstrap page cannot starve an expired lease or Sleep", async () => {
