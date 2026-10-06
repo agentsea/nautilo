@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   verifyCryptoPostgresHandle,
   type CryptoPostgresConnection,
+  type CryptoPostgresHandle,
 } from "@nautilo/lattice-bridge/server";
 import type {
   VerifiedProcessorBackgroundAuthorizationDeviceResponse,
@@ -17,12 +18,16 @@ import {
   createBackgroundAuthorizationRequestV2,
   createBackgroundAuthorizationTaskRuntimeRequestV3,
   cancelBackgroundAuthorizationRequest,
+  claimBackgroundAuthorizationRequest,
+  completeBackgroundAuthorizationRequest,
+  markBackgroundAuthorizationRunning,
 } from "../../src/protected-execution/background-authorization/lifecycle";
 import { PostgresBackgroundAuthorizationRepository } from "../../src/protected-execution/background-authorization/postgres-repository";
 import {
   BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH,
   BackgroundAuthorizationRepositoryConflictError,
   InMemoryBackgroundAuthorizationRepository,
+  buildAcceptedBackgroundAuthorizationResponse,
   buildUnclaimedTaskRuntimeAuthorityReplacement,
   type BackgroundAuthorizationRecord,
   type BackgroundAuthorizationAgentRecordV2,
@@ -38,6 +43,7 @@ class ScriptedConnection implements CryptoPostgresConnection {
   readonly parameters: unknown[][] = [];
   transactions = 0;
   transactionFailures = 0;
+  transactionDepth = 0;
   readonly #results: unknown[][];
 
   constructor(results: readonly unknown[][]) {
@@ -57,17 +63,24 @@ class ScriptedConnection implements CryptoPostgresConnection {
     callback: (transaction: this) => Promise<Result>,
   ): Promise<Result> {
     this.transactions += 1;
+    this.transactionDepth += 1;
     try {
       return await callback(this);
     } catch (error) {
       this.transactionFailures += 1;
       throw error;
+    } finally {
+      this.transactionDepth -= 1;
     }
   }
 }
 
 function digest(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function digestBytes(value: Uint8Array): Uint8Array {
+  return new Uint8Array(createHash("sha256").update(value).digest());
 }
 
 function normalizedSql(statement: string | undefined): string {
@@ -417,6 +430,76 @@ function withRecipient(
   };
 }
 
+function claimedTaskRuntimeV3(input?: Readonly<{
+  claimExpiresAt?: number;
+  authorizationExpiresAt?: number;
+}>): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const recipient = withRecipient(initialTaskRuntimeV3()) as
+    BackgroundAuthorizationTaskRuntimeRecordV3;
+  const descriptorBytes = recipient.descriptorBytes!;
+  const responseBytes = new Uint8Array([4, 5, 6]);
+  const responseHash = digestBytes(responseBytes);
+  const accepted = buildAcceptedBackgroundAuthorizationResponse(
+    recipient,
+    {
+      formatVersion: 3,
+      kind: "runtime",
+      requestId: recipient.snapshot.requestId,
+      descriptorHash: digestBytes(descriptorBytes),
+      descriptorBytes,
+      recipientGeneration: recipient.snapshot.recipientGeneration,
+      recipientKeyId: recipient.snapshot.recipient!.recipientKeyId,
+      recipientPublicKey: PUBLIC_KEY_BYTES,
+      workId: recipient.snapshot.workId,
+      workKind: recipient.workKind,
+      purpose: recipient.purpose,
+      authoritySet: recipient.authoritySet,
+      responseBytes,
+      responseHash,
+      authorizationId: "authorization_task_runtime_v3",
+      authorizationHash: responseHash.slice(),
+      issuingHumanId: "human_task_runtime_v3",
+      issuingDeviceId: "device_task_runtime_v3",
+      issuingDeviceAuthorizationRevision: 6,
+      issuerSigningPublicKeyHash: new Uint8Array(32).fill(7),
+      issuedAt: START + 1,
+      expiresAt: recipient.snapshot.recipient!.expiresAt,
+    },
+    START + 2,
+  ).next as BackgroundAuthorizationTaskRuntimeRecordV3;
+  const authorizationExpiresAt = input?.authorizationExpiresAt
+    ?? accepted.acceptedMaterial!.authorizationExpiresAt;
+  const withExpiry: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+    ...accepted,
+    acceptedMaterial: {
+      ...accepted.acceptedMaterial!,
+      authorizationExpiresAt,
+    },
+  };
+  return {
+    ...withExpiry,
+    snapshot: claimBackgroundAuthorizationRequest(
+      withExpiry.snapshot,
+      "claim_task_runtime_v3",
+      START + 3,
+      input?.claimExpiresAt ?? START + 60_000,
+    ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+  };
+}
+
+function runningTaskRuntimeV3(
+  claimed: BackgroundAuthorizationTaskRuntimeRecordV3,
+  updatedAt = START + 4,
+): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  return {
+    ...claimed,
+    snapshot: markBackgroundAuthorizationRunning(
+      claimed.snapshot,
+      updatedAt,
+    ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+  };
+}
+
 function recordRow(record: BackgroundAuthorizationRecord) {
   const { snapshot } = record;
   const subject = snapshot.credentialSubject;
@@ -718,6 +801,279 @@ describe("Postgres background authorization repository", () => {
     expect(await loaded.repository.get(record.snapshot.requestId)).toEqual(
       record,
     );
+  });
+
+  test("uses an exact running Task claim only while its row lock is held", async () => {
+    const current = runningTaskRuntimeV3(claimedTaskRuntimeV3());
+    const postgres = await setup([
+      [recordRow(current)],
+      taskRuntimeDomainRows(current),
+      namespaceRows(current),
+    ]);
+    let clockReads = 0;
+    let callbackHandle: CryptoPostgresHandle | null = null;
+
+    expect(await postgres.repository.withCurrentTaskRuntimeExecutionClaim({
+      expected: current,
+      now: () => {
+        clockReads += 1;
+        return START + 5;
+      },
+      use: async (held, handle) => {
+        callbackHandle = handle;
+        expect(postgres.connection.transactionDepth).toBe(1);
+        expect(held).toEqual(current);
+        expect(() => new PostgresBackgroundAuthorizationRepository(handle))
+          .not.toThrow();
+        expect(normalizedSql(postgres.connection.statements[1])).toContain(
+          "FOR UPDATE",
+        );
+        return "used";
+      },
+    })).toBe("used");
+    expect(clockReads).toBe(2);
+    expect(postgres.connection.transactions).toBe(1);
+    expect(postgres.connection.transactionDepth).toBe(0);
+    expect(() => new PostgresBackgroundAuthorizationRepository(
+      callbackHandle!,
+    )).toThrow("verified nautilo_crypto handle");
+  });
+
+  test("accepts only the sole canonical claimed-to-running successor", async () => {
+    const claimed = claimedTaskRuntimeV3();
+    const running = runningTaskRuntimeV3(claimed);
+    const canonical = await setup([
+      [recordRow(running)],
+      taskRuntimeDomainRows(running),
+      namespaceRows(running),
+    ]);
+    let uses = 0;
+
+    expect(await canonical.repository.withCurrentTaskRuntimeExecutionClaim({
+      expected: claimed,
+      now: () => START + 5,
+      use: async () => {
+        uses += 1;
+        return "canonical";
+      },
+    })).toBe("canonical");
+
+    const advanced: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...running,
+      snapshot: {
+        ...running.snapshot,
+        requestRevision: running.snapshot.requestRevision + 1,
+        updatedAt: running.snapshot.updatedAt + 1,
+      },
+    };
+    const stale = await setup([
+      [recordRow(advanced)],
+      taskRuntimeDomainRows(advanced),
+      namespaceRows(advanced),
+    ]);
+    expect(await stale.repository.withCurrentTaskRuntimeExecutionClaim({
+      expected: claimed,
+      now: () => START + 5,
+      use: async () => {
+        uses += 1;
+        return "must-not-run";
+      },
+    })).toBeNull();
+    expect(uses).toBe(1);
+  });
+
+  test("rejects substituted Task claim identity, material, and authority", async () => {
+    const current = runningTaskRuntimeV3(claimedTaskRuntimeV3());
+    const substitutions: BackgroundAuthorizationTaskRuntimeRecordV3[] = [
+      {
+        ...current,
+        snapshot: {
+          ...current.snapshot,
+          requestRevision: current.snapshot.requestRevision - 1,
+        },
+      },
+      {
+        ...current,
+        snapshot: { ...current.snapshot, claimId: "claim_substituted" },
+      },
+      {
+        ...current,
+        snapshot: {
+          ...current.snapshot,
+          recipientGeneration: current.snapshot.recipientGeneration + 1,
+          acceptedResponse: {
+            ...current.snapshot.acceptedResponse!,
+            recipientGeneration:
+              current.snapshot.acceptedResponse!.recipientGeneration + 1,
+          },
+        },
+      },
+      {
+        ...current,
+        acceptedMaterial: {
+          ...current.acceptedMaterial!,
+          credentialId: "authorization_substituted",
+        },
+      },
+      {
+        ...current,
+        authoritySet: {
+          ...current.authoritySet,
+          namespaceRequirements: current.authoritySet.namespaceRequirements
+            .map((requirement, index) => index === 1
+              ? { ...requirement, expectedPolicyRevision: 8 }
+              : requirement),
+        },
+      },
+      { ...current, workIdentityHash: new Uint8Array(32).fill(0x71) },
+    ];
+    let uses = 0;
+    for (const expected of substitutions) {
+      const postgres = await setup([
+        [recordRow(current)],
+        taskRuntimeDomainRows(current),
+        namespaceRows(current),
+      ]);
+      expect(await postgres.repository.withCurrentTaskRuntimeExecutionClaim({
+        expected,
+        now: () => START + 5,
+        use: async () => {
+          uses += 1;
+          return "must-not-run";
+        },
+      })).toBeNull();
+    }
+    expect(uses).toBe(0);
+  });
+
+  test("rejects non-running, terminal, transformed, and expired claims", async () => {
+    const claimed = claimedTaskRuntimeV3();
+    const running = runningTaskRuntimeV3(claimed);
+    const completedAt = START + 6;
+    const completed: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...running,
+      snapshot: completeBackgroundAuthorizationRequest(
+        running.snapshot,
+        completedAt,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      finishedAt: completedAt,
+    };
+    const rejected = [
+      {
+        expected: claimed,
+        current: claimed,
+        now: START + 5,
+        row: recordRow(claimed),
+      },
+      {
+        expected: running,
+        current: completed,
+        now: START + 7,
+        row: recordRow(completed),
+      },
+      {
+        expected: running,
+        current: running,
+        now: START + 5,
+        row: {
+          ...recordRow(running),
+          transform_commit_claim_id: running.snapshot.claimId,
+        },
+      },
+      {
+        expected: running,
+        current: running,
+        now: running.snapshot.claimExpiresAt!,
+        row: recordRow(running),
+      },
+    ];
+    let uses = 0;
+    for (const value of rejected) {
+      const postgres = await setup([
+        [value.row],
+        ...(value.row.transform_commit_claim_id === null
+          ? [taskRuntimeDomainRows(value.current), namespaceRows(value.current)]
+          : []),
+      ]);
+      expect(await postgres.repository.withCurrentTaskRuntimeExecutionClaim({
+        expected: value.expected,
+        now: () => value.now,
+        use: async () => {
+          uses += 1;
+          return "must-not-run";
+        },
+      })).toBeNull();
+    }
+    expect(uses).toBe(0);
+
+    const authorizationExpired = runningTaskRuntimeV3(claimedTaskRuntimeV3({
+      authorizationExpiresAt: START + 10,
+    }));
+    const expired = await setup([
+      [recordRow(authorizationExpired)],
+      taskRuntimeDomainRows(authorizationExpired),
+      namespaceRows(authorizationExpired),
+    ]);
+    expect(await expired.repository.withCurrentTaskRuntimeExecutionClaim({
+      expected: authorizationExpired,
+      now: () => START + 10,
+      use: async () => {
+        uses += 1;
+        return "must-not-run";
+      },
+    })).toBeNull();
+    expect(uses).toBe(0);
+
+    const recipientExpired: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...running,
+      snapshot: {
+        ...running.snapshot,
+        recipient: {
+          ...running.snapshot.recipient!,
+          expiresAt: START + 10,
+        },
+      },
+    };
+    const expiredRecipient = await setup([
+      [recordRow(recipientExpired)],
+      taskRuntimeDomainRows(recipientExpired),
+      namespaceRows(recipientExpired),
+    ]);
+    expect(await expiredRecipient.repository
+      .withCurrentTaskRuntimeExecutionClaim({
+        expected: recipientExpired,
+        now: () => START + 10,
+        use: async () => {
+          uses += 1;
+          return "must-not-run";
+        },
+      })).toBeNull();
+    expect(uses).toBe(0);
+  });
+
+  test("rolls back when the claim expires after the locked callback", async () => {
+    const current = runningTaskRuntimeV3(claimedTaskRuntimeV3());
+    const postgres = await setup([
+      [recordRow(current)],
+      taskRuntimeDomainRows(current),
+      namespaceRows(current),
+    ]);
+    const times = [START + 5, current.snapshot.claimExpiresAt!];
+    let uses = 0;
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(postgres.repository.withCurrentTaskRuntimeExecutionClaim({
+      expected: current,
+      now: () => times.shift()!,
+      use: async () => {
+        uses += 1;
+        expect(postgres.connection.transactionDepth).toBe(1);
+        return "expired";
+      },
+    })).rejects.toThrow("expired during transaction");
+    expect(uses).toBe(1);
+    expect(postgres.connection.transactionFailures).toBe(1);
+    expect(postgres.connection.transactionDepth).toBe(0);
   });
 
   test("replaces Task Runtime authority children under the exact request lock", async () => {

@@ -342,12 +342,16 @@ function restrictedAuthority(
   options: Readonly<{
     revoked?: boolean;
     securityRevision?: number;
+    deviceProjectionRevision?: number;
     signingPublicKey?: Uint8Array;
+    events?: string[];
   }> = {},
 ): PostgresJsBridgeConnection {
   const installationLineageDigest = new Uint8Array(32).fill(11);
   const headDigest = new Uint8Array(32).fill(8);
   const securityRevision = options.securityRevision ?? 6;
+  const deviceProjectionRevision = options.deviceProjectionRevision
+    ?? securityRevision;
   const signingPublicKey = options.signingPublicKey ?? value.signingPublicKey;
   const connection: PostgresJsBridgeConnection = {
     query: async <Row extends PostgresJsBridgeRow>(statement: string) => {
@@ -358,6 +362,7 @@ function restrictedAuthority(
           session_user: "nautilo_crypto",
         }];
       } else if (statement.includes("roster_bytes")) {
+        options.events?.push("device-authority");
         rows = options.revoked ? [] : [{
           user_id: USER,
           human_actor_id: HUMAN,
@@ -383,12 +388,14 @@ function restrictedAuthority(
           }),
         }];
       } else if (statement.includes("human_crypto_custodies")) {
+        options.events?.push("device-projection-lock");
         rows = [{
           device_id: DEVICE,
           device_generation: 2,
-          revision: securityRevision,
+          revision: deviceProjectionRevision,
         }];
       } else if (statement.includes("namespace_domain_key_heads")) {
+        options.events?.push("namespace-lock");
         rows = [{
           namespace_id: NAMESPACE,
           domain_id: DOMAIN,
@@ -400,6 +407,7 @@ function restrictedAuthority(
       } else if (statement.includes("domain_key_recipient_envelopes")) {
         rows = [{ domain_id: DOMAIN }];
       } else if (statement.includes("domain_key_heads")) {
+        options.events?.push("domain-lock");
         rows = [{
           domain_id: DOMAIN,
           participant_digest: value.domain.participantDigest.slice(),
@@ -659,6 +667,56 @@ describe("current Task Runtime authority", () => {
     expect(events.slice(0, 2)).toEqual(["policy lock", "policy"]);
     expect(events.filter((event) => event === "product").length)
       .toBeGreaterThan(0);
+  });
+
+  test("keeps Task security authority distinct from the locked device projection revision", async () => {
+    const value = await fixture();
+    const currentEvents: string[] = [];
+    const current = await withCurrentTaskRuntimeAuthority({
+      ...productAuthority(value, currentEvents),
+      restricted: restrictedAuthority(value, {
+        deviceProjectionRevision: 9,
+        events: currentEvents,
+      }),
+      crypto: value.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+      admission: value.admission,
+      request: value.request,
+      namespaceRequirements: value.namespaceRequirements,
+      domainRequirements: value.domainRequirements,
+      now: () => NOW + 1,
+      use: async (authority: CurrentTaskRuntimeAuthority) => {
+        expect(authority.device.securityRevision).toBe(6);
+        return "current";
+      },
+    } as unknown as Parameters<typeof withCurrentTaskRuntimeAuthority>[0]);
+    expect(current).toBe("current");
+    expect(currentEvents.indexOf("domain-lock"))
+      .toBeLessThan(currentEvents.indexOf("device-authority"));
+
+    const acceptedEvents: string[] = [];
+    const accepted = await withCurrentAcceptedTaskRuntimeAuthority({
+      ...productAuthority(value, acceptedEvents),
+      restricted: restrictedAuthority(value, {
+        deviceProjectionRevision: 9,
+        events: acceptedEvents,
+      }),
+      crypto: value.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+      accepted: value.accepted,
+      now: () => NOW + 1,
+      use: async (authority: CurrentTaskRuntimeAuthority) => {
+        expect(authority.device.securityRevision).toBe(6);
+        return "accepted";
+      },
+    } as unknown as Parameters<
+      typeof withCurrentAcceptedTaskRuntimeAuthority
+    >[0]);
+    expect(accepted).toBe("accepted");
+    expect(acceptedEvents.indexOf("domain-lock"))
+      .toBeLessThan(acceptedEvents.indexOf("device-authority"));
   });
 
   test("fails closed for revoked, revised, rekeyed, or invalidly signed issuers", async () => {

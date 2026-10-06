@@ -475,14 +475,46 @@ function authorityAllowsMutationSet(
   return exact.every((entry) => authority.mutableNamespaceIds.includes(entry));
 }
 
-/** Trusted composition boundary; authority and policy are checked before locks. */
-export type AgentMemoryPublicationBoundary = Readonly<{
-  beforeLocks(input: Readonly<{
-    transaction: Parameters<Parameters<ConversationProductCanonicalTransactionRunner["transaction"]>[0]>[0];
-    authority: ProtectedMemoryAuthority;
-    mutation: boolean;
-  }>): Promise<void>;
-}> & (
+const publicationReceipt = Symbol("agent-memory-publication-receipt");
+
+type AgentMemoryPublicationReceipt<Value> = Readonly<{
+  value: Value;
+  [publicationReceipt]: true;
+}>;
+
+export type AgentMemoryBeforeLocks = (input: Readonly<{
+  transaction: Parameters<Parameters<ConversationProductCanonicalTransactionRunner["transaction"]>[0]>[0];
+  authority: ProtectedMemoryAuthority;
+  mutation: boolean;
+}>) => Promise<void>;
+
+type AssertCurrentAgentMemoryPublication = () => Promise<void>;
+
+/**
+ * Trusted composition boundary. Foreground authority remains transaction-local
+ * and runs once before product locks. A Task authority owner instead wraps the
+ * entire Agent transaction, supplies a currentness assertion to `use`, and
+ * keeps its locks held until the exact callback receipt settles.
+ *
+ * Lifetime guards reject ordinary callback misuse, but cannot roll back an
+ * Agent transaction after a trusted owner has already released its locks.
+ */
+export type AgentMemoryPublicationBoundary = (
+  | Readonly<{
+      beforeLocks: AgentMemoryBeforeLocks;
+      withCurrentPublication?: never;
+    }>
+  | Readonly<{
+      beforeLocks?: never;
+      withCurrentPublication<Value>(input: Readonly<{
+        authority: ProtectedMemoryAuthority;
+        mutation: boolean;
+        use(
+          assertCurrent: AssertCurrentAgentMemoryPublication,
+        ): Promise<AgentMemoryPublicationReceipt<Value>>;
+      }>): Promise<AgentMemoryPublicationReceipt<Value>>;
+    }>
+) & (
   | Readonly<{ representation: "protected_only" }>
   | Readonly<{
       representation: "ordinary_and_protected";
@@ -528,7 +560,11 @@ export class PostgresAgentMemoryProductPort
       throw new TypeError("Agent Memory dedup threshold is invalid");
     }
     this.#canonicalRunner = input.canonicalRunner;
-    if (typeof input.publication?.beforeLocks !== "function"
+    const foregroundBoundary = typeof input.publication?.beforeLocks === "function"
+      && input.publication.withCurrentPublication === undefined;
+    const heldBoundary = input.publication?.beforeLocks === undefined
+      && typeof input.publication?.withCurrentPublication === "function";
+    if ((!foregroundBoundary && !heldBoundary)
       || !["protected_only", "ordinary_and_protected"].includes(input.publication.representation)
       || (input.publication.representation === "ordinary_and_protected"
         && typeof input.publication.readPreparedPayload !== "function")) {
@@ -546,23 +582,108 @@ export class PostgresAgentMemoryProductPort
     execute: (transaction: ConversationProductPostgresTransaction) => Promise<Value>,
     mutation = true,
   ): Promise<Value> {
-    return this.#canonicalRunner.transaction(async (canonical, transaction) => {
-      const identity = oneOrNull(await executeTypedConversationProductQuery(
-        transaction,
-        conversationProductTypedDb.select({
-          current_user_id: sql<string>`app_current_user_id()::text`.as("current_user_id"),
-          current_agent_id: sql<string | null>`app_current_agent_id()::text`.as("current_agent_id"),
-        }).from(sql`(values (1)) as identity_probe`).limit(2),
-      ), "Agent Memory transaction identity");
-      if (
-        identity === null
-        || rowNullableString(identity, "current_user_id")
-          !== authority.subjectUserId
-        || rowNullableString(identity, "current_agent_id") !== authority.agentId
-      ) throw new Error("Agent Memory transaction authority changed");
-      await this.#publication.beforeLocks({ transaction: canonical, authority, mutation });
-      return execute(transaction);
-    }, { isolationLevel: "serializable" });
+    const run = (
+      beforeLocks: AgentMemoryBeforeLocks | null,
+      assertCurrent: AssertCurrentAgentMemoryPublication | null,
+      assertOwnerOpen: () => void,
+    ) =>
+      this.#canonicalRunner.transaction(async (canonical, transaction) => {
+        assertOwnerOpen();
+        const identity = oneOrNull(await executeTypedConversationProductQuery(
+          transaction,
+          conversationProductTypedDb.select({
+            current_user_id: sql<string>`app_current_user_id()::text`.as("current_user_id"),
+            current_agent_id: sql<string | null>`app_current_agent_id()::text`.as("current_agent_id"),
+          }).from(sql`(values (1)) as identity_probe`).limit(2),
+        ), "Agent Memory transaction identity");
+        assertOwnerOpen();
+        if (
+          identity === null
+          || rowNullableString(identity, "current_user_id")
+            !== authority.subjectUserId
+          || rowNullableString(identity, "current_agent_id") !== authority.agentId
+        ) throw new Error("Agent Memory transaction authority changed");
+        if (beforeLocks !== null) {
+          await beforeLocks({ transaction: canonical, authority, mutation });
+          assertOwnerOpen();
+        } else {
+          if (assertCurrent === null) {
+            throw new TypeError(
+              "Agent Memory publication currentness assertion is required",
+            );
+          }
+          await assertCurrent();
+          assertOwnerOpen();
+        }
+        const value = await execute(transaction);
+        if (assertCurrent !== null) {
+          assertOwnerOpen();
+          await assertCurrent();
+          assertOwnerOpen();
+        }
+        return value;
+      }, { isolationLevel: "serializable" });
+    if ("beforeLocks" in this.#publication
+      && this.#publication.beforeLocks !== undefined) {
+      return run(this.#publication.beforeLocks, null, () => undefined);
+    }
+
+    const held = this.#publication.withCurrentPublication;
+    let ownerOpen = true;
+    let useCalls = 0;
+    let completedReceipt: AgentMemoryPublicationReceipt<Value> | null = null;
+    const getCompletedReceipt = () => completedReceipt;
+    let ownerReceipt: AgentMemoryPublicationReceipt<Value>;
+    try {
+      ownerReceipt = await held({
+        authority,
+        mutation,
+        use: async assertCurrent => {
+          useCalls += 1;
+          if (
+            useCalls !== 1
+            || !ownerOpen
+            || typeof assertCurrent !== "function"
+          ) {
+            throw new TypeError(
+              "Agent Memory publication callback is one-use",
+            );
+          }
+          const assertHeld = () => {
+            if (!ownerOpen) {
+              throw new TypeError(
+                "Agent Memory publication callback escaped its authority owner",
+              );
+            }
+          };
+          const value = await run(null, assertCurrent, assertHeld);
+          if (!ownerOpen) {
+            throw new TypeError(
+              "Agent Memory publication callback escaped its authority owner",
+            );
+          }
+          const receipt: AgentMemoryPublicationReceipt<Value> = Object.freeze({
+            value,
+            [publicationReceipt]: true as const,
+          });
+          completedReceipt = receipt;
+          return receipt;
+        },
+      });
+    } finally {
+      ownerOpen = false;
+    }
+    const completed = getCompletedReceipt();
+    if (
+      useCalls !== 1
+      || completed === null
+      || ownerReceipt !== completed
+    ) {
+      throw new TypeError(
+        "Agent Memory publication authority owner returned a manufactured result",
+      );
+    }
+    return completed.value;
   }
 
   async #scopeOpenForMutation(

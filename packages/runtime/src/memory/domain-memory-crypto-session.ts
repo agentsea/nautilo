@@ -6,7 +6,8 @@ import {
   deriveMemoryCryptoObjectIdV1,
   encodeMemoryPayloadV1,
   type AgentEntityCryptoInvocation,
-  type AgentObjectProtector,
+  type AgentObjectProtectionResult,
+  type AgentObjectProtectionSource,
   type AtomicMemoryCryptoCompletionPort,
   type MemoryPayloadV1,
   type PreparedMemoryCryptoRevision,
@@ -23,6 +24,20 @@ type EntrypointId = Parameters<
 >[0]["entrypointId"];
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export type DomainMemoryObjectProtectionRequest<Value> = Readonly<{
+  memoryId: string;
+  contentRevision: number;
+  operationId: string;
+  source: AgentObjectProtectionSource;
+  decode(plaintextBytes: Uint8Array): Value;
+}>;
+
+export interface DomainMemoryObjectProtector {
+  protect<Value>(request: DomainMemoryObjectProtectionRequest<Value>): Promise<
+    AgentObjectProtectionResult<Value>
+  >;
+}
 
 function unavailable<Value>(
   reason: "authorization_required" | "incomplete_access_set"
@@ -89,8 +104,8 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
     AgentEntityCryptoInvocation,
     "signal" | "useCurrentSet"
   >;
-  objects: AgentObjectProtector;
-  prepareOperationId: string;
+  objects: DomainMemoryObjectProtector;
+  prepareOperationId: string | ((planOperationId: string) => string);
 }>): Readonly<{
   session: ProtectedAgentMemoryCryptoSessionPort;
   completion: Pick<AtomicMemoryCryptoCompletionPort, "complete">;
@@ -141,7 +156,13 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
     if (cancelled(signal)) return unavailable<MemoryPayloadV1>(
       "authorization_required",
     );
+    const namespaceIds = canonicalTarget(target);
+    if (namespaceIds === null) {
+      return unavailable<MemoryPayloadV1>("incomplete_access_set");
+    }
     const result = await input.objects.protect({
+      memoryId: target.memoryId,
+      contentRevision: target.contentRevision,
       operationId: `memory-open:${target.cryptoObjectId}`,
       source: {
         objectId: target.cryptoObjectId,
@@ -149,7 +170,7 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
         existingObjectId: target.cryptoObjectId,
         expectedAccessRevision: target.cryptoAccessRevision,
         createdAt: 0,
-        namespaceIds: target.requiredNamespaceIds,
+        namespaceIds,
         plaintextBytes: null,
       },
       decode: decodeMemoryPayloadV1,
@@ -172,14 +193,21 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
       if (request.candidates.length === 0) {
         return Object.freeze({ status: "success" as const, value: Object.freeze([]) });
       }
-      if (request.candidates.some((candidate) => {
-        const ids = canonicalTarget(candidate);
-        return ids === null
-          || !ids.includes(candidate.readNamespaceId)
-          || !request.authority.readableNamespaceIds.includes(candidate.readNamespaceId);
-      })) return unavailable("incomplete_access_set");
-      const values: ProtectedMemorySessionOpenedItem[] = [];
+      const candidates: ProtectedMemoryCandidate[] = [];
       for (const candidate of request.candidates) {
+        const ids = canonicalTarget(candidate);
+        if (ids === null
+          || !ids.includes(candidate.readNamespaceId)
+          || !request.authority.readableNamespaceIds.includes(candidate.readNamespaceId)) {
+          return unavailable("incomplete_access_set");
+        }
+        candidates.push(Object.freeze({
+          ...candidate,
+          requiredNamespaceIds: ids,
+        }));
+      }
+      const values: ProtectedMemorySessionOpenedItem[] = [];
+      for (const candidate of candidates) {
         const result = await open(candidate, request.signal);
         if (result.status === "unavailable") return result;
         values.push(Object.freeze({
@@ -198,31 +226,62 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
       if (!bound(request) || cancelled(request.signal)) {
         return unavailable("authorization_required");
       }
-      const targetIds = canonicalTarget({
+      const plan = Object.freeze({
+        operationId: request.plan.operationId,
+        mutationKind: request.plan.mutationKind,
         memoryId: request.plan.memoryId,
         contentRevision: request.plan.contentRevision,
         cryptoAccessRevision: request.plan.cryptoAccessRevision,
         cryptoObjectId: request.plan.cryptoObjectId,
-        requiredNamespaceIds: request.plan.requiredNamespaceIds,
+        requiredNamespaceIds: Object.freeze([
+          ...request.plan.requiredNamespaceIds,
+        ]),
+        mutationCommitment: request.plan.mutationCommitment.slice(),
+        createdAt: request.plan.createdAt,
+      });
+      const content = request.content.kind === "complete"
+        ? Object.freeze({
+          kind: "complete" as const,
+          payload: Object.freeze({ ...request.content.payload }),
+        })
+        : Object.freeze({
+          kind: "replacement" as const,
+          previous: Object.freeze({
+            ...request.content.previous,
+            requiredNamespaceIds: Object.freeze([
+              ...request.content.previous.requiredNamespaceIds,
+            ]),
+          }),
+          content: request.content.content,
+        });
+      const targetIds = canonicalTarget({
+        memoryId: plan.memoryId,
+        contentRevision: plan.contentRevision,
+        cryptoAccessRevision: plan.cryptoAccessRevision,
+        cryptoObjectId: plan.cryptoObjectId,
+        requiredNamespaceIds: plan.requiredNamespaceIds,
       });
       if (
         targetIds === null
-        || request.plan.mutationKind !== (
-          request.content.kind === "complete" ? "save" : "replace"
+        || plan.mutationKind !== (
+          content.kind === "complete" ? "save" : "replace"
         )
         || !targetIds.every((id) => request.authority.mutableNamespaceIds.includes(id))
       ) return unavailable("incomplete_access_set");
       const mutationCommitment = commitMemoryMutationV1(
-        request.content.kind === "complete"
-          ? { kind: "save", payload: request.content.payload }
-          : { kind: "replace", content: request.content.content },
+        content.kind === "complete"
+          ? { kind: "save", payload: content.payload }
+          : { kind: "replace", content: content.content },
       );
-      if (!exactBytes(mutationCommitment, request.plan.mutationCommitment)) {
+      if (!exactBytes(mutationCommitment, plan.mutationCommitment)) {
         return unavailable("integrity_failure");
       }
-      let payload = request.content.kind === "complete" ? request.content.payload : null;
-      if (request.content.kind === "replacement") {
-        const previousIds = canonicalTarget(request.content.previous);
+      const prepareOperationId = typeof input.prepareOperationId === "string"
+        ? input.prepareOperationId
+        : input.prepareOperationId(plan.operationId);
+      let payload = content.kind === "complete" ? content.payload : null;
+      if (content.kind === "replacement") {
+        const previousIds = canonicalTarget(content.previous);
         if (
           previousIds === null
           || !exactIds(previousIds, targetIds)
@@ -232,25 +291,27 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
         ) {
           return unavailable("incomplete_access_set");
         }
-        const previous = await open(request.content.previous, request.signal);
+        const previous = await open(content.previous, request.signal);
         if (previous.status === "unavailable") return previous;
         payload = Object.freeze({
           formatVersion: 1 as const,
           type: previous.value.type,
-          content: request.content.content,
+          content: content.content,
         });
       }
       if (payload === null) return unavailable("integrity_failure");
       const plaintextBytes = encodeMemoryPayloadV1(payload);
       try {
         const result = await input.objects.protect({
-          operationId: input.prepareOperationId,
+          memoryId: plan.memoryId,
+          contentRevision: plan.contentRevision,
+          operationId: prepareOperationId,
           source: {
-            objectId: request.plan.cryptoObjectId,
+            objectId: plan.cryptoObjectId,
             objectType: MEMORY_OBJECT_TYPE,
             existingObjectId: null,
-            expectedAccessRevision: request.plan.cryptoAccessRevision,
-            createdAt: request.plan.createdAt,
+            expectedAccessRevision: plan.cryptoAccessRevision,
+            createdAt: plan.createdAt,
             namespaceIds: targetIds,
             plaintextBytes,
           },
@@ -259,9 +320,9 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
         if (cancelled(request.signal)) return unavailable("authorization_required");
         if (result.status !== "verified") return mappedFailure(result);
         const prepared = Object.freeze({
-          memoryId: request.plan.memoryId,
-          contentRevision: request.plan.contentRevision,
-          objectId: request.plan.cryptoObjectId,
+          memoryId: plan.memoryId,
+          contentRevision: plan.contentRevision,
+          objectId: plan.cryptoObjectId,
           objectType: MEMORY_OBJECT_TYPE,
           payloadVersion: MEMORY_PAYLOAD_VERSION,
           requiredNamespaceIds: targetIds,

@@ -238,6 +238,7 @@ export {
   PostgresAgentMemoryProductPort,
 } from "./memory/postgres-agent-memory-product-port.ts";
 export type {
+  AgentMemoryBeforeLocks,
   AgentMemoryPublicationBoundary,
   ProtectedAgentBackgroundMemoryOutputPlanInput,
 } from "./memory/postgres-agent-memory-product-port.ts";
@@ -1008,6 +1009,12 @@ export {
 } from "./task/native-task-run-result-preparation.ts";
 
 export {
+  persistTaskRuntimeAgentObject,
+  type TaskRuntimeAgentObjectPersistenceAuthority,
+  type WithTaskRuntimeAgentObjectPersistenceAuthority,
+} from "./object/postgres-task-runtime-agent-object.ts";
+
+export {
   createNativeTaskRuntimeCheckpointCellCrypto,
   type NativeTaskRuntimeCheckpointCellCryptoInput,
 } from "./task/native-task-runtime-checkpoint-cell-crypto.ts";
@@ -1032,3 +1039,8 @@ export {
   type NativeTaskMessageReadAuthorityV1,
   type NativeTaskMessageReadTargetV1,
 } from "./task/native-task-message-opener.ts";
+
+export {
+  withNativeTaskMemoryEntityCrypto,
+  type NativeTaskMemoryEntityCryptoInput,
+} from "./task/native-task-memory-entity-crypto.ts";

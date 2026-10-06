@@ -84,7 +84,7 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
     && left.every((value, index) => value === right[index]);
 }
 
-function acceptedRecord(
+export function acceptedTaskRuntimeRecord(
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): AcceptedTaskRuntimeAuthorizationV3 | null {
   const snapshot = record.snapshot;
@@ -123,7 +123,7 @@ function acceptedRecord(
   });
 }
 
-function destroyAcceptedRecord(
+export function destroyAcceptedTaskRuntimeRecord(
   accepted: AcceptedTaskRuntimeAuthorizationV3,
 ): void {
   accepted.descriptorBytes.fill(0);
@@ -181,7 +181,7 @@ function destroyHeldAuthority(authority: HeldProtectedTaskRuntimeAuthority): voi
   }
 }
 
-async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
+export async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
   product: PostgresJsBridgeConnection;
   occurrence: ProtectedTaskOccurrence;
 }>): Promise<CurrentProtectedTaskRuntimeFacts | null> {
@@ -323,7 +323,7 @@ export function createCurrentProtectedTaskRuntimeAuthorityPort(
         || input.record.snapshot.state === "running"
         ? "running" as const : null;
     if (phase === null) return null;
-    const accepted = acceptedRecord(input.record);
+    const accepted = acceptedTaskRuntimeRecord(input.record);
     if (accepted === null || input.record.descriptorBytes === null) return null;
     let requestBytes: Uint8Array;
     try {
@@ -331,13 +331,13 @@ export function createCurrentProtectedTaskRuntimeAuthorityPort(
         input.request,
       );
     } catch {
-      destroyAcceptedRecord(accepted);
+      destroyAcceptedTaskRuntimeRecord(accepted);
       return null;
     }
     const exactRequest = sameBytes(requestBytes, input.record.descriptorBytes);
     requestBytes.fill(0);
     if (!exactRequest) {
-      destroyAcceptedRecord(accepted);
+      destroyAcceptedTaskRuntimeRecord(accepted);
       return null;
     }
     let held: HeldProtectedTaskRuntimeAuthority | null;
@@ -370,7 +370,7 @@ export function createCurrentProtectedTaskRuntimeAuthorityPort(
         },
       });
     } finally {
-      destroyAcceptedRecord(accepted);
+      destroyAcceptedTaskRuntimeRecord(accepted);
     }
     if (held === null) return null;
     try {

@@ -377,12 +377,6 @@ export async function withCurrentTaskRuntimeAuthority<Value>(input: Readonly<{
             input.signal?.throwIfAborted();
             return input.restricted.transactionOnce(async (restrictedTx) => {
               const restricted = inTransaction(restrictedTx);
-              const device = await new PostgresDeviceAdmissionRepository(
-                await verifyCryptoPostgresHandle(restricted),
-                input.crypto,
-              ).currentAuthorityForDelegation(input.subject);
-              if (device === null) return null;
-              retainBytes(device, owned);
               const inspected = await new PostgresDomainKeyAuthorityRepository(
                 restricted,
                 input.crypto,
@@ -396,11 +390,19 @@ export async function withCurrentTaskRuntimeAuthority<Value>(input: Readonly<{
               });
               if (inspected.status !== "ready") return null;
               for (const domain of inspected.domains) retainBytes(domain, owned);
+              // The native inspector has now locked the device/group projection,
+              // Namespaces, and Domains. Read group security authority only after
+              // those locks; its securityRevision is a distinct counter from the
+              // inspector's device-projection revision.
+              const device = await new PostgresDeviceAdmissionRepository(
+                await verifyCryptoPostgresHandle(restricted),
+                input.crypto,
+              ).currentAuthorityForDelegation(input.subject);
+              if (device === null) return null;
+              retainBytes(device, owned);
               if (inspected.committerDeviceId !== device.deviceId
                 || inspected.committerDeviceSigningGeneration
                   !== device.deviceGeneration
-                || inspected.hostAuthorizationRevision
-                  !== device.securityRevision
                 || !matchesCurrentTaskRuntimeAuthority({
                   request,
                   plan,
@@ -573,12 +575,6 @@ export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
             input.signal?.throwIfAborted();
             return input.restricted.transactionOnce(async (restrictedTx) => {
               const restricted = inTransaction(restrictedTx);
-              const device = await new PostgresDeviceAdmissionRepository(
-                await verifyCryptoPostgresHandle(restricted),
-                input.crypto,
-              ).currentAuthorityForDelegation(input.subject);
-              if (device === null) return null;
-              retainBytes(device, owned);
               const inspected = await new PostgresDomainKeyAuthorityRepository(
                 restricted,
                 input.crypto,
@@ -592,6 +588,16 @@ export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
               });
               if (inspected.status !== "ready") return null;
               for (const domain of inspected.domains) retainBytes(domain, owned);
+              // The signed Task plan and accepted issuer bind group
+              // securityRevision. The inspector reports a separate device-row
+              // projection revision, so acquire its locks before reading the
+              // current group authority and never compare the two counters.
+              const device = await new PostgresDeviceAdmissionRepository(
+                await verifyCryptoPostgresHandle(restricted),
+                input.crypto,
+              ).currentAuthorityForDelegation(input.subject);
+              if (device === null) return null;
+              retainBytes(device, owned);
               const signingPublicKeyHash = input.crypto.hash(
                 device.signingPublicKey,
               );
@@ -612,8 +618,6 @@ export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
                 || inspected.committerDeviceId !== device.deviceId
                 || inspected.committerDeviceSigningGeneration
                   !== device.deviceGeneration
-                || inspected.hostAuthorizationRevision
-                  !== device.securityRevision
                 || !matchesCurrentTaskRuntimeAuthorityWithoutAdmission({
                   request,
                   plan,

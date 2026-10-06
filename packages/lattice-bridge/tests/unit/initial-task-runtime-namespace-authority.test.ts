@@ -307,6 +307,22 @@ describe("initial Task Runtime recipient authority", () => {
     } finally { admission.mockRestore(); }
   });
 
+  test("accepts an independent locked device projection revision", async () => {
+    const { input } = fixture(substitute("device-lock", "revision", 9));
+    const admission = spyOn(
+      PostgresDeviceAdmissionRepository.prototype,
+      "currentAuthorityForDelegation",
+    ).mockImplementation(async () => device());
+    try {
+      expect(await withInitialTaskRuntimeRecipientAuthority({
+        ...recipientInput(input),
+        use: (current) => current.device.securityRevision,
+      })).toBe(4);
+    } finally {
+      admission.mockRestore();
+    }
+  });
+
   for (const [stage, field, value] of [
     ["task", "agent_id", HUMAN], ["exact-source", "namespace_id", NAMESPACES[1]],
     ["targets", "namespace_access_revision", 40], ["policy", "revision", 8], ["policy", "mode", "plaintext_only"],

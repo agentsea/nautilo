@@ -6,11 +6,14 @@ import {
   type AgentEntityNamespaceAuthority,
   type AgentObjectProtectionResult,
   type AgentObjectProtectionSource,
-  type AgentObjectProtector,
   type MemoryPayloadV1,
 } from "@nautilo/lattice-bridge";
 
-import { createDomainMemoryCryptoSession } from
+import {
+  createDomainMemoryCryptoSession,
+  type DomainMemoryObjectProtectionRequest,
+  type DomainMemoryObjectProtector,
+} from
   "../../src/memory/domain-memory-crypto-session";
 
 const SUBJECT_ID = "10000000-0000-4000-8000-000000000001";
@@ -64,19 +67,25 @@ function plan(payload: MemoryPayloadV1) {
 
 function setup() {
   const operations: string[] = [];
+  const coordinates: Readonly<{
+    memoryId: string;
+    contentRevision: number;
+  }>[] = [];
   const sources: AgentObjectProtectionSource[] = [];
   const opened: MemoryPayloadV1 = Object.freeze({
     formatVersion: 1,
     type: "preference",
     content: "Existing protected Memory",
   });
-  const objects: AgentObjectProtector = Object.freeze({
-    async protect<Value>(request: Readonly<{
-      operationId: string;
-      source: AgentObjectProtectionSource;
-      decode(plaintextBytes: Uint8Array): Value;
-    }>): Promise<AgentObjectProtectionResult<Value>> {
+  const objects: DomainMemoryObjectProtector = Object.freeze({
+    async protect<Value>(
+      request: DomainMemoryObjectProtectionRequest<Value>,
+    ): Promise<AgentObjectProtectionResult<Value>> {
       operations.push(request.operationId);
+      coordinates.push(Object.freeze({
+        memoryId: request.memoryId,
+        contentRevision: request.contentRevision,
+      }));
       sources.push(request.source);
       const bytes = request.source.plaintextBytes?.slice()
         ?? encodeMemoryPayloadV1(opened);
@@ -112,7 +121,7 @@ function setup() {
     objects,
     prepareOperationId: "accepted-domain-publication",
   });
-  return { factory, operations, sources };
+  return { factory, operations, coordinates, sources };
 }
 
 describe("Domain Memory crypto session", () => {
@@ -163,6 +172,10 @@ describe("Domain Memory crypto session", () => {
     expect(state.operations).toEqual([
       `memory-open:${cryptoObjectId}`,
       "accepted-domain-publication",
+    ]);
+    expect(state.coordinates).toEqual([
+      { memoryId: MEMORY_ID, contentRevision: 1 },
+      { memoryId: MEMORY_ID, contentRevision: 1 },
     ]);
     expect(state.sources.map(source => ({
       existingObjectId: source.existingObjectId,

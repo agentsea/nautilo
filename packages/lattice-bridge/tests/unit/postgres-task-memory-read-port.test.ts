@@ -22,6 +22,8 @@ import { PostgresTaskMemoryReadPort } from
   "../../src/server/memory/postgres-task-memory-read-port.ts";
 import type { TaskMemoryReadBinding } from
   "../../src/server/memory/postgres-task-memory-read-port.ts";
+import type { TaskMemoryReadBoundary } from
+  "../../src/server/memory/postgres-task-memory-read-port.ts";
 
 type Query = Readonly<{
   statement: string;
@@ -181,6 +183,7 @@ async function createPort(
   connection: ScriptedConnection,
   binding: TaskMemoryReadBinding,
   boundaries: ProtectedMemoryAuthority[] = [],
+  boundary?: TaskMemoryReadBoundary,
 ) {
   const handle = await verifyConversationProductPostgresHandle(connection);
   const canonicalRunner = bindConversationProductCanonicalTransactionRunner(
@@ -191,10 +194,10 @@ async function createPort(
     handle,
     canonicalRunner,
     binding,
-    boundary: {
-      beforeLocks: ({ authority }) => {
+    boundary: boundary ?? {
+      withCurrentRead: ({ authority, use }) => {
         boundaries.push(authority);
-        return Promise.resolve();
+        return use();
       },
     },
   });
@@ -304,6 +307,119 @@ describe("PostgresTaskMemoryReadPort", () => {
     connection.assertExhausted();
   });
 
+  test("keeps ordinary bodies inside held authority and exposes no result after a late failure", async () => {
+    const selected = verifiedRow({
+      memoryId: MEMORY_A,
+      requiredNamespaceIds: [NAMESPACE_A],
+      ordinary: true,
+      distance: 0.1,
+    });
+    const candidate: AgentMemorySearchCandidate = Object.freeze({
+      representation: "dual",
+      memoryId: MEMORY_A,
+      contentRevision: 1,
+      cryptoAccessRevision: 0,
+      cryptoObjectId: selected.crypto_object_id,
+      readNamespaceId: NAMESPACE_A,
+      requiredNamespaceIds: Object.freeze([NAMESPACE_A]),
+      importance: 0.7,
+      tier: 1,
+      score: 0.9,
+      createdAt: CREATED_AT,
+    });
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [identity],
+      [selected],
+      [{ memory_id: MEMORY_A, namespace_id: NAMESPACE_A }],
+      [selected],
+      [{
+        memory_id: MEMORY_A,
+        content_revision: 1,
+        type: "fact",
+        content: "held plaintext",
+      }],
+    ]);
+    let bodyLoadedWhileHeld = false;
+    const port = await createPort(
+      connection,
+      { mode: "namespace", authority: namespaceAuthority },
+      [],
+      {
+        withCurrentRead: async ({ use }) => {
+          const receipt = await use();
+          bodyLoadedWhileHeld = connection.queries.some(query =>
+            query.parameters.includes("held plaintext")
+            || /select.+\bcontent\b.+from.+memories/isu.test(query.statement)
+          );
+          expect(receipt).toBeDefined();
+          throw new Error("read authority expired");
+        },
+      },
+    );
+
+    expect(port.loadExactOrdinary({
+      authority: namespaceAuthority,
+      candidates: [candidate],
+    })).rejects.toThrow("read authority expired");
+    expect(bodyLoadedWhileHeld).toBe(true);
+    connection.assertExhausted();
+  });
+
+  test("rejects manufactured, duplicate, and escaped held-read callback use", async () => {
+    let escaped: (() => Promise<unknown>) | null = null;
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+    ]);
+    const port = await createPort(
+      connection,
+      { mode: "namespace", authority: namespaceAuthority },
+      [],
+      {
+        withCurrentRead: async ({ use }) => {
+          escaped = use;
+          return Object.freeze({ value: { status: "success", value: [] } }) as never;
+        },
+      },
+    );
+    expect(port.searchCandidates({
+      authority: namespaceAuthority,
+      embedding,
+      limit: 1,
+      includeArchive: false,
+    })).rejects.toThrow("manufactured result");
+    expect(escaped).not.toBeNull();
+    expect(escaped!()).rejects.toThrow("one-use");
+    connection.assertExhausted();
+
+    const duplicateConnection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [identity],
+      [],
+    ]);
+    const duplicatePort = await createPort(
+      duplicateConnection,
+      { mode: "namespace", authority: namespaceAuthority },
+      [],
+      {
+        withCurrentRead: async ({ use }) => {
+          const receipt = await use();
+          const duplicate = use();
+          expect(duplicate).rejects.toThrow("one-use");
+          await duplicate.catch(() => undefined);
+          return receipt;
+        },
+      },
+    );
+    expect(duplicatePort.searchCandidates({
+      authority: namespaceAuthority,
+      embedding,
+      limit: 1,
+      includeArchive: false,
+    })).rejects.toThrow("manufactured result");
+    duplicateConnection.assertExhausted();
+  });
+
   test("Scope reads retain foreign audience edges under the current Task binding", async () => {
     const required = [NAMESPACE_A, NAMESPACE_B, NAMESPACE_C];
     const ranked = verifiedRow({
@@ -397,7 +513,7 @@ describe("PostgresTaskMemoryReadPort", () => {
       handle,
       canonicalRunner,
       binding: { mode: "namespace", authority: namespaceAuthority },
-      boundary: { beforeLocks: () => Promise.resolve() },
+      boundary: { withCurrentRead: ({ use }) => use() },
     })).toThrow("requires a direct nautilo handle");
   });
 });

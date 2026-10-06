@@ -2,6 +2,28 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { afterAll, describe, expect, test } from "bun:test";
 import {
+  LatticeCrypto,
+  authorizationRevision,
+  createDomainForegroundAuthorizationPlan,
+  cryptoDeviceId,
+  humanId,
+  mintDomainForegroundAuthorization,
+  type DomainForegroundAuthorityEntry,
+  type DomainForegroundSecretEntry,
+} from "@nautilo/lattice-crypto";
+import {
+  createTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+} from "@nautilo/lattice-crypto/background";
+import { seededRng } from "@nautilo/lattice-crypto/testing";
+import {
+  destroyDomainForegroundAuthorizationPlanV2,
+  destroyDomainForegroundAuthorizationV2,
+  serializeDomainForegroundAuthorizationV2,
+  verifyDomainForegroundAuthorizationV2,
+} from "@nautilo/lattice-crypto/wire";
+import {
   __resetSharedDirectCryptoDbForTests,
   backgroundCryptoAuthorizationDomainRequirements,
   backgroundCryptoAuthorizationNamespaceRequirements,
@@ -25,7 +47,9 @@ import {
 import {
   attachBackgroundAuthorizationRecipient,
   cancelBackgroundAuthorizationRequest,
+  claimBackgroundAuthorizationRequest,
   createBackgroundAuthorizationTaskRuntimeRequestV3,
+  markBackgroundAuthorizationRunning,
 } from "../../src/protected-execution/background-authorization/lifecycle";
 import {
   PostgresBackgroundAuthorizationRepository,
@@ -284,6 +308,256 @@ async function seedAwaitingDevice(
     throw new Error("Task authority fixture recipient attachment lost its CAS");
   }
   return attached.record as BackgroundAuthorizationTaskRuntimeRecordV3;
+}
+
+async function seedRunningExecutionClaim(
+  repository: PostgresBackgroundAuthorizationRepository,
+  requestId: string,
+): Promise<BackgroundAuthorizationTaskRuntimeRecordV3> {
+  const suffix = randomUUID();
+  const initial = taskRecord({
+    requestId,
+    taskRunId: randomUUID(),
+    suffix,
+  });
+  const crypto = new LatticeCrypto(seededRng(940_001), {
+    now: () => START,
+  });
+  const signer = crypto.generateSigningKeyPair();
+  const recipient = await crypto.generateEncryptionKeyPair();
+  const issuingHumanId = humanId(randomUUID());
+  const issuingDeviceId = cryptoDeviceId(`task-device-${suffix}`);
+  const issuingDeviceGeneration = 3;
+  const issuingDeviceRevision = authorizationRevision(7);
+  const domainAuthorities: DomainForegroundAuthorityEntry[] =
+    initial.authoritySet.domainRequirements.map((domain, index) => {
+      const namespace = initial.authoritySet.namespaceRequirements.find(
+        (candidate) => candidate.domainId === domain.domainId,
+      );
+      if (namespace === undefined) {
+        throw new Error("Task execution fixture Domain has no Namespace");
+      }
+      return Object.freeze({
+        domainId: domain.domainId,
+        sourceNamespaceId: namespace.namespaceId,
+        participantDigest: bytes(`participants:${suffix}:${index}`),
+        participantCount: 1,
+        keyClass: "ai" as const,
+        domainKeyGeneration: domain.expectedEpoch,
+        authorizationRevision: authorizationRevision(
+          domain.expectedAuthorizationRevision,
+        ),
+        headDigest: bytes(`head:${suffix}:${index}`),
+        activeNamespaceBindingSetDigest: bytes(
+          `bindings:${suffix}:${index}`,
+        ),
+        activeNamespaceBindingCount:
+          initial.authoritySet.namespaceRequirements.filter(
+            (candidate) => candidate.domainId === domain.domainId,
+          ).length,
+      });
+    });
+  const domainSecrets: DomainForegroundSecretEntry[] = domainAuthorities.map(
+    (domain, index) => Object.freeze({
+      ...domain,
+      participantDigest: domain.participantDigest.slice(),
+      headDigest: domain.headDigest.slice(),
+      domainKey: bytes(`domain-key:${suffix}:${index}`),
+    }),
+  );
+  const recipientKeyId = `task-recipient-${suffix}`;
+  const deadlineAt = START + 60_000;
+  const plan = createDomainForegroundAuthorizationPlan(crypto, {
+    authorizationId: requestId,
+    policyRevision: initial.expectedPolicyRevision,
+    sessionId: `task-episode-${suffix}`,
+    roomId: `room-${suffix}`,
+    subjectHumanId: issuingHumanId,
+    committerDeviceId: issuingDeviceId,
+    committerDeviceSigningGeneration: issuingDeviceGeneration,
+    hostAuthorizationRevision: issuingDeviceRevision,
+    recipientKind: "runtime",
+    recipientPrincipalId: "nautilo_task_runtime",
+    recipientAuthorizationRevision: authorizationRevision(0),
+    recipientRuntimeGeneration: initial.snapshot.recipientGeneration,
+    recipientKeyId,
+    operations: ["decrypt", "encrypt"],
+    issuedAt: START,
+    deadlineAt,
+    maximumSecretBytes: 2_048,
+    domains: domainAuthorities,
+  });
+  const request = createTaskRuntimeBackgroundAuthorizationRequestV1({
+    requestId,
+    workId: initial.snapshot.workId,
+    workKind: "task.execute",
+    workPurpose: "task.execute",
+    recipientGeneration: initial.snapshot.recipientGeneration,
+    episodeId: plan.sessionId,
+    sourceRoomId: plan.roomId,
+    recipientKeyId,
+    recipientPublicKey: recipient.publicKey,
+    authorizationPlan: plan,
+    issuedAt: plan.issuedAt,
+    deadlineAt: plan.deadlineAt,
+  });
+  const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
+    request,
+  );
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+  const attached: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+    ...initial,
+    snapshot: attachBackgroundAuthorizationRecipient(initial.snapshot, {
+      descriptorDigest: hexDigest(descriptorBytes),
+      recipientKeyId,
+      recipientPublicKey: Buffer.from(recipient.publicKey).toString(
+        "base64url",
+      ),
+      expiresAt: deadlineAt,
+      now: START + 1,
+    }) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    descriptorBytes,
+  };
+  createdRequestIds.add(requestId);
+  let authorization: Awaited<ReturnType<
+    typeof mintDomainForegroundAuthorization
+  >> | null = null;
+  let responseBytes: Uint8Array | null = null;
+  try {
+    expect((await repository.create(initial)).status).toBe("created");
+    const attachedResult = await repository.compareAndSwap({
+      expectedRequestRevision: initial.snapshot.requestRevision,
+      next: attached,
+    });
+    expect(attachedResult.status).toBe("updated");
+
+    authorization = await mintDomainForegroundAuthorization(crypto, {
+      plan,
+      domains: domainSecrets,
+      committerDeviceSigningPrivateKey: signer.privateKey,
+      recipientEncryptionPublicKey: recipient.publicKey,
+    });
+    responseBytes = serializeDomainForegroundAuthorizationV2(authorization);
+    const verified = verifyDomainForegroundAuthorizationV2(crypto, {
+      authorizationBytes: responseBytes,
+      now: START + 2,
+      current: {
+        authorizationId: plan.authorizationId,
+        policyRevision: plan.policyRevision,
+        sessionId: plan.sessionId,
+        roomId: plan.roomId,
+        subjectHumanId: plan.subjectHumanId,
+        committerDeviceId: plan.committerDeviceId,
+        committerDeviceSigningGeneration:
+          plan.committerDeviceSigningGeneration,
+        committerDeviceSigningPublicKey: signer.publicKey,
+        committerDeviceActive: true,
+        hostAuthorizationRevision: plan.hostAuthorizationRevision,
+        recipientKind: plan.recipientKind,
+        recipientPrincipalId: plan.recipientPrincipalId,
+        recipientAuthorizationRevision: plan.recipientAuthorizationRevision,
+        recipientRuntimeGeneration: plan.recipientRuntimeGeneration,
+        recipientKeyId: plan.recipientKeyId,
+        recipientAuthorized: true,
+        domains: domainAuthorities,
+      },
+    });
+    expect(verified.status).toBe("verified");
+    if (verified.status !== "verified") {
+      throw new Error("Task execution fixture authorization did not verify");
+    }
+    const descriptorHash = crypto.hash(descriptorBytes);
+    const responseHash = crypto.hash(responseBytes);
+    const issuerSigningPublicKeyHash = crypto.hash(signer.publicKey);
+    try {
+      const accepted = await repository.acceptVerifiedResponse({
+        response: {
+          formatVersion: 3,
+          kind: "runtime",
+          requestId,
+          descriptorHash,
+          descriptorBytes: descriptorBytes.slice(),
+          recipientGeneration: initial.snapshot.recipientGeneration,
+          recipientKeyId,
+          recipientPublicKey: recipient.publicKey.slice(),
+          workId: initial.snapshot.workId,
+          workKind: initial.workKind,
+          purpose: initial.purpose,
+          authoritySet: initial.authoritySet,
+          responseBytes: responseBytes.slice(),
+          responseHash,
+          authorizationId: plan.authorizationId,
+          authorizationHash: responseHash.slice(),
+          issuingHumanId,
+          issuingDeviceId,
+          issuingDeviceAuthorizationRevision: issuingDeviceRevision,
+          issuerSigningPublicKeyHash,
+          issuedAt: plan.issuedAt,
+          expiresAt: plan.deadlineAt,
+        },
+        acceptedAt: START + 2,
+      });
+      expect(accepted.status).toBe("accepted");
+      if (accepted.status !== "accepted") {
+        throw new Error("Task execution fixture response was not accepted");
+      }
+      const acceptedRecord = accepted.record as
+        BackgroundAuthorizationTaskRuntimeRecordV3;
+      const claimed: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+        ...acceptedRecord,
+        snapshot: claimBackgroundAuthorizationRequest(
+          acceptedRecord.snapshot,
+          `task-claim-${suffix}`,
+          START + 3,
+          START + 50_000,
+        ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      };
+      const claimedResult = await repository.compareAndSwap({
+        expectedRequestRevision: acceptedRecord.snapshot.requestRevision,
+        next: claimed,
+      });
+      expect(claimedResult.status).toBe("updated");
+      if (claimedResult.status !== "updated") {
+        throw new Error("Task execution fixture claim lost its CAS");
+      }
+      const storedClaimed = claimedResult.record as
+        BackgroundAuthorizationTaskRuntimeRecordV3;
+      const running: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+        ...storedClaimed,
+        snapshot: markBackgroundAuthorizationRunning(
+          storedClaimed.snapshot,
+          START + 4,
+        ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      };
+      const runningResult = await repository.compareAndSwap({
+        expectedRequestRevision: storedClaimed.snapshot.requestRevision,
+        next: running,
+      });
+      expect(runningResult.status).toBe("updated");
+      if (runningResult.status !== "updated") {
+        throw new Error("Task execution fixture running CAS lost");
+      }
+      return runningResult.record as BackgroundAuthorizationTaskRuntimeRecordV3;
+    } finally {
+      descriptorHash.fill(0);
+      responseHash.fill(0);
+      issuerSigningPublicKeyHash.fill(0);
+    }
+  } finally {
+    if (authorization !== null) {
+      destroyDomainForegroundAuthorizationV2(authorization);
+    }
+    responseBytes?.fill(0);
+    descriptorBytes.fill(0);
+    destroyDomainForegroundAuthorizationPlanV2(plan);
+    domainSecrets.forEach((domain) => {
+      domain.participantDigest.fill(0);
+      domain.headDigest.fill(0);
+      domain.domainKey.fill(0);
+    });
+    signer.privateKey.fill(0);
+    recipient.privateKey.fill(0);
+  }
 }
 
 type Deferred<Value> = Readonly<{
@@ -629,4 +903,103 @@ describePostgres("Task Runtime pre-claim authority replacement", () => {
       }
     });
   }
+
+  test("holds a live Task execution claim against concurrent cancellation", async () => {
+    const base = createPostgresJsBridgeConnection(getSharedDirectCryptoDb());
+    const fixture = await verifiedRepository(base);
+    const running = await seedRunningExecutionClaim(
+      fixture.repository,
+      `task-execution-lock-${randomUUID()}`,
+    );
+    const release = deferred<void>();
+    const callbackReady = deferred<void>();
+    const held = fixture.repository.withCurrentTaskRuntimeExecutionClaim({
+      expected: running,
+      now: () => START + 5,
+      use: async (current, handle) => {
+        expect(current).toEqual(running);
+        expect(await new PostgresBackgroundAuthorizationRepository(handle)
+          .get(running.snapshot.requestId)).toEqual(running);
+        callbackReady.resolve();
+        await release.promise;
+        return "held";
+      },
+    });
+    void held.catch(error => callbackReady.reject(error));
+    await callbackReady.promise;
+
+    const cancelled: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...running,
+      snapshot: cancelBackgroundAuthorizationRequest(
+        running.snapshot,
+        "cancelled",
+        START + 6,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      finishedAt: START + 6,
+    };
+    const cancellationConnection = observedConnection(base);
+    const cancellationHandle = await verifyCryptoPostgresHandle(
+      cancellationConnection.connection,
+    );
+    const cancellation = withVerifiedCryptoPostgresTransaction(
+      cancellationHandle,
+      handle => new PostgresBackgroundAuthorizationRepository(handle)
+        .compareAndSwap({
+          expectedRequestRevision: running.snapshot.requestRevision,
+          next: cancelled,
+        }),
+    );
+    try {
+      await waitForBackendLock(base, await cancellationConnection.pid);
+      release.resolve();
+      expect(await within(held)).toBe("held");
+      expect(await within(cancellation)).toEqual({
+        status: "updated",
+        record: cancelled,
+      });
+    } finally {
+      release.resolve();
+      await within(Promise.allSettled([held, cancellation]));
+    }
+  });
+
+  test("rolls back callback writes when the held Task claim expires", async () => {
+    const fixture = await verifiedRepository();
+    const running = await seedRunningExecutionClaim(
+      fixture.repository,
+      `task-execution-expiry-${randomUUID()}`,
+    );
+    const cancelled: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...running,
+      snapshot: cancelBackgroundAuthorizationRequest(
+        running.snapshot,
+        "cancelled",
+        START + 6,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      finishedAt: START + 6,
+    };
+    const clock = [START + 5, running.snapshot.claimExpiresAt!];
+    let callbackWrites = 0;
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(fixture.repository.withCurrentTaskRuntimeExecutionClaim({
+      expected: running,
+      now: () => clock.shift()!,
+      use: async (_current, handle) => {
+        const result = await new PostgresBackgroundAuthorizationRepository(
+          handle,
+        ).compareAndSwap({
+          expectedRequestRevision: running.snapshot.requestRevision,
+          next: cancelled,
+        });
+        expect(result).toEqual({ status: "updated", record: cancelled });
+        callbackWrites += 1;
+        return "must-roll-back";
+      },
+    })).rejects.toThrow("expired during transaction");
+    expect(callbackWrites).toBe(1);
+    expect(await fixture.repository.get(running.snapshot.requestId)).toEqual(
+      running,
+    );
+  });
 });

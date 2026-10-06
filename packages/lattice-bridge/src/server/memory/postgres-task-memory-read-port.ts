@@ -70,11 +70,24 @@ type CanonicalTransaction = Parameters<
   Parameters<ConversationProductCanonicalTransactionRunner["transaction"]>[0]
 >[0];
 
+const taskMemoryReadReceipt = Symbol("task-memory-read-receipt");
+
+type TaskMemoryReadReceipt<Value> = Readonly<{
+  value: Value;
+  [taskMemoryReadReceipt]: true;
+}>;
+
+/**
+ * Trusted Task authority owner. The owner must keep its locks held while
+ * `use` ranks, validates, and loads bodies on the supplied product
+ * transaction, then return the exact receipt from that one callback use.
+ */
 export type TaskMemoryReadBoundary = Readonly<{
-  beforeLocks(input: Readonly<{
+  withCurrentRead<Value>(input: Readonly<{
     transaction: CanonicalTransaction;
     authority: ProtectedMemoryAuthority;
-  }>): Promise<void>;
+    use(): Promise<TaskMemoryReadReceipt<Value>>;
+  }>): Promise<TaskMemoryReadReceipt<Value>>;
 }>;
 
 export type TaskMemoryReadBinding =
@@ -448,7 +461,7 @@ export class PostgresTaskMemoryReadPort implements ProtectedTaskMemoryReadPort {
     if (input.handle.role !== "nautilo") {
       throw new TypeError("Task Memory reader requires a direct nautilo handle");
     }
-    if (typeof input.boundary?.beforeLocks !== "function") {
+    if (typeof input.boundary?.withCurrentRead !== "function") {
       throw new TypeError("Task Memory read boundary is invalid");
     }
     if (input.binding.mode === "namespace") {
@@ -526,18 +539,69 @@ export class PostgresTaskMemoryReadPort implements ProtectedTaskMemoryReadPort {
   }>): Promise<ProtectedMemoryResult<Value>> {
     input.signal?.throwIfAborted();
     return this.#canonicalRunner.transaction(async (canonical, transaction) => {
-      input.signal?.throwIfAborted();
-      await this.#boundary.beforeLocks({
-        transaction: canonical,
-        authority: input.authority,
-      });
-      input.signal?.throwIfAborted();
-      if (!await this.#identityCurrent(transaction, input.authority)) {
-        return unavailable("authorization_required");
+      let ownerOpen = true;
+      let useCalls = 0;
+      let completedReceipt: TaskMemoryReadReceipt<
+        ProtectedMemoryResult<Value>
+      > | null = null;
+      const getCompletedReceipt = () => completedReceipt;
+      let ownerReceipt: TaskMemoryReadReceipt<ProtectedMemoryResult<Value>>;
+      try {
+        ownerReceipt = await this.#boundary.withCurrentRead({
+          transaction: canonical,
+          authority: input.authority,
+          use: async () => {
+            useCalls += 1;
+            if (useCalls !== 1 || !ownerOpen) {
+              throw new TypeError("Task Memory read callback is one-use");
+            }
+            input.signal?.throwIfAborted();
+            if (!await this.#identityCurrent(transaction, input.authority)) {
+              const receipt: TaskMemoryReadReceipt<
+                ProtectedMemoryResult<Value>
+              > = Object.freeze({
+                value: unavailable<Value>("authorization_required"),
+                [taskMemoryReadReceipt]: true as const,
+              });
+              completedReceipt = receipt;
+              return receipt;
+            }
+            if (!ownerOpen) {
+              throw new TypeError(
+                "Task Memory read callback escaped its authority owner",
+              );
+            }
+            const result = await input.use(transaction);
+            if (!ownerOpen) {
+              throw new TypeError(
+                "Task Memory read callback escaped its authority owner",
+              );
+            }
+            input.signal?.throwIfAborted();
+            const receipt: TaskMemoryReadReceipt<
+              ProtectedMemoryResult<Value>
+            > = Object.freeze({
+              value: result,
+              [taskMemoryReadReceipt]: true as const,
+            });
+            completedReceipt = receipt;
+            return receipt;
+          },
+        });
+      } finally {
+        ownerOpen = false;
       }
-      const result = await input.use(transaction);
-      input.signal?.throwIfAborted();
-      return result;
+      const completed = getCompletedReceipt();
+      if (
+        useCalls !== 1
+        || completed === null
+        || ownerReceipt !== completed
+      ) {
+        throw new TypeError(
+          "Task Memory read authority owner returned a manufactured result",
+        );
+      }
+      return completed.value;
     }, { isolationLevel: "serializable" });
   }
 

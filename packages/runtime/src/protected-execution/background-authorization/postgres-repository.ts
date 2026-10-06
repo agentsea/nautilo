@@ -32,6 +32,7 @@ import {
   BACKGROUND_AUTHORIZATION_MAX_TIMESTAMP_MS,
   parseBackgroundAuthorizationRequestSnapshot,
   cancelBackgroundAuthorizationRequest,
+  markBackgroundAuthorizationRunning,
 } from "./lifecycle";
 import {
   BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH,
@@ -70,6 +71,23 @@ import {
 } from "./repository";
 
 type Row = Readonly<Record<string, unknown>>;
+
+function taskRuntimeExecutionClaimIsActive(
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+  now: number,
+): boolean {
+  if (
+    !Number.isSafeInteger(now)
+    || now < 0
+    || now > BACKGROUND_AUTHORIZATION_MAX_TIMESTAMP_MS
+  ) throw new TypeError("Task Runtime execution claim clock is invalid");
+  return record.snapshot.claimExpiresAt !== null
+    && record.snapshot.recipient !== null
+    && record.acceptedMaterial !== null
+    && now < record.snapshot.claimExpiresAt
+    && now < record.snapshot.recipient.expiresAt
+    && now < record.acceptedMaterial.authorizationExpiresAt;
+}
 
 function requiredString(row: Row, field: string): string {
   const value = row[field];
@@ -860,6 +878,86 @@ export class PostgresBackgroundAuthorizationRepository
         status: "replaced" as const,
         record: stored as BackgroundAuthorizationTaskRuntimeRecordV3,
       };
+    });
+  }
+
+  /**
+   * Hold one exact live Task execution claim for a restricted transaction.
+   * The scoped handle is revoked when `use` returns and cannot serve as a
+   * durable claim proof after the request lock is released.
+   */
+  withCurrentTaskRuntimeExecutionClaim<Value>(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now(): number;
+    use(
+      current: BackgroundAuthorizationTaskRuntimeRecordV3,
+      transactionHandle: CryptoPostgresHandle,
+    ): Promise<Value>;
+  }>): Promise<Value | null> {
+    const parsed = parseBackgroundAuthorizationRecord(input.expected);
+    const snapshot = parsed.snapshot;
+    if (
+      snapshot.formatVersion !== 3
+      || snapshot.credentialSubject.kind !== "runtime"
+      || snapshot.credentialSubject.runtimeKind !== "task"
+      || snapshot.credentialSubject.runtimeVersion !== 1
+      || parsed.authoritySet === undefined
+    ) throw new TypeError("Task Runtime execution claim expected record is invalid");
+    const expected = parsed as BackgroundAuthorizationTaskRuntimeRecordV3;
+    return withVerifiedCryptoPostgresTransaction(this.handle, async handle => {
+      const table = backgroundCryptoAuthorizationRequests;
+      const rows = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.select().from(table)
+          .where(eq(table.requestId, expected.snapshot.requestId))
+          .limit(2).for("update"),
+      );
+      const row = rows[0] as Row | undefined;
+      if (
+        rows.length !== 1
+        || row === undefined
+        || row["transform_commit_claim_id"] !== null
+        || row["transform_commit_descriptor_hash"] !== null
+        || row["transform_commit_recipient_generation"] !== null
+        || row["transform_commit_output_count"] !== null
+        || row["transform_committed_at"] !== null
+      ) return null;
+      const repository = new PostgresBackgroundAuthorizationRepository(handle);
+      const hydrated = await repository.#recordFromRow(row);
+      const currentSnapshot = hydrated.snapshot;
+      if (
+        currentSnapshot.formatVersion !== 3
+        || currentSnapshot.credentialSubject.kind !== "runtime"
+        || currentSnapshot.credentialSubject.runtimeKind !== "task"
+        || currentSnapshot.credentialSubject.runtimeVersion !== 1
+        || hydrated.authoritySet === undefined
+        || currentSnapshot.state !== "running"
+      ) return null;
+      const current = hydrated as BackgroundAuthorizationTaskRuntimeRecordV3;
+      let matches = expected.snapshot.state === "running"
+        && sameBackgroundAuthorizationRecord(current, expected);
+      if (!matches && expected.snapshot.state === "claimed") {
+        try {
+          const successor = {
+            ...expected,
+            snapshot: markBackgroundAuthorizationRunning(
+              expected.snapshot,
+              current.snapshot.updatedAt,
+            ),
+          } as BackgroundAuthorizationTaskRuntimeRecordV3;
+          matches = sameBackgroundAuthorizationRecord(current, successor);
+        } catch {
+          return null;
+        }
+      }
+      if (!matches || !taskRuntimeExecutionClaimIsActive(current, input.now())) {
+        return null;
+      }
+      const value = await input.use(current, handle);
+      if (!taskRuntimeExecutionClaimIsActive(current, input.now())) {
+        throw new Error("Task Runtime execution claim expired during transaction");
+      }
+      return value;
     });
   }
 

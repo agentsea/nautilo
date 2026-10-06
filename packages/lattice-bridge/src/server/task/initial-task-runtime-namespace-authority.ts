@@ -360,9 +360,11 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: Ini
       });
       if (inspected.status !== "ready") return null;
       for (const domain of inspected.domains) owned.push(domain.participantDigest, domain.headDigest, domain.activeNamespaceBindingSetDigest);
+      // The native inspector's hostAuthorizationRevision is the device-row
+      // projection revision. Task recipient admission is instead bound to the
+      // group securityRevision re-read below; these counters may differ.
       if (inspected.committerDeviceId !== device.deviceId
         || inspected.committerDeviceSigningGeneration !== device.deviceGeneration
-        || inspected.hostAuthorizationRevision !== device.securityRevision
         || inspected.domains.length !== domains.length
         || inspected.domains.some((domain, index) => domain.domainId !== domains[index]?.domainId
           || domain.domainKeyGeneration !== domains[index]?.expectedEpoch

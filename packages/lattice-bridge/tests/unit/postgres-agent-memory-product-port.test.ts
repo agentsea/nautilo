@@ -507,6 +507,127 @@ describe("Postgres foreground Agent Memory product port", () => {
     }
   });
 
+  test("holds Task publication around the whole Agent transaction and asserts currentness before commit", async () => {
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo_agent", session_user: "nautilo_agent" }],
+      [identity],
+      [candidateRow([NAMESPACE_A])],
+      [{ namespace_id: NAMESPACE_A }],
+      [],
+    ]);
+    const events: string[] = [];
+    let authorityHeld = false;
+    let assertions = 0;
+    const { port } = await createPort(connection, { publication: {
+      representation: "protected_only",
+      withCurrentPublication: async ({ authority, mutation, use }) => {
+        expect(authority).toEqual(namespaceAuthority);
+        expect(mutation).toBe(false);
+        authorityHeld = true;
+        events.push("owner:open");
+        const receipt = await use(async () => {
+          expect(authorityHeld).toBe(true);
+          assertions += 1;
+          events.push(`assert:${assertions}:${connection.queries.length}`);
+        });
+        events.push("owner:after-agent-commit");
+        authorityHeld = false;
+        return receipt;
+      },
+    } });
+
+    expect((await port.searchCandidates({
+      authority: namespaceAuthority,
+      embedding,
+      limit: 1,
+      includeArchive: false,
+    })).status).toBe("success");
+    expect(events).toEqual([
+      "owner:open",
+      "assert:1:2",
+      "assert:2:5",
+      "owner:after-agent-commit",
+    ]);
+    expect(connection.isolationLevels).toEqual(["serializable"]);
+    connection.assertExhausted();
+  });
+
+  test("rejects the Agent transaction when the final held-authority assertion fails", async () => {
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo_agent", session_user: "nautilo_agent" }],
+      [identity],
+      [candidateRow([NAMESPACE_A])],
+      [{ namespace_id: NAMESPACE_A }],
+      [],
+    ]);
+    let assertions = 0;
+    const { port } = await createPort(connection, { publication: {
+      representation: "protected_only",
+      withCurrentPublication: ({ use }) => use(async () => {
+        assertions += 1;
+        if (assertions === 2) throw new Error("Task authority expired");
+      }),
+    } });
+
+    expect(port.searchCandidates({
+      authority: namespaceAuthority,
+      embedding,
+      limit: 1,
+      includeArchive: false,
+    })).rejects.toThrow("Task authority expired");
+    expect(assertions).toBe(2);
+    connection.assertExhausted();
+  });
+
+  test("rejects manufactured, duplicate, and escaped held-publication callback use", async () => {
+    let escaped: ((assertCurrent: () => Promise<void>) => Promise<unknown>)
+      | null = null;
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo_agent", session_user: "nautilo_agent" }],
+    ]);
+    const { port } = await createPort(connection, { publication: {
+      representation: "protected_only",
+      withCurrentPublication: async ({ use }) => {
+        escaped = use;
+        return Object.freeze({ value: { status: "success", value: [] } }) as never;
+      },
+    } });
+    expect(port.searchCandidates({
+      authority: namespaceAuthority,
+      embedding,
+      limit: 1,
+      includeArchive: false,
+    })).rejects.toThrow("manufactured result");
+    expect(escaped).not.toBeNull();
+    expect(escaped!(async () => undefined)).rejects.toThrow("one-use");
+    connection.assertExhausted();
+
+    const duplicateConnection = new ScriptedConnection([
+      [{ current_user: "nautilo_agent", session_user: "nautilo_agent" }],
+      [identity],
+      [],
+    ]);
+    const { port: duplicatePort } = await createPort(duplicateConnection, {
+      publication: {
+        representation: "protected_only",
+        withCurrentPublication: async ({ use }) => {
+          const receipt = await use(async () => undefined);
+          const duplicate = use(async () => undefined);
+          expect(duplicate).rejects.toThrow("one-use");
+          await duplicate.catch(() => undefined);
+          return receipt;
+        },
+      },
+    });
+    expect(duplicatePort.searchCandidates({
+      authority: namespaceAuthority,
+      embedding,
+      limit: 1,
+      includeArchive: false,
+    })).rejects.toThrow("manufactured result");
+    duplicateConnection.assertExhausted();
+  });
+
   test("rejects a canonical runner bound to a different verified handle", async () => {
     const firstConnection = new ScriptedConnection([[{
       current_user: "nautilo_agent",

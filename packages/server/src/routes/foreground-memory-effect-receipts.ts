@@ -12,7 +12,7 @@ import type {
   ProtectedMemoryResult,
 } from "@nautilo/lattice-bridge";
 import type {
-  AgentMemoryPublicationBoundary,
+  AgentMemoryBeforeLocks,
   ConversationProductCanonicalTransactionRunner,
   HumanMemoryPublicationBoundary,
   HumanMemoryProductAuthority,
@@ -107,7 +107,7 @@ function readableNamespaceIds(
 /** Deliver and acknowledge only one exact, already-committed mutation receipt. */
 export async function deliverCommittedForegroundMemoryEffect(input: Readonly<{
   canonicalRunner: ConversationProductCanonicalTransactionRunner;
-  beforeLocks: AgentMemoryPublicationBoundary["beforeLocks"];
+  beforeLocks: AgentMemoryBeforeLocks;
   authority: ProtectedMemoryAuthority;
   operationId: string;
   memoryId: string;

@@ -32,10 +32,16 @@ export type {
 export type { RuntimePolicyContext } from "@nautilo/trust";
 export {
   createDomainMemoryCryptoSession,
+  type DomainMemoryObjectProtectionRequest,
+  type DomainMemoryObjectProtector,
 } from "./memory/domain-memory-crypto-session";
 export {
   createForegroundDomainMemoryCryptoSession,
 } from "./memory/foreground-domain-memory-crypto-session";
+export {
+  createTaskRuntimeDomainMemoryCryptoSession,
+  type TaskRuntimeDomainMemoryCryptoSessionInput,
+} from "./memory/task-runtime-domain-memory-crypto-session";
 
 export { eventBus } from "./event-bus";
 export {
@@ -720,3 +726,8 @@ export { memoryReviewAdmission, finishMemoryReviewTurn } from "./memory-review/a
 export { recoverMemoryReviewTurnsAtStartup, readOrdinaryMemoryReviewCheckpoint } from "./memory-review/startup-recovery";
 
 export { canResumeSecurityResearchContextFailure } from "./tasks/security-report-recovery";
+
+export {
+  assertProtectedTaskJobReferenceV1,
+  type ProtectedTaskJobReferenceV1,
+} from "./tasks/protected-task-job-reference";

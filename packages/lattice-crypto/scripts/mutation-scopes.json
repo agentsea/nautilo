@@ -82,9 +82,11 @@
         "src/background/task-runtime-recipient-registry-v1.ts",
         "src/background/task-runtime-execution-evidence-v1.ts",
         "src/object/task-runtime-result-preparation-v1.ts",
-        "src/object/task-runtime-checkpoint-namespace-v1.ts"
+        "src/object/task-runtime-checkpoint-namespace-v1.ts",
+        "src/object/task-runtime-agent-access-manifest-set-v1.ts",
+        "src/object/task-runtime-agent-storage-coordinator-v1.ts"
       ],
-      "command": "bun test --bail=1 --timeout 60000 tests/unit/task-runtime-recipient-registry-v1.test.ts tests/integration/task-runtime-object-v1.test.ts"
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/task-runtime-recipient-registry-v1.test.ts tests/integration/task-runtime-object-v1.test.ts tests/unit/task-runtime-agent-object-access-set-v1.test.ts tests/property/task-runtime-agent-object-access-set-v1.property.test.ts"
     },
     {
       "name": "background-work-manifest",
@@ -140,7 +142,7 @@
         "src/object/payload.ts",
         "src/object/storage-coordinator.ts"
       ],
-      "command": "bun test --bail=1 --timeout 60000 tests/unit/grant-authorization-v2.test.ts tests/unit/grant-enumeration-v2.test.ts tests/unit/human-object-access-manifest-set-v1.test.ts tests/unit/object-v2-authorization.test.ts tests/unit/object-v2-batch.test.ts tests/unit/object-v2-crypto.test.ts tests/unit/object-v2-manifest.test.ts tests/integration/grant-v2-storage-coordinator.test.ts tests/integration/grant-v2-set-storage-coordinator.test.ts tests/integration/human-object-access-storage-coordinator.test.ts tests/integration/object-v2-storage-coordinator.test.ts tests/property/grant-authority-set-subset-evidence.property.test.ts tests/property/grant-enumeration-v2.property.test.ts"
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/grant-authorization-v2.test.ts tests/unit/grant-enumeration-v2.test.ts tests/unit/human-object-access-manifest-set-v1.test.ts tests/unit/object-v2-authorization.test.ts tests/unit/object-v2-batch.test.ts tests/unit/object-v2-crypto.test.ts tests/unit/object-v2-manifest.test.ts tests/integration/grant-v2-storage-coordinator.test.ts tests/integration/grant-v2-set-storage-coordinator.test.ts tests/integration/human-object-access-storage-coordinator.test.ts tests/integration/object-v2-storage-coordinator.test.ts tests/property/grant-authority-set-subset-evidence.property.test.ts tests/property/grant-enumeration-v2.property.test.ts tests/unit/task-runtime-agent-object-access-set-v1.test.ts"
     },
     {
       "name": "provider-lifecycle",
@@ -247,7 +249,7 @@
       "mutate": [
         "src/storage/v2-record-policy.ts"
       ],
-      "command": "bun test --bail=1 --timeout 60000 tests/unit/storage-v2.test.ts tests/integration/storage-adapter-support.test.ts tests/integration/object-v2-storage-coordinator.test.ts tests/integration/agent-object-access-storage-coordinator.test.ts"
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/storage-v2.test.ts tests/integration/storage-adapter-support.test.ts tests/integration/object-v2-storage-coordinator.test.ts tests/integration/agent-object-access-storage-coordinator.test.ts tests/unit/task-runtime-agent-object-access-set-v1.test.ts"
     },
     {
       "name": "existing-message-representation-publication",

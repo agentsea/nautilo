@@ -187,7 +187,7 @@ function baseInput(
       handle: {} as ConversationProductPostgresHandle,
       canonicalRunner: {} as ConversationProductCanonicalTransactionRunner,
       binding: readBinding,
-      boundary: { beforeLocks: async () => undefined },
+      boundary: { withCurrentRead: async ({ use }) => use() },
     },
     mutationProduct: mutationProduct(),
     crypto: crypto(),

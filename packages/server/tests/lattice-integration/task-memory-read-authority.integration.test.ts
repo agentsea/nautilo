@@ -26,7 +26,7 @@ import {
   fingerprintRequiredMemoryNamespaces,
   type ProtectedMemoryAuthority,
 } from "@nautilo/lattice-bridge";
-import { PostgresTaskMemoryReadPort } from
+import { PostgresTaskMemoryReadPort, type TaskMemoryReadBoundary } from
   "@nautilo/lattice-bridge/server";
 
 import { createForegroundProductTransactionContext } from
@@ -222,6 +222,9 @@ describe.serial("Task Memory read authority", () => {
           scopeId,
           originWritableNamespaceId: originNamespaceId!,
         });
+      const boundary: TaskMemoryReadBoundary = Object.freeze({
+        withCurrentRead: ({ use }) => use(),
+      });
       const portInput = Object.freeze({
         handle: product.handle,
         canonicalRunner: product.canonicalRunner,
@@ -231,9 +234,7 @@ describe.serial("Task Memory read authority", () => {
           coordinates,
           readableNamespaceIds: Object.freeze(namespaceIds),
         }),
-        boundary: Object.freeze({
-          beforeLocks: () => Promise.resolve(),
-        }),
+        boundary,
       });
       const port = new PostgresTaskMemoryReadPort(portInput);
 
