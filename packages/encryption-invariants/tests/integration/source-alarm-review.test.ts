@@ -1,3 +1,4 @@
+import { REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS } from "../../baseline/reviewed-task-foundation-source-alarms";
 import { REVIEWED_REFLECTION_REPLAY_SOURCE_ALARMS } from "../../baseline/reviewed-main-2026-09-12-reflection";
 import { REVIEWED_M314_SOURCE_ALARMS } from "../../baseline/reviewed-m314-source-alarms";
 import {
@@ -365,7 +366,8 @@ describe("source alarm review closure", () => {
       .concat(REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS)
       .concat(REVIEWED_REFLECTION_REPLAY_SOURCE_ALARMS)
       .filter((review) => !SUPERSEDED_MAIN_2026_09_17_SOURCE_ALARM_LOCATORS.has(review.locator))
-      .concat(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS));
+      .concat(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS)
+      .concat(REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS));
   });
 
   test("maps every exact baseline alarm to owned, release-blocking closure", () => {

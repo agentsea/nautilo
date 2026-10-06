@@ -9,6 +9,7 @@ import {
   type TaskSummary,
   type TaskTranscriptMessageVM,
 } from "@nautilo/types";
+import { ApiError } from "@nautilo/api-client/browser";
 
 /** Mobile has no protected Task key custody yet. Retain lifecycle, never invent text. */
 export type MobileTaskSummary = TaskSummary | TaskContentSummaryV1;
@@ -69,15 +70,9 @@ export function mobileTaskTranscript(detail: MobileTaskDetail): TaskTranscriptMe
     : [];
 }
 
-function httpStatus(error: unknown): number | null {
-  return error !== null && typeof error === "object" && "status" in error
-    && typeof (error as { status?: unknown }).status === "number"
-    ? (error as { status: number }).status
-    : null;
-}
-
-/** A previous server may not expose the opt-in projection yet. */
-export function isMissingTaskContentProjection(error: unknown): boolean {
-  const status = httpStatus(error);
-  return status === 404 || status === 405 || status === 501;
+/** The legacy endpoint refuses a mixed ordinary/protected Task collection. */
+export function requiresTaskContentProjection(error: unknown): boolean {
+  return error instanceof ApiError
+    && error.status === 409
+    && error.message === "task_content_requires_current_client";
 }

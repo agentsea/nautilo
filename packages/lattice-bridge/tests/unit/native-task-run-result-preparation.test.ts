@@ -94,8 +94,8 @@ async function fixture(adjust: Adjust = (_stage, rows) => rows) {
           domain_id: DOMAIN, domain_key_generation: 4, domain_authorization_revision: 9, domain_head_digest: domain.headDigest,
           bundle_revision: 1, retained_generation_count: 1, retained_authority_set_digest: retainedDigest, binding_digest: native.bindingDigest }];
       } else if (statement.includes('from "domain_key_heads"')) {
-        stage = "domain"; rows = [{ domain_id: DOMAIN, domain_key_generation: 4, authorization_revision: 9,
-          head_digest: domain.headDigest, participant_digest: domain.participantDigest, participant_count: 1 }];
+        stage = "domain"; rows = [{ domain_id: DOMAIN, domain_key_generation: "4", authorization_revision: "9",
+          head_digest: domain.headDigest, participant_digest: domain.participantDigest, participant_count: "1" }];
       } else throw new Error(`Unexpected native result query: ${statement}`);
       stages.push(stage);
       return adjust(stage, rows) as readonly Row[];

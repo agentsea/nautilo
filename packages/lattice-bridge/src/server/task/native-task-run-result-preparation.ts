@@ -18,7 +18,10 @@ import {
   PostgresDomainKeyAuthorityRepository,
   type DomainForegroundNamespaceAuthorityInspectionV2,
 } from "../delivery/postgres-domain-key-authority.ts";
-import { cryptoTypedDb, executeTypedCryptoQuery, verifyCryptoPostgresHandle } from "../storage/postgres-lattice-storage.ts";
+import {
+  cryptoTypedDb, executeTypedCryptoQuery,
+  readCryptoStorageInteger, verifyCryptoPostgresHandle,
+} from "../storage/postgres-lattice-storage.ts";
 
 export type PrepareNativeTaskRuntimeRunResultInput =
   Omit<PrepareTaskRuntimeRunResultInput, "namespace"> & Readonly<{
@@ -117,9 +120,9 @@ export async function prepareNativeTaskRuntimeRunResult(
       const head = rows[0];
       assertActive();
       if (rows.length !== 1 || head === undefined || head.domain_id !== domain.domainId
-        || head.domain_key_generation !== domain.domainKeyGeneration
-        || head.authorization_revision !== domain.authorizationRevision
-        || head.participant_count !== domain.participantCount
+        || readCryptoStorageInteger(head, "domain_key_generation") !== domain.domainKeyGeneration
+        || readCryptoStorageInteger(head, "authorization_revision") !== domain.authorizationRevision
+        || readCryptoStorageInteger(head, "participant_count") !== domain.participantCount
         || !(head.head_digest instanceof Uint8Array) || !sameBytes(head.head_digest, domain.headDigest)
         || !(head.participant_digest instanceof Uint8Array) || !sameBytes(head.participant_digest, domain.participantDigest)) {
         throw new TypeError("Native Task result Domain authority changed");
