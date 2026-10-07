@@ -104,6 +104,25 @@ export async function insertProviderCostEvent(input: InsertProviderCostEventInpu
   await insertProviderCostEventWith(getSharedDirectDb(), input);
 }
 
+/** Replace only the unresolved evidence of one already-recorded service call. */
+export async function settleProviderCostEvent(input: InsertProviderCostEventInput): Promise<void> {
+  const amounts = assertEvidence(input);
+  if (input.evidenceState === "unknown") return;
+  const db = getSharedDirectDb();
+  await db.update(providerCostEvents).set({ ...amounts, evidenceState: input.evidenceState })
+    .where(and(
+      eq(providerCostEvents.idempotencyKey, input.idempotencyKey),
+      eq(providerCostEvents.provider, input.provider),
+      eq(providerCostEvents.operation, input.operation),
+      eq(providerCostEvents.evidenceState, "unknown"),
+      input.fundingKind ? eq(providerCostEvents.fundingKind, input.fundingKind) : isNull(providerCostEvents.fundingKind),
+      input.providerRoute ? eq(providerCostEvents.providerRoute, input.providerRoute) : isNull(providerCostEvents.providerRoute),
+      input.payerHumanId ? eq(providerCostEvents.payerHumanId, input.payerHumanId) : isNull(providerCostEvents.payerHumanId),
+      input.credentialId ? eq(providerCostEvents.credentialId, input.credentialId) : isNull(providerCostEvents.credentialId),
+      input.credentialRevision ? eq(providerCostEvents.credentialRevision, input.credentialRevision) : isNull(providerCostEvents.credentialRevision),
+    ));
+}
+
 const EFFECTIVE_COST = sql`COALESCE(${providerCostEvents.actualCostUsd}, ${providerCostEvents.estimatedCostUsd}, 0)`;
 const CURRENT_ESTIMATED_COST = sql`CASE
   WHEN ${providerCostEvents.evidenceState} = 'estimated'

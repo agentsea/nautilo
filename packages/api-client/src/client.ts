@@ -4,8 +4,10 @@ import type {
   ModerationCommand,
   PersonalCostsRangeKey,
   PersonalCostsSummary,
+  PersonalProviderCapability,
   ServerModerationPolicy,
 } from "@nautilo/types";
+import { PERSONAL_PROVIDER_CAPABILITIES } from "@nautilo/types";
 import { moderationPolicySchema, moderationPolicyUpdateSchema, moderationPersonSchema, moderationReceiptSchema,
   enrollmentStatusSchema, enrollmentPageSchema, moderationPeopleSchema } from "./schemas/moderation";
 import {
@@ -75,6 +77,14 @@ import {
   avatarRefSchema,
   type SetupStatusResponse,
 } from "./schemas/setup-status";
+import {
+  personalCapabilityPreferencesResponseSchema,
+  replacePersonalCapabilityPreferencesRequestSchema,
+} from "./schemas/personal-capability-preferences";
+import type {
+  PersonalCapabilityPreferencesResponse,
+  ReplacePersonalCapabilityPreferencesRequest,
+} from "@nautilo/types";
 import {
   listGroupsResponseSchema,
   listGroupMembersResponseSchema,
@@ -2291,7 +2301,7 @@ export interface PersonalProviderCatalogEntry {
   readonly purpose: string;
   readonly signupUrl?: string | undefined;
   readonly formatHint?: string | undefined;
-  readonly personalCapabilities: readonly "chat"[];
+  readonly personalCapabilities: readonly PersonalProviderCapability[];
   /** Fixed server-owned destination. Humans cannot supply or edit this value. */
   readonly destination: string | null;
 }
@@ -2341,7 +2351,10 @@ const personalProviderCatalogEntrySchema: z.ZodType<PersonalProviderCatalogEntry
   purpose: z.string().min(1),
   signupUrl: z.string().min(1).optional(),
   formatHint: z.string().min(1).optional(),
-  personalCapabilities: z.array(z.literal("chat")),
+  personalCapabilities: z.array(z.string()).transform((values) => values.filter(
+    (value): value is PersonalProviderCapability =>
+      (PERSONAL_PROVIDER_CAPABILITIES as readonly string[]).includes(value),
+  )),
   destination: z.string().min(1).nullable().optional().default(null),
 }).strict();
 
@@ -5936,6 +5949,35 @@ export class NautiloApiClient {
       body: input,
       schema: deleteProviderCredentialResponseSchema,
       statusErrors: providerCredentialStatusErrors,
+    });
+  }
+
+  /** Read the authenticated Human's sparse capability choices and live projection. */
+  async getPersonalCapabilityPreferences(
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<PersonalCapabilityPreferencesResponse> {
+    return this.request({
+      path: "/api/account/capability-preferences",
+      auth: "session-fresh",
+      schema: personalCapabilityPreferencesResponseSchema,
+      defaultErrorPrefix: "GET /api/account/capability-preferences",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  /** Replace the complete sparse map with an exact revision fence. */
+  async replacePersonalCapabilityPreferences(
+    input: ReplacePersonalCapabilityPreferencesRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<PersonalCapabilityPreferencesResponse> {
+    return this.request({
+      method: "PUT",
+      path: "/api/account/capability-preferences",
+      auth: "session-fresh",
+      body: replacePersonalCapabilityPreferencesRequestSchema.parse(input),
+      schema: personalCapabilityPreferencesResponseSchema,
+      defaultErrorPrefix: "PUT /api/account/capability-preferences",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }
 

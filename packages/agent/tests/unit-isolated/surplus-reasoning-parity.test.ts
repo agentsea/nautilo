@@ -7,6 +7,7 @@ import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 const createModelInputs: Record<string, unknown>[] = [];
+const bindTools = mock((_tools: unknown[], _options?: Record<string, unknown>) => ({ invoke: async () => new AIMessage("unused") }));
 let observedResponse: ((receipt: { requestId: string; providerFamily: string; truncated: boolean; adaptedParameters?: string }, status: number) => Promise<void>) | undefined;
 const beginAttempt = mock(async (_input: Record<string, unknown>) => {});
 const settleAttempt = mock(async (_input: Record<string, unknown>) => {});
@@ -23,7 +24,7 @@ mock.module("../../src/providers/surplus-transport", () => ({
   createSurplusChatModel: (input: Record<string, unknown>) => {
     createModelInputs.push(input);
     observedResponse = input["onResponse"] as typeof observedResponse;
-    return { invoke: async () => new AIMessage("unused") };
+    return { invoke: async () => new AIMessage("unused"), bindTools };
   },
   isSafeSurplusDirectFallback: () => false,
   SurplusOutcomeUnknownError: MockSurplusOutcomeUnknownError,
@@ -53,6 +54,7 @@ const ROUTE = {
 
 beforeEach(() => {
   createModelInputs.length = 0;
+  bindTools.mockClear();
   beginAttempt.mockClear();
   settleAttempt.mockClear();
   settleAttempt.mockImplementation(async () => {});
@@ -153,6 +155,23 @@ describe("Surplus reasoning parity", () => {
         credentialRevision: 1,
       },
     })).toBe(true);
+  });
+
+  test("preserves required research tool choice through marketplace binding", async () => {
+    const { DynamicStructuredTool } = await import("@langchain/core/tools");
+    const { z } = await import("zod");
+    const search = new DynamicStructuredTool({ name: "search", description: "Search", schema: z.object({ query: z.string() }), func: async () => "unused" });
+    await invokeSurplusChatAttempt({
+      route: ROUTE, apiKey: "synthetic-surplus-key", messages: [new HumanMessage("test")], tools: [search],
+      toolBindingOptions: { tool_choice: "required" },
+      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+      invokeModel: async () => {
+        await observedResponse!({ requestId: "tool-choice-request", providerFamily: "openrouter", truncated: false }, 200);
+        return new AIMessage({ content: "ok", response_metadata: { finish_reason: "stop" } });
+      },
+    });
+    expect(bindTools.mock.calls[0]?.[0]).toEqual([search]);
+    expect(bindTools.mock.calls[0]?.[1]).toEqual({ tool_choice: "required" });
   });
 
   test("keeps a missing charge pending when its receipt has a recoverable request ID", async () => {

@@ -218,7 +218,8 @@ class UsageCallbackHandler extends BaseCallbackHandler {
     const nativeSearchProvider = this.modelId.startsWith("openai:")
       ? "openai"
       : this.modelId.startsWith("anthropic:") ? "anthropic" : null;
-    if (nativeSearchRequests > 0 && nativeSearchProvider) {
+    if (nativeSearchRequests > 0 && nativeSearchProvider
+      && usage?.actualCostUsd == null && ctx?.funding?.providerRoute !== "surplus") {
       const recordProviderCost = createToolProviderCostRecorder({
         userId: ctx?.userId,
         roomId: ctx?.roomId,
@@ -232,6 +233,7 @@ class UsageCallbackHandler extends BaseCallbackHandler {
       if (estimatedCostUsd) void recordProviderCost({
         provider: nativeSearchProvider,
         operation: "native_web_search",
+        ...(ctx?.funding ? { usageFunding: ctx.funding } : {}),
         receiptId: `${runId ?? randomUUID()}:native-web-search`,
         estimatedCostUsd,
         evidenceState: "estimated",

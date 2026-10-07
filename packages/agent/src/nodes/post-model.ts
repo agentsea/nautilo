@@ -108,7 +108,7 @@ import {
 } from "../tools/media/media-generation-approval-runtime";
 import type { ForegroundChatFundingSession } from "../runtime/foreground-chat-funding";
 import { personalFundingToolDenialMessage } from "./tools";
-import { isPersonalTaskControlCall } from "../runtime/personal-task-controls";
+import { personalToolCallSupported } from "../runtime/personal-tool-readiness";
 
 // ---------------------------------------------------------------------------
 // Interrupt payloads
@@ -486,8 +486,7 @@ export function createPostModelNode(
     if (
       deps?.foregroundChatFundingSession?.kind === "personal"
       && (
-        deps.foregroundChatFundingSession.personalTaskControls !== true
-        || toolCalls.some((call) => !isPersonalTaskControlCall(call))
+        toolCalls.some((call) => !personalToolCallSupported(call, deps.foregroundChatFundingSession?.personalTaskControls === true))
       )
     ) {
       return {

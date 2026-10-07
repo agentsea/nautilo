@@ -12,6 +12,7 @@ import { NotificationsSection } from "./sections/notifications-section";
 import { ThisMacSection } from "./sections/this-mac-section";
 import { PersonalProviderKeysSection } from "./sections/personal-provider-keys-section";
 import { PersonalCostsSection } from "./sections/personal-costs-section";
+import { PersonalCapabilityPreferencesSection } from "./sections/personal-capability-preferences-section";
 import type { SectionId } from "./ui";
 import type { UiTargetId } from "@nautilo/types";
 import { apiClient } from "../../lib/api";
@@ -224,6 +225,7 @@ export function SettingsPage() {
             showServerAdminLink={canManageServerProviderCredentials && managedByCloud === false}
           />
           <PersonalCostsSection key={`personal-costs-${auth.viewerGeneration}`} />
+          <PersonalCapabilityPreferencesSection key={`capability-models-${auth.viewerGeneration}`} />
           <MyAgentsSection showProviderKeyStatus={managedByCloud === false} />
           <ThisMacSection />
           <NotificationsSection />

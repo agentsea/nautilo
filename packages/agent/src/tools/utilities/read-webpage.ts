@@ -22,9 +22,11 @@ import {
 } from "@nautilo/relay";
 import type { BrowserResearchExecutionPort, BrowserResearchSnapshotInspectionExecutionResult } from "./browser-research-execution";
 import {
+  beginToolProviderCostAttempt,
   createToolProviderCostRecorder,
   type ProviderCostRecorder,
 } from "../../usage/provider-cost-recorder";
+import { getCapabilityFundingSession } from "../../runtime/capability-funding";
 import { estimateProviderToolCostUsd } from "@nautilo/db";
 
 export interface ReadWebpageOptions {
@@ -34,6 +36,10 @@ export interface ReadWebpageOptions {
   fetchImpl?: typeof fetch | undefined;
   recordProviderCost?: ProviderCostRecorder | undefined;
   beforeTavilyDispatch?: (() => Promise<void>) | undefined;
+  runTavilyAttempt?: (<T>(callback: (input: {
+    apiKey: string;
+    recordProviderCost: ProviderCostRecorder;
+  }) => Promise<T>) => Promise<T>) | undefined;
 }
 
 export interface ReadWebpageFetchOptions {
@@ -67,6 +73,19 @@ type RoutineCookieConsentAction =
 
 /** Stable, bounded reason for a successful Browser transition from Tavily. */
 export type TavilyReadFallbackReason = "tavily_empty" | "tavily_unconfigured" | "tavily_failed";
+
+const TAVILY_LOCAL_FALLBACK_CODES = new Set([
+  "personal_credentials_disabled", "personal_credentials_forbidden", "personal_credential_missing",
+  "server_credentials_forbidden", "provider_credentials_missing", "personal_credential_stale",
+  "personal_credential_unavailable", "personal_provider_unavailable", "unsupported_provider",
+  "unsupported_workload", "funding_interrupted_uncertain",
+]);
+
+function allowsLocalTavilyFallback(error: unknown): boolean {
+  return Boolean(error && typeof error === "object"
+    && typeof (error as { code?: unknown }).code === "string"
+    && TAVILY_LOCAL_FALLBACK_CODES.has((error as { code: string }).code));
+}
 
 export interface ReadWebpageResult {
   url: string;
@@ -282,6 +301,19 @@ export function buildReadWebpageFetcher(
         error: "Blocked URL — only public http/https webpages are allowed",
         errorCode: "blocked_url",
       };
+    }
+
+    if (options.runTavilyAttempt) {
+      try {
+        return await options.runTavilyAttempt(({ apiKey: admittedApiKey, recordProviderCost: admittedRecorder }) =>
+          buildReadWebpageFetcher({ ...options, apiKey: admittedApiKey,
+            recordProviderCost: admittedRecorder, beforeTavilyDispatch: undefined,
+            runTavilyAttempt: undefined })(url, requestOptions));
+      } catch (error) {
+        if (!allowsLocalTavilyFallback(error)) throw error;
+        return { url, status: 0, content: "", preview: "", contentLength: 0,
+          error: "Tavily extraction is unavailable for this request.", errorCode: "read_failed" };
+      }
     }
 
     if (apiKey) await beforeTavilyDispatch?.();
@@ -547,7 +579,7 @@ function formatConsentRecoveryScreenshot(result: BrowserResearchConsentRecoveryR
 /** Tavily-primary page reader with an exact paired-Desktop browser fallback. */
 export function buildAutoReadWebpageFetcher(options: AutoReadWebpageOptions = {}) {
   const tavily = buildReadWebpageFetcher(options);
-  const tavilyApiKey = options.apiKey ?? process.env["TAVILY_API_KEY"];
+  const tavilyApiKey = options.runTavilyAttempt ? "request-local" : options.apiKey ?? process.env["TAVILY_API_KEY"];
   return async (url: string, requestOptions: AutoReadWebpageRequestOptions = {}): Promise<ReadWebpageResult> => {
     if (options.provider === "duckduckgo_html") {
       if (isBlockedWebUrl(url)) {
@@ -633,8 +665,28 @@ export function createReadWebpageTool(context?: ToolContext): DynamicStructuredT
   const humanUserId = causalHumanForExecution(
     typeof context?.["causalHumanUserId"] === "string" ? context["causalHumanUserId"] : "",
   );
-  const beforeTavilyDispatch = () => assertCanUseServerProviderCredentials(humanUserId, "read_webpage_extract");
-  const fetchPage = buildAutoReadWebpageFetcher({ browserResearchExecutionPort, provider, recordProviderCost, beforeTavilyDispatch });
+  const createPageFetcher = (maxContentLength?: number) => {
+    const capabilityFunding = getCapabilityFundingSession();
+    const runTavilyAttempt = capabilityFunding ? async <T>(callback: (input: {
+      apiKey: string; recordProviderCost: ProviderCostRecorder;
+    }) => Promise<T>): Promise<T> => {
+      const service = await capabilityFunding.openService("tavily");
+      return service.runAttempt(async ({ apiKey, usageFunding }) => {
+        const attemptRecorder = await beginToolProviderCostAttempt(context,
+          { provider: "tavily", operation: "extract", usageFunding });
+        return callback({ apiKey, recordProviderCost: attemptRecorder });
+      });
+    } : undefined;
+    const beforeTavilyDispatch = capabilityFunding
+      ? undefined
+      : () => assertCanUseServerProviderCredentials(humanUserId, "read_webpage_extract");
+    return buildAutoReadWebpageFetcher({
+      ...(maxContentLength === undefined ? {} : { maxContentLength }),
+      browserResearchExecutionPort, provider, recordProviderCost,
+      ...(beforeTavilyDispatch ? { beforeTavilyDispatch } : {}),
+      ...(runTavilyAttempt ? { runTavilyAttempt } : {}),
+    });
+  };
 
   return new DynamicStructuredTool({
     name: "read_webpage",
@@ -791,9 +843,7 @@ Returns actual extracted page content, not only a search snippet. A one-shot ext
           errorCode: "read_failed",
         }, "");
       }
-      const res = maxContentLength
-        ? await buildAutoReadWebpageFetcher({ maxContentLength, browserResearchExecutionPort, provider, recordProviderCost, beforeTavilyDispatch })(url, consentActions ? { consentActions } : {})
-        : await fetchPage(url, consentActions ? { consentActions } : {});
+      const res = await createPageFetcher(maxContentLength)(url, consentActions ? { consentActions } : {});
       return formatReadWebpageToolResponse(res, url);
     },
   });

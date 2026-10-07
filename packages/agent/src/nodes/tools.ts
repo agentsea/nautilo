@@ -1,3 +1,4 @@
+import { getCapabilityFundingSession } from "../runtime/capability-funding";
 import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
 import { browserDecisionHandoffMessage, browserDecisionPlanError, browserObservationFromResult, interpretBrowserDecisionCall, settleBrowserDecision } from "../graph/browser-decision";
 import { randomUUID } from "node:crypto";
@@ -46,7 +47,7 @@ import type {
   RecallRecordsPort,
   RecallRecordsPortForState,
 } from "../tools/memory/recall-records";
-import { isPersonalTaskControlCall } from "../runtime/personal-task-controls";
+import { personalToolCallSupported } from "../runtime/personal-tool-readiness";
 
 export {
   RelayUnavailableError,
@@ -76,7 +77,7 @@ type ApprovedToolCall = NonNullable<NautiloState["approvedToolCalls"]>[number];
 
 export const PERSONAL_FUNDING_TOOL_UNSUPPORTED_RESULT = JSON.stringify({
   error: "unsupported_workload",
-  message: "Personal funding supports text chat and bounded native Task controls only. No tool was executed.",
+  message: "Personal funding is not available for one or more requested workflows. No tool was executed.",
   recovery: "continue_without_tools",
 });
 
@@ -251,8 +252,7 @@ async function executeToolsNode(
   if (
     protectedComposition.personalFunding === true
     && (
-      protectedComposition.personalTaskControls !== true
-      || toolCalls.some((call) => !isPersonalTaskControlCall(call))
+      toolCalls.some((call) => !personalToolCallSupported(call, protectedComposition.personalTaskControls === true))
     )
   ) {
     return {
@@ -426,7 +426,7 @@ async function invokeToolCall(
       ...(protectedComposition.fullEncryptionOnly === true
         ? { fullEncryptionOnly: true }
         : {}),
-      ...(protectedComposition.personalTaskControls === true
+      ...(protectedComposition.personalTaskControls === true && !getCapabilityFundingSession()
         ? { personalTaskControls: true }
         : {}),
       ...(protectedComposition.personalTaskRunnableModelIds === undefined

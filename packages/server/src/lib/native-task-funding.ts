@@ -1,7 +1,8 @@
+import { createCapabilityFundingSession, prepareCapabilityFundingSession } from "./capability-funding";
 import {
   modelIdForCapabilityProjection, getProfileByAgentId, resolveTaskModel,
   validateExactTaskModelSelection, resolveRetainedModels, resolveCatalogModel,
-  type ForegroundChatFundingSession,
+  type ForegroundChatFundingSession, isSupportedPersonalTool, readDeepResearchTaskMetadata,
 } from "@nautilo/agent";
 import { and, eq, isNull, rooms, namespaces, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type Task, type TaskRun } from "@nautilo/db";
 import { assertCanInvokeAgent, getUserCapabilities } from "@nautilo/trust";
@@ -18,12 +19,13 @@ type Candidate = Parameters<TaskFundingPort["prepareCreation"]>[0];
 function supportedShape(task: Candidate): boolean {
   return task.ownerId === task.requestorId && !task.parentTaskId && (task.depth ?? 0) === 0
     && (task.contentRepresentation ?? "ordinary") === "ordinary"
-    && task.toolsMode === "none" && !(task.toolsWhitelist?.length)
+    && ["none", "auto", "whitelist"].includes(task.toolsMode ?? "auto")
+    && (task.toolsWhitelist ?? []).every(isSupportedPersonalTool)
     && !task.useScope && !task.scopeId && !task.targetChatHandle
     && (task.preset === "task" || task.preset === "in_background" || task.preset === "schedule")
     && (task.targetChat === "orphan" || task.targetChat === "last_in_namespace")
     && (task.targetUserIds ?? []).every((id) => id === task.requestorId)
-    && !task.awaitResponse && Object.keys(task.metadata ?? {}).every((key) => key === "preparation");
+    && !task.awaitResponse && Object.keys(task.metadata ?? {}).every((key) => key === "preparation" || key === "deepResearch");
 }
 
 async function assertOwnShape(task: Candidate): Promise<void> {
@@ -51,6 +53,18 @@ async function assertOwnShape(task: Candidate): Promise<void> {
       || room.humanActorIds.length !== 0 || room.scope !== "private"
       || room.label !== `task:${task.id}`) throw new TaskFundingError("unsupported_workload");
   }
+  const research = readDeepResearchTaskMetadata(task.metadata);
+  if (research && research.version !== 2) throw new TaskFundingError("unsupported_workload");
+  if (research?.version === 2) {
+    const session = createCapabilityFundingSession(task.requestorId);
+    const lanes = { supervisor: research.modelPlan.supervisorModel, research: research.modelPlan.researchModel,
+      summarization: research.modelPlan.summarizationModel, compression: research.modelPlan.compressionModel,
+      finalReport: research.modelPlan.finalReportModel } as const;
+    for (const lane of Object.keys(lanes) as (keyof typeof lanes)[]) {
+      await session.openModel(lanes[lane], "research", research.modelFunding[lane]);
+    }
+    await session.openService("tavily", research.tavilyFunding);
+  }
   await assertCanInvokeAgent({ humanUserId: task.requestorId, origin: "task_dispatch",
     agentId: task.agentId, roomId: task.callingRoomId });
 }
@@ -74,9 +88,29 @@ function restoreDecision(task: Task, run: TaskRun): ModelFundingDecision {
     : { ...base, ...binding };
 }
 
-function assertSignedTextModel(modelId: string): void {
-  const env = { NAUTILO_ALLOW_CHINA_UPSTREAM: process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"] };
-  const row = resolveRetainedModels([modelId], { purpose: "chat", env })[0];
+type TaskSelection = Pick<Candidate,
+  "agentId" | "requestorId" | "requestedModelId" | "selectionProfile" |
+  "selectionSpec" | "toolsMode" | "toolsWhitelist">;
+
+/** Match the shared Task-selection definition of whether this run needs tools. */
+export function nativeTaskSelectionPurpose(
+  task: Pick<TaskSelection, "toolsMode" | "toolsWhitelist">,
+): "chat" | "task-tools" {
+  if (task.toolsMode === "none") return "chat";
+  if (task.toolsMode === "whitelist" && (task.toolsWhitelist?.length ?? 0) === 0) {
+    return "chat";
+  }
+  return "task-tools";
+}
+
+export function assertNativeTaskRetainedModelSelection(
+  modelId: string,
+  task: Pick<TaskSelection, "toolsMode" | "toolsWhitelist">,
+  env: NodeJS.ProcessEnv = {
+    NAUTILO_ALLOW_CHINA_UPSTREAM: process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"],
+  },
+): void {
+  const row = resolveRetainedModels([modelId], { purpose: nativeTaskSelectionPurpose(task), env })[0];
   const catalog = resolveCatalogModel(modelId, { env });
   if (!row || (row.availability !== "selectable" && row.availability !== "missing-key")) {
     throw new TaskFundingError("unsupported_provider");
@@ -84,34 +118,48 @@ function assertSignedTextModel(modelId: string): void {
   if (catalog.workload !== "chat" || !catalog.output.includes("text")) throw new TaskFundingError("unsupported_workload");
 }
 
-type TaskSelection = Pick<Candidate, "agentId" | "requestorId" | "requestedModelId" | "selectionProfile" | "selectionSpec">;
+export function validateNativeTaskExactModelSelection(
+  task: Pick<TaskSelection,
+    "requestedModelId" | "selectionProfile" | "selectionSpec" | "toolsMode" | "toolsWhitelist">,
+  env: NodeJS.ProcessEnv = {
+    NAUTILO_ALLOW_CHINA_UPSTREAM: process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"],
+  },
+) {
+  return validateExactTaskModelSelection({
+    requestedModelId: task.requestedModelId,
+    profile: task.selectionProfile,
+    spec: task.selectionSpec,
+    toolsMode: task.toolsMode,
+    toolsWhitelist: task.toolsWhitelist,
+    env,
+  });
+}
 
 async function selectTaskModel(task: TaskSelection, priorRun?: TaskRun): Promise<string> {
   if (priorRun) {
     if (!priorRun.modelId || (task.requestedModelId && task.requestedModelId !== priorRun.modelId)) {
       throw new TaskFundingError("funding_source_changed");
     }
-    assertSignedTextModel(priorRun.modelId);
+    assertNativeTaskRetainedModelSelection(priorRun.modelId, task);
     return priorRun.modelId;
   }
   if (task.requestedModelId) {
-    const failure = validateExactTaskModelSelection({ requestedModelId: task.requestedModelId,
-      profile: task.selectionProfile, spec: task.selectionSpec, toolsMode: "none",
-      env: { NAUTILO_ALLOW_CHINA_UPSTREAM: process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"] } });
+    const failure = validateNativeTaskExactModelSelection(task);
     if (failure && failure.code !== "missing_credentials") throw new Error(`[task-model-selection] ${failure.message}`);
-    assertSignedTextModel(task.requestedModelId);
+    assertNativeTaskRetainedModelSelection(task.requestedModelId, task);
     return task.requestedModelId;
   }
   const profile = await getProfileByAgentId(task.agentId);
   const baseModelId = modelIdForCapabilityProjection("chat", profile?.defaultModel?.trim()
     || process.env["NAUTILO_MODEL"]?.trim() || getCachedServerModelConfigRow()?.defaultChatModel?.trim());
   if (!task.selectionSpec && (!task.selectionProfile || task.selectionProfile === "balanced")) {
-    assertSignedTextModel(baseModelId);
+    assertNativeTaskRetainedModelSelection(baseModelId, task);
     return baseModelId;
   }
   const env = await callerTaskModelEnvironment(task.requestorId);
   return resolveTaskModel({ baseModelId,
-    profile: task.selectionProfile ?? null, spec: task.selectionSpec ?? null, env, purpose: "chat",
+    profile: task.selectionProfile ?? null, spec: task.selectionSpec ?? null, env,
+    purpose: nativeTaskSelectionPurpose(task),
     runnableModelIds: await callerTaskModelIds(task.requestorId) }).modelId;
 }
 
@@ -132,16 +180,23 @@ export async function assertRunnableNativeTaskSelection(
 
 /** Classify the actual worker selection without reading or exposing key plaintext. */
 export async function isPersonalOnlyNativeTaskSelection(
-  input: Omit<TaskSelection, "selectionProfile" | "selectionSpec"> & {
+  input: Omit<TaskSelection,
+    "selectionProfile" | "selectionSpec" | "toolsMode" | "toolsWhitelist"> & {
     callingRoomId: string;
     selectionProfile?: TaskSelection["selectionProfile"] | null;
     selectionSpec?: TaskSelection["selectionSpec"] | null;
+    toolsMode?: TaskSelection["toolsMode"];
+    toolsWhitelist?: TaskSelection["toolsWhitelist"];
   },
 ): Promise<boolean> {
   if (!await isOwnPrivateGenieRoom(input.requestorId, input.callingRoomId, input.agentId)) return false;
   const modelId = await selectRunnableTaskModel({ ...input,
     selectionProfile: input.selectionProfile ?? undefined,
-    selectionSpec: input.selectionSpec ?? undefined });
+    selectionSpec: input.selectionSpec ?? undefined,
+    // This legacy classifier rewrites an accepted create to `tools: []`.
+    // Capability-funded auto/whitelist Tasks enter through prepareCreation.
+    toolsMode: input.toolsMode ?? "none",
+    toolsWhitelist: input.toolsWhitelist ?? [] });
   if (!modelId) return false;
   return (await personalOnlyTaskModelIds(input.requestorId, [modelId])).length === 1;
 }
@@ -172,6 +227,8 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
       || currentTask.ownerId !== task.ownerId || currentTask.requestorId !== task.requestorId
       || currentTask.agentId !== task.agentId || currentTask.callingRoomId !== task.callingRoomId
       || currentTask.requestedModelId !== task.requestedModelId
+      || currentTask.toolsMode !== task.toolsMode
+      || JSON.stringify(currentTask.toolsWhitelist) !== JSON.stringify(task.toolsWhitelist)
       || currentRun.modelId !== run.modelId || currentRun.graphThreadId !== run.graphThreadId
       || currentRun.fundingPredecessorRunId !== run.fundingPredecessorRunId
       || !sameBinding(currentRun.fundingBinding, run.fundingBinding)
@@ -189,7 +246,7 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
       }
     }
     await assertOwnShape(currentTask);
-    assertSignedTextModel(candidateModelId);
+    assertNativeTaskRetainedModelSelection(candidateModelId, currentTask);
     if (!wake && task.requestedModelId && task.requestedModelId !== candidateModelId) {
       throw new TaskFundingError("funding_source_changed");
     }
@@ -210,6 +267,11 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
   let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
+    capabilityFunding: await prepareCapabilityFundingSession(
+      task.requestorId,
+      async () => { await resolveCandidate(modelId); },
+      admitted.kind,
+    ),
     async recheckAttempt(candidate, transport) {
       const current = await resolveCandidate(candidate, transport);
       if (transport && lastAttempt?.kind === "personal" && current.kind === "personal"

@@ -4,7 +4,12 @@ import {
   appendTranscriptMessages,
   createDeepResearchGraph,
   DeepResearchUnavailableError,
+  fromAdmittedDeepResearchModelPlan,
   fromDeepResearchConfig,
+  getCapabilityFundingSession,
+  parseDeepResearchTaskMetadataValue,
+  runWithDeepResearchFunding,
+  type AdmittedDeepResearchTaskMetadata,
   runWithUsageContext,
   validateDeepResearchModelPlan,
 } from "@nautilo/agent";
@@ -34,6 +39,22 @@ function readReturnRoute(input: Record<string, unknown>): DeepResearchReturnRout
     return null;
   }
   return { ownerId, requestorId, roomId, laneKey, agentId, graphThreadId };
+}
+
+function sameDeepResearchModelPlan(
+  admitted: AdmittedDeepResearchTaskMetadata["modelPlan"],
+  value: unknown,
+): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate).sort();
+  if (keys.join(",") !== "compressionModel,finalReportModel,researchModel,summarizationModel,supervisorModel,version") return false;
+  return candidate["version"] === 1
+    && candidate["supervisorModel"] === admitted.supervisorModel
+    && candidate["researchModel"] === admitted.researchModel
+    && candidate["summarizationModel"] === admitted.summarizationModel
+    && candidate["compressionModel"] === admitted.compressionModel
+    && candidate["finalReportModel"] === admitted.finalReportModel;
 }
 
 type AppendTranscript = typeof appendTranscriptMessages;
@@ -75,9 +96,21 @@ export function resolveDeepResearchExecutorConfiguration(
   input: Record<string, unknown>,
   env?: NodeJS.ProcessEnv,
 ): ReturnType<typeof fromDeepResearchConfig> {
+  const admitted = readAdmittedFunding(input);
   const storedPlan = input["deep_research_model_plan"];
   let configuration: ReturnType<typeof fromDeepResearchConfig>;
-  if (storedPlan === undefined) {
+  if (admitted) {
+    if (!getCapabilityFundingSession()) throw new DeepResearchFundingUnavailableError();
+    const inputPlan = storedPlan === undefined ? admitted.modelPlan : storedPlan;
+    if (!sameDeepResearchModelPlan(admitted.modelPlan, inputPlan)) {
+      throw new DeepResearchFundingUnavailableError();
+    }
+    configuration = fromAdmittedDeepResearchModelPlan(
+      admitted.modelPlan,
+      undefined,
+      env ?? process.env,
+    );
+  } else if (storedPlan === undefined) {
     configuration = fromDeepResearchConfig(undefined, env === undefined ? {} : { env });
   } else {
     const modelPlan = validateDeepResearchModelPlan(storedPlan, env);
@@ -87,10 +120,25 @@ export function resolveDeepResearchExecutorConfiguration(
     });
   }
   const environment = env ?? process.env;
-  if (configuration.search_api === "tavily" && !environment["TAVILY_API_KEY"]?.trim()) {
+  if (!admitted && configuration.search_api === "tavily" && !environment["TAVILY_API_KEY"]?.trim()) {
     throw new DeepResearchSearchUnavailableError();
   }
   return configuration;
+}
+
+function readAdmittedFunding(input: Record<string, unknown>): AdmittedDeepResearchTaskMetadata | null {
+  if (input["deep_research_funding"] === undefined) return null;
+  const metadata = parseDeepResearchTaskMetadataValue(input["deep_research_funding"]);
+  if (metadata.version !== 2) throw new DeepResearchFundingUnavailableError();
+  return metadata;
+}
+
+export class DeepResearchFundingUnavailableError extends Error {
+  readonly code = "deep_research_funding_unavailable" as const;
+  constructor() {
+    super("Deep Research cannot resume because its admitted funding authority is unavailable.");
+    this.name = "DeepResearchFundingUnavailableError";
+  }
 }
 
 export class DeepResearchSearchUnavailableError extends Error {
@@ -144,11 +192,14 @@ async function* runDeepResearchReportStream(
   }
 
   let researchConfiguration: ReturnType<typeof fromDeepResearchConfig>;
+  let admittedFunding: AdmittedDeepResearchTaskMetadata | null = null;
   try {
+    admittedFunding = readAdmittedFunding(input);
     researchConfiguration = resolveDeepResearchExecutorConfiguration(input);
   } catch (error) {
     const detail = error instanceof DeepResearchUnavailableError
       || error instanceof DeepResearchSearchUnavailableError
+      || error instanceof DeepResearchFundingUnavailableError
       ? error.message
       : "Deep Research model configuration is unavailable.";
     yield { phase: "Unavailable", detail };
@@ -180,25 +231,46 @@ async function* runDeepResearchReportStream(
       streamConfig,
     );
 
-    for await (const ev of eventStream) {
-      if (signal.aborted) return "";
-
-      if (!ev || typeof ev !== "object") continue;
-      const eventObj = ev as Record<string, unknown>;
-      const event = typeof eventObj["event"] === "string" ? eventObj["event"] : "";
-      const name = typeof eventObj["name"] === "string" ? eventObj["name"] : "";
-      const data = eventObj["data"] as Record<string, unknown> | undefined;
-
-      if (event === "on_custom_event" && name === "job.progress" && data) {
-        const phase = typeof data["phase"] === "string" ? data["phase"] : "Processing...";
-        yield { phase };
-      }
-
-      if (event === "on_chain_end" && data) {
-        const output = data["output"] as Record<string, unknown> | undefined;
-        if (output && typeof output["final_report"] === "string") {
-          finalReport = output["final_report"];
+    const eventIterator = eventStream[Symbol.asyncIterator]();
+    const researchFunding = admittedFunding ? {
+      modelFunding: admittedFunding.modelFunding,
+      tavilyFunding: admittedFunding.tavilyFunding,
+    } : undefined;
+    let eventStreamComplete = false;
+    try {
+      for (;;) {
+        const next = await runWithDeepResearchFunding(
+          researchFunding,
+          () => eventIterator.next(),
+        );
+        if (next.done) {
+          eventStreamComplete = true;
+          break;
         }
+        const ev = next.value;
+        if (signal.aborted) return "";
+
+        if (!ev || typeof ev !== "object") continue;
+        const eventObj = ev as Record<string, unknown>;
+        const event = typeof eventObj["event"] === "string" ? eventObj["event"] : "";
+        const name = typeof eventObj["name"] === "string" ? eventObj["name"] : "";
+        const data = eventObj["data"] as Record<string, unknown> | undefined;
+
+        if (event === "on_custom_event" && name === "job.progress" && data) {
+          const phase = typeof data["phase"] === "string" ? data["phase"] : "Processing...";
+          yield { phase };
+        }
+
+        if (event === "on_chain_end" && data) {
+          const output = data["output"] as Record<string, unknown> | undefined;
+          if (output && typeof output["final_report"] === "string") {
+            finalReport = output["final_report"];
+          }
+        }
+      }
+    } finally {
+      if (!eventStreamComplete && eventIterator.return) {
+        await runWithDeepResearchFunding(researchFunding, () => eventIterator.return!());
       }
     }
 
@@ -232,17 +304,25 @@ export function streamDeepResearchReport(
   );
   const humanUserId = initiatingHumanUserId?.trim() ?? "";
   return (async function* (): DeepResearchReportStream {
-    for (;;) {
-      const next = await runWithUsageContext(
-        {
-          callType: "subagent",
-          userId: humanUserId,
-          metadata: { executionId, operation: "deep_research" },
-        },
-        () => source.next(),
-      );
-      if (next.done) return next.value;
-      yield next.value;
+    const usageContext = {
+      callType: "subagent" as const,
+      userId: humanUserId,
+      metadata: { executionId, operation: "deep_research" },
+    };
+    let sourceComplete = false;
+    try {
+      for (;;) {
+        const next = await runWithUsageContext(usageContext, () => source.next());
+        if (next.done) {
+          sourceComplete = true;
+          return next.value;
+        }
+        yield next.value;
+      }
+    } finally {
+      if (!sourceComplete) {
+        await runWithUsageContext(usageContext, () => source.return(""));
+      }
     }
   })();
 }
@@ -267,19 +347,27 @@ export async function* deepResearchExecutor(
     readReturnRoute(input)?.requestorId,
   );
   let finalReport = "";
-  for (;;) {
-    const next = await stream.next();
-    if (next.done) {
-      finalReport = next.value;
-      break;
+  let streamComplete = false;
+  try {
+    for (;;) {
+      const next = await stream.next();
+      if (next.done) {
+        streamComplete = true;
+        finalReport = next.value;
+        break;
+      }
+      yield routed({
+        type: "job.progress",
+        kind: "deep-research",
+        jobId,
+        phase: next.value.phase,
+        ...(next.value.detail ? { detail: next.value.detail } : {}),
+      });
     }
-    yield routed({
-      type: "job.progress",
-      kind: "deep-research",
-      jobId,
-      phase: next.value.phase,
-      ...(next.value.detail ? { detail: next.value.detail } : {}),
-    });
+  } finally {
+    if (!streamComplete) {
+      await stream.return("");
+    }
   }
   if (signal.aborted) return;
   const returnRoute = readReturnRoute(input);

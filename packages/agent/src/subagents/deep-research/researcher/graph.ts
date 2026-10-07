@@ -17,6 +17,7 @@ import { hasNativeWebsearch } from "../shared/native_search";
 import { getStringField, isRecord, toStringArray } from "../shared/langchain-helpers";
 import type { DynamicStructuredTool } from "@langchain/core/tools";
 import { log, warn } from "@nautilo/logger";
+import { getDeepResearchFunding } from "../shared/funding";
 
 const toToolCallArgs = (value: unknown): Record<string, unknown> => (isRecord(value) ? value : {});
 const getToolCallId = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -59,6 +60,37 @@ export function selectNotesForCompression(rawNotes: string[], maxItems: number):
 export function appendDroppedNotesNotice(compressed: string, droppedCount: number): string {
   if (droppedCount <= 0) return compressed;
   return `[${droppedCount} older note(s) dropped from compression]\n\n${compressed}`;
+}
+
+async function summarizeSearchNotes(
+  notes: string[],
+  cfg: Configuration,
+  config?: import("@langchain/core/runnables").RunnableConfig,
+): Promise<string[]> {
+  if (!cfg.summarization_enabled || notes.length === 0) return notes;
+  const selected = notes.slice(0, cfg.summarization_max_items);
+  const messages: BaseMessageLike[] = [{
+    role: "user",
+    content: "Summarize these web-search findings for later research synthesis. Preserve every source URL and distinguish conflicting claims.\n\n" + selected.join("\n\n"),
+  }];
+  try {
+    const model = await createModel(cfg.summarization_model, cfg, {
+      maxTokens: cfg.summarization_model_max_tokens,
+      messages,
+      fundingLane: "summarization",
+    });
+    const response = await model.invoke(messages, {
+      ...(config?.signal ? { signal: config.signal } : {}),
+    });
+    const summary = extractTextFromResponse(response);
+    // The summary is an aid for later synthesis. Keep the original evidence
+    // and URLs as separate notes so a model omission cannot erase a source.
+    return summary.trim() ? [summary, ...notes] : notes;
+  } catch (error) {
+    if (config?.signal?.aborted || getDeepResearchFunding()) throw error;
+    warn(`[researcher] search summarization failed: ${error instanceof Error ? error.message : String(error)}`);
+    return notes;
+  }
 }
 
 async function researcher(
@@ -147,6 +179,7 @@ async function researcher(
       maxTokens: cfg.research_model_max_tokens,
       useOpenAIResponsesApi: true,
       messages, tools: lcTools,
+      fundingLane: "research",
     });
     if (!model.bindTools) throw new Error("Model does not support tool binding");
     const toolBoundModel: ChatModel<BaseMessageLike, unknown> = firstTurn || requiresAutomaticToolChoice
@@ -240,7 +273,8 @@ async function researcherTools(
         const snippet = item.snippet ? `\n${item.snippet}` : "";
         return `${title}\n${url}${snippet}`;
       });
-      accumulatedNotes = [...accumulatedNotes, ...notes];
+      const summarizedNotes = await summarizeSearchNotes(notes, cfg, config);
+      accumulatedNotes = [...accumulatedNotes, ...summarizedNotes];
 
       toolMessages.push(new ToolMessage({
         content: buildSearchResultToolContent(items, notes, cfg.search_max_results),
@@ -279,6 +313,7 @@ async function compressResearch(
   try {
     const model = await createModel(cfg.compression_model, cfg, {
       maxTokens: cfg.compression_model_max_tokens,
+      fundingLane: "compression",
     });
     if (!model) throw new Error("Failed to create compression model");
 

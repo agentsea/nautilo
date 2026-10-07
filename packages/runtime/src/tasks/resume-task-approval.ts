@@ -1,3 +1,5 @@
+import { openTaskFundingSession } from "../task-funding-port";
+import { runWithForegroundFundingSession } from "@nautilo/agent";
 import { assertSecurityReportTaskActive, finalizeSecurityReportDelivery } from "./security-report-artifact";
 import { parkTaskContentAccessRecovery } from "./ordinary-content-access-recovery";
 import { recordSecurityResearchFailure, parkSecurityResearchInterruption, parkSecurityReportDelivery, SecurityReportDeliveryPendingError } from "./security-report-recovery";
@@ -122,7 +124,9 @@ export async function authorizeTaskApprovalResume(
       agentId: found.task.agentId,
       ...(found.task.targetRoomId ? { roomId: found.task.targetRoomId } : {}),
     });
-    await assertServerFunding(found.task.requestorId, "task_approval_resume");
+    if (found.task.fundingMode !== "caller") {
+      await assertServerFunding(found.task.requestorId, "task_approval_resume");
+    }
   } catch (error) {
     if (!(error instanceof AgentInvocationDeniedError)
       && !(error instanceof ServerProviderCredentialsDeniedError)) throw error;
@@ -275,7 +279,7 @@ async function runTaskApprovalResumeWorker(
     await (deps.assertInvocation ?? assertCanInvokeAgent)({ humanUserId: task.requestorId,
       agentId: task.agentId, ...(task.targetRoomId ? { roomId: task.targetRoomId } : {}),
       origin: "foreground_resume" });
-    await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(task.requestorId, "task_approval_resume");
+    if (task.fundingMode !== "caller") await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(task.requestorId, "task_approval_resume");
   } catch (error) {
     if (!(error instanceof AgentInvocationDeniedError)
       && !(error instanceof ServerProviderCredentialsDeniedError)) throw error;
@@ -374,7 +378,13 @@ async function runTaskApprovalResumeWorker(
       },
     };
 
-    await runWithAcceptedWorkAuthorities(
+    const fundingSession = task.fundingMode === "caller"
+      ? await openTaskFundingSession({
+          task, run, authority: args.invocationAuthority, requestorId: task.requestorId,
+          modelId: run.modelId ?? "", graphThreadId: run.graphThreadId,
+        })
+      : null;
+    await runWithForegroundFundingSession(fundingSession, () => runWithAcceptedWorkAuthorities(
       args.maintenanceAuthority,
       args.invocationAuthority,
       () => runWithTaskCausalHuman(task.requestorId, async () => {
@@ -436,7 +446,7 @@ async function runTaskApprovalResumeWorker(
           );
         }
       }),
-    );
+    ));
     // R10 / R11 — finalize via the Task finalizer, or stay awaiting if the
     // resume re-parked on a chained approval/PIN/identity interrupt (the patched
     // chained events are buffered until the durable transition succeeds).

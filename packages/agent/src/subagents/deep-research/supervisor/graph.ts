@@ -73,6 +73,7 @@ function createSupervisorNode(cfg: Configuration) {
         maxTokens: cfg.supervisor_model_max_tokens,
         useOpenAIResponsesApi: true,
         messages, tools,
+        fundingLane: "supervisor",
       });
       if (!model.bindTools) throw new Error("Model does not support tool binding");
       const toolBoundModel: ChatModel<BaseMessageLike, unknown> = model.bindTools(tools);

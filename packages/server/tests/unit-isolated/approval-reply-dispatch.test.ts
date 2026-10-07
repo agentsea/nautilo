@@ -95,6 +95,10 @@ mock.module("@nautilo/agent", () => ({
 // exception.
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
+import type {
+  ForegroundChatFundingSession,
+  ForegroundFundingSnapshot,
+} from "@nautilo/agent";
 import {
   PinChallengeProvider,
   type NamespaceMemoryEnvelope,
@@ -123,6 +127,22 @@ let auditEvents: SecurityAuditEvent[];
 let shadowBehavior: "fallback" | "strict" = "fallback";
 let encryptionMode: "shadow_encryption" | "encrypted_only" = "shadow_encryption";
 let invokedAgentIds: string[] = [];
+const savedFundingByThread = new Map<string, ForegroundFundingSnapshot>();
+const fundingReadCalls: Array<{ threadId: string; checkpointSaver?: unknown }> = [];
+const fundingOpenCalls: unknown[] = [];
+const agentReadSequences = new Map<string, string[]>();
+const humanReadSequences = new Map<string, string[]>();
+const agentReadCalls: Array<{ threadId: string; checkpointSaver?: unknown }> = [];
+const humanReadCalls: Array<{ threadId: string; checkpointSaver?: unknown }> = [];
+const restoredFundingSession: ForegroundChatFundingSession = {
+  kind: "personal",
+  runAttempt: async <T>(): Promise<T> => {
+    throw new Error("unexpected provider attempt in approval resume test");
+  },
+  recheckAttempt: async () => {},
+};
+let fundingSessionForResume: ForegroundChatFundingSession | null =
+  restoredFundingSession;
 
 const OWNER_ACTOR_ID = "test-actor-id";
 const OWNER_ID = "test-owner-id";
@@ -263,12 +283,35 @@ beforeAll(async () => {
       roomId: RESUME_ROOM_ID,
       kind: "group",
     }),
-    resumeCausalHumanUserIdForThread: async () => OWNER_ID,
+    resumeCausalHumanUserIdForThread: async (threadId, checkpointSaver) => {
+      humanReadCalls.push({
+        threadId,
+        ...(checkpointSaver ? { checkpointSaver } : {}),
+      });
+      return humanReadSequences.get(threadId)?.shift() ?? OWNER_ID;
+    },
     policyResolver: {
       buildEnvelope: buildEnvelopeSpy,
     } as never,
-    resumeAgentIdForThread: async (threadId) =>
-      threadId === SAMPLE_APPROVAL_THREAD ? SAMPLE_AGENT_ID : null,
+    resumeAgentIdForThread: async (threadId, checkpointSaver) => {
+      agentReadCalls.push({
+        threadId,
+        ...(checkpointSaver ? { checkpointSaver } : {}),
+      });
+      return agentReadSequences.get(threadId)?.shift()
+        ?? (threadId === SAMPLE_APPROVAL_THREAD ? SAMPLE_AGENT_ID : null);
+    },
+    resumeFundingForThread: async (threadId, checkpointSaver) => {
+      fundingReadCalls.push({
+        threadId,
+        ...(checkpointSaver ? { checkpointSaver } : {}),
+      });
+      return savedFundingByThread.get(threadId) ?? null;
+    },
+    openForegroundFundingSessionForResume: async (input) => {
+      fundingOpenCalls.push(input);
+      return fundingSessionForResume;
+    },
     connectedWebActionPendingForThread: async () => [CONNECTED_WEB_ATTENTION, CONNECTED_WEB_RACE_ATTENTION, CONNECTED_WEB_FAILED_ATTENTION, CONNECTED_WEB_DOUBLE_FAILED_ATTENTION],
     connectedWebActionResumeBindingForThread: async () => connectedWebCheckpointBinding,
     auditEvent: (event) => {
@@ -450,6 +493,11 @@ describe("POST /api/auth/approval-reply — route→graph dispatch (M-4)", () =>
   test("runs browser-bound resumes inside fresh Runtime authority with policy-matched checkpoint storage", async () => {
     resumeSpy.mockClear();
     buildEnvelopeSpy.mockClear();
+    fundingReadCalls.length = 0;
+    fundingOpenCalls.length = 0;
+    agentReadCalls.length = 0;
+    humanReadCalls.length = 0;
+    fundingSessionForResume = restoredFundingSession;
     let protectedContextObserved = false;
     const ordering: string[] = [];
     const protectedRepository = Object.freeze({ kind: "protected-repository" });
@@ -621,6 +669,22 @@ describe("POST /api/auth/approval-reply — route→graph dispatch (M-4)", () =>
       const sentinel = "FULL_RESUME_ROUTE_PRIVATE_SENTINEL";
       const warningSpy = spyOn(console, "error").mockImplementation(() => {});
       encryptionMode = "encrypted_only";
+      const fullThreadId = "thread-protected-resume-full-failure";
+      const fullFundingSnapshot: ForegroundFundingSnapshot = {
+        modelId: "anthropic:claude-sonnet-4-6",
+        binding: {
+          kind: "personal",
+          providerRoute: "anthropic",
+          credentialId: "77777777-7777-4777-8777-777777777777",
+          credentialRevision: 3,
+        },
+      };
+      savedFundingByThread.set(fullThreadId, fullFundingSnapshot);
+      agentReadSequences.set(fullThreadId, [
+        "stub-envelope-agent",
+        "stub-envelope-agent",
+      ]);
+      humanReadSequences.set(fullThreadId, [OWNER_ID, OWNER_ID]);
       resumeSpy.mockClear();
       resumeSpy.mockImplementationOnce(async () => {
         throw new Error(sentinel);
@@ -635,7 +699,7 @@ describe("POST /api/auth/approval-reply — route→graph dispatch (M-4)", () =>
           },
           payload: {
             verb: "once",
-            threadId: "thread-protected-resume-full-failure",
+            threadId: fullThreadId,
             clientActionSessionId: "browser-session",
             authorizationDeviceId: "approving-device",
           },
@@ -643,9 +707,31 @@ describe("POST /api/auth/approval-reply — route→graph dispatch (M-4)", () =>
         expect(fullRes.statusCode).toBe(200);
         await Bun.sleep(15);
         expect(resumeSpy).toHaveBeenCalledTimes(1);
+        const fundingRead = fundingReadCalls.find(
+          (call) => call.threadId === fullThreadId,
+        );
+        expect(fundingRead?.checkpointSaver).toBeDefined();
+        expect(fundingRead?.checkpointSaver).toBe(resumeSpy.mock.calls[0]?.[4]);
+        expect(agentReadCalls.filter(
+          (call) => call.threadId === fullThreadId,
+        ).at(-1)?.checkpointSaver).toBe(fundingRead?.checkpointSaver);
+        expect(humanReadCalls.filter(
+          (call) => call.threadId === fullThreadId,
+        ).at(-1)?.checkpointSaver).toBe(fundingRead?.checkpointSaver);
+        expect(fundingOpenCalls.at(-1)).toMatchObject({
+          humanUserId: OWNER_ID,
+          modelId: fullFundingSnapshot.modelId,
+          roomId: RESUME_ROOM_ID,
+          agentId: "stub-envelope-agent",
+          entrypoint: "foreground.main",
+          prior: fullFundingSnapshot,
+        });
         expect(JSON.stringify(warningSpy.mock.calls)).not.toContain(sentinel);
         expect(JSON.stringify(warningSpy.mock.calls)).toContain("protected resume failed");
       } finally {
+        savedFundingByThread.delete(fullThreadId);
+        agentReadSequences.delete(fullThreadId);
+        humanReadSequences.delete(fullThreadId);
         warningSpy.mockRestore();
         encryptionMode = "shadow_encryption";
       }
@@ -659,6 +745,7 @@ describe("POST /api/auth/approval-reply — route→graph dispatch (M-4)", () =>
   test("passes the Full guard without protected-memory ports when no fresh custody exists", async () => {
     resumeSpy.mockClear();
     buildEnvelopeSpy.mockClear();
+    fundingReadCalls.length = 0;
     encryptionMode = "encrypted_only";
     try {
       const res = await app.inject({
@@ -680,10 +767,110 @@ describe("POST /api/auth/approval-reply — route→graph dispatch (M-4)", () =>
       expect(memoryDeps["protectedMemoryRepositoryForState"]).toBeUndefined();
       expect(memoryDeps["protectedMemoryAccessPortForState"]).toBeUndefined();
       expect(memoryDeps["protectedMemoryProjectionPortForState"]).toBeUndefined();
+      expect(fundingReadCalls.some(
+        (call) => call.threadId === "thread-full-without-custody",
+      )).toBeFalse();
     } finally {
       encryptionMode = "shadow_encryption";
     }
   });
+
+  test("fails closed before graph resume when a saved funding binding cannot reopen", async () => {
+    const threadId = "thread-funding-unavailable";
+    savedFundingByThread.set(threadId, {
+      modelId: "anthropic:claude-sonnet-4-6",
+      binding: {
+        kind: "personal",
+        providerRoute: "anthropic",
+        credentialId: "88888888-8888-4888-8888-888888888888",
+        credentialRevision: 1,
+      },
+    });
+    agentReadSequences.set(threadId, [
+      "stub-envelope-agent",
+      "stub-envelope-agent",
+    ]);
+    humanReadSequences.set(threadId, [OWNER_ID, OWNER_ID]);
+    fundingSessionForResume = null;
+    fundingOpenCalls.length = 0;
+    resumeSpy.mockClear();
+    const warningSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/auth/approval-reply",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${validToken}`,
+        },
+        payload: { verb: "once", threadId },
+      });
+
+      expect(res.statusCode).toBe(200);
+      await Bun.sleep(15);
+      expect(fundingOpenCalls).toHaveLength(1);
+      expect(resumeSpy).not.toHaveBeenCalled();
+      expect(JSON.stringify(warningSpy.mock.calls)).toContain(
+        "Saved funding is unavailable",
+      );
+    } finally {
+      warningSpy.mockRestore();
+      fundingSessionForResume = restoredFundingSession;
+      savedFundingByThread.delete(threadId);
+      agentReadSequences.delete(threadId);
+      humanReadSequences.delete(threadId);
+    }
+  });
+
+  test.each(["Agent", "Human"] as const)(
+    "fails closed when the saved funding %s identity changes after admission",
+    async (identity) => {
+      const threadId = `thread-funding-${identity.toLowerCase()}-changed`;
+      savedFundingByThread.set(threadId, {
+        modelId: "anthropic:claude-sonnet-4-6",
+        binding: {
+          kind: "personal",
+          providerRoute: "anthropic",
+          credentialId: "99999999-9999-4999-8999-999999999999",
+          credentialRevision: 1,
+        },
+      });
+      agentReadSequences.set(threadId, identity === "Agent"
+        ? ["stub-envelope-agent", "changed-agent"]
+        : ["stub-envelope-agent", "stub-envelope-agent"]);
+      humanReadSequences.set(threadId, identity === "Human"
+        ? [OWNER_ID, "changed-human"]
+        : [OWNER_ID, OWNER_ID]);
+      fundingSessionForResume = restoredFundingSession;
+      fundingOpenCalls.length = 0;
+      resumeSpy.mockClear();
+      const warningSpy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/auth/approval-reply",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${validToken}`,
+          },
+          payload: { verb: "once", threadId },
+        });
+
+        expect(res.statusCode).toBe(200);
+        await Bun.sleep(15);
+        expect(fundingOpenCalls).toHaveLength(0);
+        expect(resumeSpy).not.toHaveBeenCalled();
+        expect(JSON.stringify(warningSpy.mock.calls)).toContain(
+          `Saved funding ${identity} changed`,
+        );
+      } finally {
+        warningSpy.mockRestore();
+        savedFundingByThread.delete(threadId);
+        agentReadSequences.delete(threadId);
+        humanReadSequences.delete(threadId);
+      }
+    },
+  );
 
   test("prove-and-resume forwards canonical protected-memory dependencies from its fresh session", async () => {
     approvalResumeSpy.mockClear();

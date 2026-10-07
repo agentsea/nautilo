@@ -3,11 +3,13 @@ import type { Configuration } from "../shared/config";
 import type { SearchResultItem, SearchResults } from "./types";
 import { getUsageContext } from "../../../usage/usage-context";
 import {
+  beginToolProviderCostAttempt,
   createToolProviderCostRecorder,
 } from "../../../usage/provider-cost-recorder";
 import { estimateProviderToolCostUsd } from "@nautilo/db";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
-import { assertDeepResearchServerFunding } from "../shared/funding";
+import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
+import { assertDeepResearchServerFunding, getDeepResearchFunding } from "../shared/funding";
 
 export type SearchProvider = "tavily" | "openai" | "anthropic" | "duckduckgo" | "exa" | "none";
 
@@ -36,8 +38,8 @@ export function buildSearchTool(cfg: Configuration, _callbacks?: unknown[]): Sea
 
 function buildTavilySearch(cfg: Configuration): SearchTool {
   return async (query: string): Promise<SearchResults> => {
+    const funding = getDeepResearchFunding();
     try {
-      await assertDeepResearchServerFunding("deep_research_tavily");
       const tavilyModule = await import("@langchain/tavily");
       const TavilySearchCtor = (tavilyModule as Record<string, unknown>)["TavilySearch"] as
         | (new (c: Record<string, unknown>) => { invoke: (input: unknown) => Promise<unknown> })
@@ -45,35 +47,49 @@ function buildTavilySearch(cfg: Configuration): SearchTool {
       if (typeof TavilySearchCtor !== "function") {
         return { provider: "tavily", query, items: [] };
       }
-      const tool = new TavilySearchCtor({
-        apiKey: process.env["TAVILY_API_KEY"],
-        maxResults: cfg.search_max_results,
-        searchDepth: cfg.search_depth,
-        includeImages: false,
-        includeAnswer: false,
-        includeRawContent: false,
-      });
-      const rawResults = await tool.invoke({ query });
       const usage = getUsageContext();
       const estimatedCostUsd = estimateProviderToolCostUsd("tavily:credit", cfg.search_depth === "advanced" ? 2 : 1);
-      if (estimatedCostUsd) {
+      const invoke = async (apiKey: string, recordProviderCost: ReturnType<typeof createToolProviderCostRecorder>) => {
+        const tool = new TavilySearchCtor({
+          apiKey,
+          maxResults: cfg.search_max_results,
+          searchDepth: cfg.search_depth,
+          includeImages: false,
+          includeAnswer: false,
+          includeRawContent: false,
+        });
+        const rawResults = await tool.invoke({ query });
+        if (estimatedCostUsd) await recordProviderCost({
+          provider: "tavily", operation: "deep_research_search",
+          receiptId: randomUUID(), estimatedCostUsd, evidenceState: "estimated",
+        });
+        return rawResults;
+      };
+      let rawResults: unknown;
+      if (funding) {
+        const capability = getCapabilityFundingSession();
+        if (!capability) throw new Error("Admitted Deep Research Tavily authority is unavailable.");
+        const service = await capability.openService("tavily", funding.tavilyFunding);
+        rawResults = await service.runAttempt(async ({ apiKey, usageFunding }) => {
+          const recorder = await beginToolProviderCostAttempt({
+            userId: usage?.userId, roomId: usage?.roomId,
+            agentId: usage?.metadata?.["agentId"], turnId: usage?.metadata?.["turnId"],
+          }, { provider: "tavily", operation: "deep_research_search", usageFunding });
+          return invoke(apiKey, recorder);
+        });
+      } else {
+        await assertDeepResearchServerFunding("deep_research_tavily");
         const recordProviderCost = createToolProviderCostRecorder({
           userId: usage?.userId,
           roomId: usage?.roomId,
           agentId: usage?.metadata?.["agentId"],
           turnId: usage?.metadata?.["turnId"],
         });
-        await recordProviderCost({
-          provider: "tavily",
-          operation: "deep_research_search",
-          receiptId: randomUUID(),
-          estimatedCostUsd,
-          evidenceState: "estimated",
-        });
+        rawResults = await invoke(process.env["TAVILY_API_KEY"] ?? "", recordProviderCost);
       }
       return { provider: "tavily", query, items: parseTavilyResults(rawResults) };
     } catch (error) {
-      if (error instanceof ServerProviderCredentialsDeniedError) throw error;
+      if (funding || error instanceof ServerProviderCredentialsDeniedError) throw error;
       return { provider: "tavily", query, items: [] };
     }
   };

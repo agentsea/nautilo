@@ -32,6 +32,7 @@ export interface SurplusChatAttemptInput {
   readonly apiKey: string;
   readonly messages: BaseMessage[];
   readonly tools: readonly StructuredTool[];
+  readonly toolBindingOptions?: Record<string, unknown>;
   readonly config: RunnableConfig;
   readonly maxOutputTokens: number;
   readonly reasoningEffort?: ReasoningEffort;
@@ -330,7 +331,7 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
       ...(input.openrouterSessionId === undefined ? {} : { openrouterSessionId: input.openrouterSessionId }),
       onResponse,
     });
-    const bound = input.tools.length > 0 ? model.bindTools?.([...input.tools]) : model;
+    const bound = input.tools.length > 0 ? model.bindTools?.([...input.tools], input.toolBindingOptions) : model;
     if (!bound) throw new Error("The selected Surplus route cannot bind tools.");
     const response = await input.invokeModel(
       bound as { invoke(messages: BaseMessage[], options?: RunnableConfig): Promise<unknown> },

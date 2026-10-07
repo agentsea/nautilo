@@ -106,6 +106,29 @@ describe("M293 background Deep Research admission", () => {
     expect(observedUserIds).toEqual(["human-deep-research", "human-deep-research"]);
   });
 
+  test("closes an abandoned report stream as the exact initiating Human", async () => {
+    let cleanupUserId: string | null | undefined;
+    _setDeepResearchReportStreamForTests(async function* () {
+      try {
+        yield { phase: "researching" };
+        yield { phase: "more research" };
+        return "report";
+      } finally {
+        cleanupUserId = getUsageContext()?.userId;
+      }
+    });
+
+    const stream = streamDeepResearchReport(
+      {},
+      "job-deep-research-cancelled",
+      new AbortController().signal,
+      "human-deep-research",
+    );
+    expect(await stream.next()).toEqual({ done: false, value: { phase: "researching" } });
+    expect(await stream.return("")).toEqual({ done: true, value: "" });
+    expect(cleanupUserId).toBe("human-deep-research");
+  });
+
   test("rehydrates and revalidates the exact admitted OpenRouter plan", () => {
     const configuration = resolveDeepResearchExecutorConfiguration(
       { deep_research_model_plan: plan },

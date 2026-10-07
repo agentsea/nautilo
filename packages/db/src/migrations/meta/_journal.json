@@ -2241,6 +2241,20 @@
       "when": 1791291118564,
       "tag": "0319_sticky_scarlet_witch",
       "breakpoints": true
+    },
+    {
+      "idx": 320,
+      "version": "7",
+      "when": 1791362136845,
+      "tag": "0320_uneven_juggernaut",
+      "breakpoints": true
+    },
+    {
+      "idx": 321,
+      "version": "7",
+      "when": 1791364043003,
+      "tag": "0321_personal_capability_preferences_grants",
+      "breakpoints": true
     }
   ]
 }

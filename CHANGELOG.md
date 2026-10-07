@@ -7,6 +7,12 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Members can choose personal models for research and decisions independently
+  of the server defaults. Personal Tavily and model keys fund supported research,
+  native decisions, and ordinary tools under the administrator's funding policy.
+  Queued work and approval resumes retain their admitted payer and recheck live
+  authority before spending. Research service charges retain their personal
+  funding attribution, including unsettled costs and later receipts.
 - Reflection allows up to ten minutes per poll, preserves completed batch results
   when repair runs out of time, and gives other eligible records a turn after
   timed-out work yields.

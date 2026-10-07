@@ -8,6 +8,10 @@ import {
   ServerProviderCredentialsDeniedError,
 } from "@nautilo/trust";
 import { causalHumanForExecution } from "../../runtime/causal-human-context";
+import {
+  prepareDecisionFunding,
+  runPreparedDecision,
+} from "../../providers/decision-funding";
 
 interface DecisionToolContext {
   readonly turnId?: string | undefined;
@@ -54,18 +58,25 @@ export function createEvaluateDecisionsTool(
           userId: fundingHumanUserId || null,
           roomId: context?.roomId ?? ambient?.roomId ?? null,
           metadata: { ...ambient?.metadata, turnId: context?.turnId, agentId: context?.agentId, tool: "evaluate_decisions" },
-        }, () => invokeDecision({
-          modelId: input.model_id, state: input.state, questions: input.questions,
-          signal,
-        }, {
-          fundingHumanUserId,
-          ...(dependencies.assertCanUseServerProviderCredentials === undefined
-            ? {}
-            : {
-                assertCanUseServerProviderCredentials:
-                  dependencies.assertCanUseServerProviderCredentials,
-              }),
-        })));
+        }, async () => {
+          const prepared = await prepareDecisionFunding(input.model_id);
+          const invoke = (funding: Parameters<typeof invokeDecision>[1] = {}) => invokeDecision({
+            modelId: prepared?.modelId ?? input.model_id,
+            state: input.state,
+            questions: input.questions,
+            signal,
+          }, {
+            fundingHumanUserId,
+            ...(dependencies.assertCanUseServerProviderCredentials === undefined
+              ? {}
+              : {
+                  assertCanUseServerProviderCredentials:
+                    dependencies.assertCanUseServerProviderCredentials,
+                }),
+            ...funding,
+          });
+          return prepared ? runPreparedDecision(prepared, invoke) : invoke();
+        }));
       } catch (error) {
         if (error instanceof ServerProviderCredentialsDeniedError) throw error;
         if (error instanceof DecisionRequestError)

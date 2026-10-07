@@ -139,7 +139,7 @@ class PersonalSurplusDirectFallbackUnavailableError extends SurplusDirectFallbac
   }
 }
 
-async function runPersonalDirectFallback<T>(
+async function runAdmittedDirectFallback<T>(
   fundingSession: ForegroundChatFundingSession,
   modelId: string,
   run: (attempt: ForegroundChatFundingAttempt) => Promise<T>,
@@ -785,6 +785,10 @@ export async function invokeChatModelWithFallback(
     fundingSession?: ForegroundChatFundingSession;
     /** Reserved for the server-owned Room-side shared-memory pipeline. */
     serverFundedService?: ModelFundingService;
+    /** Explicit output bound owned by the admitted research lane. */
+    maxOutputTokens?: number;
+    /** Internal research tool binding options, never model-produced. */
+    toolBindingOptions?: Record<string, unknown>;
     /** Global force: when false, reasoning output is off for every hop (e.g. conductor). */
     reasoningOutput?: boolean;
     /** Per-model operator override map . Resolved per fallback hop; absent key ⇒ ON. */
@@ -837,7 +841,7 @@ export async function invokeChatModelWithFallback(
   }
   // Direct callers receive the same model-tool fence as agentNode. The
   // server/legacy path preserves its existing tool binding unchanged.
-  tools = personalFunding
+  tools = personalFunding && fundingSession?.workload !== "research" && !fundingSession?.capabilityFunding
     ? fundingSession?.personalTaskControls === true
       ? filterPersonalTaskControlTools(tools)
       : []
@@ -944,6 +948,10 @@ export async function invokeChatModelWithFallback(
     let maxTokens: number;
     try {
       maxTokens = await resolveCompletionBudget(currentModelId, providerMessages, tools);
+      if (invokeOptions?.maxOutputTokens !== undefined) {
+        if (!Number.isSafeInteger(invokeOptions.maxOutputTokens) || invokeOptions.maxOutputTokens < 1) throw new RangeError("maxOutputTokens must be a positive safe integer");
+        maxTokens = Math.min(maxTokens, invokeOptions.maxOutputTokens);
+      }
     } catch (error) {
       if (isPreparedContextExceededError(error)) {
         if (await recoverContext("preflight")) continue;
@@ -1019,13 +1027,13 @@ export async function invokeChatModelWithFallback(
           // Apply the server-wide serving preference inside the admitted payer.
           // Supported routes reuse the current signed catalogue and preserve
           // the selected provider pin.
-          if (usageFunding.kind !== "personal" || usageFunding.providerRoute === "surplus") {
+          if (!fundingSession || usageFunding.providerRoute === "surplus") {
             kickServerModelConfigRefresh();
             const surplusKey = usageFunding.kind === "personal"
               ? personalCredential?.apiKey ?? null : resolveProviderKey("surplus");
             const surplus = resolveSurplusChatServingAvailability({
               catalogModelId: currentModelId,
-              policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
+              policyEnabled: fundingSession ? usageFunding.providerRoute === "surplus" : getCachedServerModelConfigRow()?.preferSurplus === true,
               keyConfigured: surplusKey !== null,
             });
             const catalogEntry = getActiveModelCatalogSync().catalog.entries.find((entry) => entry.id === currentModelId);
@@ -1051,6 +1059,7 @@ export async function invokeChatModelWithFallback(
                 apiKey: surplusKey,
                 messages: attemptMessages,
                 tools,
+                ...(invokeOptions?.toolBindingOptions ? { toolBindingOptions: invokeOptions.toolBindingOptions } : {}),
                 config: llmCallConfig,
                 maxOutputTokens: maxTokens,
                 ...(requestedReasoningEffort === undefined ? {} : { reasoningEffort: requestedReasoningEffort }),
@@ -1083,11 +1092,10 @@ export async function invokeChatModelWithFallback(
               if (result.kind === "served") {
                 return result.response;
               }
-              if (usageFunding.kind === "personal") {
-                // The funding owner admits the caller's direct credential anew;
-                // the marketplace secret must never reach the original provider.
-                if (!fundingSession) throw new SurplusDirectFallbackUnavailableError();
-                return await runPersonalDirectFallback(
+              if (fundingSession) {
+                // Re-admit the same payer on the direct rail before dispatch;
+                // marketplace credentials never reach the original provider.
+                return await runAdmittedDirectFallback(
                   fundingSession,
                   currentModelId,
                   runProviderAttempt,
@@ -1101,14 +1109,12 @@ export async function invokeChatModelWithFallback(
                 throw new SurplusDirectFallbackUnavailableError();
               }
               try {
-                if (fundingSession) await fundingSession.recheckAttempt(currentModelId);
-                else await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
+                await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
               } catch (error) {
                 throw new ForegroundFundingRecheckError(error);
               }
-            } else if (usageFunding.kind === "personal" && usageFunding.providerRoute === "surplus") {
-              if (!fundingSession) throw new SurplusDirectFallbackUnavailableError("request-not-qualified");
-              return await runPersonalDirectFallback(
+            } else if (fundingSession && usageFunding.providerRoute === "surplus") {
+              return await runAdmittedDirectFallback(
                 fundingSession,
                 currentModelId,
                 runProviderAttempt,
@@ -1146,7 +1152,7 @@ export async function invokeChatModelWithFallback(
             ...(fireworksSessionAffinityId ? { fireworksSessionAffinityId } : {}),
             ...(personalCredential === undefined ? {} : { personalCredential }),
           });
-          const modelWithTools = model.bindTools!(tools);
+          const modelWithTools = model.bindTools!(tools, invokeOptions?.toolBindingOptions);
           const endpoint = currentModelId.startsWith("anthropic:") ? "/v1/messages"
             : currentModelId.startsWith("google:")
               ? `/v1beta/models/${currentModelId.slice("google:".length)}:generateContent`

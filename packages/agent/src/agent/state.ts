@@ -100,6 +100,10 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /** Frozen once by fresh foreground ingress, retained across tool/approval resumes. */
+  foregroundFundingSnapshot: Annotation<import("../runtime/foreground-chat-funding").ForegroundFundingSnapshot | null>({
+    reducer: (_, update) => update, default: () => null,
+  }),
+
   foregroundModelControlSnapshot: Annotation<ForegroundModelControlSnapshot | null>({
     reducer: (_, update) => update,
     default: () => null,
@@ -891,6 +895,7 @@ export type NautiloState = Omit<
   | "noProgressStreaks" | "noProgressPendingCorrection" | "noProgressPendingStop"
   | "projectionSnapshots" | "projectionRoomChoices" | "projectionRejectedToolCallIds" | "modelRejectedToolCallIds" | "researchContinuationRequired"
   | "identityEnrollmentToolCallIds"
+  | "foregroundFundingSnapshot"
   | "approvalLaneKey"
   | "callingRoomId"
   | "currentTaskId"
@@ -900,6 +905,7 @@ export type NautiloState = Omit<
   | "promptTimeReference"
   | "connectedAppProviderIds"
 > & {
+  foregroundFundingSnapshot?: import("../runtime/foreground-chat-funding").ForegroundFundingSnapshot | null;
   /** Legacy checkpoints resolve preferences when next invoked. */
   foregroundModelControlSnapshot?: ForegroundModelControlSnapshot | null;
   /** Empty only for legacy checkpoints; new ingress always checkpoints the exact reply lane. */

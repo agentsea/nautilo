@@ -11,6 +11,7 @@ export * from "./queries/legacy-photo-history";
 export * from "./queries/reflection-sources";
 export * from "./queries/personal-encryption-coverage";
 export * from "./queries/personal-provider-credentials";
+export * from "./queries/personal-capability-preferences";
 export * from "./queries/soul-generation-attempts";
 export * from "./queries/protected-task-output-bindings";
 export * from "./queries/video-generation-links";
@@ -822,6 +823,7 @@ export {
 export {
   insertProviderCostEvent,
   insertProviderCostEventWith,
+  settleProviderCostEvent,
   buildProviderCostsSummaryQueries,
   providerCostIdempotencyKey,
   estimateProviderToolCostUsd,

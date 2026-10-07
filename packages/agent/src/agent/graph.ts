@@ -1,3 +1,5 @@
+import { getForegroundFundingSession } from "../runtime/foreground-chat-funding";
+import { runWithCapabilityFundingSession } from "../runtime/capability-funding";
 import {
   StateGraph,
   END,
@@ -194,6 +196,10 @@ export function createNautiloGraph(
   policyResolver?: PolicyResolver | null,
   deps?: NautiloGraphDeps,
 ): CompiledGraph {
+  const restoredFunding = getForegroundFundingSession();
+  if (!deps?.foregroundChatFundingSession && restoredFunding) deps = { ...deps, foregroundChatFundingSession: restoredFunding };
+  const withinFunding = <Args extends unknown[], Result>(run: (...args: Args) => Result) =>
+    (...args: Args): Result => runWithCapabilityFundingSession(deps?.foregroundChatFundingSession?.capabilityFunding, () => run(...args));
   const postModelNode = createPostModelNode(policyResolver, deps);
   const graphProjectionPreflightNode = createProjectionPreflightNode(
     async (state, calls) => {
@@ -272,18 +278,19 @@ export function createNautiloGraph(
   });
 
   const workflow = new StateGraph(NautiloStateAnnotation)
-    .addNode("pre_model", async (state, config) => ({
+    .addNode("pre_model", withinFunding(async (state: NautiloState, config: Parameters<typeof preModelNode>[1]) => ({
       ...await draftNodes.prepare(state, config),
+      foregroundFundingSnapshot: deps?.foregroundChatFundingSession?.admission ?? null,
       // Ordinary Genie reasoning suspends an unfinished fast segment. The evidence remains checkpointed.
       browserDecision: state.browserDecision ? { ...state.browserDecision, phase: "handoff" as const, pending: null } : null,
-    }))
-    .addNode("browser_decision", createBrowserDecisionNode(deps))
-    .addNode("agent", draftNodes.agent)
+    })))
+    .addNode("browser_decision", withinFunding(createBrowserDecisionNode(deps)))
+    .addNode("agent", withinFunding(draftNodes.agent))
     .addNode("model_output_preflight", modelOutputPreflightNode)
     .addNode("projection_preflight", graphProjectionPreflightNode)
     .addNode("ordinary_content_access_preflight", createOrdinaryContentAccessPreflightNode(deps?.ordinaryContentAccessForState, deps?.isPinEnrolled))
-    .addNode("post_model", postModelNode)
-    .addNode("tools", graphToolsNode)
+    .addNode("post_model", withinFunding(postModelNode))
+    .addNode("tools", withinFunding(graphToolsNode))
     .addNode("await_reply", awaitReplyNode)
     .setEntryPoint("pre_model")
     .addEdge("pre_model", "agent")
