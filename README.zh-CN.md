@@ -2,13 +2,13 @@
 
 <div align="center">
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
+[English](README.md) · [Deutsch](README.de.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
 本地图文指南: [English](https://nautilo.ai/docs/operator/deploy/local) · [简体中文](https://nautilo.ai/docs/operator/deploy/local-zh-cn) · [日本語](https://nautilo.ai/docs/operator/deploy/local-ja) · [Français](https://nautilo.ai/docs/operator/deploy/local-fr) · [Español](https://nautilo.ai/docs/operator/deploy/local-es) · [한국어](https://nautilo.ai/docs/operator/deploy/local-ko)
 
 Nautilo 的界面目前为英语。README 和本地安装指南已提供翻译，其他文档可能仍为英文。
 
-<!-- Translation source: README.md; SHA-256: 16d086763bea38779f0d4b3363499637762369b3271f663ed86c7c8f77346fc7 -->
+<!-- Translation source: README.md; SHA-256: d9e81d8a699a01fa1836ec768028a4e0c464d4420524b9cae4d0f48686dd855b -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI，进入多人模式。

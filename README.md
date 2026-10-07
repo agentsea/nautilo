@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
+[English](README.md) · [Deutsch](README.de.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
 Illustrated local guide: [English](https://nautilo.ai/docs/operator/deploy/local) · [简体中文](https://nautilo.ai/docs/operator/deploy/local-zh-cn) · [日本語](https://nautilo.ai/docs/operator/deploy/local-ja) · [Français](https://nautilo.ai/docs/operator/deploy/local-fr) · [Español](https://nautilo.ai/docs/operator/deploy/local-es) · [한국어](https://nautilo.ai/docs/operator/deploy/local-ko)
 

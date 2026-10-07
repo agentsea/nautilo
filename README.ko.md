@@ -2,13 +2,13 @@
 
 <div align="center">
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
+[English](README.md) · [Deutsch](README.de.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Français](README.fr.md) · [Español](README.es.md) · [한국어](README.ko.md)
 
 로컬 설치 그림 가이드: [English](https://nautilo.ai/docs/operator/deploy/local) · [简体中文](https://nautilo.ai/docs/operator/deploy/local-zh-cn) · [日本語](https://nautilo.ai/docs/operator/deploy/local-ja) · [Français](https://nautilo.ai/docs/operator/deploy/local-fr) · [Español](https://nautilo.ai/docs/operator/deploy/local-es) · [한국어](https://nautilo.ai/docs/operator/deploy/local-ko)
 
 Nautilo의 인터페이스는 현재 영어입니다. README와 로컬 설치 가이드는 번역되어 있으며, 다른 문서는 영어일 수 있습니다.
 
-<!-- Translation source: README.md; SHA-256: 16d086763bea38779f0d4b3363499637762369b3271f663ed86c7c8f77346fc7 -->
+<!-- Translation source: README.md; SHA-256: d9e81d8a699a01fa1836ec768028a4e0c464d4420524b9cae4d0f48686dd855b -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI가 멀티플레이어가 됩니다.
