@@ -9,6 +9,7 @@ import {
   rooms,
   tasks,
   type PostgresJsBridgeConnection,
+  type ParkedProtectedTaskAdditionalAuthority,
 } from "@nautilo/db";
 import {
   LATTICE_LIMITS,
@@ -45,6 +46,12 @@ import {
   readCurrentTaskScopeMemoryNamespaceInventory,
   type TaskScopeMemoryBinding,
 } from "./task-scope-memory-metadata.ts";
+import {
+  copyParkedTaskRuntimeAuthority,
+  lockCurrentParkedTaskAdditionalAuthority,
+  withParkedTaskRuntimeRestrictedAuthority,
+} from "./parked-task-runtime-authority.ts";
+import type { CanonicalTranscriptTx } from "@nautilo/trust";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
@@ -120,6 +127,7 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
   ) => Promise<Value | null>,
   validateCurrentTaskRun?: (
     product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx,
   ) => Promise<boolean>,
 ): Promise<Value | null> {
   // Snapshot caller-owned coordinates before the first asynchronous boundary.
@@ -198,7 +206,7 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
     // Recipient binding starts before a signed request exists. Hold the exact
     // awaiting TaskRun lock for the entire request-construction callback.
     if (validateCurrentTaskRun !== undefined
-      && !await validateCurrentTaskRun(product)) return null;
+      && !await validateCurrentTaskRun(product, tx)) return null;
     return new PostgresNamespaceProductAuthority(product)
       .withCurrentReadableNamespaceSet({
         subjectUserId: request.requesterUserId,
@@ -434,6 +442,14 @@ export type InitialTaskRuntimeRecipientAuthority = Readonly<{
   scopeMemory?: TaskScopeMemoryBinding;
 }>;
 
+type TaskRuntimeRecipientAuthorityInput =
+  InitialTaskRuntimeNamespaceInput & Readonly<{
+    deviceId: string;
+    namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
+    domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
+    signal?: AbortSignal;
+  }>;
+
 function sameDevice(left: CurrentDeviceAdmissionAuthority, right: CurrentDeviceAdmissionAuthority): boolean {
   return left.userId === right.userId && left.humanActorId === right.humanActorId
     && left.deviceId === right.deviceId && left.deviceGeneration === right.deviceGeneration
@@ -445,19 +461,19 @@ function sameDevice(left: CurrentDeviceAdmissionAuthority, right: CurrentDeviceA
     && left.signingPublicKey.every((byte, index) => byte === right.signingPublicKey[index]);
 }
 
-/**
- * Awaiting-phase request construction under the same product proof as planning.
- * The callback borrows public authority only; copy public bytes into its request
- * before returning. No key material or transaction handle is lent.
- */
-export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: InitialTaskRuntimeNamespaceInput & Readonly<{
-  deviceId: string;
-  namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
-  domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
-  validateCurrentTaskRun(product: PostgresJsBridgeConnection): Promise<boolean>;
-  signal?: AbortSignal;
-  use(authority: InitialTaskRuntimeRecipientAuthority): Value | Promise<Value>;
-}>): Promise<Value | null> {
+/** Shared awaiting-phase authority pipeline for initial and parked requests. */
+async function withTaskRuntimeRecipientAuthority<Value>(
+  input: TaskRuntimeRecipientAuthorityInput,
+  validateCurrentTaskRun: (
+    product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx,
+  ) => Promise<boolean>,
+  use: (
+    authority: InitialTaskRuntimeRecipientAuthority,
+    restricted: PostgresJsBridgeConnection,
+    request: TaskRuntimeRecipientAuthorityInput,
+  ) => Value | Promise<Value>,
+): Promise<Value | null> {
   const namespaces = Object.freeze(input.namespaceRequirements.map((entry) => Object.freeze({
     ...entry, operations: Object.freeze([...entry.operations]),
   })));
@@ -469,7 +485,7 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: Ini
       ? {}
       : { scopeMemory: copyTaskScopeMemoryBinding(input.scopeMemory) }),
   });
-  if (typeof request.validateCurrentTaskRun !== "function"
+  if (typeof validateCurrentTaskRun !== "function"
     || request.deviceId.length === 0 || namespaces.length !== request.namespaceIds.length
     || namespaces.some((entry, index) => entry.ordinal !== index
       || entry.namespaceId !== request.namespaceIds[index]
@@ -544,14 +560,67 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: Ini
       retainDevice(lockedDevice);
       if (!sameDevice(device, lockedDevice)) return null;
       request.signal?.throwIfAborted();
-      const value = await request.use(Object.freeze({ sourceRoomId: request.sourceRoomId,
+      const value = await use(Object.freeze({ sourceRoomId: request.sourceRoomId,
         sourceNamespaceId: request.contentNamespaceId, device: Object.freeze(lockedDevice),
         domains: inspected.domains, namespaceRequirements: namespaces, policyRevision,
         ...(request.scopeMemory === undefined
           ? {}
-          : { scopeMemory: request.scopeMemory }) }));
+          : { scopeMemory: request.scopeMemory }) }), restricted, request);
       request.signal?.throwIfAborted();
       return value;
     } finally { for (const bytes of owned) bytes.fill(0); }
-  }, request.validateCurrentTaskRun);
+  }, validateCurrentTaskRun);
+}
+
+export async function withInitialTaskRuntimeRecipientAuthority<Value>(
+  input: TaskRuntimeRecipientAuthorityInput & Readonly<{
+    validateCurrentTaskRun(
+      product: PostgresJsBridgeConnection,
+    ): Promise<boolean>;
+    use(authority: InitialTaskRuntimeRecipientAuthority): Value | Promise<Value>;
+  }>,
+): Promise<Value | null> {
+  const validateCurrentTaskRun = input.validateCurrentTaskRun;
+  const use = input.use;
+  return withTaskRuntimeRecipientAuthority(
+    input,
+    product => validateCurrentTaskRun(product),
+    (authority, _restricted, request) => Reflect.apply(use, request, [authority]),
+  );
+}
+
+/**
+ * Continuation recipient construction under the exact parked lifecycle proof.
+ * The proof is locked and re-parsed before any Namespace or crypto authority.
+ */
+export async function withParkedTaskRuntimeRecipientAuthority<Value>(
+  input: TaskRuntimeRecipientAuthorityInput & Readonly<{
+    expected: ParkedProtectedTaskAdditionalAuthority;
+    authorizationRequestId: string;
+    use(
+      authority: InitialTaskRuntimeRecipientAuthority,
+      restricted: PostgresJsBridgeConnection,
+    ): Value | Promise<Value>;
+  }>,
+): Promise<Value | null> {
+  const use = input.use;
+  const expected = copyParkedTaskRuntimeAuthority(input.expected);
+  if (input.authorizationRequestId !== expected.authorizationRequestId
+    || input.taskId !== expected.occurrence.task.id
+    || input.requesterUserId !== expected.occurrence.task.requestorId
+    || input.agentId !== expected.occurrence.task.agentId
+    || input.contentNamespaceId
+      !== expected.occurrence.task.contentNamespaceId) return null;
+  return withTaskRuntimeRecipientAuthority(
+    input,
+    async (_product, transaction) =>
+      await lockCurrentParkedTaskAdditionalAuthority({
+        transaction,
+        expected,
+      }) !== null,
+    (authority, restricted) => withParkedTaskRuntimeRestrictedAuthority(
+      restricted,
+      scoped => Promise.resolve(use(authority, scoped)),
+    ),
+  );
 }

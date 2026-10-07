@@ -13,6 +13,7 @@ import {
   protectedTaskContinuationReceipts,
   protectedTaskAdditionalAuthorityContinuationFingerprint,
   protectedTaskExecutionSegmentReceipts,
+  readParkedProtectedTaskAdditionalAuthority,
   resolveAppDatabaseConnectionString,
   sealAndParkProtectedTaskRun,
   startParkedProtectedTaskRunAdditionalAuthoritySegment,
@@ -486,8 +487,35 @@ test("cancellation and atomic park serialize without retaining loser receipts", 
 test("product-role continuation start has one durable next-Job winner", async () => {
   const fixture = await createFixture();
   try {
+    // A started segment may already have selected its model before parking.
+    await admin.update(taskRuns).set({ modelId: "test:selected-model" })
+      .where(eq(taskRuns.id, fixture.taskRunId));
+    const discoveryIdentity = {
+      taskRunId: fixture.taskRunId,
+      authorizationRequestId: "authority-request:1",
+    } as const;
+    expect(await readParkedProtectedTaskAdditionalAuthority(
+      productA,
+      discoveryIdentity,
+    )).toBeNull();
     expect(await sealAndParkProtectedTaskRun(productA, input(fixture)))
       .toMatchObject({ status: "parked" });
+    expect(await readParkedProtectedTaskAdditionalAuthority(
+      productA,
+      discoveryIdentity,
+    )).toMatchObject({
+      authorizationRequestId: discoveryIdentity.authorizationRequestId,
+      nextExecutionSegment: 2,
+      occurrence: {
+        task: { id: fixture.taskId, status: "awaiting" },
+        run: {
+          id: fixture.taskRunId,
+          jobId: fixture.jobId,
+          status: "awaiting",
+        },
+      },
+      priorJob: { id: fixture.jobId, generation: 1 },
+    });
     await insertAdditionalAuthorityJob(fixture);
     const conflict: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput = {
       ...additionalAuthorityStartInput(fixture),
@@ -520,6 +548,10 @@ test("product-role continuation start has one durable next-Job winner", async ()
     expect(results.filter(result =>
       result.status === "rejected" && result.reason === "stale"
     )).toHaveLength(1);
+    expect(await readParkedProtectedTaskAdditionalAuthority(
+      productA,
+      discoveryIdentity,
+    )).toBeNull();
     const winnerIndex = results.findIndex(result => result.status === "started");
     expect(await startParkedProtectedTaskRunAdditionalAuthoritySegment(
       productA,

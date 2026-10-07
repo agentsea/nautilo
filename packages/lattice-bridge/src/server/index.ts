@@ -942,6 +942,7 @@ export { matchesCurrentReflectionAuthority, withCurrentReflectionAuthority } fro
 export {
   withCurrentTaskRuntimeAuthority,
   withCurrentAcceptedTaskRuntimeAuthority,
+  withCurrentAcceptedParkedTaskRuntimeAuthority,
   type AcceptedTaskRuntimeAuthorizationV3,
   type CurrentTaskRuntimeAuthority,
   type TaskRuntimeAuthoritySubject,
@@ -996,6 +997,7 @@ export {
   inspectInitialTaskRuntimeNamespaceAuthority,
   inspectTaskContentNamespaceAuthority,
   withInitialTaskRuntimeRecipientAuthority,
+  withParkedTaskRuntimeRecipientAuthority,
   type InitialTaskRuntimeRecipientAuthority,
   type InitialTaskRuntimeNamespaceAuthority,
   type InitialTaskRuntimeNamespaceFact,

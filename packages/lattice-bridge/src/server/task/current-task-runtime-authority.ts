@@ -1,5 +1,6 @@
 import {
   acquireEncryptionConsumptionFence,
+  type ParkedProtectedTaskAdditionalAuthority,
   type PostgresJsBridgeConnection,
 } from "@nautilo/db";
 import {
@@ -41,6 +42,11 @@ import type {
 import {
   verifyCryptoPostgresHandle,
 } from "../storage/postgres-lattice-storage.ts";
+import {
+  copyParkedTaskRuntimeAuthority,
+  lockCurrentParkedTaskAdditionalAuthority,
+  withParkedTaskRuntimeRestrictedAuthority,
+} from "./parked-task-runtime-authority.ts";
 
 export type TaskRuntimeNamespaceAuthorityRequirement = Readonly<{
   ordinal: number;
@@ -447,14 +453,7 @@ export async function withCurrentTaskRuntimeAuthority<Value>(input: Readonly<{
   }
 }
 
-/**
- * Rechecks an already accepted Task V3 authorization under short canonical
- * locks. Unlike the device list/respond owner above, this execution owner uses
- * the durable accepted record and its signed authorization, never the original
- * HTTP admission or bearer.
- */
-export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
-  input: Readonly<{
+type CurrentAcceptedTaskRuntimeAuthorityInput = Readonly<{
     runner: ConversationProductCanonicalTransactionRunner;
     restricted: PostgresJsBridgeConnection;
     crypto: LatticeCrypto;
@@ -463,12 +462,29 @@ export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
     accepted: AcceptedTaskRuntimeAuthorizationV3;
     now(): number;
     signal?: AbortSignal;
+}>;
+
+type CurrentAcceptedTaskRuntimeAuthorityUse<Value> =
+  | Readonly<{
+    kind: "current";
     use(
       authority: CurrentTaskRuntimeAuthority,
       product: PostgresJsBridgeConnection,
       restricted: PostgresJsBridgeConnection,
     ): Promise<Value>;
-  }>,
+  }>
+  | Readonly<{
+    kind: "parked";
+    expected: ParkedProtectedTaskAdditionalAuthority;
+    use(
+      authority: CurrentTaskRuntimeAuthority,
+      restricted: PostgresJsBridgeConnection,
+    ): Promise<Value>;
+  }>;
+
+async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
+  input: CurrentAcceptedTaskRuntimeAuthorityInput,
+  authorityUse: CurrentAcceptedTaskRuntimeAuthorityUse<Value>,
 ): Promise<Value | null> {
   const descriptorBytes = Uint8Array.from(input.accepted.descriptorBytes);
   const authorizationBytes = Uint8Array.from(input.accepted.authorizationBytes);
@@ -548,6 +564,11 @@ export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
         || input.now() >= accepted.authorizationExpiresAt
         || namespaces.some((requirement) =>
           requirement.expectedPolicyRevision !== policy.revision)) return null;
+      if (authorityUse.kind === "parked"
+        && await lockCurrentParkedTaskAdditionalAuthority({
+          transaction: tx,
+          expected: authorityUse.expected,
+        }) === null) return null;
       const product = inTransaction(executor);
       return new PostgresNamespaceProductAuthority(product)
         .withCurrentReadableNamespaceSet({
@@ -660,13 +681,22 @@ export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
               );
               if (verified.status !== "verified") return null;
               input.signal?.throwIfAborted();
-              const result = await input.use({
+              const authority = Object.freeze({
                 device,
                 plan,
                 domains: inspected.domains,
                 namespaceRequirements: namespaces,
                 policyRevision: policy.revision,
-              }, product, restricted);
+              });
+              let result: Value;
+              if (authorityUse.kind === "current") {
+                result = await authorityUse.use(authority, product, restricted);
+              } else {
+                result = await withParkedTaskRuntimeRestrictedAuthority(
+                  restricted,
+                  scoped => authorityUse.use(authority, scoped),
+                );
+              }
               input.signal?.throwIfAborted();
               const finishedAt = input.now();
               if (finishedAt >= request.deadlineAt
@@ -689,4 +719,62 @@ export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
     destroyDomainForegroundAuthorizationPlanV2(plan);
     destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
   }
+}
+
+/**
+ * Rechecks an already accepted Task V3 authorization under short canonical
+ * locks. Unlike the device list/respond owner above, this execution owner uses
+ * the durable accepted record and its signed authorization, never the original
+ * HTTP admission or bearer.
+ */
+export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
+  input: CurrentAcceptedTaskRuntimeAuthorityInput & Readonly<{
+    use(
+      authority: CurrentTaskRuntimeAuthority,
+      product: PostgresJsBridgeConnection,
+      restricted: PostgresJsBridgeConnection,
+    ): Promise<Value>;
+  }>,
+): Promise<Value | null> {
+  return withCurrentAcceptedTaskRuntimeAuthorityInternal(input, {
+    kind: "current",
+    use: (authority, product, restricted) => input.use(
+      authority,
+      product,
+      restricted,
+    ),
+  });
+}
+
+/**
+ * Rechecks accepted continuation authority while the exact parked Task, Run,
+ * and prior Job remain locked. The callback receives only a lifetime-scoped
+ * restricted connection for the grant mutation that completes this phase.
+ */
+export async function withCurrentAcceptedParkedTaskRuntimeAuthority<Value>(
+  input: CurrentAcceptedTaskRuntimeAuthorityInput & Readonly<{
+    expected: ParkedProtectedTaskAdditionalAuthority;
+    use(
+      authority: CurrentTaskRuntimeAuthority,
+      restricted: PostgresJsBridgeConnection,
+    ): Promise<Value>;
+  }>,
+): Promise<Value | null> {
+  const use = input.use;
+  const expected = copyParkedTaskRuntimeAuthority(input.expected);
+  const subject = Object.freeze({ ...input.subject });
+  if (input.accepted.requestId !== expected.authorizationRequestId
+    || input.accepted.workId !== expected.occurrence.run.id
+    || input.accepted.workKind !== "task.execute"
+    || input.accepted.workPurpose !== "task.execute"
+    || subject.userId !== expected.occurrence.task.requestorId
+    || !input.accepted.namespaceRequirements.some(requirement =>
+      requirement.namespaceId
+        === expected.occurrence.task.contentNamespaceId)) return null;
+  return withCurrentAcceptedTaskRuntimeAuthorityInternal(
+    Object.freeze({ ...input, subject }), {
+    kind: "parked",
+    expected,
+    use: (authority, restricted) => use(authority, restricted),
+  });
 }

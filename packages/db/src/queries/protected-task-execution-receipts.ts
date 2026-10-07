@@ -663,7 +663,10 @@ export async function readProtectedTaskExecutionContinuationProof(
     || !validSegment(input.executionSegment)) {
     throw new TypeError("Protected Task continuation identity is malformed");
   }
-  const [run] = await db.select().from(taskRuns).where(and(
+  const [run] = await db.select({
+    id: taskRuns.id,
+    taskId: taskRuns.taskId,
+  }).from(taskRuns).where(and(
     eq(taskRuns.id, input.taskRunId),
     eq(taskRuns.taskId, input.taskId),
   )).limit(1);

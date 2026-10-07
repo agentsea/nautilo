@@ -16,7 +16,7 @@ import {
  * Phase 2 can pass either a pooled `DirectDatabase` or a transaction-
  * scoped handle) rather than reaching for a module-level singleton.
  */
-import { and, arrayContains, asc, desc, eq, exists, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, notExists, notInArray, or, sql } from "drizzle-orm";
+import { and, arrayContains, asc, desc, eq, exists, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, ne, notExists, notInArray, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DirectDatabase } from "../config/direct-database";
 import { tasks, type Task, type NewTask } from "../schema/tasks";
@@ -2253,11 +2253,11 @@ export async function attachProtectedTaskRunModel(
   });
 }
 
-const PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY =
+export const PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY =
   "nautilo.protectedTaskRunPark.v1";
 const PROTECTED_TASK_AWAIT_REPLY_ACCEPTANCE_METADATA_KEY =
   "nautilo.protectedTaskAwaitReplyAcceptance.v1";
-const PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY =
+export const PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY =
   "nautilo.protectedTaskRunTerminal.v1";
 const OPAQUE_CHECKPOINT_COORDINATE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u;
 const CONTINUATION_FINGERPRINT = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u;
@@ -2390,6 +2390,93 @@ export type SealAndParkProtectedTaskRunResult =
       stage: "park";
       reason: Extract<ParkProtectedTaskRunResult, { status: "rejected" }>["reason"];
     }>;
+
+/** Content-free Task projection accepted by parked-authority discovery. */
+export type ParkedProtectedTaskAdditionalAuthorityTaskRow = Readonly<{
+  id: string;
+  ownerId: string;
+  requestorId: string;
+  agentId: string;
+  callingRoomId: string | null;
+  scheduleKind: "now" | "one_shot" | "cron";
+  status: string;
+  contentRepresentation: "ordinary" | "dual" | "protected";
+  contentNamespaceId: string | null;
+  contentRevision: number;
+  cryptoObjectId: string | null;
+  cryptoAccessRevision: number;
+  cryptoRequiredNamespaceFingerprint: Uint8Array | null;
+  cryptoMappingState: "unmapped" | "verified" | "stale";
+  /** Derived without returning prompt, expected output, or last-error text. */
+  contentPristine: boolean;
+}>;
+
+/** Content-free TaskRun projection accepted by parked-authority discovery. */
+export type ParkedProtectedTaskAdditionalAuthorityRunRow = Readonly<{
+  id: string;
+  taskId: string;
+  jobId: string | null;
+  graphThreadId: string;
+  status: string;
+  startedAt: Date;
+  /** Derived without returning result, error, or funding payloads. */
+  pristine: boolean;
+}>;
+
+/** Narrow prior-Job projection; only protected reference/park JSON is read. */
+export type ParkedProtectedTaskAdditionalAuthorityJobRow = Readonly<{
+  id: string;
+  ownerId: string;
+  requestorId: string;
+  laneKey: string | null;
+  type: string;
+  status: string;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  reference: unknown;
+  parkReceipt: unknown;
+  /** Derived without returning Job result, message, or full metadata. */
+  pristine: boolean;
+}>;
+
+export type ParkedProtectedTaskAdditionalAuthority = Readonly<{
+  occurrence: Readonly<{
+    task: Readonly<{
+      id: string;
+      ownerId: string;
+      requestorId: string;
+      agentId: string;
+      callingRoomId: string | null;
+      scheduleKind: "now" | "one_shot" | "cron";
+      status: "awaiting" | "pending";
+      contentRepresentation: "dual" | "protected";
+      contentNamespaceId: string;
+      contentRevision: number;
+      cryptoObjectId: string;
+      cryptoAccessRevision: number;
+      cryptoRequiredNamespaceFingerprint: Uint8Array;
+    }>;
+    run: Readonly<{
+      id: string;
+      taskId: string;
+      jobId: string;
+      graphThreadId: string;
+      status: "awaiting";
+      startedAt: Date;
+    }>;
+  }>;
+  priorJob: Readonly<{
+    id: string;
+    generation: number;
+    parkedAt: Date;
+    interrupts: readonly ProtectedTaskRunInterruptCoordinate[];
+    reference: ProtectedTaskDurableJobReference;
+  }>;
+  proof: ProtectedTaskExecutionContinuationProof;
+  authorizationRequestId: string;
+  continuationFingerprint: string;
+  nextExecutionSegment: number;
+}>;
 
 export type StartParkedProtectedTaskRunSegmentInput = Readonly<{
   taskId: string;
@@ -3069,6 +3156,445 @@ export async function sealAndParkProtectedTaskRun(
     if (error instanceof SealAndParkRollback) return error.rejection;
     throw error;
   }
+}
+
+function cloneProtectedTaskExecutionContinuationProof(
+  proof: ProtectedTaskExecutionContinuationProof,
+): ProtectedTaskExecutionContinuationProof {
+  return Object.freeze({
+    segment: Object.freeze({
+      ...proof.segment,
+      transcriptAssociationDigest:
+        proof.segment.transcriptAssociationDigest?.slice() ?? null,
+      checkpointDigest: proof.segment.checkpointDigest?.slice() ?? null,
+      checkpointBlobDigest: proof.segment.checkpointBlobDigest?.slice() ?? null,
+      pendingWriteDigest: proof.segment.pendingWriteDigest?.slice() ?? null,
+      sealedAt: new Date(proof.segment.sealedAt.getTime()),
+    }),
+    continuation: Object.freeze({
+      ...proof.continuation,
+      requestDigest: proof.continuation.requestDigest?.slice() ?? null,
+      requiredAuthorityDigest:
+        proof.continuation.requiredAuthorityDigest?.slice() ?? null,
+      sealedAt: new Date(proof.continuation.sealedAt.getTime()),
+    }),
+  });
+}
+
+function copyProtectedTaskInterrupts(
+  interrupts: readonly ProtectedTaskRunInterruptCoordinate[],
+): readonly ProtectedTaskRunInterruptCoordinate[] {
+  return Object.freeze(interrupts.map(interrupt => Object.freeze({
+    id: interrupt.id,
+    kind: interrupt.kind,
+    ...(interrupt.requestId === undefined
+      ? {}
+      : { requestId: interrupt.requestId }),
+  })));
+}
+
+/**
+ * Validate a narrow, content-free parked-run projection and immutable proof.
+ * The returned descriptor is an unlocked discovery candidate, never current
+ * execution authority. Callers must re-read and parse the same facts while
+ * holding the product lifecycle locks before opening protected material.
+ */
+export function parseParkedProtectedTaskAdditionalAuthority(input: Readonly<{
+  task: ParkedProtectedTaskAdditionalAuthorityTaskRow;
+  run: ParkedProtectedTaskAdditionalAuthorityRunRow;
+  job: ParkedProtectedTaskAdditionalAuthorityJobRow;
+  proof: ProtectedTaskExecutionContinuationProof | null;
+  authorizationRequestId: string;
+}>): ParkedProtectedTaskAdditionalAuthority | null {
+  const { task, run, job, proof, authorizationRequestId } = input;
+  if (!opaqueCheckpointCoordinate(authorizationRequestId)
+    || !CANONICAL_UUID.test(task.id)
+    || !CANONICAL_UUID.test(task.ownerId)
+    || !CANONICAL_UUID.test(task.requestorId)
+    || !CANONICAL_UUID.test(task.agentId)
+    || task.callingRoomId !== null
+      && !CANONICAL_UUID.test(task.callingRoomId)
+    || task.scheduleKind !== "now"
+      && task.scheduleKind !== "one_shot"
+      && task.scheduleKind !== "cron"
+    || task.status !== (task.scheduleKind === "cron" ? "pending" : "awaiting")
+    || task.contentRepresentation !== "dual"
+      && task.contentRepresentation !== "protected"
+    || task.contentNamespaceId === null
+    || !CANONICAL_UUID.test(task.contentNamespaceId)
+    || !Number.isSafeInteger(task.contentRevision)
+    || task.contentRevision < 1
+    || task.cryptoObjectId === null
+    || task.cryptoObjectId.length === 0
+    || !Number.isSafeInteger(task.cryptoAccessRevision)
+    || task.cryptoAccessRevision < 0
+    || !(task.cryptoRequiredNamespaceFingerprint instanceof Uint8Array)
+    || task.cryptoRequiredNamespaceFingerprint.length !== 32
+    || task.cryptoMappingState !== "verified"
+    || task.contentPristine !== true
+    || !CANONICAL_UUID.test(run.id)
+    || run.taskId !== task.id
+    || run.jobId !== job.id
+    || typeof run.graphThreadId !== "string"
+    || run.graphThreadId.length === 0
+    || run.status !== "awaiting"
+    || !(run.startedAt instanceof Date)
+    || !Number.isFinite(run.startedAt.getTime())
+    || run.pristine !== true
+    || !CANONICAL_UUID.test(job.id)
+    || job.ownerId !== task.requestorId
+    || job.requestorId !== task.requestorId
+    || job.laneKey !== `task:${task.id}`
+    || job.type !== "foreground"
+    || job.status !== "completed"
+    || !(job.startedAt instanceof Date)
+    || !Number.isFinite(job.startedAt.getTime())
+    || !(job.completedAt instanceof Date)
+    || !Number.isFinite(job.completedAt.getTime())
+    || job.pristine !== true
+    || !isRecord(job.reference)
+    || !isRecord(job.parkReceipt)
+    || proof === null) return null;
+
+  const reference = job.reference as ProtectedTaskDurableJobReference;
+  if (!exactProtectedTaskJobReference(job.reference, reference)
+    || reference.taskId !== task.id
+    || reference.taskRunId !== run.id
+    || reference.inputObjectId !== task.cryptoObjectId
+    || reference.resultObjectId !== protectedTaskRunResultObjectId(task.id, run.id)
+    || !opaqueCheckpointCoordinate(reference.authorizationRequestId)
+    || reference.authorizationRequestId === authorizationRequestId
+    || !Number.isSafeInteger(reference.policyRevision)
+    || reference.policyRevision < 1
+    || !Number.isSafeInteger(reference.executionSegment)
+    || reference.executionSegment < 1
+    || reference.executionSegment === Number.MAX_SAFE_INTEGER) return null;
+
+  const rawReceipt = job.parkReceipt;
+  const parkedAtText = rawReceipt["parkedAt"];
+  const parkedAt = typeof parkedAtText === "string"
+    ? new Date(parkedAtText)
+    : new Date(Number.NaN);
+  if (Object.keys(rawReceipt).sort().join(",")
+      !== "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,taskId,taskRunId,version"
+    || rawReceipt["version"] !== 1
+    || !Number.isSafeInteger(rawReceipt["generation"])
+    || (rawReceipt["generation"] as number) < 0
+    || rawReceipt["executionSegment"] !== reference.executionSegment
+    || !Number.isFinite(parkedAt.getTime())
+    || parkedAt.toISOString() !== parkedAtText
+    || job.completedAt.getTime() !== parkedAt.getTime()) return null;
+
+  let interrupts: readonly ProtectedTaskRunInterruptCoordinate[];
+  try {
+    interrupts = canonicalInterruptCoordinates(
+      rawReceipt["interrupts"] as readonly ProtectedTaskRunInterruptCoordinate[],
+    );
+  } catch {
+    return null;
+  }
+  const receipt: ProtectedTaskRunParkReceipt = Object.freeze({
+    version: 1,
+    taskId: task.id,
+    taskRunId: run.id,
+    jobId: job.id,
+    graphThreadId: run.graphThreadId,
+    generation: rawReceipt["generation"] as number,
+    executionSegment: reference.executionSegment,
+    interrupts,
+    parkedAt: parkedAt.toISOString(),
+  });
+  const continuation = proof.continuation;
+  const segment = proof.segment;
+  const matchingInterrupts = interrupts.filter(interrupt =>
+    interrupt.kind === "additional_authority"
+      && interrupt.requestId === authorizationRequestId
+  );
+  if (!exactParkReceipt(rawReceipt, receipt)
+    || matchingInterrupts.length !== 1
+    || matchingInterrupts[0]!.id !== continuation.interruptId
+    || segment.taskRunId !== run.id
+    || segment.jobId !== job.id
+    || segment.executionSegment !== reference.executionSegment
+    || segment.route !== "native_langgraph_v1"
+    || segment.transcriptContract !== "protected_message_associations_v1"
+    || !Number.isSafeInteger(segment.expectedTranscriptAssociationCount)
+    || segment.expectedTranscriptAssociationCount < 0
+    || !(segment.transcriptAssociationDigest instanceof Uint8Array)
+    || segment.transcriptAssociationDigest.length !== 32
+    || segment.checkpointContract !== "encrypted_langgraph_v1"
+    || !Number.isSafeInteger(segment.expectedCheckpointCount)
+    || segment.expectedCheckpointCount < 1
+    || !(segment.checkpointDigest instanceof Uint8Array)
+    || segment.checkpointDigest.length !== 32
+    || !Number.isSafeInteger(segment.expectedCheckpointBlobCount)
+    || segment.expectedCheckpointBlobCount < 0
+    || !(segment.checkpointBlobDigest instanceof Uint8Array)
+    || segment.checkpointBlobDigest.length !== 32
+    || !Number.isSafeInteger(segment.expectedPendingWriteCount)
+    || segment.expectedPendingWriteCount < 0
+    || !(segment.pendingWriteDigest instanceof Uint8Array)
+    || segment.pendingWriteDigest.length !== 32
+    || !(segment.sealedAt instanceof Date)
+    || segment.sealedAt.getTime() !== parkedAt.getTime()
+    || continuation.taskRunId !== run.id
+    || continuation.jobId !== job.id
+    || continuation.executionSegment !== reference.executionSegment
+    || continuation.kind !== "pre_effect_interrupt_v1"
+    || continuation.reason !== "additional_authority"
+    || continuation.effectDisposition !== "not_started_v1"
+    || !opaqueCheckpointCoordinate(continuation.interruptId)
+    || !opaqueCheckpointCoordinate(continuation.operationId)
+    || !(continuation.requestDigest instanceof Uint8Array)
+    || continuation.requestDigest.length !== 32
+    || !(continuation.requiredAuthorityDigest instanceof Uint8Array)
+    || continuation.requiredAuthorityDigest.length !== 32
+    || !(continuation.sealedAt instanceof Date)
+    || continuation.sealedAt.getTime() !== parkedAt.getTime()) return null;
+
+  const continuationFingerprint =
+    protectedTaskAdditionalAuthorityContinuationFingerprint(continuation);
+  const copiedReference = Object.freeze({ ...reference });
+  const copiedProof = cloneProtectedTaskExecutionContinuationProof(proof);
+  return Object.freeze({
+    occurrence: Object.freeze({
+      task: Object.freeze({
+        id: task.id,
+        ownerId: task.ownerId,
+        requestorId: task.requestorId,
+        agentId: task.agentId,
+        callingRoomId: task.callingRoomId,
+        scheduleKind: task.scheduleKind,
+        status: task.status,
+        contentRepresentation: task.contentRepresentation,
+        contentNamespaceId: task.contentNamespaceId,
+        contentRevision: task.contentRevision,
+        cryptoObjectId: task.cryptoObjectId,
+        cryptoAccessRevision: task.cryptoAccessRevision,
+        cryptoRequiredNamespaceFingerprint:
+          task.cryptoRequiredNamespaceFingerprint.slice(),
+      }),
+      run: Object.freeze({
+        id: run.id,
+        taskId: run.taskId,
+        jobId: job.id,
+        graphThreadId: run.graphThreadId,
+        status: "awaiting" as const,
+        startedAt: new Date(run.startedAt.getTime()),
+      }),
+    }),
+    priorJob: Object.freeze({
+      id: job.id,
+      generation: receipt.generation,
+      parkedAt: new Date(parkedAt.getTime()),
+      interrupts: copyProtectedTaskInterrupts(interrupts),
+      reference: copiedReference,
+    }),
+    proof: copiedProof,
+    authorizationRequestId,
+    continuationFingerprint,
+    nextExecutionSegment: reference.executionSegment + 1,
+  });
+}
+
+/** Exact comparison for a discovered candidate re-read under lifecycle locks. */
+export function sameParkedProtectedTaskAdditionalAuthority(
+  left: ParkedProtectedTaskAdditionalAuthority,
+  right: ParkedProtectedTaskAdditionalAuthority,
+): boolean {
+  const leftTask = left.occurrence.task;
+  const rightTask = right.occurrence.task;
+  const leftRun = left.occurrence.run;
+  const rightRun = right.occurrence.run;
+  const leftJob = left.priorJob;
+  const rightJob = right.priorJob;
+  const leftSegment = left.proof.segment;
+  const rightSegment = right.proof.segment;
+  const leftContinuation = left.proof.continuation;
+  const rightContinuation = right.proof.continuation;
+  return leftTask.id === rightTask.id
+    && leftTask.ownerId === rightTask.ownerId
+    && leftTask.requestorId === rightTask.requestorId
+    && leftTask.agentId === rightTask.agentId
+    && leftTask.callingRoomId === rightTask.callingRoomId
+    && leftTask.scheduleKind === rightTask.scheduleKind
+    && leftTask.status === rightTask.status
+    && leftTask.contentRepresentation === rightTask.contentRepresentation
+    && leftTask.contentNamespaceId === rightTask.contentNamespaceId
+    && leftTask.contentRevision === rightTask.contentRevision
+    && leftTask.cryptoObjectId === rightTask.cryptoObjectId
+    && leftTask.cryptoAccessRevision === rightTask.cryptoAccessRevision
+    && sameBytes(
+      leftTask.cryptoRequiredNamespaceFingerprint,
+      rightTask.cryptoRequiredNamespaceFingerprint,
+    )
+    && leftRun.id === rightRun.id
+    && leftRun.taskId === rightRun.taskId
+    && leftRun.jobId === rightRun.jobId
+    && leftRun.graphThreadId === rightRun.graphThreadId
+    && leftRun.status === rightRun.status
+    && leftRun.startedAt.getTime() === rightRun.startedAt.getTime()
+    && leftJob.id === rightJob.id
+    && leftJob.generation === rightJob.generation
+    && leftJob.parkedAt.getTime() === rightJob.parkedAt.getTime()
+    && exactInterruptCoordinates(leftJob.interrupts, rightJob.interrupts)
+    && exactProtectedTaskJobReference(leftJob.reference, rightJob.reference)
+    && leftSegment.taskRunId === rightSegment.taskRunId
+    && leftSegment.executionSegment === rightSegment.executionSegment
+    && leftSegment.jobId === rightSegment.jobId
+    && leftSegment.route === rightSegment.route
+    && leftSegment.transcriptContract === rightSegment.transcriptContract
+    && leftSegment.expectedTranscriptAssociationCount
+      === rightSegment.expectedTranscriptAssociationCount
+    && sameBytes(
+      leftSegment.transcriptAssociationDigest,
+      rightSegment.transcriptAssociationDigest,
+    )
+    && leftSegment.checkpointContract === rightSegment.checkpointContract
+    && leftSegment.expectedCheckpointCount
+      === rightSegment.expectedCheckpointCount
+    && sameBytes(leftSegment.checkpointDigest, rightSegment.checkpointDigest)
+    && leftSegment.expectedCheckpointBlobCount
+      === rightSegment.expectedCheckpointBlobCount
+    && sameBytes(
+      leftSegment.checkpointBlobDigest,
+      rightSegment.checkpointBlobDigest,
+    )
+    && leftSegment.expectedPendingWriteCount
+      === rightSegment.expectedPendingWriteCount
+    && sameBytes(leftSegment.pendingWriteDigest, rightSegment.pendingWriteDigest)
+    && leftSegment.sealedAt.getTime() === rightSegment.sealedAt.getTime()
+    && leftContinuation.taskRunId === rightContinuation.taskRunId
+    && leftContinuation.executionSegment === rightContinuation.executionSegment
+    && leftContinuation.jobId === rightContinuation.jobId
+    && leftContinuation.kind === rightContinuation.kind
+    && leftContinuation.reason === rightContinuation.reason
+    && leftContinuation.effectDisposition === rightContinuation.effectDisposition
+    && leftContinuation.interruptId === rightContinuation.interruptId
+    && leftContinuation.operationId === rightContinuation.operationId
+    && sameBytes(leftContinuation.requestDigest, rightContinuation.requestDigest)
+    && sameBytes(
+      leftContinuation.requiredAuthorityDigest,
+      rightContinuation.requiredAuthorityDigest,
+    )
+    && leftContinuation.sealedAt.getTime()
+      === rightContinuation.sealedAt.getTime()
+    && left.authorizationRequestId === right.authorizationRequestId
+    && left.continuationFingerprint === right.continuationFingerprint
+    && left.nextExecutionSegment === right.nextExecutionSegment;
+}
+
+/** Shared content-free projections for discovery and locked revalidation. */
+export const parkedTaskAdditionalAuthorityTaskProjection = Object.freeze({
+  id: tasks.id,
+  ownerId: tasks.ownerId,
+  requestorId: tasks.requestorId,
+  agentId: tasks.agentId,
+  callingRoomId: tasks.callingRoomId,
+  scheduleKind: tasks.scheduleKind,
+  status: tasks.status,
+  contentRepresentation: tasks.contentRepresentation,
+  contentNamespaceId: tasks.contentNamespaceId,
+  contentRevision: tasks.contentRevision,
+  cryptoObjectId: tasks.cryptoObjectId,
+  cryptoAccessRevision: tasks.cryptoAccessRevision,
+  cryptoRequiredNamespaceFingerprint:
+    tasks.cryptoRequiredNamespaceFingerprint,
+  cryptoMappingState: tasks.cryptoMappingState,
+  contentPristine: and(
+    isNull(tasks.lastError),
+    or(ne(tasks.contentRepresentation, "protected"), and(
+      eq(tasks.prompt, ""), isNull(tasks.expectedOutput),
+    )),
+  )!.mapWith(Boolean),
+});
+
+export const parkedTaskAdditionalAuthorityRunProjection = Object.freeze({
+  id: taskRuns.id,
+  taskId: taskRuns.taskId,
+  jobId: taskRuns.jobId,
+  graphThreadId: taskRuns.graphThreadId,
+  status: taskRuns.status,
+  startedAt: taskRuns.startedAt,
+  pristine: and(
+    isNull(taskRuns.resultText),
+    isNull(taskRuns.completedAt),
+    isNull(taskRuns.lastError),
+    eq(taskRuns.resultRepresentation, "ordinary"),
+    isNull(taskRuns.resultContentNamespaceId),
+    eq(taskRuns.resultRevision, 0),
+    isNull(taskRuns.resultCryptoObjectId),
+    eq(taskRuns.resultCryptoAccessRevision, 0),
+    isNull(taskRuns.resultCryptoRequiredNamespaceFingerprint),
+    eq(taskRuns.resultCryptoMappingState, "unmapped"),
+  )!.mapWith(Boolean),
+});
+
+export const parkedTaskAdditionalAuthorityJobProjection = Object.freeze({
+  id: jobs.id,
+  ownerId: jobs.ownerId,
+  requestorId: jobs.requestorId,
+  laneKey: jobs.laneKey,
+  type: jobs.type,
+  status: jobs.status,
+  startedAt: jobs.startedAt,
+  completedAt: jobs.completedAt,
+  reference: jobs.input,
+  parkReceipt: sql<unknown>`${jobs.metadata} -> ${PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY}`,
+  pristine: and(
+    isNull(jobs.result),
+    isNull(jobs.message),
+    sql<boolean>`NOT (${jobs.metadata} ? ${PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY})`,
+  )!.mapWith(Boolean),
+});
+
+/**
+ * Discover one parked additional-authority candidate without taking lifecycle
+ * locks. The descriptor is content-free and must be revalidated by its later
+ * authority owner before any protected execution is admitted.
+ */
+export async function readParkedProtectedTaskAdditionalAuthority(
+  db: Pick<DirectDatabase, "select">,
+  input: Readonly<{ taskRunId: string; authorizationRequestId: string }>,
+): Promise<ParkedProtectedTaskAdditionalAuthority | null> {
+  const taskRunId = input.taskRunId;
+  const authorizationRequestId = input.authorizationRequestId;
+  if (!CANONICAL_UUID.test(taskRunId)
+    || !opaqueCheckpointCoordinate(authorizationRequestId)) {
+    throw new TypeError(
+      "Protected Task additional-authority discovery identity is malformed",
+    );
+  }
+  const rows = await db.select({
+    task: parkedTaskAdditionalAuthorityTaskProjection,
+    run: parkedTaskAdditionalAuthorityRunProjection,
+    job: parkedTaskAdditionalAuthorityJobProjection,
+  }).from(taskRuns)
+    .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
+    .innerJoin(jobs, eq(jobs.id, taskRuns.jobId))
+    .where(and(
+      eq(taskRuns.id, taskRunId),
+      eq(taskRuns.status, "awaiting"),
+      eq(jobs.status, "completed"),
+      sql`${jobs.input} ->> 'kind' = 'protected_task_run_v1'`,
+    )).limit(2);
+  if (rows.length !== 1) return null;
+  const row = rows[0]!;
+  if (!isRecord(row.job.reference)
+    || !Number.isSafeInteger(row.job.reference["executionSegment"])) {
+    return null;
+  }
+  const proof = await readProtectedTaskExecutionContinuationProof(db, {
+    taskId: row.task.id,
+    taskRunId: row.run.id,
+    jobId: row.job.id,
+    executionSegment: row.job.reference["executionSegment"] as number,
+  });
+  return parseParkedProtectedTaskAdditionalAuthority({
+    ...row,
+    proof,
+    authorizationRequestId,
+  });
 }
 
 type PublishedProtectedTaskReplyMessage = Readonly<{

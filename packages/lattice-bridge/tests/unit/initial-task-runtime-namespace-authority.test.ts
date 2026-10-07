@@ -495,6 +495,79 @@ describe("initial Task Runtime recipient authority", () => {
     } finally { admission.mockRestore(); }
   });
 
+  test("snapshots callbacks before awaiting while retaining the frozen request receiver", async () => {
+    const { input } = fixture();
+    const exact = recipientInput(input);
+    const originalRunner = exact.runner;
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const runnerEntered = new Promise<void>(resolve => { entered = resolve; });
+    const runner = {
+      transaction: async (
+        use: Parameters<typeof originalRunner.transaction>[0],
+        options: Parameters<typeof originalRunner.transaction>[1],
+      ) => {
+        entered();
+        await gate;
+        return originalRunner.transaction(use, options);
+      },
+    };
+    let receiverAssertions = 0;
+    let originalValidation = 0;
+    let originalUse = 0;
+    let substituted = 0;
+    const request = {
+      ...exact,
+      runner,
+      validateCurrentTaskRun: async () => {
+        originalValidation += 1;
+        return true;
+      },
+      use: function(this: unknown) {
+        expect(this).not.toBe(request);
+        expect(Object.isFrozen(this)).toBe(true);
+        expect(Object.isFrozen(
+          (this as { namespaceIds: readonly string[] }).namespaceIds,
+        )).toBe(true);
+        expect((this as { namespaceIds: readonly string[] }).namespaceIds)
+          .not.toBe(request.namespaceIds);
+        receiverAssertions += 1;
+        originalUse += 1;
+        return "original";
+      },
+    };
+    const admission = spyOn(
+      PostgresDeviceAdmissionRepository.prototype,
+      "currentAuthorityForDelegation",
+    ).mockImplementation(async () => device());
+    try {
+      const operation = withInitialTaskRuntimeRecipientAuthority(
+        request as unknown as Parameters<
+          typeof withInitialTaskRuntimeRecipientAuthority<string>
+        >[0],
+      );
+      await runnerEntered;
+      request.validateCurrentTaskRun = async () => {
+        substituted += 1;
+        return false;
+      };
+      request.use = function() {
+        substituted += 1;
+        return "substituted";
+      };
+      release();
+      expect(await operation).toBe("original");
+      expect(originalValidation).toBe(1);
+      expect(originalUse).toBe(1);
+      expect(substituted).toBe(0);
+      expect(receiverAssertions).toBe(1);
+    } finally {
+      release();
+      admission.mockRestore();
+    }
+  });
+
   test("accepts an independent locked device projection revision", async () => {
     const { input } = fixture(substitute("device-lock", "revision", 9));
     const admission = spyOn(

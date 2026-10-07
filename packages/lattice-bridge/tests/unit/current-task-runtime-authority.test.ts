@@ -1,8 +1,16 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, test } from "bun:test";
-import type {
+import {
+  parseParkedProtectedTaskAdditionalAuthority,
   PostgresJsBridgeConnection,
   PostgresJsBridgeExecutor,
   PostgresJsBridgeRow,
+  type ParkedProtectedTaskAdditionalAuthorityJobRow,
+  type ParkedProtectedTaskAdditionalAuthorityRunRow,
+  type ParkedProtectedTaskAdditionalAuthorityTaskRow,
+  type ProtectedTaskDurableJobReference,
+  type ProtectedTaskExecutionContinuationProof,
 } from "@nautilo/db";
 import {
   LatticeCrypto,
@@ -24,6 +32,7 @@ import {
 } from "@nautilo/lattice-crypto/wire";
 import {
   matchesCurrentTaskRuntimeAuthority,
+  withCurrentAcceptedParkedTaskRuntimeAuthority,
   withCurrentAcceptedTaskRuntimeAuthority,
   withCurrentTaskRuntimeAuthority,
   type AcceptedTaskRuntimeAuthorizationV3,
@@ -39,7 +48,124 @@ const ROOM = "10000000-0000-4000-8000-000000000004";
 const NAMESPACE = "10000000-0000-4000-8000-000000000005";
 const DOMAIN = "10000000-0000-4000-8000-000000000006";
 const AGENT = "10000000-0000-4000-8000-000000000007";
+const TASK = "20000000-0000-4000-8000-000000000008";
+const RUN = "20000000-0000-4000-8000-000000000009";
+const JOB = "20000000-0000-4000-8000-00000000000a";
 const NOW = 1_800_000_000_000;
+
+function parkedAuthorityRows() {
+  const startedAt = new Date("2026-10-07T12:00:00.000Z");
+  const parkedAt = new Date("2026-10-07T12:34:56.000Z");
+  const objectId = `task-definition:v1:${"a".repeat(64)}`;
+  const resultDigest = createHash("sha256").update(
+    `nautilo/task-run-result-crypto-object/v1\n${TASK}\n${RUN}\n1`,
+    "utf8",
+  ).digest("hex");
+  const reference: ProtectedTaskDurableJobReference = {
+    kind: "protected_task_run_v1",
+    taskId: TASK,
+    taskRunId: RUN,
+    inputObjectId: objectId,
+    resultObjectId: `task-run-result:v1:${resultDigest}`,
+    authorizationRequestId: "prior-request:1",
+    policyRevision: 7,
+    executionSegment: 1,
+  };
+  const task: ParkedProtectedTaskAdditionalAuthorityTaskRow = {
+    id: TASK,
+    ownerId: USER,
+    requestorId: USER,
+    agentId: AGENT,
+    callingRoomId: ROOM,
+    scheduleKind: "now",
+    status: "awaiting",
+    contentRepresentation: "protected",
+    contentNamespaceId: NAMESPACE,
+    contentRevision: 1,
+    cryptoObjectId: objectId,
+    cryptoAccessRevision: 2,
+    cryptoRequiredNamespaceFingerprint: new Uint8Array(32).fill(1),
+    cryptoMappingState: "verified",
+    contentPristine: true,
+  };
+  const run: ParkedProtectedTaskAdditionalAuthorityRunRow = {
+    id: RUN,
+    taskId: TASK,
+    jobId: JOB,
+    graphThreadId: `subagent:${TASK}:${RUN}`,
+    status: "awaiting",
+    startedAt,
+    pristine: true,
+  };
+  const proof: ProtectedTaskExecutionContinuationProof = {
+    segment: {
+      taskRunId: RUN,
+      executionSegment: 1,
+      jobId: JOB,
+      route: "native_langgraph_v1",
+      transcriptContract: "protected_message_associations_v1",
+      expectedTranscriptAssociationCount: 0,
+      transcriptAssociationDigest: new Uint8Array(32).fill(2),
+      checkpointContract: "encrypted_langgraph_v1",
+      expectedCheckpointCount: 1,
+      checkpointDigest: new Uint8Array(32).fill(3),
+      expectedCheckpointBlobCount: 1,
+      checkpointBlobDigest: new Uint8Array(32).fill(4),
+      expectedPendingWriteCount: 0,
+      pendingWriteDigest: new Uint8Array(32).fill(5),
+      sealedAt: parkedAt,
+    },
+    continuation: {
+      taskRunId: RUN,
+      executionSegment: 1,
+      jobId: JOB,
+      kind: "pre_effect_interrupt_v1",
+      reason: "additional_authority",
+      effectDisposition: "not_started_v1",
+      interruptId: "interrupt:authority:1",
+      operationId: "tool-call:1",
+      requestDigest: new Uint8Array(32).fill(6),
+      requiredAuthorityDigest: new Uint8Array(32).fill(7),
+      sealedAt: parkedAt,
+    },
+  };
+  const job: ParkedProtectedTaskAdditionalAuthorityJobRow = {
+    id: JOB,
+    ownerId: USER,
+    requestorId: USER,
+    laneKey: `task:${TASK}`,
+    type: "foreground",
+    status: "completed",
+    startedAt,
+    completedAt: parkedAt,
+    reference,
+    parkReceipt: {
+      version: 1,
+      taskId: TASK,
+      taskRunId: RUN,
+      jobId: JOB,
+      graphThreadId: run.graphThreadId,
+      generation: 3,
+      executionSegment: 1,
+      interrupts: [{
+        id: "interrupt:authority:1",
+        kind: "additional_authority",
+        requestId: "task-request",
+      }],
+      parkedAt: parkedAt.toISOString(),
+    },
+    pristine: true,
+  };
+  const expected = parseParkedProtectedTaskAdditionalAuthority({
+    task,
+    run,
+    job,
+    proof,
+    authorizationRequestId: "task-request",
+  });
+  if (expected === null) throw new Error("Parked authority fixture is invalid");
+  return { task, run, job, proof, expected };
+}
 
 function u32(value: number): Uint8Array {
   const bytes = new Uint8Array(4);
@@ -106,7 +232,7 @@ function hex(value: Uint8Array): string {
     .join("");
 }
 
-async function fixture() {
+async function fixture(continuation = false) {
   const crypto = new LatticeCrypto();
   const signing = crypto.generateSigningKeyPair();
   const recipient = await crypto.generateEncryptionKeyPair();
@@ -148,9 +274,9 @@ async function fixture() {
   });
   const request = createTaskRuntimeBackgroundAuthorizationRequestV1({
     requestId: plan.authorizationId,
-    workId: "task-run",
-    workKind: "task.dispatch",
-    workPurpose: "task.dispatch",
+    workId: continuation ? RUN : "task-run",
+    workKind: continuation ? "task.execute" : "task.dispatch",
+    workPurpose: continuation ? "task.execute" : "task.dispatch",
     recipientGeneration: plan.recipientRuntimeGeneration,
     episodeId: plan.sessionId,
     sourceRoomId: plan.roomId,
@@ -244,6 +370,7 @@ async function fixture() {
 function productAuthority(
   value: Awaited<ReturnType<typeof fixture>>,
   events: string[],
+  parked?: ReturnType<typeof parkedAuthorityRows>,
 ) {
   const member = { actor_id: HUMAN, kind: "user" };
   const agentMember = { actor_id: AGENT, kind: "agent" };
@@ -261,20 +388,56 @@ function productAuthority(
       events.push("policy lock");
       return [];
     },
-    select: () => {
+    select: (projection?: Record<string, unknown>) => {
       const query: Record<string, unknown> = {};
+      let rows: readonly unknown[];
+      let event: string;
+      if (projection && Object.hasOwn(projection, "mode")) {
+        rows = [{
+          mode: "shadow_encryption",
+          shadowBehavior: "fallback",
+          revision: value.plan.policyRevision,
+        }];
+        event = "policy";
+      } else if (parked && projection
+        && Object.hasOwn(projection, "contentPristine")) {
+        rows = [parked.task];
+        event = "task lock";
+      } else if (parked && projection
+        && Object.hasOwn(projection, "graphThreadId")) {
+        rows = [parked.run];
+        event = "run lock";
+      } else if (parked && projection
+        && Object.hasOwn(projection, "parkReceipt")) {
+        rows = [parked.job];
+        event = "job lock";
+      } else if (parked && projection
+        && Object.keys(projection).length === 2
+        && Object.hasOwn(projection, "taskId")) {
+        rows = [{ id: RUN, taskId: TASK }];
+        event = "proof run";
+      } else if (parked && projection === undefined) {
+        const segmentRead = !events.includes("proof segment");
+        rows = segmentRead
+          ? [parked.proof.segment]
+          : [parked.proof.continuation];
+        event = segmentRead ? "proof segment" : "proof continuation";
+      } else {
+        throw new Error("Unexpected canonical Task authority projection");
+      }
       for (const method of ["from", "where"]) query[method] = () => query;
+      query["limit"] = () => query;
+      query["for"] = async () => {
+        events.push(event);
+        return rows;
+      };
       query["then"] = (
         resolve: (current: unknown) => unknown,
         reject: (reason: unknown) => unknown,
       ) => {
-        events.push("policy");
-        selected = true;
-        return Promise.resolve([{
-          mode: "shadow_encryption",
-          shadowBehavior: "fallback",
-          revision: value.plan.policyRevision,
-        }]).then(resolve, reject);
+        events.push(event);
+        if (event === "policy") selected = true;
+        return Promise.resolve(rows).then(resolve, reject);
       };
       return query;
     },
@@ -357,6 +520,7 @@ function restrictedAuthority(
     query: async <Row extends PostgresJsBridgeRow>(statement: string) => {
       let rows: readonly PostgresJsBridgeRow[];
       if (statement.includes("SELECT current_user::text")) {
+        options.events?.push("role");
         rows = [{
           current_user: "nautilo_crypto",
           session_user: "nautilo_crypto",
@@ -667,6 +831,138 @@ describe("current Task Runtime authority", () => {
     expect(events.slice(0, 2)).toEqual(["policy lock", "policy"]);
     expect(events.filter((event) => event === "product").length)
       .toBeGreaterThan(0);
+  });
+
+  test("holds the exact parked proof before Namespace and restricted authority", async () => {
+    const value = await fixture(true);
+    const parked = parkedAuthorityRows();
+    const events: string[] = [];
+    let retained: PostgresJsBridgeConnection | undefined;
+    let used = false;
+    const result = await withCurrentAcceptedParkedTaskRuntimeAuthority({
+      ...productAuthority(value, events, parked),
+      restricted: restrictedAuthority(value, { events }),
+      crypto: value.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+      accepted: value.accepted,
+      expected: parked.expected,
+      now: () => NOW + 1,
+      use: async (
+        _authority: CurrentTaskRuntimeAuthority,
+        restricted: PostgresJsBridgeConnection,
+      ) => {
+        used = true;
+        retained = restricted;
+        await restricted.query("SELECT current_user::text");
+        return "parked";
+      },
+    } as unknown as Parameters<
+      typeof withCurrentAcceptedParkedTaskRuntimeAuthority
+    >[0]);
+    expect(result).toBe("parked");
+    expect(used).toBe(true);
+    expect(events.slice(0, 8)).toEqual([
+      "policy lock",
+      "policy",
+      "task lock",
+      "run lock",
+      "job lock",
+      "proof run",
+      "proof segment",
+      "proof continuation",
+    ]);
+    expect(events.indexOf("proof continuation"))
+      .toBeLessThan(events.indexOf("product"));
+    const roleReads = events.filter(event => event === "role").length;
+    expect(() => retained?.query("SELECT current_user::text"))
+      .toThrow("Parked Task Runtime authority is not active");
+    expect(events.filter(event => event === "role")).toHaveLength(roleReads);
+  });
+
+  test("snapshots the parked callback before awaiting its locked proof", async () => {
+    const value = await fixture(true);
+    const parked = parkedAuthorityRows();
+    const events: string[] = [];
+    const product = productAuthority(value, events, parked);
+    const originalRunner = product.runner;
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const runnerEntered = new Promise<void>(resolve => { entered = resolve; });
+    let originalUse = 0;
+    let substitutedUse = 0;
+    const request = {
+      ...product,
+      runner: {
+        transaction: async (
+          use: (
+            transaction: unknown,
+            executor: PostgresJsBridgeExecutor,
+          ) => Promise<unknown>,
+        ) => {
+          entered();
+          await gate;
+          return originalRunner.transaction(use);
+        },
+      },
+      restricted: restrictedAuthority(value, { events }),
+      crypto: value.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+      accepted: value.accepted,
+      expected: parked.expected,
+      now: () => NOW + 1,
+      use: async () => {
+        originalUse += 1;
+        return "original";
+      },
+    };
+    const operation = withCurrentAcceptedParkedTaskRuntimeAuthority(
+      request as unknown as Parameters<
+        typeof withCurrentAcceptedParkedTaskRuntimeAuthority<string>
+      >[0],
+    );
+    await runnerEntered;
+    request.use = async () => {
+      substitutedUse += 1;
+      return "substituted";
+    };
+    release();
+    expect(await operation).toBe("original");
+    expect(originalUse).toBe(1);
+    expect(substitutedUse).toBe(0);
+  });
+
+  test("rejects changed parked lifecycle before Namespace or crypto", async () => {
+    const value = await fixture(true);
+    const parked = parkedAuthorityRows();
+    const events: string[] = [];
+    let used = false;
+    const stale = {
+      ...parked,
+      job: { ...parked.job, status: "cancelled" },
+    };
+    const result = await withCurrentAcceptedParkedTaskRuntimeAuthority({
+      ...productAuthority(value, events, stale),
+      restricted: restrictedAuthority(value, { events }),
+      crypto: value.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+      accepted: value.accepted,
+      expected: parked.expected,
+      now: () => NOW + 1,
+      use: async () => {
+        used = true;
+        return "unsafe";
+      },
+    } as unknown as Parameters<
+      typeof withCurrentAcceptedParkedTaskRuntimeAuthority
+    >[0]);
+    expect(result).toBeNull();
+    expect(used).toBe(false);
+    expect(events).not.toContain("product");
+    expect(events).not.toContain("role");
   });
 
   test("keeps Task security authority distinct from the locked device projection revision", async () => {
