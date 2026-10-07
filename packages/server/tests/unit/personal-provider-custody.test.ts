@@ -114,12 +114,16 @@ function installDirectDb(): void {
   trackSpy(spyOn(serverDirectDb, "getServerDirectDb").mockReturnValue(db));
 }
 
-function context(index: number): PersonalProviderCredentialContext & { provider: "openai" } {
+function context(index: number): PersonalProviderCredentialContext & {
+  provider: "openai";
+  destination: null;
+} {
   return {
     id: `40000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
     userId: OWNER_ID,
     provider: "openai",
     revision: 1,
+    destination: null,
   };
 }
 

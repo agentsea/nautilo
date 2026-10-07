@@ -39,6 +39,15 @@ afterEach(() => {
 const BASE = "anthropic:claude-sonnet-4-6";
 
 describe("resolveTaskModel (M152)", () => {
+  test("admits the trusted marketplace-only text union without needing a direct key", () => {
+    const input = { baseModelId: BASE, purpose: "chat" as const, env: {}, runnableModelIds: [BASE] };
+    expect(resolveTaskModel(input)).toEqual({ modelId: BASE });
+    expect(resolveTaskModel({ ...input, profile: "smartest" })).toEqual({ modelId: BASE });
+    expect(validateTaskModelSelectionForCreate({ ...input, profile: "smartest" })).toBeNull();
+    expect(() => resolveTaskModel({ ...input, runnableModelIds: [] })).toThrow(/not runnable/);
+    expect(() => resolveTaskModel({ ...input, purpose: "task-tools" })).toThrow(/not runnable/);
+    expect(() => resolveTaskModel({ ...input, baseModelId: "unsigned:invented", runnableModelIds: ["unsigned:invented"] })).toThrow(/not runnable/);
+  });
   test("trusted tool-free purpose and credential env do not inherit legacy task-tools qualification", () => {
     const modelId = "google:gemini-2.5-pro";
     const env = { GOOGLE_API_KEY: "personal-present" };

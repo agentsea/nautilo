@@ -83,8 +83,7 @@ describe("ServerProviderPolicyCard", () => {
     });
     expect(getPolicy).toHaveBeenCalledTimes(1);
     expect(view.getByRole("switch").hasAttribute("disabled")).toBe(true);
-    expect(view.getByRole("group", { name: "Funding priority" }).hasAttribute("disabled"))
-      .toBe(true);
+    expect(view.queryByRole("group", { name: "Funding priority" })).toBeNull();
     expect(view.queryByRole("button", { name: "Save personal provider policy" })).toBeNull();
     expect(view.getByText(/manage server settings permission is required/u)).toBeTruthy();
   });
@@ -129,30 +128,26 @@ describe("ServerProviderPolicyCard", () => {
     });
   });
 
-  test("saves only a changed funding priority and keeps the enable policy off", async () => {
+  test("retains a changed priority while hiding it when the draft is off", async () => {
     capabilities.add("manage_server_settings");
     const view = render(<ServerProviderPolicyCard />);
-    const serverFirst = await waitFor(() =>
-      view.getByRole("radio", { name: "Server keys first" }),
-    );
-
-    expect(view.getByText(/has no effect until personal keys are enabled/u)).toBeTruthy();
-    expect(serverFirst.hasAttribute("disabled")).toBe(false);
-    fireEvent.click(serverFirst);
-    expect(view.getByText("Unsaved selection")).toBeTruthy();
-    expect(view.getByTestId("server-provider-policy-funding-persisted").textContent)
-      .toContain("Personal keys first");
+    const toggle = await waitFor(() => view.getByRole("switch"));
+    expect(view.queryByRole("group", { name: "Funding priority" })).toBeNull();
+    fireEvent.click(toggle);
+    fireEvent.click(view.getByRole("radio", { name: "Server keys first" }));
+    fireEvent.click(toggle);
+    expect(view.queryByRole("group", { name: "Funding priority" })).toBeNull();
+    fireEvent.click(toggle);
+    expect((view.getByRole("radio", { name: "Server keys first" }) as HTMLInputElement).checked).toBe(true);
     fireEvent.click(view.getByRole("button", { name: "Save personal provider policy" }));
-
-    await waitFor(() => {
-      expect(setPolicy).toHaveBeenCalledWith({ fundingPreference: "server_first" });
-      expect(view.getByTestId("server-provider-policy-funding-persisted").textContent)
-        .toContain("Server keys first");
-    });
-    expect(view.getByRole("switch").getAttribute("aria-checked")).toBe("false");
+    await waitFor(() => expect(setPolicy).toHaveBeenCalledWith({
+      allowPersonalProviderKeys: true,
+      fundingPreference: "server_first",
+    }));
   });
 
   test("loads the saved funding priority", async () => {
+    persisted.allowPersonalProviderKeys = true;
     persisted.fundingPreference = "server_first";
     const view = render(<ServerProviderPolicyCard />);
 
@@ -213,6 +208,7 @@ describe("ServerProviderPolicyCard", () => {
     let policyEvents = 0;
     const onPolicyChanged = () => { policyEvents++; };
     window.addEventListener("nautilo:personal-provider-policy-changed", onPolicyChanged);
+    persisted.allowPersonalProviderKeys = true;
     const view = render(<ServerProviderPolicyCard />);
     const serverFirst = await waitFor(() =>
       view.getByRole("radio", { name: "Server keys first" }),
@@ -240,6 +236,7 @@ describe("ServerProviderPolicyCard", () => {
     let policyEvents = 0;
     const onPolicyChanged = () => { policyEvents++; };
     window.addEventListener("nautilo:personal-provider-policy-changed", onPolicyChanged);
+    persisted.allowPersonalProviderKeys = true;
     const view = render(<ServerProviderPolicyCard />);
     const serverFirst = await waitFor(() =>
       view.getByRole("radio", { name: "Server keys first" }),
@@ -282,6 +279,7 @@ describe("ServerProviderPolicyCard", () => {
   test("reverts a failed priority save to the current server value", async () => {
     capabilities.add("manage_server_settings");
     failNextSave = true;
+    persisted.allowPersonalProviderKeys = true;
     const view = render(<ServerProviderPolicyCard />);
     const serverFirst = await waitFor(() =>
       view.getByRole("radio", { name: "Server keys first" }),

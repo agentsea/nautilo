@@ -71,7 +71,7 @@ import {
 } from "@nautilo/agent";
 import { candidatesForModelRole } from "@nautilo/config";
 import { getServerDirectDb } from "../lib/server-direct-db";
-import { callerTaskModelEnvironment } from "../lib/caller-task-model-context";
+import { callerTaskModelEnvironment, callerTaskModelIds } from "../lib/caller-task-model-context";
 import { requireAgentInvocation, requireServerFunding } from "../lib/agent-invocation-admission";
 import {
   AgentInvocationDeniedError,
@@ -194,6 +194,7 @@ async function taskSelectionValidationContext(
   env?: NodeJS.ProcessEnv;
   purpose?: "chat";
   baseModelId?: string;
+  runnableModelIds?: readonly string[];
 }>> {
   if (toolsMode !== "none") return {};
   const [env, profile] = await Promise.all([
@@ -205,6 +206,7 @@ async function taskSelectionValidationContext(
     || getCachedServerModelConfigRow()?.defaultChatModel?.trim();
   return {
     env,
+    runnableModelIds: await callerTaskModelIds(requestorId),
     purpose: "chat",
     baseModelId: configuredBaseModel ?? candidatesForModelRole("chat")[0]!,
   };

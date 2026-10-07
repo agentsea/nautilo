@@ -11,11 +11,15 @@ describe("orderProviderKeys", () => {
       { id: "gateway" },
       { id: "nautilo-gateway" },
       { id: "custom" },
+      { id: "surplus" },
+      { id: "openrouter" },
       { id: "venice" },
     ];
 
     expect(orderProviderKeys(providers).map(({ id }) => id)).toEqual([
       "venice",
+      "openrouter",
+      "surplus",
       "openai",
       "anthropic",
       "tavily",
@@ -32,6 +36,8 @@ describe("orderProviderKeys", () => {
       "gateway",
       "nautilo-gateway",
       "custom",
+      "surplus",
+      "openrouter",
       "venice",
     ]);
   });

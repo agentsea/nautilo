@@ -36,6 +36,8 @@ export interface ResolveTaskModelInput {
   env?: NodeJS.ProcessEnv;
   /** Tool-free personal Tasks use chat; legacy Tasks retain task-tools. */
   purpose?: "chat" | "task-tools";
+  /** Trusted funding-owner union; membership cannot bypass signed capabilities. */
+  runnableModelIds?: readonly string[];
   profile?: SelectionProfile | null;
   spec?: ComboSpec | null;
   /** Provider-neutral preference asserted by reviewed signed-catalog rows. */
@@ -70,12 +72,17 @@ export function resolveTaskModel(input: ResolveTaskModelInput): ResolveTaskModel
   const { baseModelId } = input;
   const purpose = input.purpose ?? "task-tools";
   const allowChinaUpstream = resolveChinaUpstreamConsent(input.allowChinaUpstream, input.env);
+  const runnable = input.runnableModelIds ? new Set(input.runnableModelIds) : null;
+  const isRunnable = (id: string, availability: string) => (!runnable || runnable.has(id)) && (availability === "selectable"
+    || (purpose === "chat" && availability === "missing-key" && runnable?.has(id) === true
+      && resolveCatalogModel(id, input.env === undefined ? {} : { env: input.env }).workload === "chat"
+      && resolveCatalogModel(id, input.env === undefined ? {} : { env: input.env }).output.includes("text")));
   const defaultSelection = input.spec == null && (input.profile == null || input.profile === "balanced");
   if (defaultSelection && input.taskPreference == null) {
     const base = resolveRetainedModels([baseModelId], {
       purpose, allowChinaUpstream, ...(input.env === undefined ? {} : { env: input.env }),
     })[0]!;
-    if (base.availability !== "selectable") {
+    if (!isRunnable(baseModelId, base.availability)) {
       throw new ModelSelectionError({
         ...(input.profile ? { profile: input.profile } : {}),
         reason: "absolute_floor_empty",
@@ -90,7 +97,9 @@ export function resolveTaskModel(input: ResolveTaskModelInput): ResolveTaskModel
   }
   const pool: PoolModel[] = getEligibleModels({
     purpose, allowChinaUpstream, ...(input.env === undefined ? {} : { env: input.env }),
+    ...(runnable ? { includeUnavailable: true } : {}),
   })
+    .filter((model) => (!runnable || runnable.has(model.id)) && isRunnable(model.id, model.availability))
     .map((m) => {
       // Eligibility remains authoritative for runnable/tool-capable models.
       // The active resolved catalog owns its reviewed intelligence metadata,
@@ -137,7 +146,7 @@ export function resolveTaskModel(input: ResolveTaskModelInput): ResolveTaskModel
       allowChinaUpstream,
       ...(input.env === undefined ? {} : { env: input.env }),
     })[0]!;
-    if (base.availability !== "selectable") {
+    if (!isRunnable(baseModelId, base.availability)) {
       throw new ModelSelectionError({
         ...(input.profile ? { profile: input.profile } : {}),
         reason: "absolute_floor_empty",

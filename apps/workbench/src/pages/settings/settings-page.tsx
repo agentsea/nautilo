@@ -11,6 +11,7 @@ import { YourAccessSection } from "./sections/your-access-section";
 import { NotificationsSection } from "./sections/notifications-section";
 import { ThisMacSection } from "./sections/this-mac-section";
 import { PersonalProviderKeysSection } from "./sections/personal-provider-keys-section";
+import { PersonalCostsSection } from "./sections/personal-costs-section";
 import type { SectionId } from "./ui";
 import type { UiTargetId } from "@nautilo/types";
 import { apiClient } from "../../lib/api";
@@ -40,6 +41,7 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SectionId; label: string; ca
 ];
 
 const NESTED_SECTION_PARENT: Readonly<Record<string, SectionId>> = {
+  "personal-costs": "personal-provider-keys",
   members: "invite-people",
   "profile-soul": "my-agents",
   model: "my-agents",
@@ -221,6 +223,7 @@ export function SettingsPage() {
             key={auth.viewerGeneration}
             showServerAdminLink={canManageServerProviderCredentials && managedByCloud === false}
           />
+          <PersonalCostsSection key={`personal-costs-${auth.viewerGeneration}`} />
           <MyAgentsSection showProviderKeyStatus={managedByCloud === false} />
           <ThisMacSection />
           <NotificationsSection />

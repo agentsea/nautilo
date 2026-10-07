@@ -37,7 +37,7 @@ import type { SelectionProfile, ComboSpec } from "@nautilo/types";
 export function validateTaskSelectionForCreate(
   profile: SelectionProfile | null | undefined,
   spec?: ComboSpec | null,
-  options: Readonly<Pick<ResolveTaskModelInput, "env" | "purpose"> & {
+  options: Readonly<Pick<ResolveTaskModelInput, "env" | "purpose" | "runnableModelIds"> & {
     baseModelId?: string;
   }> = {},
 ): string | null {
@@ -48,6 +48,7 @@ export function validateTaskSelectionForCreate(
     spec: spec ?? null,
     ...(options.env === undefined ? {} : { env: options.env }),
     ...(options.purpose === undefined ? {} : { purpose: options.purpose }),
+    ...(options.runnableModelIds === undefined ? {} : { runnableModelIds: options.runnableModelIds }),
   });
   return failure ? failure.message : null;
 }
@@ -56,6 +57,7 @@ export type ValidateTaskModelSelectionForCreateInput = ValidateExactTaskModelInp
   Readonly<{
     baseModelId?: string;
     purpose?: "chat" | "task-tools";
+    runnableModelIds?: readonly string[];
   }>;
 
 /**
@@ -74,5 +76,6 @@ export function validateTaskModelSelectionForCreate(
     ...(input.baseModelId === undefined ? {} : { baseModelId: input.baseModelId }),
     ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
+    ...(input.runnableModelIds === undefined ? {} : { runnableModelIds: input.runnableModelIds }),
   });
 }

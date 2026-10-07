@@ -46,6 +46,10 @@ function assertSignedChatModel(modelId: string): void {
   if (!model || (model.availability !== "selectable" && model.availability !== "missing-key")) {
     throw new ModelFundingError("unsupported_provider");
   }
+  const catalog = resolveCatalogModel(modelId, { env: {} });
+  if (catalog.workload !== "chat" || !catalog.output.includes("text")) {
+    throw new ModelFundingError("unsupported_workload");
+  }
 }
 
 /** A live, exact private Room and the actor mirror establish the supported chat shape. */
@@ -124,27 +128,36 @@ export async function openForegroundChatFundingSession(
     modelId: input.modelId,
     workload: "foreground_text_chat",
   });
-  const resolveCandidate = (modelId: string) => {
+  const resolveCandidate = (modelId: string, transport?: "direct" | "surplus") => {
     assertSignedChatModel(modelId);
     return resolveModelFunding({
       humanUserId: input.humanUserId,
       modelId,
       workload: "foreground_text_chat",
       priorDecision: admitted,
+      ...(transport ? { transport } : {}),
     });
   };
   const runnableModelIds = await callerTaskModelIds(input.humanUserId);
+  let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
     personalTaskControls: admitted.kind === "personal"
       && resolveCatalogModel(input.modelId, { env: {} }).features.tools === true,
     runnableModelIds,
     personalOnlyTaskModelIds: await personalOnlyTaskModelIds(input.humanUserId, runnableModelIds),
-    async recheckAttempt(modelId) {
-      await resolveCandidate(modelId);
+    async recheckAttempt(modelId, transport) {
+      const current = await resolveCandidate(modelId, transport);
+      if (transport && lastAttempt?.kind === "personal" && current.kind === "personal"
+        && lastAttempt.modelId === modelId && lastAttempt.providerRoute === current.providerRoute
+        && (lastAttempt.credentialId !== current.credentialId
+          || lastAttempt.credentialRevision !== current.credentialRevision)) {
+        throw new ModelFundingError("personal_credential_stale");
+      }
     },
-    async runAttempt(modelId, run) {
-      const decision = await resolveCandidate(modelId);
+    async runAttempt(modelId, run, transport) {
+      const decision = await resolveCandidate(modelId, transport);
+      lastAttempt = decision;
       const usageFunding = usageFundingFor(decision);
       if (decision.kind === "server") return run({ usageFunding });
       return withAdmittedPersonalProviderKey(

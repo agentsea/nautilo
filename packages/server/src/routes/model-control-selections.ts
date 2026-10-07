@@ -9,6 +9,7 @@ import {
   upsertRoomAgentModelControlSelection,
 } from "@nautilo/db";
 import { findPersonalAgentsForUser, findRoomForUserAndAgentMembers } from "@nautilo/trust";
+import { resolveForegroundChatPreflightModelId } from "../lib/foreground-chat-preflight";
 import { getServerDirectDb } from "../lib/server-direct-db";
 import {
   resolveCallerModelAvailability,
@@ -16,7 +17,7 @@ import {
 } from "./config";
 
 /**
- * D462's browser-facing selection scope is deliberately `(current user,
+ * The browser-facing selection scope is deliberately `(current user,
  * explicitly selected owned Agent, Room)`. The browser submits only neutral catalog
  * identifiers; the server owns catalog validation and provider translation.
  */
@@ -29,6 +30,7 @@ export interface ModelControlSelectionRoutesDeps {
     userActorId: string,
     agentId: string,
   ) => Promise<{ id?: string } | null>;
+  resolveEffectiveModelId?: typeof resolveForegroundChatPreflightModelId;
   getSelection?: (roomId: string, agentId: string) => Promise<ModelControlSelection | null>;
   setSelection?: (
     roomId: string,
@@ -175,7 +177,7 @@ export function modelControlSelectionRoutes(
     ((humanUserId: string, modelId: string) =>
       resolveCallerModelAvailability(humanUserId, modelId, { purpose: "chat-tools" }));
 
-  app.get<{ Params: RoomParams }>(
+  app.get<{ Params: RoomParams; Querystring: { includeEffectiveModel?: string } }>(
     "/api/rooms/:roomId/agents/:agentId/model-control-selection",
     async (request, reply) => {
       if (!request.sessionUserId) {
@@ -183,7 +185,12 @@ export function modelControlSelectionRoutes(
       }
       const authorized = await resolveAuthorizedRoomAgent(request, findAgents, findRoom);
       if (!authorized) return reply.code(404).send({ error: "Room not found" });
-      return reply.send({ selection: await getSelection(authorized.roomId, authorized.agentId) });
+      const selection = await getSelection(authorized.roomId, authorized.agentId);
+      if (request.query.includeEffectiveModel !== "true") return reply.send({ selection });
+      const effectiveModelId = await (deps.resolveEffectiveModelId ?? resolveForegroundChatPreflightModelId)({
+        humanUserId: request.sessionUserId, roomId: authorized.roomId, agentId: authorized.agentId, turnModelId: null,
+      });
+      return reply.send({ selection, effectiveModelId });
     },
   );
 

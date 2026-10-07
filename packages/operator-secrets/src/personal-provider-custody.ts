@@ -29,6 +29,8 @@ export interface PersonalProviderCredentialContext {
   readonly provider: string;
   readonly id: string;
   readonly revision: number;
+  /** Fixed provider destination; absent/null preserves legacy envelope AAD. */
+  readonly destination?: string | null;
 }
 
 export interface PersonalProviderCredentialEnvelope {
@@ -90,14 +92,18 @@ export function serializePersonalProviderCustody(custody: PersonalProviderCustod
 
 function associatedData(context: PersonalProviderCredentialContext, keyId: string): Buffer {
   if (![context.userId, context.provider, context.id].every((s) => typeof s === "string" && s.length > 0)
-    || !Number.isSafeInteger(context.revision) || context.revision < 1) {
+    || !Number.isSafeInteger(context.revision) || context.revision < 1
+    || (context.destination !== undefined && context.destination !== null
+      && (typeof context.destination !== "string" || context.destination.length === 0))) {
     throw new PersonalProviderCustodyError("credential_invalid");
   }
   // JSON array encoding is unambiguous even if a caller supplies delimiter characters.
-  return Buffer.from(JSON.stringify([
+  const fields: Array<string | number> = [
     "nautilo.personal-provider-credential.v1", keyId,
     context.userId, context.provider, context.id, context.revision,
-  ]));
+  ];
+  if (context.destination) fields.push("destination", context.destination);
+  return Buffer.from(JSON.stringify(fields));
 }
 
 function decode(value: string, length?: number): Buffer {

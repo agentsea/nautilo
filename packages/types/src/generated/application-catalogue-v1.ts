@@ -11,6 +11,7 @@ export const APPLICATION_CATALOGUE_TARGET_IDS_V1 = [
   "admin",
   "admin.access_control",
   "costs",
+  "costs.personal",
   "skills",
   "connections",
   "commands",
@@ -159,6 +160,22 @@ const GENERATED_APPLICATION_CATALOGUE_METADATA_V1 = [
       "cost dashboard",
       "usage dashboard",
       "detailed spending"
+    ]
+  },
+  {
+    "target": "costs.personal",
+    "label": "Your costs",
+    "menuPath": [
+      "Settings",
+      "Your costs"
+    ],
+    "description": "Review charges and estimates for work paid with your personal provider keys.",
+    "discoveryTerms": [
+      "my costs",
+      "personal key costs",
+      "BYOK costs",
+      "provider charges",
+      "personal spending"
     ]
   },
   {

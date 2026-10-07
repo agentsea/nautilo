@@ -6,7 +6,10 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
   __setLlmUsageDbForTests,
+  buildCostsRecoveryAttemptsQuery,
   buildCostsSummaryQueries,
+  buildPersonalCostsByRouteQuery,
+  buildPersonalCostsByTaskQuery,
   getCostsSummary,
 } from "../../src/queries/llm-usage";
 
@@ -215,6 +218,95 @@ describe("getCostsSummary fallback disclosure (ISSUE-M217)", () => {
       );
       expect(generated.params).toContain("personal");
     }
+  });
+
+  test("personal aggregates bind payer identity in every model query", () => {
+    const offlineDb = drizzle.mock() as unknown as DirectDatabase;
+    const payer = "22222222-2222-4222-8222-222222222222";
+    const compiled = Object.values(buildCostsSummaryQueries(RANGE, offlineDb, payer)).map(
+      (queryBuilder) => queryBuilder.toSQL(),
+    );
+    for (const generated of compiled) {
+      expect(generated.sql).toContain('"llm_usage_events"."payer_human_id" =');
+      expect(generated.sql).toContain('"llm_usage_events"."funding_kind" =');
+      expect(generated.params).toContain(payer);
+      expect(generated.params).toContain("personal");
+    }
+  });
+
+  test("personal estimated aggregates exclude estimates superseded by actual evidence", () => {
+    const offlineDb = drizzle.mock() as unknown as DirectDatabase;
+    const payer = "22222222-2222-4222-8222-222222222222";
+    const personal = Object.values(buildCostsSummaryQueries(RANGE, offlineDb, payer)).map(
+      (queryBuilder) => queryBuilder.toSQL().sql.replace(/\s+/g, " ").toLowerCase(),
+    );
+    const personalRoute = buildPersonalCostsByRouteQuery(
+      RANGE,
+      offlineDb,
+      payer,
+    ).toSQL().sql.replace(/\s+/g, " ").toLowerCase();
+
+    for (const sqlText of [personal[0]!, personal[1]!, personal[3]!, personal[4]!, personalRoute]) {
+      expect(sqlText).toContain(
+        `when "llm_usage_events"."cost_state" = 'estimated' then "llm_usage_events"."estimated_cost_usd"`,
+      );
+      expect(sqlText).toContain(
+        `when "llm_usage_events"."cost_state" is null and "llm_usage_events"."actual_cost_usd" is null then "llm_usage_events"."estimated_cost_usd"`,
+      );
+      expect(sqlText).toContain("else 0 end");
+    }
+  });
+
+  test("administrator estimated aggregates exclude estimates superseded by actual evidence", () => {
+    const offlineDb = drizzle.mock() as unknown as DirectDatabase;
+    const totalsSql = buildCostsSummaryQueries(RANGE, offlineDb).totals
+      .toSQL().sql.replace(/\s+/g, " ").toLowerCase();
+
+    expect(totalsSql).toContain(
+      `when "llm_usage_events"."cost_state" = 'estimated' then "llm_usage_events"."estimated_cost_usd"`,
+    );
+    expect(totalsSql).toContain("else 0 end");
+  });
+
+  test("personal route aggregation groups on actual provider route and call type", () => {
+    const payer = "22222222-2222-4222-8222-222222222222";
+    const generated = buildPersonalCostsByRouteQuery(
+      RANGE,
+      drizzle.mock() as unknown as DirectDatabase,
+      payer,
+    ).toSQL();
+    expect(generated.sql).toContain('"llm_usage_events"."provider_route"');
+    expect(generated.sql).toContain('"llm_usage_events"."call_type"');
+    expect(generated.sql).toContain('group by "llm_usage_events"."provider_route", "llm_usage_events"."call_type"');
+    expect(generated.params).toContain(payer);
+    expect(generated.params).toContain("personal");
+  });
+
+  test("Task attribution and diagnostics bind the personal payer before returning rows", () => {
+    const payer = "22222222-2222-4222-8222-222222222222";
+    const offlineDb = drizzle.mock() as unknown as DirectDatabase;
+    const taskSql = buildPersonalCostsByTaskQuery(RANGE, offlineDb, payer).toSQL();
+    const recoverySql = buildCostsRecoveryAttemptsQuery(RANGE, offlineDb, payer).toSQL();
+
+    for (const generated of [taskSql, recoverySql]) {
+      expect(generated.sql).toContain('"llm_usage_events"."funding_kind" =');
+      expect(generated.sql).toContain('"llm_usage_events"."payer_human_id" =');
+      expect(generated.params).toContain("personal");
+      expect(generated.params).toContain(payer);
+    }
+    expect(taskSql.sql).toContain('group by "llm_usage_events"."task_id"');
+    expect(recoverySql.sql).toContain("limit");
+    expect(recoverySql.params).toContain(100);
+  });
+
+  test("administrator diagnostics exclude explicitly personal attempts in SQL", () => {
+    const generated = buildCostsRecoveryAttemptsQuery(
+      RANGE,
+      drizzle.mock() as unknown as DirectDatabase,
+    ).toSQL();
+    expect(generated.sql).toContain('"llm_usage_events"."funding_kind" is null');
+    expect(generated.sql).toContain('"llm_usage_events"."funding_kind" <>');
+    expect(generated.params).toContain("personal");
   });
 
   test("pending and unknown model attempts are counted without entering known spend", async () => {

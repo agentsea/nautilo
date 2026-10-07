@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
 import type { Task, TaskRun } from "@nautilo/db";
-import type { ForegroundChatFundingSession } from "@nautilo/agent";
+import {
+  PersonalDirectFundingUnavailableError,
+  PersonalModelFundingUnavailableError,
+  type ForegroundChatFundingSession,
+} from "@nautilo/agent";
 import { assertTaskFundingAdmission, installTaskFundingPort, openTaskFundingSession,
   TaskFundingError, taskFundingFailureCode, uninstallTaskFundingPort } from "../../src/task-funding-port";
 
@@ -67,5 +71,12 @@ describe("trusted native Task funding port", () => {
     expect(taskFundingFailureCode(wrapped)).toBe("personal_credential_stale");
     expect(taskFundingFailureCode(new Error("sensitive upstream context"))).toBeNull();
     expect(taskFundingFailureCode({ code: "arbitrary provider text" })).toBeNull();
+  });
+
+  test("personal safe-fallback terminal errors retain the existing paused-repair reason", () => {
+    expect(taskFundingFailureCode(new PersonalDirectFundingUnavailableError()))
+      .toBe("personal_credential_missing");
+    expect(taskFundingFailureCode(new PersonalModelFundingUnavailableError()))
+      .toBe("personal_credential_missing");
   });
 });

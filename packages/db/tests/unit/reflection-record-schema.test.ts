@@ -343,7 +343,7 @@ describe("Reflection durable Record schema", () => {
 
   test("replaces the installed semantic-work guard trigger under its durable name", () => {
     const migration = readFileSync(
-      new URL("../../src/migrations/0318_sticky_scarlet_witch.sql", import.meta.url),
+      new URL("../../src/migrations/0319_sticky_scarlet_witch.sql", import.meta.url),
       "utf8",
     );
     expect(migration).toContain(

@@ -92,7 +92,7 @@ describe("catalog-derived Surplus chat routes", () => {
     }).status).toBe("qualified-unavailable");
     expect(resolveSurplusChatServingAvailability({
       catalogModelId, policyEnabled: true, keyConfigured: true, fundingKind: "personal",
-    }).status).toBe("qualified-unavailable");
+    }).status).toBe("available");
   });
 
   test("aggregate availability scans the active catalog instead of a fixed model", async () => {

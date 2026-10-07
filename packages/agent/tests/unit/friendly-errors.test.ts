@@ -15,6 +15,10 @@ import { EmptyTerminalResponseError } from "../../src/graph/empty-terminal-respo
 import { DEFAULT_GRAPH_RECURSION_LIMIT } from "../../src/graph/execution-policy";
 import { NoProgressError } from "../../src/graph/no-progress";
 import { SurplusDirectFallbackUnavailableError } from "../../src/providers/surplus-route";
+import {
+  PersonalDirectFundingUnavailableError,
+  PersonalModelFundingUnavailableError,
+} from "../../src/runtime/foreground-chat-funding";
 
 /**
  * Friendly-error translator.
@@ -585,4 +589,18 @@ test("Surplus-only safe fallback failure explains the missing direct route", () 
   expect(unsupported.message).toContain("features or token limits");
   expect(unsupported.category).toBe("provider_unavailable");
   expect(unsupported.detailsForLog).toBe("surplus_direct_fallback_unavailable");
+});
+
+test("personal Surplus fallback failures direct the Human to their own keys", () => {
+  const direct = toFriendlyError(new PersonalDirectFundingUnavailableError());
+  expect(direct).toEqual({
+    message: "Surplus could not serve this request, and you do not have a matching personal provider key for the selected model. Add that key in your personal provider settings or choose another model available with your keys.",
+    category: "provider_unavailable",
+    code: "MDL006",
+    detailsForLog: "personal_credential_missing",
+  });
+  const candidate = toFriendlyError(new PersonalModelFundingUnavailableError());
+  expect(candidate.message).toContain("your personal provider keys");
+  expect(candidate.message).not.toContain("administrator");
+  expect(candidate.detailsForLog).toBe("personal_credential_missing");
 });

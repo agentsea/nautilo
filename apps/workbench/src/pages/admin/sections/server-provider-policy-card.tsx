@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ServerProviderPolicy, ServerProviderFundingPreference } from "@nautilo/api-client";
 import { apiClient } from "../../../lib/api";
 import { useCan } from "../../../hooks/use-can";
@@ -24,22 +24,26 @@ export function ServerProviderPolicyCard() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
+  const loadGeneration = useRef(0);
 
   const load = useCallback(async () => {
     if (!canRead) return;
+    const generation = ++loadGeneration.current;
     setLoading(true);
     setLoadError(null);
     try {
       const policy = await apiClient.admin.serverProviderPolicy.get();
+      if (generation !== loadGeneration.current) return;
       setPersisted(policy);
       setDraftEnabled(policy.allowPersonalProviderKeys);
       setDraftFundingPreference(policy.fundingPreference);
       setPolicyStateKnown(true);
       setSaveError(null);
     } catch (cause) {
+      if (generation !== loadGeneration.current) return;
       setLoadError(errorMessage(cause));
     } finally {
-      setLoading(false);
+      if (generation === loadGeneration.current) setLoading(false);
     }
   }, [canRead]);
 
@@ -136,7 +140,7 @@ export function ServerProviderPolicyCard() {
           <p className="mt-1 text-xs text-foreground-muted">
             Controls whether eligible members may use their own provider credentials.
             When enabled, eligible members can add personal keys in Settings and
-            use supported private text chat. Other paid work is being added in
+            use supported private text chat and native text Tasks with their own Genie. Other paid work is being added in
             later stages.
           </p>
           {persisted !== null ? (
@@ -184,18 +188,13 @@ export function ServerProviderPolicyCard() {
         ) : null}
       </div>
 
-      {persisted !== null ? (
+      {persisted !== null && draftEnabled ? (
         <fieldset className="mt-4" disabled={!canManage || saving || !policyStateKnown}>
           <legend className="text-sm font-semibold text-foreground">Funding priority</legend>
           <p className="mt-1 text-xs text-foreground-muted">
             When both keys are available and allowed for a model, use this source first.
             Members can still choose models available through either permitted source.
           </p>
-          {policyStateKnown && !persisted.allowPersonalProviderKeys ? (
-            <p className="mt-1 text-xs font-medium text-foreground-muted">
-              This preference has no effect until personal keys are enabled for an eligible member.
-            </p>
-          ) : null}
           <div className="mt-3 flex flex-wrap gap-3">
             {([
               ["personal_first", "Personal keys first"],

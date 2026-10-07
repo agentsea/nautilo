@@ -71,6 +71,7 @@ function installDb(recordCount: number, keyId = RESTORED.keyId): void {
     userId: "40000000-0000-4000-8000-000000000004",
     provider: "openai",
     revision: 1,
+    destination: null,
   } as const;
   const rows = recordCount === 0 ? [] : [{
     ...context,
