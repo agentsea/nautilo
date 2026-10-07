@@ -9,12 +9,13 @@ import {
   createCurrentProtectedTaskRuntimeAuthorityPort,
   type CurrentProtectedTaskRuntimeAuthorityPort,
 } from "./task-runtime-current-authority";
+import type { ProtectedTaskRunningOccurrence } from "@nautilo/runtime";
 
 export type LoadCurrentNativeProtectedTaskDefinitionOccurrenceInput = Readonly<
   Omit<
     Parameters<CurrentProtectedTaskRuntimeAuthorityPort>[0],
-    "use"
-  >
+    "occurrence" | "use"
+  > & Readonly<{ occurrence: ProtectedTaskRunningOccurrence }>
 >;
 
 type Dependencies = Readonly<{
@@ -35,6 +36,9 @@ function hasExactDefinitionCoordinates(
   const { occurrence, record, request } = input;
   return (record.snapshot.state === "claimed"
       || record.snapshot.state === "running")
+    && occurrence.run.status === "running"
+    && typeof occurrence.run.jobId === "string"
+    && occurrence.run.jobId.length > 0
     && occurrence.run.taskId === occurrence.task.id
     && occurrence.task.contentRevision >= 1
     && occurrence.task.cryptoAccessRevision === 0

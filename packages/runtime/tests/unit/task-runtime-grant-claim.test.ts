@@ -50,7 +50,11 @@ import {
   type TaskRuntimeRecipientCurrentAuthority,
   type TaskRuntimeGrantClaimPlan,
 } from "../../src/protected-execution/background-authorization/task-runtime-grant-claim";
-import type { ProtectedTaskOccurrence } from "../../src/tasks/task-observer";
+import type {
+  ProtectedTaskAuthorityOccurrence,
+  ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
+} from "../../src/tasks/task-observer";
 
 const NOW = 1_800_500_000_000;
 const OWNER = "10000000-0000-4000-8000-000000000001";
@@ -354,6 +358,9 @@ async function fixture() {
     TaskRuntimeGrantClaimPlan) | null = null;
   const startInputs: StartProtectedTaskRunInput[] = [];
   const publishedResults: string[] = [];
+  const openedOccurrences: ProtectedTaskRunningOccurrence[] = [];
+  const publishedOccurrences: ProtectedTaskRunningOccurrence[] = [];
+  const authorityOccurrences: ProtectedTaskAuthorityOccurrence[] = [];
   let startResult: "started" | "stale" = "started";
   const trackedRepository: BackgroundAuthorizationTaskRuntimeReplacementRepository = {
     create: (record) => repository.create(record),
@@ -487,9 +494,11 @@ async function fixture() {
         deadlineAt: attempt.expiresAt,
       });
     },
-    openTransientInput: async ({ domains, evidence, signal }) => {
+    openTransientInput: async ({ occurrence: currentOccurrence, domains,
+      evidence, signal }) => {
       expect(authorityLocksHeld).toBe(false);
       signal.throwIfAborted();
+      openedOccurrences.push(currentOccurrence);
       expect(domains).toHaveLength(1);
       expect(domains[0]!.domainKey).toEqual(bytes(9));
       expect(evidence.result.taskId).toBe(TASK);
@@ -497,9 +506,11 @@ async function fixture() {
       expect(evidence.namespaceRequirements).toEqual(currentNamespaceRequirements);
       return { message: SENTINEL };
     },
-    publishResult: async ({ payload, domains, evidence, signal }) => {
+    publishResult: async ({ occurrence: currentOccurrence, payload, domains,
+      evidence, signal }) => {
       expect(authorityLocksHeld).toBe(false);
       signal.throwIfAborted();
+      publishedOccurrences.push(currentOccurrence);
       expect(domains).toHaveLength(1);
       expect(evidence.result.taskRunId).toBe(RUN);
       if (payload.resultText !== null) publishedResults.push(payload.resultText);
@@ -517,8 +528,9 @@ async function fixture() {
       plan,
       now: () => clock,
       claimId: () => "task-runtime-claim",
-      withCurrentAuthority: async ({ use }) => {
+      withCurrentAuthority: async ({ occurrence: currentOccurrence, use }) => {
         if (currentAuthority === null) return null;
+        authorityOccurrences.push(currentOccurrence);
         const borrowed = copyAuthority(currentAuthority);
         authorityLocksHeld = true;
         try {
@@ -590,6 +602,9 @@ async function fixture() {
     authorityLocksHeld: () => authorityLocksHeld,
     startInputs,
     publishedResults,
+    openedOccurrences,
+    publishedOccurrences,
+    authorityOccurrences,
     setStartResult: (value: "started" | "stale") => { startResult = value; },
     setClock: (value: number) => { clock = value; },
     setProvenSourceRoomId: (value: string) => { provenSourceRoomId = value; },
@@ -1430,7 +1445,8 @@ describe("Task Runtime grant claim", () => {
     expect(JSON.stringify(prepared)).not.toContain(SENTINEL);
 
     await acceptGrant(value);
-    const result = await value.coordinator.prepareOrClaimExact(occurrence());
+    const admittedOccurrence = occurrence();
+    const result = await value.coordinator.prepareOrClaimExact(admittedOccurrence);
     expect(result.status).toBe("claimed");
     if (result.status !== "claimed") throw new Error("grant not claimed");
     expect(value.claimCasCount()).toBe(1);
@@ -1443,8 +1459,16 @@ describe("Task Runtime grant claim", () => {
     // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
     await expect(result.dispatch.candidate.run(async () => {}))
       .rejects.toThrow("has not started");
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(result.dispatch.candidate.start("  "))
+      .rejects.toThrow("Job identity is invalid");
+    expect(value.startInputs).toEqual([]);
     expect(await result.dispatch.candidate.start("protected-job-1"))
       .toEqual({ status: "started" });
+    expect(admittedOccurrence.run).toMatchObject({
+      status: "awaiting",
+      jobId: null,
+    });
     expect(value.startInputs).toEqual([{
       taskId: TASK,
       taskRunId: RUN,
@@ -1475,6 +1499,24 @@ describe("Task Runtime grant claim", () => {
     });
     expect(transient[0]).toEqual({ message: SENTINEL });
     expect(value.publishedResults).toEqual(["protected result"]);
+    for (const observed of [
+      ...value.openedOccurrences,
+      ...value.publishedOccurrences,
+      ...value.authorityOccurrences.filter(item => item.run.status === "running"),
+    ]) {
+      expect(observed.run).toMatchObject({
+        id: RUN,
+        status: "running",
+        jobId: "protected-job-1",
+      });
+    }
+    expect(value.openedOccurrences).toHaveLength(1);
+    expect(value.publishedOccurrences).toHaveLength(1);
+    expect(value.authorityOccurrences.some(item =>
+      item.run.status === "awaiting" && item.run.jobId === null)).toBe(true);
+    expect(value.authorityOccurrences.some(item =>
+      item.run.status === "running"
+      && item.run.jobId === "protected-job-1")).toBe(true);
     // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
     await expect(result.dispatch.candidate.run(async () => {}))
       .rejects.toThrow("one-use");

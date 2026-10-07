@@ -258,8 +258,12 @@ test("protected Task execution receipts are exact, resumable and append-only for
       .toMatchObject({ status: "sealed", receipt: { jobId: fixture.jobId } });
     expect(await sealProtectedTaskExecutionSegmentReceipt(product, {
       ...segment,
-      sealedAt: new Date("2026-10-06T13:00:00.000Z"),
+      sealedAt: new Date(segment.sealedAt),
     })).toMatchObject({ status: "exact_replay" });
+    expect(await sealProtectedTaskExecutionSegmentReceipt(product, {
+      ...segment,
+      sealedAt: new Date("2026-10-06T13:00:00.000Z"),
+    })).toEqual({ status: "rejected", reason: "conflict" });
     expect(await sealProtectedTaskExecutionSegmentReceipt(product, {
       ...segment,
       checkpoint: {
@@ -297,8 +301,12 @@ test("protected Task execution receipts are exact, resumable and append-only for
       });
     expect(await sealProtectedTaskContinuationReceipt(product, {
       ...continuation,
-      sealedAt: new Date("2026-10-06T14:00:00.000Z"),
+      sealedAt: new Date(continuation.sealedAt),
     })).toMatchObject({ status: "exact_replay" });
+    expect(await sealProtectedTaskContinuationReceipt(product, {
+      ...continuation,
+      sealedAt: new Date("2026-10-06T14:00:00.000Z"),
+    })).toEqual({ status: "rejected", reason: "conflict" });
     expect(await sealProtectedTaskContinuationReceipt(product, {
       ...continuation,
       reason: "time_limit",

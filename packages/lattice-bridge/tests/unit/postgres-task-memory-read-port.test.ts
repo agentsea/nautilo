@@ -313,6 +313,48 @@ describe("PostgresTaskMemoryReadPort", () => {
     connection.assertExhausted();
   });
 
+  test("locks parent Memories without locking their Namespace edge rows", async () => {
+    const ranked = verifiedRow({
+      memoryId: MEMORY_A,
+      requiredNamespaceIds: [NAMESPACE_A],
+      ordinary: true,
+      distance: 0.1,
+    });
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [identity],
+      [ranked],
+      [ranked],
+      [{ memory_id: MEMORY_A, namespace_id: NAMESPACE_A }],
+    ]);
+    const port = await createPort(connection, {
+      mode: "namespace",
+      authority: namespaceAuthority,
+    });
+
+    expect(await port.searchCandidates({
+      authority: namespaceAuthority,
+      embedding,
+      limit: 1,
+      includeArchive: false,
+    })).toEqual({
+      status: "success",
+      value: [expect.objectContaining({ memoryId: MEMORY_A })],
+    });
+    const parentInventory = connection.queries.find(query =>
+      /from\s+"memories"/iu.test(query.statement)
+      && /for\s+share\s+of\s+"memories"/iu.test(query.statement)
+    );
+    const edgeInventory = connection.queries.find(query =>
+      /from\s+"memory_namespaces"/iu.test(query.statement)
+    );
+    expect(parentInventory).toBeDefined();
+    expect(edgeInventory).toBeDefined();
+    expect(edgeInventory?.statement).not.toMatch(/for\s+share/iu);
+    expect(connection.isolationLevels).toEqual(["serializable"]);
+    connection.assertExhausted();
+  });
+
   test("revalidates exact ordinary currentness before exposing source plaintext", async () => {
     const selected = Object.freeze({
       ...verifiedRow({

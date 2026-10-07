@@ -22,6 +22,7 @@ import {
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
   ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 
 import {
@@ -181,6 +182,14 @@ async function fixture() {
       authorizationExpiresAt: plan.deadlineAt,
     },
   } as unknown as BackgroundAuthorizationTaskRuntimeRecordV3;
+  const runningOccurrence: ProtectedTaskRunningOccurrence = {
+    task: occurrence.task,
+    run: {
+      ...occurrence.run,
+      jobId: "job:task",
+      status: "running",
+    },
+  };
   const authority: CurrentTaskRuntimeAuthority = {
     device: {
       userId: occurrence.task.requestorId,
@@ -200,7 +209,8 @@ async function fixture() {
     policyRevision: plan.policyRevision,
   };
   recipient.privateKey.fill(0);
-  return {crypto, signing, now, occurrence, facts, record, request, authority};
+  return {crypto, signing, now, occurrence, runningOccurrence, facts, record,
+    request, authority};
 }
 
 describe("current protected Task Runtime authority adapter", () => {
@@ -240,9 +250,9 @@ describe("current protected Task Runtime authority adapter", () => {
 
   test("rechecks closed current facts under accepted authority and releases locks before use", async () => {
     const f = await fixture();
-    const occurrence: ProtectedTaskOccurrence = {
-      ...f.occurrence,
-      task: { ...f.occurrence.task, callingRoomId: "room:open" },
+    const occurrence: ProtectedTaskRunningOccurrence = {
+      ...f.runningOccurrence,
+      task: { ...f.runningOccurrence.task, callingRoomId: "room:open" },
     };
     let insideAuthority = false;
     let loaded = 0;
@@ -292,9 +302,9 @@ describe("current protected Task Runtime authority adapter", () => {
 
   test("accepts current running cron authority with a pending parent Task", async () => {
     const f = await fixture();
-    const occurrence: ProtectedTaskOccurrence = {
-      ...f.occurrence,
-      task: { ...f.occurrence.task, scheduleKind: "cron" },
+    const occurrence: ProtectedTaskRunningOccurrence = {
+      ...f.runningOccurrence,
+      task: { ...f.runningOccurrence.task, scheduleKind: "cron" },
     };
     const port = createCurrentProtectedTaskRuntimeAuthorityPort({
       loadCurrentFacts: async () => ({
@@ -355,7 +365,7 @@ describe("current protected Task Runtime authority adapter", () => {
         subject: {userId: f.occurrence.task.requestorId,
           humanActorId: f.authority.plan.subjectHumanId,
           deviceId: f.authority.plan.committerDeviceId},
-        occurrence: f.occurrence,
+        occurrence: f.runningOccurrence,
         record: f.record,
         request,
         now: () => f.now,
@@ -424,7 +434,7 @@ describe("current protected Task Runtime authority adapter", () => {
       } as never;
       const facts = await loadCurrentProtectedTaskRuntimeFacts({
         product,
-        occurrence: f.occurrence,
+        occurrence: f.runningOccurrence,
       });
       return {facts, statement: statements[0]!};
     };

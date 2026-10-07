@@ -12,7 +12,7 @@ import type {
 } from "@nautilo/lattice-bridge";
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
-  ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 
 import {
@@ -29,6 +29,7 @@ const DEVICE = "40000000-0000-4000-8000-000000000004";
 const AGENT = "50000000-0000-4000-8000-000000000005";
 const TASK = "60000000-0000-4000-8000-000000000006";
 const RUN = "70000000-0000-4000-8000-000000000007";
+const JOB = "75000000-0000-4000-8000-000000000007";
 const ROOM = "80000000-0000-4000-8000-000000000008";
 const NAMESPACE = "90000000-0000-4000-8000-000000000009";
 const DOMAIN = "a0000000-0000-4000-8000-00000000000a";
@@ -38,7 +39,7 @@ function bytes(fill: number, length: number = 32): Uint8Array {
   return new Uint8Array(length).fill(fill);
 }
 
-function occurrence(): ProtectedTaskOccurrence {
+function occurrence(): ProtectedTaskRunningOccurrence {
   return Object.freeze({
     task: Object.freeze({
       id: TASK,
@@ -57,9 +58,9 @@ function occurrence(): ProtectedTaskOccurrence {
     run: Object.freeze({
       id: RUN,
       taskId: TASK,
-      jobId: null,
+      jobId: JOB,
       graphThreadId: `task:${TASK}:${RUN}`,
-      status: "awaiting" as const,
+      status: "running" as const,
       startedAt: new Date(2_000_000_000_000),
     }),
   });

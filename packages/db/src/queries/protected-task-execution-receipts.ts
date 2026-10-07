@@ -571,7 +571,8 @@ function exactSegment(
     && sameBytes(receipt.checkpointBlobDigest, expected.checkpointBlobDigest)
     && receipt.expectedPendingWriteCount
       === expected.expectedPendingWriteCount
-    && sameBytes(receipt.pendingWriteDigest, expected.pendingWriteDigest);
+    && sameBytes(receipt.pendingWriteDigest, expected.pendingWriteDigest)
+    && receipt.sealedAt.getTime() === expected.sealedAt.getTime();
 }
 
 function segmentRejected(
@@ -733,7 +734,8 @@ function exactContinuation(
     && exactSemanticAuthorityRequirements(
       receipt.semanticAuthorityRequirements,
       expected.semanticAuthorityRequirements,
-    );
+    )
+    && receipt.sealedAt.getTime() === expected.sealedAt.getTime();
 }
 
 function continuationRejected(

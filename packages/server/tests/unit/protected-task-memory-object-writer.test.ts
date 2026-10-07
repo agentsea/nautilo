@@ -24,7 +24,7 @@ import type {
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
   ProtectedTaskJobReferenceV1,
-  ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 import {
   withTaskRuntimeExecutionEvidenceV1,
@@ -175,7 +175,7 @@ async function fixture() {
     domainRequirements: domains,
     namespaceRequirements: namespaces,
   };
-  const occurrence: ProtectedTaskOccurrence = {
+  const occurrence: ProtectedTaskRunningOccurrence = {
     task: {
       id: TASK_ID,
       ownerId: USER_ID,
@@ -193,9 +193,9 @@ async function fixture() {
     run: {
       id: RUN_ID,
       taskId: TASK_ID,
-      jobId: null,
+      jobId: JOB_ID,
       graphThreadId: `task:${TASK_ID}:${RUN_ID}`,
-      status: "awaiting",
+      status: "running",
       startedAt: new Date(NOW - 1_000),
     },
   };

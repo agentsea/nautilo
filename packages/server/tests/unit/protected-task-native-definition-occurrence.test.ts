@@ -8,7 +8,7 @@ import {
 } from "@nautilo/lattice-crypto";
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
-  ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 
 import {
@@ -22,6 +22,7 @@ import type {
 
 const TASK = "10000000-0000-4000-8000-000000000001";
 const RUN = "20000000-0000-4000-8000-000000000002";
+const JOB = "25000000-0000-4000-8000-000000000002";
 const AGENT = "30000000-0000-4000-8000-000000000003";
 const USER = "40000000-0000-4000-8000-000000000004";
 const HUMAN = "50000000-0000-4000-8000-000000000005";
@@ -30,7 +31,9 @@ const ROOM = "70000000-0000-4000-8000-000000000007";
 const NAMESPACE = "80000000-0000-4000-8000-000000000008";
 const DOMAIN = "90000000-0000-4000-8000-000000000009";
 
-function occurrence(overrides: Partial<ProtectedTaskOccurrence["task"]> = {}): ProtectedTaskOccurrence {
+function occurrence(
+  overrides: Partial<ProtectedTaskRunningOccurrence["task"]> = {},
+): ProtectedTaskRunningOccurrence {
   const contentRevision = overrides.contentRevision ?? 4;
   return Object.freeze({
     task: Object.freeze({
@@ -55,9 +58,9 @@ function occurrence(overrides: Partial<ProtectedTaskOccurrence["task"]> = {}): P
     run: Object.freeze({
       id: RUN,
       taskId: TASK,
-      jobId: null,
+      jobId: JOB,
       graphThreadId: `task:${TASK}:${RUN}`,
-      status: "awaiting" as const,
+      status: "running" as const,
       startedAt: new Date(1_800_000_000_000),
     }),
   });
@@ -104,7 +107,9 @@ function held(overrides: Readonly<{
   };
 }
 
-function input(value: ProtectedTaskOccurrence = occurrence()): LoadCurrentNativeProtectedTaskDefinitionOccurrenceInput {
+function input(
+  value: ProtectedTaskRunningOccurrence = occurrence(),
+): LoadCurrentNativeProtectedTaskDefinitionOccurrenceInput {
   return {
     runner: {} as never,
     restricted: {} as never,

@@ -30,7 +30,7 @@ import {
 import {
   isCurrentProtectedTaskRunForGrant,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
-  type ProtectedTaskOccurrence,
+  type ProtectedTaskAuthorityOccurrence,
 } from "@nautilo/runtime";
 
 type CurrentTask = Pick<Task,
@@ -57,7 +57,7 @@ export type CurrentProtectedTaskRuntimeFacts = Readonly<{
 
 type LoadCurrentFacts = (input: Readonly<{
   product: PostgresJsBridgeConnection;
-  occurrence: ProtectedTaskOccurrence;
+  occurrence: ProtectedTaskAuthorityOccurrence;
 }>) => Promise<CurrentProtectedTaskRuntimeFacts | null>;
 
 type WithAcceptedAuthority = typeof withCurrentAcceptedTaskRuntimeAuthority;
@@ -83,7 +83,7 @@ export type CurrentProtectedTaskRuntimeAuthorityPort = <Value>(input: Readonly<{
   crypto: LatticeCrypto;
   serverScope: string;
   subject: TaskRuntimeAuthoritySubject;
-  occurrence: ProtectedTaskOccurrence;
+  occurrence: ProtectedTaskAuthorityOccurrence;
   record: BackgroundAuthorizationTaskRuntimeRecordV3;
   request: TaskRuntimeBackgroundAuthorizationRequestV1;
   now(): number;
@@ -197,7 +197,7 @@ function destroyHeldAuthority(authority: HeldProtectedTaskRuntimeAuthority): voi
 
 export async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
   product: PostgresJsBridgeConnection;
-  occurrence: ProtectedTaskOccurrence;
+  occurrence: ProtectedTaskAuthorityOccurrence;
 }>): Promise<CurrentProtectedTaskRuntimeFacts | null> {
   const taskRows = await executeTypedCryptoQuery(input.product, cryptoTypedDb.select({
     id: tasks.id,

@@ -36,6 +36,7 @@ import {
   type BackgroundAuthorizationTaskRuntimeRecordV3,
   type ProtectedTaskNativeExecution,
   type ProtectedTaskOccurrence,
+  type ProtectedTaskRunningOccurrence,
   type ProtectedTaskPredispatchPlan,
   type ProtectedTaskTranscriptMessagePublisher,
   type RunProtectedTaskNativeSegmentInput,
@@ -103,12 +104,12 @@ export type ProtectedTaskNativeFixedMemorySegmentInput = Readonly<{
   fallbackOrdinary: MemoryRepositoryInput["fallbackOrdinary"];
   createDedicatedPool: DedicatedPoolFactory;
   resolveExecutionContext(input: Readonly<{
-    occurrence: ProtectedTaskOccurrence;
+    occurrence: ProtectedTaskRunningOccurrence;
     predispatch: ProtectedTaskPredispatchPlan;
     protectedMetadata: TaskPayloadV1["protectedMetadata"];
   }>): FixedExecutionContext | Promise<FixedExecutionContext>;
   createTranscriptPublisher(input: Readonly<{
-    occurrence: ProtectedTaskOccurrence;
+    occurrence: ProtectedTaskRunningOccurrence;
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     request: TaskRuntimeBackgroundAuthorizationRequestV1;
     current: ProtectedTaskMemoryAuthorityInput;
@@ -255,9 +256,9 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
     && left.every((byte, index) => byte === right[index]);
 }
 
-function sameOccurrence(
-  left: ProtectedTaskOccurrence,
-  right: ProtectedTaskOccurrence,
+function sameOccurrenceIdentity(
+  left: ProtectedTaskOccurrence | ProtectedTaskRunningOccurrence,
+  right: ProtectedTaskOccurrence | ProtectedTaskRunningOccurrence,
 ): boolean {
   return left.task.id === right.task.id
     && left.task.ownerId === right.task.ownerId
@@ -276,10 +277,17 @@ function sameOccurrence(
     )
     && left.run.id === right.run.id
     && left.run.taskId === right.run.taskId
-    && left.run.jobId === right.run.jobId
     && left.run.graphThreadId === right.run.graphThreadId
-    && left.run.status === right.run.status
     && left.run.startedAt.getTime() === right.run.startedAt.getTime();
+}
+
+function sameOccurrence(
+  left: ProtectedTaskOccurrence,
+  right: ProtectedTaskOccurrence,
+): boolean {
+  return sameOccurrenceIdentity(left, right)
+    && left.run.jobId === right.run.jobId
+    && left.run.status === right.run.status;
 }
 
 function executablePolicyMode(
@@ -404,7 +412,7 @@ function copyPredispatch(
 }
 
 function subjectFromRecord(
-  occurrence: ProtectedTaskOccurrence,
+  occurrence: ProtectedTaskRunningOccurrence,
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): ProtectedTaskMemoryAuthorityInput["subject"] {
   const accepted = record.snapshot.acceptedResponse;
@@ -422,7 +430,7 @@ function subjectFromRecord(
 }
 
 function exactGrant(input: Readonly<{
-  occurrence: ProtectedTaskOccurrence;
+  occurrence: ProtectedTaskRunningOccurrence;
   policy: ProtectedTaskRuntimeMemoryPolicy;
   reference: TaskRuntimeGrantClaimPlan["reference"];
   record: BackgroundAuthorizationTaskRuntimeRecordV3;
@@ -449,7 +457,7 @@ function exactGrant(input: Readonly<{
 }
 
 function memoryAuthority(input: Readonly<{
-  occurrence: ProtectedTaskOccurrence;
+  occurrence: ProtectedTaskRunningOccurrence;
   predispatch: ProtectedTaskPredispatchPlan;
   subject: ProtectedTaskMemoryAuthorityInput["subject"];
   scopeMemory?: Parameters<PrepareExecution>[0]["scopeMemory"];
@@ -494,7 +502,7 @@ function memoryAuthority(input: Readonly<{
 }
 
 function exactRequest(input: Readonly<{
-  occurrence: ProtectedTaskOccurrence;
+  occurrence: ProtectedTaskRunningOccurrence;
   reference: TaskRuntimeGrantClaimPlan["reference"];
   evidence: TaskRuntimeExecutionEvidence;
   request: TaskRuntimeBackgroundAuthorizationRequestV1;
@@ -509,7 +517,7 @@ function exactRequest(input: Readonly<{
 
 function exactExecutorInput(
   input: Record<string, unknown>,
-  occurrence: ProtectedTaskOccurrence,
+  occurrence: ProtectedTaskOccurrence | ProtectedTaskRunningOccurrence,
   predispatch: ProtectedTaskPredispatchPlan,
 ): Readonly<{
   run(
@@ -666,20 +674,24 @@ export function createProtectedTaskNativeFixedMemorySegment(
 
     const openTransientInput: TaskRuntimeGrantClaimPlan["openTransientInput"] =
       grant => {
-        if (!sameOccurrence(occurrence, grant.occurrence)) {
+        if (grant.occurrence.run.status !== "running"
+          || typeof grant.occurrence.run.jobId !== "string"
+          || grant.occurrence.run.jobId.length === 0
+          || !sameOccurrenceIdentity(occurrence, grant.occurrence)) {
           throw new TypeError("Protected Task fixed Memory occurrence changed");
         }
+        const runningOccurrence = grant.occurrence;
         exactGrant({
-          occurrence,
+          occurrence: runningOccurrence,
           policy,
           reference,
           record: grant.record,
           evidence: grant.evidence,
           signal: grant.signal,
         });
-        const subject = subjectFromRecord(occurrence, grant.record);
+        const subject = subjectFromRecord(runningOccurrence, grant.record);
         const authority = memoryAuthority({
-          occurrence,
+          occurrence: runningOccurrence,
           predispatch,
           subject,
           ...(scopeMemory === undefined ? {} : { scopeMemory }),
@@ -694,8 +706,11 @@ export function createProtectedTaskNativeFixedMemorySegment(
             throw new TypeError("Protected Task fixed Memory segment was reused");
           }
           used = true;
+          if (jobId !== runningOccurrence.run.jobId) {
+            throw new TypeError("Protected Task fixed Memory Job changed");
+          }
           exactGrant({
-            occurrence,
+            occurrence: runningOccurrence,
             policy,
             reference,
             record: grant.record,
@@ -705,7 +720,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
           if (transientInput[TRANSIENT_SEGMENT] !== token) {
             throw new TypeError("Protected Task fixed Memory segment was substituted");
           }
-          exactExecutorInput(transientInput, occurrence, predispatch);
+          exactExecutorInput(transientInput, runningOccurrence, predispatch);
           const signal = AbortSignal.any([grant.signal, jobSignal]);
           signal.throwIfAborted();
           const descriptorBytes = grant.record.descriptorBytes;
@@ -717,14 +732,15 @@ export function createProtectedTaskNativeFixedMemorySegment(
             throw new TypeError("Protected Task fixed Memory request is unavailable");
           }
           try {
-            exactRequest({ occurrence, reference, evidence: grant.evidence, request });
+            exactRequest({ occurrence: runningOccurrence, reference,
+              evidence: grant.evidence, request });
             const current: ProtectedTaskMemoryAuthorityInput = Object.freeze({
               runner: input.product.canonicalRunner,
               restricted: input.restricted,
               crypto: input.crypto,
               serverScope: input.serverScope,
               subject,
-              occurrence,
+              occurrence: runningOccurrence,
               record: grant.record,
               request,
               evidence: grant.evidence,
@@ -769,14 +785,14 @@ export function createProtectedTaskNativeFixedMemorySegment(
                 assertNativeProtectedMetadata(payload.protectedMetadata);
                 const context = exactExecutionContext(
                   await input.resolveExecutionContext({
-                    occurrence,
+                    occurrence: runningOccurrence,
                     predispatch,
                     protectedMetadata: payload.protectedMetadata,
                   }),
                 );
-                const humanTurnId = occurrence.run.id;
+                const humanTurnId = runningOccurrence.run.id;
                 const publish = await input.createTranscriptPublisher({
-                  occurrence,
+                  occurrence: runningOccurrence,
                   record: grant.record,
                   request,
                   current,
@@ -785,12 +801,12 @@ export function createProtectedTaskNativeFixedMemorySegment(
                 });
                 const transcriptPort = dependencies.createTranscriptPort({
                   identity: {
-                    taskId: occurrence.task.id,
-                    taskRunId: occurrence.run.id,
-                    graphThreadId: occurrence.run.graphThreadId,
+                    taskId: runningOccurrence.task.id,
+                    taskRunId: runningOccurrence.run.id,
+                    graphThreadId: runningOccurrence.run.graphThreadId,
                     roomId: predispatch.scheduling.roomId,
                     humanTurnId,
-                    agentId: occurrence.task.agentId,
+                    agentId: runningOccurrence.task.agentId,
                   },
                   signal,
                   publish,
@@ -820,8 +836,8 @@ export function createProtectedTaskNativeFixedMemorySegment(
                         serverScope: input.serverScope,
                         evidence: grant.evidence,
                         identity: {
-                          taskId: occurrence.task.id,
-                          taskRunId: occurrence.run.id,
+                          taskId: runningOccurrence.task.id,
+                          taskRunId: runningOccurrence.run.id,
                           sourceRoomId: request.sourceRoomId,
                           namespaceId:
                             grant.evidence.result.namespace.namespaceId,
@@ -830,7 +846,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                             grant.evidence.result.namespace
                               .expectedAccessRevision,
                           expectedPolicyRevision: policy.revision,
-                          graphThreadId: occurrence.run.graphThreadId,
+                          graphThreadId: runningOccurrence.run.graphThreadId,
                         },
                         domains: grant.domains,
                         signal,
@@ -846,9 +862,9 @@ export function createProtectedTaskNativeFixedMemorySegment(
                           });
                           const segment: RunProtectedTaskNativeSegmentInput = {
                             mode: "native",
-                            taskId: occurrence.task.id,
-                            taskRunId: occurrence.run.id,
-                            graphThreadId: occurrence.run.graphThreadId,
+                            taskId: runningOccurrence.task.id,
+                            taskRunId: runningOccurrence.run.id,
+                            graphThreadId: runningOccurrence.run.graphThreadId,
                             signal,
                             checkpointSaver,
                             transcriptPort,
@@ -857,12 +873,13 @@ export function createProtectedTaskNativeFixedMemorySegment(
                             execution: Object.freeze({
                               ...context,
                               parentThreadId:
-                                occurrence.task.callingRoomId === null
-                                  ? `task:${occurrence.task.id}`
-                                  : `room:${occurrence.task.callingRoomId}`,
-                              parentTurnId: occurrence.run.id,
-                              parentOwnerId: occurrence.task.ownerId,
-                              causalHumanUserId: occurrence.task.requestorId,
+                                runningOccurrence.task.callingRoomId === null
+                                  ? `task:${runningOccurrence.task.id}`
+                                  : `room:${runningOccurrence.task.callingRoomId}`,
+                              parentTurnId: runningOccurrence.run.id,
+                              parentOwnerId: runningOccurrence.task.ownerId,
+                              causalHumanUserId:
+                                runningOccurrence.task.requestorId,
                               brief: payload.prompt,
                               ...(payload.expectedOutput === null
                                 ? {}
@@ -870,11 +887,11 @@ export function createProtectedTaskNativeFixedMemorySegment(
                               subEnvelope: predispatch.memory.envelope,
                               actorRole: "owner",
                               roomId: predispatch.scheduling.roomId,
-                              ...(occurrence.task.callingRoomId === null
+                              ...(runningOccurrence.task.callingRoomId === null
                                 ? {}
                                 : {
                                     callingRoomId:
-                                      occurrence.task.callingRoomId,
+                                      runningOccurrence.task.callingRoomId,
                                   }),
                             }),
                           };

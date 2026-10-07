@@ -24,6 +24,7 @@ import type {
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
   ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
   ProtectedTaskPredispatchPlan,
   RunProtectedTaskNativeSegmentInput,
   TaskRuntimeGrantClaimPlan,
@@ -293,11 +294,20 @@ async function fixture(mode: "namespace" | "scope" = "namespace") {
     domainKey: bytes(8),
   })];
   recipient.privateKey.fill(0);
+  const runningOccurrence: ProtectedTaskRunningOccurrence = Object.freeze({
+    task: occurrence.task,
+    run: Object.freeze({
+      ...occurrence.run,
+      jobId: JOB,
+      status: "running" as const,
+    }),
+  });
   return {
     crypto,
     request,
     evidenceInput,
     occurrence,
+    runningOccurrence,
     predispatch,
     policy,
     reference,
@@ -556,7 +566,7 @@ async function executeScenario(
         }),
       });
       const transient = await prepared.openTransientInput({
-        occurrence: value.occurrence,
+        occurrence: value.runningOccurrence,
         record: value.record,
         domains: value.domains,
         evidence,
@@ -598,7 +608,7 @@ async function withScenario<Value>(
         }),
       });
       const transient = await prepared.openTransientInput({
-        occurrence: value.occurrence,
+        occurrence: value.runningOccurrence,
         record: value.record,
         domains: value.domains,
         evidence,
@@ -657,6 +667,19 @@ describe("protected Task native fixed Memory segment", () => {
     });
   });
 
+  test("rejects an executor Job different from the admitted running occurrence", async () => {
+    await withScenario("namespace", "complete", async scenario => {
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(consume(scenario.prepared.executor(
+        scenario.input,
+        "substituted-job",
+        `task:${TASK}`,
+        new AbortController().signal,
+      ))).rejects.toThrow("Job changed");
+      expect(scenario.calls).toEqual([]);
+    });
+  });
+
   test("rejects a retained closure after genuine evidence custody closes", async () => {
     const scenario = await executeScenario();
     // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
@@ -711,7 +734,7 @@ describe("protected Task native fixed Memory segment", () => {
             stableRoutingDigest: value.stableRoutingDigest,
           });
           const transient = await prepared.openTransientInput({
-            occurrence: value.occurrence, record: value.record,
+            occurrence: value.runningOccurrence, record: value.record,
             domains: value.domains, evidence, signal: new AbortController().signal,
           });
           const execution = consume(prepared.executor(
@@ -783,7 +806,7 @@ describe("protected Task native fixed Memory segment", () => {
           stableRoutingDigest: value.stableRoutingDigest,
         });
         const transient = await prepared.openTransientInput({
-          occurrence: value.occurrence,
+          occurrence: value.runningOccurrence,
           record: value.record,
           domains: value.domains,
           evidence,
@@ -919,7 +942,7 @@ describe("protected Task native fixed Memory segment", () => {
       now: () => NOW,
       execute: async (evidence: TaskRuntimeExecutionEvidence) => {
         const transient = await prepared.openTransientInput({
-          occurrence: value.occurrence,
+          occurrence: value.runningOccurrence,
           record: value.record,
           domains: value.domains,
           evidence,
@@ -981,7 +1004,7 @@ describe("protected Task native fixed Memory segment", () => {
           stableRoutingDigest: value.stableRoutingDigest,
         });
         const transient = await prepared.openTransientInput({
-          occurrence: value.occurrence,
+          occurrence: value.runningOccurrence,
           record: value.record,
           domains: value.domains,
           evidence,

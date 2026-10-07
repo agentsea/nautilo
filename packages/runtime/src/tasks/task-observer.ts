@@ -81,6 +81,24 @@ export type ProtectedTaskOccurrence = Readonly<{
   }>;
 }>;
 
+/** Exact post-start identity for one protected execution segment. */
+export type ProtectedTaskRunningOccurrence = Readonly<{
+  task: ProtectedTaskOccurrence["task"];
+  run: Readonly<{
+    id: string;
+    taskId: string;
+    jobId: string;
+    graphThreadId: string;
+    status: "running";
+    startedAt: Date;
+  }>;
+}>;
+
+/** Authority checks accept only an explicit awaiting or running phase. */
+export type ProtectedTaskAuthorityOccurrence =
+  | ProtectedTaskOccurrence
+  | ProtectedTaskRunningOccurrence;
+
 /**
  * Server-owned authorization and dispatch boundary for protected Task work.
  * The observer supplies only closed durable identity. The port owns the exact

@@ -82,7 +82,7 @@ function input(
           taskId: ids.task,
           jobId: ids.job,
           graphThreadId,
-          status: "awaiting",
+          status: "running",
           startedAt: new Date(NOW - 1_000),
         },
       },

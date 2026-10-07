@@ -46,7 +46,11 @@ import type {
   ClaimProtectedTaskOccurrenceResult,
   ProtectedTaskOccurrenceClaimPort,
 } from "../../tasks/protected-task-occurrence-coordinator";
-import type { ProtectedTaskOccurrence } from "../../tasks/task-observer";
+import type {
+  ProtectedTaskAuthorityOccurrence,
+  ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
+} from "../../tasks/task-observer";
 import {
   BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
   BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES,
@@ -71,7 +75,7 @@ type HeldTaskRuntimeAuthority = Readonly<{
 }>;
 
 type CurrentTaskRuntimeAuthorityPort = <Value>(input: Readonly<{
-  occurrence: ProtectedTaskOccurrence;
+  occurrence: ProtectedTaskAuthorityOccurrence;
   record: BackgroundAuthorizationTaskRuntimeRecordV3;
   request: TaskRuntimeBackgroundAuthorizationRequestV1;
   use(
@@ -191,14 +195,14 @@ export type TaskRuntimeGrantClaimPlan = Readonly<{
     authority: TaskRuntimeRecipientCurrentAuthority;
   }>): TaskRuntimeBackgroundAuthorizationRequestV1;
   openTransientInput(input: Readonly<{
-    occurrence: ProtectedTaskOccurrence;
+    occurrence: ProtectedTaskRunningOccurrence;
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     domains: readonly DomainForegroundSecretEntry[];
     evidence: TaskRuntimeExecutionEvidence;
     signal: AbortSignal;
   }>): Promise<Record<string, unknown>>;
   publishResult(input: Readonly<{
-    occurrence: ProtectedTaskOccurrence;
+    occurrence: ProtectedTaskRunningOccurrence;
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     payload: TaskRunResultPayloadV1;
     domains: readonly DomainForegroundSecretEntry[];
@@ -434,7 +438,7 @@ function sameTaskScopeMemoryBinding(
 }
 
 function exactOccurrenceRecord(
-  occurrence: ProtectedTaskOccurrence,
+  occurrence: ProtectedTaskAuthorityOccurrence,
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): boolean {
   const contentRequirements = record.authoritySet.namespaceRequirements.filter(
@@ -1380,6 +1384,7 @@ function createCandidate(input: Readonly<{
 }>): ProtectedTaskExecutionCandidate {
   let state: "ready" | "starting" | "started" | "running" | "finished" =
     "ready";
+  let runningOccurrence: ProtectedTaskRunningOccurrence | null = null;
   let released = false;
   const release = (): void => {
     if (released) return;
@@ -1393,6 +1398,9 @@ function createCandidate(input: Readonly<{
     async start(jobId: string): Promise<StartProtectedTaskRunResult> {
       if (state !== "ready") {
         throw new Error("Task Runtime execution candidate is one-use");
+      }
+      if (typeof jobId !== "string" || jobId.trim().length === 0) {
+        throw new TypeError("Task Runtime Job identity is invalid");
       }
       state = "starting";
       try {
@@ -1423,6 +1431,19 @@ function createCandidate(input: Readonly<{
         if (result.status !== "started") {
           throw new TypeError("Task Runtime start returned an invalid result");
         }
+        runningOccurrence = Object.freeze({
+          task: Object.freeze({
+            ...input.occurrence.task,
+            cryptoRequiredNamespaceFingerprint:
+              input.occurrence.task.cryptoRequiredNamespaceFingerprint.slice(),
+          }),
+          run: Object.freeze({
+            ...input.occurrence.run,
+            jobId,
+            status: "running" as const,
+            startedAt: new Date(input.occurrence.run.startedAt.getTime()),
+          }),
+        });
         state = "started";
         return result;
       } catch (error) {
@@ -1445,6 +1466,10 @@ function createCandidate(input: Readonly<{
       if (state !== "started") {
         throw new Error("Task Runtime execution candidate is one-use");
       }
+      const occurrence = runningOccurrence;
+      if (occurrence === null) {
+        throw new Error("Task Runtime running occurrence is unavailable");
+      }
       state = "running";
       try {
         const current = await input.dependencies.repository.get(
@@ -1457,7 +1482,7 @@ function createCandidate(input: Readonly<{
           || current.snapshot.claimId !== input.claimId
           || current.snapshot.claimExpiresAt === null
           || current.acceptedMaterial === null
-          || !exactOccurrenceRecord(input.occurrence, current)
+          || !exactOccurrenceRecord(occurrence, current)
           || !resultBindingMatchesRecord(input.result, current)
         ) throw new Error("Task Runtime durable claim is no longer current");
         const request = requestFromRecord(current);
@@ -1466,7 +1491,7 @@ function createCandidate(input: Readonly<{
         }
         try {
           const authority = await input.dependencies.withCurrentAuthority({
-            occurrence: input.occurrence,
+            occurrence,
             record: current,
             request,
             use: (held) => currentMatchesRequest(held.foreground, request)
@@ -1503,7 +1528,7 @@ function createCandidate(input: Readonly<{
               result: input.result,
               operation: async (domains, signal, evidence) => {
                 const transientInput = await input.plan.openTransientInput({
-                  occurrence: input.occurrence,
+                  occurrence,
                   record: current,
                   domains,
                   evidence,
@@ -1530,7 +1555,7 @@ function createCandidate(input: Readonly<{
                   || !isTaskRuntimeRecord(storedRunning)
                   || storedRunning.snapshot.state !== "running"
                   || storedRunning.snapshot.claimId !== input.claimId
-                  || !exactOccurrenceRecord(input.occurrence, storedRunning)
+                  || !exactOccurrenceRecord(occurrence, storedRunning)
                 ) {
                   throw new Error("Task Runtime execution start could not be recorded");
                 }
@@ -1546,7 +1571,7 @@ function createCandidate(input: Readonly<{
                     publicationCalls += 1;
                     signal.throwIfAborted();
                     const pending = input.plan.publishResult({
-                      occurrence: input.occurrence,
+                      occurrence,
                       record: storedRunning,
                       payload,
                       domains,

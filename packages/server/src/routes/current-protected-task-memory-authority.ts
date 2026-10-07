@@ -50,7 +50,7 @@ import {
   PostgresBackgroundAuthorizationRepository,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
   type ProtectedTaskJobReferenceV1,
-  type ProtectedTaskOccurrence,
+  type ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 
 import {
@@ -65,7 +65,7 @@ export type ProtectedTaskMemoryAuthorityInput = Readonly<{
   crypto: LatticeCrypto;
   serverScope: string;
   subject: TaskRuntimeAuthoritySubject;
-  occurrence: ProtectedTaskOccurrence;
+  occurrence: ProtectedTaskRunningOccurrence;
   record: BackgroundAuthorizationTaskRuntimeRecordV3;
   request: TaskRuntimeBackgroundAuthorizationRequestV1;
   evidence: TaskRuntimeExecutionEvidence;
@@ -210,7 +210,10 @@ function assertInputBinding(
   const { evidence, reference, occurrence, record, request } = input;
   const snapshot = record.snapshot;
   if (
-    reference.taskId !== occurrence.task.id
+    occurrence.run.status !== "running"
+    || typeof occurrence.run.jobId !== "string"
+    || occurrence.run.jobId.length === 0
+    || reference.taskId !== occurrence.task.id
     || reference.taskRunId !== occurrence.run.id
     || reference.inputObjectId !== occurrence.task.cryptoObjectId
     || reference.resultObjectId !== evidence.result.objectId
@@ -238,7 +241,9 @@ function assertInputBinding(
     || request.workId !== evidence.workId
     || request.episodeId !== evidence.episodeId
     || request.sourceRoomId !== evidence.sourceRoomId
+    || typeof input.jobId !== "string"
     || input.jobId.length === 0
+    || input.jobId !== occurrence.run.jobId
     || input.executionRoomId.length === 0
     || !Number.isSafeInteger(checkedAt)
     || checkedAt < request.issuedAt

@@ -350,6 +350,8 @@ export {
   TaskObserver,
   type TaskObserverDeps,
   type ProtectedTaskOccurrence,
+  type ProtectedTaskRunningOccurrence,
+  type ProtectedTaskAuthorityOccurrence,
 } from "./tasks/task-observer";
 export {
   isCurrentProtectedTaskRunForGrant,

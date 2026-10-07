@@ -356,7 +356,7 @@ describe("protected Task execution receipts", () => {
     expect(first).toMatchObject({ status: "sealed" });
     const replay = await sealProtectedTaskExecutionSegmentReceiptInTx(
       target.tx,
-      segmentInput({ sealedAt: new Date("2026-10-06T11:00:00.000Z") }),
+      segmentInput({ sealedAt: new Date(sealedAt) }),
     );
     expect(replay).toMatchObject({ status: "exact_replay" });
     expect(target.segments).toHaveLength(1);
@@ -391,6 +391,14 @@ describe("protected Task execution receipts", () => {
       gap.tx,
       segmentInput({ executionSegment: 2 }),
     )).toEqual({ status: "rejected", reason: "segment_gap" });
+  });
+
+  test("rejects a segment replay sealed at a different park time", async () => {
+    const target = await sealSegment();
+    expect(await sealProtectedTaskExecutionSegmentReceiptInTx(
+      target.tx,
+      segmentInput({ sealedAt: new Date("2026-10-06T11:00:00.000Z") }),
+    )).toEqual({ status: "rejected", reason: "conflict" });
   });
 
   test("rejects stale, substituted and ordinary execution identities", async () => {
@@ -479,9 +487,7 @@ describe("protected Task execution receipts", () => {
     });
     expect(await sealProtectedTaskContinuationReceiptInTx(
       target.tx,
-      checkpointContinuation({
-        sealedAt: new Date("2026-10-06T12:00:00.000Z"),
-      }),
+      checkpointContinuation({ sealedAt: new Date(sealedAt) }),
     )).toMatchObject({ status: "exact_replay" });
     const proof = await readProtectedTaskExecutionContinuationProof(
       target.tx,
@@ -647,6 +653,20 @@ describe("protected Task execution receipts", () => {
       checkpointContinuation({ reason: "time_limit" }),
     )).toEqual({ status: "rejected", reason: "conflict" });
     expect(target.continuations).toHaveLength(1);
+  });
+
+  test("rejects a continuation replay sealed at a different park time", async () => {
+    const target = await sealSegment();
+    expect(await sealProtectedTaskContinuationReceiptInTx(
+      target.tx,
+      checkpointContinuation(),
+    )).toMatchObject({ status: "sealed" });
+    expect(await sealProtectedTaskContinuationReceiptInTx(
+      target.tx,
+      checkpointContinuation({
+        sealedAt: new Date("2026-10-06T12:00:00.000Z"),
+      }),
+    )).toEqual({ status: "rejected", reason: "conflict" });
   });
 
   test("treats an altered semantic manifest as conflicting replay", async () => {

@@ -133,7 +133,7 @@ import {
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
   ProtectedTaskJobReferenceV1,
-  ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 import {
   withTaskRuntimeExecutionEvidenceV1,
@@ -1328,7 +1328,7 @@ async function createScenario(
   base.objectIds.add(memoryObjectId);
   base.requestIds.add(requestId);
 
-  const occurrence: ProtectedTaskOccurrence = Object.freeze({
+  const occurrence: ProtectedTaskRunningOccurrence = Object.freeze({
     task: Object.freeze({
       id: taskId,
       ownerId: base.userId,
@@ -1346,9 +1346,9 @@ async function createScenario(
     run: Object.freeze({
       id: taskRunId,
       taskId,
-      jobId: null,
+      jobId,
       graphThreadId: `task:${taskId}:${taskRunId}`,
-      status: "awaiting",
+      status: "running",
       startedAt,
     }),
   });

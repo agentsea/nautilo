@@ -615,6 +615,9 @@ export class PostgresTaskMemoryReadPort implements ProtectedTaskMemoryReadPort {
     memoryIds: readonly string[],
   ): Promise<ReadonlyMap<string, readonly string[]> | null> {
     if (memoryIds.length === 0) return new Map();
+    // The parent Memory rows are already SHARE-locked in canonical UUID order.
+    // Read their child edges from the serializable snapshot: locking an edge
+    // here can deadlock with detach, whose invalidation trigger updates parent.
     const rows = await executeTypedConversationProductQuery(
       transaction,
       conversationProductTypedDb.select({
@@ -626,7 +629,7 @@ export class PostgresTaskMemoryReadPort implements ProtectedTaskMemoryReadPort {
       )).orderBy(
         asc(memoryNamespaces.memoryId),
         asc(memoryNamespaces.namespaceId),
-      ).for("share", { of: memoryNamespaces }),
+      ),
     );
     const result = new Map<string, string[]>();
     for (const row of rows) {
