@@ -133,7 +133,7 @@ export function resolveSurplusChatServingAvailability(
       .find((candidate): candidate is QualifiedSurplusChatRoute => candidate !== null) ?? null
     : resolveQualifiedSurplusChatRoute(input.catalogModelId, input.routes);
   if (!route) return { status: "not-qualified", route: null };
-  if (input.fundingKind === "personal" || !input.policyEnabled || !input.keyConfigured) {
+  if (!input.policyEnabled || !input.keyConfigured) {
     return { status: "qualified-unavailable", route };
   }
   return { status: "available", route };

@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 const createModelInputs: Record<string, unknown>[] = [];
 let observedResponse: ((receipt: { requestId: string; providerFamily: string; truncated: boolean; adaptedParameters?: string }, status: number) => Promise<void>) | undefined;
-const beginAttempt = mock(async () => {});
+const beginAttempt = mock(async (_input: Record<string, unknown>) => {});
 const settleAttempt = mock(async (_input: Record<string, unknown>) => {});
 
 mock.module("@nautilo/db", () => ({
@@ -148,11 +148,11 @@ describe("Surplus reasoning parity", () => {
         kind: "personal" as const,
         humanUserId: "user-1",
         payerHumanId: "user-1",
-        providerRoute: "openrouter",
+        providerRoute: "surplus",
         credentialId: "credential-1",
         credentialRevision: 1,
       },
-    })).toBe(false);
+    })).toBe(true);
   });
 
   test("keeps a missing charge pending when its receipt has a recoverable request ID", async () => {
@@ -352,4 +352,25 @@ describe("Surplus reasoning parity", () => {
     expect(settleAttempt).toHaveBeenCalledTimes(1);
     expect(settleAttempt.mock.calls[0]?.[0]).toMatchObject({ outcome: "succeeded", costState: "unknown" });
   });
+});
+
+
+test("personal marketplace attempts retain exact credential provenance and actual buyer cost", async () => {
+  const response = new AIMessage({ content: "personal output", response_metadata: {
+    finish_reason: "stop", usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3, buyer_cost_micro: 47 },
+  } });
+  const funding = { kind: "personal" as const, humanUserId: "personal-human", payerHumanId: "personal-human",
+    providerRoute: "surplus", credentialId: "personal-surplus-row", credentialRevision: 9 };
+  const result = await invokeSurplusChatAttempt({ route: ROUTE, apiKey: "personal-surplus-only",
+    messages: [new HumanMessage("Synthetic personal prompt")], tools: [], config: {}, maxOutputTokens: 256,
+    funding, invokeModel: async () => {
+      await observedResponse!({ requestId: "personal-receipt", providerFamily: "openrouter", truncated: false }, 200);
+      return response;
+    },
+  });
+  expect(result.kind).toBe("served");
+  expect(beginAttempt.mock.calls.at(-1)?.[0]).toMatchObject({ fundingKind: "personal", payerHumanId: funding.payerHumanId,
+    credentialId: funding.credentialId, credentialRevision: 9, userId: "personal-human" });
+  expect(settleAttempt.mock.calls.at(-1)?.[0]).toMatchObject({ outcome: "succeeded", costState: "actual", actualCostUsd: 0.000047 });
+  expect(JSON.stringify(beginAttempt.mock.calls.at(-1))).not.toContain("personal-surplus-only");
 });

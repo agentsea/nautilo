@@ -4,7 +4,8 @@
  */
 import { beforeEach, describe, expect, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
-import type { CostsSummary } from "@nautilo/db";
+import type { CostsSummary, PersonalCostsData } from "@nautilo/db";
+import type { PersonalCostsSummary } from "@nautilo/types";
 import { costsRoutes } from "../../src/routes/costs";
 
 const OWNER = "owner-user-id";
@@ -96,10 +97,46 @@ function fakeSummary(): CostsSummary {
     timeSeries: [
       { day: "2026-07-08", estimatedCostUsd: 0.02, actualCostUsd: 0.005, totalCostUsd: 0.021 },
     ],
+    recovery: {
+      pendingAttempts: 1,
+      retryableAttempts: 0,
+      blockedAttempts: 0,
+      unknownAttempts: 1,
+      attempts: [],
+    },
   };
 }
 
-function buildApp(caps: Set<string>): FastifyInstance {
+function fakePersonalSummary(): PersonalCostsData {
+  return {
+    entry: { available: true, hasPersonalCredentials: false, hasHistory: true },
+    totals: {
+      calls: 1, providerOperations: 0, unknownProviderOperations: 0, inputTokens: 100, cachedInputTokens: 0,
+      outputTokens: 25, totalTokens: 125, estimatedCostUsd: 0,
+      actualCostUsd: 0.000283, totalCostUsd: 0.000283,
+      pendingAttempts: 0, unknownAttempts: 0, retryableAttempts: 0, blockedAttempts: 0,
+    },
+    byModel: [{
+      model: "venice:openai-gpt-55", provider: "venice", displayName: "venice:openai-gpt-55",
+      calls: 1, inputTokens: 100, outputTokens: 25, estimatedCostUsd: 0,
+      actualCostUsd: 0.000283, totalCostUsd: 0.000283, hasActual: true,
+      hasFallbackEstimate: false, pendingAttempts: 0, unknownAttempts: 0, blockedAttempts: 0,
+    }],
+    byCallType: [{ callType: "chat", calls: 1, totalCostUsd: 0.000283 }],
+    byProvider: [],
+    byTask: [],
+    timeSeries: [{ day: "2026-07-08", estimatedCostUsd: 0, actualCostUsd: 0.000283, totalCostUsd: 0.000283 }],
+    recovery: {
+      pendingAttempts: 0,
+      retryableAttempts: 0,
+      blockedAttempts: 0,
+      unknownAttempts: 0,
+      attempts: [],
+    },
+  };
+}
+
+function buildApp(caps: Set<string>, seenPersonalPayers: string[] = []): FastifyInstance {
   const app = Fastify();
   app.decorateRequest("sessionUserId", null);
   app.addHook("preHandler", async (request) => {
@@ -109,6 +146,10 @@ function buildApp(caps: Set<string>): FastifyInstance {
   costsRoutes(app, {
     hasBillingCapability: async (userId) => caps.has(userId),
     getCostsSummary: async () => fakeSummary(),
+    getPersonalCostsSummary: async (input) => {
+      seenPersonalPayers.push(input.payerHumanId);
+      return fakePersonalSummary();
+    },
   });
   return app;
 }
@@ -169,5 +210,40 @@ describe("/api/costs auth gating (D405)", () => {
       headers: { "x-test-user": OWNER },
     });
     expect(res.statusCode).toBe(200);
+  });
+});
+
+describe("/api/account/costs session scoping", () => {
+  test("requires authentication without a billing capability", async () => {
+    const app = buildApp(new Set());
+    const unauthenticated = await app.inject({ method: "GET", url: "/api/account/costs" });
+    expect(unauthenticated.statusCode).toBe(401);
+
+    const seen: string[] = [];
+    const memberApp = buildApp(new Set(), seen);
+    const response = await memberApp.inject({
+      method: "GET",
+      url: "/api/account/costs?range=7d",
+      headers: { "x-test-user": MEMBER },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(seen).toEqual([MEMBER]);
+    expect(response.json()).toMatchObject({
+      currency: "USD",
+      range: { key: "7d" },
+      entry: { available: true, hasPersonalCredentials: false, hasHistory: true },
+      totals: { actualCostUsd: 0.000283, totalCostUsd: 0.000283 },
+    });
+  });
+
+  test("invalid ranges use the bounded default", async () => {
+    const app = buildApp(new Set());
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/account/costs?range=all",
+      headers: { "x-test-user": MEMBER },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json<PersonalCostsSummary>().range.key).toBe("30d");
   });
 });

@@ -20,7 +20,6 @@ export type SectionId =
   | "mobile-access"
   | "invite-people"
   | "security"
-  | "costs"
   | "about";
 
 /**

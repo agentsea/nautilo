@@ -138,7 +138,9 @@ export function validateExactTaskModelSelection(
     : null;
   const surplusInput = input.surplus ?? {
     policyEnabled: serverModelConfig?.preferSurplus === true,
-    keyConfigured: resolveProviderKey("surplus") !== null,
+    keyConfigured: input.env === undefined
+      ? resolveProviderKey("surplus") !== null
+      : Boolean(input.env["SURPLUS_API_KEY"]?.trim()),
   };
   const surplus = row.availability === "missing_credentials"
     ? resolveSurplusChatServingAvailability({

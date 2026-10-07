@@ -27,11 +27,13 @@ elevenlabs = { value = "REPLACE_with_ElevenLabs_key" }
 # Other supported services. Enable only the ones you intend to use.
 # typesafe = { value = "REPLACE_with_TypeSafe_key" }
 # google = { value = "REPLACE_with_Google_key" }
+# xai = { value = "REPLACE_with_xAI_key" }
 # fireworks = { value = "REPLACE_with_Fireworks_key" }
+# together = { value = "REPLACE_with_Together_AI_key" }
 # groq = { value = "REPLACE_with_Groq_key" }
 # gateway = { value = "REPLACE_with_gateway_key" }
-# A Surplus key is deployed for qualified marketplace routes; by itself it does
-# not provide chat capability.
+# A Surplus key provides the marketplace chat rail for signed routes. Runtime
+# use also requires the administrator's Prefer Surplus setting.
 # A custom gateway also needs its URL configured separately in Nautilo.
 # This file is not a Railway dashboard upload. Pass it to nautilo host adopt
 # with --provider-config, or to host plan/deploy with --all-providers.

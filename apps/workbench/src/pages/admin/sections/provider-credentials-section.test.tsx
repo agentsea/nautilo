@@ -41,6 +41,18 @@ beforeEach(() => {
 });
 
 describe("ProviderCredentialsEditor", () => {
+  test("renders stable disabled provider rows while key status is loading", async () => {
+    let resolve!: (value: { keys: KeyReport[]; hasLlm: boolean }) => void;
+    const pending = new Promise<{ keys: KeyReport[]; hasLlm: boolean }>((done) => { resolve = done; });
+    const keyApi = api([]);
+    keyApi.getKeySummary = mock(() => pending);
+    const view = render(<ProviderCredentialsEditor keyApi={keyApi} enabled viewerIsVerified />);
+    expect(view.getByText("Loading key status…")).toBeTruthy();
+    expect(view.getAllByText("Checking status…").length).toBeGreaterThan(0);
+    expect((view.getByRole("button", { name: "Add OpenAI key" }) as HTMLButtonElement).disabled).toBeTrue();
+    resolve({ keys: [], hasLlm: false });
+  });
+
   test("uses the shared stable order and shows masked previews with per-row actions", async () => {
     const keys = [
       key({ id: "anthropic", name: "Anthropic", status: "missing", masked: null }),
@@ -56,13 +68,10 @@ describe("ProviderCredentialsEditor", () => {
     />);
 
     await view.findByText("sk-…1234");
-    expect([...view.container.querySelectorAll("label")].map((label) => label.textContent)).toEqual([
-      "OpenAI",
-      "Anthropic",
-      "Custom one",
-      "Custom two",
-      "Gateway",
-    ]);
+    const labels = [...view.container.querySelectorAll("label")].map((label) => label.textContent);
+    expect(labels.indexOf("Surplus Intelligence")).toBe(labels.indexOf("OpenRouter") + 1);
+    expect(labels.indexOf("OpenAI")).toBeLessThan(labels.indexOf("Anthropic"));
+    expect(labels.slice(-3)).toEqual(["Custom one", "Custom two", "OpenAI-Compatible Gateway"]);
     expect(view.getByRole("button", { name: "Replace OpenAI key" })).toBeTruthy();
     expect(view.getByRole("button", { name: "Validate OpenAI key" })).toBeTruthy();
     expect(view.getByRole("button", { name: "Delete OpenAI key" })).toBeTruthy();

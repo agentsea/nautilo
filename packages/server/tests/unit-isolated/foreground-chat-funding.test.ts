@@ -55,7 +55,7 @@ mock.module("@nautilo/agent", () => ({
   resolveRetainedModels: (ids: string[]) => ids.map((id) => ({ id, availability: "missing-key" })),
   getEligibleModels: ({ env }: { env: NodeJS.ProcessEnv }) =>
     env["OPENROUTER_API_KEY"]
-      ? [MODEL, FALLBACK].map((id) => ({ id }))
+      ? [MODEL, FALLBACK].map((id) => ({ id, availability: "selectable" }))
       : [],
   modelHasRunnableCredentials: (modelId: string, env: NodeJS.ProcessEnv) =>
     modelId.startsWith("openrouter:") && Boolean(env["OPENROUTER_API_KEY"]),
@@ -93,6 +93,8 @@ mock.module("../../src/lib/model-funding", () => ({
     constructor(readonly code: string) { super(code); }
   },
   resolveModelFunding: resolveFunding,
+  resolveServerFundingRoute: (modelId: string) => actualAgent.modelHasRunnableCredentials(modelId, process.env)
+    ? modelId.split(":", 1)[0] : null,
   withAdmittedPersonalProviderKey: withKey,
 }));
 
@@ -125,6 +127,11 @@ beforeEach(() => {
 afterAll(() => mock.restore());
 
 describe("foreground chat funding admission", () => {
+  test("a missing key never admits a signed image model as personal text chat", async () => {
+    expect(openForegroundChatFundingSession({ ...input, modelId: "openai:gpt-image-2" }))
+      .rejects.toMatchObject({ code: "unsupported_workload" });
+    expect(resolveFunding).not.toHaveBeenCalled();
+  });
   test("counts only runnable chat credentials as configured personal funding", async () => {
     personalProviders = ["tavily", "elevenlabs"];
     expect(await callerHasConfiguredPersonalFunding(HUMAN)).toBe(false);

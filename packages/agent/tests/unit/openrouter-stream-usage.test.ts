@@ -134,6 +134,7 @@ describe.each([
       cachedInputTokens: 15,
       cacheCreationTokens: 7,
       actualCostUsd: 0.0123,
+      providerRequestId: "chatcmpl-test",
     });
   });
 

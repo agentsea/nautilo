@@ -118,6 +118,27 @@ describe("NautiloApiClient", () => {
     }
   });
 
+  test("caller-model client accepts only the secret-free effective funding projection", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => Response.json([{
+      id: "openai:gpt-5",
+      displayName: "GPT-5",
+      provider: "openai",
+      priority: 1,
+      enabled: true,
+      costCoefficient: 1,
+      availability: "selectable",
+      fundingSource: "personal",
+      fundingProviderRoute: "surplus",
+    }])) as unknown as typeof fetch;
+    try {
+      const [model] = await new NautiloApiClient("http://127.0.0.1:3001").getCallerModels();
+      expect(model).toMatchObject({ fundingSource: "personal", fundingProviderRoute: "surplus" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("retained-model client posts only the requested ids and purpose", async () => {
     const originalFetch = globalThis.fetch;
     let requestBody: unknown;

@@ -7,8 +7,10 @@ import {
   buildModelBarRows,
   modelRowBadges,
   modelRowTitle,
+  normalizeAdminCosts,
   type CostsModelBarInput,
 } from "../../src/pages/costs/costs-view-model";
+import type { CostsSummary } from "../../src/lib/costs-api";
 
 function modelRow(
   overrides: Partial<CostsModelBarInput> & Pick<CostsModelBarInput, "model">,
@@ -32,35 +34,38 @@ function modelRow(
 
 describe("M217 — costs view-model badges", () => {
   test("explicit estimate only → no badges", () => {
-    expect(modelRowBadges({ hasActual: false, hasFallbackEstimate: false })).toEqual([]);
+    expect(
+      modelRowBadges({ hasActual: false, hasFallbackEstimate: false }),
+    ).toEqual([]);
   });
 
   test("provider actual only → actual badge unchanged", () => {
-    expect(modelRowBadges({ hasActual: true, hasFallbackEstimate: false })).toEqual([
-      MODEL_BADGE_ACTUAL,
-    ]);
+    expect(
+      modelRowBadges({ hasActual: true, hasFallbackEstimate: false }),
+    ).toEqual([MODEL_BADGE_ACTUAL]);
   });
 
   test("fallback estimate only → fallback estimate badge", () => {
-    expect(modelRowBadges({ hasActual: false, hasFallbackEstimate: true })).toEqual([
-      MODEL_BADGE_FALLBACK_ESTIMATE,
-    ]);
+    expect(
+      modelRowBadges({ hasActual: false, hasFallbackEstimate: true }),
+    ).toEqual([MODEL_BADGE_FALLBACK_ESTIMATE]);
   });
 
   test("mixed actual + fallback aggregate → both badges (actual first)", () => {
-    expect(modelRowBadges({ hasActual: true, hasFallbackEstimate: true })).toEqual([
-      MODEL_BADGE_ACTUAL,
-      MODEL_BADGE_FALLBACK_ESTIMATE,
-    ]);
+    expect(
+      modelRowBadges({ hasActual: true, hasFallbackEstimate: true }),
+    ).toEqual([MODEL_BADGE_ACTUAL, MODEL_BADGE_FALLBACK_ESTIMATE]);
   });
 
   test("unresolved marketplace attempts remain visible", () => {
-    expect(modelRowBadges({
-      hasActual: false,
-      hasFallbackEstimate: false,
-      pendingAttempts: 2,
-      unknownAttempts: 1,
-    })).toEqual([MODEL_BADGE_PENDING, MODEL_BADGE_UNKNOWN]);
+    expect(
+      modelRowBadges({
+        hasActual: false,
+        hasFallbackEstimate: false,
+        pendingAttempts: 2,
+        unknownAttempts: 1,
+      }),
+    ).toEqual([MODEL_BADGE_PENDING, MODEL_BADGE_UNKNOWN]);
   });
 
   test("modelRowTitle preserves raw model id for diagnosis", () => {
@@ -71,7 +76,6 @@ describe("M217 — costs view-model badges", () => {
       }),
     ).toBe("GPT-5.6 Terra (openai:gpt-5.6-terra)");
   });
-
 });
 
 describe("M217 — buildModelBarRows renders every model", () => {
@@ -170,13 +174,41 @@ describe("M217 — buildModelBarRows renders every model", () => {
     const badgeByKey = Object.fromEntries(rows.map((r) => [r.key, r.badges]));
 
     expect(badgeByKey["openai:gpt-5.6-terra"]).toEqual([]);
-    expect(badgeByKey["openrouter:anthropic/claude-opus-4"]).toEqual([MODEL_BADGE_ACTUAL]);
-    expect(badgeByKey["fireworks:accounts/fireworks/models/qwen3-235b"]).toEqual([
-      MODEL_BADGE_FALLBACK_ESTIMATE,
+    expect(badgeByKey["openrouter:anthropic/claude-opus-4"]).toEqual([
+      MODEL_BADGE_ACTUAL,
     ]);
+    expect(
+      badgeByKey["fireworks:accounts/fireworks/models/qwen3-235b"],
+    ).toEqual([MODEL_BADGE_FALLBACK_ESTIMATE]);
     expect(badgeByKey["gateway:custom/experimental-model"]).toEqual([
       MODEL_BADGE_ACTUAL,
       MODEL_BADGE_FALLBACK_ESTIMATE,
     ]);
   });
+});
+
+test("admin headlines derive the current estimate without double-counting historical estimates", () => {
+  const data = {
+    totals: {
+      calls: 1,
+      providerOperations: 0,
+      unknownProviderOperations: 0,
+      pendingModelAttempts: 0,
+      unknownModelAttempts: 0,
+      inputTokens: 1,
+      cachedInputTokens: 0,
+      outputTokens: 1,
+      totalTokens: 2,
+      estimatedCostUsd: 5,
+      actualCostUsd: 3,
+      totalCostUsd: 4,
+    },
+    byModel: [],
+    byCallType: [],
+    byProvider: [],
+    byUser: [],
+    timeSeries: [],
+  } as unknown as CostsSummary;
+  expect(normalizeAdminCosts(data).totals.estimatedCostUsd).toBe(1);
+  expect(data.totals.estimatedCostUsd).toBe(5);
 });

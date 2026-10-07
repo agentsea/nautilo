@@ -308,8 +308,8 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
     ...(Object.keys(configuration).length > 0 ? { configuration } : {}),
   };
   if (timeoutMs !== undefined) base["timeout"] = timeoutMs;
-  if (options.maxRetries !== undefined) base["maxRetries"] = options.maxRetries;
   if (options.callbacks) base["callbacks"] = options.callbacks;
+  if (options.maxRetries !== undefined) base["maxRetries"] = options.maxRetries;
   if (options.apiKey) base["apiKey"] = options.apiKey;
   if (useResponsesApi) {
     const directGpt6 = isDirectGpt6Model(options.modelId);
@@ -387,6 +387,7 @@ export async function createAnthropic(options: CreateModelOptions): Promise<Chat
   if (timeoutMs !== undefined) base["timeout"] = timeoutMs;
   if (options.apiKey) base["apiKey"] = options.apiKey;
   if (options.callbacks) base["callbacks"] = options.callbacks;
+  if (options.maxRetries !== undefined) base["maxRetries"] = options.maxRetries;
   // `@langchain/anthropic` honors `anthropicApiUrl` (NOT `baseURL`) — see
   // chat_models.js where `this.apiUrl = fields?.anthropicApiUrl`.
   if (options.baseUrl) base["anthropicApiUrl"] = options.baseUrl;
@@ -414,6 +415,7 @@ export async function createAnthropicWithLongContext(options: CreateModelOptions
   if (timeoutMs !== undefined) base["timeout"] = timeoutMs;
   if (options.apiKey) base["apiKey"] = options.apiKey;
   if (options.callbacks) base["callbacks"] = options.callbacks;
+  if (options.maxRetries !== undefined) base["maxRetries"] = options.maxRetries;
   // Long-context variant must honor the same `anthropicApiUrl` routing as the
   // standard `createAnthropic` factory; otherwise a caller-supplied baseUrl
   // (proxy, gateway, regional endpoint) is silently dropped on the long-context
@@ -441,6 +443,7 @@ export async function createGemini(options: CreateModelOptions): Promise<ChatMod
     ...(options.apiKey ? { apiKey: options.apiKey } : {}),
     ...(options.callbacks ? { callbacks: options.callbacks } : {}),
   };
+  if (options.maxRetries !== undefined) config["maxRetries"] = options.maxRetries;
   if (timeoutMs !== undefined) config["requestOptions"] = { timeout: timeoutMs };
   const llm = new ChatGoogleGenerativeAI(config as unknown as ConstructorParameters<typeof ChatGoogleGenerativeAI>[0]);
   // The sanitizer recursively wraps the concrete model returned by each
@@ -487,6 +490,7 @@ export async function createFireworks(options: CreateModelOptions): Promise<Chat
     if (timeoutMs !== undefined) base["timeout"] = timeoutMs;
     if (options.apiKey) base["apiKey"] = options.apiKey;
     if (options.callbacks) base["callbacks"] = options.callbacks;
+    if (options.maxRetries !== undefined) base["maxRetries"] = options.maxRetries;
     if (Object.keys(modelKwargs).length > 0) base["modelKwargs"] = modelKwargs;
     if (affinityHeaders) base["configuration"] = { defaultHeaders: affinityHeaders };
     const llm = new ChatFireworks(base);
@@ -513,6 +517,7 @@ export async function createFireworks(options: CreateModelOptions): Promise<Chat
     if (timeoutMs !== undefined) base["timeout"] = timeoutMs;
     if (options.apiKey) base["apiKey"] = options.apiKey;
     if (options.callbacks) base["callbacks"] = options.callbacks;
+    if (options.maxRetries !== undefined) base["maxRetries"] = options.maxRetries;
     if (Object.keys(modelKwargs).length > 0) base["modelKwargs"] = modelKwargs;
     const llm = new ChatOpenAI(base);
     return llm as unknown as ChatModel<BaseMessageLike, unknown>;
@@ -530,6 +535,7 @@ export async function createXAI(options: CreateModelOptions): Promise<ChatModel<
   if (timeoutMs !== undefined) base["timeout"] = timeoutMs;
   if (options.apiKey) base["apiKey"] = options.apiKey;
   if (options.callbacks) base["callbacks"] = options.callbacks;
+  if (options.maxRetries !== undefined) base["maxRetries"] = options.maxRetries;
   const llm = new ChatXAI(base);
   return llm as unknown as ChatModel<BaseMessageLike, unknown>;
 }
@@ -566,5 +572,6 @@ export async function createTogetherWithDependencies(
   if (timeoutMs !== undefined) fields["timeout"] = timeoutMs;
   if (options.apiKey) fields["apiKey"] = options.apiKey;
   if (options.callbacks) fields["callbacks"] = options.callbacks;
+  if (options.maxRetries !== undefined) fields["maxRetries"] = options.maxRetries;
   return dependencies.createClient(fields);
 }

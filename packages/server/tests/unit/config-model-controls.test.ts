@@ -361,7 +361,9 @@ describe("caller-scoped model availability", () => {
       expect(body[0]?.availability).toBe("selectable");
       expect(body[0]?.capabilities).toMatchObject({ tools: false, vision: false, webSearch: false });
       expect(response.body).not.toContain("credential-1");
-      expect(response.body).not.toContain("funding");
+      expect(body[0]).toMatchObject({ fundingSource: "personal", fundingProviderRoute: "anthropic" });
+      expect(response.body).not.toContain("credentialRevision");
+      expect(response.body).not.toContain("payerHumanId");
       expect(calls).toEqual([{ humanUserId: "human-1", modelId, purpose: "chat-tools" }]);
     } finally {
       await app.close();
@@ -381,6 +383,8 @@ describe("caller-scoped model availability", () => {
           provider,
           revision: 1,
           validationStatus: "unverified",
+          destination: null,
+          receiptReadStatus: "unknown",
           validatedAt: null,
           envelope: encryptPersonalProviderCredential(custody, `synthetic-${provider}`, {
             id,
@@ -460,7 +464,8 @@ describe("caller-scoped model availability", () => {
         ]));
         expect(response.body).not.toContain("synthetic-anthropic");
         expect(response.body).not.toContain("synthetic-openrouter");
-        expect(response.body).not.toContain("funding");
+        expect(response.body).not.toContain("credentialRevision");
+        expect(response.body).not.toContain("payerHumanId");
       } finally {
         await app.close();
       }

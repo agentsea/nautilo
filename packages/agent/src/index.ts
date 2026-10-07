@@ -164,9 +164,11 @@ export {
   runWithInitiatingClientSurface,
 } from "./runtime/initiating-client-surface-context";
 export { runWithTaskCausalHuman } from "./runtime/causal-human-context";
-export type {
-  ForegroundChatFundingAttempt,
-  ForegroundChatFundingSession,
+export {
+  PersonalDirectFundingUnavailableError,
+  PersonalModelFundingUnavailableError,
+  type ForegroundChatFundingAttempt,
+  type ForegroundChatFundingSession,
 } from "./runtime/foreground-chat-funding";
 export {
   runScopeSubagentUntilPause,
@@ -1413,3 +1415,5 @@ export { OrdinaryContentAccessRetryRequiredError } from "./runtime/ordinary-cont
 
 export { listSpeechModels, getServerSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "./config/speech-models";
 export { surplusCredentialFingerprint, fetchSurplusSettlement } from "./providers/surplus-reconciliation";
+
+export { normalizeGatewayBaseUrl } from "./providers/universal";

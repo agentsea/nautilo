@@ -20,6 +20,7 @@ const auditedInputs: Readonly<Record<string, KeyboardOwner>> = {
   "app/(drawer)/(tabs)/settings/commands/new.tsx": "screen",
   "app/(drawer)/(tabs)/settings/human-profile.tsx": "screen",
   "app/(drawer)/(tabs)/settings/profile.tsx": "screen",
+  "app/(drawer)/(tabs)/settings/provider-keys.tsx": "screen",
   "app/(drawer)/(tabs)/settings/security.tsx": "screen",
   "app/(drawer)/(tabs)/settings/skills/[name].tsx": "screen",
   "app/(drawer)/(tabs)/settings/skills/index.tsx": "screen",
