@@ -11,7 +11,7 @@ const fixture = read("fixtures/server-scanner-drift-2026-10-01.json") as {
   sourceSha: string;
   architectures: Record<Architecture, Tuple[]>;
 };
-const source = read("server-vulnerability-exceptions.input.json");
+const source = read("fixtures/server-policy-before-retirement-2026-10-07.json");
 const decisions = source.exceptions.filter((entry: { reviewedAt: string }) => entry.reviewedAt === "2026-10-01T20:28:00Z");
 const digest = `sha256:${"a".repeat(64)}`;
 

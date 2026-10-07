@@ -145,6 +145,7 @@
     "node-pty"
   ],
   "overrides": {
+    "@modelcontextprotocol/sdk": "1.31.0",
     "@fastify/busboy": "3.2.1",
     "@hono/node-server": "1.19.15",
     "@langchain/openai": "1.4.5",

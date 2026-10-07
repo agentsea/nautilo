@@ -16,7 +16,7 @@ describe("September 16 server scanner inventory", () => {
       findingTuples: FindingTuple[];
       decision: { reviewedAt: string; expiresAt: string };
     };
-    const source = readJson("server-vulnerability-exceptions.input.json") as Pick<VulnerabilityPolicyV1, "exceptions">;
+    const source = readJson("fixtures/server-policy-before-retirement-2026-10-07.json") as Pick<VulnerabilityPolicyV1, "exceptions">;
     const parsed = parseVulnerabilityPolicy(JSON.stringify({
       version: 1,
       ...source,
