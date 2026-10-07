@@ -7,6 +7,7 @@ import {
 } from "@nautilo/lattice-bridge";
 import {
   bindConversationProductCanonicalTransactionRunner,
+  copyTaskScopeMemoryBinding,
   verifyConversationProductPostgresHandle,
   type AgentMemoryPublicationBoundary,
   type ConversationProductCanonicalTransactionRunner,
@@ -21,10 +22,6 @@ import {
   type ProtectedTaskMemoryAuthorityInput,
 } from "./current-protected-task-memory-authority";
 
-type NamespaceAuthority = Extract<
-  ProtectedMemoryAuthority,
-  { mode: "namespace" }
->;
 type CanonicalTransaction = Parameters<
   Parameters<ConversationProductCanonicalTransactionRunner["transaction"]>[0]
 >[0];
@@ -33,7 +30,7 @@ type CanonicalExecutor = Parameters<
 >[1];
 
 export type ProtectedTaskMemoryBoundaries = Readonly<{
-  authority: NamespaceAuthority;
+  authority: ProtectedMemoryAuthority;
   policy: CurrentProtectedTaskMemoryPolicy;
   publication: AgentMemoryPublicationBoundary;
   read: TaskMemoryReadBoundary;
@@ -101,10 +98,13 @@ function canonicalIds(
 
 function snapshotAuthority(
   value: ProtectedMemoryAuthority,
-): NamespaceAuthority | null {
-  if (value.mode !== "namespace"
-    || !UUID.test(value.subjectUserId)
+): ProtectedMemoryAuthority | null {
+  if (!UUID.test(value.subjectUserId)
     || !UUID.test(value.agentId)) return null;
+  if (value.mode === "scope") {
+    return UUID.test(value.scopeId) && UUID.test(value.originWritableNamespaceId)
+      ? Object.freeze({ ...value }) : null;
+  }
   const readableNamespaceIds = canonicalIds(
     value.readableNamespaceIds,
     false,
@@ -141,8 +141,15 @@ function sameIds(
 
 function sameAuthority(
   value: ProtectedMemoryAuthority,
-  expected: NamespaceAuthority,
+  expected: ProtectedMemoryAuthority,
 ): boolean {
+  if (value.mode === "scope" || expected.mode === "scope") {
+    return value.mode === "scope" && expected.mode === "scope"
+      && value.subjectUserId === expected.subjectUserId
+      && value.agentId === expected.agentId
+      && value.scopeId === expected.scopeId
+      && value.originWritableNamespaceId === expected.originWritableNamespaceId;
+  }
   return value.mode === "namespace"
     && value.subjectUserId === expected.subjectUserId
     && value.agentId === expected.agentId
@@ -161,7 +168,7 @@ function policyMatches(
 }
 
 function authorityHasGrant(
-  authority: NamespaceAuthority,
+  authority: ProtectedMemoryAuthority,
   current: ProtectedTaskMemoryAuthorityInput,
 ): boolean {
   const requirements = new Map<string, readonly ("decrypt" | "encrypt")[]>();
@@ -171,6 +178,14 @@ function authorityHasGrant(
   }
   const has = (namespaceId: string, operation: "decrypt" | "encrypt") =>
     requirements.get(namespaceId)?.includes(operation) === true;
+  if (authority.mode === "scope") {
+    const scope = current.scopeMemory?.binding;
+    return scope !== undefined && scope.scopeId === authority.scopeId
+      && scope.originWritableNamespaceId === authority.originWritableNamespaceId
+      && scope.readableNamespaceIds.every(id => has(id, "decrypt"))
+      && has(authority.originWritableNamespaceId, "encrypt");
+  }
+  if (current.scopeMemory !== undefined) return false;
   return authority.readableNamespaceIds.every(id => has(id, "decrypt"))
     && authority.mutableNamespaceIds.every(id =>
       has(id, "decrypt") && has(id, "encrypt"))
@@ -214,7 +229,15 @@ export function createProtectedTaskMemoryBoundaries(
   });
   // Preserve branded evidence/request identity while preventing the caller
   // from substituting the outer authority input after this factory returns.
-  const current = Object.freeze({ ...input.current });
+  const current = Object.freeze({ ...input.current,
+    ...(input.current.scopeMemory === undefined ? {} : {
+      scopeMemory: Object.freeze({
+        binding: copyTaskScopeMemoryBinding(input.current.scopeMemory.binding),
+        targetRoomId: input.current.scopeMemory.targetRoomId,
+        workIdentity: input.current.scopeMemory.workIdentity,
+      }),
+    }),
+  });
   const authority = snapshotAuthority(input.authority);
   if (authority === null
     || authority.subjectUserId !== current.subject.userId

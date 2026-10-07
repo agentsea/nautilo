@@ -536,6 +536,7 @@ test("includes the exact Scope origin and distinct output Namespaces", async () 
       envelope: scopeEnvelope,
     },
   };
+  let scopeWorkIdentityDigest: Uint8Array | undefined;
   const plan = await createProtectedTaskRuntimeGrantPlanBuilder({
     crypto: new LatticeCrypto(),
     recipientTtlMs: 60_000,
@@ -556,8 +557,12 @@ test("includes the exact Scope origin and distinct output Namespaces", async () 
         facts: [...facts(), outputFact, seedFact],
       };
     },
-    prepareExecution: async ({ scopeMemory: binding }) => {
+    prepareExecution: async ({ scopeMemory: binding, scopeWorkIdentity }) => {
       expect(binding).toEqual(scopeMemory);
+      expect(typeof scopeWorkIdentity).toBe("string");
+      scopeWorkIdentityDigest = createHash("sha256").update(scopeWorkIdentity!).digest();
+      const committed = JSON.parse(scopeWorkIdentity!) as { scopeMemory: unknown };
+      expect(committed.scopeMemory).toEqual(scopeMemory);
       return {
         executor: async function* () { yield* []; },
         openTransientInput: async () => ({}),
@@ -578,6 +583,7 @@ test("includes the exact Scope origin and distinct output Namespaces", async () 
     scopeId: scopeEnvelope.scopeId,
   });
   expect(plan.scopeMemory).toEqual(scopeMemory);
+  expect(scopeWorkIdentityDigest).toEqual(plan.initialRecord.workIdentityHash);
 
   const reduced = await createProtectedTaskRuntimeGrantPlanBuilder({
     crypto: new LatticeCrypto(),

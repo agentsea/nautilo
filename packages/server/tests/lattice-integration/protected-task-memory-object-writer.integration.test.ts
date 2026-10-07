@@ -61,6 +61,7 @@ import {
   transitionTaskLifecycleTerminal,
   users,
   type PostgresJsBridgeConnection,
+  type PostgresJsBridgeExecutor,
   type PostgresJsBridgeRow,
   type PostgresJsBridgeScalar,
 } from "@nautilo/db";
@@ -113,6 +114,7 @@ import {
   fingerprintRequiredMemoryNamespaces,
   MEMORY_OBJECT_TYPE,
   prepareTaskRuntimeAgentObject,
+  type TaskRuntimeAgentObjectNamespaceMaterial,
 } from "@nautilo/lattice-bridge";
 import {
   PostgresDeviceAdmissionRepository,
@@ -153,6 +155,7 @@ import {
   withProtectedTaskNativeMemoryRepository,
 } from "../../src/routes/protected-task-native-memory-repository.ts";
 import {
+  adoptProtectedTaskScopeMemoryOrigin,
   requireHeldProtectedTaskMemoryWriterAuthority,
   withCurrentProtectedTaskMemoryAuthority,
   type HeldProtectedTaskMemoryAuthority,
@@ -290,6 +293,9 @@ function observeRestrictedConnection(
 
 function observeCanonicalRunner(
   base: ConversationProductCanonicalTransactionRunner,
+  wrapExecutor: (
+    executor: PostgresJsBridgeExecutor,
+  ) => PostgresJsBridgeExecutor = executor => executor,
 ): Readonly<{
   runner: ConversationProductCanonicalTransactionRunner;
   pid: Promise<number>;
@@ -321,7 +327,7 @@ function observeCanonicalRunner(
             throw new Error("Task Memory writer has no product backend PID");
           }
           backend.resolve(pid);
-          return await callback(tx, executor) as Result;
+          return await callback(tx, wrapExecutor(executor)) as Result;
         } catch (error) {
           backend.reject(error);
           throw error;
@@ -329,6 +335,40 @@ function observeCanonicalRunner(
         }, options);
       },
     }),
+  });
+}
+
+function gateCanonicalRunnerAfterScopeOriginUpdate(
+  base: ConversationProductCanonicalTransactionRunner,
+): Readonly<{
+  runner: ConversationProductCanonicalTransactionRunner;
+  entered: Promise<void>;
+  pid: Promise<number>;
+  release(): void;
+}> {
+  const entered = deferred();
+  const release = deferred();
+  let gated = false;
+  const observed = observeCanonicalRunner(base, executor => ({
+    query: async <Row extends PostgresJsBridgeRow = PostgresJsBridgeRow>(
+      statement: string,
+      parameters?: readonly PostgresJsBridgeScalar[],
+    ): Promise<readonly Row[]> => {
+      const result = await executor.query<Row>(statement, parameters);
+      if (!gated && /^\s*update\s+"memories"\s+set/iu.test(statement)
+        && statement.includes("scope_origin_namespace_id")) {
+        gated = true;
+        entered.resolve();
+        await release.promise;
+      }
+      return result;
+    },
+  }));
+  return Object.freeze({
+    entered: entered.promise,
+    pid: observed.pid,
+    release: release.resolve,
+    runner: observed.runner,
   });
 }
 
@@ -1136,6 +1176,7 @@ async function createBaseFixture() {
         audienceFingerprint: originNamespace.audienceFingerprint.slice(),
         key: originNamespace.key.slice(),
       }),
+      seedNamespace,
       runtime,
       objectIds,
       memoryIds,
@@ -1158,7 +1199,21 @@ async function createBaseFixture() {
   }
 }
 
-async function createScenario(base: BaseFixture) {
+type ScenarioOptions = Readonly<{
+  scopeMemory?: Readonly<{
+    binding: TaskScopeMemoryBinding;
+    targetRoomId: string;
+    targetNamespace: TaskRuntimeAgentObjectNamespaceMaterial;
+  }>;
+}>;
+
+async function createScenario(
+  base: BaseFixture,
+  options: ScenarioOptions = {},
+) {
+  const scopeMemory = options.scopeMemory;
+  const targetRoomId = scopeMemory?.targetRoomId ?? base.roomId;
+  const targetNamespace = scopeMemory?.targetNamespace ?? base.namespace;
   const taskId = randomUUID();
   const taskRunId = randomUUID();
   const jobId = randomUUID();
@@ -1207,9 +1262,14 @@ async function createScenario(base: BaseFixture) {
       prompt: "",
       scheduleKind: "now",
       callingRoomId: base.roomId,
-      targetRoomId: base.roomId,
+      targetChat: targetRoomId === base.roomId
+        ? "orphan"
+        : "last_in_namespace",
+      targetRoomId,
       targetUserIds: [base.userId],
       status: "running",
+      useScope: scopeMemory !== undefined,
+      scopeId: scopeMemory?.binding.scopeId ?? null,
     });
     await tx.insert(taskDefinitionCryptoRevisions).values({
       taskId,
@@ -1241,7 +1301,7 @@ async function createScenario(base: BaseFixture) {
       ownerId: base.userId,
       requestorId: base.userId,
       laneKey: `task:${taskId}`,
-      roomId: base.roomId,
+      roomId: targetRoomId,
       type: "foreground",
       status: "running",
       input: reference,
@@ -1286,19 +1346,57 @@ async function createScenario(base: BaseFixture) {
       startedAt,
     }),
   });
-  const namespaceRequirements = Object.freeze([Object.freeze({
-    ordinal: 0,
-    namespaceId: base.namespaceValue,
-    domainId: base.domainSecret.domainId,
-    operations: Object.freeze(["decrypt", "encrypt"] as const),
-    expectedAccessRevision: base.namespace.accessRevision,
-    expectedPolicyRevision: base.policyRevision,
-  })]);
+  const availableNamespaces = new Map<
+    string,
+    TaskRuntimeAgentObjectNamespaceMaterial
+  >([
+    [base.namespace.namespaceId, base.namespace],
+    [base.seedNamespace.namespaceId, base.seedNamespace],
+  ]);
+  const requiredNamespaceIds = scopeMemory === undefined
+    ? [base.namespaceValue]
+    : [...scopeMemory.binding.readableNamespaceIds];
+  const namespaceRequirements = Object.freeze(requiredNamespaceIds
+    .sort()
+    .map((requiredNamespaceId, ordinal) => {
+      const namespace = availableNamespaces.get(requiredNamespaceId);
+      if (namespace === undefined) {
+        throw new Error("Task Memory scenario Namespace is unavailable");
+      }
+      return Object.freeze({
+        ordinal,
+        namespaceId: requiredNamespaceId,
+        domainId: namespace.domainId,
+        operations: requiredNamespaceId === base.namespaceValue
+            || requiredNamespaceId === targetNamespace.namespaceId
+          ? Object.freeze(["decrypt", "encrypt"] as const)
+          : Object.freeze(["decrypt"] as const),
+        expectedAccessRevision: namespace.accessRevision,
+        expectedPolicyRevision: base.policyRevision,
+      });
+    }));
+  const scenarioDomainAuthority = scopeMemory === undefined
+    ? base.domainAuthority
+    : await new PostgresDomainKeyAuthorityRepository(
+      base.restricted,
+      base.crypto,
+      SERVER_SCOPE,
+    ).inspectForegroundAuthority({
+      namespaceIds: [...requiredNamespaceIds],
+      keyClass: "ai",
+      subjectHumanId: base.humanActorId,
+      deviceId: base.deviceId,
+    });
+  if (scenarioDomainAuthority.status !== "ready"
+    || scenarioDomainAuthority.domains.length !== 1) {
+    throw new Error("Task Memory scenario Domain authority is unavailable");
+  }
+  const scenarioDomain = scenarioDomainAuthority.domains[0]!;
   const domainRequirements = Object.freeze([Object.freeze({
     ordinal: 0,
-    domainId: base.domainSecret.domainId,
-    expectedEpoch: base.domainSecret.domainKeyGeneration,
-    expectedAuthorizationRevision: base.domainSecret.authorizationRevision,
+    domainId: scenarioDomain.domainId,
+    expectedEpoch: scenarioDomain.domainKeyGeneration,
+    expectedAuthorizationRevision: scenarioDomain.authorizationRevision,
   })]);
   const stableIdentity = Object.freeze({
     taskId,
@@ -1311,12 +1409,12 @@ async function createScenario(base: BaseFixture) {
     graphThreadId: occurrence.run.graphThreadId,
     startedAt: startedAt.getTime(),
     sourceRoomId: base.roomId,
-    targetRoomId: base.roomId,
+    targetRoomId,
     targetUserIds: [base.userId],
-    outputRoomId: base.roomId,
+    outputRoomId: targetRoomId,
     outputNamespaceId: base.namespaceValue,
-    memoryMode: "namespace" as const,
-    scopeId: null,
+    memoryMode: scopeMemory === undefined ? "namespace" as const : "scope" as const,
+    scopeId: scopeMemory?.binding.scopeId ?? null,
     contentRepresentation: "protected" as const,
     contentNamespaceId: base.namespaceValue,
     contentRevision: 1,
@@ -1325,6 +1423,12 @@ async function createScenario(base: BaseFixture) {
     requiredNamespaceFingerprint: Buffer.from(requiredFingerprint).toString(
       "base64url",
     ),
+  });
+  const scopeWorkIdentity = scopeMemory === undefined ? null : JSON.stringify({
+    taskId,
+    taskRunId,
+    targetRoomId,
+    scopeMemory: scopeMemory.binding,
   });
   const initialSnapshot = createBackgroundAuthorizationTaskRuntimeRequestV3({
     requestId,
@@ -1335,7 +1439,9 @@ async function createScenario(base: BaseFixture) {
   const idempotencyKey = taskRuntimeStableIdempotencyKey(stableIdentity);
   const initial: BackgroundAuthorizationTaskRuntimeRecordV3 = {
     snapshot: initialSnapshot,
-    workIdentityHash: base.crypto.hash(new TextEncoder().encode(idempotencyKey)),
+    workIdentityHash: base.crypto.hash(new TextEncoder().encode(
+      scopeWorkIdentity ?? idempotencyKey,
+    )),
     idempotencyKey,
     workKind: "task.execute",
     purpose: "task.execute",
@@ -1371,7 +1477,7 @@ async function createScenario(base: BaseFixture) {
     issuedAt: NOW,
     deadlineAt: EXPIRES_AT,
     maximumSecretBytes: 2_048,
-    domains: base.domainAuthority.domains,
+    domains: scenarioDomainAuthority.domains,
   });
   const request = createTaskRuntimeBackgroundAuthorizationRequestV1({
     requestId,
@@ -1412,9 +1518,12 @@ async function createScenario(base: BaseFixture) {
   if (attachedResult.status !== "updated") {
     throw new Error("Task Memory recipient attachment lost its CAS");
   }
-  const authorization = await mintDomainForegroundAuthorization(base.crypto, {
+    const authorization = await mintDomainForegroundAuthorization(base.crypto, {
     plan,
-    domains: [base.domainSecret],
+    domains: [Object.freeze({
+      ...base.domainSecret,
+      sourceNamespaceId: scenarioDomain.sourceNamespaceId,
+    })],
     committerDeviceSigningPrivateKey: base.signingPrivateKey,
     recipientEncryptionPublicKey: recipient.publicKey,
   });
@@ -1446,7 +1555,7 @@ async function createScenario(base: BaseFixture) {
         recipientRuntimeGeneration: plan.recipientRuntimeGeneration,
         recipientKeyId: plan.recipientKeyId,
         recipientAuthorized: true,
-        domains: base.domainAuthority.domains,
+        domains: scenarioDomainAuthority.domains,
       },
     });
     if (verified.status !== "verified") {
@@ -1541,14 +1650,14 @@ async function createScenario(base: BaseFixture) {
         objectId: resultObjectId,
         signerAgentId: base.productAgentId,
         namespace: {
-          namespaceId: base.namespaceValue,
-          domainId: base.domainSecret.domainId,
+          namespaceId: base.namespace.namespaceId,
+          domainId: base.namespace.domainId,
           operations: ["encrypt"],
           expectedAccessRevision: base.namespace.accessRevision,
           expectedPolicyRevision: base.policyRevision,
         },
       },
-      domainRequirements: base.domainAuthority.domains,
+      domainRequirements: scenarioDomainAuthority.domains,
       namespaceRequirements,
     };
     const writerInput = (
@@ -1567,10 +1676,34 @@ async function createScenario(base: BaseFixture) {
       request,
       evidence,
       jobId,
-      executionRoomId: base.roomId,
+      executionRoomId: targetRoomId,
+      ...(scopeMemory === undefined ? {} : {
+        scopeMemory: Object.freeze({
+          binding: scopeMemory.binding,
+          targetRoomId: scopeMemory.targetRoomId,
+          workIdentity: scopeWorkIdentity!,
+        }),
+      }),
       reference,
       now,
       signal: new AbortController().signal,
+    });
+    const withAuthority = <Value>(
+      now: () => number,
+      use: (input: Readonly<{
+        evidence: TaskRuntimeExecutionEvidence;
+        writer: ProtectedTaskMemoryObjectWriterInput;
+      }>) => Promise<Value>,
+      restricted = base.restricted,
+      runner = base.product.canonicalRunner,
+    ) => withTaskRuntimeExecutionEvidenceV1({
+      evidence: evidenceInput,
+      signal: new AbortController().signal,
+      now: () => NOW + 5,
+      execute: (evidence) => use(Object.freeze({
+        evidence,
+        writer: writerInput(evidence, now, restricted, runner),
+      })),
     });
     const withPreparedWrite = <Value>(
       now: () => number,
@@ -1581,11 +1714,7 @@ async function createScenario(base: BaseFixture) {
       }>) => Promise<Value>,
       restricted = base.restricted,
       runner = base.product.canonicalRunner,
-    ) => withTaskRuntimeExecutionEvidenceV1({
-      evidence: evidenceInput,
-      signal: new AbortController().signal,
-      now: () => NOW + 5,
-      execute: async (evidence) => {
+    ) => withAuthority(now, async ({ evidence, writer }) => {
         const plaintextBytes = encodeMemoryPayloadV1({
           formatVersion: 1,
           type: "fact",
@@ -1594,7 +1723,7 @@ async function createScenario(base: BaseFixture) {
         try {
           return await use(Object.freeze({
             evidence,
-            writer: writerInput(evidence, now, restricted, runner),
+            writer,
             write: Object.freeze({
               memoryId,
               contentRevision: 1,
@@ -1606,7 +1735,7 @@ async function createScenario(base: BaseFixture) {
                 objectType: MEMORY_OBJECT_TYPE,
                 plaintextBytes,
                 createdAt: NOW + 5,
-                namespaceSet: [base.namespace],
+                namespaceSet: [targetNamespace],
                 operationId: `task-memory-object-write:${memoryId}`,
                 runtime: base.runtime.runtime,
                 signerPublication: base.runtime.signerPublication,
@@ -1619,8 +1748,7 @@ async function createScenario(base: BaseFixture) {
         } finally {
           plaintextBytes.fill(0);
         }
-      },
-    });
+      }, restricted, runner);
     const execute = (
       now: () => number,
       restricted = base.restricted,
@@ -1637,6 +1765,7 @@ async function createScenario(base: BaseFixture) {
       memoryObjectId,
       requestId,
       execute,
+      withAuthority,
       withPreparedWrite,
     });
   } finally {
@@ -2393,6 +2522,354 @@ describePostgres("sealed protected Task Memory object writer", () => {
       throw cleanupError instanceof Error
         ? cleanupError
         : new Error("Task Memory writer cleanup threw a non-Error value", {
+          cause: cleanupError,
+        });
+    }
+  });
+
+  test("adopts one immutable Scope Memory origin under genuine competing Task authority", async () => {
+    const base = await createBaseFixture();
+    let testError: unknown;
+    try {
+      const scopeId = randomUUID();
+      const candidateMemoryId = randomUUID();
+      const existingOriginMemoryId = randomUUID();
+      const seedMemoryId = randomUUID();
+      const mappedMemoryId = randomUUID();
+      const targetMismatchMemoryId = randomUUID();
+      const identityMismatchMemoryId = randomUUID();
+      const expiryMemoryId = randomUUID();
+      const plainMemoryId = randomUUID();
+      const cancelledMemoryId = randomUUID();
+      const mappedObjectId = deriveMemoryCryptoObjectIdV1({
+        memoryId: mappedMemoryId,
+        contentRevision: 1,
+      });
+      base.scopeIds.add(scopeId);
+      base.objectIds.add(mappedObjectId);
+      for (const memoryId of [
+        candidateMemoryId,
+        existingOriginMemoryId,
+        seedMemoryId,
+        mappedMemoryId,
+        targetMismatchMemoryId,
+        identityMismatchMemoryId,
+        expiryMemoryId,
+        plainMemoryId,
+        cancelledMemoryId,
+      ]) base.memoryIds.add(memoryId);
+
+      const ordinaryMemory = (id: string) => ({
+        id,
+        type: "fact",
+        content: `legacy Scope Memory ${id}`,
+        importance: 0.7,
+        tier: 1,
+        createdAt: new Date(NOW),
+      });
+      const mappedFingerprint = fingerprintRequiredMemoryNamespaces([
+        base.namespaceValue,
+      ]);
+      try {
+        await base.admin.transaction(async (tx) => {
+          await tx.insert(agentScopes).values({
+            id: scopeId,
+            parentAgentId: base.productAgentId,
+            speakerUserId: base.userId,
+            name: `task-memory-origin-adoption-${scopeId}`,
+          });
+          await tx.insert(cryptoObjects).values({
+            objectId: mappedObjectId,
+            payloadHash: digest(`mapped-memory:${mappedMemoryId}`),
+            payloadBytes: Uint8Array.of(1),
+          });
+          await tx.insert(memories).values([
+            ordinaryMemory(candidateMemoryId),
+            {
+              ...ordinaryMemory(existingOriginMemoryId),
+              scopeOriginNamespaceId: base.namespaceValue,
+            },
+            ordinaryMemory(seedMemoryId),
+            {
+              ...ordinaryMemory(mappedMemoryId),
+              cryptoObjectId: mappedObjectId,
+              contentRevision: 1,
+              cryptoMappingState: "verified",
+              cryptoRequiredNamespaceFingerprint: mappedFingerprint,
+            },
+            ordinaryMemory(targetMismatchMemoryId),
+            ordinaryMemory(identityMismatchMemoryId),
+            ordinaryMemory(expiryMemoryId),
+            ordinaryMemory(plainMemoryId),
+            ordinaryMemory(cancelledMemoryId),
+          ]);
+          await tx.insert(memoryScopes).values([
+            { memoryId: candidateMemoryId, scopeId, origin: "scope" },
+            { memoryId: existingOriginMemoryId, scopeId, origin: "scope" },
+            { memoryId: seedMemoryId, scopeId, origin: "seed" },
+            { memoryId: mappedMemoryId, scopeId, origin: "scope" },
+            { memoryId: targetMismatchMemoryId, scopeId, origin: "scope" },
+            { memoryId: identityMismatchMemoryId, scopeId, origin: "scope" },
+            { memoryId: expiryMemoryId, scopeId, origin: "scope" },
+            { memoryId: plainMemoryId, scopeId, origin: "scope" },
+            { memoryId: cancelledMemoryId, scopeId, origin: "scope" },
+          ]);
+          await tx.insert(memoryNamespaces).values({
+            memoryId: seedMemoryId,
+            namespaceId: base.seedNamespaceValue,
+          });
+        });
+      } finally {
+        mappedFingerprint.fill(0);
+      }
+
+      const readableNamespaceIds = Object.freeze([
+        base.namespaceValue,
+        base.seedNamespaceValue,
+      ].sort());
+      const primaryBinding = Object.freeze({
+        scopeId,
+        memoryRoomId: base.roomId,
+        originWritableNamespaceId: base.namespaceValue,
+        readableNamespaceIds,
+      }) satisfies TaskScopeMemoryBinding;
+      const seedBinding = Object.freeze({
+        scopeId,
+        memoryRoomId: base.seedRoomId,
+        originWritableNamespaceId: base.seedNamespaceValue,
+        readableNamespaceIds,
+      }) satisfies TaskScopeMemoryBinding;
+      const primary = await createScenario(base, {
+        scopeMemory: {
+          binding: primaryBinding,
+          targetRoomId: base.roomId,
+          targetNamespace: base.namespace,
+        },
+      });
+      const seed = await createScenario(base, {
+        scopeMemory: {
+          binding: seedBinding,
+          targetRoomId: base.seedRoomId,
+          targetNamespace: base.seedNamespace,
+        },
+      });
+      const adopt = (
+        scenario: typeof primary,
+        memoryId: string,
+        runner = base.product.canonicalRunner,
+        now: () => number = () => NOW + 5,
+      ) => scenario.withAuthority(
+        now,
+        ({ writer }) => adoptProtectedTaskScopeMemoryOrigin(writer, memoryId),
+        base.restricted,
+        runner,
+      );
+
+      expect(await primary.withAuthority(
+        () => NOW + 5,
+        ({ writer }) => withCurrentProtectedTaskMemoryAuthority(
+          writer,
+          async () => true,
+        ),
+      )).toBe(true);
+      expect(await seed.withAuthority(
+        () => NOW + 5,
+        ({ writer }) => withCurrentProtectedTaskMemoryAuthority(
+          writer,
+          async () => true,
+        ),
+      )).toBe(true);
+
+      const gate = gateCanonicalRunnerAfterScopeOriginUpdate(
+        base.product.canonicalRunner,
+      );
+      const primaryAdoption = adopt(primary, candidateMemoryId, gate.runner);
+      let seedAdoption: ReturnType<typeof adopt> | null = null;
+      let primaryRace: Awaited<typeof primaryAdoption>;
+      let seedRace: Awaited<ReturnType<typeof adopt>>;
+      try {
+        const admission = await Promise.race([
+          gate.entered.then(() => "entered" as const),
+          primaryAdoption.then(() => "completed" as const),
+        ]);
+        if (admission !== "entered") {
+          throw new Error("Scope Memory adoption ended before its origin CAS");
+        }
+        seedAdoption = adopt(seed, candidateMemoryId);
+        await waitForBlockedContender(base, await gate.pid);
+        gate.release();
+        [primaryRace, seedRace] = await Promise.all([
+          primaryAdoption,
+          seedAdoption,
+        ]);
+      } catch (error) {
+        gate.release();
+        await Promise.allSettled([
+          primaryAdoption,
+          ...(seedAdoption === null ? [] : [seedAdoption]),
+        ]);
+        throw error;
+      }
+      expect(primaryRace).toBe("adopted");
+      expect(seedRace).toBe("stale");
+      const winner = primary;
+      const loser = seed;
+      const winnerNamespaceId = base.namespaceValue;
+      expect(await adopt(winner, candidateMemoryId)).toBe("replayed");
+      expect(await adopt(loser, candidateMemoryId)).toBe("stale");
+
+      const [adopted] = await base.admin.select({
+        type: memories.type,
+        content: memories.content,
+        contentRevision: memories.contentRevision,
+        cryptoAccessRevision: memories.cryptoAccessRevision,
+        cryptoObjectId: memories.cryptoObjectId,
+        cryptoMappingState: memories.cryptoMappingState,
+        cryptoRequiredNamespaceFingerprint:
+          memories.cryptoRequiredNamespaceFingerprint,
+        scopeOriginNamespaceId: memories.scopeOriginNamespaceId,
+      }).from(memories).where(eq(memories.id, candidateMemoryId));
+      expect(adopted).toEqual({
+        type: "fact",
+        content: `legacy Scope Memory ${candidateMemoryId}`,
+        contentRevision: 0,
+        cryptoAccessRevision: 0,
+        cryptoObjectId: null,
+        cryptoMappingState: "unmapped",
+        cryptoRequiredNamespaceFingerprint: null,
+        scopeOriginNamespaceId: winnerNamespaceId,
+      });
+      expect(await base.admin.select({
+        namespaceId: memoryNamespaces.namespaceId,
+      }).from(memoryNamespaces).where(eq(
+        memoryNamespaces.memoryId,
+        candidateMemoryId,
+      ))).toEqual([]);
+
+      expect(await adopt(primary, existingOriginMemoryId)).toBe("replayed");
+      expect(await adopt(seed, existingOriginMemoryId)).toBe("stale");
+      expect(await adopt(primary, seedMemoryId)).toBe("stale");
+      expect(await adopt(primary, mappedMemoryId)).toBe("stale");
+
+      const mismatchedTarget = await primary.withAuthority(
+        () => NOW + 5,
+        ({ writer }) => adoptProtectedTaskScopeMemoryOrigin(Object.freeze({
+          ...writer,
+          scopeMemory: Object.freeze({
+            ...writer.scopeMemory!,
+            targetRoomId: base.seedRoomId,
+          }),
+        }), targetMismatchMemoryId),
+      );
+      expect(mismatchedTarget).toBe("stale");
+      const mismatchedIdentity = await primary.withAuthority(
+        () => NOW + 5,
+        ({ writer }) => adoptProtectedTaskScopeMemoryOrigin(Object.freeze({
+          ...writer,
+          scopeMemory: Object.freeze({
+            ...writer.scopeMemory!,
+            workIdentity: `${writer.scopeMemory!.workIdentity} `,
+          }),
+        }), identityMismatchMemoryId),
+      );
+      expect(mismatchedIdentity).toBe("stale");
+
+      const expiryGate = gateCanonicalRunnerAfterScopeOriginUpdate(
+        base.product.canonicalRunner,
+      );
+      let expired = false;
+      const expiryAdoption = adopt(
+        primary,
+        expiryMemoryId,
+        expiryGate.runner,
+        () => expired ? EXPIRES_AT : NOW + 5,
+      );
+      try {
+        const admission = await Promise.race([
+          expiryGate.entered.then(() => "entered" as const),
+          expiryAdoption.then(() => "completed" as const),
+        ]);
+        if (admission !== "entered") {
+          throw new Error("Expiring Scope Memory adoption missed its CAS");
+        }
+        expired = true;
+        expiryGate.release();
+        expect(await expiryAdoption).toBe("stale");
+      } catch (error) {
+        expiryGate.release();
+        await Promise.allSettled([expiryAdoption]);
+        throw error;
+      }
+
+      try {
+        await base.admin.update(encryptionTransitionPolicy).set({
+          mode: "plaintext_only",
+          shadowBehavior: "fallback",
+          revision: base.policyRevision,
+          shadowEncryptionStartedAt: null,
+          updatedAt: new Date(NOW + 10),
+        }).where(eq(encryptionTransitionPolicy.id, "server"));
+        expect(await adopt(primary, plainMemoryId)).toBe("stale");
+      } finally {
+        await base.admin.update(encryptionTransitionPolicy).set({
+          mode: "encrypted_only",
+          shadowBehavior: "strict",
+          revision: base.policyRevision,
+          shadowEncryptionStartedAt: new Date(NOW),
+          updatedAt: new Date(NOW + 11),
+        }).where(eq(encryptionTransitionPolicy.id, "server"));
+      }
+
+      expect(await transitionTaskLifecycleTerminal(base.productDb, {
+        taskId: seed.taskId,
+        taskStatus: "cancelled",
+        taskPatch: { cancelledAt: new Date(NOW + 12) },
+        runId: seed.taskRunId,
+        runStatus: "cancelled",
+      })).toMatchObject({ transitioned: true, outcome: "transitioned" });
+      expect(await adopt(seed, cancelledMemoryId)).toBe("stale");
+
+      const untouched = await base.admin.select({
+        id: memories.id,
+        scopeOriginNamespaceId: memories.scopeOriginNamespaceId,
+      }).from(memories).where(inArray(memories.id, [
+        seedMemoryId,
+        mappedMemoryId,
+        targetMismatchMemoryId,
+        identityMismatchMemoryId,
+        expiryMemoryId,
+        plainMemoryId,
+        cancelledMemoryId,
+      ]));
+      expect(untouched).toHaveLength(7);
+      expect(untouched.every(memory =>
+        memory.scopeOriginNamespaceId === null)).toBe(true);
+    } catch (error) {
+      testError = error;
+    }
+    let cleanupError: unknown;
+    try {
+      await base.cleanup();
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (testError !== undefined && cleanupError !== undefined) {
+      throw new AggregateError(
+        [testError, cleanupError],
+        "Task Memory origin adoption test and cleanup both failed",
+      );
+    }
+    if (testError !== undefined) {
+      throw testError instanceof Error
+        ? testError
+        : new Error("Task Memory origin adoption threw a non-Error value", {
+          cause: testError,
+        });
+    }
+    if (cleanupError !== undefined) {
+      throw cleanupError instanceof Error
+        ? cleanupError
+        : new Error("Task Memory origin adoption cleanup threw a non-Error value", {
           cause: cleanupError,
         });
     }

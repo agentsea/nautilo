@@ -755,6 +755,15 @@ export class PostgresTaskMemoryReadPort implements ProtectedTaskMemoryReadPort {
     for (const entry of metadata) {
       if (previous !== undefined && previous >= entry.memoryId) return null;
       previous = entry.memoryId;
+      if (entry.origin === "scope" && entry.scopeOriginNamespaceId === null) {
+        const legacyUnavailable = entry.mappingState === "unmapped"
+          && entry.cryptoObjectId === null
+          && entry.requiredNamespaceFingerprint === null
+          && entry.requiredNamespaceIds.length === 0
+          && entry.ordinaryNamespaceIds.length === 0;
+        if (legacyUnavailable) continue;
+        return null;
+      }
       const required = canonicalIds(entry.requiredNamespaceIds, false);
       const ordinary = canonicalIds(entry.ordinaryNamespaceIds, true);
       if (required === null || ordinary === null) return null;

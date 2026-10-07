@@ -20,10 +20,14 @@ import {
   type TaskRuntimeExecutionEvidence,
 } from "@nautilo/lattice-crypto";
 
-import { createDomainMemoryCryptoSession } from
+import {
+  createDomainMemoryCryptoSession,
+  type DomainMemoryScopeBinding,
+} from
   "./domain-memory-crypto-session.ts";
 
 export interface TaskRuntimeDomainMemoryCryptoSessionInput {
+  scopeBinding?: DomainMemoryScopeBinding;
   subjectUserId: string;
   agentId: string;
   evidence: TaskRuntimeExecutionEvidence;
@@ -68,7 +72,7 @@ function unavailable<Value>(): ProtectedMemoryResult<Value> {
   });
 }
 
-/** Native protected Task wrapper for one Namespace-bound Memory session. */
+/** Native protected Task wrapper for one fixed Memory authority. */
 export function createTaskRuntimeDomainMemoryCryptoSession(
   input: Readonly<TaskRuntimeDomainMemoryCryptoSessionInput>,
 ): Readonly<{
@@ -104,6 +108,9 @@ export function createTaskRuntimeDomainMemoryCryptoSession(
       read: input.read,
     }),
     prepareOperationId: planOperationId => planOperationId,
+    ...(input.scopeBinding === undefined
+      ? {}
+      : { scopeBinding: input.scopeBinding }),
   });
 
   return Object.freeze({

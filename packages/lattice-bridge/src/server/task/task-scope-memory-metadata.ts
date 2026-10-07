@@ -152,6 +152,18 @@ function rowNullableBytes(row: object, field: string): Uint8Array | null {
   ).slice();
 }
 
+function isLegacyUnavailableScopeMemoryMetadata(
+  memory: TaskScopeMemoryMetadata,
+): boolean {
+  return memory.origin === "scope"
+    && memory.scopeOriginNamespaceId === null
+    && memory.requiredNamespaceIds.length === 0
+    && memory.ordinaryNamespaceIds.length === 0
+    && memory.cryptoObjectId === null
+    && memory.mappingState === "unmapped"
+    && memory.requiredNamespaceFingerprint === null;
+}
+
 async function queryTaskScopeMemoryMetadata(
   input: TaskScopeMemoryMetadataInput,
   locked: boolean,
@@ -249,6 +261,10 @@ async function queryTaskScopeMemoryMetadata(
       crypto_required_namespace_fingerprint:
         memories.cryptoRequiredNamespaceFingerprint,
       scope_origin_namespace_id: memories.scopeOriginNamespaceId,
+      ordinary_type_present: sql<boolean>`${memories.type} IS NOT NULL`
+        .as("ordinary_type_present"),
+      ordinary_content_present: sql<boolean>`${memories.content} IS NOT NULL`
+        .as("ordinary_content_present"),
     }).from(memoryScopes).innerJoin(
       memories,
       eq(memories.id, memoryScopes.memoryId),
@@ -342,25 +358,14 @@ async function queryTaskScopeMemoryMetadata(
     const allScopeEdges = scopesByMemory.get(row.id) ?? [];
     const currentEdges = allScopeEdges.filter((edge) =>
       edge.scopeId === coordinates.scopeId);
-    if (currentEdges.length !== 1 || currentEdges[0]!.origin !== row.origin
-      || row.origin === "scope"
-        && row.scope_origin_namespace_id === null) return null;
+    if (currentEdges.length !== 1 || currentEdges[0]!.origin !== row.origin) {
+      return null;
+    }
 
     const ordinaryNamespaceIds = canonicalIds(
       ordinaryByMemory.get(row.id) ?? [],
     );
     if (ordinaryNamespaceIds === null) return null;
-    let requiredNamespaceIds: readonly string[];
-    try {
-      requiredNamespaceIds = resolveRequiredMemoryNamespaceIds({
-        namespaceIds: ordinaryNamespaceIds,
-        scopeOrigins: allScopeEdges.map((edge) => edge.origin),
-        originWritableNamespaceId: row.scope_origin_namespace_id,
-      });
-    } catch {
-      return null;
-    }
-
     let fingerprint: Uint8Array | null;
     try {
       fingerprint = rowNullableBytes(
@@ -369,6 +374,30 @@ async function queryTaskScopeMemoryMetadata(
       );
     } catch {
       return null;
+    }
+    const legacyUnavailable = row.origin === "scope"
+      && row.scope_origin_namespace_id === null
+      && ordinaryNamespaceIds.length === 0
+      && row.crypto_object_id === null
+      && row.crypto_mapping_state === "unmapped"
+      && fingerprint === null
+      && row.ordinary_type_present === true
+      && row.ordinary_content_present === true;
+    if (row.origin === "scope" && row.scope_origin_namespace_id === null
+      && !legacyUnavailable) return null;
+    let requiredNamespaceIds: readonly string[];
+    if (legacyUnavailable) {
+      requiredNamespaceIds = Object.freeze([]);
+    } else {
+      try {
+        requiredNamespaceIds = resolveRequiredMemoryNamespaceIds({
+          namespaceIds: ordinaryNamespaceIds,
+          scopeOrigins: allScopeEdges.map((edge) => edge.origin),
+          originWritableNamespaceId: row.scope_origin_namespace_id,
+        });
+      } catch {
+        return null;
+      }
     }
     if (row.crypto_object_id === null) {
       if (row.crypto_mapping_state !== "unmapped" || fingerprint !== null) {
@@ -477,6 +506,7 @@ async function queryTaskScopeMemoryNamespaceInventory(
   ]);
   for (const memory of metadata) {
     if (memory.origin === "scope") {
+      if (isLegacyUnavailableScopeMemoryMetadata(memory)) continue;
       if (memory.scopeOriginNamespaceId === null) return null;
       candidates.add(memory.scopeOriginNamespaceId);
     } else {

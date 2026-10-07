@@ -77,6 +77,8 @@ export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
     occurrence: ProtectedTaskOccurrence;
     predispatch: ProtectedTaskPredispatchPlan;
     scopeMemory?: TaskScopeMemoryBinding;
+    /** Exact committed preimage; retained only for fixed Scope execution admission. */
+    scopeWorkIdentity?: string;
   }>): Promise<Readonly<{
     executor: TaskRuntimeGrantClaimPlan["executor"];
     openTransientInput: TaskRuntimeGrantClaimPlan["openTransientInput"];
@@ -459,14 +461,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
         occurrence.task.cryptoRequiredNamespaceFingerprint,
       ).toString("base64url"),
     });
-    const initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3 = Object.freeze({
-      snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
-        requestId,
-        workId: occurrence.run.id,
-        namespaceId: occurrence.task.contentNamespaceId,
-        now: createdAt,
-      }),
-      workIdentityHash: createHash("sha256").update(JSON.stringify({
+    const workIdentity = JSON.stringify({
         taskId: occurrence.task.id,
         taskRunId: occurrence.run.id,
         scheduleKind: occurrence.task.scheduleKind,
@@ -487,7 +482,15 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
         ...(scopeMemory === undefined ? {} : { scopeMemory }),
         namespaces: authority.namespaces,
         domains: authority.domains,
-      })).digest(),
+      });
+    const initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3 = Object.freeze({
+      snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
+        requestId,
+        workId: occurrence.run.id,
+        namespaceId: occurrence.task.contentNamespaceId,
+        now: createdAt,
+      }),
+      workIdentityHash: createHash("sha256").update(workIdentity).digest(),
       idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity),
       workKind: "task.execute",
       purpose: "task.execute",
@@ -517,7 +520,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
     const execution = await dependencies.prepareExecution(Object.freeze({
       occurrence,
       predispatch: prepared,
-      ...(scopeMemory === undefined ? {} : { scopeMemory }),
+      ...(scopeMemory === undefined ? {} : { scopeMemory, scopeWorkIdentity: workIdentity }),
     }));
     const executionKeys = execution !== null && typeof execution === "object"
       ? Object.keys(execution).sort().join(",")

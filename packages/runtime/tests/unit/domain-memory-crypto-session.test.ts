@@ -20,6 +20,10 @@ const SUBJECT_ID = "10000000-0000-4000-8000-000000000001";
 const AGENT_ID = "10000000-0000-4000-8000-000000000002";
 const MEMORY_ID = "10000000-0000-4000-8000-000000000003";
 const NAMESPACE_ID = "10000000-0000-4000-8000-000000000004";
+const HISTORIC_NAMESPACE_ID = "10000000-0000-4000-8000-000000000005";
+const SEED_NAMESPACE_ID = "10000000-0000-4000-8000-000000000006";
+const SCOPE_ID = "10000000-0000-4000-8000-000000000007";
+const OUTSIDE_ID = "10000000-0000-4000-8000-000000000008";
 
 const namespaceAuthority: AgentEntityNamespaceAuthority = Object.freeze({
   namespaceId: NAMESPACE_ID,
@@ -65,8 +69,16 @@ function plan(payload: MemoryPayloadV1) {
   });
 }
 
-function setup() {
+function setup(scopeBinding?: Readonly<{
+  scopeId: string;
+  originWritableNamespaceId: string;
+  readableNamespaceIds: readonly string[];
+}>) {
   const operations: string[] = [];
+  const keyRequests: Readonly<{
+    operations: readonly string[];
+    namespaceIds: readonly string[];
+  }>[] = [];
   const coordinates: Readonly<{
     memoryId: string;
     contentRevision: number;
@@ -112,16 +124,23 @@ function setup() {
       signal: new AbortController().signal,
       useCurrentSet: async request => ({
         status: "executed" as const,
-        value: await request.execute([{
-          namespaceKey: new Uint8Array(32).fill(0x62),
-          authority: namespaceAuthority,
-        }]),
+        value: await (async () => {
+          keyRequests.push(Object.freeze({
+            operations: Object.freeze([...request.operations]),
+            namespaceIds: Object.freeze([...request.namespaceIds]),
+          }));
+          return request.execute([{
+            namespaceKey: new Uint8Array(32).fill(0x62),
+            authority: namespaceAuthority,
+          }]);
+        })(),
       }),
     },
     objects,
     prepareOperationId: "accepted-domain-publication",
+    ...(scopeBinding === undefined ? {} : { scopeBinding }),
   });
-  return { factory, operations, coordinates, sources };
+  return { factory, operations, coordinates, sources, keyRequests };
 }
 
 describe("Domain Memory crypto session", () => {
@@ -210,5 +229,173 @@ describe("Domain Memory crypto session", () => {
       candidates: [],
     })).toEqual({ status: "unavailable", reason: "authorization_required" });
     expect(state.operations).toEqual([]);
+  });
+
+  test("binds Scope reads to the frozen inventory and writes to the current origin", async () => {
+    const mutableReadable = [
+      NAMESPACE_ID,
+      HISTORIC_NAMESPACE_ID,
+      SEED_NAMESPACE_ID,
+    ];
+    const state = setup({
+      scopeId: SCOPE_ID,
+      originWritableNamespaceId: NAMESPACE_ID,
+      readableNamespaceIds: mutableReadable,
+    });
+    mutableReadable[1] = OUTSIDE_ID;
+    const scopeAuthority = Object.freeze({
+      mode: "scope" as const,
+      subjectUserId: SUBJECT_ID,
+      agentId: AGENT_ID,
+      scopeId: SCOPE_ID,
+      originWritableNamespaceId: NAMESPACE_ID,
+    });
+    const cryptoObjectId = deriveMemoryCryptoObjectIdV1({
+      memoryId: MEMORY_ID,
+      contentRevision: 1,
+    });
+    const candidate = (readNamespaceId: string) => Object.freeze({
+      memoryId: MEMORY_ID,
+      contentRevision: 1,
+      cryptoAccessRevision: 0,
+      cryptoObjectId,
+      readNamespaceId,
+      requiredNamespaceIds: Object.freeze([
+        HISTORIC_NAMESPACE_ID,
+        SEED_NAMESPACE_ID,
+      ]),
+      importance: 0.5,
+      tier: 1,
+      score: 0.9,
+      createdAt: new Date("2027-01-15T08:00:00.000Z"),
+    });
+
+    for (const readNamespaceId of [
+      HISTORIC_NAMESPACE_ID,
+      SEED_NAMESPACE_ID,
+    ]) {
+      expect(await state.factory.session.openMany({
+        entrypointId: "foreground.main",
+        agentId: AGENT_ID,
+        authority: scopeAuthority,
+        candidates: [candidate(readNamespaceId)],
+      })).toEqual({ status: "success", value: [{
+        memoryId: MEMORY_ID,
+        contentRevision: 1,
+        type: "preference",
+        content: "Existing protected Memory",
+      }] });
+    }
+    expect(state.sources.map(source => source.namespaceIds)).toEqual([
+      [HISTORIC_NAMESPACE_ID, SEED_NAMESPACE_ID],
+      [HISTORIC_NAMESPACE_ID, SEED_NAMESPACE_ID],
+    ]);
+
+    expect(await state.factory.session.openMany({
+      entrypointId: "foreground.main",
+      agentId: AGENT_ID,
+      authority: scopeAuthority,
+      candidates: [candidate(OUTSIDE_ID)],
+    })).toEqual({ status: "unavailable", reason: "incomplete_access_set" });
+    expect(await state.factory.session.openMany({
+      entrypointId: "foreground.main",
+      agentId: AGENT_ID,
+      authority: { ...scopeAuthority, scopeId: OUTSIDE_ID },
+      candidates: [],
+    })).toEqual({ status: "unavailable", reason: "authorization_required" });
+
+    const payload = Object.freeze({
+      formatVersion: 1 as const,
+      type: "preference" as const,
+      content: "Current Scope origin only",
+    });
+    const originPlan = plan(payload);
+    expect((await state.factory.session.prepare({
+      entrypointId: "foreground.main",
+      agentId: AGENT_ID,
+      authority: scopeAuthority,
+      plan: originPlan,
+      content: { kind: "complete", payload },
+    })).status).toBe("success");
+    expect(await state.factory.session.prepare({
+      entrypointId: "foreground.main",
+      agentId: AGENT_ID,
+      authority: scopeAuthority,
+      plan: {
+        ...originPlan,
+        requiredNamespaceIds: [HISTORIC_NAMESPACE_ID],
+      },
+      content: { kind: "complete", payload },
+    })).toEqual({ status: "unavailable", reason: "incomplete_access_set" });
+
+    let commits = 0;
+    expect(await state.factory.session.authorizeCommit({
+      entrypointId: "foreground.main",
+      agentId: AGENT_ID,
+      authority: scopeAuthority,
+      target: originPlan,
+      operation: "publish",
+      commit: () => ++commits,
+    })).toEqual({ status: "success", value: 1 });
+    expect(state.keyRequests).toEqual([{
+      operations: ["encrypt"],
+      namespaceIds: [NAMESPACE_ID],
+    }]);
+    expect(await state.factory.session.authorizeCommit({
+      entrypointId: "foreground.main",
+      agentId: AGENT_ID,
+      authority: scopeAuthority,
+      target: {
+        ...originPlan,
+        requiredNamespaceIds: [HISTORIC_NAMESPACE_ID],
+      },
+      operation: "publish",
+      commit: () => ++commits,
+    })).toEqual({ status: "unavailable", reason: "incomplete_access_set" });
+    expect(commits).toBe(1);
+    expect(state.keyRequests).toHaveLength(1);
+  });
+
+  test("rejects malformed Scope bindings without weakening Namespace defaults", () => {
+    const invalid: readonly Readonly<{
+      scopeId: string;
+      originWritableNamespaceId: string;
+      readableNamespaceIds: readonly string[];
+    }>[] = [
+      {
+        scopeId: SCOPE_ID,
+        originWritableNamespaceId: NAMESPACE_ID,
+        readableNamespaceIds: [HISTORIC_NAMESPACE_ID],
+      },
+      {
+        scopeId: SCOPE_ID,
+        originWritableNamespaceId: NAMESPACE_ID,
+        readableNamespaceIds: [NAMESPACE_ID, NAMESPACE_ID],
+      },
+      {
+        scopeId: SCOPE_ID,
+        originWritableNamespaceId: NAMESPACE_ID,
+        readableNamespaceIds: [HISTORIC_NAMESPACE_ID, NAMESPACE_ID],
+      },
+      {
+        scopeId: "not-a-uuid",
+        originWritableNamespaceId: NAMESPACE_ID,
+        readableNamespaceIds: [NAMESPACE_ID],
+      },
+      {
+        scopeId: SCOPE_ID,
+        originWritableNamespaceId: NAMESPACE_ID,
+        readableNamespaceIds: [NAMESPACE_ID],
+        substituted: OUTSIDE_ID,
+      } as unknown as Readonly<{
+        scopeId: string;
+        originWritableNamespaceId: string;
+        readableNamespaceIds: readonly string[];
+      }>,
+    ];
+    for (const scopeBinding of invalid) {
+      expect(() => setup(scopeBinding)).toThrow("Scope Memory binding is invalid");
+    }
+    expect(setup().factory).toBeDefined();
   });
 });

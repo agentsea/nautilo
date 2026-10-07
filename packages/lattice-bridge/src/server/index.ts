@@ -1048,3 +1048,8 @@ export {
   withNativeTaskMemoryEntityCrypto,
   type NativeTaskMemoryEntityCryptoInput,
 } from "./task/native-task-memory-entity-crypto.ts";
+
+export {
+  adoptLegacyTaskScopeMemoryOrigin,
+  type TaskScopeMemoryOriginAdoptionResult,
+} from "./task/task-scope-memory-origin-adoption.ts";

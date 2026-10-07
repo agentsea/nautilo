@@ -11,6 +11,7 @@ import {
   type ProtectedTaskResultSignerAuthority,
 } from "@nautilo/lattice-bridge";
 import {
+  copyTaskScopeMemoryBinding,
   PostgresAgentMemoryProductPort,
   PostgresDomainKeyAuthorityRepository,
   PostgresHumanDeviceSignerHistory,
@@ -24,6 +25,7 @@ import {
 } from "@nautilo/runtime";
 
 import {
+  adoptProtectedTaskScopeMemoryOrigin,
   requireHeldProtectedTaskMemoryWriterAuthority,
   withCurrentProtectedTaskMemoryAuthority,
   type CurrentProtectedTaskMemoryPolicy,
@@ -44,17 +46,13 @@ import {
   resolveForegroundMemoryNativeEntries,
 } from "./foreground-memory-repository";
 
-type NamespaceAuthority = Extract<
-  ProtectedMemoryAuthority,
-  { mode: "namespace" }
->;
 type ProductContext = Readonly<{
   handle: ConversationProductPostgresHandle;
   canonicalRunner: ConversationProductCanonicalTransactionRunner;
 }>;
 
 export type ProtectedTaskNativeMemoryRepositoryInput<Value> = Readonly<{
-  authority: NamespaceAuthority;
+  authority: ProtectedMemoryAuthority;
   policy: ProtectedTaskMemoryBoundariesInput["policy"];
   current: ProtectedTaskMemoryAuthorityInput;
   domains: readonly DomainForegroundSecretEntry[];
@@ -74,6 +72,7 @@ export type ProtectedTaskNativeMemoryRepositoryInput<Value> = Readonly<{
 
 type Dependencies = Readonly<{
   withCurrentAuthority: typeof withCurrentProtectedTaskMemoryAuthority;
+  adoptScopeOrigin: typeof adoptProtectedTaskScopeMemoryOrigin;
   withEntityCrypto: typeof withNativeTaskMemoryEntityCrypto;
   createSession: typeof createTaskRuntimeDomainMemoryCryptoSession;
   createBoundaries: typeof createProtectedTaskMemoryBoundaries;
@@ -96,6 +95,7 @@ type Dependencies = Readonly<{
 
 const productionDependencies: Dependencies = Object.freeze({
   withCurrentAuthority: withCurrentProtectedTaskMemoryAuthority,
+  adoptScopeOrigin: adoptProtectedTaskScopeMemoryOrigin,
   withEntityCrypto: withNativeTaskMemoryEntityCrypto,
   createSession: createTaskRuntimeDomainMemoryCryptoSession,
   createBoundaries: createProtectedTaskMemoryBoundaries,
@@ -134,7 +134,9 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
     ...productionDependencies,
     ...overrides,
   });
-  const authority = Object.freeze({
+  const authority: ProtectedMemoryAuthority = input.authority.mode === "scope"
+    ? Object.freeze({ ...input.authority })
+    : Object.freeze({
     mode: input.authority.mode,
     subjectUserId: input.authority.subjectUserId,
     agentId: input.authority.agentId,
@@ -145,13 +147,30 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
       ...input.authority.mutableNamespaceIds,
     ]),
     writableNamespaceId: input.authority.writableNamespaceId,
-  }) satisfies NamespaceAuthority;
+  });
   const policy = Object.freeze({
     mode: input.policy.mode,
     shadowBehavior: input.policy.shadowBehavior,
     revision: input.policy.revision,
   });
-  const current = Object.freeze({ ...input.current });
+  const current = Object.freeze({ ...input.current,
+    ...(input.current.scopeMemory === undefined ? {} : {
+      scopeMemory: Object.freeze({
+        binding: copyTaskScopeMemoryBinding(input.current.scopeMemory.binding),
+        targetRoomId: input.current.scopeMemory.targetRoomId,
+        workIdentity: input.current.scopeMemory.workIdentity,
+      }),
+    }),
+  });
+  const scope = current.scopeMemory?.binding;
+  if (authority.mode === "scope"
+    ? scope === undefined || scope.scopeId !== authority.scopeId
+      || scope.originWritableNamespaceId !== authority.originWritableNamespaceId
+    : scope !== undefined) {
+    throw new TypeError("Protected native Task Memory Scope binding is unavailable");
+  }
+  const readableNamespaceIds = authority.mode === "namespace"
+    ? authority.readableNamespaceIds : scope!.readableNamespaceIds;
   const productContext = Object.freeze({ ...input.product });
   const agentProductContext = Object.freeze({ ...input.agentProduct });
   const signer = Object.freeze({ ...input.signer });
@@ -207,6 +226,11 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
         signal: entities.signal,
       });
       const session = dependencies.createSession({
+        ...(scope === undefined ? {} : { scopeBinding: {
+          scopeId: scope.scopeId,
+          originWritableNamespaceId: scope.originWritableNamespaceId,
+          readableNamespaceIds: scope.readableNamespaceIds,
+        } }),
         subjectUserId: authority.subjectUserId,
         agentId: authority.agentId,
         evidence: current.evidence,
@@ -267,7 +291,7 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
       const mutationProduct = dependencies.createProduct({
         handle: agentProductContext.handle,
         canonicalRunner: agentProductContext.canonicalRunner,
-        readableNamespaceIds: boundaries.authority.readableNamespaceIds,
+        readableNamespaceIds,
         cryptoCompletion: session.completion,
         publication: boundaries.publication,
       });
@@ -278,14 +302,51 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
         read: {
           handle: productContext.handle,
           canonicalRunner: productContext.canonicalRunner,
-          binding: { mode: "namespace", authority: boundaries.authority },
+          binding: boundaries.authority.mode === "namespace"
+            ? { mode: "namespace", authority: boundaries.authority }
+            : { mode: "scope", authority: boundaries.authority,
+                readableNamespaceIds,
+                coordinates: {
+                  taskId: current.occurrence.task.id,
+                  requesterUserId: current.subject.userId,
+                  agentId: authority.agentId,
+                  scopeId: scope!.scopeId,
+                  memoryRoomId: scope!.memoryRoomId,
+                  originWritableNamespaceId: scope!.originWritableNamespaceId,
+                },
+              },
           boundary: boundaries.read,
         },
         mutationProduct,
         crypto: session.session,
         owner,
         embedding,
-        repairExactCandidate,
+        repairExactCandidate: authority.mode === "namespace"
+          ? repairExactCandidate
+          : async request => {
+              if (!representation.allowForwardRepair) {
+                return Object.freeze({ status: "unavailable" as const,
+                  reason: "encryption_pending" as const });
+              }
+              if (request.authority.mode !== "scope"
+                || request.authority.scopeId !== authority.scopeId
+                || request.authority.subjectUserId !== authority.subjectUserId
+                || request.authority.agentId !== authority.agentId
+                || request.authority.originWritableNamespaceId
+                  !== authority.originWritableNamespaceId
+                || request.signal?.aborted === true) {
+                return Object.freeze({ status: "unavailable" as const,
+                  reason: "authorization_required" as const });
+              }
+              const adopted = await dependencies.adoptScopeOrigin(
+                scopedCurrent, request.selection.memoryId,
+              );
+              if (adopted === "stale") {
+                return Object.freeze({ status: "unavailable" as const,
+                  reason: "authorization_required" as const });
+              }
+              return repairExactCandidate(request);
+            },
         fallbackOrdinary,
         signal: entities.signal,
       });

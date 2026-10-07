@@ -191,6 +191,82 @@ describe("protected native Task Memory repository", () => {
     });
   }
 
+  for (const mode of ["shadow_encryption", "encrypted_only"] as const) {
+  test(`assembles Scope ${mode} reads and crypto from the same copied inventory`, async () => {
+    const base = fixture(mode);
+    const scopeId = "55555555-5555-4555-8555-555555555555";
+    const memoryRoomId = "66666666-6666-4666-8666-666666666666";
+    const readable = [NAMESPACE, OTHER_NAMESPACE];
+    const scopeAuthority = { mode: "scope" as const, subjectUserId: USER,
+      agentId: AGENT, scopeId, originWritableNamespaceId: NAMESPACE };
+    let repairRequest: Parameters<Dependency<"createRepository">>[0]["repairExactCandidate"] | undefined;
+    let adopted: "adopted" | "stale" = "stale";
+    let repaired = 0;
+    let adoptions = 0;
+    const input = { ...base, authority: scopeAuthority,
+      repairExactCandidate: async () => { repaired++; return { status: "success" as const, value: { memoryId: "77777777-7777-4777-8777-777777777777", contentRevision: 1 } }; },
+      execute: async () => {
+        const request = { operationId: "repair", authority: scopeAuthority,
+          selection: { memoryId: "77777777-7777-4777-8777-777777777777" },
+        } as Parameters<NonNullable<typeof repairRequest>>[0];
+        expect((await repairRequest!(request)).status).toBe("unavailable");
+        expect(repaired).toBe(0);
+        if (mode === "encrypted_only") {
+          expect(adoptions).toBe(0);
+          return "assembled";
+        }
+        adopted = "adopted";
+        expect((await repairRequest!(request)).status).toBe("success");
+        expect(repaired).toBe(1);
+        return "assembled";
+      },
+      current: { ...base.current, scopeMemory: { targetRoomId: memoryRoomId, workIdentity: "bound work",
+        binding: { scopeId, memoryRoomId, originWritableNamespaceId: NAMESPACE,
+          readableNamespaceIds: readable } } } };
+    const events: string[] = [];
+    const overrides = assemblyOverrides(input, events);
+    const session = overrides.createSession!;
+    const repository = overrides.createRepository!;
+    const product = overrides.createProduct!;
+    const result = await withProtectedTaskNativeMemoryRepository(input, {
+      ...overrides,
+      withCurrentAuthority: (async (_, use) => {
+        readable.pop();
+        return use(held(input));
+      }) as Dependency<"withCurrentAuthority">,
+      adoptScopeOrigin: async () => { adoptions++; return adopted; },
+      createSession: request => {
+        expect(request.scopeBinding).toEqual({ scopeId,
+          originWritableNamespaceId: NAMESPACE,
+          readableNamespaceIds: [NAMESPACE, OTHER_NAMESPACE] });
+        return session(request);
+      },
+      createBoundaries: request => ({ authority: request.authority,
+        policy: input.policy, publication: {}, read: {},
+      }) as ReturnType<Dependency<"createBoundaries">>,
+      createProduct: request => {
+        expect(request.readableNamespaceIds).toEqual([NAMESPACE, OTHER_NAMESPACE]);
+        return product(request);
+      },
+      createRepository: request => {
+        repairRequest = request.repairExactCandidate;
+        expect(request.read.binding).toEqual({ mode: "scope", authority: scopeAuthority,
+          readableNamespaceIds: [NAMESPACE, OTHER_NAMESPACE], coordinates: {
+            taskId: input.current.occurrence.task.id, requesterUserId: USER,
+            agentId: AGENT, scopeId, memoryRoomId,
+            originWritableNamespaceId: NAMESPACE,
+          } });
+        return repository(request);
+      },
+    });
+    expect(result).toBe("assembled");
+    let rejected = false;
+    try { await withProtectedTaskNativeMemoryRepository({ ...input,
+      current: base.current }, overrides); } catch { rejected = true; }
+    expect(rejected).toBeTrue();
+  });
+  }
+
   test("rejects identity substitution before native custody", async () => {
     const input = fixture();
     let nativeUses = 0;

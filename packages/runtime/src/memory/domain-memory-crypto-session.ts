@@ -24,6 +24,8 @@ type EntrypointId = Parameters<
 >[0]["entrypointId"];
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SCOPE_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export type DomainMemoryObjectProtectionRequest<Value> = Readonly<{
   memoryId: string;
@@ -38,6 +40,12 @@ export interface DomainMemoryObjectProtector {
     AgentObjectProtectionResult<Value>
   >;
 }
+
+export type DomainMemoryScopeBinding = Readonly<{
+  scopeId: string;
+  originWritableNamespaceId: string;
+  readableNamespaceIds: readonly string[];
+}>;
 
 function unavailable<Value>(
   reason: "authorization_required" | "incomplete_access_set"
@@ -83,6 +91,26 @@ function namespaceAuthority(
     && canonicalIds(authority.mutableNamespaceIds) !== null;
 }
 
+function snapshotScopeBinding(
+  value: DomainMemoryScopeBinding,
+): DomainMemoryScopeBinding {
+  const readableNamespaceIds = canonicalIds(value.readableNamespaceIds);
+  if (Object.keys(value).sort().join(",")
+      !== "originWritableNamespaceId,readableNamespaceIds,scopeId"
+    || !SCOPE_UUID.test(value.scopeId)
+    || !SCOPE_UUID.test(value.originWritableNamespaceId)
+    || readableNamespaceIds === null
+    || readableNamespaceIds.some(id => !SCOPE_UUID.test(id))
+    || !readableNamespaceIds.includes(value.originWritableNamespaceId)) {
+    throw new TypeError("Scope Memory binding is invalid");
+  }
+  return Object.freeze({
+    scopeId: value.scopeId,
+    originWritableNamespaceId: value.originWritableNamespaceId,
+    readableNamespaceIds,
+  });
+}
+
 function mappedFailure<Value>(result: Readonly<{
   status: "waiting_for_authority" | "failed";
   reason: string;
@@ -106,12 +134,16 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
   >;
   objects: DomainMemoryObjectProtector;
   prepareOperationId: string | ((planOperationId: string) => string);
+  scopeBinding?: DomainMemoryScopeBinding;
 }>): Readonly<{
   session: ProtectedAgentMemoryCryptoSessionPort;
   completion: Pick<AtomicMemoryCryptoCompletionPort, "complete">;
   /** Transient verified bytes for the policy-permitted ordinary Shadow sibling. */
   readPreparedPayload(revision: PreparedMemoryCryptoRevision): MemoryPayloadV1;
 }> {
+  const scopeBinding = input.scopeBinding === undefined
+    ? null
+    : snapshotScopeBinding(input.scopeBinding);
   const owned = new WeakMap<PreparedMemoryCryptoRevision, MemoryPayloadV1>();
   const cancelled = (signal?: AbortSignal): boolean =>
     input.entities.signal.aborted || signal?.aborted === true;
@@ -119,11 +151,35 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
     entrypointId: EntrypointId;
     agentId: string;
     authority: ProtectedMemoryAuthority;
-  }>): request is typeof request & Readonly<{
-    authority: Extract<ProtectedMemoryAuthority, { mode: "namespace" }>;
-  }> => request.entrypointId === input.entrypointId
+  }>): boolean => request.entrypointId === input.entrypointId
     && request.agentId === input.agentId
-    && namespaceAuthority(request.authority, input.subjectUserId, input.agentId);
+    && (scopeBinding === null
+      ? namespaceAuthority(
+        request.authority,
+        input.subjectUserId,
+        input.agentId,
+      )
+      : request.authority.mode === "scope"
+        && request.authority.subjectUserId === input.subjectUserId
+        && request.authority.agentId === input.agentId
+        && request.authority.scopeId === scopeBinding.scopeId
+        && request.authority.originWritableNamespaceId
+          === scopeBinding.originWritableNamespaceId);
+
+  const readable = (
+    authority: ProtectedMemoryAuthority,
+    namespaceId: string,
+  ): boolean => authority.mode === "namespace"
+    ? authority.readableNamespaceIds.includes(namespaceId)
+    : scopeBinding?.readableNamespaceIds.includes(namespaceId) === true;
+
+  const mutable = (
+    authority: ProtectedMemoryAuthority,
+    namespaceIds: readonly string[],
+  ): boolean => authority.mode === "namespace"
+    ? namespaceIds.every((id) => authority.mutableNamespaceIds.includes(id))
+    : scopeBinding !== null
+      && exactIds(namespaceIds, [scopeBinding.originWritableNamespaceId]);
 
   const canonicalTarget = (
     target: ProtectedMemoryMutationTarget,
@@ -198,7 +254,7 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
         const ids = canonicalTarget(candidate);
         if (ids === null
           || !ids.includes(candidate.readNamespaceId)
-          || !request.authority.readableNamespaceIds.includes(candidate.readNamespaceId)) {
+          || !readable(request.authority, candidate.readNamespaceId)) {
           return unavailable("incomplete_access_set");
         }
         candidates.push(Object.freeze({
@@ -266,7 +322,7 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
         || plan.mutationKind !== (
           content.kind === "complete" ? "save" : "replace"
         )
-        || !targetIds.every((id) => request.authority.mutableNamespaceIds.includes(id))
+        || !mutable(request.authority, targetIds)
       ) return unavailable("incomplete_access_set");
       const mutationCommitment = commitMemoryMutationV1(
         content.kind === "complete"
@@ -285,9 +341,7 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
         if (
           previousIds === null
           || !exactIds(previousIds, targetIds)
-          || !previousIds.some((id) =>
-            request.authority.readableNamespaceIds.includes(id)
-          )
+          || !previousIds.some((id) => readable(request.authority, id))
         ) {
           return unavailable("incomplete_access_set");
         }
@@ -349,7 +403,7 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
       const ids = canonicalTarget(request.target);
       if (
         ids === null
-        || !ids.every((id) => request.authority.mutableNamespaceIds.includes(id))
+        || !mutable(request.authority, ids)
       ) return unavailable("incomplete_access_set");
       const result = await input.entities.useCurrentSet({
         operations: ["encrypt"],

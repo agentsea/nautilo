@@ -25,6 +25,8 @@ const NOW = 2_200_000_000_000;
 const SUBJECT_ID = "22000000-0000-4000-8000-000000000001";
 const MEMORY_ID = "22000000-0000-4000-8000-000000000002";
 const NAMESPACE_ID = "22000000-0000-4000-8000-000000000003";
+const SCOPE_ID = "22000000-0000-4000-8000-000000000004";
+const OTHER_SCOPE_ID = "22000000-0000-4000-8000-000000000005";
 
 describe("Task Runtime Domain Memory crypto session", () => {
   test("binds plan coordinates and preserves a completed semantic result across closure", async () => {
@@ -340,6 +342,149 @@ describe("Task Runtime Domain Memory crypto session", () => {
           persist: async () => "stale",
           read: async () => null,
         })).toThrow("does not match execution evidence");
+      },
+    );
+  });
+
+  test("forwards one frozen Scope binding and keeps Namespace authority separate", async () => {
+    const base = await taskRuntimeAgentObjectSetFixture(92_603);
+    await base.withEvidence(
+      new AbortController().signal,
+      () => NOW,
+      async evidence => {
+        const origin = NAMESPACE_ID;
+        const mutableReadable = [origin];
+        let keySetUses = 0;
+        const factory = createTaskRuntimeDomainMemoryCryptoSession({
+          scopeBinding: {
+            scopeId: SCOPE_ID,
+            originWritableNamespaceId: origin,
+            readableNamespaceIds: mutableReadable,
+          },
+          subjectUserId: SUBJECT_ID,
+          agentId: evidence.result.signerAgentId,
+          evidence,
+          crypto: base.crypto,
+          entities: {
+            signal: new AbortController().signal,
+            use: async () => ({
+              status: "unavailable" as const,
+              reason: "authorization_unavailable" as const,
+            }),
+            useCurrentSet: async () => {
+              keySetUses += 1;
+              return {
+                status: "unavailable" as const,
+                reason: "authorization_unavailable" as const,
+              };
+            },
+          },
+          runtime: base.initialized.runtime,
+          signerPublication: base.initialized.signerPublication,
+          resolveHistoricalSignerPublicationManager: () =>
+            base.manager.publicKey,
+          agentAuthorizationRevision: authorizationRevision(7),
+          persist: async () => "stale",
+          read: async () => null,
+        });
+        mutableReadable[0] = OTHER_SCOPE_ID;
+        const authority = Object.freeze({
+          mode: "scope" as const,
+          subjectUserId: SUBJECT_ID,
+          agentId: evidence.result.signerAgentId,
+          scopeId: SCOPE_ID,
+          originWritableNamespaceId: origin,
+        });
+        expect(await factory.session.openMany({
+          entrypointId: "subagent.scope",
+          agentId: evidence.result.signerAgentId,
+          authority,
+          candidates: [],
+        })).toEqual({ status: "success", value: [] });
+        expect(await factory.session.openMany({
+          entrypointId: "subagent.scope",
+          agentId: evidence.result.signerAgentId,
+          authority,
+          candidates: [{
+            memoryId: MEMORY_ID,
+            contentRevision: 1,
+            cryptoAccessRevision: 0,
+            cryptoObjectId: deriveMemoryCryptoObjectIdV1({
+              memoryId: MEMORY_ID,
+              contentRevision: 1,
+            }),
+            readNamespaceId: origin,
+            requiredNamespaceIds: [origin],
+            importance: 0.5,
+            tier: 1,
+            score: 0.9,
+            createdAt: new Date(NOW),
+          }],
+        })).toEqual({
+          status: "unavailable",
+          reason: "encryption_pending",
+        });
+        expect(await factory.session.openMany({
+          entrypointId: "subagent.scope",
+          agentId: evidence.result.signerAgentId,
+          authority: { ...authority, scopeId: OTHER_SCOPE_ID },
+          candidates: [],
+        })).toEqual({
+          status: "unavailable",
+          reason: "authorization_required",
+        });
+        expect(await factory.session.openMany({
+          entrypointId: "subagent.scope",
+          agentId: evidence.result.signerAgentId,
+          authority: {
+            mode: "namespace",
+            subjectUserId: SUBJECT_ID,
+            agentId: evidence.result.signerAgentId,
+            readableNamespaceIds: [origin],
+            mutableNamespaceIds: [origin],
+            writableNamespaceId: origin,
+          },
+          candidates: [],
+        })).toEqual({
+          status: "unavailable",
+          reason: "authorization_required",
+        });
+        const payload = Object.freeze({
+          formatVersion: 1 as const,
+          type: "preference" as const,
+          content: "Binding cannot mint Namespace keys.",
+        });
+        expect(await factory.session.prepare({
+          entrypointId: "subagent.scope",
+          agentId: evidence.result.signerAgentId,
+          authority,
+          plan: {
+            operationId: "scope-binding-does-not-grant",
+            action: "created",
+            mutationKind: "save",
+            memoryId: MEMORY_ID,
+            contentRevision: 1,
+            cryptoAccessRevision: 0,
+            expectedPriorAccessRevision: 0,
+            cryptoObjectId: deriveMemoryCryptoObjectIdV1({
+              memoryId: MEMORY_ID,
+              contentRevision: 1,
+            }),
+            requiredNamespaceIds: [origin],
+            reservationDigest: new Uint8Array(32).fill(0x61),
+            mutationCommitment: commitMemoryMutationV1({
+              kind: "save",
+              payload,
+            }),
+            importance: 0.5,
+            createdAt: NOW,
+          },
+          content: { kind: "complete", payload },
+        })).toEqual({
+          status: "unavailable",
+          reason: "authorization_required",
+        });
+        expect(keySetUses).toBe(1);
       },
     );
   });

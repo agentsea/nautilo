@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
+
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   acquireEncryptionConsumptionFence,
   eq,
   jobs,
+  rooms,
   taskRuns,
   tasks,
   type PostgresJsBridgeConnection,
@@ -19,7 +22,11 @@ import {
   type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
+  adoptLegacyTaskScopeMemoryOrigin,
+  type TaskScopeMemoryOriginAdoptionResult,
   bindConversationProductCanonicalTransactionRunner,
+  copyTaskScopeMemoryBinding,
+  type TaskScopeMemoryBinding,
   verifyConversationProductPostgresHandle,
   verifyCryptoPostgresHandle,
   withCurrentAcceptedTaskRuntimeAuthority,
@@ -55,6 +62,12 @@ export type ProtectedTaskMemoryAuthorityInput = Readonly<{
   evidence: TaskRuntimeExecutionEvidence;
   jobId: string;
   executionRoomId: string;
+  /** Fixed preclaim Scope inventory and resolved output, never inferred from execution Room. */
+  scopeMemory?: Readonly<{
+    binding: TaskScopeMemoryBinding;
+    targetRoomId: string;
+    workIdentity: string;
+  }>;
   reference: ProtectedTaskJobReferenceV1;
   now(): number;
   signal: AbortSignal;
@@ -90,6 +103,7 @@ type HeldState = {
   policy: CurrentProtectedTaskMemoryPolicy;
   restricted: PostgresJsBridgeConnection | null;
   restrictedHandle: CryptoPostgresHandle | null;
+  product: PostgresJsBridgeConnection;
 };
 
 const heldStates = new WeakMap<HeldProtectedTaskMemoryAuthority, HeldState>();
@@ -389,6 +403,27 @@ export function requireHeldProtectedTaskMemoryWriterAuthority(
   });
 }
 
+function scopeWorkIdentityMatches(input: ProtectedTaskMemoryAuthorityInput): boolean {
+  const scope = input.scopeMemory;
+  if (scope === undefined) return true;
+  if (typeof scope.workIdentity !== "string") return false;
+  const digest = createHash("sha256").update(scope.workIdentity).digest();
+  if (!sameBytes(digest, input.record.workIdentityHash)) return false;
+  try {
+    const identity = JSON.parse(scope.workIdentity) as Record<string, unknown>;
+    const binding = copyTaskScopeMemoryBinding(identity["scopeMemory"] as TaskScopeMemoryBinding);
+    return identity["taskId"] === input.occurrence.task.id
+      && identity["taskRunId"] === input.occurrence.run.id
+      && identity["targetRoomId"] === scope.targetRoomId
+      && binding.scopeId === scope.binding.scopeId
+      && binding.memoryRoomId === scope.binding.memoryRoomId
+      && binding.originWritableNamespaceId === scope.binding.originWritableNamespaceId
+      && binding.readableNamespaceIds.length === scope.binding.readableNamespaceIds.length
+      && binding.readableNamespaceIds.every((id, index) =>
+        id === scope.binding.readableNamespaceIds[index]);
+  } catch { return false; }
+}
+
 /**
  * Hold current Task Memory authority in the established lock order: global
  * policy; Task, Run and Job; accepted-owner policy and Namespace locks; exact
@@ -405,7 +440,15 @@ export async function withCurrentProtectedTaskMemoryAuthority<Value>(
       "Task Memory publication requires the complete product role",
     );
   }
+  if (input.scopeMemory !== undefined) {
+    input = Object.freeze({ ...input, scopeMemory: Object.freeze({
+      binding: copyTaskScopeMemoryBinding(input.scopeMemory.binding),
+      targetRoomId: input.scopeMemory.targetRoomId,
+      workIdentity: input.scopeMemory.workIdentity,
+    }) });
+  }
   assertInputBinding(input, input.now());
+  if (!scopeWorkIdentityMatches(input)) return null;
   const accepted = acceptedTaskRuntimeRecord(input.record);
   if (accepted === null) return null;
   try {
@@ -416,7 +459,13 @@ export async function withCurrentProtectedTaskMemoryAuthority<Value>(
         if (policy.mode === "plaintext_only"
           || policy.revision !== input.evidence.policyRevision) return null;
 
-        const [task] = await tx.select({ id: tasks.id }).from(tasks)
+        const [task] = await tx.select({
+          id: tasks.id,
+          useScope: tasks.useScope,
+          scopeId: tasks.scopeId,
+          targetChat: tasks.targetChat,
+          targetRoomId: tasks.targetRoomId,
+        }).from(tasks)
           .where(eq(tasks.id, input.occurrence.task.id)).limit(1).for("update");
         const [run] = await tx.select({
           id: taskRuns.id,
@@ -449,6 +498,22 @@ export async function withCurrentProtectedTaskMemoryAuthority<Value>(
           || job.status !== "running"
           || job.completedAt !== null
           || !exactReference(job.input, input.reference)) return null;
+
+        const scopeMemory = input.scopeMemory?.binding;
+        if (task.useScope === true && scopeMemory === undefined) return null;
+        if (scopeMemory !== undefined && (
+          task.useScope !== true || task.scopeId !== scopeMemory.scopeId
+          || task.targetRoomId !== input.scopeMemory?.targetRoomId
+          || scopeMemory.memoryRoomId !== (task.targetChat === "orphan"
+            ? input.request.sourceRoomId : task.targetRoomId)
+          || scopeMemory.readableNamespaceIds.some(namespaceId =>
+            !input.evidence.namespaceRequirements.some(requirement =>
+              requirement.namespaceId === namespaceId
+              && requirement.operations.includes("decrypt")))
+          || !input.evidence.namespaceRequirements.some(requirement =>
+            requirement.namespaceId === scopeMemory.originWritableNamespaceId
+            && requirement.operations.includes("encrypt"))
+        )) return null;
 
         const product = connection(executor);
         const productHandle = await verifyConversationProductPostgresHandle(
@@ -507,6 +572,18 @@ export async function withCurrentProtectedTaskMemoryAuthority<Value>(
           now: input.now,
           signal: input.signal,
           use: async (currentRuntime, _product, currentRestricted) => {
+            if (scopeMemory !== undefined) {
+              // Canonical Namespace locks precede this Room fence. Do not take
+              // Scope SHARE here: the nested Agent publisher owns Scope UPDATE.
+              const [memoryRoom] = await tx.select({
+                namespaceId: rooms.namespaceId,
+                archivedAt: rooms.archivedAt,
+              }).from(rooms).where(eq(rooms.id, scopeMemory.memoryRoomId))
+                .limit(1).for("share");
+              if (memoryRoom === undefined || memoryRoom.archivedAt !== null
+                || memoryRoom.namespaceId
+                  !== scopeMemory.originWritableNamespaceId) return null;
+            }
             const heldPolicy = Object.freeze({
               mode: policy.mode,
               shadowBehavior: policy.shadowBehavior,
@@ -529,6 +606,7 @@ export async function withCurrentProtectedTaskMemoryAuthority<Value>(
               policy: heldPolicy,
               restricted: null,
               restrictedHandle: null,
+              product,
             };
             heldStates.set(held, state);
             try {
@@ -559,4 +637,41 @@ export async function withCurrentProtectedTaskMemoryAuthority<Value>(
   } finally {
     destroyAcceptedTaskRuntimeRecord(accepted);
   }
+}
+
+/** Resolve legacy provenance for the exact repair candidate under the live Task
+ * owner. This records authority only; mapping/body repair happens afterwards. */
+export async function adoptProtectedTaskScopeMemoryOrigin(
+  input: ProtectedTaskMemoryAuthorityInput,
+  memoryId: string,
+): Promise<TaskScopeMemoryOriginAdoptionResult> {
+  if (input.scopeMemory === undefined) return "stale";
+  const scopeMemory = Object.freeze({
+    binding: copyTaskScopeMemoryBinding(input.scopeMemory.binding),
+    targetRoomId: input.scopeMemory.targetRoomId,
+      workIdentity: input.scopeMemory.workIdentity,
+  });
+  const scope = scopeMemory.binding;
+  const result = await withCurrentProtectedTaskMemoryAuthority(
+    Object.freeze({ ...input, scopeMemory }),
+    async held => {
+      await held.assertCurrent();
+      const state = stateFor(held);
+      const outcome = await adoptLegacyTaskScopeMemoryOrigin({
+        transaction: state.product,
+        memoryId,
+        coordinates: {
+          taskId: state.input.occurrence.task.id,
+          requesterUserId: state.input.subject.userId,
+          agentId: state.input.occurrence.task.agentId,
+          scopeId: scope.scopeId,
+          memoryRoomId: scope.memoryRoomId,
+          originWritableNamespaceId: scope.originWritableNamespaceId,
+        },
+      });
+      await held.assertCurrent();
+      return outcome;
+    },
+  );
+  return result ?? "stale";
 }

@@ -158,8 +158,66 @@ describe("protected Task Memory boundaries", () => {
       Object.freeze({}) as PreparedMemoryCryptoRevision,
     )).toBe(shadowPayload);
     expect(Object.isFrozen(shadow.authority)).toBeTrue();
+    if (shadow.authority.mode !== "namespace") throw new Error("expected Namespace");
     expect(Object.isFrozen(shadow.authority.readableNamespaceIds)).toBeTrue();
     expect(Object.isFrozen(shadow.policy)).toBeTrue();
+  });
+
+  test("Scope binds historical reads and current-origin writes to the fixed grant", async () => {
+    const scopeId = "55555555-5555-4555-8555-555555555555";
+    const roomId = "66666666-6666-4666-8666-666666666666";
+    const scopeAuthority = {
+      mode: "scope" as const, subjectUserId: USER, agentId: AGENT,
+      scopeId, originWritableNamespaceId: NS_A,
+    };
+    const readable = [NS_A, NS_B];
+    const base = current();
+    const scopeCurrent = {
+      ...base,
+      scopeMemory: { targetRoomId: roomId, workIdentity: "bound work", binding: {
+        scopeId, memoryRoomId: roomId, originWritableNamespaceId: NS_A,
+        readableNamespaceIds: readable,
+      } },
+      evidence: { ...base.evidence, namespaceRequirements: [
+        base.evidence.namespaceRequirements[0]!,
+        { ...base.evidence.namespaceRequirements[0]!, namespaceId: NS_B,
+          operations: ["decrypt" as const] },
+      ] },
+    };
+    let used = 0;
+    const boundaries = createProtectedTaskMemoryBoundaries(input({
+      authority: scopeAuthority, current: scopeCurrent,
+    }), { withCurrentAuthority: (async (captured, use) => {
+      expect(captured.scopeMemory?.binding.readableNamespaceIds).toEqual([NS_A, NS_B]);
+      used++;
+      return use(held());
+    }) as CurrentOwner });
+    readable.pop();
+    const publish = boundaries.publication.withCurrentPublication!;
+    const receipt = Object.freeze({ value: "published" });
+    expect(await publish({ authority: scopeAuthority, mutation: true,
+      use: async () => receipt as never })).toBe(receipt as never);
+    expect(used).toBe(1);
+    let substituted = false;
+    try {
+      await publish({ authority: { ...scopeAuthority, originWritableNamespaceId: NS_B },
+        mutation: true, use: async () => receipt as never });
+    } catch { substituted = true; }
+    expect(substituted).toBeTrue();
+    expect(used).toBe(1);
+    expect(() => createProtectedTaskMemoryBoundaries(input({
+      authority: scopeAuthority, current: base,
+    }))).toThrow("authority is unavailable");
+    expect(() => createProtectedTaskMemoryBoundaries(input({
+      authority: scopeAuthority, current: { ...scopeCurrent,
+        scopeMemory: { ...scopeCurrent.scopeMemory, binding: {
+          ...scopeCurrent.scopeMemory.binding, readableNamespaceIds: [NS_A, NS_B],
+        } }, evidence: base.evidence,
+      },
+    }))).toThrow("authority is unavailable");
+    expect(() => createProtectedTaskMemoryBoundaries(input({
+      current: scopeCurrent,
+    }))).toThrow("authority is unavailable");
   });
 
   test("recovers only an observed mutation receipt after the outer owner fails", async () => {

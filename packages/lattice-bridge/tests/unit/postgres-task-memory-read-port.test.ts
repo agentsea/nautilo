@@ -25,7 +25,10 @@ import type { TaskMemoryReadBinding } from
   "../../src/server/memory/postgres-task-memory-read-port.ts";
 import type { TaskMemoryReadBoundary } from
   "../../src/server/memory/postgres-task-memory-read-port.ts";
-import { discoverTaskScopeMemoryNamespaceInventory } from
+import {
+  discoverTaskScopeMemoryMetadata,
+  discoverTaskScopeMemoryNamespaceInventory,
+} from
   "../../src/server/task/task-scope-memory-metadata.ts";
 
 type Query = Readonly<{
@@ -642,7 +645,97 @@ describe("PostgresTaskMemoryReadPort", () => {
     hiddenConnection.assertExhausted();
   });
 
-  test("Scope inventory admits mapped origins without changing seed provenance", async () => {
+  test("Scope search hides a legacy unavailable row without hiding mapped peers", async () => {
+    const required = [NAMESPACE_A];
+    const ranked = verifiedRow({
+      memoryId: MEMORY_A,
+      requiredNamespaceIds: required,
+      ordinary: false,
+      distance: 0.1,
+    });
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [identity],
+      [identity],
+      [{
+        id: TASK_ID,
+        requestor_id: USER_ID,
+        agent_id: AGENT_ID,
+        use_scope: true,
+        scope_id: SCOPE_ID,
+      }],
+      [{
+        id: SCOPE_ID,
+        parent_agent_id: AGENT_ID,
+        speaker_user_id: USER_ID,
+        lifecycle_state: "open",
+        revision: 0,
+      }],
+      [{ id: ROOM_ID, namespace_id: NAMESPACE_A }],
+      [{
+        id: MEMORY_A,
+        origin: "scope",
+        content_revision: 1,
+        crypto_object_id: ranked.crypto_object_id,
+        crypto_access_revision: 0,
+        crypto_mapping_state: "verified",
+        crypto_required_namespace_fingerprint:
+          fingerprintRequiredMemoryNamespaces(required),
+        scope_origin_namespace_id: NAMESPACE_A,
+        ordinary_type_present: false,
+        ordinary_content_present: false,
+      }, {
+        id: MEMORY_B,
+        origin: "scope",
+        content_revision: 0,
+        crypto_object_id: null,
+        crypto_access_revision: 0,
+        crypto_mapping_state: "unmapped",
+        crypto_required_namespace_fingerprint: null,
+        scope_origin_namespace_id: null,
+        ordinary_type_present: true,
+        ordinary_content_present: true,
+      }],
+      [],
+      [
+        { memory_id: MEMORY_A, scope_id: SCOPE_ID, origin: "scope" },
+        { memory_id: MEMORY_B, scope_id: SCOPE_ID, origin: "scope" },
+      ],
+      [ranked],
+    ]);
+    const port = await createPort(connection, {
+      mode: "scope",
+      authority: scopeAuthority,
+      coordinates: {
+        taskId: TASK_ID,
+        requesterUserId: USER_ID,
+        agentId: AGENT_ID,
+        scopeId: SCOPE_ID,
+        memoryRoomId: ROOM_ID,
+        originWritableNamespaceId: NAMESPACE_A,
+      },
+      readableNamespaceIds: [NAMESPACE_A],
+    });
+
+    const result = await port.searchCandidates({
+      authority: scopeAuthority,
+      embedding,
+      limit: 4,
+      includeArchive: false,
+    });
+    expect(result).toEqual({
+      status: "success",
+      value: [expect.objectContaining({
+        memoryId: MEMORY_A,
+        representation: "protected_only",
+        readNamespaceId: NAMESPACE_A,
+        requiredNamespaceIds: required,
+      })],
+    });
+    connection.assertExhausted();
+  });
+
+  test("Scope metadata retains valid entries beside one legacy unavailable authored row", async () => {
     const connection = new ScriptedConnection([
       [identity],
       [{
@@ -681,11 +774,112 @@ describe("PostgresTaskMemoryReadPort", () => {
           crypto_required_namespace_fingerprint: null,
           scope_origin_namespace_id: null,
         },
+        {
+          id: MEMORY_C,
+          origin: "scope",
+          content_revision: 1,
+          crypto_object_id: null,
+          crypto_access_revision: 0,
+          crypto_mapping_state: "unmapped",
+          crypto_required_namespace_fingerprint: null,
+          scope_origin_namespace_id: null,
+          ordinary_type_present: true,
+          ordinary_content_present: true,
+        },
       ],
       [{ memory_id: MEMORY_B, namespace_id: NAMESPACE_B }],
       [
         { memory_id: MEMORY_A, scope_id: SCOPE_ID, origin: "scope" },
         { memory_id: MEMORY_B, scope_id: SCOPE_ID, origin: "seed" },
+        { memory_id: MEMORY_C, scope_id: SCOPE_ID, origin: "scope" },
+      ],
+    ]);
+
+    const metadata = await discoverTaskScopeMemoryMetadata({
+      transaction: connection as unknown as ConversationProductPostgresTransaction,
+      coordinates: {
+        taskId: TASK_ID,
+        requesterUserId: USER_ID,
+        agentId: AGENT_ID,
+        scopeId: SCOPE_ID,
+        memoryRoomId: ROOM_ID,
+        originWritableNamespaceId: NAMESPACE_A,
+      },
+    });
+    expect(metadata).not.toBeNull();
+    expect(metadata).toHaveLength(3);
+    expect(metadata?.[2]).toEqual({
+      memoryId: MEMORY_C,
+      origin: "scope",
+      contentRevision: 1,
+      cryptoObjectId: null,
+      cryptoAccessRevision: 0,
+      mappingState: "unmapped",
+      requiredNamespaceIds: [],
+      ordinaryNamespaceIds: [],
+      scopeOriginNamespaceId: null,
+      requiredNamespaceFingerprint: null,
+    });
+    connection.assertExhausted();
+  });
+
+  test("Scope inventory skips only legacy unavailable authored rows and retains seed provenance", async () => {
+    const connection = new ScriptedConnection([
+      [identity],
+      [{
+        id: TASK_ID,
+        requestor_id: USER_ID,
+        agent_id: AGENT_ID,
+        use_scope: true,
+        scope_id: SCOPE_ID,
+      }],
+      [{
+        id: SCOPE_ID,
+        parent_agent_id: AGENT_ID,
+        speaker_user_id: USER_ID,
+        lifecycle_state: "open",
+        revision: 0,
+      }],
+      [{ id: ROOM_ID, namespace_id: NAMESPACE_A }],
+      [
+        {
+          id: MEMORY_A,
+          origin: "scope",
+          content_revision: 1,
+          crypto_object_id: null,
+          crypto_access_revision: 0,
+          crypto_mapping_state: "unmapped",
+          crypto_required_namespace_fingerprint: null,
+          scope_origin_namespace_id: NAMESPACE_C,
+        },
+        {
+          id: MEMORY_B,
+          origin: "seed",
+          content_revision: 1,
+          crypto_object_id: null,
+          crypto_access_revision: 0,
+          crypto_mapping_state: "unmapped",
+          crypto_required_namespace_fingerprint: null,
+          scope_origin_namespace_id: null,
+        },
+        {
+          id: MEMORY_C,
+          origin: "scope",
+          content_revision: 1,
+          crypto_object_id: null,
+          crypto_access_revision: 0,
+          crypto_mapping_state: "unmapped",
+          crypto_required_namespace_fingerprint: null,
+          scope_origin_namespace_id: null,
+          ordinary_type_present: true,
+          ordinary_content_present: true,
+        },
+      ],
+      [{ memory_id: MEMORY_B, namespace_id: NAMESPACE_B }],
+      [
+        { memory_id: MEMORY_A, scope_id: SCOPE_ID, origin: "scope" },
+        { memory_id: MEMORY_B, scope_id: SCOPE_ID, origin: "seed" },
+        { memory_id: MEMORY_C, scope_id: SCOPE_ID, origin: "scope" },
       ],
       [{ namespace_id: NAMESPACE_A }, { namespace_id: NAMESPACE_B },
         { namespace_id: NAMESPACE_C }],
@@ -709,6 +903,82 @@ describe("PostgresTaskMemoryReadPort", () => {
       readableNamespaceIds: [NAMESPACE_A, NAMESPACE_B, NAMESPACE_C],
     });
     connection.assertExhausted();
+  });
+
+  test("Scope metadata rejects null-origin authored rows with mapped or ordinary state", async () => {
+    const mappedObjectId = deriveMemoryCryptoObjectIdV1({
+      memoryId: MEMORY_A,
+      contentRevision: 1,
+    });
+    const invalidRows = [
+      {
+        id: MEMORY_A,
+        origin: "scope",
+        content_revision: 1,
+        crypto_object_id: mappedObjectId,
+        crypto_access_revision: 0,
+        crypto_mapping_state: "verified",
+        crypto_required_namespace_fingerprint:
+          fingerprintRequiredMemoryNamespaces([NAMESPACE_A]),
+        scope_origin_namespace_id: null,
+        ordinary_type_present: true,
+        ordinary_content_present: true,
+        ordinaryRows: [] as unknown[],
+      },
+      {
+        id: MEMORY_A,
+        origin: "scope",
+        content_revision: 1,
+        crypto_object_id: null,
+        crypto_access_revision: 0,
+        crypto_mapping_state: "unmapped",
+        crypto_required_namespace_fingerprint: null,
+        scope_origin_namespace_id: null,
+        ordinary_type_present: true,
+        ordinary_content_present: true,
+        ordinaryRows: [{
+          memory_id: MEMORY_A,
+          namespace_id: NAMESPACE_B,
+        }],
+      },
+    ];
+
+    for (const invalid of invalidRows) {
+      const { ordinaryRows, ...bagRow } = invalid;
+      const connection = new ScriptedConnection([
+        [identity],
+        [{
+          id: TASK_ID,
+          requestor_id: USER_ID,
+          agent_id: AGENT_ID,
+          use_scope: true,
+          scope_id: SCOPE_ID,
+        }],
+        [{
+          id: SCOPE_ID,
+          parent_agent_id: AGENT_ID,
+          speaker_user_id: USER_ID,
+          lifecycle_state: "open",
+          revision: 0,
+        }],
+        [{ id: ROOM_ID, namespace_id: NAMESPACE_A }],
+        [bagRow],
+        ordinaryRows,
+        [{ memory_id: MEMORY_A, scope_id: SCOPE_ID, origin: "scope" }],
+      ]);
+      expect(await discoverTaskScopeMemoryMetadata({
+        transaction: connection as unknown as ConversationProductPostgresTransaction,
+        coordinates: {
+          taskId: TASK_ID,
+          requesterUserId: USER_ID,
+          agentId: AGENT_ID,
+          scopeId: SCOPE_ID,
+          memoryRoomId: ROOM_ID,
+          originWritableNamespaceId: NAMESPACE_A,
+        },
+      })).toBeNull();
+      connection.assertExhausted();
+    }
   });
 
   test("rejects Agent-role construction so reads cannot inherit truncated RLS rows", async () => {
