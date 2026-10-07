@@ -98,7 +98,7 @@
     },
     "packages/agent": {
       "entry": [
-        "tests/integration/fixtures/*-postgres-read-worker.ts",
+        "tests/integration/fixtures/postgres-read-worker.ts",
         "src/**/*.test.ts",
         "tests/unit/**/*.test.ts",
         "tests/unit-isolated/**/*.test.ts",
