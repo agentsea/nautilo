@@ -1,3 +1,4 @@
+import { parseImageAssistanceSummary } from "@nautilo/types";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ServerEvent } from "@nautilo/types";
 
@@ -167,6 +168,10 @@ export async function publishLiveShadowRuntimeMessages(input: Readonly<{
       ...(publication.createdAt ? { createdAt: publication.createdAt } : {}),
       role: "ai",
       content: publication.payload.content,
+      ...(() => {
+        const imageAssistance = parseImageAssistanceSummary(publication.payload.sensitiveMetadata?.["imageAssistance"]);
+        return imageAssistance ? { imageAssistance } : {};
+      })(),
       ...(input.agentId ? { authorAgentId: input.agentId } : {}),
       ...(publication.assistantMessageKey === null
         ? {}

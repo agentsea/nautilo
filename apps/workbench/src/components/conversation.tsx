@@ -69,6 +69,7 @@ import {
   type MessageActionDescriptor,
   type ChatFocusedResourceRef,
   type MessageAttachmentRef,
+  type ImageAssistanceSummary,
 } from "@nautilo/types";
 import { useWsState } from "../hooks/use-ws-state";
 import { MENU_SPEAK_EVENT } from "../hooks/use-desktop-menu";
@@ -2110,7 +2111,10 @@ function Composer({
   }, [activeRoomId, activeRoomAgentId]);
   const composerModel = composerModelState?.roomId === activeRoomId
     && composerModelState?.agentId === activeRoomAgentId ? composerModelState.model : null;
-  const imageInputUnsupported = !directHumanRoom && canInvokeAgents && composerModel?.capabilities?.vision === false;
+  const imageInputUnsupported = !directHumanRoom && canInvokeAgents
+    && (composerModel?.imageInput !== undefined
+      ? composerModel.imageInput === "unavailable"
+      : composerModel?.capabilities?.vision === false);
   const imageInputUnsupportedRef = useRef(imageInputUnsupported);
   imageInputUnsupportedRef.current = imageInputUnsupported;
   const threadMessages = useThread((s) => s.messages);
@@ -4493,6 +4497,10 @@ function AssistantBubbleInner({
   const artifactOpenRefs = useMessage((state) => {
     return artifactOpenRefsFromMessageMetadata(state.metadata);
   });
+  const imageAssistance = useMessage((state) => {
+    const value = state.metadata?.custom?.imageAssistance as ImageAssistanceSummary | undefined;
+    return value?.status === "completed" ? value : undefined;
+  });
   const author = resolveAssistantAuthorLabel({
     authorAgentId,
     authorHarnessId,
@@ -4550,6 +4558,11 @@ function AssistantBubbleInner({
         <div className="mt-1 pl-2" data-room-search-content>
           <MessagePrimitive.Content components={assistantComponents} />
         </div>
+        {imageAssistance ? (
+          <p className="mt-1 pl-2 text-[11px] text-foreground-muted">
+            Image read by {imageAssistance.modelDisplayName}
+          </p>
+        ) : null}
         <div className="pl-2">
           <MessageArtifactOpenCards artifacts={artifactOpenRefs} />
         </div>

@@ -6,6 +6,7 @@ import {
   rooms,
   sessionMessages,
   sessions,
+  sql,
 } from "@nautilo/db";
 
 import { decodeMessagePayloadV2 } from "../../message/message-payload-v2.ts";
@@ -67,6 +68,7 @@ export async function loadPostgresForegroundMessageRepairSources(input: Readonly
           content: sessionMessages.content,
           tool_calls: sessionMessages.toolCalls,
           tool_name: sessionMessages.toolName,
+        metadata_json: sql<string | null>`${sessionMessages.metadata}::text`.as("metadata_json"),
         };
       return executeTypedConversationProductQuery(
         transaction,

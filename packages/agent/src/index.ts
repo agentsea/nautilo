@@ -38,13 +38,16 @@ export {
 } from "./utils/tool-argument-redaction";
 export {
   maybeSummarizeImagesWithVisionFallback,
-  type TextOnlyImagePolicy,
+  ImageAssistanceError,
+  imageAssistanceInputDigest,
+  imageAssistanceSummary,
+  imageAssistanceContext,
+  type ImageAssistanceResult,
 } from "./chat/vision-fallback";
 export {
   hasRunnableChatProviderCredentials,
   modelHasRunnableCredentials,
 } from "./chat/model-runtime-credentials";
-export { parseVisionCandidateIds } from "./chat/vision-candidates";
 
 // Graph
 export {

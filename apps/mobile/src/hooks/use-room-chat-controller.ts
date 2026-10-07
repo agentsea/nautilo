@@ -314,7 +314,7 @@ export function useRoomChatController({
   // session-only model selection is keyed by paired server + room.
   // This revision counter only re-renders after a store write; it does not
   // retain a selection itself.
-  const [, refreshModelSelection] = useReducer((revision: number) => revision + 1, 0);
+  const [modelAvailabilityRevision, refreshModelSelection] = useReducer((revision: number) => revision + 1, 0);
   // Best-effort model list fetch so the chip can resolve the selected id to a
   // display name. The ModelSwitcherSheet fetches its own copy on open; this
   // one is the chip's label source. Failure is silent (chip falls back to
@@ -751,14 +751,18 @@ export function useRoomChatController({
           inheritedModelId,
         ].filter((id): id is string => !!id);
         const [list, retained] = await Promise.all([
-          api.getModels(),
+          api.getCallerModels({ includeUnavailable: true }),
           retainedIds.length > 0
             ? api.resolveRetainedModels(retainedIds)
             : Promise.resolve([]),
         ]);
         if (cancelled) return;
         const byId = new Map(list.map((model) => [model.id, model]));
-        for (const model of retained) byId.set(model.id, model);
+        for (const model of retained) {
+          if (byId.has(model.id)) continue;
+          byId.set(model.id, { ...model, availability: "filtered",
+            unavailableReason: "This saved model is not available for your account." });
+        }
         setModels(Array.from(byId.values()));
         setDefaultModelId(inheritedModelId);
       } catch {
@@ -771,7 +775,7 @@ export function useRoomChatController({
     return () => {
       cancelled = true;
     };
-  }, [activeServer, canInvokeAgents, roomMembersLoading, directHumanRoom, modelId, roomId, roomMembers]);
+  }, [activeServer, canInvokeAgents, roomMembersLoading, directHumanRoom, modelId, roomId, roomMembers, appIsActive, recoveryRevision, modelAvailabilityRevision]);
 
   const defaultModelLabel = useMemo(() => {
     if (!defaultModelId) return "Server default";
@@ -788,7 +792,9 @@ export function useRoomChatController({
 
   const effectiveComposerModel = models.find((candidate) => candidate.id === (modelId ?? defaultModelId));
   const imageInputUnsupported = canInvokeAgents && !directHumanRoom
-    && effectiveComposerModel?.capabilities?.vision === false;
+    && (effectiveComposerModel?.imageInput !== undefined
+      ? effectiveComposerModel.imageInput === "unavailable"
+      : effectiveComposerModel?.capabilities?.vision === false);
   const imageAttachmentConflict = imageInputUnsupported
     && attachments.some((attachment) => isComposerImageAttachment(attachment.name, attachment.mimeType));
   const imageAttachmentError = imageAttachmentConflict ? imageAttachmentModelError(modelLabel) : null;
@@ -1086,6 +1092,9 @@ export function useRoomChatController({
         return;
       }
       if (event.type === "job.status") {
+        if (roomIdFromLaneKey(event.laneKey) === roomId && event.errorCode === "image_assistance_failed") {
+          setItems((previous) => applyStreamEvent(previous, event));
+        }
         const terminal =
           event.status === "completed" ||
           event.status === "failed" ||
@@ -2120,6 +2129,7 @@ export function useRoomChatController({
     defaultModelLabel,
     models,
     handleModelSelect,
+    refreshModelAvailability: refreshModelSelection,
     // send / stop / mic
     handleSend,
     handleStop,

@@ -55,7 +55,7 @@ import type { ChatRoutesDeps } from "../routes/chat";
 import type { VerifiedOrdinaryOrigin } from "@nautilo/types";
 
 /**
- * M125 Phase 2.2 — typed error so the chat / dispatch HTTP callers can
+ * typed error so the chat / dispatch HTTP callers can
  * surface a structured 4xx instead of bubbling a 500 when the envelope
  * lacks an agent id (which used to silently borrow the bootstrap
  * default and attribute every non-operator turn to the operator's
@@ -83,7 +83,7 @@ export type AgentMediatedSendResult = {
 };
 
 /**
- * Runs the M042 agent-mediated send pipeline: roster load, `createForegroundJob`,
+ * Runs the agent-mediated send pipeline: roster load, `createForegroundJob`,
  * legacy-shaped job input (including `turnId` / resolver stamps), and attachment
  * normalization inside `runWithTurn`.
  */
@@ -109,7 +109,7 @@ export async function executeAgentMediatedRoomMessage(args: {
    * into the job as `focusedResources`. Local-file refs fail closed this phase.
    */
   focusedResources?: ChatFocusedResourceRef[];
-  /** M233 — validated picker-authored Human recipients for the Human row only. */
+  /** validated picker-authored Human recipients for the Human row only. */
   mentionedHumanUserIds?: readonly string[];
   /** Structured Room-wide Human mention intent. */
   mentionEveryone?: boolean;
@@ -137,7 +137,7 @@ export async function executeAgentMediatedRoomMessage(args: {
    */
   transcriptOwnerId?: string;
   /**
-   * M134 — when the Room Conductor wakes multiple bots for ONE inbound user
+   * when the Room Conductor wakes multiple bots for ONE inbound user
    * message, every woken bot's job must share this `turnId` so the persisted
    * human-message fingerprint (`humanTurnId`) is identical across the per-bot
    * sessions. `getRoomMessagesAcrossMemberSessions` then collapses the
@@ -145,7 +145,7 @@ export async function executeAgentMediatedRoomMessage(args: {
    */
   sharedTurnId?: string;
   /**
-   * M305 — exact protected operation consumed by the foreground capability.
+   * exact protected operation consumed by the foreground capability.
    * This is deliberately separate from `sharedTurnId`: shared Agent dispatch
    * has one Human turn id for transcript causality and a distinct per-Agent
    * execution id for protected authorization.
@@ -154,7 +154,7 @@ export async function executeAgentMediatedRoomMessage(args: {
   /** Group conductor carries this process-local context for one accepted Human turn only. */
   foregroundTurnCoalescingContext?: NonNullable<ForegroundTurnCandidate["coalescingContext"]>;
   /**
-   * M135 P6 — DM (1 human + 1 agent) server-time prefix (ISO-8601 UTC). Set
+   * DM (1 human + 1 agent) server-time prefix (ISO-8601 UTC). Set
    * only on the DM dispatch path; threaded to the human-turn builder.
    */
   serverTimePrefixIso?: string;
@@ -166,7 +166,7 @@ export async function executeAgentMediatedRoomMessage(args: {
    * dependence on read-time fingerprint collapse).
    */
   humanAlreadyPersisted?: boolean;
-  /** M282 opaque, process-local authority for this exact protected turn. */
+  /** Opaque, process-local authority for this exact protected turn. */
   liveShadowCapability?: LiveShadowExecutionCapability;
   liveShadowEnforcementPolicy?: StrictShadowEnforcementPolicy;
   liveShadowDataOperationPolicy?: DataOperationPolicyBinding;
@@ -181,7 +181,7 @@ export async function executeAgentMediatedRoomMessage(args: {
       authorizationSignal?: AbortSignal,
     ): Promise<Value>;
   }>): Promise<LiveShadowAgentTurnExecutionResult<Value>>;
-  /** M282 — trusted virtual Job identity bound before runtime acceptance. */
+  /** trusted virtual Job identity bound before runtime acceptance. */
   preferredVirtualJobId?: string;
   /**
    * user explicitly selected this agent from an `ask_user` picker.
@@ -190,7 +190,7 @@ export async function executeAgentMediatedRoomMessage(args: {
    */
   explicitlySelected?: boolean;
   /**
-   * M168 — subthread anchoring threaded to the executor so it rebuilds history
+   * subthread anchoring threaded to the executor so it rebuilds history
    * from the parent up-to-anchor window ++ the subthread window. Set only on
    * subthread dispatch paths (`detail.kind === "subthread"`), sourced from
    * `detail.parentRoomId` / `detail.threadRootMessageId`.
@@ -200,7 +200,7 @@ export async function executeAgentMediatedRoomMessage(args: {
   /** child Room id forwarded to runtime transcript persistence. */
   subthreadRoomId?: string;
   /**
-   * M168 R5 — the just-persisted human row id to EXCLUDE from the rebuilt
+   * the just-persisted human row id to EXCLUDE from the rebuilt
    * transcript (group/subthread wakes where `humanAlreadyPersisted`); the
    * message is still re-injected as the live turn message. Omit on the DM main
    * path (it persists its human row after the history is built).
@@ -215,7 +215,7 @@ export async function executeAgentMediatedRoomMessage(args: {
    * the synchronous DM path (the gate re-checks there as a TOCTOU backstop).
    */
   acceptanceAuthority?: MaintenanceAcceptanceAuthority;
-  /** M254 — opaque proof of current Human invocation admission. */
+  /** opaque proof of current Human invocation admission. */
   invocationAuthority: AcceptedInvocationAuthority;
   /** opaque client session from an ordinary direct foreground send. */
   clientActionSessionId?: unknown;
@@ -253,8 +253,8 @@ export async function executeAgentMediatedRoomMessage(args: {
   const currentFolder = localElectronOrigin ? args.currentFolder : null;
   const workspacePath = localElectronOrigin ? args.workspacePath : null;
 
-  // M125 Phase 2.2 — agentId MUST come from the canonical room
-  // resolution (`canonicalAgentId`) or the request envelope. Pre-M125
+  // agentId MUST come from the canonical room
+  // resolution (`canonicalAgentId`) or the request envelope. Previously,
   // a missing envelope agentId fell back to the bootstrap default,
   // which silently dispatched every non-operator turn to the operator's
   // agent. Fail closed and surface as a structured 4xx.
@@ -290,6 +290,7 @@ export async function executeAgentMediatedRoomMessage(args: {
         uploaderActorId: request.sessionActorId ?? "",
         writableNamespaceId: envelope ? envelopeWritableNamespaces(envelope)[0] ?? null : null,
         models: [{ id: modelId }],
+        humanUserId: sessionUserId, fundingKind: "server",
       });
     } catch (error) {
       if (!(error instanceof ImageAttachmentModelError)) throw error;
@@ -303,7 +304,7 @@ export async function executeAgentMediatedRoomMessage(args: {
   const roomRoster =
     args.canonicalRoomRoster ?? (roomId ? await deps.loadRoomRoster(roomId) : []);
 
-  // M087 — resolve the user's IANA timezone for this turn. The validated
+  // resolve the user's IANA timezone for this turn. The validated
   // request value is persisted on drift (fire-and-forget; never blocks the
   // turn), then the resolved value is `request ?? stored ?? "UTC"`.
   const requestedTz = validateIanaTimezone(
@@ -319,7 +320,7 @@ export async function executeAgentMediatedRoomMessage(args: {
     (memoryOwnerId ? await loadUserTimezone(memoryOwnerId).catch(() => null) : null) ??
     "UTC";
 
-  // M087 — timestamp of the previous user message in THIS room, resolved
+  // timestamp of the previous user message in THIS room, resolved
   // before the new turn's message is persisted (the executor persists it
   // later). On any lookup failure we pass `null` (the prompt renders the
   // "first message" fallback); never block the turn.
@@ -480,7 +481,7 @@ export async function executeAgentMediatedRoomMessage(args: {
       roomRoster,
       explicitlySelected: args.explicitlySelected ?? false,
       ...(args.ordinaryOrigin ? { verifiedOrdinaryOrigin: args.ordinaryOrigin } : {}),
-      // M168 — subthread anchoring + R5 current-message exclusion for the
+      // Subthread anchoring + current-message exclusion for the
       // transcript rebuild in `langgraph-executor.ts`.
       ...(args.subthreadParentRoomId ? { subthreadParentRoomId: args.subthreadParentRoomId } : {}),
       ...(args.subthreadAnchorMessageId != null

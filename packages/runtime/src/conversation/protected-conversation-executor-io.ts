@@ -1,3 +1,4 @@
+import { parseImageAssistanceSummary } from "@nautilo/types";
 import type { BaseMessage } from "@langchain/core/messages";
 import {
   AIMessage,
@@ -212,6 +213,10 @@ export function protectedAgentMessagePayload(
       role: "assistant",
       content,
       ...(toolCalls.length === 0 ? {} : { toolCalls }),
+      ...(() => {
+        const imageAssistance = parseImageAssistanceSummary(message.additional_kwargs["nautilo_image_assistance"]);
+        return imageAssistance ? { sensitiveMetadata: { imageAssistance: { ...imageAssistance } } } : {};
+      })(),
     };
   } else if (ToolMessage.isInstance(message)) {
     payload = {

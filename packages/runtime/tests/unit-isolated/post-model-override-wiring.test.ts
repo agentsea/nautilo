@@ -1,5 +1,5 @@
 /**
- * D418 task 3.2.5 — verifies the `langgraphExecutor` threads the Full
+ * Verifies the `langgraphExecutor` threads the Full
  * Workstation approval override resolver (installed by `app.ts` on
  * `defaultPostModelDeps.resolveWorkstationApprovalOverride`) into the graph
  * it builds via `createNautiloGraph`. The post-model Pass 2 consultation is
@@ -13,7 +13,7 @@
  * downstream agent call. Mutate the real `defaultPostModelDeps` object with
  * a stub resolver, drive one executor `.next()`, and assert the captured
  * deps carry the stub. A second case asserts that without the mutation the
- * captured deps carry no resolver (byte-for-byte pre-D418 behavior).
+ * captured deps carry no resolver.
  */
 import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import type { WorkstationAdmissionDecision } from "@nautilo/trust";
@@ -41,13 +41,17 @@ const snapshotLoads: Array<[string, string, string | null]> = [];
 const capturedGraphInputs: Record<string, unknown>[] = [];
 const resolvedModelIds: string[] = [];
 
+// Match the production no-image result; an array would falsely signal completion.
+const noImageAssistance: typeof realNautiloAgent.maybeSummarizeImagesWithVisionFallback =
+  async () => null;
+
 mock.module("@nautilo/agent", () => ({
   ...realNautiloAgent,
   // Keep the REAL defaultPostModelDeps object so the test's mutation is
   // visible to the executor (it imports the same reference).
   defaultPostModelDeps: realNautiloAgent.defaultPostModelDeps,
   createCheckpointSaver: () => ({}),
-  // M311 deliberately resolves all selected context before constructing the
+  // The executor deliberately resolves all selected context before constructing the
   // graph. Keep this wiring test hermetic by supplying the catalog coordinate
   // it now reaches on the way to the mocked graph boundary.
   getDefaultModel: () => ({ id: "test:chat" }),
@@ -58,7 +62,7 @@ mock.module("@nautilo/agent", () => ({
   }),
   getAgentDisplayNameById: async () => null,
   selectPromptBriefMemories: async () => [],
-  maybeSummarizeImagesWithVisionFallback: async () => [],
+  maybeSummarizeImagesWithVisionFallback: noImageAssistance,
   loadForegroundModelControlSnapshot: async (
     roomId: string,
     agentId: string,
@@ -130,7 +134,7 @@ afterEach(() => {
 
 afterAll(() => {
   // Restore the singleton so other test files in the same process see the
-  // pre-D418 default (no resolver) unless app.ts installs one.
+  // default (no resolver) unless app.ts installs one.
   // `exactOptionalPropertyTypes: true` forbids assigning `undefined` to an
   // optional property, so use `delete` to restore the absent state.
   if (originalResolver === undefined) {
@@ -155,7 +159,7 @@ async function driveExecutorOnce(input: Record<string, unknown> = {}): Promise<v
   const controller = new AbortController();
   const gen = langgraphExecutor(
     { ...minimalInput(), ...input },
-    "job-d418-wiring",
+    "job-override-wiring",
     null,
     controller.signal,
   );
@@ -198,7 +202,7 @@ async function driveForkOnce(input: Record<string, unknown>): Promise<void> {
   }
 }
 
-describe("langgraphExecutor — D418 Full Workstation override resolver wiring", () => {
+describe("langgraphExecutor — Full Workstation override resolver wiring", () => {
   test("threads defaultPostModelDeps.resolveWorkstationApprovalOverride into the graph", async () => {
     const stubResolver = (): WorkstationAdmissionDecision => ({
       override: "none",
@@ -219,7 +223,7 @@ describe("langgraphExecutor — D418 Full Workstation override resolver wiring",
     expect(deps.resolveWorkstationApprovalOverride).toBe(stubResolver);
   });
 
-  test("without an installed resolver, the graph deps carry no resolver (pre-D418)", async () => {
+  test("without an installed resolver, the graph deps carry no resolver", async () => {
     delete (realNautiloAgent.defaultPostModelDeps as PostModelDepsWithResolver)
       .resolveWorkstationApprovalOverride;
 

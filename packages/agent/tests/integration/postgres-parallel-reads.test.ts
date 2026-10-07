@@ -8,10 +8,10 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 
-const enabled = process.env["NAUTILO_D516_DISPOSABLE_PG"] === "1";
+const enabled = process.env["NAUTILO_PARALLEL_READ_DISPOSABLE_PG"] === "1";
 const ownership = randomUUID();
-const name = `d516-checkpoint-${ownership}`;
-const database = "d516_checkpoint";
+const name = `parallel-read-checkpoint-${ownership}`;
+const database = "parallel_read_checkpoint";
 let containerId: string | undefined;
 let port: string | undefined;
 const children = new Set<ReturnType<typeof worker>>();
@@ -54,9 +54,9 @@ function worker(phase: string, threadId: string) {
   }
   const direct = `postgresql://postgres@127.0.0.1:${port}/${database}`;
   const agent = `postgresql://nautilo_agent@127.0.0.1:${port}/${database}`;
-  const child = spawn(process.execPath, [resolve(import.meta.dir, "fixtures/d516-postgres-read-worker.ts"), phase, threadId], {
+  const child = spawn(process.execPath, [resolve(import.meta.dir, "fixtures/postgres-read-worker.ts"), phase, threadId], {
     env: {
-      ...env, NAUTILO_D516_DISPOSABLE_PG: "1", D516_PG_PORT: port,
+      ...env, NAUTILO_PARALLEL_READ_DISPOSABLE_PG: "1", NAUTILO_PARALLEL_READ_PG_PORT: port,
       NAUTILO_INSTANCE_ID: "test-cruft", NAUTILO_TEST_MODE: "stub",
       DB_DIRECT_CONNECTION: direct, DB_CONNECTION_STRING: direct,
       DB_AGENT_DIRECT_CONNECTION: agent, DB_AGENT_CONNECTION_STRING: agent,
@@ -113,7 +113,7 @@ function containsToolReturn(value: unknown, callId: string): boolean {
 }
 
 async function hasAcknowledgedFirst(threadId: string): Promise<boolean> {
-  if (!/^d516:[a-f0-9-]+$/.test(threadId)) throw new Error("Unexpected disposable thread identity");
+  if (!/^parallel-read:[a-f0-9-]+$/.test(threadId)) throw new Error("Unexpected disposable thread identity");
   // PostgreSQL's base64 encoder wraps lines; use JSON aggregation for rows.
   const encodedRows = JSON.parse(await query(`SELECT COALESCE(json_agg(encode(blob,'base64')),'[]'::json)
     FROM langchain.checkpoint_writes WHERE thread_id = '${threadId}'
@@ -122,7 +122,7 @@ async function hasAcknowledgedFirst(threadId: string): Promise<boolean> {
 }
 
 async function hasCompletedMessagesCheckpoint(threadId: string): Promise<boolean> {
-  if (!/^d516:[a-f0-9-]+$/.test(threadId)) throw new Error("Unexpected disposable thread identity");
+  if (!/^parallel-read:[a-f0-9-]+$/.test(threadId)) throw new Error("Unexpected disposable thread identity");
   const rows = JSON.parse(await query(`SELECT COALESCE(json_agg(encode(b.blob,'base64')),'[]'::json)
     FROM (SELECT * FROM langchain.checkpoints WHERE thread_id = '${threadId}'
       AND checkpoint_ns = '' ORDER BY checkpoint_id DESC LIMIT 1) AS c
@@ -137,7 +137,7 @@ async function hasCompletedMessagesCheckpoint(threadId: string): Promise<boolean
 }
 
 async function hasAnyPersistedResult(threadId: string, callId: string): Promise<boolean> {
-  if (!/^d516:[a-f0-9-]+$/.test(threadId)) throw new Error("Unexpected disposable thread identity");
+  if (!/^parallel-read:[a-f0-9-]+$/.test(threadId)) throw new Error("Unexpected disposable thread identity");
   const rows = JSON.parse(await query(`SELECT COALESCE(json_agg(json_build_object('type',type,'data',encode(blob,'base64'))),'[]'::json)
     FROM (SELECT type,blob FROM langchain.checkpoint_writes WHERE thread_id = '${threadId}'
       UNION ALL SELECT type,blob FROM langchain.checkpoint_blobs WHERE thread_id = '${threadId}') AS receipts;`)) as Array<{ type: string; data: string | null }>;
@@ -148,12 +148,12 @@ async function hasAnyPersistedResult(threadId: string, callId: string): Promise<
   }).some(Boolean);
 }
 
-describe.skipIf(!enabled)("D516 real Postgres durable parallel reads", () => {
+describe.skipIf(!enabled)("Durable parallel reads with real PostgreSQL", () => {
   beforeAll(async () => {
     // Explicitly isolated fixture: no persistent volume, loopback host port,
     // no production credentials, and no ability to select an inherited target.
     containerId = await docker(["run", "-d", "--rm", "--name", name,
-      "--label", `dev.nautilo.d516.checkpoint-owner=${ownership}`,
+      "--label", `dev.nautilo.parallel-read.checkpoint-owner=${ownership}`,
       "--tmpfs", "/var/lib/postgresql/data", "-p", "127.0.0.1::5432",
       "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", `POSTGRES_DB=${database}`, "postgres:16"]);
     if (!/^[a-f0-9]{64}$/.test(containerId)) throw new Error("Docker returned no exact container identity");
@@ -170,7 +170,7 @@ describe.skipIf(!enabled)("D516 real Postgres durable parallel reads", () => {
   afterAll(async () => {
     await Promise.all([...children].map((child) => child.stop()));
     if (containerId !== undefined) {
-      const actual = await docker(["inspect", "--format", '{{index .Config.Labels "dev.nautilo.d516.checkpoint-owner"}}', containerId]);
+      const actual = await docker(["inspect", "--format", '{{index .Config.Labels "dev.nautilo.parallel-read.checkpoint-owner"}}', containerId]);
       if (actual !== ownership) throw new Error("Refusing cleanup of a foreign PostgreSQL container");
       await docker(["rm", "-f", containerId]);
     }
@@ -178,7 +178,7 @@ describe.skipIf(!enabled)("D516 real Postgres durable parallel reads", () => {
 
   for (const acknowledged of [true, false]) {
     test(`fresh process reuses ${acknowledged ? "acknowledged" : "no unacknowledged"} sibling completion`, async () => {
-      const threadId = `d516:${randomUUID()}`;
+      const threadId = `parallel-read:${randomUUID()}`;
       const phase = acknowledged ? "crash-acknowledged" : "crash-unacknowledged";
       const initial = worker(phase, threadId);
       children.add(initial);
@@ -215,24 +215,24 @@ describe.skipIf(!enabled)("D516 real Postgres durable parallel reads", () => {
   }
 
   test("per-call SQL failure propagates while a committed graph checkpoint prevents replay", async () => {
-    const threadId = `d516:${randomUUID()}`;
+    const threadId = `parallel-read:${randomUUID()}`;
     const initial = worker("write-failure", threadId);
     children.add(initial);
     await initial.wait("ready");
     // This trigger exists only inside the owned disposable cluster, scoped to
     // this thread and the first read return. The runtime's real pg transactions
     // and retry wrapper must encounter the error; no saver method is mocked.
-    await query(`CREATE FUNCTION langchain.d516_fail_first() RETURNS trigger LANGUAGE plpgsql AS $$
+    await query(`CREATE FUNCTION langchain.parallel_read_fail_first() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
         IF NEW.thread_id = '${threadId}' AND NEW.channel = '__return__'
           AND NEW.type = 'json' AND jsonb_path_exists(convert_from(NEW.blob,'UTF8')::jsonb,
             '$.**.tool_call_id ? (@ == "call:first")') THEN
-          RAISE EXCEPTION 'connection terminated: d516 persistence fixture';
+          RAISE EXCEPTION 'connection terminated: parallel-read persistence fixture';
         END IF;
         RETURN NEW;
       END $$;
-      CREATE TRIGGER d516_fail_first BEFORE INSERT OR UPDATE ON langchain.checkpoint_writes
-      FOR EACH ROW EXECUTE FUNCTION langchain.d516_fail_first();`);
+      CREATE TRIGGER parallel_read_fail_first BEFORE INSERT OR UPDATE ON langchain.checkpoint_writes
+      FOR EACH ROW EXECUTE FUNCTION langchain.parallel_read_fail_first();`);
     initial.proceed();
     await initial.wait("failed");
     expect(await initial.exited).toBe(1);
@@ -243,7 +243,7 @@ describe.skipIf(!enabled)("D516 real Postgres durable parallel reads", () => {
     // Establish that alternative durable receipt independently before expecting
     // zero redispatch; absence of one task row alone is not lost-result proof.
     expect(await hasCompletedMessagesCheckpoint(threadId)).toBe(true);
-    await query("DROP TRIGGER d516_fail_first ON langchain.checkpoint_writes; DROP FUNCTION langchain.d516_fail_first();");
+    await query("DROP TRIGGER parallel_read_fail_first ON langchain.checkpoint_writes; DROP FUNCTION langchain.parallel_read_fail_first();");
 
     const resumed = worker("resume", threadId);
     children.add(resumed);
@@ -259,23 +259,23 @@ describe.skipIf(!enabled)("D516 real Postgres durable parallel reads", () => {
   }, 60_000);
 
   test("failure of every first-result write retries only that read after recovery", async () => {
-    const threadId = `d516:${randomUUID()}`;
+    const threadId = `parallel-read:${randomUUID()}`;
     const initial = worker("write-failure", threadId);
     children.add(initial);
     await initial.wait("ready");
-    await query(`CREATE FUNCTION langchain.d516_fail_all_first() RETURNS trigger LANGUAGE plpgsql AS $$
+    await query(`CREATE FUNCTION langchain.parallel_read_fail_all_first() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
         IF NEW.thread_id = '${threadId}' AND NEW.type = 'json'
           AND jsonb_path_exists(convert_from(NEW.blob,'UTF8')::jsonb,
             '$.**.tool_call_id ? (@ == "call:first")') THEN
-          RAISE EXCEPTION 'connection terminated: d516 persistence fixture';
+          RAISE EXCEPTION 'connection terminated: parallel-read persistence fixture';
         END IF;
         RETURN NEW;
       END $$;
-      CREATE TRIGGER d516_fail_all_first BEFORE INSERT OR UPDATE ON langchain.checkpoint_writes
-        FOR EACH ROW EXECUTE FUNCTION langchain.d516_fail_all_first();
-      CREATE TRIGGER d516_fail_all_first BEFORE INSERT OR UPDATE ON langchain.checkpoint_blobs
-        FOR EACH ROW EXECUTE FUNCTION langchain.d516_fail_all_first();`);
+      CREATE TRIGGER parallel_read_fail_all_first BEFORE INSERT OR UPDATE ON langchain.checkpoint_writes
+        FOR EACH ROW EXECUTE FUNCTION langchain.parallel_read_fail_all_first();
+      CREATE TRIGGER parallel_read_fail_all_first BEFORE INSERT OR UPDATE ON langchain.checkpoint_blobs
+        FOR EACH ROW EXECUTE FUNCTION langchain.parallel_read_fail_all_first();`);
     initial.proceed();
     await initial.wait("failed");
     expect(await initial.exited).toBe(1);
@@ -283,9 +283,9 @@ describe.skipIf(!enabled)("D516 real Postgres durable parallel reads", () => {
     expect(await hasAnyPersistedResult(threadId, "call:first")).toBe(false);
     expect(await hasAnyPersistedResult(threadId, "call:second")).toBe(true);
     expect(await hasCompletedMessagesCheckpoint(threadId)).toBe(false);
-    await query(`DROP TRIGGER d516_fail_all_first ON langchain.checkpoint_writes;
-      DROP TRIGGER d516_fail_all_first ON langchain.checkpoint_blobs;
-      DROP FUNCTION langchain.d516_fail_all_first();`);
+    await query(`DROP TRIGGER parallel_read_fail_all_first ON langchain.checkpoint_writes;
+      DROP TRIGGER parallel_read_fail_all_first ON langchain.checkpoint_blobs;
+      DROP FUNCTION langchain.parallel_read_fail_all_first();`);
     const resumed = worker("resume", threadId);
     children.add(resumed);
     await resumed.wait("completed");

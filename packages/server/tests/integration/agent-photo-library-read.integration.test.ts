@@ -15,6 +15,7 @@ import {
   sql,
   users,
 } from "@nautilo/db";
+import { syntheticFixtureEmail } from "../../../../dev/testing/synthetic-fixture-email";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import { createPhotoLibraryCursorCodec } from "../../src/photo-library/photo-library-cursor";
 import { AgentPhotoLibraryReadService } from "../../src/lib/agent-photo-library-read-service";
@@ -58,12 +59,12 @@ afterAll(async () => {
 async function fixture() {
   const nonce = randomUUID();
   const [user] = await db.insert(users).values({
-    name: "D487 read owner", email: `d487-read-${nonce}@test.invalid`, handle: `d487r${nonce.replaceAll("-", "").slice(0, 12)}`,
+    name: "Photo read owner", email: syntheticFixtureEmail(), handle: `photor${nonce.replaceAll("-", "").slice(0, 12)}`,
   }).returning({ id: users.id });
-  const [agent] = await db.insert(agents).values({ handle: `d487-read-agent-${nonce}` }).returning({ id: agents.id });
+  const [agent] = await db.insert(agents).values({ handle: `photo-read-agent-${nonce}` }).returning({ id: agents.id });
   if (!user || !agent) throw new Error("fixture insert failed");
   cleanup.push({ userId: user.id, agentId: agent.id });
-  await db.insert(actors).values({ ownerId: user.id, kind: "agent", agentId: agent.id, displayName: "D487 Read" });
+  await db.insert(actors).values({ ownerId: user.id, kind: "agent", agentId: agent.id, displayName: "Photo Read" });
   const [profile] = await db.insert(profiles).values({ userId: user.id, agentId: agent.id, avatarRef: null }).returning({ id: profiles.id });
   if (!profile) throw new Error("profile insert failed");
   return { userId: user.id, agentId: agent.id, profileId: profile.id };
@@ -71,7 +72,7 @@ async function fixture() {
 
 async function entry(input: { userId: string; agentId: string; ordinal: number; deleted?: boolean }) {
   const createdAt = new Date(nowMs - input.ordinal * 1000);
-  const blobId = `d487-read-${randomUUID()}`;
+  const blobId = `photo-read-${randomUUID()}`;
   const [row] = await db.insert(ownedPhotoEntries).values({
     serverInstanceId, ownerUserId: input.userId, subjectKind: "agent", agentId: input.agentId,
     avatarKind: "uploaded", blobId, source: "upload", origin: "mobile", operationId: randomUUID(),
@@ -117,13 +118,13 @@ function appFor(
   return app;
 }
 
-describe("D487 owned Agent-photo read routes", () => {
+describe("Owned Agent-photo read routes", () => {
   test("routes an effective selected owned Agent from the request envelope and rejects a foreign selection", async () => {
     const owner = await fixture();
     const foreign = await fixture();
-    const [second] = await db.insert(agents).values({ handle: `d487-read-second-${randomUUID()}` }).returning({ id: agents.id });
+    const [second] = await db.insert(agents).values({ handle: `photo-read-second-${randomUUID()}` }).returning({ id: agents.id });
     if (!second) throw new Error("second owned Agent insert failed");
-    await db.insert(actors).values({ ownerId: owner.userId, kind: "agent", agentId: second.id, displayName: "D487 Read Second" });
+    await db.insert(actors).values({ ownerId: owner.userId, kind: "agent", agentId: second.id, displayName: "Photo Read Second" });
     const [secondProfile] = await db.insert(profiles).values({ userId: owner.userId, agentId: second.id, avatarRef: null }).returning({ id: profiles.id });
     if (!secondProfile) throw new Error("second owned Agent profile insert failed");
     const secondEntry = await entry({ userId: owner.userId, agentId: second.id, ordinal: 0 });
@@ -308,7 +309,7 @@ describe("D487 owned Agent-photo read routes", () => {
           media_mime_type, media_byte_size, media_sha256, created_at
         ) values (
           ${id}, ${serverInstanceId}, ${data.userId}, 'agent', ${data.agentId}, 'uploaded',
-          ${`d487-read-${randomUUID()}`}, 'upload', 'mobile', ${randomUUID()}, ${"a".repeat(64)},
+          ${`photo-read-${randomUUID()}`}, 'upload', 'mobile', ${randomUUID()}, ${"a".repeat(64)},
           'image/png', 12, ${"b".repeat(64)}, ${createdAt}::timestamptz
         )
       `);

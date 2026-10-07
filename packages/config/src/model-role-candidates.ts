@@ -186,16 +186,6 @@ export const MODEL_ROLE_CANDIDATES = {
     "openrouter:openai/text-embedding-3-small",
     "openai:text-embedding-3-small",
   ],
-  visionFallback: [
-    "openrouter:minimax/minimax-m3",
-    "venice:minimax-m3-preview",
-    "openrouter:anthropic/claude-sonnet-4.6",
-    "venice:claude-sonnet-4-6",
-    "anthropic:claude-sonnet-4-6",
-    "openrouter:google/gemini-3.1-pro-preview",
-    "venice:gemini-3-1-pro-preview",
-    "google:gemini-3.1-pro-preview",
-  ],
   imageGeneration: [
     "openai:gpt-image-2.5-sunburst",
     "openai:gpt-image-2.5-flare",

@@ -8,15 +8,15 @@ import {
 import type { NautiloState } from "../../../src/agent/state";
 import { COMPUTER_RESULT_DURABLE_SIDECAR_KEY } from "../../../src/tools/computer/model-result-projector";
 import {
-  d516BindingFor,
-  d516GraphFor,
-  d516HostResult,
-  d516ReadCall,
-  d516StateFor,
-  setD516RelayDispatch,
-  setupD516ProductionReadFixture,
-  teardownD516ProductionReadFixture,
-} from "../../support/d516-production-read-fixture";
+  productionReadBindingFor,
+  productionReadGraphFor,
+  productionReadHostResult,
+  productionReadCall,
+  productionReadStateFor,
+  setProductionReadRelayDispatch,
+  setupProductionReadFixture,
+  teardownProductionReadFixture,
+} from "../../support/production-read-fixture";
 
 type Phase = "crash-acknowledged" | "crash-unacknowledged" | "write-failure" | "resume";
 
@@ -45,16 +45,16 @@ function phaseFromArg(value: string | undefined): Phase {
     || value === "write-failure" || value === "resume") {
     return value;
   }
-  throw new Error("D516 worker phase rejected");
+  throw new Error("Parallel-read worker phase rejected");
 }
 
 function assertOwnedDatabaseEnvironment(): void {
-  if (process.env["NAUTILO_D516_DISPOSABLE_PG"] !== "1") {
-    throw new Error("D516 worker requires its disposable Postgres marker");
+  if (process.env["NAUTILO_PARALLEL_READ_DISPOSABLE_PG"] !== "1") {
+    throw new Error("Parallel-read worker requires its disposable Postgres marker");
   }
-  const expectedPort = process.env["D516_PG_PORT"];
+  const expectedPort = process.env["NAUTILO_PARALLEL_READ_PG_PORT"];
   if (expectedPort === undefined || !/^\d{1,5}$/u.test(expectedPort)) {
-    throw new Error("D516 worker Postgres port rejected");
+    throw new Error("Parallel-read worker Postgres port rejected");
   }
   const expectedUsers = new Map([
     ["DB_DIRECT_CONNECTION", "postgres"],
@@ -62,14 +62,14 @@ function assertOwnedDatabaseEnvironment(): void {
   ]);
   for (const [name, expectedUser] of expectedUsers) {
     const raw = process.env[name];
-    if (raw === undefined) throw new Error(`D516 worker ${name} is required`);
+    if (raw === undefined) throw new Error(`Parallel-read worker ${name} is required`);
     const url = new URL(raw);
     if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
-      throw new Error(`D516 worker ${name} protocol rejected`);
+      throw new Error(`Parallel-read worker ${name} protocol rejected`);
     }
     if (url.hostname !== "127.0.0.1" || url.port !== expectedPort
-      || url.pathname !== "/d516_checkpoint" || decodeURIComponent(url.username) !== expectedUser) {
-      throw new Error(`D516 worker ${name} target rejected`);
+      || url.pathname !== "/parallel_read_checkpoint" || decodeURIComponent(url.username) !== expectedUser) {
+      throw new Error(`Parallel-read worker ${name} target rejected`);
     }
   }
 }
@@ -91,8 +91,8 @@ async function main(): Promise<void> {
   const phase = phaseFromArg(process.argv[2]);
   activePhase = phase;
   const threadId = process.argv[3];
-  if (threadId === undefined || !/^d516:[a-z0-9-]{8,96}$/u.test(threadId)) {
-    throw new Error("D516 worker thread id rejected");
+  if (threadId === undefined || !/^parallel-read:[a-z0-9-]{8,96}$/u.test(threadId)) {
+    throw new Error("Parallel-read worker thread id rejected");
   }
   assertOwnedDatabaseEnvironment();
 
@@ -103,30 +103,30 @@ async function main(): Promise<void> {
   console.error = (...values: unknown[]) => { process.stderr.write(`${values.map(String).join(" ")}\n`); };
 
   await setupCheckpointSaver();
-  await setupD516ProductionReadFixture();
+  await setupProductionReadFixture();
   emit({ event: "ready" });
 
-  const first = d516ReadCall("call:first");
-  const second = d516ReadCall("call:second");
-  const mutation = d516ReadCall("call:mutation", "computer_do", {
+  const first = productionReadCall("call:first");
+  const second = productionReadCall("call:second");
+  const mutation = productionReadCall("call:mutation", "computer_do", {
     operation: { kind: "launch_app", app: { name: "TextEdit" } },
   });
   const callByInvocation = new Map([
-    [d516BindingFor(first).computerUseInvocationId, "first" as const],
-    [d516BindingFor(second).computerUseInvocationId, "second" as const],
+    [productionReadBindingFor(first).computerUseInvocationId, "first" as const],
+    [productionReadBindingFor(second).computerUseInvocationId, "second" as const],
   ]);
 
-  setD516RelayDispatch(async (request: RelayDispatchRequest) => {
+  setProductionReadRelayDispatch(async (request: RelayDispatchRequest) => {
     const invocationId = request.desktopAutomationBinding?.computerUseInvocationId;
     const call = invocationId === undefined ? undefined : callByInvocation.get(invocationId);
-    if (call === undefined) throw new Error("D516 worker received an unexpected relay request");
+    if (call === undefined) throw new Error("Parallel-read worker received an unexpected relay request");
     emit({ event: "dispatch", call });
     if ((phase === "crash-acknowledged" || phase === "crash-unacknowledged")
       && call === "second") return await never();
-    return { status: "ok", result: d516HostResult(request, call) };
+    return { status: "ok", result: productionReadHostResult(request, call) };
   });
 
-  const graph = d516GraphFor(createCheckpointSaver(), () => ({
+  const graph = productionReadGraphFor(createCheckpointSaver(), () => ({
     protectAssistantToolCall: async (message) => {
       emit({ event: "assistant_protected" });
       return await Promise.resolve(message);
@@ -137,7 +137,7 @@ async function main(): Promise<void> {
         : message.tool_call_id === second.id
           ? "second"
           : undefined;
-      if (call === undefined) throw new Error("D516 worker received an unexpected protected result");
+      if (call === undefined) throw new Error("Parallel-read worker received an unexpected protected result");
       emit({ event: "result_protected", call });
       if (phase === "crash-unacknowledged" && call === "first") return await never();
       return message;
@@ -146,7 +146,7 @@ async function main(): Promise<void> {
   const config = { configurable: { thread_id: threadId } };
   if (phase === "write-failure") await waitForParentGate();
   const output = await graph.invoke(
-    phase === "resume" ? null : d516StateFor([first, second, mutation]),
+    phase === "resume" ? null : productionReadStateFor([first, second, mutation]),
     config,
   ) as NautiloState;
   emit({
@@ -163,7 +163,7 @@ async function main(): Promise<void> {
       .filter((message) => COMPUTER_RESULT_DURABLE_SIDECAR_KEY in (message.additional_kwargs ?? {}))
       .map((message) => message.tool_call_id),
   });
-  await teardownD516ProductionReadFixture();
+  await teardownProductionReadFixture();
   await closeCheckpointSaver(5_000);
 }
 

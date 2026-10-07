@@ -154,18 +154,6 @@ const runtimeModelSchema = {
   nautilo_web_search_model: z.string().default(MODEL_DEFAULTS.webSearch),
   /** Recoverable/no-progress events between Genie interventions; not a provider retry, time, or step limit. */
   nautilo_browser_decision_intervention_limit: z.number().int().positive().default(2),
-  /** vision-capable chat model id for summarizing images when the user's model is text-only */
-  nautilo_vision_fallback_model: z.string().default(""),
-  /**
-   * Comma/newline-separated ordered list; first entry with image input + runnable provider keys wins.
-   * When empty, `nautilo_vision_fallback_model` is used as a single candidate.
-   */
-  nautilo_vision_fallback_candidates: z.string().default(""),
-  /**
-   * When the chat model is text-only and the user attaches images: `unsupported` (default) skips auxiliary vision calls;
-   * `vision_summary` enables the candidate-list summarization path (lossy, opt-in).
-   */
-  nautilo_text_only_image_policy: z.enum(["unsupported", "vision_summary"]).default("unsupported"),
 } satisfies z.ZodRawShape;
 
 const runtimeHistorySchema = {
@@ -490,12 +478,6 @@ const UserModelsSchema = z.object({
   flush: z.string().default(MODEL_DEFAULTS.flush),
   reviewer: z.string().default(MODEL_DEFAULTS.reviewer),
   webSearch: z.string().default(MODEL_DEFAULTS.webSearch),
-  /** Optional vision-capable chat model for image summarization when `default` is text-only */
-  visionFallback: z.string().optional().default(""),
-  /** Ordered pool (comma/newline); used when `textOnlyImagePolicy` is `vision_summary` */
-  visionFallbackCandidates: z.string().optional().default(""),
-  /** `unsupported` (default) or opt-in `vision_summary` auxiliary model path */
-  textOnlyImagePolicy: z.enum(["unsupported", "vision_summary"]).optional().default("unsupported"),
   embedding: z.object({
     model: z.string().default(MODEL_DEFAULTS.embeddingModel),
     dimensions: z.number().int().positive().default(MODEL_DEFAULTS.embeddingDimensions),
@@ -684,9 +666,6 @@ function normalizeModels(user: NautiloUserConfig): Record<string, unknown> {
     nautilo_web_search_model: user.models.webSearch,
     nautilo_embedding_model: user.models.embedding.model,
     nautilo_embedding_dims: user.models.embedding.dimensions,
-    nautilo_vision_fallback_model: user.models.visionFallback ?? "",
-    nautilo_vision_fallback_candidates: user.models.visionFallbackCandidates ?? "",
-    nautilo_text_only_image_policy: user.models.textOnlyImagePolicy ?? "unsupported",
   };
 }
 
@@ -803,13 +782,6 @@ function normalizeInstanceSurface(user: NautiloUserConfig): Record<string, unkno
   };
 }
 
-function readTextOnlyImagePolicyEnv(env: Env): "unsupported" | "vision_summary" | undefined {
-  const raw = env["NAUTILO_TEXT_ONLY_IMAGE_POLICY"]?.trim().toLowerCase();
-  if (raw === "vision_summary") return "vision_summary";
-  if (raw === "unsupported") return "unsupported";
-  return undefined;
-}
-
 function readModelsFromEnv(source: RuntimeSource, env: Env): Record<string, unknown> {
   // This operator/runtime control overrides the materialized user-config default.
   const browserDecisionInterventionLimit = env["NAUTILO_BROWSER_DECISION_INTERVENTION_LIMIT"];
@@ -826,12 +798,6 @@ function readModelsFromEnv(source: RuntimeSource, env: Env): Record<string, unkn
       browserDecisionInterventionLimit !== undefined
         ? Number(browserDecisionInterventionLimit)
         : source?.nautilo_browser_decision_intervention_limit,
-    nautilo_vision_fallback_model:
-      source?.nautilo_vision_fallback_model ?? env["NAUTILO_VISION_FALLBACK_MODEL"] ?? "",
-    nautilo_vision_fallback_candidates:
-      source?.nautilo_vision_fallback_candidates ?? env["NAUTILO_VISION_FALLBACK_CANDIDATES"] ?? "",
-    nautilo_text_only_image_policy:
-      source?.nautilo_text_only_image_policy ?? readTextOnlyImagePolicyEnv(env),
   };
 }
 

@@ -18,6 +18,7 @@ import {
   profiles,
   users,
 } from "@nautilo/db";
+import { syntheticFixtureEmail } from "../../../../dev/testing/synthetic-fixture-email";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import {
   AgentPhotoLibraryError,
@@ -62,7 +63,7 @@ beforeAll(async () => {
     .from(nautiloInstanceIdentity)
     .where(eq(nautiloInstanceIdentity.id, "self"))
     .limit(1);
-  if (!identity) throw new Error("D487 test instance identity is missing");
+  if (!identity) throw new Error("Photo test instance identity is missing");
   serverInstanceId = identity.serverInstanceId;
 }, 30_000);
 
@@ -71,24 +72,23 @@ afterAll(async () => {
 });
 
 async function makeFixture(initialAvatar: { kind: "preset"; id: string } | null = { kind: "preset", id: "shell" }): Promise<Fixture> {
-  const nonce = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   const [owner] = await db
     .insert(users)
     .values({
-      name: "D487 selection owner",
-      email: `d487-selection-${nonce}@test.invalid`,
-      handle: `d487${randomUUID().replaceAll("-", "").slice(0, 12)}`,
+      name: "Photo selection owner",
+      email: syntheticFixtureEmail(),
+      handle: `photo${randomUUID().replaceAll("-", "").slice(0, 12)}`,
     })
     .returning({ id: users.id });
-  if (!owner) throw new Error("D487 selection owner insert failed");
+  if (!owner) throw new Error("Photo selection owner insert failed");
   const [agent] = await db
     .insert(agents)
-    .values({ handle: `d487-agent-${randomUUID()}` })
+    .values({ handle: `photo-agent-${randomUUID()}` })
     .returning({ id: agents.id });
-  if (!agent) throw new Error("D487 selection Agent insert failed");
+  if (!agent) throw new Error("Photo selection Agent insert failed");
   await db.insert(actors).values({
     ownerId: owner.id,
-    displayName: "D487 selection Agent",
+    displayName: "Photo selection Agent",
     kind: "agent",
     agentId: agent.id,
   });
@@ -96,7 +96,7 @@ async function makeFixture(initialAvatar: { kind: "preset"; id: string } | null 
     .insert(profiles)
     .values({ userId: owner.id, agentId: agent.id, avatarRef: initialAvatar })
     .returning({ id: profiles.id });
-  if (!profile) throw new Error("D487 selection profile insert failed");
+  if (!profile) throw new Error("Photo selection profile insert failed");
 
   const authority = {
     serverInstanceId,
@@ -140,7 +140,7 @@ async function cleanupFixture(fixture: Fixture): Promise<void> {
 }
 
 async function createEntry(fixture: Fixture, options: { present?: boolean; deleted?: boolean } = {}) {
-  const blobId = `d487-selection-${randomUUID()}`;
+  const blobId = `photo-selection-${randomUUID()}`;
   const now = new Date();
   const [entry] = await db
     .insert(ownedPhotoEntries)
@@ -162,7 +162,7 @@ async function createEntry(fixture: Fixture, options: { present?: boolean; delet
       purgeAfter: options.deleted ? new Date(now.getTime() + 30 * 86_400_000) : null,
     })
     .returning();
-  if (!entry) throw new Error("D487 selection entry insert failed");
+  if (!entry) throw new Error("Photo selection entry insert failed");
   if (options.present !== false) fixture.presentBlobIds.add(blobId);
   return entry;
 }
@@ -284,7 +284,7 @@ async function readProfile(fixture: Fixture) {
     })
     .from(profiles)
     .where(eq(profiles.id, fixture.profileId));
-  if (!row) throw new Error("D487 selection profile disappeared");
+  if (!row) throw new Error("Photo selection profile disappeared");
   return row;
 }
 
@@ -295,7 +295,7 @@ async function revisionRows(fixture: Fixture) {
     .where(eq(agentPhotoSelectionRevisions.agentId, fixture.agentId));
 }
 
-describe("D487 AgentPhotoLibraryService atomic selection", () => {
+describe("Photo AgentPhotoLibraryService atomic selection", () => {
   test("fences create reservations by lease, publishes one receipt/event, and rejects a duplicate pending provider start", async () => {
     const fixture = await makeFixture();
     try {

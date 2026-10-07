@@ -16,7 +16,7 @@ function walk(root: string): string[] {
   });
 }
 
-describe("D489 lifecycle repository guards", () => {
+describe("Maintenance lifecycle repository guards", () => {
   test("keeps one clone spine, one selector, and one bounded canonical seed store", () => {
     const productionFiles = walk(devSourceRoot).filter((path) => path.endsWith(".ts"));
     const declarations = (pattern: RegExp): string[] => productionFiles
@@ -98,13 +98,13 @@ describe("D489 lifecycle repository guards", () => {
       .filter((path) => {
         const body = readFileSync(path, "utf8");
         return /(?:Bun\.spawn\(|spawn\("bun")/.test(body) &&
-          /NAUTILO_D489_(?:LIVE_CHILD|PARENT_OWNS_CLEANUP)/.test(body);
+          /(?:NAUTILO_CLONE_LIVE_CHILD|NAUTILO_CHECKPOINT_PARENT_OWNS_CLEANUP)/.test(body);
       })
       .map((path) => relative(repoRoot, path))
       .sort();
     expect(discovered).toEqual([
-      "bin/nautilo-dev/tests/integration/d489-checkpoint-maintenance-acceptance-runner.ts",
-      "bin/nautilo-dev/tests/integration/d489-default-clone-acceptance.test.ts",
+      "bin/nautilo-dev/tests/integration/checkpoint-maintenance-acceptance-runner.ts",
+      "bin/nautilo-dev/tests/integration/default-clone-acceptance.test.ts",
     ]);
 
     const clone = source(discovered[1]!);
@@ -120,13 +120,13 @@ describe("D489 lifecycle repository guards", () => {
     expect(clone).toContain("expect(byteEvidence.afterFilesystemBytes).toBe(0)");
 
     const checkpointRunner = source(discovered[0]!);
-    const checkpointWorker = source("bin/nautilo-dev/tests/integration/d489-checkpoint-maintenance-acceptance.test.ts");
-    const checkpointJournal = source("bin/nautilo-dev/tests/integration/helpers/d489-disposable-resource-journal.ts");
-    expect(checkpointWorker.indexOf("createD489ResourceJournal(runId)"))
+    const checkpointWorker = source("bin/nautilo-dev/tests/integration/checkpoint-maintenance-acceptance.test.ts");
+    const checkpointJournal = source("bin/nautilo-dev/tests/integration/helpers/disposable-postgres-resource-journal.ts");
+    expect(checkpointWorker.indexOf("createDisposablePostgresResourceJournal(runId)"))
       .toBeLessThan(checkpointWorker.indexOf('"run", "-d", "--pull=never"'));
     expect(checkpointRunner).toMatch(/finally\s*{[\s\S]*parentFinally\(\)/);
     for (const marker of [
-      "resources: D489OwnedResources", "container:", "volume:", "network:",
+      "resources: DisposablePostgresOwnedResources", "container:", "volume:", "network:",
       "reuse-only-never-remove", "processes:", "filesRoot:",
       "beforeOwnedDockerBytes: 0", "peakOwnedDockerBytes:", "afterOwnedDockerBytes:",
       "afterOwnedFilesystemBytes", "objectExists(kind, name)", "${kind}-residue",

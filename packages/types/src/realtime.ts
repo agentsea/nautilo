@@ -12,6 +12,7 @@ import type { DocumentPatchEvent } from "./document-patches";
 import type { DocumentMutationCommittedEvent } from "./document-mutations";
 import type {
   AdvancedVideoWorkcardContinuation,
+  ImageAssistanceSummary,
   MaintenanceState,
   MessageAttachmentRef,
   MessageArtifactOpenRef,
@@ -64,6 +65,7 @@ export interface MessageTokensEvent {
 }
 
 export interface MessageNewEvent {
+  imageAssistance?: ImageAssistanceSummary;
   /** Persisted sent time; never a socket receipt or edit time. */
   createdAt?: string;
   type: "message.new";
@@ -250,6 +252,7 @@ export interface ThreadSummaryChangedEvent {
 }
 
 export interface JobStatusEvent {
+  errorCode?: "image_assistance_failed";
   type: "job.status";
   jobId: string;
   status: "queued" | "running" | "completed" | "failed" | "timed_out" | "cancelled";
@@ -1127,7 +1130,7 @@ export interface ShareMemoryApprovalPreview {
   } | undefined;
 }
 
-/** M088A — server-enriched context for `share_artifact` ask / prove_it UIs.
+/** server-enriched context for `share_artifact` ask / prove_it UIs.
  *
  * -P3: parallel fields to {@link ShareMemoryApprovalPreview} (`targetHandle` …
  * `sensitivity`) must stay aligned in the agent preview helpers.
@@ -1156,7 +1159,7 @@ export interface ProveItToolInfo {
   } | undefined;
   /** present when `name === "share_memory"`. */
   shareMemoryPreview?: ShareMemoryApprovalPreview | undefined;
-  /** M088A — present when `name === "share_artifact"`. */
+  /** present when `name === "share_artifact"`. */
   shareArtifactPreview?: ShareArtifactApprovalPreview | undefined;
 }
 

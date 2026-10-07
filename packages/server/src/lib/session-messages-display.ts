@@ -16,15 +16,27 @@ export interface SessionMessageInput {
   /** Persisted tool name on `role = 'tool'` rows; optional for legacy. */
   toolName?: string | null;
   createdAt?: Date;
-  /** D124 — quote-reply FK when set. */
+  /** Quote-reply FK when set. */
   replyToMessageId?: number | null;
-  /** D124 — human author (`sessions.owner_id`) for room-scoped fan-in. */
+  /** Human author (`sessions.owner_id`) for room-scoped fan-in. */
   sourceUserId?: string;
 }
 
 export type SessionMessageWithDisplay<M extends SessionMessageInput = SessionMessageInput> = M & {
   displayContent?: string;
 };
+
+/** Retained helper evidence belongs to model history, not the visible transcript. */
+export function isVisibleSessionMessage(message: Readonly<{
+  role: string; content?: string | null; toolName?: string | null; toolCalls?: string | null;
+}>): boolean {
+  if (message.role === "tool" && message.toolName === "image_assistance") return false;
+  if (message.role === "assistant" && message.content === "") {
+    const calls = parseAssistantToolCallsJson(message.toolCalls);
+    if (calls.length > 0 && calls.every((call) => call.name === "image_assistance")) return false;
+  }
+  return true;
+}
 
 interface ParsedToolCall {
   id?: string;

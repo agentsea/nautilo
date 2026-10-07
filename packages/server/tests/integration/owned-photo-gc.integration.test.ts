@@ -17,6 +17,7 @@ import {
   users,
   type OwnedPhotoEntry,
 } from "@nautilo/db";
+import { syntheticFixtureEmail } from "../../../../dev/testing/synthetic-fixture-email";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import {
   OwnedPhotoGarbageCollector,
@@ -45,13 +46,13 @@ afterAll(async () => {
 async function fixture() {
   const nonce = randomUUID();
   const [user] = await db.insert(users).values({
-    name: "D487 GC owner",
-    email: `d487-gc-${nonce}@test.invalid`,
-    handle: `d487gc${nonce.replaceAll("-", "").slice(0, 12)}`,
+    name: "Photo GC owner",
+    email: syntheticFixtureEmail(),
+    handle: `photogc${nonce.replaceAll("-", "").slice(0, 12)}`,
   }).returning({ id: users.id });
-  const [agent] = await db.insert(agents).values({ handle: `d487-gc-agent-${nonce}` }).returning({ id: agents.id });
+  const [agent] = await db.insert(agents).values({ handle: `photo-gc-agent-${nonce}` }).returning({ id: agents.id });
   if (!user || !agent) throw new Error("GC fixture insert failed");
-  await db.insert(actors).values({ ownerId: user.id, kind: "agent", agentId: agent.id, displayName: "D487 GC" });
+  await db.insert(actors).values({ ownerId: user.id, kind: "agent", agentId: agent.id, displayName: "Photo GC" });
   const [profile] = await db.insert(profiles).values({ userId: user.id, agentId: agent.id, avatarRef: null })
     .returning({ id: profiles.id });
   if (!profile) throw new Error("GC profile insert failed");
@@ -110,7 +111,7 @@ function blobSnapshot(entries: OwnedPhotoEntry[]) {
   };
 }
 
-describe("D487 reference-safe owned-photo garbage collection", () => {
+describe("Photo reference-safe owned-photo garbage collection", () => {
   test("dry-run reports eligibility without claiming rows or touching bytes", async () => {
     const owner = await fixture();
     try {
@@ -242,7 +243,7 @@ describe("D487 reference-safe owned-photo garbage collection", () => {
 
   test("filesystem cleanup removes only the row's known original and thumbnail variants", async () => {
     const owner = await fixture();
-    const root = await mkdtemp(join(tmpdir(), "d487-gc-media-"));
+    const root = await mkdtemp(join(tmpdir(), "photo-gc-media-"));
     try {
       const now = new Date("2026-08-04T12:00:00.000Z");
       const entry = await dueEntry(owner, { now, kind: "generated" });

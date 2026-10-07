@@ -35,7 +35,7 @@ import {
 } from "@nautilo/trust";
 import { getRoomNamespaceId, hydrateMessageArtifacts } from "@nautilo/db";
 import { warn } from "@nautilo/logger";
-import { enrichSessionMessagesForDisplay } from "../lib/session-messages-display.js";
+import { enrichSessionMessagesForDisplay, isVisibleSessionMessage } from "../lib/session-messages-display.js";
 import { canViewOwnSessionTranscripts } from "../lib/session-transcript-access.js";
 import { currentStrictShadowPolicy } from "../lib/strict-shadow-policy.js";
 import {
@@ -59,7 +59,7 @@ export interface SessionRoutesDeps {
   searchRoomMessages: typeof searchRoomMessages;
   getSessionMessages: typeof getSessionMessages;
   /**
-   * M125 Phase 2.5 — viewer-scoped graph-thread resolver. Pre-M125 the
+   * viewer-scoped graph-thread resolver. Previously, the
    * dep was `getRoomGraphThreadForOwnerSession` which required a
    * caller-supplied `defaultAgentId`; routes passed the bootstrap
    * default which scoped the membership join to the operator's agent
@@ -102,7 +102,7 @@ defaultSessionRoutesDeps.roomHistoryShadowRead =
   lazyProductionHistoryShadowRead;
 
 /**
- * M121 — batch-fetch reactions for a message page. Fail-soft: reactions are an
+ * batch-fetch reactions for a message page. Fail-soft: reactions are an
  * additive enrichment, so a read error must never 500 the messages endpoint
  * (and keeps hermetic route unit tests that don't stub the store green).
  */
@@ -123,7 +123,7 @@ async function safeReactionsForMessages(
 }
 
 /**
- * D424 — hydrate server-authored ArtifactOpenCards for a message page. The
+ * Hydrate server-authored ArtifactOpenCards for a message page. The
  * viewer's room membership is already verified by the route; this re-validates
  * artifact attachment to the canonical room namespace + not-deleted and
  * projects pointer-only `MessageArtifactOpenRef[]` per message. Fail-soft: a
@@ -224,6 +224,7 @@ type AroundDisplayMessage = {
   authorAgentId?: string;
   authorHarnessId?: string;
   workcardContinuation?: AdvancedVideoWorkcardContinuation | undefined;
+  imageAssistance?: import("@nautilo/types").ImageAssistanceSummary | undefined;
 };
 
 function serializeRoomMessageForAround(message: AroundDisplayMessage) {
@@ -256,6 +257,7 @@ function serializeRoomMessageForAround(message: AroundDisplayMessage) {
       ? { authorHarnessId: message.authorHarnessId }
       : {}),
     ...(message.workcardContinuation ? { workcardContinuation: message.workcardContinuation } : {}),
+    ...(message.imageAssistance ? { imageAssistance: message.imageAssistance } : {}),
   };
 }
 
@@ -290,7 +292,7 @@ export function sessionRoutes(
     let session: Awaited<ReturnType<typeof getLatestSession>>;
     let roomPage: Awaited<ReturnType<typeof getRoomMessagesAcrossMemberSessions>> | null = null;
 
-    // D106 — opt-in room-scoped history for room switchers. Validate access
+    // Opt-in room-scoped history for room switchers. Validate access
     // through the Room graph-thread resolver, then load by sessions.room_id so
     // legacy thread_id shapes backfilled into the Room remain visible.
     if (roomIdParam && isUuidString(roomIdParam)) {
@@ -317,7 +319,7 @@ export function sessionRoutes(
     } else {
       // The unscoped legacy reader can span Rooms, so it remains Memory-
       // capability gated. Exact Room reads above are authorized by current
-      // membership instead (M259).
+      // membership instead.
       const caps = await getUserCapabilities(sessionUserId);
       if (!canViewOwnSessionTranscripts(caps)) {
         return reply.send({ session: null, messages: [] });
@@ -348,7 +350,7 @@ export function sessionRoutes(
       messages,
       request.sessionUserId ?? "",
     );
-    // D424 — hydrate ArtifactOpenCards only for the room-scoped latest path
+    // Hydrate ArtifactOpenCards only for the room-scoped latest path
     // (where the canonical room namespace is known). The non-room latest path
     // has no room context on this route; cards are omitted there.
     const artifactsByMessage = roomIdParam && isUuidString(roomIdParam)
@@ -363,7 +365,7 @@ export function sessionRoutes(
         messageCount: session.messageCount,
         startedAt: session.startedAt,
       },
-      messages: messages.map((m) => ({
+      messages: messages.filter(isVisibleSessionMessage).map((m) => ({
         id: m.id,
         ...(m.logicalMessageKey ? { logicalMessageKey: m.logicalMessageKey } : {}),
         role: m.role,
@@ -391,6 +393,7 @@ export function sessionRoutes(
           ? { authorHarnessId: m.authorHarnessId }
           : {}),
         ...(m.workcardContinuation ? { workcardContinuation: m.workcardContinuation } : {}),
+        ...(m.imageAssistance ? { imageAssistance: m.imageAssistance } : {}),
         ...(() => {
           const reactions = reactionsByMessage.get(Number(m.id));
           return reactions && reactions.length > 0 ? { reactions } : {};
@@ -454,15 +457,8 @@ export function sessionRoutes(
       return reply.code(400).send({ error: "valid beforeId and beforeCreatedAt are required" });
     }
 
-    // D181 cross-member loader fix: gate on ROOM MEMBERSHIP, not on
-    // the caller owning their own session in the room. The legacy
-    // `getRoomGraphThreadForOwnerSession` check (kept above for the
-    // deprecated `/api/sessions/latest?roomId=` route) returns null
-    // for any caller that hasn't written messages in the room — which
-    // is the entire point of D181's cross-member surface (Casey
-    // reloading a two-Human DM as the non-author). Use the same
-    // membership check D174's dispatcher uses (`getRoomDetailForMember`)
-    // so this route's auth contract matches `POST /api/rooms/:id/messages`.
+    // Room membership authorizes shared history even when this Human has no
+    // authored session. Use the same membership check as message dispatch.
     const detail = await deps.getRoomDetailForMember(roomId, sessionActorId);
     if (!detail) {
       return reply.code(404).send({ error: "Not found" });
@@ -513,7 +509,7 @@ export function sessionRoutes(
       messages,
       request.sessionUserId ?? "",
     );
-    // D424 — hydrate server-authored ArtifactOpenCards. Viewer room membership
+    // Hydrate server-authored ArtifactOpenCards. Viewer room membership
     // is verified above (`getRoomDetailForMember`); this re-validates artifact
     // attachment to the canonical room namespace + not-deleted, pointer-only.
     const artifactsByMessage = await safeArtifactsForMessages(messages, roomId);
@@ -552,7 +548,9 @@ export function sessionRoutes(
       }
     }
     return reply.send({
-      messages: messages.map((m) => ({
+      // Shadow readers must correlate every selected structural sibling before
+      // hiding internal protocol rows. Plain readers need only display rows.
+      messages: (shadowReadIntent === null ? messages.filter(isVisibleSessionMessage) : messages).map((m) => ({
         id: m.id,
         ...(m.logicalMessageKey ? { logicalMessageKey: m.logicalMessageKey } : {}),
         role: m.role,
@@ -587,6 +585,7 @@ export function sessionRoutes(
           ? { authorHarnessId: m.authorHarnessId }
           : {}),
         ...(m.workcardContinuation ? { workcardContinuation: m.workcardContinuation } : {}),
+        ...(m.imageAssistance ? { imageAssistance: m.imageAssistance } : {}),
         ...(() => {
           const reactions = reactionsByMessage.get(Number(m.id));
           return reactions && reactions.length > 0 ? { reactions } : {};
@@ -739,7 +738,7 @@ export function sessionRoutes(
     return reply.send(response);
   });
 
-  /** D470 — fetch exactly one authorized, cursor-paged Chats-wide search page. */
+  /** Fetch exactly one authorized, cursor-paged Chats-wide search page. */
   app.get("/api/rooms/search", async (request, reply) => {
     const sessionUserId = request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
     const sessionActorId = request.sessionActorId;
@@ -890,10 +889,10 @@ export function sessionRoutes(
         now: Date.now(),
       }), request.query)
       : undefined;
-    // D430 1.2b deliberately does not hydrate attachments/artifacts; the
-    // around reader's bounded transcript shape is sufficient for navigation.
+    // The around reader's bounded transcript shape is sufficient for navigation
+    // without hydrating attachments/artifacts.
     return reply.send({
-      messages: messages.map(serializeRoomMessageForAround),
+      messages: (shadowReadIntent === null ? messages.filter(isVisibleSessionMessage) : messages).map(serializeRoomMessageForAround),
       target: serializeRoomSearchCursor(page.target),
       includedToolCallCompanion: page.includedToolCallCompanion,
       hasOlder: page.hasOlder,

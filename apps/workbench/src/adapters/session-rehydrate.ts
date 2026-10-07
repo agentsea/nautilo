@@ -11,11 +11,13 @@ import {
   type DataOperationFailureClass,
   type MessagePayloadV2,
 } from "@nautilo/lattice-bridge";
-import type {
-  AdvancedVideoWorkcardContinuation,
-  MessageArtifactOpenRef,
-  MessageAttachmentRef,
-  RoomHistoryTerminalExecutionSummary,
+import {
+  parseImageAssistanceSummary,
+  type AdvancedVideoWorkcardContinuation,
+  type MessageArtifactOpenRef,
+  type MessageAttachmentRef,
+  type ImageAssistanceSummary,
+  type RoomHistoryTerminalExecutionSummary,
 } from "@nautilo/types";
 import {
   parseSerializedToolArgsForDisplay,
@@ -26,7 +28,7 @@ import { preserveComputerUseResultForCard } from "../components/tool-card/render
 import { preserveConnectedAppResultForCard } from "../components/tool-card/renderers/connected-app-receipt";
 import { isShareRejection } from "./live-shadow-message-projection";
 /**
- * Stable Assistant UI metadata key for D424's server-authored open-card
+ * Stable Assistant UI metadata key for 's server-authored open-card
  * pointers. Keep this deliberately distinct from composer `artifactRefs`:
  * these are already authorized, room-scoped pointers received from history
  * or realtime, never a client-side inference from authored prose.
@@ -54,7 +56,7 @@ export function dedupeMessageArtifactOpenRefs(
 
 /**
  * Rehydrate outcome. Callers key off `status` so the PIN-at-start
- * gate (D085) can distinguish a 401 (drop token, show gate with
+ * gate  can distinguish a 401 (drop token, show gate with
  * "session expired") from an empty session (fresh start, no gate)
  * from a transport failure (soft error, no token action).
  */
@@ -165,19 +167,19 @@ export async function reconcileFetchedRoomHistoryPage(
   return messages;
 }
 
-/** Sentinel cursor for "load latest N messages" on GET /api/rooms/:id/messages (D181). */
+/** Sentinel cursor for "load latest N messages" on GET /api/rooms/:id/messages. */
 /**
  * Sentinel "before id" for the "load latest" pagination call.
  *
  * 2147483647 == Postgres int4 max (`session_messages.id` is SERIAL,
  * which is int4-typed). Using `Number.MAX_SAFE_INTEGER` here causes
  * a binding-time OUT_OF_RANGE error from the driver because 2^53-1
- * overflows int4 (D181 smoke 2026-05-18 — first attempt failed
- * silently at the drizzle-orm wrapper layer with "Failed query"
+ * overflows int4 (the driver failure can surface
+ * indirectly at the drizzle-orm wrapper layer with "Failed query"
  * and the underlying PG error was hidden).
  */
 export const LATEST_SENTINEL_BEFORE_ID = 2147483647;
-/** Sentinel cursor for "load latest N messages" on GET /api/rooms/:id/messages (D181). */
+/** Sentinel cursor for "load latest N messages" on GET /api/rooms/:id/messages. */
 /**
  * Sentinel "before" timestamp for the "load latest" pagination call.
  *
@@ -185,8 +187,8 @@ export const LATEST_SENTINEL_BEFORE_ID = 2147483647;
  * date in the server's local TZ, may add up to ~14h offset) cannot
  * roll the year over a SQL TIMESTAMP boundary. The earlier sentinel
  * `9999-12-31T23:59:59.999Z` rolled to year 10000 in CET (+1h) and
- * Postgres rejected the query with no out-of-range diagnostic
- * (D181 smoke 2026-05-18). 2099 is still ~70 years past any real
+ * Postgres rejected the query with no out-of-range diagnostic.
+ * 2099 is still ~70 years past any real
  * workbench message; refresh in 2090 if anyone still cares.
  */
 export const LATEST_SENTINEL_BEFORE_AT = "2099-12-31T00:00:00.000Z";
@@ -282,14 +284,14 @@ export interface StoredSessionMessageDto {
    * tool payload. Never accepted as authority from the ordinary sibling. */
   authenticatedToolCallId?: string;
   replyToMessageId?: number | null;
-  /** D124 — persisted human author (`sessions.owner_id`) for room fan-in. */
+  /** persisted human author (`sessions.owner_id`) for room fan-in. */
   sourceUserId?: string;
-  /** D300 — authoring agent (`sessions.agent_id`) for assistant/tool rows. */
+  /** authoring agent (`sessions.agent_id`) for assistant/tool rows. */
   authorAgentId?: string;
   /** External harness that authored this Task result; `authorAgentId` is its delegator. */
   authorHarnessId?: string;
   /**
-   * D426 — authoritative denormalized child-reply summary on a parent-room
+   * authoritative denormalized child-reply summary on a parent-room
    * anchor row. They join author provenance in Assistant UI's supported
    * `metadata.custom` shape so HTTP hydration and live WS snapshots converge.
    */
@@ -297,18 +299,19 @@ export interface StoredSessionMessageDto {
   lastReplyAt?: string | null;
   summaryRevision?: number;
   /**
-   * D212 / M121 — aggregated emoji reactions inlined by
+   * aggregated emoji reactions inlined by
    * `GET /api/rooms/:id/messages` (omitted when empty). Carried into
    * `metadata.custom.reactions` so the bubble can render a reaction strip.
    */
   reactions?: { emoji: string; count: number }[];
   /**
-   * D424/D570 — server-authorized Workspace document pointers. Normally a
+   * server-authorized Workspace document pointers. Normally a
    * human-authored focus send; also present on the trusted ask_peer assistant
    * question that carries documents into the exact peer DM.
    */
   artifacts?: MessageArtifactOpenRef[];
   attachments?: MessageAttachmentRef[];
+  imageAssistance?: ImageAssistanceSummary;
   workcardContinuation?: AdvancedVideoWorkcardContinuation;
   /** Protected-history-only terminal outcomes mapped to this Human input. */
   terminalExecutions?: readonly RoomHistoryTerminalExecutionSummary[];
@@ -337,6 +340,7 @@ export function projectAuthenticatedRoomHistoryPayload(
     ...availableRow,
     content: payload.content,
     toolCalls: JSON.stringify(payload.toolCalls ?? []),
+    imageAssistance: parseImageAssistanceSummary(payload.sensitiveMetadata?.["imageAssistance"]),
   });
   if (payload.role === "tool") {
     const explicitStatus = payload.sensitiveMetadata?.["toolStatus"];
@@ -463,10 +467,12 @@ export function roomHistoryShadowOrdinarySibling(
   } else if (message.role === "assistant") {
     const toolCalls = parseCanonicalToolCalls(message.toolCalls);
     if (toolCalls === null) return null;
+    const imageAssistance = parseImageAssistanceSummary(message.imageAssistance);
     payload = Object.freeze({
       role: "assistant",
       content: message.content,
       ...(toolCalls.length === 0 ? {} : { toolCalls }),
+      ...(imageAssistance ? { sensitiveMetadata: { imageAssistance: { ...imageAssistance } } } : {}),
     });
   } else if (message.role === "tool") {
     const toolName = message.toolName
@@ -612,6 +618,7 @@ export function restoreSessionMessages(
   // the next page. The cap also bounds malformed assistant-only history.
   const pendingToolCalls: StoredToolCall[] = [];
   for (const m of messages) {
+    if (m.role === "tool" && m.toolName === "image_assistance") continue;
     if (m.workcardContinuation?.kind === "advanced_video") {
       restored.push({
         id: m.id,
@@ -690,7 +697,7 @@ export function restoreSessionMessages(
       const calls = parseToolCalls(m.toolCalls);
       const availablePendingSlots = MAX_PENDING_TOOL_CALLS_PER_PAGE - pendingToolCalls.length;
       if (availablePendingSlots > 0) {
-        pendingToolCalls.push(...calls.filter((call) => call.name !== "skip").slice(0, availablePendingSlots));
+        pendingToolCalls.push(...calls.filter((call) => call.name !== "skip" && call.name !== "image_assistance").slice(0, availablePendingSlots));
       }
       if (m.content.trim() && !calls.some((call) => call.name === "skip")) {
         const custom: Record<string, unknown> = { ...(m.createdAt ? { sentAt: m.createdAt } : {}) };
@@ -710,6 +717,9 @@ export function restoreSessionMessages(
         const artifacts = dedupeMessageArtifactOpenRefs(m.artifacts);
         if (artifacts !== undefined) {
           custom[MESSAGE_ARTIFACT_OPEN_REFS_METADATA_KEY] = artifacts;
+        }
+        if (m.imageAssistance && m.historyUnavailable !== true) {
+          custom.imageAssistance = m.imageAssistance;
         }
         if (m.reactions && m.reactions.length > 0) custom.reactions = m.reactions;
         if (typeof m.replyCount === "number" && Number.isFinite(m.replyCount)) {
@@ -758,7 +768,7 @@ export function restoreSessionMessages(
       );
       if (!m.content.trim()) continue;
       const toolName = storedToolName ?? call?.name ?? "tool result";
-      // D212 P0 — reactions render as a strip on the target message, not
+      // reactions render as a strip on the target message, not
       // as a restored tool card. Consume the pairing (above) then skip.
       if (toolName === "react") continue;
       const custom: Record<string, unknown> = { ...(m.createdAt ? { sentAt: m.createdAt } : {}) };

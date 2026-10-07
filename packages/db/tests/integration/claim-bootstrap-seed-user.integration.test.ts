@@ -1,12 +1,12 @@
 /**
- * D140 — `claimBootstrapSeedUserInTx` integration tests against
+ * Bootstrap-seed — `claimBootstrapSeedUserInTx` integration tests against
  * live Postgres.
  *
- * User-side mirror of `d140-claim-bootstrap-seed.integration.test.ts`.
+ * User-side mirror of `claim-bootstrap-seed-agent.integration.test.ts`.
  * Pins UPDATE-in-place: after a Logto-claim handoff,
  * `SELECT count(*) FROM users` is unchanged (no parallel claimer
  * row inserted) and the bootstrap-seed dummy is re-targeted to the
- * claimer. Predicate (M100-aligned): bootstrap-seed user = the row
+ * claimer. Predicate (credential-aware): bootstrap-seed user = the row
  * with no `credentials` rows AND no `external_id`.
  *
  * DB-STATE INDEPENDENCE (run against any instance, incl. a populated
@@ -21,8 +21,7 @@
  * test seeds. Because the tx rolls back, neither the neutralization
  * nor the fixtures nor the claim side-effects ever touch real data.
  *
- * D140 post-rebase: tests no longer reference `users.is_bootstrap_seed`
- * (column removed; M100's predicate uses credentials presence).
+ * Seed identity is inferred from credentials presence and external identity.
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import {
@@ -39,6 +38,7 @@ import {
   and,
   sql,
 } from "@nautilo/db";
+import { syntheticFixtureEmail } from "../../../../dev/testing/synthetic-fixture-email";
 import { bootstrapTestDbInstance } from "../../src/testing/instance-guard";
 
 let db: ReturnType<typeof createDirectDb>;
@@ -57,7 +57,7 @@ const OWNER_BOOT_CHANNELS = ["tui", "electron", "workbench"] as const;
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-const ROLLBACK_SENTINEL = "__d140_rollback__";
+const ROLLBACK_SENTINEL = "__seed-claim_rollback__";
 
 /**
  * Runs `fn` inside a transaction that is always rolled back, so no real
@@ -85,7 +85,7 @@ async function inRollback(fn: (tx: Tx) => Promise<void>): Promise<void> {
 async function neutralizeSeedShapeUsers(tx: Tx): Promise<void> {
   await tx.execute(sql`
     UPDATE users
-       SET external_id = '__d140_parked_' || id::text
+       SET external_id = '__seed-claim_parked_' || id::text
      WHERE external_id IS NULL
        AND NOT EXISTS (
          SELECT 1 FROM credentials c WHERE c.user_id = users.id
@@ -101,7 +101,7 @@ async function seedFakeBootstrapUser(
     .insert(users)
     .values({
       name: "bootstrap-dummy",
-      email: `dummy-${suffix}@test.local`,
+      email: syntheticFixtureEmail(),
       handle: `dummy-${suffix}`.slice(0, 20),
     })
     .returning({ id: users.id });
@@ -145,7 +145,7 @@ async function countUsers(tx: Tx): Promise<number> {
   return rows[0]?.c ?? 0;
 }
 
-describe("D140 — claimBootstrapSeedUserInTx", () => {
+describe("Bootstrap-seed — claimBootstrapSeedUserInTx", () => {
   test("UPDATE-in-place: user count unchanged across claim", async () => {
     await inRollback(async (tx) => {
       await neutralizeSeedShapeUsers(tx);
@@ -153,10 +153,11 @@ describe("D140 — claimBootstrapSeedUserInTx", () => {
       const seeded = await seedFakeBootstrapUser(tx, ts);
 
       const before = await countUsers(tx);
+      const claimerEmail = syntheticFixtureEmail();
 
       const result = await claimBootstrapSeedUserInTx(tx, {
         name: "Claimer Path A",
-        email: `claimer-${ts}@test.local`,
+        email: claimerEmail,
         handle: `claimer${ts}`.slice(0, 20),
         externalId: `logto-sub-fake-${ts}`,
         pin: {
@@ -189,7 +190,7 @@ describe("D140 — claimBootstrapSeedUserInTx", () => {
         .where(eq(users.id, seeded.userId))
         .limit(1);
       expect(updatedUser?.externalId).toBe(`logto-sub-fake-${ts}`);
-      expect(updatedUser?.email).toBe(`claimer-${ts}@test.local`);
+      expect(updatedUser?.email).toBe(claimerEmail);
 
       const [ownersMembership] = await tx
         .select({ groupId: groupMembers.groupId })
@@ -244,7 +245,7 @@ describe("D140 — claimBootstrapSeedUserInTx", () => {
 
       const result = await claimBootstrapSeedUserInTx(tx, {
         name: "No Seed Claimer",
-        email: `claimer-noseed-${ts}@test.local`,
+        email: syntheticFixtureEmail(),
         handle: `noseed${ts}`.slice(0, 20),
         externalId: null,
         pin: {
@@ -258,7 +259,7 @@ describe("D140 — claimBootstrapSeedUserInTx", () => {
     });
   });
 
-  // Reviewer Finding 2 + predicate-hardening regression test: an M105
+  // A shared-room
   // half-redeemed user (externalId=logtoSub, no credentials) is NOT
   // the bootstrap seed and must NOT be picked up by the claim helper.
   test("half-redeemed user (externalId set, no credentials) is not claimed", async () => {
@@ -268,7 +269,7 @@ describe("D140 — claimBootstrapSeedUserInTx", () => {
       // predicate (external_id IS NULL) must still skip.
       await neutralizeSeedShapeUsers(tx);
       const ts = Date.now().toString(36);
-      const halfRedeemedEmail = `dummy-${ts}@test.local`;
+      const halfRedeemedEmail = syntheticFixtureEmail();
 
       const [halfRedeemed] = await tx
         .insert(users)
@@ -283,7 +284,7 @@ describe("D140 — claimBootstrapSeedUserInTx", () => {
 
       const result = await claimBootstrapSeedUserInTx(tx, {
         name: "Wrong Claimer",
-        email: `claimer-${ts}@test.local`,
+        email: syntheticFixtureEmail(),
         handle: null,
         externalId: `logto-sub-other-${ts}`,
         pin: null,
@@ -309,7 +310,7 @@ describe("D140 — claimBootstrapSeedUserInTx", () => {
     });
   });
 
-  // Reviewer Finding 3: a second claim attempt on an already-bound
+  // A second claim attempt on an already-bound
   // user row must NOT overwrite. With the conditional UPDATE
   // (`external_id IS NULL AND NOT EXISTS credentials` in the WHERE),
   // the second call sees no eligible seed row and returns null cleanly.
@@ -321,7 +322,7 @@ describe("D140 — claimBootstrapSeedUserInTx", () => {
 
       const firstResult = await claimBootstrapSeedUserInTx(tx, {
         name: "First Claim",
-        email: `claimer-first-${ts}@test.local`,
+        email: syntheticFixtureEmail(),
         handle: `first${ts}`.slice(0, 20),
         externalId: `logto-sub-first-${ts}`,
         pin: {
@@ -338,7 +339,7 @@ describe("D140 — claimBootstrapSeedUserInTx", () => {
       // clobbering.
       const secondResult = await claimBootstrapSeedUserInTx(tx, {
         name: "Second Claim (should not bind)",
-        email: `claimer-second-${ts}@test.local`,
+        email: syntheticFixtureEmail(),
         handle: `second${ts}`.slice(0, 20),
         externalId: `logto-sub-second-${ts}`,
         pin: {

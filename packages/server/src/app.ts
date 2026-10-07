@@ -28,6 +28,7 @@ import { setWorkspaceArtifactCreatedSink } from "@nautilo/agent";
 import { createServerMemoryReviewRuntime } from "./lib/memory-review-runtime";
 import { createSurplusCostRecovery } from "./lib/surplus-cost-reconciliation";
 import { openForegroundChatFundingSession } from "./lib/foreground-chat-funding";
+import { openImageAssistance } from "./lib/image-assistance";
 import {
   assertRunnableNativeTaskSelection,
   isPersonalOnlyNativeTaskSelection,
@@ -2085,7 +2086,7 @@ export async function createApp(options?: CreateAppOptions) {
   const reflectionSleepController = new ReflectionSleepController({
     resolveWorker: async () => (await reflectionRuntime()).worker,
   });
-  installForegroundChatFundingPort({ openSession: openForegroundChatFundingSession });
+  installForegroundChatFundingPort({ openSession: openForegroundChatFundingSession, openImageAssistance });
   installTaskFundingPort(nativeTaskFundingPort);
   app.addHook("onClose", () => {
     uninstallForegroundChatFundingPort();

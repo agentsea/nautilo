@@ -1,17 +1,15 @@
 /**
- * D140 — `claimBootstrapSeedAgentInTx` integration tests against
+ * Bootstrap-seed — `claimBootstrapSeedAgentInTx` integration tests against
  * live Postgres.
  *
- * Pins the Success Criterion #5 invariant from the issue: after a
+ * A claim reuses the existing seed row: after a
  * claim handoff, `SELECT count(*) FROM agents` returns the same
  * number as before claim (no duplicate row inserted). Also verifies
  * the predicate behavior (negation of `findDefaultAgentForOwner`'s
  * mirror-actor condition: "no actors row with kind='agent'") and the
  * fallback path (return null when no seed agent exists).
  *
- * D140 post-rebase: tests no longer reference `agents.is_bootstrap_seed`
- * (column removed in favor of M100's helpers; D140 helpers use the
- * credentials/group predicates internally).
+ * Seed identity is inferred from credentials and group membership.
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import {
@@ -24,6 +22,7 @@ import {
   eq,
   sql,
 } from "@nautilo/db";
+import { syntheticFixtureEmail } from "../../../../dev/testing/synthetic-fixture-email";
 import { bootstrapTestDbInstance } from "../../src/testing/instance-guard";
 
 let db: ReturnType<typeof createDirectDb>;
@@ -38,22 +37,22 @@ beforeAll(async () => {
   // own leftover agents from a crashed prior run. NEVER blanket-delete
   // `genie_%` — on a populated instance that targets the operator's real
   // Genie agent (and trips sessions_agent_id_agents_id_fk). Scope to
-  // agents whose mirror actor is owned by a d140 test user (covers both
-  // the `d140%` seed handle and the post-claim `genie_claimer` rename).
+  // agents whose mirror actor is owned by a seed-claim test user (covers both
+  // the `fixture-seed-claim%` seed handle and the post-claim `genie_claimer` rename).
   await db.execute(
-    sql`DELETE FROM agents WHERE handle LIKE 'd140%'
+    sql`DELETE FROM agents WHERE handle LIKE 'fixture-seed-claim%'
       OR id IN (
         SELECT a.agent_id FROM actors a
         JOIN users u ON u.id = a.owner_id
         WHERE a.kind = 'agent' AND a.agent_id IS NOT NULL
-          AND u.email LIKE 'd140-owner-%@test.local'
+          AND u.name = 'fixture-seed-claim-owner'
       )`,
   );
   await db.execute(
-    sql`DELETE FROM actors WHERE display_name IN ('Jeannie','d140-owner','Claimer') AND kind IN ('agent','user')`,
+    sql`DELETE FROM actors WHERE display_name IN ('Jeannie','fixture-seed-claim-owner','Claimer') AND kind IN ('agent','user')`,
   );
   await db.execute(
-    sql`DELETE FROM users WHERE email LIKE 'd140-%@test.local' OR email LIKE 'claimer-%@test.local'`,
+    sql`DELETE FROM users WHERE name IN ('fixture-seed-claim-owner', 'fixture-seed-claim-invitee')`,
   );
 });
 
@@ -66,12 +65,11 @@ async function seedFakeBootstrapAgent(handle: string): Promise<{
   agentActorId: string;
   ownerId: string;
 }> {
-  const ts = Date.now().toString(36);
   const [owner] = await db
     .insert(users)
     .values({
-      name: "d140-owner",
-      email: `d140-owner-${ts}-${handle}@test.local`,
+      name: "fixture-seed-claim-owner",
+      email: syntheticFixtureEmail(),
     })
     .returning({ id: users.id });
   if (!owner) throw new Error("owner seed");
@@ -103,7 +101,7 @@ async function cleanup(agentId: string, ownerId: string): Promise<void> {
   await db.delete(users).where(eq(users.id, ownerId));
 }
 
-describe("D140 — claimBootstrapSeedAgentInTx", () => {
+describe("Bootstrap-seed — claimBootstrapSeedAgentInTx", () => {
   test("UPDATE-in-place: agent count unchanged across claim", async () => {
     // Production-flow fixture: `claimBootstrapSeedUserInTx` runs
     // BEFORE `claimBootstrapSeedAgentInTx` in `redeem-invite.ts` and
@@ -116,7 +114,7 @@ describe("D140 — claimBootstrapSeedAgentInTx", () => {
     // IS the inviteeUserId we pass in. A test that passes a different
     // claimer.id here would exercise the fallback-null path, not the
     // happy claim-seed path.
-    const seedHandle = `d140seed${Date.now().toString(36)}`;
+    const seedHandle = `fixture-seed-claim-${Date.now().toString(36)}`;
     const seeded = await seedFakeBootstrapAgent(seedHandle);
 
     const beforeRows = (await db.execute(
@@ -159,7 +157,7 @@ describe("D140 — claimBootstrapSeedAgentInTx", () => {
     const after = afterRows[0]?.c ?? 0;
     expect(after).toBe(before);
 
-    // Post-state: the seed agent's handle was renamed. M128 —
+    // Post-state: the seed agent's handle was renamed. actor mirror —
     // claimBootstrapSeedAgentInTx no longer mints per-agent ownership
     // groups; the invitee's server seat is added via the invite's
     // target_group_id in redeemInviteAtomically instead.
@@ -188,13 +186,13 @@ describe("D140 — claimBootstrapSeedAgentInTx", () => {
     // Predicate (`actors.owner_id = inviteeUserId AND kind = 'agent'`)
     // returns null when the user owns no agent yet — the brand-new
     // INSERTed user case (kind=agent / kind=room invites, or
-    // pre-D140 Logto-claim's INSERT path before this PR).
+    // pre-Bootstrap-seed Logto-claim's INSERT path before this PR).
     const ts = Date.now().toString(36);
     const [claimer] = await db
       .insert(users)
       .values({
-        name: "Claimer",
-        email: `claimer-noseed-${ts}@test.local`,
+        name: "fixture-seed-claim-invitee",
+        email: syntheticFixtureEmail(),
         handle: `noseed${ts}`.slice(0, 20),
       })
       .returning({ id: users.id });

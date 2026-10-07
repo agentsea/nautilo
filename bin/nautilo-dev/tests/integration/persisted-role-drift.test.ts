@@ -1,9 +1,9 @@
 /**
- * D475 destructive-safe live regression.
+ * Live regression for persisted service-role drift using disposable fixtures.
  *
  * Opt in explicitly:
- *   NAUTILO_D475_LIVE=1 bun test \
- *     bin/nautilo-dev/tests/integration/d475-persisted-role-drift.test.ts
+ *   NAUTILO_ROLE_DRIFT_LIVE=1 bun test \
+ *     bin/nautilo-dev/tests/integration/persisted-role-drift.test.ts
  *
  * The fixture creates a uniquely named disposable instance, proves canonical
  * credentials work, deliberately drifts all three persisted service-role
@@ -27,14 +27,14 @@ import {
 } from "../../src/lib/compose-infra";
 import { reconcileServiceRoles } from "../../src/lib/service-role-reconcile";
 
-const enabled = process.env["NAUTILO_D475_LIVE"] === "1";
+const enabled = process.env["NAUTILO_ROLE_DRIFT_LIVE"] === "1";
 const originalHome = process.env["HOME"];
 const originalInstance = process.env["NAUTILO_INSTANCE_ID"];
 const fixtureHome = enabled
-  ? mkdtempSync(join(tmpdir(), "nautilo-d475-live-"))
-  : join(tmpdir(), "nautilo-d475-live-disabled");
+  ? mkdtempSync(join(tmpdir(), "nautilo-role-drift-live-"))
+  : join(tmpdir(), "nautilo-role-drift-live-disabled");
 const suffix = `${process.pid}-${Date.now().toString(36)}`.toLowerCase();
-const instanceId = `d475-${suffix}`.slice(0, 48);
+const instanceId = `role-drift-${suffix}`.slice(0, 48);
 const projectName = `nautilo-${instanceId}`;
 const portBase = 41_000 + (process.pid % 1_000) * 7;
 let servicePlan: InstanceServiceSecretPlan | undefined;
@@ -182,7 +182,7 @@ function expectSeedFailureBeforeRepair(canonicalPassword: string): void {
   expect(seed.status).not.toBe(0);
 }
 
-describe.skipIf(!enabled)("D475 persisted service-role drift", () => {
+describe.skipIf(!enabled)("Persisted service-role drift", () => {
   beforeAll(async () => {
     process.env["HOME"] = fixtureHome;
     process.env["NAUTILO_INSTANCE_ID"] = instanceId;
@@ -266,7 +266,7 @@ describe.skipIf(!enabled)("D475 persisted service-role drift", () => {
       spawnSync("docker", ["network", "rm", network], { stdio: "ignore" });
     }
     const compatibilityRoot = join(homedir(), `.nautilo-${instanceId}`);
-    if (compatibilityRoot.startsWith(`${homedir()}/.nautilo-d475-`)) {
+    if (compatibilityRoot.startsWith(`${homedir()}/.nautilo-role-drift-`)) {
       rmSync(compatibilityRoot, { recursive: true, force: true });
     }
     if (originalHome === undefined) delete process.env["HOME"];

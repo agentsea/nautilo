@@ -49,14 +49,17 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   exact-model Tasks retain their selected model.
   Mobile cost amounts use the same rounding and tiny-amount display as Workbench.
 
-- Text-only chat models reject new image attachments with clear removal/model
-  selection guidance. Queued images remain editable after a model switch;
-  earlier image history stays saved and text conversations can continue with
-  an explicit image-context notice.
+- Text-only chat models can use an available image-reading model automatically,
+  while keeping the selected chat model. Selection uses the current model
+  catalog, authorized credentials, privacy requirements and estimated cost.
+  Answers identify the image-reading model; completed observations remain
+  available for follow-up questions. When no supported image route is available,
+  attachments show clear removal/model selection guidance. Queued images remain
+  editable after a model switch, and earlier image history stays saved.
   Returning to the app keeps chat visible while access refreshes, and model
   changes avoid repeated full-catalog work and temporary raw provider IDs.
-  On Mobile, tapping the image attachment button for a text-only model explains
-  the restriction without opening the photo picker.
+  On Mobile, tapping the image attachment button when no image route is available
+  explains the restriction without opening the photo picker.
   Long Mobile drafts and attachment guidance remain scrollable on compact screens,
   with message actions kept above the software keyboard.
 

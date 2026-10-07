@@ -8,8 +8,8 @@ import {
   parseCheckpointSemanticCompactionOutput,
 } from "../../src/lib/checkpoint-semantic-compaction";
 
-const enabled = process.env["NAUTILO_D489_DISPOSABLE_PG"] === "1";
-const container = `d489-pg-${randomUUID().slice(0, 12)}`;
+const enabled = process.env["NAUTILO_CHECKPOINT_DISPOSABLE_PG"] === "1";
+const container = `disposable-pg-${randomUUID().slice(0, 12)}`;
 let hostPort = 0;
 
 function docker(args: string[], input?: string) {
@@ -59,10 +59,10 @@ INSERT INTO langchain.checkpoint_blobs VALUES
   ('legacy', 'nested', 'shared', 's2', 'json', convert_to('"legacy-shared"','UTF8'));
 `;
 
-describe.skipIf(!enabled)("D489 disposable semantic compaction", () => {
+describe.skipIf(!enabled)("Disposable checkpoint semantic compaction", () => {
   beforeAll(() => {
     docker(["rm", "-f", container]);
-    const started = docker(["run", "-d", "--name", container, "-p", "127.0.0.1::5432", "-e", "POSTGRES_PASSWORD=d489-disposable", "postgres:16"]);
+    const started = docker(["run", "-d", "--name", container, "-p", "127.0.0.1::5432", "-e", "POSTGRES_PASSWORD=fixture-postgres", "postgres:16"]);
     if (started.status !== 0) throw new Error("disposable PostgreSQL did not start");
     let initComplete = false;
     for (let attempt = 0; attempt < 120; attempt += 1) {
@@ -125,7 +125,7 @@ describe.skipIf(!enabled)("D489 disposable semantic compaction", () => {
     `);
     expect(saverShape.stdout.trim().split(/\s+/)).toEqual(["2", "2", "4", "2"]);
     const saver = PostgresSaver.fromConnString(
-      `postgresql://postgres:d489-disposable@127.0.0.1:${hostPort}/nautilo`,
+      `postgresql://postgres:fixture-postgres@127.0.0.1:${hostPort}/nautilo`,
       { schema: "langchain" },
     );
     try {
