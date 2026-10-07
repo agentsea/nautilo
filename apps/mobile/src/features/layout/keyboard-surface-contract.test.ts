@@ -143,8 +143,10 @@ describe("mobile keyboard surface contract", () => {
 
   test("bottom sheets keep their declared keyboard-safe height", () => {
     const source = readFileSync(resolve(sourceRoot, "components/bottom-sheet.tsx"), "utf8");
-    expect(source).toContain('keyboardBehavior="interactive"');
-    expect(source).toContain('android_keyboardInputMode="adjustResize"');
+    expect(source).toContain('keyboardBehavior = "interactive"');
+    expect(source).toContain("keyboardBehavior={keyboardBehavior}");
+    expect(source).toContain('androidKeyboardInputMode = "adjustResize"');
+    expect(source).toContain("android_keyboardInputMode={androidKeyboardInputMode}");
     expect(source).toContain("enableDynamicSizing={false}");
   });
 

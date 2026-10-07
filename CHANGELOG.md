@@ -7,6 +7,12 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Mobile model search keeps its field and scrollable choices above the keyboard
+  on compact screens; selecting a result works on the first tap.
+
+- Mobile personal key and cost settings retain their header and Back action above
+  the safe area.
+
 - Reflection allows up to ten minutes per poll, preserves completed batch results
   when repair runs out of time, and gives other eligible records a turn after
   timed-out work yields.
@@ -46,6 +52,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   changes avoid repeated full-catalog work and temporary raw provider IDs.
   On Mobile, tapping the image attachment button for a text-only model explains
   the restriction without opening the photo picker.
+  Long Mobile drafts and attachment guidance remain scrollable on compact screens,
+  with message actions kept above the software keyboard.
 
 - Successful skips end the agent turn without another model call. Silence and
   hand-off control activity stays out of chat while rejected hand-offs remain

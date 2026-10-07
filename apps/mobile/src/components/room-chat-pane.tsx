@@ -696,7 +696,7 @@ export function RoomChatPane({
 
 function createStyles(t: AppTheme) {
   return StyleSheet.create({
-    transcriptWrap: { flex: 1 },
+    transcriptWrap: { flex: 1, flexShrink: 1, minHeight: 0, overflow: "hidden" },
     listBody: { paddingHorizontal: t.spacing.md, paddingVertical: t.spacing.sm },
     highlightedRow: {
       borderRadius: t.radii.md,
