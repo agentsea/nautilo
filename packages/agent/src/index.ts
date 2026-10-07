@@ -53,6 +53,8 @@ export {
 } from "./agent/graph";
 export {
   createEncryptedCheckpointSaver,
+  encryptedCheckpointShadowNamespaceId,
+  encryptedCheckpointShadowThreadId,
   ENCRYPTED_CHECKPOINT_LIST_DEFAULT_LIMIT,
   ENCRYPTED_CHECKPOINT_LIST_MAX_LIMIT,
   EncryptedCheckpointSaver,
@@ -74,7 +76,13 @@ export {
   type EncryptedCheckpointMaintenanceCoordinate,
   type EncryptedCheckpointMaintenanceOutcome,
   type EncryptedCheckpointSaverCloseOutcome,
+  type EncryptedCheckpointSaverQuiescence,
 } from "./checkpoints/encrypted-checkpoint-saver";
+export {
+  readEncryptedCheckpointPhysicalManifest,
+  type EncryptedCheckpointManifestPool,
+  type EncryptedCheckpointPhysicalManifest,
+} from "./checkpoints/encrypted-checkpoint-manifest";
 export {
   createDedicatedEncryptedCheckpointPool,
 } from "./checkpoints/checkpoint-saver";

@@ -399,6 +399,8 @@ export type {
 export {
   withProtectedTaskCheckpointSaver,
   withNativeProtectedTaskCheckpointSaver,
+  withNativeProtectedTaskCheckpointManifest,
+  type NativeProtectedTaskCheckpointManifestResult,
 } from "./tasks/protected-task-checkpoint-saver";
 export {
   dispatchTaskRun,

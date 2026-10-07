@@ -837,7 +837,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                         now,
                         assertCurrentTaskAuthority,
                         createDedicatedPool: input.createDedicatedPool,
-                        execute: checkpointSaver => {
+                        execute: async checkpointSaver => {
                           const memoryHandoff: MemoryHandoff = Object.freeze({
                             search: repository,
                             repository,
@@ -878,14 +878,26 @@ export function createProtectedTaskNativeFixedMemorySegment(
                                   }),
                             }),
                           };
-                          return dependencies.runSegment(segment).then(result => {
-                            if ("status" in result) {
-                              throw new TypeError(
-                                "Protected Task fixed Memory continuation is unavailable",
-                              );
-                            }
-                            return result;
-                          });
+                          const outcome = await Promise.resolve()
+                            .then(() => dependencies.runSegment(segment))
+                            .then(
+                              value => ({ status: "fulfilled", value } as const),
+                              (error: unknown) => ({ status: "rejected", error } as const),
+                            );
+                          const transcriptClose = await transcriptPort.quiesce();
+                          if (outcome.status === "rejected") throw outcome.error;
+                          if (transcriptClose.failedPublicationCount !== 0) {
+                            throw new Error(
+                              "Protected Task transcript publication did not complete",
+                            );
+                          }
+                          const result = outcome.value;
+                          if ("status" in result) {
+                            throw new TypeError(
+                              "Protected Task fixed Memory continuation is unavailable",
+                            );
+                          }
+                          return result;
                         },
                       }),
                     }),

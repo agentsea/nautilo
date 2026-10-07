@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   and,
   asc,
@@ -12,6 +13,7 @@ import {
 import { alias } from "drizzle-orm/pg-core";
 
 import type { DirectDatabase } from "../config/direct-database";
+import type { ProtectedTaskTranscriptManifestReceipt } from "./protected-task-execution-receipts";
 import { sessionMessageCryptoRevisions } from
   "../schema/session-message-crypto-revisions";
 import { sessionMessages, sessions } from "../schema/sessions";
@@ -595,5 +597,80 @@ export async function readProtectedTaskRunTranscriptIndex(
   return Object.freeze({
     status: "ready" as const,
     rows: Object.freeze(projected),
+  });
+}
+
+/**
+ * Cumulative transcript provenance at a closed execution boundary. The caller
+ * must hold Task -> TaskRun UPDATE locks until sealing/parking commits: Message
+ * association writers take those lifecycle locks before inserting provenance.
+ * Never join Messages here; deletion must not erase the receipt denominator.
+ *
+ * Digest v1 is SHA-256 over UTF-8 JSON arrays separated by LF: a version/identity/
+ * row-count header, then immutable publication coordinates in message-id order.
+ * createdAt is deliberately not part of publication identity.
+ */
+export async function readProtectedTaskTranscriptManifestInTx(
+  tx: Pick<DirectDatabase, "select">,
+  input: Readonly<{
+    taskId: string;
+    taskRunId: string;
+    graphThreadId: string;
+  }>,
+): Promise<ProtectedTaskTranscriptManifestReceipt> {
+  if (!CANONICAL_UUID.test(input.taskId)
+    || !CANONICAL_UUID.test(input.taskRunId)
+    || typeof input.graphThreadId !== "string"
+    || input.graphThreadId.length === 0) {
+    throw new TypeError("Protected Task transcript manifest identity is malformed");
+  }
+  const [run] = await tx.select({
+    id: taskRuns.id,
+    taskId: taskRuns.taskId,
+    graphThreadId: taskRuns.graphThreadId,
+  }).from(taskRuns).where(and(
+    eq(taskRuns.id, input.taskRunId),
+    eq(taskRuns.taskId, input.taskId),
+    eq(taskRuns.graphThreadId, input.graphThreadId),
+  )).limit(1);
+  if (!run || run.id !== input.taskRunId || run.taskId !== input.taskId
+    || run.graphThreadId !== input.graphThreadId) {
+    throw new Error("Protected Task transcript manifest lost its TaskRun");
+  }
+  const rows = await tx.select({
+    taskRunId: taskRunMessageAssociations.taskRunId,
+    sessionId: taskRunMessageAssociations.sessionId,
+    messageId: taskRunMessageAssociations.messageId,
+    publishedRevision: taskRunMessageAssociations.publishedRevision,
+    kind: taskRunMessageAssociations.kind,
+    publicationKey: taskRunMessageAssociations.publicationKey,
+  }).from(taskRunMessageAssociations).where(and(
+    eq(taskRunMessageAssociations.taskRunId, input.taskRunId),
+    eq(taskRunMessageAssociations.kind, "transcript"),
+  )).orderBy(asc(taskRunMessageAssociations.messageId));
+  const hash = createHash("sha256");
+  hash.update(JSON.stringify([
+    "protected-task-transcript-manifest:v1", input.taskId, input.taskRunId,
+    input.graphThreadId, rows.length,
+  ]) + "\n", "utf8");
+  let previousMessageId = 0;
+  for (const row of rows) {
+    if (row.taskRunId !== input.taskRunId || row.kind !== "transcript"
+      || !CANONICAL_UUID.test(row.sessionId)
+      || !Number.isSafeInteger(row.messageId) || row.messageId <= previousMessageId
+      || !Number.isSafeInteger(row.publishedRevision) || row.publishedRevision < 0
+      || typeof row.publicationKey !== "string" || row.publicationKey.length === 0) {
+      throw new Error("Protected Task transcript manifest contains invalid provenance");
+    }
+    hash.update(JSON.stringify([
+      row.taskRunId, row.sessionId, String(row.messageId),
+      String(row.publishedRevision), row.kind, row.publicationKey,
+    ]) + "\n", "utf8");
+    previousMessageId = row.messageId;
+  }
+  return Object.freeze({
+    contract: "protected_message_associations_v1" as const,
+    expectedAssociationCount: rows.length,
+    orderedDigest: new Uint8Array(hash.digest()),
   });
 }

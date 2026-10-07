@@ -44,6 +44,16 @@ import {
   "../schema/protected-task-run-output-bindings";
 import { protectedTaskRunResultObjectId } from
   "./protected-task-output-binding-identities";
+import {
+  sealProtectedTaskContinuationReceiptInTx,
+  sealProtectedTaskExecutionSegmentReceiptInTx,
+  type SealProtectedTaskContinuationReceiptInput,
+  type SealProtectedTaskContinuationReceiptResult,
+  type SealProtectedTaskExecutionSegmentReceiptInput,
+  type SealProtectedTaskExecutionSegmentReceiptResult,
+} from "./protected-task-execution-receipts";
+import { readProtectedTaskTranscriptManifestInTx } from
+  "./task-run-message-associations";
 
 type TaskStatus = NonNullable<NewTask["status"]>;
 type TaskRunStatus = NonNullable<NewTaskRun["status"]>;
@@ -2239,7 +2249,8 @@ export type ProtectedTaskRunInterruptKind =
   | "approval"
   | "prove_it"
   | "identity"
-  | "await_reply";
+  | "await_reply"
+  | "additional_authority";
 
 export type ProtectedTaskRunInterruptCoordinate = Readonly<{
   id: string;
@@ -2303,6 +2314,62 @@ export type ParkProtectedTaskRunInput = Readonly<{
 export type ParkProtectedTaskRunResult =
   | Readonly<{ status: "parked" | "exact_replay" }>
   | Readonly<{ status: "rejected"; reason: "conflict" | "not_found" | "stale" }>;
+
+type SegmentReceiptEvidence = Omit<
+  SealProtectedTaskExecutionSegmentReceiptInput,
+  | "taskId"
+  | "taskRunId"
+  | "jobId"
+  | "executionSegment"
+  | "transcript"
+  | "sealedAt"
+>;
+
+type WithoutContinuationIdentity<
+  Input extends SealProtectedTaskContinuationReceiptInput,
+> = Input extends SealProtectedTaskContinuationReceiptInput
+  ? Omit<
+      Input,
+      "taskId" | "taskRunId" | "jobId" | "executionSegment" | "sealedAt"
+    >
+  : never;
+
+export type SealAndParkProtectedTaskRunContinuation = Readonly<
+  Omit<WithoutContinuationIdentity<Extract<
+    SealProtectedTaskContinuationReceiptInput,
+    { kind: "pre_effect_interrupt_v1" }
+  >>, "reason"> & { reason: "additional_authority" }
+>;
+
+export type SealAndParkProtectedTaskRunInput = Readonly<{
+  park: ParkProtectedTaskRunInput;
+  segment: SegmentReceiptEvidence;
+  continuation: SealAndParkProtectedTaskRunContinuation;
+}>;
+
+export type SealAndParkProtectedTaskRunResult =
+  | Readonly<{ status: "parked" | "exact_replay" }>
+  | Readonly<{
+      status: "rejected";
+      stage: "segment";
+      reason: Extract<
+        SealProtectedTaskExecutionSegmentReceiptResult,
+        { status: "rejected" }
+      >["reason"];
+    }>
+  | Readonly<{
+      status: "rejected";
+      stage: "continuation";
+      reason: Extract<
+        SealProtectedTaskContinuationReceiptResult,
+        { status: "rejected" }
+      >["reason"];
+    }>
+  | Readonly<{
+      status: "rejected";
+      stage: "park";
+      reason: Extract<ParkProtectedTaskRunResult, { status: "rejected" }>["reason"];
+    }>;
 
 export type StartParkedProtectedTaskRunSegmentInput = Readonly<{
   taskId: string;
@@ -2429,7 +2496,13 @@ function canonicalInterruptCoordinates(
     if (
       keys !== "id,kind" && keys !== "id,kind,requestId"
       || !opaqueCheckpointCoordinate(candidate["id"])
-      || !["approval", "prove_it", "identity", "await_reply"].includes(
+      || ![
+        "approval",
+        "prove_it",
+        "identity",
+        "await_reply",
+        "additional_authority",
+      ].includes(
         candidate["kind"] as string,
       )
     ) {
@@ -2595,19 +2668,18 @@ function pristineProtectedTaskRun(run: TaskRun): boolean {
     && run.resultCryptoMappingState === "unmapped";
 }
 
-/**
- * Park one clean protected graph interruption after its encrypted checkpoint
- * is durable. The Job receipt contains only closed checkpoint coordinates; it
- * never stores interrupt arguments, reasons, replies, or a content digest.
- *
- * This transition shares Task -> TaskRun -> Job row-lock order with terminal
- * result publication, so exactly one outcome can win. A later continuation
- * may attach a fresh Job to this awaiting run after reopening the checkpoint.
- */
-export async function parkProtectedTaskRun(
-  db: DirectDatabase,
+type ProtectedTaskParkTx = Pick<DirectDatabase, "select" | "update">;
+
+type LockedProtectedTaskParkRows = Readonly<{
+  status: "locked";
+  task: Task;
+  run: TaskRun;
+  job: Job;
+}>;
+
+function prepareProtectedTaskParkReceipt(
   input: ParkProtectedTaskRunInput,
-): Promise<ParkProtectedTaskRunResult> {
+): ProtectedTaskRunParkReceipt {
   if (
     !input.taskId
     || !input.taskRunId
@@ -2636,125 +2708,327 @@ export async function parkProtectedTaskRun(
   ) {
     throw new TypeError("Protected Task park binding is malformed");
   }
-  const receipt = parkReceipt(input);
+  return parkReceipt(input);
+}
 
-  return db.transaction(async (tx) => {
-    const [task] = await tx.select().from(tasks)
-      .where(eq(tasks.id, input.taskId)).limit(1).for("update");
-    if (!task) return { status: "rejected", reason: "not_found" } as const;
+async function lockProtectedTaskParkRows(
+  tx: Pick<DirectDatabase, "select">,
+  input: ParkProtectedTaskRunInput,
+): Promise<LockedProtectedTaskParkRows | Extract<
+  ParkProtectedTaskRunResult,
+  { status: "rejected" }
+>> {
+  const [task] = await tx.select().from(tasks)
+    .where(eq(tasks.id, input.taskId)).limit(1).for("update");
+  if (!task) return { status: "rejected", reason: "not_found" };
 
-    const [run] = await tx.select().from(taskRuns).where(and(
-      eq(taskRuns.id, input.taskRunId),
-      eq(taskRuns.taskId, task.id),
-    )).limit(1).for("update");
-    if (!run) return { status: "rejected", reason: "not_found" } as const;
+  const [run] = await tx.select().from(taskRuns).where(and(
+    eq(taskRuns.id, input.taskRunId),
+    eq(taskRuns.taskId, task.id),
+  )).limit(1).for("update");
+  if (!run) return { status: "rejected", reason: "not_found" };
 
-    const [job] = await tx.select().from(jobs)
-      .where(eq(jobs.id, input.jobId)).limit(1).for("update");
-    if (!job) return { status: "rejected", reason: "not_found" } as const;
+  const [job] = await tx.select().from(jobs)
+    .where(eq(jobs.id, input.jobId)).limit(1).for("update");
+  if (!job) return { status: "rejected", reason: "not_found" };
 
-    const metadata = isRecord(job.metadata) ? job.metadata : {};
-    const existingReceipt = metadata[PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY];
-    const exactProtectedTask = (
-      task.contentRepresentation === "dual"
-        || task.contentRepresentation === "protected"
-    )
-      && task.contentNamespaceId !== null
-      && task.contentRevision > 0
-      && task.cryptoObjectId !== null
-      && task.cryptoAccessRevision >= 0
-      && task.cryptoRequiredNamespaceFingerprint !== null
-      && task.cryptoRequiredNamespaceFingerprint.length === 32
-      && task.cryptoMappingState === "verified"
-      && task.lastError === null
-      && (task.contentRepresentation !== "protected" || (
-        task.prompt === ""
-        && task.expectedOutput === null
-      ));
-    const exactRunIdentity = run.graphThreadId === input.graphThreadId
-      && run.jobId === input.jobId
-      && pristineProtectedTaskRun(run);
-    const exactJobIdentity = job.ownerId === task.requestorId
-      && job.requestorId === task.requestorId
-      && job.laneKey === `task:${task.id}`
-      && job.type === "foreground"
-      && job.result === null
-      && job.message === null
-      && job.startedAt !== null
-      && metadata["nautilo.protectedTaskRunTerminal.v1"] === undefined
-      && input.jobReference.inputObjectId === task.cryptoObjectId
-      && exactProtectedTaskJobReference(job.input, input.jobReference);
-    const expectedTaskParkedStatus = task.scheduleKind === "cron"
-      ? "pending"
-      : "awaiting";
+  return { status: "locked", task, run, job };
+}
+
+async function parkProtectedTaskRunWithLockedRows(
+  tx: ProtectedTaskParkTx,
+  input: ParkProtectedTaskRunInput,
+  receipt: ProtectedTaskRunParkReceipt,
+  rows: LockedProtectedTaskParkRows,
+): Promise<ParkProtectedTaskRunResult> {
+  const { task, run, job } = rows;
+  const metadata = isRecord(job.metadata) ? job.metadata : {};
+  const existingReceipt = metadata[PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY];
+  const exactProtectedTask = (
+    task.contentRepresentation === "dual"
+      || task.contentRepresentation === "protected"
+  )
+    && task.contentNamespaceId !== null
+    && task.contentRevision > 0
+    && task.cryptoObjectId !== null
+    && task.cryptoAccessRevision >= 0
+    && task.cryptoRequiredNamespaceFingerprint !== null
+    && task.cryptoRequiredNamespaceFingerprint.length === 32
+    && task.cryptoMappingState === "verified"
+    && task.lastError === null
+    && (task.contentRepresentation !== "protected" || (
+      task.prompt === ""
+      && task.expectedOutput === null
+    ));
+  const exactRunIdentity = run.graphThreadId === input.graphThreadId
+    && run.jobId === input.jobId
+    && pristineProtectedTaskRun(run);
+  const exactJobIdentity = job.ownerId === task.requestorId
+    && job.requestorId === task.requestorId
+    && job.laneKey === `task:${task.id}`
+    && job.type === "foreground"
+    && job.result === null
+    && job.message === null
+    && job.startedAt !== null
+    && metadata["nautilo.protectedTaskRunTerminal.v1"] === undefined
+    && input.jobReference.inputObjectId === task.cryptoObjectId
+    && exactProtectedTaskJobReference(job.input, input.jobReference);
+  const expectedTaskParkedStatus = task.scheduleKind === "cron"
+    ? "pending"
+    : "awaiting";
+  if (
+    task.status === expectedTaskParkedStatus
+    && run.status === "awaiting"
+    && run.jobId === job.id
+    && job.status === "completed"
+  ) {
     if (
-      task.status === expectedTaskParkedStatus
-      && run.status === "awaiting"
-      && run.jobId === job.id
-      && job.status === "completed"
-    ) {
-      if (
-        !exactProtectedTask
-        || !exactRunIdentity
-        || !exactJobIdentity
-        || !exactParkReceipt(existingReceipt, receipt)
-        || job.completedAt?.getTime() !== input.parkedAt.getTime()
-      ) return { status: "rejected", reason: "conflict" } as const;
-      return { status: "exact_replay" } as const;
-    }
-
-    if (
-      task.status !== (task.scheduleKind === "cron" ? "pending" : "running")
-      || !exactProtectedTask
-      || run.status !== "running"
+      !exactProtectedTask
       || !exactRunIdentity
       || !exactJobIdentity
-      || job.status !== "running"
-      || job.completedAt !== null
-      || existingReceipt !== undefined
-    ) return { status: "rejected", reason: "stale" } as const;
+      || !exactParkReceipt(existingReceipt, receipt)
+      || job.completedAt?.getTime() !== input.parkedAt.getTime()
+    ) return { status: "rejected", reason: "conflict" };
+    return { status: "exact_replay" };
+  }
 
-    const [updatedJob] = await tx.update(jobs).set({
-      status: "completed",
-      completedAt: new Date(input.parkedAt.getTime()),
-      metadata: {
-        ...metadata,
-        [PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY]: receipt,
-      },
-    }).where(and(
-      eq(jobs.id, job.id),
-      eq(jobs.status, "running"),
-      isNull(jobs.result),
-      isNull(jobs.message),
-      isNull(jobs.completedAt),
-    )).returning();
-    if (!updatedJob) throw new Error("Protected Task park CAS lost its Job");
+  if (
+    task.status !== (task.scheduleKind === "cron" ? "pending" : "running")
+    || !exactProtectedTask
+    || run.status !== "running"
+    || !exactRunIdentity
+    || !exactJobIdentity
+    || job.status !== "running"
+    || job.completedAt !== null
+    || existingReceipt !== undefined
+  ) return { status: "rejected", reason: "stale" };
 
-    const [updatedRun] = await tx.update(taskRuns).set({
+  const [updatedJob] = await tx.update(jobs).set({
+    status: "completed",
+    completedAt: new Date(input.parkedAt.getTime()),
+    metadata: {
+      ...metadata,
+      [PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY]: receipt,
+    },
+  }).where(and(
+    eq(jobs.id, job.id),
+    eq(jobs.status, "running"),
+    isNull(jobs.result),
+    isNull(jobs.message),
+    isNull(jobs.completedAt),
+  )).returning();
+  if (!updatedJob) throw new Error("Protected Task park CAS lost its Job");
+
+  const [updatedRun] = await tx.update(taskRuns).set({
+    status: "awaiting",
+  }).where(and(
+    eq(taskRuns.id, run.id),
+    eq(taskRuns.taskId, task.id),
+    eq(taskRuns.graphThreadId, input.graphThreadId),
+    eq(taskRuns.jobId, job.id),
+    eq(taskRuns.status, "running"),
+    isNull(taskRuns.completedAt),
+  )).returning();
+  if (!updatedRun) throw new Error("Protected Task park CAS lost its TaskRun");
+
+  if (task.scheduleKind !== "cron") {
+    const [updatedTask] = await tx.update(tasks).set({
       status: "awaiting",
+      updatedAt: new Date(input.parkedAt.getTime()),
     }).where(and(
-      eq(taskRuns.id, run.id),
-      eq(taskRuns.taskId, task.id),
-      eq(taskRuns.graphThreadId, input.graphThreadId),
-      eq(taskRuns.jobId, job.id),
-      eq(taskRuns.status, "running"),
-      isNull(taskRuns.completedAt),
+      eq(tasks.id, task.id),
+      eq(tasks.status, "running"),
+      inArray(tasks.contentRepresentation, ["dual", "protected"]),
     )).returning();
-    if (!updatedRun) throw new Error("Protected Task park CAS lost its TaskRun");
+    if (!updatedTask) throw new Error("Protected Task park CAS lost its Task");
+  }
+  return { status: "parked" };
+}
 
-    if (task.scheduleKind !== "cron") {
-      const [updatedTask] = await tx.update(tasks).set({
-        status: "awaiting",
-        updatedAt: new Date(input.parkedAt.getTime()),
-      }).where(and(
-        eq(tasks.id, task.id),
-        eq(tasks.status, "running"),
-        inArray(tasks.contentRepresentation, ["dual", "protected"]),
-      )).returning();
-      if (!updatedTask) throw new Error("Protected Task park CAS lost its Task");
-    }
-    return { status: "parked" } as const;
+/**
+ * Park one clean protected graph interruption after its encrypted checkpoint
+ * is durable. The Job receipt contains only closed checkpoint coordinates; it
+ * never stores interrupt arguments, reasons, replies, or a content digest.
+ *
+ * This transition shares Task -> TaskRun -> Job row-lock order with terminal
+ * result publication, so exactly one outcome can win. A later continuation
+ * may attach a fresh Job to this awaiting run after reopening the checkpoint.
+ */
+export async function parkProtectedTaskRun(
+  db: DirectDatabase,
+  input: ParkProtectedTaskRunInput,
+): Promise<ParkProtectedTaskRunResult> {
+  const receipt = prepareProtectedTaskParkReceipt(input);
+
+  return db.transaction(async (tx) => {
+    const locked = await lockProtectedTaskParkRows(tx, input);
+    return locked.status === "rejected"
+      ? locked
+      : parkProtectedTaskRunWithLockedRows(tx, input, receipt, locked);
   });
+}
+
+type SealAndParkRejection = Extract<
+  SealAndParkProtectedTaskRunResult,
+  { status: "rejected" }
+>;
+
+class SealAndParkRollback extends Error {
+  readonly rejection: SealAndParkRejection;
+
+  constructor(rejection: SealAndParkRejection) {
+    super("Protected Task seal-and-park transaction rejected");
+    this.name = "SealAndParkRollback";
+    this.rejection = rejection;
+  }
+}
+
+function rollbackSealAndPark(rejection: SealAndParkRejection): never {
+  throw new SealAndParkRollback(Object.freeze(rejection));
+}
+
+/**
+ * Atomically seal one native pre-effect continuation and park its exact
+ * protected TaskRun. Lifecycle rows are locked Task -> TaskRun -> Job before
+ * transcript evidence is read or immutable receipts are inserted. Any staged
+ * rejection aborts the transaction so a park cannot retain partial proof.
+ */
+export async function sealAndParkProtectedTaskRun(
+  db: DirectDatabase,
+  input: SealAndParkProtectedTaskRunInput,
+): Promise<SealAndParkProtectedTaskRunResult> {
+  const parkReceiptValue = prepareProtectedTaskParkReceipt(input.park);
+  const park = Object.freeze({
+    ...input.park,
+    interrupts: parkReceiptValue.interrupts,
+    parkedAt: new Date(input.park.parkedAt.getTime()),
+    jobReference: Object.freeze({ ...input.park.jobReference }),
+  });
+  const segment = input.segment;
+  if (segment.route !== "native_langgraph_v1"
+    || segment.checkpoint.contract !== "encrypted_langgraph_v1"
+    || !Number.isSafeInteger(segment.checkpoint.expectedCheckpointCount)
+    || segment.checkpoint.expectedCheckpointCount < 1) {
+    throw new TypeError("Protected Task seal-and-park segment is malformed");
+  }
+  const segmentSnapshot = Object.freeze({
+    route: segment.route,
+    checkpoint: Object.freeze({
+      ...segment.checkpoint,
+      checkpointOrderedDigest:
+        segment.checkpoint.checkpointOrderedDigest?.slice() ?? null,
+      blobOrderedDigest: segment.checkpoint.blobOrderedDigest?.slice() ?? null,
+      pendingWriteOrderedDigest:
+        segment.checkpoint.pendingWriteOrderedDigest?.slice() ?? null,
+    }),
+  });
+  const continuation = input.continuation;
+  if (!isRecord(continuation)
+    || continuation.kind !== "pre_effect_interrupt_v1"
+    || continuation.reason !== "additional_authority"
+    || !(continuation.requestDigest instanceof Uint8Array)
+    || !(continuation.requiredAuthorityDigest instanceof Uint8Array)) {
+    throw new TypeError("Protected Task seal-and-park continuation is malformed");
+  }
+  const continuationSnapshot = Object.freeze({
+    kind: continuation.kind,
+    reason: continuation.reason,
+    effectDisposition: continuation.effectDisposition,
+    interruptId: continuation.interruptId,
+    operationId: continuation.operationId,
+    requestDigest: continuation.requestDigest.slice(),
+    requiredAuthorityDigest: continuation.requiredAuthorityDigest.slice(),
+  });
+  const interrupt = parkReceiptValue.interrupts.find(candidate =>
+    candidate.id === continuationSnapshot.interruptId
+  );
+  if (interrupt === undefined || interrupt.kind !== "additional_authority") {
+    throw new TypeError("Protected Task seal-and-park continuation is malformed");
+  }
+
+  try {
+    return await db.transaction(async (tx) => {
+      const locked = await lockProtectedTaskParkRows(tx, park);
+      if (locked.status === "rejected") {
+        return rollbackSealAndPark({
+          status: "rejected",
+          stage: "park",
+          reason: locked.reason,
+        });
+      }
+
+      const transcript = await readProtectedTaskTranscriptManifestInTx(tx, {
+        taskId: park.taskId,
+        taskRunId: park.taskRunId,
+        graphThreadId: park.graphThreadId,
+      });
+      const segmentResult = await sealProtectedTaskExecutionSegmentReceiptInTx(
+        tx,
+        {
+          ...segmentSnapshot,
+          taskId: park.taskId,
+          taskRunId: park.taskRunId,
+          jobId: park.jobId,
+          executionSegment: park.executionSegment,
+          transcript,
+          sealedAt: new Date(park.parkedAt.getTime()),
+        },
+      );
+      if (segmentResult.status === "rejected") {
+        return rollbackSealAndPark({
+          status: "rejected",
+          stage: "segment",
+          reason: segmentResult.reason,
+        });
+      }
+
+      const continuationResult = await sealProtectedTaskContinuationReceiptInTx(
+        tx,
+        {
+          ...continuationSnapshot,
+          taskId: park.taskId,
+          taskRunId: park.taskRunId,
+          jobId: park.jobId,
+          executionSegment: park.executionSegment,
+          sealedAt: new Date(park.parkedAt.getTime()),
+        },
+      );
+      if (continuationResult.status === "rejected") {
+        return rollbackSealAndPark({
+          status: "rejected",
+          stage: "continuation",
+          reason: continuationResult.reason,
+        });
+      }
+
+      const parkResult = await parkProtectedTaskRunWithLockedRows(
+        tx,
+        park,
+        parkReceiptValue,
+        locked,
+      );
+      if (parkResult.status === "rejected") {
+        return rollbackSealAndPark({
+          status: "rejected",
+          stage: "park",
+          reason: parkResult.reason,
+        });
+      }
+      if (parkResult.status === "exact_replay"
+        && (segmentResult.status !== "exact_replay"
+          || continuationResult.status !== "exact_replay")) {
+        return rollbackSealAndPark({
+          status: "rejected",
+          stage: "park",
+          reason: "conflict",
+        });
+      }
+      return Object.freeze({ status: parkResult.status });
+    });
+  } catch (error) {
+    if (error instanceof SealAndParkRollback) return error.rejection;
+    throw error;
+  }
 }
 
 type PublishedProtectedTaskReplyMessage = Readonly<{

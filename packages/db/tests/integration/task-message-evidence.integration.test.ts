@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
   agents, getSharedDirectDb, __resetSharedDirectDbForTests, eq, readTaskRunMessageMappingCounts,
-  recordTaskRunMessageAssociationInTx, sessionMessages, sessions,
+  recordTaskRunMessageAssociationInTx, readProtectedTaskTranscriptManifestInTx, sessionMessages, sessions,
   sql, taskRunMessageAssociations, taskRuns, tasks, users,
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "../../src/testing/instance-guard";
@@ -53,7 +53,18 @@ test("Task Message evidence survives Message deletion and cannot be rewritten by
         verifiedMappedCount: 0, verifiedShadowMappedCount: 0, verifiedFullMappedCount: 0,
         pendingOrStaleCount: 1, missingMessageCount: 0,
       }]);
+      const manifestIdentity = {
+        taskId: task!.id, taskRunId: run!.id, graphThreadId: thread,
+      };
+      const beforeDeletion = await readProtectedTaskTranscriptManifestInTx(
+        tx, manifestIdentity,
+      );
+      expect(beforeDeletion.contract).toBe("protected_message_associations_v1");
+      expect(beforeDeletion.expectedAssociationCount).toBe(1);
+      expect(beforeDeletion.orderedDigest?.length).toBe(32);
       await tx.delete(sessionMessages).where(eq(sessionMessages.id, message!.id));
+      expect(await readProtectedTaskTranscriptManifestInTx(tx, manifestIdentity))
+        .toEqual(beforeDeletion);
       expect(await readTaskRunMessageMappingCounts(tx, run!.id)).toMatchObject([{
         associatedCount: 1, presentMessageCount: 0, missingMessageCount: 1,
       }]);

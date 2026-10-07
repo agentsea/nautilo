@@ -492,6 +492,7 @@ function overrides(
       finally { calls.push("checkpoint-close"); }
     },
     createTranscriptPort: () => Object.freeze({
+      quiesce: async () => ({ failedPublicationCount: 0 }),
       publishBatch: async () => undefined,
     }),
     runSegment: async (input: {
@@ -664,6 +665,74 @@ describe("protected Task native fixed Memory segment", () => {
     ))).rejects.toThrow();
     expect(scenario.calls).toEqual([]);
   });
+
+  for (const fails of [false, true]) {
+    test(`drains escaped transcript writes before owner close (failure=${fails})`, async () => {
+      const value = await fixture();
+      const calls: string[] = [];
+      const terminal: unknown[] = [];
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const prepare = createProtectedTaskNativeFixedMemorySegment({
+        ...compositionInput(value.crypto, runner()),
+        createTranscriptPublisher: async () => async () => {
+          started.resolve();
+          await release.promise;
+          if (fails) throw new Error("transcript storage failed");
+          calls.push("transcript-stored");
+        },
+      }, {
+        ...overrides(calls),
+        createTranscriptPort: createProtectedTaskTranscriptPort,
+        runSegment: async segment => {
+          void segment.transcriptPort.publishBatch({
+            taskId: segment.taskId,
+            taskRunId: segment.taskRunId,
+            graphThreadId: segment.graphThreadId,
+            roomId: segment.execution.roomId,
+            humanTurnId: segment.execution.parentTurnId,
+            agentId: segment.execution.subEnvelope.agentId,
+            messages: [new AIMessage("protected progress")],
+          }).catch(() => undefined);
+          return { formatVersion: 1, resultText: "done", lastError: null };
+        },
+      });
+      await withTaskRuntimeExecutionEvidenceV1({
+        evidence: value.evidenceInput,
+        signal: new AbortController().signal,
+        now: () => NOW,
+        execute: async evidence => {
+          const prepared = await prepare({
+            occurrence: value.occurrence, predispatch: value.predispatch,
+            policy: value.policy, reference: value.reference,
+          });
+          const transient = await prepared.openTransientInput({
+            occurrence: value.occurrence, record: value.record,
+            domains: value.domains, evidence, signal: new AbortController().signal,
+          });
+          const execution = consume(prepared.executor(
+            executorInput(value.occurrence, transient, terminal, calls),
+            JOB, `task:${TASK}`, new AbortController().signal,
+          ));
+          await started.promise;
+          expect(calls).not.toContain("checkpoint-close");
+          expect(terminal).toEqual([]);
+          release.resolve();
+          if (fails) {
+            // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+            await expect(execution).rejects.toThrow("transcript publication did not complete");
+            expect(terminal).toEqual([]);
+          } else {
+            await execution;
+            expect(terminal).toHaveLength(1);
+            expect(calls.indexOf("transcript-stored"))
+              .toBeLessThan(calls.indexOf("checkpoint-close"));
+          }
+          expect(calls).toContain("definition-close");
+        },
+      });
+    });
+  }
 
   test("uses the runner parent turn for the actual protected transcript port", async () => {
     const value = await fixture();
