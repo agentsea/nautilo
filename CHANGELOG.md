@@ -7,6 +7,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Server native image checks recognize the patched Sharp and libvips packages.
+
 - Update the MCP transport and image-processing libraries to their supported
   patched releases, and retire obsolete server security decisions.
 

@@ -26,7 +26,7 @@ export function runtimeArchForPlatform(platform: NativeRuntimePlatform): NodeJS.
 export async function collectNativeRuntimeInventory(platform: NativeRuntimePlatform): Promise<NativeRuntimeInventory> {
   const architecture = platform === "linux/amd64" ? "x64" : "arm64";
   const sharpPackage = join(ROOT, "sharp", "package.json");
-  const sharpAddon = join(ROOT, "@img", `sharp-linux-${architecture}`, "lib", `sharp-linux-${architecture}-0.35.4.node`);
+  const sharpAddon = join(ROOT, "@img", `sharp-linux-${architecture}`, "lib", `sharp-linux-${architecture}-0.35.5.node`);
   const sharpLibvipsRoot = join(ROOT, "@img", `sharp-libvips-linux-${architecture}`);
   const sharpLibvipsPackage = join(sharpLibvipsRoot, "package.json");
   const libvipsCandidates = (await readdir(join(sharpLibvipsRoot, "lib")))
@@ -49,8 +49,8 @@ export async function collectNativeRuntimeInventory(platform: NativeRuntimePlatf
     argon2Addon,
   };
   await Promise.all(Object.values(inventory).filter((value) => value.startsWith("/")).map((path) => stat(path)));
-  await assertPackageVersion(sharpPackage, "sharp", "0.35.4");
-  await assertPackageVersion(sharpLibvipsPackage, `@img/sharp-libvips-linux-${architecture}`, "1.3.3");
+  await assertPackageVersion(sharpPackage, "sharp", "0.35.5");
+  await assertPackageVersion(sharpLibvipsPackage, `@img/sharp-libvips-linux-${architecture}`, "1.3.4");
   await assertPackageVersion(argon2Package, "argon2", "0.44.0");
   await assertElfArchitecture(sharpAddon, platform);
   await assertElfArchitecture(inventory.sharpLibvipsLibrary, platform);
