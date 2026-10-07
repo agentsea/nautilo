@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Update the MCP transport and image-processing libraries to their supported
+  patched releases, and retire obsolete server security decisions.
+
 - Mobile model search keeps its field and scrollable choices above the keyboard
   on compact screens; selecting a result works on the first tap.
 

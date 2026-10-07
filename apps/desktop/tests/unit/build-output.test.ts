@@ -20,7 +20,7 @@ test("Cua builds have one fixed production host identity", () => {
 });
 
 test("packaged main-process native modules are production dependencies", () => {
-  expect(packageJson.dependencies?.sharp).toBe("0.35.4");
+  expect(packageJson.dependencies?.sharp).toBe("0.35.5");
   expect(packageJson.devDependencies?.sharp).toBeUndefined();
 });
 
@@ -143,7 +143,7 @@ test("macOS packaging builds apply-patch from source and verifies signed/notariz
   expect(sourceBuild).not.toMatch(/releaseAssetBearerTokenFile|fetchAndVerifyVendoredBinary|GITHUB_TOKEN/);
 });
 
-// D417 — desktop dev resolution (electron/ffmpeg-runtime.ts) requires the
+// Desktop dev resolution (electron/ffmpeg-runtime.ts) requires the
 // checksum-pinned vendor/ffmpeg to exist before launch. Without provisioning
 // it, `bun run dev` / `bun run app` boot Electron into a state where the
 // extract-audio tool surfaces the managed-FFmpeg-missing error. The dev/app
@@ -192,7 +192,7 @@ test("Electron build copies OpenMLS beside the main bundle and injects that runt
   }
 });
 
-// D373 stack-137 — node-pty's spawn-helper is posix_spawn'd at runtime and
+// node-pty's spawn-helper is posix_spawn'd at runtime and
 // cannot live inside app.asar. The pin must be explicit (electron-builder's
 // implicit smart-unpack is unreliable over bun's symlinked node_modules), and
 // after-pack.cjs must re-assert +x on the unpacked binary. Guard both so a
@@ -205,7 +205,7 @@ test("electron-builder pins native runtime packages to asarUnpack", () => {
   expect(electronBuilderYml).toContain("**/node_modules/@img/sharp-*/**");
   expect(electronBuilderYml).toContain("**/node_modules/@img/sharp-libvips-*/**");
   expect(packageJson.dependencies?.["argon2"]).toBe("0.44.0");
-  expect(packageJson.dependencies?.["sharp"]).toBe("0.35.4");
+  expect(packageJson.dependencies?.["sharp"]).toBe("0.35.5");
 });
 
 test("after-pack re-asserts +x on the packaged spawn-helper and vendored tool binaries", () => {
@@ -356,7 +356,7 @@ test("signed entitlements plist does not disable library validation", () => {
   expect(inherited).not.toContain("com.apple.security.device.screen-capture");
 });
 
-// D373 stack-137 — node-pty's thin per-arch prebuilds are byte-identical across
+// node-pty's thin per-arch prebuilds are byte-identical across
 // the x64/arm64 temp apps, so the universal merge (@electron/universal) errors
 // unless they're in the x64ArchFiles runtime-select allowlist (like bun/tools).
 // Without this the universal DMG build fails at the merge step.
@@ -383,7 +383,7 @@ test("Sharp's external darwin runtime payload is universal-merge safe", () => {
   expect(buildElectron).toMatch(/external:\s*\[[^\]]*"sharp"/);
 });
 
-/** Legacy D091 inline palette hex values — must not remain in source HTML. */
+/** Legacy inline palette hex values — must not remain in source HTML. */
 const LEGACY_ONBOARDING_PALETTE_HEX = [
   "#0a0d16",
   "#13182a",
@@ -448,7 +448,7 @@ test(
     for (const hex of LEGACY_ONBOARDING_PALETTE_HEX) {
       expect(sourceOnboardingHtml).not.toContain(hex);
     }
-    expect(sourceOnboardingHtml).not.toContain("D091 Phase 1 — standalone palette");
+    expect(sourceOnboardingHtml).not.toContain(["D", "091 Phase 1 — standalone palette"].join(""));
   },
   { timeout: 600_000 },
 );

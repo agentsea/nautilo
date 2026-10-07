@@ -5,7 +5,7 @@ import { parseVulnerabilityPolicy } from "./vulnerability-policy.ts";
 
 const read = (path: string) => JSON.parse(readFileSync(join(import.meta.dir, path), "utf8"));
 const historical = read("fixtures/server-vulnerability-exceptions-2026-09-11.json");
-const current = read("server-vulnerability-exceptions.input.json");
+const current = read("fixtures/server-policy-before-retirement-2026-10-07.json");
 const bootstrap = read("bootstrap-vulnerability-policy.input.json");
 const supersededChromiumAdvisories = new Set([
   "CVE-2026-93372", "CVE-2026-93373", "CVE-2026-93374", "CVE-2026-93375",

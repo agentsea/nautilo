@@ -42,10 +42,10 @@ export interface SharpDarwinPackage {
 }
 
 export const SHARP_DARWIN_PACKAGES: readonly SharpDarwinPackage[] = [
-  { name: "@img/sharp-darwin-arm64", version: "0.35.4", integrity: "sha512-Uhfl4V4lhP2nbUVF9+hyH1+luj86f1gUFeo8ALYxFoULoU+G87D43BfeMP8XHsk9boxAnCY/bf2EHwhA7MuGsA==", requiredFiles: ["lib/sharp-darwin-arm64-0.35.4.node"], requiresLicenseFile: true },
-  { name: "@img/sharp-darwin-x64", version: "0.35.4", integrity: "sha512-hWniXY3bG5qKpkKrAwPe4y+VTPmf086YQAnkxWh7uA1YrlRouWGa0M0Mxj3ZjnXFkv7/TD1bTy9lGUK26vRvWw==", requiredFiles: ["lib/sharp-darwin-x64-0.35.4.node"], requiresLicenseFile: true },
-  { name: "@img/sharp-libvips-darwin-arm64", version: "1.3.3", integrity: "sha512-suTBPTDGrI9WodccaDdwZItTSaBYASlBk1NSfElSHrUfzu3szG6lvIF58+WiFvnfzuK8ZBFS5zE00PxqxnRiPg==", requiredFiles: ["lib/libvips-cpp.8.18.6.dylib"], requiresLicenseFile: false },
-  { name: "@img/sharp-libvips-darwin-x64", version: "1.3.3", integrity: "sha512-FVJZ5mITMobmXIz/hPDTw0EintTW5H3WfrxwLqEqjiIihlu+hVRyGrFQ60xl0Lxn7Bt3zdpevPaQi0HEzqz9fw==", requiredFiles: ["lib/libvips-cpp.8.18.6.dylib"], requiresLicenseFile: false },
+  { name: "@img/sharp-darwin-arm64", version: "0.35.5", integrity: "sha512-QRUlFQ0WxvdWyqqG/WtI3iupfD5rBzmCHXSdPsY91sAtVtTo7Q4cb6zOccZ3gqEqkr0f1As1ehLqmEpDsRf+lg==", requiredFiles: ["lib/sharp-darwin-arm64-0.35.5.node"], requiresLicenseFile: true },
+  { name: "@img/sharp-darwin-x64", version: "0.35.5", integrity: "sha512-+BR255RhDlpygUpOc/Jdt1nT6DQ3XG/ERo5wbcdOf5Q320dKtPCKPLR1LJs9VGXRaMa8l1uUa0tkCNOXiAxZUw==", requiredFiles: ["lib/sharp-darwin-x64-0.35.5.node"], requiresLicenseFile: true },
+  { name: "@img/sharp-libvips-darwin-arm64", version: "1.3.4", integrity: "sha512-5R89nBYiRdUlSWJxPhO+GVtaXzXSxKnRu/xqMn3KTA3L9EB9Oy/P+Nn2f2vlhPuUdy/Zusb2DarbyTpGCfEDuw==", requiredFiles: ["lib/libvips-cpp.8.18.7.dylib"], requiresLicenseFile: false },
+  { name: "@img/sharp-libvips-darwin-x64", version: "1.3.4", integrity: "sha512-iR2OKH80yi0U+dUplyh3/xdpFvps6YkCwsXenIJxqxR1v9o+xtKTGbS9H7cps+2Vxjc8B1j96p75NmTGjIhtpQ==", requiredFiles: ["lib/libvips-cpp.8.18.7.dylib"], requiresLicenseFile: false },
 ] as const;
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
