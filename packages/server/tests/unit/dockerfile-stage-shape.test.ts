@@ -1,10 +1,10 @@
-// M118: stage-shape regression guard.
+// Dockerfile stage-shape regression guard.
 //
-// Asserts the Dockerfile keeps the M118 stages plus the build-time auth
+// Asserts the Dockerfile keeps the dependency/build stages plus the build-time auth
 // contract artifact stage and isolated vendored-binary stages:
 //   manifests → deps → workbench-build + auth-contract + binary vendors → runtime
 // And that the BuildKit cache mounts are wired on the install / apt
-// `RUN` directives that need them. And that the pre-M118 cache-busting
+// `RUN` directives that need them. And that the cache-busting
 // `COPY . .` is gone from the manifests / deps stages.
 //
 // Also guards `.dockerignore` against over-aggressive entries that would
@@ -233,7 +233,7 @@ function stageContainsCopySource(stageBody: string, required: string): boolean {
   );
 }
 
-describe("M118 Dockerfile stage shape", () => {
+describe("Dockerfile stage shape", () => {
   const dockerfile = readFileSync(DOCKERFILE_PATH, "utf8");
   const stages = parseStages(dockerfile);
   const byName = new Map(stages.map((s) => [s.name, s] as const));
@@ -566,7 +566,7 @@ describe("M118 Dockerfile stage shape", () => {
     );
   });
 
-  // D402: desktop-only node-pty has no linux prebuild; if left in
+  // Desktop-only node-pty has no linux prebuild; if left in
   // trustedDependencies, bun runs `node-gyp rebuild` and the image
   // build dies with exit 127. Manifests-stage rewrite must drop it
   // (and still strip postinstall) without blanket ignore-scripts.
@@ -588,7 +588,7 @@ describe("M118 Dockerfile stage shape", () => {
   });
 });
 
-describe("M209 Dockerfile cache-topology guards", () => {
+describe("Dockerfile cache-topology guards", () => {
   const dockerfile = readFileSync(DOCKERFILE_PATH, "utf8");
   const stages = parseStages(dockerfile);
   const byName = new Map(stages.map((s) => [s.name, s] as const));
@@ -907,7 +907,7 @@ describe("M209 Dockerfile cache-topology guards", () => {
   });
 });
 
-describe("M118 .dockerignore conservative guard", () => {
+describe(".dockerignore conservative guard", () => {
   const ignore = readFileSync(DOCKERIGNORE_PATH, "utf8");
   const lines = ignore
     .split("\n")
@@ -956,7 +956,7 @@ describe("M118 .dockerignore conservative guard", () => {
 
 });
 
-describe("M209 .dockerignore safe reductions", () => {
+describe(".dockerignore safe reductions", () => {
   const ignore = readFileSync(DOCKERIGNORE_PATH, "utf8");
   const lines = ignore
     .split("\n")

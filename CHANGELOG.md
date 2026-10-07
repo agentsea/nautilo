@@ -36,6 +36,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   an explicit image-context notice.
   Returning to the app keeps chat visible while access refreshes, and model
   changes avoid repeated full-catalog work and temporary raw provider IDs.
+  On Mobile, tapping the image attachment button for a text-only model explains
+  the restriction without opening the photo picker.
 
 - Successful skips end the agent turn without another model call. Silence and
   hand-off control activity stays out of chat while rejected hand-offs remain
