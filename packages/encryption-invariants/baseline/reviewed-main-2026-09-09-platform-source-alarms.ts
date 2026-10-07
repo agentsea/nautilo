@@ -591,48 +591,6 @@ export const REVIEWED_MAIN_2026_09_09_PLATFORM_SOURCE_ALARMS: readonly SourceAla
     "reason": "This exact call remains on Nautilo's reviewed plaintext diagnostic boundary. The review does not claim that generic logged values are encrypted or content-free; it records the moved or added call site so further drift still fails closed."
   },
   {
-    "locator": "packages/agent/src/chat/vision-fallback.ts#log_emitter:7ef703451e44cded:1",
-    "owner": "packages/agent",
-    "closure": "declaration",
-    "declarationId": "source.main-2026-09-09.platform.85",
-    "reason": "This exact call remains on Nautilo's reviewed plaintext diagnostic boundary. The review does not claim that generic logged values are encrypted or content-free; it records the moved or added call site so further drift still fails closed."
-  },
-  {
-    "locator": "packages/agent/src/chat/vision-fallback.ts#log_emitter:7ef703451e44cded:2",
-    "owner": "packages/agent",
-    "closure": "declaration",
-    "declarationId": "source.main-2026-09-09.platform.86",
-    "reason": "This exact call remains on Nautilo's reviewed plaintext diagnostic boundary. The review does not claim that generic logged values are encrypted or content-free; it records the moved or added call site so further drift still fails closed."
-  },
-  {
-    "locator": "packages/agent/src/chat/vision-fallback.ts#log_emitter:7ef703451e44cded:3",
-    "owner": "packages/agent",
-    "closure": "declaration",
-    "declarationId": "source.main-2026-09-09.platform.87",
-    "reason": "This exact call remains on Nautilo's reviewed plaintext diagnostic boundary. The review does not claim that generic logged values are encrypted or content-free; it records the moved or added call site so further drift still fails closed."
-  },
-  {
-    "locator": "packages/agent/src/chat/vision-fallback.ts#log_emitter:7ef703451e44cded:4",
-    "owner": "packages/agent",
-    "closure": "declaration",
-    "declarationId": "source.main-2026-09-09.platform.88",
-    "reason": "This exact call remains on Nautilo's reviewed plaintext diagnostic boundary. The review does not claim that generic logged values are encrypted or content-free; it records the moved or added call site so further drift still fails closed."
-  },
-  {
-    "locator": "packages/agent/src/chat/vision-fallback.ts#log_emitter:7ef703451e44cded:5",
-    "owner": "packages/agent",
-    "closure": "declaration",
-    "declarationId": "source.main-2026-09-09.platform.89",
-    "reason": "This exact call remains on Nautilo's reviewed plaintext diagnostic boundary. The review does not claim that generic logged values are encrypted or content-free; it records the moved or added call site so further drift still fails closed."
-  },
-  {
-    "locator": "packages/agent/src/chat/vision-fallback.ts#log_emitter:7ef703451e44cded:6",
-    "owner": "packages/agent",
-    "closure": "declaration",
-    "declarationId": "source.main-2026-09-09.platform.90",
-    "reason": "This exact call remains on Nautilo's reviewed plaintext diagnostic boundary. The review does not claim that generic logged values are encrypted or content-free; it records the moved or added call site so further drift still fails closed."
-  },
-  {
     "locator": "packages/agent/src/config/venice-catalog-cache.ts#log_emitter:7ef703451e44cded:1",
     "owner": "packages/agent",
     "closure": "declaration",

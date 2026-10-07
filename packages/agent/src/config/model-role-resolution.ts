@@ -19,7 +19,6 @@ const PURPOSE_BY_ROLE: Readonly<Record<ModelRole, ModelPurpose>> = {
   deepResearchSynthesis: "chat",
   deepResearchFinalReport: "chat",
   embeddings: "embeddings",
-  visionFallback: "vision",
   imageGeneration: "image-generation",
 };
 

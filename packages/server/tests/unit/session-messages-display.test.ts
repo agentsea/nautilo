@@ -2,10 +2,25 @@ import { describe, expect, test } from "bun:test";
 import { getActiveComputerUseContractCatalogueSync } from "@nautilo/agent";
 import {
   enrichSessionMessagesForDisplay,
+  isVisibleSessionMessage,
   inferToolEndStatusFromContent,
   parseAssistantToolCallsJson,
   toolDisplayNameFromDisplayContent,
 } from "../../src/lib/session-messages-display.js";
+
+test("image assistance evidence stays available internally and is excluded only from the visible transcript", () => {
+  const evidence = { id: "1", role: "tool", content: "retained observations", toolCalls: null, toolName: "image_assistance" };
+  const answer = { id: "2", role: "assistant", content: "answer", toolCalls: null };
+  const enriched = enrichSessionMessagesForDisplay([evidence, answer]);
+  expect(enriched).toHaveLength(2);
+  expect(enriched.filter(isVisibleSessionMessage).map((message) => message.id)).toEqual(["2"]);
+  expect(isVisibleSessionMessage({ role: "assistant", toolName: "image_assistance" })).toBe(true);
+  expect(isVisibleSessionMessage({ role: "tool", toolName: "other_tool" })).toBe(true);
+  const calls = JSON.stringify([{ id: "image-assistance:synthetic", name: "image_assistance", args: {} }]);
+  expect(isVisibleSessionMessage({ role: "assistant", content: "", toolCalls: calls })).toBe(false);
+  expect(isVisibleSessionMessage({ role: "assistant", content: "visible answer", toolCalls: calls })).toBe(true);
+  expect(isVisibleSessionMessage({ role: "assistant", content: "", toolCalls: "not-json" })).toBe(true);
+});
 
 describe("parseAssistantToolCallsJson", () => {
   test("parses id + name fields in order", () => {

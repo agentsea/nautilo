@@ -1,5 +1,5 @@
 /**
- * D516 3.6.14 production-node characterization.
+ * Parallel-read 3.6.14 production-node characterization.
  *
  * This runs the real signed catalogue registration, tools node, invocation
  * service, Relay request construction, LangGraph tasks, and MemorySaver. Only
@@ -22,15 +22,15 @@ import {
 } from "../../src/config/computer-use-catalogue/runtime-catalogue";
 import { canonicalComputerUseContractCatalogueSigningPayloadV1 } from "../../src/config/computer-use-catalogue/schema";
 import {
-  d516BindingFor as bindingFor,
-  d516GraphFor as graphFor,
-  d516HostResult as hostResult,
-  d516ReadCall as call,
-  d516StateFor as stateFor,
-  setD516RelayDispatch,
-  setupD516ProductionReadFixture,
-  teardownD516ProductionReadFixture,
-} from "../support/d516-production-read-fixture";
+  productionReadBindingFor as bindingFor,
+  productionReadGraphFor as graphFor,
+  productionReadHostResult as hostResult,
+  productionReadCall as call,
+  productionReadStateFor as stateFor,
+  setProductionReadRelayDispatch,
+  setupProductionReadFixture,
+  teardownProductionReadFixture,
+} from "../support/production-read-fixture";
 
 const actualDb = await import("@nautilo/db");
 mock.module("@nautilo/db", () => ({
@@ -39,11 +39,11 @@ mock.module("@nautilo/db", () => ({
 }));
 
 beforeAll(async () => {
-  await setupD516ProductionReadFixture();
+  await setupProductionReadFixture();
 });
 
 afterAll(async () => {
-  await teardownD516ProductionReadFixture();
+  await teardownProductionReadFixture();
   mock.restore();
 });
 
@@ -110,7 +110,7 @@ test("real tools node overlaps a coordinated read wave and preserves ordered pro
   const started: string[] = [];
   let markBothStarted!: () => void;
   const bothStarted = new Promise<void>((resolve) => { markBothStarted = resolve; });
-  setD516RelayDispatch(async (request) => {
+  setProductionReadRelayDispatch(async (request) => {
     const invocationId = request.desktopAutomationBinding!.computerUseInvocationId;
     started.push(invocationId);
     if (started.length === 2) markBothStarted();
@@ -128,7 +128,7 @@ test("real tools node overlaps a coordinated read wave and preserves ordered pro
       return message;
     },
   }));
-  const config = { configurable: { thread_id: "d516-production-parallel-order" } };
+  const config = { configurable: { thread_id: "parallel-read-production-parallel-order" } };
   const running = graph.invoke(stateFor(calls), config);
   await bothStarted;
   const firstInvocation = bindingFor(first).computerUseInvocationId;
@@ -157,7 +157,7 @@ test("real tools node overlaps a coordinated read wave and preserves ordered pro
 test("Strict Shadow requires every assistant call in a read wave before any dispatch", async () => {
   const calls = [call("strict:first"), call("strict:second")];
   let dispatches = 0;
-  setD516RelayDispatch(async () => {
+  setProductionReadRelayDispatch(async () => {
     dispatches += 1;
     return { status: "error", error: "must not dispatch" };
   });
@@ -168,7 +168,7 @@ test("Strict Shadow requires every assistant call in a read wave before any disp
     });
     const graph = graphFor(new MemorySaver(), boundary, true);
     expect(await rejectionMessage(graph.invoke(stateFor(calls), {
-      configurable: { thread_id: `d516-strict-wave-${scenario}` },
+      configurable: { thread_id: `parallel-read-strict-wave-${scenario}` },
     }))).toContain("Strict Shadow tool protection is required");
   }
   expect(dispatches).toBe(0);
@@ -207,14 +207,14 @@ test("missing binding, at-most-once Computer Use, and ordinary tools remain seri
 
   for (const item of cases) {
     let dispatches = 0;
-    setD516RelayDispatch(async () => {
+    setProductionReadRelayDispatch(async () => {
       dispatches += 1;
       return { status: "error", error: "serial fixture" };
     });
     const graph = graphFor(new MemorySaver());
     const initial = stateFor(item.calls, item.bound ?? item.calls);
     const output = await graph.invoke(initial, {
-      configurable: { thread_id: `d516-production-serial-${item.name}` },
+      configurable: { thread_id: `parallel-read-production-serial-${item.name}` },
     }) as NautiloState;
 
     expect(output.approvedToolCalls).toEqual([following]);
@@ -227,7 +227,7 @@ test("an older v1 catalogue without scheduling metadata remains accepted and ser
   const first = call("call:old-v1-first");
   const second = call("call:old-v1-second");
   let dispatches = 0;
-  setD516RelayDispatch(async (request) => {
+  setProductionReadRelayDispatch(async (request) => {
     dispatches += 1;
     return { status: "ok", result: hostResult(request, "old-v1") };
   });
@@ -238,7 +238,7 @@ test("an older v1 catalogue without scheduling metadata remains accepted and ser
       return copy;
     }));
     const output = await graphFor(new MemorySaver()).invoke(stateFor([first, second]), {
-      configurable: { thread_id: "d516-production-old-v1-serial" },
+      configurable: { thread_id: "parallel-read-production-old-v1-serial" },
     }) as NautiloState;
     expect(dispatches).toBe(1);
     expect(output.approvedToolCalls).toEqual([second]);
@@ -253,7 +253,7 @@ test("a protected sibling is durable when the other result protection fails term
   const first = call("call:replay-first");
   const second = call("call:replay-second");
   const dispatches = new Map<string, number>();
-  setD516RelayDispatch(async (request) => {
+  setProductionReadRelayDispatch(async (request) => {
     const invocationId = request.desktopAutomationBinding!.computerUseInvocationId;
     dispatches.set(invocationId, (dispatches.get(invocationId) ?? 0) + 1);
     return { status: "ok", result: hostResult(request, invocationId) };
@@ -274,7 +274,7 @@ test("a protected sibling is durable when the other result protection fails term
       return message;
     },
   }));
-  const config = { configurable: { thread_id: "d516-production-shadow-replay" } };
+  const config = { configurable: { thread_id: "parallel-read-production-shadow-replay" } };
 
   expect(await rejectionMessage(graph.invoke(stateFor([first, second]), config)))
     .toContain("Live Shadow tool protection failed terminally");
@@ -295,7 +295,7 @@ test("a resumed read wave reuses canonical protection but refuses a removed sign
   const first = call("call:catalogue-first");
   const second = call("call:catalogue-second");
   const dispatches = new Map<string, number>();
-  setD516RelayDispatch(async (request) => {
+  setProductionReadRelayDispatch(async (request) => {
     const invocationId = request.desktopAutomationBinding!.computerUseInvocationId;
     dispatches.set(invocationId, (dispatches.get(invocationId) ?? 0) + 1);
     return { status: "ok", result: hostResult(request, invocationId) };
@@ -316,7 +316,7 @@ test("a resumed read wave reuses canonical protection but refuses a removed sign
       return message;
     },
   }));
-  const config = { configurable: { thread_id: "d516-production-catalogue-replacement" } };
+  const config = { configurable: { thread_id: "parallel-read-production-catalogue-replacement" } };
 
   expect(await rejectionMessage(graph.invoke(stateFor([first, second]), config)))
     .toContain("Live Shadow tool protection failed terminally");

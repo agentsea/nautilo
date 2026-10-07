@@ -565,6 +565,7 @@ function selectRoomRows(
         content: sessionMessages.content,
         tool_calls: sessionMessages.toolCalls,
         tool_name: sessionMessages.toolName,
+        metadata_json: sql<string | null>`${sessionMessages.metadata}::text`.as("metadata_json"),
       }),
       created_at: sql`${sessionMessages.createdAt}`.as("created_at"),
       edited_at: sql`${sessionMessages.editedAt}`.as("edited_at"),
@@ -706,6 +707,7 @@ async function selectCompleteShadowOperations(
             content: sessionMessages.content,
             tool_calls: sessionMessages.toolCalls,
             tool_name: sessionMessages.toolName,
+        metadata_json: sql<string | null>`${sessionMessages.metadata}::text`.as("metadata_json"),
             completion: sessionMessageCryptoRevisions.completion,
             disposition: sessionMessageCryptoRevisions.disposition,
             parity_status: sessionMessageCryptoRevisions.parityStatus,
@@ -1444,7 +1446,7 @@ export function createCurrentDomainKeyRoomHistoryAuthorityResolver(input: Readon
   };
 }
 
-/** Current Human-only Room and active recipient-device authority for M295. */
+/** Current Human-only Room and active recipient-device authority. */
 export function createCurrentHumanDomainKeyRoomHistoryAuthorityResolver(
   input: Readonly<{
     readonly product: PostgresJsBridgeConnection;

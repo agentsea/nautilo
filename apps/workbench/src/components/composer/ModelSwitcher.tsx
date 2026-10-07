@@ -9,6 +9,7 @@ import {
   PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT,
 } from "../../lib/caller-model-availability";
 import { useProfile } from "../../hooks/use-profile";
+import { useWsStateContext } from "../../adapters/runtime-contexts";
 import {
   ModelControlRows,
   ReasoningOptions,
@@ -56,6 +57,7 @@ export function ModelSwitcher({
   openRequest?: number;
 }) {
   const { response } = useProfile();
+  const { state: connectionState } = useWsStateContext();
   const profile = response?.viewerRole === "owner" ? response.agent : null;
   const isOwner = response?.viewerRole === "owner";
   const navigate = useNavigate();
@@ -73,8 +75,15 @@ export function ModelSwitcher({
   useEffect(() => {
     if (!isOwner) return;
     const refresh = () => setModelRefresh((revision) => revision + 1);
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
     window.addEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, refresh);
-    return () => window.removeEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, refresh);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, refresh);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [isOwner]);
 
   const defaultModelId = profile?.defaultModel ?? null;
@@ -95,7 +104,7 @@ export function ModelSwitcher({
     return () => {
       cancelled = true;
     };
-  }, [defaultModelId, isOwner, modelRefresh, profile?.agentIdentity]);
+  }, [defaultModelId, isOwner, modelRefresh, profile?.agentIdentity, connectionState]);
 
   useEffect(() => {
     if (!isOwner || !roomId || !agentId) {

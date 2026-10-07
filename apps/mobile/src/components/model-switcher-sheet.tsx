@@ -51,14 +51,18 @@ export function ModelSwitcherSheet({
       try {
         const api = getApiClient(activeServer.serverUrl);
         const [list, retained] = await Promise.all([
-          api.getModels(),
+          api.getCallerModels({ includeUnavailable: true }),
           selectedModelId
             ? api.resolveRetainedModels([selectedModelId])
             : Promise.resolve([]),
         ]);
         if (cancelled) return;
         const byId = new Map(list.map((model) => [model.id, model]));
-        for (const model of retained) byId.set(model.id, model);
+        for (const model of retained) {
+          if (byId.has(model.id)) continue;
+          byId.set(model.id, { ...model, availability: "filtered",
+            unavailableReason: "This saved model is not available for your account." });
+        }
         setModels(Array.from(byId.values()));
       } catch (e) {
         if (cancelled) return;

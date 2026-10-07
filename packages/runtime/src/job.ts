@@ -4,6 +4,7 @@ import { runWithTurn, log } from "@nautilo/logger";
 import { StrictShadowEnforcementError } from "@nautilo/lattice-bridge";
 import {
   toFriendlyError,
+  ImageAssistanceError,
   friendlyMessageWithCode,
   toGraphBudgetOutcome,
   toNoProgressOutcomeFromError,
@@ -176,7 +177,7 @@ export class Job {
         this.config.durableInputReference,
       );
     }
-    // M042B: extract roomId from input when present. Non-string /
+    // Extract roomId from input when present. Non-string /
     // absent values store NULL (guest, background, legacy callers).
     const durableInput = this.config.durableInputReference ?? this.config.input;
     const rawRoomId =
@@ -254,7 +255,7 @@ export class Job {
     try {
       await this.setStatus("running");
 
-      // D082 PR B — safety-net AsyncLocalStorage rebind for any job
+      // Safety-net AsyncLocalStorage rebind for any job
       // whose input carries a `turnId`. Today the only such caller is
       // the `/api/chat` route, which already wraps in `runWithTurn`
       // before `createForegroundJob(...)` — so the context inherits
@@ -383,7 +384,7 @@ export class Job {
         return;
       }
 
-      // D141 Phase 1 — translate at the single user-facing chokepoint.
+      // translate at the single user-facing chokepoint.
       // Every agent-thrown error funnels through this catch on its way
       // to the `job.status: failed` ServerEvent. Previously `err.message`
       // was forwarded verbatim, so raw upstream-provider blobs (e.g.
@@ -401,10 +402,7 @@ export class Job {
       // or model output and would cross-user-leak. The raw blob lives
       // in `server.log` (a) via `formatProviderError` at
       // `chat-model-invocation.ts:219` and (b) via the `[nautilo/job]`
-      // line below. A future user-scoped error-details event (Stack 17
-      // / D141-P3) can carry the blob to the request originator only.
-      // See ISSUE-D141 §"Locked Decisions" LD-8.
-      // ISSUE-D141 §LD-9 — stable MDL00x code rides on the
+      // line below. The stable MDL00x code rides on the
       // user-visible message (bracket-suffix) and as a structured
       // `code=` token on the server-log line. The code is the shared
       // vocabulary token bridging chat (`"... [MDL003]"`) ↔ server.log
@@ -418,9 +416,13 @@ export class Job {
   /** Terminalize a persisted Job when an opaque pre-executor candidate fails. */
   async fail(err: unknown): Promise<void> {
     if (this.isTerminal()) return;
+    if (err instanceof ImageAssistanceError) {
+      await this.setStatus("failed", { message: err.message, errorCode: err.code, errorCategory: "unknown" });
+      return;
+    }
     const friendly = toFriendlyError(err);
-      // Stack 208 P0 — surface the typed internal graph-budget outcome distinctly
-      // in telemetry (R9). `toFriendlyError` already produced the user-safe
+      // Surface the typed internal graph-budget outcome distinctly
+      // in telemetry. `toFriendlyError` already produced the user-safe
       // sentence (graph-budget-specific, category `unknown` / `MDL007` so the
       // closed `JobStatusEvent.errorCategory` union in `@nautilo/types` is
       // untouched). Here we emit a structured `outcome=graph_budget_exceeded`
@@ -428,8 +430,8 @@ export class Job {
       // to the specific framework failure; the raw `detailsForLog` blob
       // (LangGraph troubleshooting URL + literal limit) rides the same line.
     const budgetOutcome = toGraphBudgetOutcome(err);
-      // Stack 208 P2 — surface the no-progress breaker's typed outcome
-      // distinctly in telemetry (R9). `toFriendlyError` already produced the
+      // Surface the no-progress breaker's typed outcome
+      // distinctly in telemetry. `toFriendlyError` already produced the
       // user-safe no-progress sentence (category `unknown` / `MDL007` so the
       // closed WS union is untouched). Here we emit a structured
       // `outcome=no_progress` token + sanitized tool/operation labels on the
@@ -505,11 +507,12 @@ export class Job {
       message?: string;
       result?: Record<string, unknown>;
       /**
-       * D141 Phase 1 — stable error-category tag for workbench renderer
+       * stable error-category tag for workbench renderer
        * styling. WS-event-only (not persisted). Zero user content;
        * safe to room-broadcast.
        */
       errorCategory?: FriendlyErrorCategory;
+      errorCode?: "image_assistance_failed";
     }
   ): Promise<void> {
     this._status = status;
@@ -537,6 +540,7 @@ export class Job {
       jobId: this.id,
       status,
       message: fields?.message,
+      ...(fields?.errorCode ? { errorCode: fields.errorCode } : {}),
       ...this.lifecycleIdentity(),
       ...(fields?.errorCategory !== undefined
         ? { errorCategory: fields.errorCategory }

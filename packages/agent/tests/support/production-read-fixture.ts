@@ -17,7 +17,7 @@ let deriveInvocationId: AdmissionModule["deriveComputerUseInvocationId"] | null 
 let clearCatalog: typeof import("@nautilo/catalog")["clearToolCatalog"] | null = null;
 let previousTestMode: string | undefined;
 
-const d516ReadFixtureIds = {
+const productionReadFixtureIds = {
   human: "human-parallel",
   agent: "agent-parallel",
   relay: "relay-parallel",
@@ -30,7 +30,7 @@ const d516ReadFixtureIds = {
   context: "computer-context-parallel",
 } as const;
 
-export async function setupD516ProductionReadFixture(): Promise<void> {
+export async function setupProductionReadFixture(): Promise<void> {
   if (toolsModule !== null) return;
   previousTestMode = process.env["NAUTILO_TEST_MODE"];
   process.env["NAUTILO_TEST_MODE"] = "stub";
@@ -47,7 +47,7 @@ export async function setupD516ProductionReadFixture(): Promise<void> {
   catalogModule.initToolCatalog(catalog);
 }
 
-export async function teardownD516ProductionReadFixture(): Promise<void> {
+export async function teardownProductionReadFixture(): Promise<void> {
   toolsModule?.setRelayRegistry(null);
   clearCatalog?.();
   const { resetRuntimeComputerUseContractCatalogue } = await import(
@@ -66,12 +66,12 @@ function requireFixture(): Readonly<{
   derive: AdmissionModule["deriveComputerUseInvocationId"];
 }> {
   if (toolsModule === null || deriveInvocationId === null) {
-    throw new Error("D516 production read fixture is not initialized");
+    throw new Error("Parallel-read production read fixture is not initialized");
   }
   return { tools: toolsModule, derive: deriveInvocationId };
 }
 
-export function d516ReadCall(
+export function productionReadCall(
   id: string,
   name = "computer_observe",
   args: Record<string, unknown> = { operation: "desktop_state" },
@@ -79,67 +79,67 @@ export function d516ReadCall(
   return { id, name, args, type: "tool_call" };
 }
 
-export function d516BindingFor(toolCall: ToolCall): ComputerUseInvocationBinding {
+export function productionReadBindingFor(toolCall: ToolCall): ComputerUseInvocationBinding {
   const derive = requireFixture().derive;
   return {
     version: RELAY_DESKTOP_AUTOMATION_INVOCATION_BINDING_VERSION,
-    computerUseContextId: d516ReadFixtureIds.context,
-    computerUseInvocationId: derive(d516ReadFixtureIds.context, toolCall)!,
-    relayId: d516ReadFixtureIds.relay,
-    pairingGeneration: d516ReadFixtureIds.pairing,
-    desktopSessionId: d516ReadFixtureIds.desktopSession,
-    originHumanId: d516ReadFixtureIds.human,
-    originRunId: d516ReadFixtureIds.run,
-    originAgentId: d516ReadFixtureIds.agent,
-    lineageId: d516ReadFixtureIds.lineage,
-    installationEpoch: d516ReadFixtureIds.installation,
+    computerUseContextId: productionReadFixtureIds.context,
+    computerUseInvocationId: derive(productionReadFixtureIds.context, toolCall)!,
+    relayId: productionReadFixtureIds.relay,
+    pairingGeneration: productionReadFixtureIds.pairing,
+    desktopSessionId: productionReadFixtureIds.desktopSession,
+    originHumanId: productionReadFixtureIds.human,
+    originRunId: productionReadFixtureIds.run,
+    originAgentId: productionReadFixtureIds.agent,
+    lineageId: productionReadFixtureIds.lineage,
+    installationEpoch: productionReadFixtureIds.installation,
     grantGeneration: 1,
     provider: "cua",
-    providerGeneration: d516ReadFixtureIds.providerGeneration,
+    providerGeneration: productionReadFixtureIds.providerGeneration,
   };
 }
 
-export function d516StateFor(calls: readonly ToolCall[], bound = calls): NautiloState {
+export function productionReadStateFor(calls: readonly ToolCall[], bound = calls): NautiloState {
   return {
     messages: [new AIMessage({ content: "", tool_calls: [...calls] })],
     approvedToolCalls: [...calls],
     computerUseInvocationBindings: Object.fromEntries(bound.flatMap((item) =>
-      item.id === undefined ? [] : [[item.id, d516BindingFor(item)]])),
+      item.id === undefined ? [] : [[item.id, productionReadBindingFor(item)]])),
     requiredHostRelays: Object.fromEntries(calls.flatMap((item) =>
-      item.id === undefined ? [] : [[item.id, d516ReadFixtureIds.relay]])),
-    userId: d516ReadFixtureIds.human,
-    agentId: d516ReadFixtureIds.agent,
+      item.id === undefined ? [] : [[item.id, productionReadFixtureIds.relay]])),
+    userId: productionReadFixtureIds.human,
+    agentId: productionReadFixtureIds.agent,
     actorRole: "owner",
-    causalHumanUserId: d516ReadFixtureIds.human,
+    causalHumanUserId: productionReadFixtureIds.human,
     trustedExecutionEntrypoint: "foreground.main",
     verifiedOrdinaryOrigin: {
       kind: "local_electron",
-      userId: d516ReadFixtureIds.human,
-      actorId: d516ReadFixtureIds.human,
-      relayId: d516ReadFixtureIds.relay,
-      desktopSessionId: d516ReadFixtureIds.desktopSession,
-      pairingGeneration: d516ReadFixtureIds.pairing,
+      userId: productionReadFixtureIds.human,
+      actorId: productionReadFixtureIds.human,
+      relayId: productionReadFixtureIds.relay,
+      desktopSessionId: productionReadFixtureIds.desktopSession,
+      pairingGeneration: productionReadFixtureIds.pairing,
       requestId: "request-parallel",
     },
     desktopAutomationProvenance: {
-      originHumanId: d516ReadFixtureIds.human,
-      originRunId: d516ReadFixtureIds.run,
-      originAgentId: d516ReadFixtureIds.agent,
-      lineageId: d516ReadFixtureIds.lineage,
-      installationEpoch: d516ReadFixtureIds.installation,
+      originHumanId: productionReadFixtureIds.human,
+      originRunId: productionReadFixtureIds.run,
+      originAgentId: productionReadFixtureIds.agent,
+      lineageId: productionReadFixtureIds.lineage,
+      installationEpoch: productionReadFixtureIds.installation,
       grantGeneration: 1,
     },
     desktopAutomationRouteBinding: {
       version: 2,
       provider: "cua",
-      providerGeneration: d516ReadFixtureIds.providerGeneration,
+      providerGeneration: productionReadFixtureIds.providerGeneration,
       grantGeneration: 1,
     },
     relayCapabilities: { canUseComputer: true },
     memoryAccessEnvelope: {
-      ownerId: d516ReadFixtureIds.human,
-      actorId: d516ReadFixtureIds.human,
-      agentId: d516ReadFixtureIds.agent,
+      ownerId: productionReadFixtureIds.human,
+      actorId: productionReadFixtureIds.human,
+      agentId: productionReadFixtureIds.agent,
       roomId: "room-parallel",
       readableNamespaces: [],
       mutableNamespaces: [],
@@ -153,7 +153,7 @@ export function d516StateFor(calls: readonly ToolCall[], bound = calls): Nautilo
   } as unknown as NautiloState;
 }
 
-export function d516HostResult(request: RelayDispatchRequest, marker: string): string {
+export function productionReadHostResult(request: RelayDispatchRequest, marker: string): string {
   const contract = request.computerUseRequest?.contract as ComputerUseHostContract;
   return JSON.stringify({
     kind: "result",
@@ -161,7 +161,7 @@ export function d516HostResult(request: RelayDispatchRequest, marker: string): s
     requestId: `host:${marker}`,
     fence: {
       hostGeneration: "host-generation-parallel",
-      driverGeneration: d516ReadFixtureIds.providerGeneration,
+      driverGeneration: productionReadFixtureIds.providerGeneration,
       cancellationGeneration: 1,
     },
     contract,
@@ -193,12 +193,12 @@ export function d516HostResult(request: RelayDispatchRequest, marker: string): s
   });
 }
 
-export function setD516RelayDispatch(
+export function setProductionReadRelayDispatch(
   dispatch: (request: RelayDispatchRequest) => Promise<RelayDispatchResult>,
 ): void {
   const { tools } = requireFixture();
   tools.setRelayRegistry({
-    findByCapabilityForUser: () => [d516ReadFixtureIds.relay],
+    findByCapabilityForUser: () => [productionReadFixtureIds.relay],
     getCapabilities: () => ({
       profile: "desktop-agent",
       canUseComputer: true,
@@ -212,7 +212,7 @@ export function setD516RelayDispatch(
   } as unknown as NonNullable<Parameters<ToolsModule["setRelayRegistry"]>[0]>);
 }
 
-export function d516GraphFor(
+export function productionReadGraphFor(
   saver: BaseCheckpointSaver,
   boundary?: NonNullable<Parameters<ToolsModule["createToolsNode"]>[0]>["liveShadowToolBoundaryForState"],
   fullEncryptionOnly = false,

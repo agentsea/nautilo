@@ -38,7 +38,7 @@ import {
 } from "../conductor/history-search";
 
 /**
- * M169 (R1) — injectable lookups for {@link readSubagentRunTranscript} so it is
+ * Injectable lookups for {@link readSubagentRunTranscript} so it is
  * unit-testable without a live DB. Defaults bind the real `@nautilo/agent`
  * queries.
  */
@@ -55,21 +55,18 @@ const defaultReadSubagentRunTranscriptDeps: ReadSubagentRunTranscriptDeps = {
 };
 
 /**
- * M169 (R1) — the production subagent-run transcript reader for the builder's
+ * The production subagent-run transcript reader for the builder's
  * `kind:"subagent"` scope. Reads the agent-authored run transcript
- * (`getRunAgentTranscript` — `assistant`/`tool` rows, M163), resolves the
- * Agent's label fields, and maps to `RoomHistoryHit[]` via the M166
+ * (`getRunAgentTranscript` — `assistant`/`tool` rows), resolves the
+ * Agent's label fields, and maps to `RoomHistoryHit[]` via the
  * `runAgentTranscriptToHits` helper.
  *
- * Labels (spec §4): display name is single-sourced on `profiles.name` (M156) →
+ * Labels: display name is single-sourced on `profiles.name` →
  * COALESCE to **"Genie"** (the seed Agent has no Profile row), NOT "Agent".
  * `@handle` comes from `agents.handle`; a missing handle falls back to `""`
  * (the renderer emits `(@):` — never a raw agent id). Returns `[]` for a run
  * with no agent-authored rows.
  *
- * DORMANT in M169 (R2): wired into the deps-factory slot below but called by NO
- * production `buildTranscriptContext({ kind:"subagent" })` path in this issue —
- * Phase H (or a future fresh-continuation feature) is the first real caller.
  */
 export async function readSubagentRunTranscript(
   scope: Extract<TranscriptContextScope, { kind: "subagent" }>,
@@ -91,7 +88,7 @@ export async function readSubagentRunTranscript(
 }
 
 /**
- * M168 — production `BuildTranscriptContextDeps` plus a `close()` hook for
+ * production `BuildTranscriptContextDeps` plus a `close()` hook for
  * lifecycle symmetry with the foreground executor's `finally`. Uses the
  * process-wide full-role `getSharedDirectDb()` pool when no db is injected;
  * `close()` is always a no-op (unit tests inject a fake db instead).
@@ -104,15 +101,13 @@ export interface DefaultTranscriptContextDeps extends BuildTranscriptContextDeps
  * Constructs both transcript readers over the full-role shared direct pool
  * (`getSharedDirectDb()` — BYPASSRLS, same handle pattern dispatch uses for
  * `roomMessagesSince` et al.):
- *  - **room** (C + D — DM / group): the bounded labelled Room transcript
+ *  - **room** (DM / group): the bounded labelled Room transcript
  *    (server-configured conversational rows plus intervening tools), with the
  *    current turn excluded by message ID/fingerprint.
- *  - **subthread** (E): parent up-to-anchor window (`parentMessagesUpToAnchor`)
+ *  - **subthread**: parent up-to-anchor window (`parentMessagesUpToAnchor`)
  *    plus the same bounded child-Room transcript, concatenated oldest→newest.
- *  - **subagent** (M169, F): `readSubagentRunTranscript` — DORMANT (no
- *    production `buildTranscriptContext({kind:"subagent"})` caller yet); the
- *    M168 throw-stub is replaced now that F lands second per the coordination
- *    note. Uses its own `@nautilo/agent` queries (NOT the shared direct handle
+ *  - **subagent**: `readSubagentRunTranscript` uses its own
+ *    `@nautilo/agent` queries (NOT the shared direct handle
  *    this factory reads through), so `close()` does not affect it.
  */
 export function defaultBuildTranscriptContextDeps(
@@ -178,6 +173,7 @@ export function defaultBuildTranscriptContextDeps(
           roomId: scope.roomId,
           conversationalLimit: await recentConversationLimit(),
           userId: scope.ownerId,
+          ...(scope.imageAssistanceTurnId ? { imageAssistanceTurnId: scope.imageAssistanceTurnId } : {}),
           ...(scope.agentId ? { agentId: scope.agentId } : {}),
           ...(botActorId ? { botActorId } : {}),
           ...(scope.excludeMessageId != null
@@ -190,6 +186,7 @@ export function defaultBuildTranscriptContextDeps(
         roomId: scope.roomId,
         conversationalLimit: await recentConversationLimit(),
         userId: scope.ownerId,
+        ...(scope.imageAssistanceTurnId ? { imageAssistanceTurnId: scope.imageAssistanceTurnId } : {}),
         ...(scope.agentId ? { agentId: scope.agentId } : {}),
         ...(botActorId ? { botActorId } : {}),
         ...(scope.excludeMessageId != null ? { excludeMessageId: scope.excludeMessageId } : {}),
@@ -200,7 +197,7 @@ export function defaultBuildTranscriptContextDeps(
         .select({ rebuildRequestedAt: roomJournalState.rebuildRequestedAt })
         .from(roomJournalState)
         .where(eq(roomJournalState.roomId, scope.roomId));
-      // M230 — fail closed while an edit-triggered full rebuild is pending.
+      // fail closed while an edit-triggered full rebuild is pending.
       if (state?.rebuildRequestedAt != null) {
         return { rollup: null, events: [] };
       }

@@ -31,7 +31,7 @@ import {
 import { normalizeSearchQuery } from "./search-query";
 
 /**
- * M135 Phase 7 — room-scoped full-text history search used as Conductor
+ * room-scoped full-text history search used as Conductor
  * EVIDENCE (not as an answer). Two consumers:
  *   1. the deterministic history-owner route (D-B) in `routeRoomMessage`, and
  *   2. the Floor Manager's bounded `request_search` refinement (P5).
@@ -56,7 +56,8 @@ export interface RoomHistoryHit {
   /** Server-internal actor id. NEVER passed to the LLM. */
   authorActorId: string;
   snippet: string;
-  /** M121 — count-only reaction snapshot for woken-bot transcript lines. */
+  toolName?: string | null | undefined;
+  /** count-only reaction snapshot for woken-bot transcript lines. */
   reactions?: { emoji: string; count: number }[];
 }
 
@@ -73,6 +74,7 @@ interface RawHistoryRow {
   message_id: number | string;
   ts: string | Date;
   role: string;
+  tool_name?: string | null;
   content: string;
   agent_handle: string | null;
   agent_display_name: string | null;
@@ -92,6 +94,7 @@ function selectHistoryRows(db: Pick<DirectDatabase, "select">) {
       message_id: sql<number>`${sessionMessages.id}`.as("message_id"),
       ts: sql<Date>`${sessionMessages.createdAt}`.as("ts"),
       role: sql<string>`${sessionMessages.role}`.as("role"),
+      tool_name: sessionMessages.toolName,
       content: sql<string>`${sessionMessages.content}`.as("content"),
       agent_handle: sql<string | null>`${agents.handle}`.as("agent_handle"),
       agent_display_name: sql<string | null>`${agentAuthor.displayName}`.as(
@@ -158,8 +161,8 @@ function snippetOf(content: string): string {
 }
 
 /**
- * M138/M168 — Subthread context-window bounds. Moved here from
- * `server/messaging/dispatch.ts` (M168) so BOTH the (still-used) legacy
+ * Room/Subthread context-window bounds. Moved here from
+ * `server/messaging/dispatch.ts` so BOTH the (still-used) legacy
  * `buildSubthreadContextBlock` and the new transcript reader
  * (`defaultBuildTranscriptContextDeps`) import ONE copy. The parent window is
  * the ≤10 messages up to and including the anchor; the Subthread window is the
@@ -173,7 +176,7 @@ export const SUBTHREAD_HEAD = 5;
 export const SUBTHREAD_TAIL = 50;
 
 /**
- * M135 P6 — attach the count-only reaction snapshot to each hit (woken-bot
+ * attach the count-only reaction snapshot to each hit (woken-bot
  * transcript path). Mutates + returns `hits`. No-op when there are no hits or
  * no trust-context `userId`. Shared by `roomMessagesSince` + `allRoomMessages`.
  */
@@ -198,7 +201,7 @@ async function enrichWithReactions(
 }
 
 /**
- * D279 Phase 3 — exclude messages authored during a deaf window so bots never
+ * exclude messages authored during a deaf window so bots never
  * ingest them, even on a later wake. When `botActorId` is set, room-wide deaf
  * windows AND that bot's per-bot deaf windows apply. When omitted (Conductor
  * evidence search), only room-wide deaf windows are excluded.
@@ -331,6 +334,7 @@ function mapHistoryRows(
       authorDisplayName: display ?? handle,
       handle,
       authorActorId: actorId,
+      toolName: row.tool_name,
       snippet: contentProjection === "full" ? row.content : snippetOf(row.content),
     });
   }
@@ -338,7 +342,7 @@ function mapHistoryRows(
 }
 
 /**
- * M135 P6 — room messages across ALL member sessions, oldest-first, each
+ * room messages across ALL member sessions, oldest-first, each
  * resolved to its author (display name + `@handle` + ts). Powers the composite
  * labelled-transcript block fed to a woken bot.
  *
@@ -354,10 +358,10 @@ export async function roomMessagesSince(
     roomId: string;
     since: Date | null;
     limit: number;
-    /** Trust context for M121 reaction snapshot (woken-bot path). */
+    /** Trust context for reaction snapshot (woken-bot path). */
     userId?: string;
     agentId?: string | null;
-    /** D279 — bot actor for deaf-window ingestion filter. */
+    /** bot actor for deaf-window ingestion filter. */
     botActorId?: string;
   },
 ): Promise<RoomHistoryHit[]> {
@@ -383,7 +387,7 @@ export async function roomMessagesSince(
 }
 
 /**
- * M168 R4 — the FULL labelled room transcript across ALL member sessions,
+ * The FULL labelled room transcript across ALL member sessions,
  * oldest→newest, with NO `since` window and NO 500 clamp (unlike
  * `roomMessagesSince`). Includes `user`/`assistant`/`tool` rows so the rebuilt
  * conversation history covers a bot's own prior tool activity as narration
@@ -426,7 +430,7 @@ export async function allRoomMessages(
 }
 
 /**
- * M219 — bounded fresh-turn Room history.
+ * bounded fresh-turn Room history.
  *
  * Selects the configured newest conversational boundaries after collapsing only
  * non-null user fingerprints, then retains every assistant/tool evidence row
@@ -442,6 +446,7 @@ export async function recentBoundedRoomMessages(
     agentId?: string | null;
     botActorId?: string;
     excludeMessageId?: number;
+    imageAssistanceTurnId?: string;
     conversationalLimit?: number;
   },
 ): Promise<RoomHistoryHit[]> {
@@ -453,9 +458,14 @@ export async function recentBoundedRoomMessages(
     ),
   );
   const deafFilter = deafWindowExclusionSql(args.roomId, args.botActorId);
+  const currentImageResult = args.imageAssistanceTurnId
+    ? sql`(sm.role = 'tool' AND sm.tool_name = 'image_assistance'
+        AND starts_with(sm.metadata->'nautilo_tool_result'->>'toolCallId', ${`image-assistance:${args.imageAssistanceTurnId}:`})
+        AND s.agent_id = ${args.agentId ?? null})`
+    : sql`false`;
   const exclusiveBound =
     args.excludeMessageId != null
-      ? sql`AND sm.id < ${args.excludeMessageId}`
+      ? sql`AND (sm.id < ${args.excludeMessageId} OR ${currentImageResult})`
       : sql``;
   const triggeringFingerprintFilter =
     args.excludeMessageId != null
@@ -477,7 +487,8 @@ export async function recentBoundedRoomMessages(
       SELECT
         sm.id AS message_id,
         sm.created_at AS ts,
-        sm.role,
+        sm.role, sm.tool_name,
+        ${currentImageResult} AS current_image_result,
         sm.content,
         sm.fingerprint,
         ag.handle AS agent_handle,
@@ -533,7 +544,7 @@ export async function recentBoundedRoomMessages(
     SELECT
       e.message_id,
       e.ts,
-      e.role,
+      e.role, e.tool_name,
       e.content,
       e.agent_handle,
       e.agent_display_name,
@@ -542,9 +553,9 @@ export async function recentBoundedRoomMessages(
       e.user_name,
       e.user_actor_id
     FROM eligible e
-    CROSS JOIN earliest first
+    LEFT JOIN earliest first ON true
     WHERE
-      (e.ts > first.ts OR (e.ts = first.ts AND e.message_id >= first.message_id))
+      (e.current_image_result OR e.ts > first.ts OR (e.ts = first.ts AND e.message_id >= first.message_id))
       AND NOT (e.role = 'user' AND e.fingerprint IS NOT NULL AND e.fingerprint_ordinal > 1)
     ORDER BY e.ts ASC, e.message_id ASC
   `);
@@ -553,7 +564,7 @@ export async function recentBoundedRoomMessages(
 }
 
 /**
- * M135 P6 — the most recent messages across ALL member sessions of the room
+ * the most recent messages across ALL member sessions of the room
  * (cold-start convenience = `roomMessagesSince(since: null)`).
  */
 export async function recentRoomMessages(
@@ -577,7 +588,7 @@ export async function recentRoomMessages(
 }
 
 /**
- * M135 P6 — the timestamp of the bot's OWN most recent message in the room
+ * the timestamp of the bot's OWN most recent message in the room
  * (its last assistant turn across every member session), or null if the bot
  * has never spoken here. Anchors the "diff since I last spoke" context window
  * so an already-active bot, returning to a room where several humans talked in
@@ -627,7 +638,7 @@ function subthreadRowsQuery(
 }
 
 /**
- * M138 — parent-room messages up to AND INCLUDING the anchor message,
+ * parent-room messages up to AND INCLUDING the anchor message,
  * oldest→newest (≤ `limit` rows; the anchor is the LAST element). A Subthread
  * is rooted at the anchor, so the anchor line is part of the seed context.
  * Returns `[]` if the anchor row is missing/deleted (graceful fallback — no
@@ -684,7 +695,7 @@ export async function parentMessagesUpToAnchor(
 }
 
 /**
- * M138 — Subthread messages for the windowing policy, oldest→newest. If the
+ * Subthread messages for the windowing policy, oldest→newest. If the
  * thread is small (≤ `smallThreshold`) returns ALL messages; if long, returns
  * the first `headCount` ("initial") ++ last `tailCount` ("tail"), de-duplicated
  * on overlap, ordered oldest→newest. Returns `[]` for an empty Subthread.
@@ -754,7 +765,7 @@ export async function subthreadContextWindow(
 }
 
 /**
- * M135 P7 — id of the newest message across all member sessions of the room
+ * id of the newest message across all member sessions of the room
  * (the turn immediately preceding a fresh inbound send). Drives
  * `messageNeedsHistory`'s "reply to old vs preceding turn" distinction.
  * Returns null for an empty room.

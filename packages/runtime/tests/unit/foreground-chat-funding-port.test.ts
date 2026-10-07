@@ -9,6 +9,7 @@ import {
   assertForegroundChatFundingWorkloadSupported,
   installForegroundChatFundingPort,
   openForegroundChatFundingSessionForInvocation,
+  openImageAssistanceForInvocation,
   uninstallForegroundChatFundingPort,
 } from "../../src/foreground-chat-funding-port";
 
@@ -63,6 +64,7 @@ describe("foreground chat funding port", () => {
         roomId: "room-1",
         agentId: "agent-1",
         entrypoint,
+        hasImages: false,
       }]);
     },
   );
@@ -135,7 +137,7 @@ describe("foreground chat funding port", () => {
           protectedTurn,
         });
       const shapes = [
-        { voiceMode: true }, { multimodalImages: ["image"] },
+        { voiceMode: true },
         { attachmentTextBlocks: ["text"] }, { retainedAttachmentIds: ["attachment"] },
         { artifactRefs: [{ id: "artifact" }] }, { focusedResources: [{ id: "resource" }] },
         { activeMiniApp: {} }, { liveMiniAppSession: {} },
@@ -152,9 +154,9 @@ describe("foreground chat funding port", () => {
     },
   );
 
-  test("personal sessions refuse image and voice work with a safe error", () => {
+  test("personal sessions admit images but refuse unrelated voice work", () => {
+    expect(() => assertForegroundChatFundingWorkloadSupported(personalSession, { hasImages: true, voiceRequested: false })).not.toThrow();
     for (const workload of [
-      { hasImages: true, voiceRequested: false },
       { hasImages: false, voiceRequested: true },
     ]) {
       expect(() => assertForegroundChatFundingWorkloadSupported(
@@ -162,6 +164,30 @@ describe("foreground chat funding port", () => {
         workload,
       )).toThrow(ForegroundChatFundingUnsupportedWorkloadError);
     }
+  });
+
+  test.each(["foreground.main", "foreground.fork"] as const)("image assistance uses accepted %s authority and pinned funding", async (entrypoint) => {
+    const opened: unknown[] = [];
+    installForegroundChatFundingPort({ openSession: async () => personalSession,
+      openImageAssistance: async (input) => { opened.push(input); return { modelId: "vision-a", fundingSession: personalSession }; } });
+    const input = { authority: createAcceptedInvocationAuthority("human-1"), jobInput: baseJobInput,
+      causalHumanUserId: "human-1", entrypoint, modelId: "text-a", roomId: "room-1", agentId: "agent-1", fundingKind: "personal" as const };
+    expect((await openImageAssistanceForInvocation(input))?.modelId).toBe("vision-a");
+    expect(opened[0]).toMatchObject({ humanUserId: "human-1", fundingKind: "personal", entrypoint });
+    expect(openImageAssistanceForInvocation({ ...input, causalHumanUserId: "other" })).rejects.toBeInstanceOf(ForegroundChatFundingAuthorityError);
+    expect(opened).toHaveLength(1);
+    expect(await openImageAssistanceForInvocation({ ...input, authority: undefined })).toBeNull();
+  });
+
+  test("image-linked retained resources are supported without admitting other files", async () => {
+    installForegroundChatFundingPort({ openSession: async () => personalSession });
+    const input = { authority: createAcceptedInvocationAuthority("human-1"),
+      jobInput: { ...baseJobInput, multimodalImages: [{ attachmentId: "image-a" }], retainedAttachmentIds: ["image-a"],
+        focusedResources: [{ kind: "message-attachment", displayName: "chart.png", location: "server", lifetime: "message", capabilities: ["read"], locator: { attachmentId: "image-a" } }] },
+      causalHumanUserId: "human-1", entrypoint: "foreground.main" as const, modelId: "text-a", roomId: "room-1", agentId: "agent-1" };
+    expect((await openForegroundChatFundingSessionForInvocation(input))?.kind).toBe("personal");
+    expect(openForegroundChatFundingSessionForInvocation({ ...input, jobInput: { ...input.jobInput, focusedResources: [{ kind: "local-file", locator: { attachmentId: "image-a" } }] } })).rejects.toBeInstanceOf(ForegroundChatFundingUnsupportedWorkloadError);
+    expect(openForegroundChatFundingSessionForInvocation({ ...input, jobInput: { ...input.jobInput, retainedAttachmentIds: ["other-file"] } })).rejects.toBeInstanceOf(ForegroundChatFundingUnsupportedWorkloadError);
   });
 
   test("funding sessions are injected only as transient graph dependencies", () => {
@@ -173,7 +199,7 @@ describe("foreground chat funding port", () => {
       const graphInput = source.split("const graphInput = {")[1]?.split(
         "const protectedCheckpointSaver",
       )[0] ?? "";
-      expect(graphInput).not.toContain("fundingSession");
+      expect(graphInput.split("  };", 1)[0]).not.toContain("fundingSession");
       expect(source).toContain("foregroundChatFundingSession: fundingSession");
     }
   });

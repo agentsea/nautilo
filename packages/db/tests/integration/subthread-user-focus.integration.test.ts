@@ -1,5 +1,5 @@
 /**
- * D426 Phase 2 §2.1 — `subthread_user_focus` durable Thread Responder
+ *  `subthread_user_focus` durable Thread Responder
  * substrate: schema invariants (composite PK, CHECK constraints, FK
  * cascade + SET NULL). Live Postgres; run against a scratch instance.
  */
@@ -26,6 +26,7 @@ import {
   subthreadUserFocus,
   users,
 } from "@nautilo/db";
+import { syntheticFixtureEmail } from "../../../../dev/testing/synthetic-fixture-email";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 
 let db: ReturnType<typeof createDirectDb>;
@@ -46,7 +47,7 @@ async function createUser(label: string): Promise<string> {
     .insert(users)
     .values({
       name: label,
-      email: `${label}-${ts}-${randomUUID()}@d426p2.test`,
+      email: syntheticFixtureEmail(),
       handle: `${label}${ts}${Math.floor(Math.random() * 1e6)}`,
     })
     .returning({ id: users.id });
@@ -90,7 +91,7 @@ interface Fixture {
 }
 
 async function makeFixture(label: string, opts?: { botMode?: "active" | "mention_only" | "observe" }): Promise<Fixture> {
-  const userId = await createUser(`d426p2${label}`);
+  const userId = await createUser(`subthread${label}`);
   const userActorId = await createHumanActor(userId, label.toUpperCase());
   const bot = await createAgentActor(userId, `BOT-${label}`);
   const [ns] = await db
@@ -203,8 +204,8 @@ function expectPgError(fn: () => PromiseLike<unknown>, pattern: RegExp): Promise
   return expect(Promise.resolve(fn())).rejects.toThrow(pattern) as unknown as Promise<void>;
 }
 
-describe("D426 Phase 2 — subthread_user_focus schema invariants", () => {
-  test("exposes the expected D426 Phase 2 columns", async () => {
+describe(" subthread_user_focus schema invariants", () => {
+  test("exposes the expected responder columns", async () => {
     const cols = await db.execute(sql`
       SELECT column_name FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'subthread_user_focus'

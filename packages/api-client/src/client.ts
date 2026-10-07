@@ -613,6 +613,7 @@ import type {
   MarkRoomReadResponse,
   MessageReadStateDto,
   MessageAttachmentRef,
+  ImageAssistanceSummary,
   MessageArtifactOpenRef,
   NotificationLevel,
   NotificationPreferencesDto,
@@ -738,7 +739,7 @@ export interface HumanAvatarUploadResponse {
 /**
  * Binary value that the host FormData implementation can serialize. Browser
  * callers pass a `Blob` or `File`; Expo callers pass an `expo-file-system`
- * `File`, whose `bytes()` method is what Winter fetch recognizes. Deliberately
+ * `File`, whose `bytes` method is what Winter fetch recognizes. Deliberately
  * excludes React Native's `{ uri, name, type }` descriptor, which Winter
  * cannot serialize as a multipart part.
  */
@@ -1685,6 +1686,8 @@ export const assistantModelSummarySchema = z
       ])
       .optional(),
     unavailableReason: z.string().optional(),
+    /** Caller-specific image admission, including automatic image assistance. */
+    imageInput: z.enum(["direct", "assisted", "unavailable"]).optional(),
     /** Authenticated caller's currently admitted payer source; checked again at dispatch. */
     fundingSource: z.enum(["personal", "server"]).optional(),
     /** Secret-free effective transport family for the admitted source. */
@@ -10135,6 +10138,7 @@ export class NautiloApiClient {
       authorAgentId?: string;
       authorHarnessId?: string;
       attachments?: MessageAttachmentRef[];
+      imageAssistance?: ImageAssistanceSummary;
     }>;
     pageInfo?: {
       hasMoreBefore: boolean;
@@ -10160,6 +10164,7 @@ export class NautiloApiClient {
         editedAt?: string | null;
         editRevision?: number;
         attachments?: MessageAttachmentRef[];
+        imageAssistance?: ImageAssistanceSummary;
       }>;
       pageInfo?: {
         hasMoreBefore: boolean;
@@ -10194,6 +10199,7 @@ export class NautiloApiClient {
       authorAgentId?: string;
       authorHarnessId?: string;
       attachments?: MessageAttachmentRef[];
+      imageAssistance?: ImageAssistanceSummary;
       artifacts?: MessageArtifactOpenRef[];
     }>;
     pageInfo: {
@@ -10237,6 +10243,7 @@ export class NautiloApiClient {
         authorAgentId?: string;
         authorHarnessId?: string;
         attachments?: MessageAttachmentRef[];
+        imageAssistance?: ImageAssistanceSummary;
         artifacts?: MessageArtifactOpenRef[];
       }>;
       pageInfo: {

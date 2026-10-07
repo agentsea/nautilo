@@ -26,6 +26,7 @@ import { liveShadowDurableEventDigestV1 } from
   "../../src/message/live-shadow-realtime-evidence.ts";
 import {
   createLiveShadowToolResultCallIdResolver,
+  encodeLiveShadowOrdinaryPayloadV2,
   resolveRoomHistoryReaderSigningPublicKey,
   resolveLiveShadowToolResultCallIds,
   verifyAndRecordLiveShadowClientVerification,
@@ -659,4 +660,22 @@ describe("Room history reader signing authority", () => {
       hostAuthorizationRevision: 3,
     })).toBeNull();
   });
+});
+
+
+test("automatic image observations preserve canonical pair correlation and final attribution parity", () => {
+  const toolCallId = "image-assistance:digest-a";
+  const call = { role: "assistant", content: "", tool_name: null,
+    tool_calls: JSON.stringify([{ id: toolCallId, name: "image_assistance", args: {}, type: "tool_call" }]) };
+  const result = { role: "tool", content: "synthetic observations", tool_calls: null, tool_name: "image_assistance" };
+  expect([...resolveLiveShadowToolResultCallIds([call, result])]).toEqual([[2, toolCallId]]);
+  expect(encodeLiveShadowOrdinaryPayloadV2(result, toolCallId)).toEqual(encodeMessagePayloadV2({
+    role: "tool", content: result.content, toolName: "image_assistance", sensitiveMetadata: { toolCallId },
+  }));
+  const imageAssistance = { status: "completed", modelId: "vision-a", modelDisplayName: "Vision A", attachmentIds: ["image-a"] };
+  const answer = { role: "assistant", content: "Total: 123.45", tool_calls: null, tool_name: null,
+    metadata_json: JSON.stringify({ nautilo_image_assistance: imageAssistance }) };
+  expect(encodeLiveShadowOrdinaryPayloadV2(answer, null)).toEqual(encodeMessagePayloadV2({
+    role: "assistant", content: answer.content, sensitiveMetadata: { imageAssistance },
+  }));
 });

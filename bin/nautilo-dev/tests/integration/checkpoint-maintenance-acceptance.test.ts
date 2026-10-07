@@ -1,5 +1,5 @@
 /**
- * Expensive D489 4.2 acceptance. Run only through the parent runner script.
+ * Expensive checkpoint-maintenance acceptance. Run only through the parent runner script.
  * It never resolves a Nautilo instance and never writes canonical default state.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -42,22 +42,22 @@ import {
 } from "../../src/lib/full-dev-backup";
 import { dumpPostgresDatabaseGzip, importPostgresDatabaseGzip } from "../../src/lib/postgres-archive";
 import {
-  createD489ResourceJournal,
-  advanceD489StableReadiness,
-  expectedD489ResourcePaths,
-  hasD489NormalPostgresReadyLog,
-  installD489WorkerCleanup,
-  parseD489LoopbackMappedPort,
-  recordD489OwnedProcess,
-  recordD489PeakMeasurement,
-  type D489ResourceJournal,
-} from "./helpers/d489-disposable-resource-journal";
+  createDisposablePostgresResourceJournal,
+  advanceDisposablePostgresStableReadiness,
+  expectedDisposablePostgresResourcePaths,
+  hasDisposablePostgresNormalPostgresReadyLog,
+  installDisposablePostgresWorkerCleanup,
+  parseDisposablePostgresLoopbackMappedPort,
+  recordDisposablePostgresOwnedProcess,
+  recordDisposablePostgresPeakMeasurement,
+  type DisposablePostgresResourceJournal,
+} from "./helpers/disposable-postgres-resource-journal";
 
-const enabled = process.env["NAUTILO_D489_DISPOSABLE_PG"] === "1";
-const runId = process.env["NAUTILO_D489_RUN_ID"] ?? "";
-const expectedPaths = runId === "" ? null : expectedD489ResourcePaths(runId);
+const enabled = process.env["NAUTILO_CHECKPOINT_DISPOSABLE_PG"] === "1";
+const runId = process.env["NAUTILO_CHECKPOINT_RUN_ID"] ?? "";
+const expectedPaths = runId === "" ? null : expectedDisposablePostgresResourcePaths(runId);
 const journalPath = expectedPaths?.journalPath ?? "";
-let journal: D489ResourceJournal;
+let journal: DisposablePostgresResourceJournal;
 let removeWorkerCleanup: () => void = () => undefined;
 let hostPort = 0;
 let backup: VerifiedFullBackup;
@@ -89,13 +89,13 @@ function waitReady(): void {
 function refreshMappedHostPort(): void {
   const mapped = docker(["port", journal.resources.container, "5432/tcp"]);
   if (mapped.status !== 0) throw new Error("Disposable mapped port unavailable");
-  hostPort = parseD489LoopbackMappedPort(mapped.stdout);
+  hostPort = parseDisposablePostgresLoopbackMappedPort(mapped.stdout);
 }
 
 function waitInitialDatabaseServer(): void {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     const logs = docker(["logs", journal.resources.container]);
-    if (hasD489NormalPostgresReadyLog(`${logs.stdout}\n${logs.stderr}`)) {
+    if (hasDisposablePostgresNormalPostgresReadyLog(`${logs.stdout}\n${logs.stderr}`)) {
       const ready = docker(["exec", journal.resources.container, "pg_isready", "-U", "postgres", "-d", "postgres"]);
       const first = psqlDb("postgres", "SELECT pg_postmaster_start_time()::text;");
       Bun.sleepSync(100);
@@ -256,7 +256,7 @@ async function captureVerifiedBackup(): Promise<VerifiedFullBackup> {
   mkdirSync(dir, { mode: 0o700 });
   await dumpPostgresDatabaseGzip({ container: journal.resources.container, database: "nautilo", outputPath: join(dir, "nautilo.sql.gz") });
   await dumpPostgresDatabaseGzip({ container: journal.resources.container, database: "logto_nautilo", outputPath: join(dir, "logto.sql.gz") });
-  writeFileSync(join(dir, "instance.env"), "D489_DISPOSABLE=1\n", { mode: 0o600 });
+  writeFileSync(join(dir, "instance.env"), "CHECKPOINT_DISPOSABLE=1\n", { mode: 0o600 });
   const home = join(journal.resources.filesRoot, "captured-home");
   mkdirSync(home, { mode: 0o700 });
   writeFileSync(join(home, "fixture.json"), "{\"disposable\":true}\n", { mode: 0o600 });
@@ -289,7 +289,7 @@ async function restoreNautilo(database = "nautilo"): Promise<void> {
 }
 
 async function verifyPinnedSaverResume(database = "nautilo"): Promise<void> {
-  const saver = PostgresSaver.fromConnString(`postgresql://postgres:d489-disposable@127.0.0.1:${hostPort}/${database}`, { schema: "langchain" });
+  const saver = PostgresSaver.fromConnString(`postgresql://postgres:fixture-postgres@127.0.0.1:${hostPort}/${database}`, { schema: "langchain" });
   try {
     for (let thread = 1; thread <= 4; thread += 1) for (const ns of ["", "nested-2"]) {
       const tuple = await saver.getTuple({ configurable: { thread_id: `thread-${thread}`, checkpoint_ns: ns } });
@@ -304,14 +304,14 @@ async function verifyPinnedSaverResume(database = "nautilo"): Promise<void> {
 async function waitHostForwardedPostgres(database = "nautilo"): Promise<void> {
   let consecutiveSuccesses = 0;
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    const saver = PostgresSaver.fromConnString(`postgresql://postgres:d489-disposable@127.0.0.1:${hostPort}/${database}`, { schema: "langchain" });
+    const saver = PostgresSaver.fromConnString(`postgresql://postgres:fixture-postgres@127.0.0.1:${hostPort}/${database}`, { schema: "langchain" });
     let succeeded = false;
     try {
       const tuple = await saver.getTuple({ configurable: { thread_id: "thread-1", checkpoint_ns: "" } });
       succeeded = tuple?.config.configurable?.["checkpoint_id"] !== undefined;
     } catch { /* bounded readiness retry; no connection detail escapes */ }
     finally { try { await saver.end(); } catch { /* failed pools have nothing else to release */ } }
-    const state = advanceD489StableReadiness(consecutiveSuccesses, succeeded);
+    const state = advanceDisposablePostgresStableReadiness(consecutiveSuccesses, succeeded);
     consecutiveSuccesses = state.consecutiveSuccesses;
     if (state.ready) return;
     await Bun.sleep(100);
@@ -338,17 +338,17 @@ async function waitForMarker(child: ChildProcessWithoutNullStreams, marker: stri
   throw new Error("Disposable lock holder did not acquire lock");
 }
 
-describe.skipIf(!enabled)("D489 disposable checkpoint-maintenance acceptance", () => {
+describe.skipIf(!enabled)("Disposable checkpoint-maintenance acceptance", () => {
   beforeAll(async () => {
-    if (expectedPaths === null) throw new Error("D489 acceptance must run through its parent runner");
-    journal = createD489ResourceJournal(runId); // owner-only journal exists before Docker creation
-    removeWorkerCleanup = installD489WorkerCleanup(journalPath);
+    if (expectedPaths === null) throw new Error("Checkpoint maintenance acceptance must run through its parent runner");
+    journal = createDisposablePostgresResourceJournal(runId); // owner-only journal exists before Docker creation
+    removeWorkerCleanup = installDisposablePostgresWorkerCleanup(journalPath);
     expect(docker(["network", "create", journal.resources.network]).status).toBe(0);
     expect(docker(["volume", "create", journal.resources.volume]).status).toBe(0);
     const started = docker([
       "run", "-d", "--pull=never", "--name", journal.resources.container, "--network", journal.resources.network,
       "--mount", `type=volume,source=${journal.resources.volume},target=/var/lib/postgresql/data`,
-      "-p", "127.0.0.1::5432", "-e", "POSTGRES_PASSWORD=d489-disposable", journal.image.id,
+      "-p", "127.0.0.1::5432", "-e", "POSTGRES_PASSWORD=fixture-postgres", journal.image.id,
     ]);
     if (started.status !== 0) throw new Error("Disposable PostgreSQL did not start from pre-existing exact image ID");
     expect(docker(["inspect", "--format", "{{.Image}}", journal.resources.container]).stdout.trim()).toBe(journal.image.id);
@@ -361,7 +361,7 @@ describe.skipIf(!enabled)("D489 disposable checkpoint-maintenance acceptance", (
     mustPsql("logto_nautilo", "CREATE TABLE sentinel(id integer PRIMARY KEY,value text NOT NULL); INSERT INTO sentinel VALUES(1,'logto-sentinel');");
     mustPsql("unrelated", "CREATE TABLE sentinel(id integer PRIMARY KEY,value text NOT NULL); INSERT INTO sentinel VALUES(1,'unrelated-db-sentinel');");
     await waitHostForwardedPostgres();
-    expect(recordD489PeakMeasurement(expectedPaths.journalPath)).toBeGreaterThan(0);
+    expect(recordDisposablePostgresPeakMeasurement(expectedPaths.journalPath)).toBeGreaterThan(0);
   }, 180_000);
 
   afterAll(() => { removeWorkerCleanup(); }); // outer parent runner is the sole ordinary cleanup authority
@@ -396,7 +396,7 @@ describe.skipIf(!enabled)("D489 disposable checkpoint-maintenance acceptance", (
       },
     });
     expect(logtoPaused).toBe(false);
-    expect(recordD489PeakMeasurement(journalPath)).toBeGreaterThan(0); // includes verified dumps and real home archive
+    expect(recordDisposablePostgresPeakMeasurement(journalPath)).toBeGreaterThan(0); // includes verified dumps and real home archive
     expect(semantic?.before).toEqual(semanticAggregate(dryRun.current));
     expect(semantic?.after).toEqual(semanticAggregate(dryRun.retained));
     expect(semantic?.deleted).toEqual(semanticAggregate(dryRun.reclaimable));
@@ -428,7 +428,7 @@ describe.skipIf(!enabled)("D489 disposable checkpoint-maintenance acceptance", (
 
     // A real concurrent PostgreSQL client makes the writer gate fail and recover before mutation.
     const writer = spawn("docker", ["exec", "-i", journal.resources.container, "psql", "-q", "-t", "-A", "-U", "postgres", "-d", "nautilo"], { stdio: ["pipe", "pipe", "pipe"] });
-    recordD489OwnedProcess(journalPath, writer.pid!, journal.resources.container);
+    recordDisposablePostgresOwnedProcess(journalPath, writer.pid!, journal.resources.container);
     writer.stdin.end("SELECT 'writer-held'; SELECT pg_sleep(60);\n");
     await waitForMarker(writer, "writer-held");
     let writerContention: unknown;
@@ -494,7 +494,7 @@ describe.skipIf(!enabled)("D489 disposable checkpoint-maintenance acceptance", (
     const compacted = executeCheckpointSemanticCompaction({ container: journal.resources.container });
 
     const holder = spawn("docker", ["exec", "-i", journal.resources.container, "psql", "-q", "-t", "-A", "-U", "postgres", "-d", "nautilo"], { stdio: ["pipe", "pipe", "pipe"] });
-    recordD489OwnedProcess(journalPath, holder.pid!, journal.resources.container);
+    recordDisposablePostgresOwnedProcess(journalPath, holder.pid!, journal.resources.container);
     holder.stdin.end("BEGIN; LOCK TABLE langchain.checkpoint_blobs IN ACCESS SHARE MODE; SELECT 'lock-held'; SELECT pg_sleep(60); COMMIT;\n");
     await waitForMarker(holder, "lock-held");
     let contention: unknown;
@@ -553,7 +553,7 @@ describe.skipIf(!enabled)("D489 disposable checkpoint-maintenance acceptance", (
     expect(checkpointFailureEvidence(new CheckpointMaintenanceGateError("backup", restoreFailure)))
       .toMatchObject({ failure: { code: "backup-verification-failed" }, retryState: "safe-to-retry" });
 
-    expect(recordD489PeakMeasurement(journalPath)).toBeGreaterThan(0); // includes corrupt backup/restore artifacts
+    expect(recordDisposablePostgresPeakMeasurement(journalPath)).toBeGreaterThan(0); // includes corrupt backup/restore artifacts
 
     expect(sentinelSnapshot()).toBe(sentinelsBefore);
     expect(protectedDefaultSnapshot()).toBe(defaultBefore);

@@ -246,7 +246,7 @@ describe("Encryption Wave 0 repository wiring", () => {
       .toBe(240);
   });
 
-  test("Desktop smoke stays PR-only and D475 stays manual-only after server publication moves out", async () => {
+  test("Desktop smoke stays PR-only and Service-role drift stays manual-only after server publication moves out", async () => {
     const desktopWorkflow = await read(
       ".github/workflows/desktop-smoke.yml",
     );
@@ -264,14 +264,14 @@ describe("Encryption Wave 0 repository wiring", () => {
     expect(desktopWorkflow).not.toMatch(/^\s*push:/mu);
     expect(desktopWorkflow).toMatch(/^\s*workflow_dispatch:/mu);
     expect(workflowTexts.join("\n")).not.toContain(
-      "test:integration:d475",
+      "test:integration:role-drift",
     );
     expect(workflowTexts.join("\n")).not.toContain(
       "dev-stack-secret-recovery",
     );
-    expect(devToolsPackage.scripts["test:integration:d475"]).toBe(
-      "NAUTILO_D475_LIVE=1 bun test --timeout 240000 "
-      + "tests/integration/d475-persisted-role-drift.test.ts",
+    expect(devToolsPackage.scripts["test:integration:role-drift"]).toBe(
+      "NAUTILO_ROLE_DRIFT_LIVE=1 bun test --timeout 240000 "
+      + "tests/integration/persisted-role-drift.test.ts",
     );
   });
 

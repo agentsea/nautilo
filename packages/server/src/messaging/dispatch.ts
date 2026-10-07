@@ -105,6 +105,7 @@ import {
 import {
   normalizeChatAttachments,
   assertChatAttachmentImageSupport,
+  pendingChatAttachmentsAreImages,
   ImageAttachmentModelError,
   parseChatAttachmentRefs,
   validateClientPathSafe,
@@ -187,7 +188,7 @@ import {
 
 export type RoomPostMessageBody = {
   content?: string;
-  /** M282 — Browser-prepared protected sibling for the same ordinary text. */
+  /** Browser-prepared protected sibling for the same ordinary text. */
   liveShadow?: unknown;
   /**
    * raw optional session input carried only to the future
@@ -195,7 +196,7 @@ export type RoomPostMessageBody = {
    * model-visible in this transport-only phase.
    */
     clientActionSessionId?: unknown;
-  /** M233 — picker-authored stable Human recipient ids; never inferred from content. */
+  /** picker-authored stable Human recipient ids; never inferred from content. */
   mentionedHumanUserIds?: unknown;
   /** Structured Room-wide Human mention intent. */
   mentionEveryone?: boolean;
@@ -227,14 +228,14 @@ export type RoomPostMessageBody = {
    */
   model?: string | null;
   /**
-   * M087 — IANA timezone auto-detected by the client. Validated +
+   * IANA timezone auto-detected by the client. Validated +
    * resolved inside `executeAgentMediatedRoomMessage` (reads `request.body`
    * directly); declared here so the canonical room-message body type allows
    * it. Invalid/omitted → `users.timezone ?? "UTC"`.
    */
   userTimezone?: string | null;
   /**
-   * M134 Phase 4 — optional UI-selected bot (opens/continues focus without a
+   * optional UI-selected bot (opens/continues focus without a
    * `@mention`). Must be the actor id of an agent member of the room.
    */
   uiSelectedBotActorId?: string | null;
@@ -249,7 +250,7 @@ export type RoomPostMessageBody = {
   /** persisted human message id for an ask_user resume (exclude from context block). */
   resumeMessageId?: number | null;
   /**
-   * M135 P7 — explicit "search room history" UI signal. When true the
+   * explicit "search room history" UI signal. When true the
    * Conductor consults the room-history evidence route regardless of reply
    * structure. Optional; defaults to false.
    */
@@ -361,7 +362,7 @@ function parseAdvancedVideoWorkcardContinuation(args: {
 }
 
 /**
- * M135 P6 — context window bounds for the woken-bot composite block.
+ * context window bounds for the woken-bot composite block.
  * `WINDOW_CAP` caps the DB fetch of "messages since the bot last spoke";
  * `MAX_LINES` caps the rendered block (oldest-first elision beyond it). The
  * cap keeps a bot that has been silent through a very long burst from pulling
@@ -392,7 +393,7 @@ function uploadedAttachmentArgs(
 
 /**
  * after the human message is persisted, stamp this turn's retained
- * attachments (images + audio) with the M134 `fingerprint` of the just-
+ * attachments (images + audio) with the `fingerprint` of the just-
  * inserted human row. The room history read joins attachments -> the deduped
  * message by `turn_id` (= fingerprint), so an attachment renders once per
  * turn regardless of how many per-bot copies of the message exist. Best-
@@ -478,7 +479,7 @@ type GroupRoomConductorAfterPersistArgs = {
    * inside `createForegroundJob` bypasses a turn accepted before drain.
    */
   acceptanceAuthority?: MaintenanceAcceptanceAuthority;
-  /** M254 — Human invocation admission for this accepted Room turn. */
+  /** Human invocation admission for this accepted Room turn. */
   invocationAuthority: AcceptedInvocationAuthority;
   assertCanInvokeAgent?: (input: AgentInvocationAdmissionInput) => Promise<void>;
   /** same process-local registry that created the opaque handle. */
@@ -636,14 +637,11 @@ const conductorCoalescer = new ConductorCoalescer(
   },
 );
 
-// M171 (Phase H) — the legacy transient context blocks (peer-diff +
-// `buildSubthreadContextBlock`, deduped against the checkpoint via
-// `readGraphCheckpointText`) were deleted here: every flow now rebuilds the
-// full labelled history from the DB transcript in `resolveForegroundHistoryMessages`
-// (M168), which subsumes them. Only the live turn message is threaded forward.
+// Every flow rebuilds the full labelled history from the DB transcript in
+// `resolveForegroundHistoryMessages`. Only the live turn message is threaded forward.
 
 /**
- * M135 P8 — one structured log line per Conductor decision. Floor-manager
+ * one structured log line per Conductor decision. Floor-manager
  * outcomes read distinctly from deterministic routes via the controlled
  * `reasonCode`.
  *
@@ -818,7 +816,7 @@ export async function dispatchRoomMessageSend(
      * unit tests so the drain rejection can be exercised DB-free.
      */
     maintenanceGate?: MaintenanceGate;
-    /** M254 — injected only by hermetic route tests. */
+    /** injected only by hermetic route tests. */
     assertCanInvokeAgent?: (input: AgentInvocationAdmissionInput) => Promise<void>;
     /** Injected by hermetic route tests; production reads current Human RBAC. */
     assertCanUseServerProviderCredentials?: (humanUserId: string, origin?: string) => Promise<void>;
@@ -830,7 +828,7 @@ export async function dispatchRoomMessageSend(
     aliasHttpContract?: boolean;
     /** Verified paired-mobile provenance for this exact ordinary send. */
     ordinaryOrigin?: VerifiedOrdinaryOrigin;
-    /** M297 — injectable exact-pair admission seam for route tests. */
+    /** injectable exact-pair admission seam for route tests. */
     humanPairIsBlocked?: (firstUserId: string, secondUserId: string) => Promise<boolean>;
   },
 ): Promise<void> {
@@ -1089,7 +1087,7 @@ export async function dispatchRoomMessageSend(
     replyToMessageId = replyRaw;
   }
 
-  // M134 — optional UI-selected bot. Must name an agent member of the room.
+  // optional UI-selected bot. Must name an agent member of the room.
   let uiSelectedBotActorId: string | null = null;
   const uiSelRaw = opts.body.uiSelectedBotActorId;
   if (uiSelRaw !== undefined && uiSelRaw !== null) {
@@ -1108,7 +1106,7 @@ export async function dispatchRoomMessageSend(
     uiSelectedBotActorId = sel;
   }
 
-  // M135 P7 — optional explicit "search room history" UI flag.
+  // optional explicit "search room history" UI flag.
   const searchHistoryFlag = opts.body.searchHistoryFlag === true;
 
   // ask_user resume turn id (reuse the persisted human row's
@@ -1129,7 +1127,7 @@ export async function dispatchRoomMessageSend(
   const chatDeps = resolvedChatRoutesDeps(app, opts.chatDeps);
   const alias = opts.aliasHttpContract === true;
 
-  // M254 R7 — an exact parked Task reply is ordinary Room history first,
+  // an exact parked Task reply is ordinary Room history first,
   // including in the strict 1H+1A ask-peer DM shape. Persist it through the
   // shared Human-only path; the post-persist hook independently checks both
   // responder and durable requestor authority (plus maintenance) before the
@@ -1182,13 +1180,13 @@ export async function dispatchRoomMessageSend(
       content = commandExpanded.content;
       handledAgentSlash ||= commandExpanded.handled;
     }
-    // M134 §2 — a "DM" for routing is STRICTLY 1 human + 1 agent. Everything
+    // a "DM" for routing is STRICTLY 1 human + 1 agent. Everything
     // else with ≥1 agent is a group room routed by the Conductor.
     if (advancedVideoWorkcardContinuation && !isDm) {
       return reply.code(400).send({ error: "advanced video workcards require a direct Genie room" });
     }
 
-    // M254 R2 — classify validated explicit intent before persistence. Reuse
+    // classify validated explicit intent before persistence. Reuse
     // the canonical mention parser, reply-to-Agent lookup, UI validation, and
     // slash resolvers instead of introducing a second free-text grammar.
     const replyTargetActorId = replyToMessageId !== undefined
@@ -1295,7 +1293,10 @@ export async function dispatchRoomMessageSend(
       && detail.members.some((member) => member.kind === "user" && member.userId === sessionUserId)
       && agentMembers[0]?.agentOwnerUserId === sessionUserId
       && !mentionEveryoneRoutingHint;
-    const hasAuxiliaryWorkload = voiceMode || fullPrepared || attachmentRefs.length > 0
+    const hasNonImageAttachments = attachmentRefs.length > 0 && !(await pendingChatAttachmentsAreImages(
+      uploadedAttachmentArgs(attachmentRefs, request.sessionActorId, request.memoryEnvelope),
+    ));
+    const hasAuxiliaryWorkload = voiceMode || fullPrepared || hasNonImageAttachments
       || artifactRefs.length > 0 || focusedResources.length > 0 || activeMiniApp !== null
       || liveMiniAppSession !== null || handledAgentSlash;
     let personalChatCandidate = ownPrivateDm
@@ -1317,7 +1318,7 @@ export async function dispatchRoomMessageSend(
     if (personalChatCandidate && hasAuxiliaryWorkload) {
       return reply.code(422).send({
         code: "unsupported_workload",
-        error: "Personal provider credentials support text chat only.",
+        error: "Personal provider credentials support chat and image attachments only.",
       });
     }
     if (!personalChatCandidate) {
@@ -1377,6 +1378,7 @@ export async function dispatchRoomMessageSend(
         })));
         await assertChatAttachmentImageSupport({
           ...uploadedAttachmentArgs(attachmentRefs, request.sessionActorId, request.memoryEnvelope), models,
+          humanUserId: sessionUserId, fundingKind: personalChatCandidate ? "personal" : "server",
         });
       } catch (error) {
         if (!(error instanceof ImageAttachmentModelError)) throw error;
@@ -2189,7 +2191,7 @@ export async function dispatchRoomMessageSend(
                 : { liveShadowRunAgentTurn }),
             }
           : {}),
-        // M168 — DM-subthread: anchor the transcript rebuild to the parent
+        // DM-subthread: anchor the transcript rebuild to the parent
         // window. No `currentMessageId` (the DM path persists its human row
         // AFTER history is built, so there is nothing to exclude).
         ...(detail.kind === "subthread" && detail.parentRoomId
@@ -2201,7 +2203,7 @@ export async function dispatchRoomMessageSend(
         // the direct 1:1 route uses the same child-row / root-summary
         // persistence contract as conductor wakes.
         ...(detail.kind === "subthread" ? { subthreadRoomId: detail.id } : {}),
-        // M135 P6 — DM bots get a server-time prefix on the human turn.
+        // DM bots get a server-time prefix on the human turn.
         serverTimePrefixIso: `${new Date().toISOString().slice(0, 19)}Z`,
         invocationAuthority,
         ...(advancedVideoWorkcardContinuation
@@ -2775,7 +2777,7 @@ async function dispatchHumanOnlyRoomMessage(
       .send(strictShadowHttpBody(out.strictShadowFailure));
   }
 
-  // M254 R2/R7 — the Task reply hook sees only admitted, persisted messages.
+  // the Task reply hook sees only admitted, persisted messages.
   if (opts.content !== undefined) {
     void maybeResumeAwaitingTask(opts.detail.id, opts.sessionUserId, opts.content);
   }
@@ -2843,7 +2845,7 @@ async function dispatchHumanOnlyRoomMessage(
 }
 
 /**
- * M134 Phase 2/3 — group-room dispatch via the Room Conductor.
+ * group-room dispatch via the Room Conductor.
  *
  * A group room is anything with ≥1 agent that is NOT a strict 1-human-1-agent
  * DM. The Conductor decides which 0..N bots to wake deterministically; each
@@ -2898,7 +2900,7 @@ async function dispatchGroupRoomMessage(
      * the conductor wake so the drain gate bypasses this accepted turn.
      */
     acceptanceAuthority?: MaintenanceAcceptanceAuthority;
-    /** M254 — Human invocation admission for this accepted Room turn. */
+    /** Human invocation admission for this accepted Room turn. */
     invocationAuthority: AcceptedInvocationAuthority;
     assertCanInvokeAgent?: (input: AgentInvocationAdmissionInput) => Promise<void>;
   clientActionSessionId?: unknown;
@@ -3311,7 +3313,7 @@ async function dispatchGroupRoomMessage(
   }
 
   if (!opts.resumeTurnId && content !== undefined) {
-    // M254 R2/R7 — only a newly admitted, persisted Human message may attempt
+    // only a newly admitted, persisted Human message may attempt
     // the independently gated awaiting-Task resume.
     void maybeResumeAwaitingTask(detail.id, sessionUserId, content);
   }

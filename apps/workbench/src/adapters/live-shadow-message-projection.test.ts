@@ -272,3 +272,34 @@ describe("live Shadow Message UI projection", () => {
     })).toEqual([]);
   });
 });
+
+
+test("protected live answer projects completed authenticated image attribution", () => {
+  const imageAssistance = { status: "completed" as const, modelId: "provider:vision", modelDisplayName: "Image reader", attachmentIds: ["image-1"] };
+  const events = projectLiveShadowMessageResult({
+    event: frameEvent,
+    result: { status: "durable_verified", payload: { role: "assistant", content: "The chart rose", sensitiveMetadata: { imageAssistance } }, messageId: "43", assistantMessageKey: null, authorAgentId: "agent-1" },
+  });
+  expect(events[0]).toMatchObject({ type: "message.new", role: "ai", imageAssistance });
+  const invalid = projectLiveShadowMessageResult({
+    event: frameEvent,
+    result: { status: "durable_verified", payload: { role: "assistant", content: "The chart rose", sensitiveMetadata: { imageAssistance: { ...imageAssistance, status: "failed" } } }, messageId: "44", assistantMessageKey: null, authorAgentId: "agent-1" },
+  });
+  expect(invalid[0]).not.toHaveProperty("imageAssistance");
+});
+
+
+test("omits authenticated image helper rows from realtime chat", () => {
+  expect(projectLiveShadowMessageResult({
+    event: frameEvent,
+    result: { status: "durable_verified", payload: { role: "tool", toolName: "image_assistance", content: '{"observations":"private observation"}', sensitiveMetadata: { toolCallId: "image-assistance:input-digest" } }, messageId: "43", assistantMessageKey: null, authorAgentId: "agent-1" },
+  })).toEqual([]);
+});
+
+
+test("omits empty protected image helper declarations without emitting tool activity", () => {
+  expect(projectLiveShadowMessageResult({
+    event: frameEvent,
+    result: { status: "durable_verified", payload: { role: "assistant", content: "", toolCalls: [{ id: "image-assistance:input-digest", name: "image_assistance", args: {} }] }, messageId: "42", assistantMessageKey: null, authorAgentId: "agent-1" },
+  })).toEqual([]);
+});

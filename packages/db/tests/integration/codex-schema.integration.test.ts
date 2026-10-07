@@ -1,5 +1,5 @@
 /**
- * D453 task 2.1 — live Postgres contract for the safe Codex persistence
+ * Codex task 2.1 — live Postgres contract for the safe Codex persistence
  * substrate.  These tests deliberately use the direct DB owner: FORCE ROW
  * LEVEL SECURITY means the policies still apply once the transaction's
  * `app.current_user_id` is set, which lets the test prove the same fail-closed
@@ -25,6 +25,7 @@ import {
   taskRuns,
   users,
 } from "@nautilo/db";
+import { syntheticFixtureEmail } from "../../../../dev/testing/synthetic-fixture-email";
 import { bootstrapTestDbInstance } from "../../src/testing/instance-guard";
 
 type Db = ReturnType<typeof createDirectDb>;
@@ -82,17 +83,17 @@ async function seedBindingFixture(tag: string) {
   const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const [owner] = await db
     .insert(users)
-    .values({ name: `d453-owner-${tag}`, email: `d453-${tag}-${token}@test.local` })
+    .values({ name: `codex-owner-${tag}`, email: syntheticFixtureEmail() })
     .returning({ id: users.id });
   const [other] = await db
     .insert(users)
-    .values({ name: `d453-other-${tag}`, email: `d453-other-${tag}-${token}@test.local` })
+    .values({ name: `codex-other-${tag}`, email: syntheticFixtureEmail() })
     .returning({ id: users.id });
   const [agent] = await db
     .insert(agents)
-    .values({ handle: `d453-agent-${tag}-${token}` })
+    .values({ handle: `codex-agent-${tag}-${token}` })
     .returning({ id: agents.id });
-  if (!owner || !other || !agent) throw new Error("D453 fixture identities failed");
+  if (!owner || !other || !agent) throw new Error("Codex fixture identities failed");
 
   const [ownerActor] = await db
     .insert(actors)
@@ -109,9 +110,9 @@ async function seedBindingFixture(tag: string) {
     .returning({ id: actors.id });
   const [namespace] = await db
     .insert(namespaces)
-    .values({ scope: "test", label: `d453-${tag}-${token}` })
+    .values({ scope: "test", label: `codex-${tag}-${token}` })
     .returning({ id: namespaces.id });
-  if (!ownerActor || !agentActor || !namespace) throw new Error("D453 fixture trust failed");
+  if (!ownerActor || !agentActor || !namespace) throw new Error("Codex fixture trust failed");
 
   const [room] = await db
     .insert(rooms)
@@ -119,12 +120,12 @@ async function seedBindingFixture(tag: string) {
       ownerId: owner.id,
       type: "private",
       kind: "private",
-      label: `d453 room ${tag}`,
-      graphThreadId: `d453:${tag}:${token}`,
+      label: `codex room ${tag}`,
+      graphThreadId: `codex:${tag}:${token}`,
       namespaceId: namespace.id,
     })
     .returning({ id: rooms.id });
-  if (!room) throw new Error("D453 fixture room failed");
+  if (!room) throw new Error("Codex fixture room failed");
   // room_members is not FORCE RLS; this bootstrap insert mirrors the trusted
   // room seed path and makes the later forced binding policy meaningful.
   await db.insert(roomMembers).values([
@@ -138,12 +139,12 @@ async function seedBindingFixture(tag: string) {
       ownerId: owner.id,
       requestorId: owner.id,
       agentId: agent.id,
-      prompt: `D453 ${tag}`,
+      prompt: `Codex ${tag}`,
       callingRoomId: room.id,
       targetRoomId: room.id,
     })
     .returning({ id: tasks.id });
-  if (!task) throw new Error("D453 fixture task failed");
+  if (!task) throw new Error("Codex fixture task failed");
   const [job] = await db
     .insert(jobs)
     .values({
@@ -154,12 +155,12 @@ async function seedBindingFixture(tag: string) {
       type: "foreground",
     })
     .returning({ id: jobs.id });
-  if (!job) throw new Error("D453 fixture job failed");
+  if (!job) throw new Error("Codex fixture job failed");
   const [taskRun] = await db
     .insert(taskRuns)
-    .values({ taskId: task.id, jobId: job.id, graphThreadId: `d453-run:${token}` })
+    .values({ taskId: task.id, jobId: job.id, graphThreadId: `codex-run:${token}` })
     .returning({ id: taskRuns.id });
-  if (!taskRun) throw new Error("D453 fixture task run failed");
+  if (!taskRun) throw new Error("Codex fixture task run failed");
 
   const [profile] = await asUser(owner.id, (tx) =>
     tx
@@ -172,7 +173,7 @@ async function seedBindingFixture(tag: string) {
       })
       .returning(),
   );
-  if (!profile) throw new Error("D453 fixture profile failed");
+  if (!profile) throw new Error("Codex fixture profile failed");
 
   return { owner, other, agent, ownerActor, agentActor, namespace, room, task, job, taskRun, profile };
 }
@@ -234,7 +235,7 @@ async function seedSiblingTaskRun(fixture: Awaited<ReturnType<typeof seedBinding
       ownerId: fixture.owner.id,
       requestorId: fixture.owner.id,
       agentId: fixture.agent.id,
-      prompt: `D453 sibling ${suffix}`,
+      prompt: `Codex sibling ${suffix}`,
       callingRoomId: fixture.room.id,
       targetRoomId: fixture.room.id,
     })
@@ -249,16 +250,16 @@ async function seedSiblingTaskRun(fixture: Awaited<ReturnType<typeof seedBinding
       type: "foreground",
     })
     .returning({ id: jobs.id });
-  if (!task || !job) throw new Error("D453 sibling Task/Job failed");
+  if (!task || !job) throw new Error("Codex sibling Task/Job failed");
   const [taskRun] = await db
     .insert(taskRuns)
-    .values({ taskId: task.id, jobId: job.id, graphThreadId: `d453-sibling:${suffix}` })
+    .values({ taskId: task.id, jobId: job.id, graphThreadId: `codex-sibling:${suffix}` })
     .returning({ id: taskRuns.id });
-  if (!taskRun) throw new Error("D453 sibling task run failed");
+  if (!taskRun) throw new Error("Codex sibling task run failed");
   return { task, job, taskRun };
 }
 
-describe("D453 Codex schema", () => {
+describe("Codex schema", () => {
   test("safe columns, checks, defaults, and forced RLS are present", async () => {
     const columns = (await db.execute(sql`
       SELECT table_name, column_name
@@ -613,13 +614,13 @@ describe("D453 Codex schema", () => {
           ),
         );
       }
-      const [wrongTaskAgent] = await db.insert(agents).values({ handle: `d453-wrong-agent-${crypto.randomUUID()}` }).returning({ id: agents.id });
+      const [wrongTaskAgent] = await db.insert(agents).values({ handle: `codex-wrong-agent-${crypto.randomUUID()}` }).returning({ id: agents.id });
       const [wrongAgentTask] = await db.insert(tasks).values({
         ownerId: fixture.owner.id, requestorId: fixture.owner.id, agentId: wrongTaskAgent!.id,
-        prompt: "D453 wrong Task Agent", callingRoomId: fixture.room.id, targetRoomId: fixture.room.id,
+        prompt: "Codex wrong Task Agent", callingRoomId: fixture.room.id, targetRoomId: fixture.room.id,
       }).returning({ id: tasks.id });
       const [wrongAgentRun] = await db.insert(taskRuns).values({
-        taskId: wrongAgentTask!.id, jobId: fixture.job.id, graphThreadId: `d453-wrong-agent:${crypto.randomUUID()}`,
+        taskId: wrongAgentTask!.id, jobId: fixture.job.id, graphThreadId: `codex-wrong-agent:${crypto.randomUUID()}`,
       }).returning({ id: taskRuns.id });
       await expectRejected(() => asRuntimeContext(fixture.owner.id, fixture.agent.id, (tx) =>
         tx.insert(codexThreadBindings).values({ ...taskBinding, taskId: wrongAgentTask!.id, taskRunId: wrongAgentRun!.id }),
@@ -628,7 +629,7 @@ describe("D453 Codex schema", () => {
         ownerId: fixture.other.id, requestorId: fixture.other.id, laneKey: `room:${fixture.room.id}`, roomId: fixture.room.id, type: "foreground",
       }).returning({ id: jobs.id });
       const [foreignOwnerRun] = await db.insert(taskRuns).values({
-        taskId: fixture.task.id, jobId: foreignOwnerJob!.id, graphThreadId: `d453-wrong-job-owner:${crypto.randomUUID()}`,
+        taskId: fixture.task.id, jobId: foreignOwnerJob!.id, graphThreadId: `codex-wrong-job-owner:${crypto.randomUUID()}`,
       }).returning({ id: taskRuns.id });
       await expectRejected(() => asRuntimeContext(fixture.owner.id, fixture.agent.id, (tx) =>
         tx.insert(codexThreadBindings).values({ ...taskBinding, taskRunId: foreignOwnerRun!.id, jobId: foreignOwnerJob!.id }),

@@ -57,8 +57,8 @@ import { NAUTILO_REPO_ROOT } from "../../src/lib/compose-infra";
 import { CLONE_STAGES, deriveCloneOperationNextStage } from "../../src/lib/clone-operation";
 import { collectDockerPublishedTcpPorts } from "../../src/lib/docker-published-ports";
 
-const RUN_LIVE = process.env["NAUTILO_RUN_D489_LIVE_ACCEPTANCE"] === "1";
-const LIVE_CHILD = process.env["NAUTILO_D489_LIVE_CHILD"] === "1";
+const RUN_LIVE = process.env["NAUTILO_RUN_DEFAULT_CLONE_ACCEPTANCE"] === "1";
+const LIVE_CHILD = process.env["NAUTILO_CLONE_LIVE_CHILD"] === "1";
 const describeLive = LIVE_CHILD ? describe : describe.skip;
 const describeLauncher = RUN_LIVE && !LIVE_CHILD ? describe : describe.skip;
 const MIGRATIONS_DIR = join(NAUTILO_REPO_ROOT, "packages/db/src/migrations");
@@ -208,13 +208,13 @@ const WORKER_FAILURE_CODES = new Set([
 
 function validateWorkerDiagnostics(workerStage?: unknown, workerFailureCode?: unknown): void {
   if (workerStage !== undefined && (typeof workerStage !== "string" || !WORKER_STAGES.has(workerStage))) {
-    throw new Error("Invalid D489 worker stage");
+    throw new Error("Invalid Clone acceptance worker stage");
   }
   if (
     workerFailureCode !== undefined &&
     (typeof workerFailureCode !== "string" || !WORKER_FAILURE_CODES.has(workerFailureCode))
   ) {
-    throw new Error("Invalid D489 worker failure code");
+    throw new Error("Invalid Clone acceptance worker failure code");
   }
 }
 
@@ -431,8 +431,8 @@ export function filesystemBytes(root: string): number {
 
 function readJournal(path: string): ResourceJournal {
   const parsed = JSON.parse(readFileSync(path, "utf8")) as ResourceJournal;
-  const expectedPath = join(tmpdir(), `d489-live-default-clone-${parsed.runId}.journal.json`);
-  const expectedRoot = join(tmpdir(), `d489-live-default-clone-${parsed.runId}`);
+  const expectedPath = join(tmpdir(), `disposable-live-default-clone-${parsed.runId}.journal.json`);
+  const expectedRoot = join(tmpdir(), `disposable-live-default-clone-${parsed.runId}`);
   const runKey = parsed.runId.slice(0, 8);
   if (
     parsed.formatVersion !== 1 || !/^[a-f0-9]{24}$/.test(parsed.runId) ||
@@ -440,8 +440,8 @@ function readJournal(path: string): ResourceJournal {
     !Array.isArray(parsed.projects) || !Array.isArray(parsed.roots) ||
     !Array.isArray(parsed.credentials) || !Array.isArray(parsed.pidFiles) ||
     parsed.roots[0] !== expectedRoot
-  ) throw new Error("Invalid D489 resource journal identity");
-  if (lstatSync(path).isSymbolicLink()) throw new Error("D489 resource journal refuses a symbolic-link journal");
+  ) throw new Error("Invalid Clone acceptance resource journal identity");
+  if (lstatSync(path).isSymbolicLink()) throw new Error("Clone acceptance resource journal refuses a symbolic-link journal");
   const stringArrays = [
     parsed.projects, parsed.containers, parsed.volumes, parsed.networks,
     parsed.requiredImages, parsed.roots, parsed.credentials, parsed.pidFiles,
@@ -449,7 +449,7 @@ function readJournal(path: string): ResourceJournal {
     parsed.baseline?.networks, parsed.baseline?.buildCache,
   ];
   if (stringArrays.some((value) => !Array.isArray(value) || value.some((entry) => typeof entry !== "string"))) {
-    throw new Error("Invalid D489 resource journal array schema");
+    throw new Error("Invalid Clone acceptance resource journal array schema");
   }
   if (
     typeof parsed.requiredImageIds !== "object" || parsed.requiredImageIds === null ||
@@ -459,7 +459,7 @@ function readJournal(path: string): ResourceJournal {
     typeof parsed.baseline?.systemBytes !== "string" ||
     !(parsed.peakOwnedBytes === null || isSafeNonnegativeByteEvidence(parsed.peakOwnedBytes)) ||
     !(parsed.peakFilesystemBytes === null || isSafeNonnegativeByteEvidence(parsed.peakFilesystemBytes))
-  ) throw new Error("Invalid D489 resource journal evidence schema");
+  ) throw new Error("Invalid Clone acceptance resource journal evidence schema");
   if (parsed.cleanup !== undefined && (
     typeof parsed.cleanup.attemptedAt !== "string" ||
     !Array.isArray(parsed.cleanup.composeExitCodes) ||
@@ -469,17 +469,17 @@ function readJournal(path: string): ResourceJournal {
     !Array.isArray(parsed.cleanup.errors) ||
     !Array.isArray(parsed.cleanup.filesystemRemovalFailures) ||
     !isCleanupByteEvidence(parsed.cleanup.ownedBytesAfterDockerCleanup)
-  )) throw new Error("Invalid D489 cleanup evidence schema");
+  )) throw new Error("Invalid Clone acceptance cleanup evidence schema");
   if (parsed.launcherResult !== undefined && (
     !(parsed.launcherResult.exitCode === null || Number.isInteger(parsed.launcherResult.exitCode)) ||
     typeof parsed.launcherResult.timedOut !== "boolean" ||
     !(parsed.launcherResult.requestedSignal === null || typeof parsed.launcherResult.requestedSignal === "string") ||
     !Number.isSafeInteger(parsed.launcherResult.outputBytes) || parsed.launcherResult.outputBytes < 0
-  )) throw new Error("Invalid D489 launcher evidence schema");
+  )) throw new Error("Invalid Clone acceptance launcher evidence schema");
   validateWorkerDiagnostics(parsed.workerStage, parsed.workerFailureCode);
   for (const project of parsed.projects) {
-    if (project !== `d489-default-${runKey}` && !project.startsWith(`nautilo-d489-${runKey}-`)) {
-      throw new Error("D489 resource journal project is outside its run authority");
+    if (project !== `disposable-default-${runKey}` && !project.startsWith(`nautilo-disposable-${runKey}-`)) {
+      throw new Error("Clone acceptance resource journal project is outside its run authority");
     }
   }
   const expectedResources = projectResourceNames(parsed.projects);
@@ -491,7 +491,7 @@ function readJournal(path: string): ResourceJournal {
     if (
       !Array.isArray(actual) ||
       JSON.stringify([...actual].sort()) !== JSON.stringify([...expected].sort())
-    ) throw new Error("D489 resource journal object names do not match its projects");
+    ) throw new Error("Clone acceptance resource journal object names do not match its projects");
   }
   const allowedRoots = new Set([
     expectedRoot,
@@ -504,18 +504,18 @@ function readJournal(path: string): ResourceJournal {
     if (
       !isAbsolute(root) || resolve(root) !== root || !allowedRoots.has(root)
     ) {
-      throw new Error("D489 resource journal root is outside its temporary authority");
+      throw new Error("Clone acceptance resource journal root is outside its temporary authority");
     }
     if (existsSync(root) && lstatSync(root).isSymbolicLink()) {
-      throw new Error("D489 resource journal refuses symbolic-link roots");
+      throw new Error("Clone acceptance resource journal refuses symbolic-link roots");
     }
   }
   for (const pathEntry of [...parsed.credentials, ...parsed.pidFiles]) {
     if (!isAbsolute(pathEntry) || resolve(pathEntry) !== pathEntry || !pathEntry.startsWith(`${expectedRoot}/`)) {
-      throw new Error("D489 resource journal file is outside its temporary authority");
+      throw new Error("Clone acceptance resource journal file is outside its temporary authority");
     }
     if (existsSync(pathEntry) && lstatSync(pathEntry).isSymbolicLink()) {
-      throw new Error("D489 resource journal refuses symbolic-link files");
+      throw new Error("Clone acceptance resource journal refuses symbolic-link files");
     }
   }
   return parsed;
@@ -544,7 +544,7 @@ function emergencyCleanup(journalPath: string): void {
   }
   const composeExitCodes: number[] = [];
   for (const project of journal.projects) {
-    if (!/^(?:d489-default-|nautilo-d489-)[a-z0-9-]+$/.test(project)) continue;
+    if (!/^(?:disposable-default-|nautilo-disposable-)[a-z0-9-]+$/.test(project)) continue;
     const logtoDown = spawnSync("docker", [
       "compose", "-p", project, "-f", "infra/compose/nautilo.yml",
       "--profile", "auth", "down", "-v", "--remove-orphans",
@@ -625,19 +625,19 @@ function emergencyCleanup(journalPath: string): void {
     remainingContainers.length > 0 || remainingVolumes.length > 0 ||
     remainingNetworks.length > 0 || ownedBytesAfterDockerCleanup !== 0 ||
     errors.length > 0 || filesystemRemovalFailures.length > 0
-  ) throw new Error("D489 exact cleanup incomplete; journal retained for retry");
+  ) throw new Error("Clone acceptance exact cleanup incomplete; journal retained for retry");
 }
 
-describeLauncher("D489 isolated live-acceptance launcher", () => {
+describeLauncher("Default-clone acceptance launcher", () => {
   test("starts the worker with HOME established before any Nautilo module loads", async () => {
     const operatorHome = originalHome ?? "";
     const before = operatorSentinel(operatorHome);
     const defaultProjectBefore = projectObjects("nautilo");
     const runId = randomBytes(12).toString("hex");
     const nonce = runId.slice(0, 8);
-    const project = `d489-default-${nonce}`;
-    const isolatedHome = join(tmpdir(), `d489-live-default-clone-${runId}`);
-    const journalPath = join(tmpdir(), `d489-live-default-clone-${runId}.journal.json`);
+    const project = `disposable-default-${nonce}`;
+    const isolatedHome = join(tmpdir(), `disposable-live-default-clone-${runId}`);
+    const journalPath = join(tmpdir(), `disposable-live-default-clone-${runId}.journal.json`);
     const baseline = dockerBaseline();
     const requiredImages = composeImages();
     const requiredImageIds: Record<string, string> = {};
@@ -647,7 +647,7 @@ describeLauncher("D489 isolated live-acceptance launcher", () => {
         ["image", "inspect", image, "--format", "{{.Id}}"],
         { encoding: "utf8" },
       );
-      if (inspect.status !== 0) throw new Error(`D489 live acceptance refuses to pull missing image ${image}`);
+      if (inspect.status !== 0) throw new Error(`Clone acceptance refuses to pull missing image ${image}`);
       requiredImageIds[image] = inspect.stdout.trim();
     }
     const sourceResources = projectResourceNames([project]);
@@ -679,10 +679,10 @@ describeLauncher("D489 isolated live-acceptance launcher", () => {
         ...process.env,
         HOME: isolatedHome,
         NAUTILO_INSTANCE_ID: "",
-        NAUTILO_D489_LIVE_CHILD: "1",
-        NAUTILO_D489_LIVE_HOME: isolatedHome,
-        NAUTILO_D489_LIVE_NONCE: nonce,
-        NAUTILO_D489_JOURNAL: journalPath,
+        NAUTILO_CLONE_LIVE_CHILD: "1",
+        NAUTILO_CLONE_LIVE_HOME: isolatedHome,
+        NAUTILO_CLONE_LIVE_NONCE: nonce,
+        NAUTILO_CLONE_JOURNAL: journalPath,
         NAUTILO_DISPOSABLE_NO_PULL_BUILD: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -778,7 +778,7 @@ describeLauncher("D489 isolated live-acceptance launcher", () => {
     expect(projectObjects("nautilo")).toBe(defaultProjectBefore);
     if (timedOut || exitCode !== 0 || outputBytes > 64 * 1024 * 1024) {
       throw new Error(
-        `D489 live worker failed at ${journal.workerStage ?? "unknown stage"}; ` +
+        `Clone acceptance live worker failed at ${journal.workerStage ?? "unknown stage"}; ` +
         `owner-only cleanup journal retained at ${journalPath}`,
       );
     }
@@ -839,12 +839,12 @@ export function classifySeedFailureMessage(text: string): string {
           : "unclassified";
 }
 
-describe("D489 secret-free seed failure classification", () => {
+describe("Secret-free clone seed failure classification", () => {
   test("binds worker HOME to disposable authority and leaves operator config proof to the parent", () => {
-    const disposableHome = join(tmpdir(), "d489-disposable-home");
+    const disposableHome = join(tmpdir(), "disposable-home");
     expect(workerHomeMatchesDisposableAuthority(disposableHome, disposableHome, disposableHome)).toBe(true);
     expect(workerHomeMatchesDisposableAuthority(
-      join(disposableHome, "..", "d489-disposable-home"),
+      join(disposableHome, "..", "disposable-home"),
       disposableHome,
       disposableHome,
     ))
@@ -864,14 +864,14 @@ describe("D489 secret-free seed failure classification", () => {
   });
 
   test("allocates the disposable source against one Docker port inventory", () => {
-    const testHome = join(tmpdir(), `d489-source-allocator-${randomBytes(12).toString("hex")}`);
+    const testHome = join(tmpdir(), `disposable-source-allocator-${randomBytes(12).toString("hex")}`);
     mkdirSync(testHome, { recursive: true, mode: 0o700 });
     let calls = 0;
     const firstNamedLegacyPort = 5534;
     try {
       const allocated = resolveDisposableSourceAllocator({
         home: testHome,
-        allocatorId: "d489-source-test",
+        allocatorId: "disposable-source-test",
         skipHostBindProbe: true,
         additionalClaimedPorts: () => {
           calls++;
@@ -880,7 +880,7 @@ describe("D489 secret-free seed failure classification", () => {
       });
       expect(calls).toBe(1);
       expect(allocated.db.postgresHostPort).not.toBe(firstNamedLegacyPort);
-      expect(existsSync(join(testHome, ".nautilo-d489-source-test", "instance.json"))).toBe(true);
+      expect(existsSync(join(testHome, ".nautilo-disposable-source-test", "instance.json"))).toBe(true);
     } finally {
       rmSync(testHome, { recursive: true, force: true });
     }
@@ -890,12 +890,12 @@ describe("D489 secret-free seed failure classification", () => {
     expect(() => validateWorkerDiagnostics("seed-fresh-capture", "seed-artifact")).not.toThrow();
     expect(() => validateWorkerDiagnostics("acceptance-complete", "unclassified")).not.toThrow();
     expect(() => validateWorkerDiagnostics("injected-operation-status", "injected-operation-status")).not.toThrow();
-    expect(() => validateWorkerDiagnostics("raw database error", "seed-artifact")).toThrow("Invalid D489 worker stage");
+    expect(() => validateWorkerDiagnostics("raw database error", "seed-artifact")).toThrow("Invalid Clone acceptance worker stage");
     expect(() => validateWorkerDiagnostics("source-evidence", "password=secret")).toThrow(
-      "Invalid D489 worker failure code",
+      "Invalid Clone acceptance worker failure code",
     );
     expect(() => validateWorkerDiagnostics("forward-migration-runner", "forward-migration-runner")).not.toThrow();
-    expect(() => validateWorkerDiagnostics(42, null)).toThrow("Invalid D489 worker stage");
+    expect(() => validateWorkerDiagnostics(42, null)).toThrow("Invalid Clone acceptance worker stage");
   });
 
   test("persists stable categories without copying raw errors", () => {
@@ -907,10 +907,10 @@ describe("D489 secret-free seed failure classification", () => {
   });
 
   test("accepts an exact rebound artifact URI without rejecting its default-root prefix", () => {
-    const sourceRoot = "/tmp/d489-home/.nautilo";
-    const targetRoot = `${sourceRoot}-d489-equal`;
+    const sourceRoot = "/tmp/disposable-home/.nautilo";
+    const targetRoot = `${sourceRoot}-disposable-equal`;
     const expected = {
-      path: "d489/witness.txt",
+      path: "disposable/witness.txt",
       storageUri: `file://${targetRoot}/artifacts/artifact-id`,
       size: 17,
     };
@@ -965,7 +965,7 @@ describe("D489 secret-free seed failure classification", () => {
   });
 
   test("counts owned symlink inode bytes without following the target", () => {
-    const root = mkdtempSync(join(tmpdir(), "d489-filesystem-bytes-"));
+    const root = mkdtempSync(join(tmpdir(), "disposable-filesystem-bytes-"));
     try {
       writeFileSync(join(root, "owned.txt"), "12345", { mode: 0o600 });
       symlinkSync("owned.txt", join(root, "link"));
@@ -1067,7 +1067,7 @@ function cloneRequest(home: string, targetId: string): CloneMaterializationReque
   });
 }
 
-describeLive("D489 live disposable default-clone acceptance", () => {
+describeLive("Disposable default-clone acceptance", () => {
   let home = "";
   let source!: ResolvedInstance;
   let sourceProject = "";
@@ -1078,8 +1078,8 @@ describeLive("D489 live disposable default-clone acceptance", () => {
   const targetIds: string[] = [];
 
   const publishAuthority = (): void => {
-    const journalPath = process.env["NAUTILO_D489_JOURNAL"];
-    if (!journalPath) throw new Error("D489 live worker requires its parent resource journal");
+    const journalPath = process.env["NAUTILO_CLONE_JOURNAL"];
+    if (!journalPath) throw new Error("Clone acceptance live worker requires its parent resource journal");
     const current = readJournal(journalPath);
     const roots = [resolveNautiloStorageRoot(home, ""), ...targetIds.map((id) => resolveNautiloStorageRoot(home, id))];
     const credentials = roots.flatMap((root) => [
@@ -1100,7 +1100,7 @@ describeLive("D489 live disposable default-clone acceptance", () => {
     });
   };
   const publishStage = (workerStage: string): void => {
-    const journalPath = process.env["NAUTILO_D489_JOURNAL"]!;
+    const journalPath = process.env["NAUTILO_CLONE_JOURNAL"]!;
     writeJournal({ ...readJournal(journalPath), workerStage });
   };
   const registerTarget = (id: string): void => {
@@ -1109,20 +1109,20 @@ describeLive("D489 live disposable default-clone acceptance", () => {
   };
 
   beforeAll(async () => {
-    home = process.env["NAUTILO_D489_LIVE_HOME"] ?? "";
-    runKey = process.env["NAUTILO_D489_LIVE_NONCE"] ?? "";
+    home = process.env["NAUTILO_CLONE_LIVE_HOME"] ?? "";
+    runKey = process.env["NAUTILO_CLONE_LIVE_NONCE"] ?? "";
     if (home === "" || !/^[a-f0-9]{8}$/.test(runKey)) {
-      throw new Error("D489 live worker requires its parent-owned HOME and run key");
+      throw new Error("Clone acceptance live worker requires its parent-owned HOME and run key");
     }
-    const journalPath = process.env["NAUTILO_D489_JOURNAL"];
-    if (!journalPath) throw new Error("D489 live worker requires its parent resource journal");
+    const journalPath = process.env["NAUTILO_CLONE_JOURNAL"];
+    if (!journalPath) throw new Error("Clone acceptance live worker requires its parent resource journal");
     const journal = readJournal(journalPath);
     if (!workerHomeMatchesDisposableAuthority(originalHome, home, journal.roots[0]!)) {
-      throw new Error("D489 live worker HOME must match its journal-owned disposable authority");
+      throw new Error("Clone acceptance live worker HOME must match its journal-owned disposable authority");
     }
-    sourceProject = `d489-default-${runKey}`;
+    sourceProject = `disposable-default-${runKey}`;
     publishAuthority();
-    const allocatorId = `d489ports-${runKey}`;
+    const allocatorId = `disposableports-${runKey}`;
     const allocator = resolveDisposableSourceAllocator({ home, allocatorId });
     publishAuthority();
     await rm(resolveNautiloStorageRoot(home, allocatorId), { recursive: true, force: true });
@@ -1139,14 +1139,14 @@ describeLive("D489 live disposable default-clone acceptance", () => {
     await mkdir(workbenchDist, { recursive: true, mode: 0o700 });
     await writeFile(
       join(workbenchDist, "index.html"),
-      "<!doctype html><html><body>D489 isolated workbench</body></html>",
+      "<!doctype html><html><body>Clone acceptance isolated workbench</body></html>",
       { mode: 0o600 },
     );
     await writeFile(join(root, "instance.env"), [
       `NAUTILO_DB_PASSWORD=${randomBytes(24).toString("base64url")}`,
       `NAUTILO_AGENT_DB_PASSWORD=${randomBytes(24).toString("base64url")}`,
       `LOGTO_DB_PASSWORD=${randomBytes(24).toString("base64url")}`,
-      `D489_PROVIDER_SENTINEL=${providerSentinel}`,
+      `CLONE_PROVIDER_SENTINEL=${providerSentinel}`,
       `NAUTILO_WORKBENCH_DIST=${workbenchDist}`,
       "",
     ].join("\n"), { mode: 0o600 });
@@ -1165,7 +1165,7 @@ describeLive("D489 live disposable default-clone acceptance", () => {
     publishStage("source-population");
     // infra:start creates the first invite before server runtime normally
     // seeds the owner. On this disposable authority remove that disposable
-    // invite so D374 does not interpret it as prior-life evidence, then run
+    // invite so bootstrap restoration does not interpret it as prior-life evidence, then run
     // the exact production seeders directly.
     queryPostgresContainer({
       container: source.compose.containers.legacyPostgres,
@@ -1181,7 +1181,7 @@ describeLive("D489 live disposable default-clone acceptance", () => {
     // Server startup creates the real owner/agent/room graph. Add only the
     // two acceptance rows whose byte/count identity must be easy to observe.
     artifactId = randomUUID();
-    artifactBody = `d489-artifact-${randomBytes(32).toString("hex")}`;
+    artifactBody = `disposable-artifact-${randomBytes(32).toString("hex")}`;
     const artifactRoot = join(root, "artifacts");
     await mkdir(artifactRoot, { recursive: true, mode: 0o700 });
     await writeFile(join(artifactRoot, artifactId), artifactBody, { mode: 0o600 });
@@ -1190,9 +1190,9 @@ describeLive("D489 live disposable default-clone acceptance", () => {
       database: "nautilo",
       sql: `
         INSERT INTO public.memories (content, creation_key)
-        VALUES ('D489 copied-row migration witness', 'd489-live-witness');
+        VALUES ('Clone acceptance copied-row migration witness', 'disposable-live-witness');
         INSERT INTO public.artifacts (artifact_id, path, mime_type, size, storage_uri)
-        VALUES ('${artifactId}', 'd489/witness.txt', 'text/plain', ${Buffer.byteLength(artifactBody)},
+        VALUES ('${artifactId}', 'disposable/witness.txt', 'text/plain', ${Buffer.byteLength(artifactBody)},
                 'file://${join(artifactRoot, artifactId)}');
       `,
     });
@@ -1220,11 +1220,11 @@ describeLive("D489 live disposable default-clone acceptance", () => {
     const sourceSelection = selectCloneSource(home, { kind: "canonical-default" });
     publishStage("source-evidence");
     const recordFailure = (workerFailureCode: string): void => {
-      const journalPath = process.env["NAUTILO_D489_JOURNAL"]!;
+      const journalPath = process.env["NAUTILO_CLONE_JOURNAL"]!;
       writeJournal({ ...readJournal(journalPath), workerFailureCode });
     };
     const recordFailureIfAbsent = (workerFailureCode: string): void => {
-      const journalPath = process.env["NAUTILO_D489_JOURNAL"]!;
+      const journalPath = process.env["NAUTILO_CLONE_JOURNAL"]!;
       if (readJournal(journalPath).workerFailureCode === undefined) recordFailure(workerFailureCode);
     };
     const checked = async <T>(stage: string, action: () => T | Promise<T>): Promise<T> => {
@@ -1237,11 +1237,11 @@ describeLive("D489 live disposable default-clone acceptance", () => {
       }
     };
     const recordPeakSample = async (): Promise<void> => {
-      const before = readJournal(process.env["NAUTILO_D489_JOURNAL"]!);
+      const before = readJournal(process.env["NAUTILO_CLONE_JOURNAL"]!);
       const dockerBytes = await checked("peak-docker-bytes", () => ownedDockerBytes(before));
       const ownedFilesystemBytes = await checked("peak-filesystem-bytes", () => filesystemBytes(home));
       await checked("peak-journal-write", () => {
-        const current = readJournal(process.env["NAUTILO_D489_JOURNAL"]!);
+        const current = readJournal(process.env["NAUTILO_CLONE_JOURNAL"]!);
         writeJournal({
           ...current,
           peakOwnedBytes: Math.max(current.peakOwnedBytes ?? 0, dockerBytes),
@@ -1334,7 +1334,7 @@ describeLive("D489 live disposable default-clone acceptance", () => {
     );
 
     const admission = { seed: refreshed.value.seed, freshness: refreshed.value.freshness } as const;
-    const equalId = `d489-${runKey}-equal-${randomBytes(3).toString("hex")}`;
+    const equalId = `disposable-${runKey}-equal-${randomBytes(3).toString("hex")}`;
     registerTarget(equalId);
     const equalRoot = resolveNautiloStorageRoot(home, equalId);
     publishStage("equal-materialize");
@@ -1388,7 +1388,7 @@ describeLive("D489 live disposable default-clone acceptance", () => {
       expect(existsSync(join(equalRoot, "session.json"))).toBe(false);
       expect(existsSync(join(equalRoot, "desktop-auth-live.json"))).toBe(false);
       const targetEnv = await readFile(join(equalRoot, "instance.env"), "utf8");
-      const reboundProvider = targetEnv.match(/^D489_PROVIDER_SENTINEL=(.+)$/m)?.[1] ?? "";
+      const reboundProvider = targetEnv.match(/^CLONE_PROVIDER_SENTINEL=(.+)$/m)?.[1] ?? "";
       expect(sha(reboundProvider)).toBe(providerSentinelSha256);
     } catch (error) {
       recordFailure("equal-runtime");
@@ -1402,54 +1402,54 @@ describeLive("D489 live disposable default-clone acceptance", () => {
         sql: `SELECT path || '|' || storage_uri || '|' || size FROM artifacts WHERE artifact_id='${artifactId}';`,
       });
       const projectionFailure = equalArtifactProjectionFailureCode(artifactProjection, {
-        path: "d489/witness.txt",
+        path: "disposable/witness.txt",
         storageUri: `file://${join(equalRoot, "artifacts", artifactId)}`,
         size: Buffer.byteLength(artifactBody),
       });
       if (projectionFailure !== null) {
         recordFailure(projectionFailure);
-        throw new Error("D489 equal artifact database projection mismatch");
+        throw new Error("Clone acceptance equal artifact database projection mismatch");
       }
       const artifactPath = join(equalRoot, "artifacts", artifactId);
       if (!existsSync(artifactPath)) {
         recordFailure("equal-artifact-file");
-        throw new Error("D489 equal artifact target file is absent");
+        throw new Error("Clone acceptance equal artifact target file is absent");
       }
       const clonedArtifactBody = await readFile(artifactPath, "utf8");
       if (Buffer.byteLength(clonedArtifactBody) !== Buffer.byteLength(artifactBody)) {
         recordFailure("equal-artifact-bytes");
-        throw new Error("D489 equal artifact target byte count mismatch");
+        throw new Error("Clone acceptance equal artifact target byte count mismatch");
       }
       if (sha(clonedArtifactBody) !== sha(artifactBody)) {
         recordFailure("equal-artifact-hash");
-        throw new Error("D489 equal artifact target hash mismatch");
+        throw new Error("Clone acceptance equal artifact target hash mismatch");
       }
       if (clonedArtifactBody !== artifactBody) {
         recordFailure("equal-artifact-content");
-        throw new Error("D489 equal artifact target content mismatch");
+        throw new Error("Clone acceptance equal artifact target content mismatch");
       }
     } catch (error) {
-      if (readJournal(process.env["NAUTILO_D489_JOURNAL"]!).workerFailureCode === undefined) {
+      if (readJournal(process.env["NAUTILO_CLONE_JOURNAL"]!).workerFailureCode === undefined) {
         recordFailure("equal-artifact-row");
       }
       throw error;
     }
 
-    const forwardId = `d489-${runKey}-forward-${randomBytes(3).toString("hex")}`;
+    const forwardId = `disposable-${runKey}-forward-${randomBytes(3).toString("hex")}`;
     publishStage("forward-clone");
     registerTarget(forwardId);
-    const forwardTag = `${String(checkout.length).padStart(4, "0")}_d489_live_copied_row_witness`;
+    const forwardTag = `${String(checkout.length).padStart(4, "0")}_disposable_live_copied_row_witness`;
     const forwardSql = `
-DO $d489$
+DO $disposable$
 BEGIN
   IF (SELECT count(*) FROM public.users) <> ${sourceBefore.users}
      OR (SELECT count(*) FROM public.rooms) <> ${sourceBefore.rooms}
      OR (SELECT count(*) FROM public.memories) <> ${sourceBefore.memories} THEN
-    RAISE EXCEPTION 'D489 copied rows are not visible to forward migration';
+    RAISE EXCEPTION 'Clone acceptance copied rows are not visible to forward migration';
   END IF;
 END
-$d489$;
-CREATE TABLE public.d489_clone_migration_witness AS
+$disposable$;
+CREATE TABLE public.disposable_clone_migration_witness AS
   SELECT count(*)::bigint AS copied_memories FROM public.memories;
 `;
     const forward: MigrationLineageEntry = {
@@ -1458,9 +1458,9 @@ CREATE TABLE public.d489_clone_migration_witness AS
       createdAt: last.createdAt + 1,
       sha256: sha(forwardSql),
     };
-    const forwardMigrations = join(home, "d489-forward-migrations");
+    const forwardMigrations = join(home, "disposable-forward-migrations");
     const forwardJournalPath = join(forwardMigrations, "meta", "_journal.json");
-    const forwardConfig = join(home, "d489-forward-drizzle.config.ts");
+    const forwardConfig = join(home, "disposable-forward-drizzle.config.ts");
     publishStage("forward-prepare");
     try {
       await cp(MIGRATIONS_DIR, forwardMigrations, { recursive: true, errorOnExist: true });
@@ -1510,17 +1510,17 @@ export default {
           });
           if (migrated.error || migrated.status !== 0) {
             recordFailure("forward-migration-runner");
-            throw new Error("D489 real forward migration runner failed");
+            throw new Error("Clone acceptance real forward migration runner failed");
           }
           publishStage("forward-copied-row");
           copiedRowsObserved = queryPostgresContainer({
             container: target.compose.containers.legacyPostgres,
             database: "nautilo",
-            sql: "SELECT copied_memories FROM public.d489_clone_migration_witness;",
+            sql: "SELECT copied_memories FROM public.disposable_clone_migration_witness;",
           }) === String(sourceBefore.memories);
           if (!copiedRowsObserved) {
             recordFailure("forward-copied-row");
-            throw new Error("D489 forward migration copied-row witness mismatch");
+            throw new Error("Clone acceptance forward migration copied-row witness mismatch");
           }
         },
       },
@@ -1602,8 +1602,8 @@ export default {
         disposableMigrationAcceptance: { checkoutLineage: lineage, run: async () => undefined },
       }).then(() => false, () => true);
     };
-    expect(await rejected(`d489-${runKey}-ahead-${randomBytes(3).toString("hex")}`, checkout.slice(0, -1))).toBe(true);
-    expect(await rejected(`d489-${runKey}-divergent-${randomBytes(3).toString("hex")}`, [
+    expect(await rejected(`disposable-${runKey}-ahead-${randomBytes(3).toString("hex")}`, checkout.slice(0, -1))).toBe(true);
+    expect(await rejected(`disposable-${runKey}-divergent-${randomBytes(3).toString("hex")}`, [
       { ...checkout[0]!, sha256: sha("divergent") }, ...checkout.slice(1),
     ])).toBe(true);
 
@@ -1612,8 +1612,8 @@ export default {
       refreshed.value.seed.backup.manifest.artifacts.nautiloDatabase.file,
     );
     const originalArtifact = await readFile(databaseArtifact);
-    await writeFile(databaseArtifact, "corrupt-d489-seed", { mode: 0o600 });
-    const corruptId = `d489-${runKey}-corrupt-${randomBytes(3).toString("hex")}`;
+    await writeFile(databaseArtifact, "corrupt-disposable-seed", { mode: 0o600 });
+    const corruptId = `disposable-${runKey}-corrupt-${randomBytes(3).toString("hex")}`;
     publishStage("rejection-and-corruption");
     registerTarget(corruptId);
     expect(await materializeClone(cloneRequest(home, corruptId), admission, {
@@ -1622,7 +1622,7 @@ export default {
       .then(() => false, () => true)).toBe(true);
     await writeFile(databaseArtifact, originalArtifact, { mode: 0o600 });
 
-    const failedId = `d489-${runKey}-failed-${randomBytes(3).toString("hex")}`;
+    const failedId = `disposable-${runKey}-failed-${randomBytes(3).toString("hex")}`;
     publishStage("injected-failure-and-deletion");
     registerTarget(failedId);
     const failedRoot = join(home, `.nautilo-${failedId}`);
@@ -1635,7 +1635,7 @@ export default {
           await checked("injected-copied-row", () => {
             expect(dbCount(target, "memories")).toBe(sourceBefore.memories);
           });
-          throw new Error("D489 injected migration failure");
+          throw new Error("Clone acceptance injected migration failure");
         },
       },
     }).then(() => false, () => true);
@@ -1654,7 +1654,7 @@ export default {
       expect(failedOperation.status).toBe("failed");
     });
     await checked("injected-operation-failure", () => {
-      expect(failedOperation.failure).toBe("D489 injected migration failure");
+      expect(failedOperation.failure).toBe("Clone acceptance injected migration failure");
     });
     await checked("injected-operation-completed-stages", () => {
       expect(failedOperation.completedStages).not.toContain("nautilo-migrated");
@@ -1706,9 +1706,9 @@ export default {
     };
     await checked("public-evidence", () => {
       expect(JSON.stringify(publicEvidence)).not.toMatch(/PASSWORD|SENTINEL|base64url/i);
-      writeFileSync(join(home, "d489-default-clone-acceptance.json"), `${JSON.stringify(publicEvidence, null, 2)}\n`, { mode: 0o600 });
+      writeFileSync(join(home, "disposable-default-clone-acceptance.json"), `${JSON.stringify(publicEvidence, null, 2)}\n`, { mode: 0o600 });
     });
-    const journalPath = process.env["NAUTILO_D489_JOURNAL"]!;
+    const journalPath = process.env["NAUTILO_CLONE_JOURNAL"]!;
     await recordPeakSample();
     await checked("acceptance-journal-write", () => {
       const journal = readJournal(journalPath);

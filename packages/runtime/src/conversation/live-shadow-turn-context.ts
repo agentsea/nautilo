@@ -514,6 +514,7 @@ export async function protectLiveShadowForegroundHistory(
       return hits.map((hit) => Object.freeze({
         ...hit,
         snippet: byId.get(hit.messageId)!.payload.content,
+        toolName: byId.get(hit.messageId)!.payload.toolName,
       }));
     }
         }

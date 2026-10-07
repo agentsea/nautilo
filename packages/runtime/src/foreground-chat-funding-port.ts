@@ -14,9 +14,19 @@ export interface ForegroundChatFundingOpenInput {
   readonly roomId: string;
   readonly agentId: string;
   readonly entrypoint: ForegroundChatFundingEntrypoint;
+  readonly hasImages?: boolean;
+}
+
+export interface ImageAssistanceSession {
+  readonly modelId: string;
+  readonly fundingSession: ForegroundChatFundingSession;
 }
 
 export interface ForegroundChatFundingPort {
+  openImageAssistance?(
+    input: ForegroundChatFundingOpenInput & { readonly fundingKind?: "server" | "personal" },
+  ): Promise<ImageAssistanceSession | null>;
+
   openSession(
     input: ForegroundChatFundingOpenInput,
   ): Promise<ForegroundChatFundingSession | null>;
@@ -110,10 +120,28 @@ export async function openForegroundChatFundingSessionForInvocation(input: Reado
     roomId: input.roomId,
     agentId: input.agentId,
     entrypoint: input.entrypoint,
+    hasImages: Array.isArray(input.jobInput["multimodalImages"]) && input.jobInput["multimodalImages"].length > 0,
   });
+  const imageIds = new Set(Array.isArray(input.jobInput["multimodalImages"])
+    ? input.jobInput["multimodalImages"].flatMap((image: unknown) =>
+      image && typeof image === "object" && typeof (image as Record<string, unknown>)["attachmentId"] === "string"
+        ? [(image as Record<string, unknown>)["attachmentId"] as string] : []) : []);
+  const hasUnrelatedFocus = Array.isArray(input.jobInput["focusedResources"])
+    && input.jobInput["focusedResources"].some((resource: unknown) => {
+      if (!resource || typeof resource !== "object") return true;
+      const row = resource as Record<string, unknown>;
+      const locator = row["locator"];
+      return row["kind"] !== "message-attachment" || !locator || typeof locator !== "object"
+        || !imageIds.has((locator as Record<string, unknown>)["attachmentId"] as string);
+    });
   const hasResources = [
-    "attachmentTextBlocks", "retainedAttachmentIds", "artifactRefs", "focusedResources",
+    "attachmentTextBlocks", "artifactRefs",
   ].some((field) => Array.isArray(input.jobInput[field]) && input.jobInput[field].length > 0)
+    || (Array.isArray(input.jobInput["retainedAttachmentIds"])
+      && input.jobInput["retainedAttachmentIds"].some((id) =>
+        !Array.isArray(input.jobInput["multimodalImages"])
+        || !input.jobInput["multimodalImages"].some((image: { attachmentId?: unknown }) => image.attachmentId === id)))
+    || hasUnrelatedFocus
     || input.jobInput["activeMiniApp"] != null
     || input.jobInput["liveMiniAppSession"] != null;
   assertForegroundChatFundingWorkloadSupported(session, {
@@ -138,6 +166,24 @@ export function assertForegroundChatFundingWorkloadSupported(
 ): void {
   if (
     session?.kind === "personal"
-    && (input.hasImages || input.voiceRequested || input.hasResources || input.protectedTurn)
+    && (input.voiceRequested || input.hasResources || input.protectedTurn)
   ) throw new ForegroundChatFundingUnsupportedWorkloadError();
+}
+
+/** Reuse the accepted Human authority; Job content alone cannot authorize spend. */
+export async function openImageAssistanceForInvocation(
+  input: Parameters<typeof openForegroundChatFundingSessionForInvocation>[0] & {
+    fundingKind?: "server" | "personal";
+  },
+): Promise<ImageAssistanceSession | null> {
+  if (!installedPort?.openImageAssistance || !input.authority || !input.entrypoint
+    || hasUnsupportedForegroundFundingShape(input.jobInput)) return null;
+  const humanUserId = getAcceptedInvocationAuthoritySubject(input.authority);
+  if (!humanUserId || input.jobInput["requestorId"] !== humanUserId
+    || input.causalHumanUserId !== humanUserId) throw new ForegroundChatFundingAuthorityError();
+  return installedPort.openImageAssistance({
+    humanUserId, modelId: input.modelId, roomId: input.roomId,
+    agentId: input.agentId, entrypoint: input.entrypoint,
+    ...(input.fundingKind ? { fundingKind: input.fundingKind } : {}),
+  });
 }

@@ -1,4 +1,4 @@
-/** Disposable-only D489 3.4 acceptance. Never resolves a Nautilo instance. */
+/** Disposable-only physical reclamation acceptance. Never resolves a Nautilo instance. */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -12,8 +12,8 @@ import {
 } from "../../src/lib/checkpoint-physical-reclamation";
 import { buildCheckpointSemanticCompactionScript } from "../../src/lib/checkpoint-semantic-compaction";
 
-const enabled = process.env["NAUTILO_D489_DISPOSABLE_PG"] === "1";
-const container = `d489-physical-${randomUUID().slice(0, 12)}`;
+const enabled = process.env["NAUTILO_CHECKPOINT_DISPOSABLE_PG"] === "1";
+const container = `disposable-physical-${randomUUID().slice(0, 12)}`;
 
 function docker(args: string[], input?: string) {
   return spawnSync("docker", args, { input, encoding: "utf8", timeout: 180_000 });
@@ -78,9 +78,9 @@ async function waitForOutput(child: ChildProcessWithoutNullStreams, marker: stri
   throw new Error("disposable contention holder did not acquire its lock");
 }
 
-describe.skipIf(!enabled)("D489 disposable physical reclamation", () => {
+describe.skipIf(!enabled)("Disposable checkpoint physical reclamation", () => {
   beforeAll(() => {
-    const started = docker(["run", "-d", "--name", container, "-e", "POSTGRES_PASSWORD=d489-disposable", "postgres:16"]);
+    const started = docker(["run", "-d", "--name", container, "-e", "POSTGRES_PASSWORD=fixture-postgres", "postgres:16"]);
     if (started.status !== 0) throw new Error("disposable PostgreSQL did not start");
     let initialized = false;
     for (let attempt = 0; attempt < 120; attempt += 1) {
@@ -106,8 +106,8 @@ describe.skipIf(!enabled)("D489 disposable physical reclamation", () => {
     expect(afterSemantic.physical.totalBytes).toBe(beforeSemantic.physical.totalBytes);
 
     const holder = spawn("docker", ["exec", "-i", container, "psql", "-q", "-t", "-A", "-U", "postgres", "-d", "nautilo"], { stdio: ["pipe", "pipe", "pipe"] });
-    holder.stdin.end("BEGIN; LOCK TABLE langchain.checkpoint_blobs IN ACCESS SHARE MODE; SELECT 'd489-lock-held'; SELECT pg_sleep(30); COMMIT;\n");
-    await waitForOutput(holder, "d489-lock-held");
+    holder.stdin.end("BEGIN; LOCK TABLE langchain.checkpoint_blobs IN ACCESS SHARE MODE; SELECT 'disposable-lock-held'; SELECT pg_sleep(30); COMMIT;\n");
+    await waitForOutput(holder, "disposable-lock-held");
     // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
     await expect(executeCheckpointPhysicalReclamation({ container, expectedSemanticState: semanticState })).rejects.toMatchObject({ code: "contention", stage: "preflight" });
     holder.kill("SIGTERM");

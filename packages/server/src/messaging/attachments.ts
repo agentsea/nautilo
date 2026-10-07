@@ -17,6 +17,8 @@
  */
 import { modelSupportsInput } from "@nautilo/model-capabilities";
 import { imageAttachmentModelError } from "@nautilo/attachments/composer-chat-extensions";
+import { resolveModelFunding } from "../lib/model-funding";
+import { resolveCallerImageInput } from "../lib/image-assistance";
 import { readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type {
@@ -409,16 +411,58 @@ export async function assertChatAttachmentImageSupport(
     uploaderActorId: string;
     writableNamespaceId: string | null;
     models: readonly { id: string; label?: string }[];
+    humanUserId?: string;
+    fundingKind?: "server" | "personal";
   },
   findPending = findPendingMessageAttachmentForSender,
+  resolveImageInput = resolveCallerImageInput,
+  resolveFunding = resolveModelFunding,
 ): Promise<void> {
-  const unsupported = args.models.find((model) => !modelSupportsInput(model.id, "image"));
-  if (!unsupported || !args.writableNamespaceId) return;
+  if (args.models.length === 0 || !args.writableNamespaceId || args.attachmentIds.length === 0) return;
+  // Legacy caller-free unit seams retain native capability behavior. Product
+  // dispatch supplies the initiating Human and rechecks funding for every target.
+  if (!args.humanUserId && args.models.every((model) => modelSupportsInput(model.id, "image"))) return;
+  let hasImage = false;
   for (const attachmentId of args.attachmentIds) {
     const row = await findPending({ attachmentId, uploaderActorId: args.uploaderActorId,
       namespaceId: args.writableNamespaceId });
     if (row?.mimeType.startsWith("image/")) {
-      throw new ImageAttachmentModelError(imageAttachmentModelError(unsupported.label ?? unsupported.id));
+      hasImage = true;
+      break;
     }
   }
+  if (!hasImage) return;
+  for (const model of args.models) {
+    let supported = modelSupportsInput(model.id, "image");
+    if (args.humanUserId) {
+      try {
+        const funding = await resolveFunding({ humanUserId: args.humanUserId,
+          modelId: model.id, workload: "foreground_text_chat",
+          ...(args.fundingKind ? { fundingKind: args.fundingKind } : {}),
+        });
+        supported = await resolveImageInput({ humanUserId: args.humanUserId,
+          modelId: model.id, funding }) !== "unavailable";
+      } catch {
+        supported = false;
+      }
+    }
+    if (!supported) {
+      throw new ImageAttachmentModelError(imageAttachmentModelError(model.label ?? model.id));
+    }
+  }
+}
+
+/** Sender and Namespace checks precede the narrow personal-image exception. */
+export async function pendingChatAttachmentsAreImages(
+  args: Readonly<{ attachmentIds: readonly string[]; uploaderActorId: string; writableNamespaceId: string | null }>,
+  findPending = findPendingMessageAttachmentForSender,
+): Promise<boolean> {
+  if (args.attachmentIds.length === 0) return true;
+  if (!args.writableNamespaceId) return false;
+  for (const attachmentId of args.attachmentIds) {
+    const row = await findPending({ attachmentId, uploaderActorId: args.uploaderActorId,
+      namespaceId: args.writableNamespaceId });
+    if (!row?.mimeType.startsWith("image/")) return false;
+  }
+  return true;
 }

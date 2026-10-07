@@ -1,5 +1,5 @@
 /**
- * D420 — maintenance lease + work-acceptance ledger on live Postgres.
+ * Maintenance — maintenance lease + work-acceptance ledger on live Postgres.
  *
  * Covers the `queries/maintenance.ts` state machine (fail-closed
  * transitions, cross-owner refusal, lease renewal + hard-expiry recovery,
@@ -35,6 +35,7 @@ import {
   listAcceptancesForJobWith,
   WORK_ACCEPTANCE_REASONS,
 } from "@nautilo/db";
+import { syntheticFixtureEmail } from "../../../../dev/testing/synthetic-fixture-email";
 import { bootstrapTestDbInstance } from "../../src/testing/instance-guard";
 
 let db!: ReturnType<typeof createDirectDb>;
@@ -100,12 +101,12 @@ beforeEach(async () => {
 
 /** Seed a user to satisfy the jobs.owner_id / requestor_id FKs. */
 async function seedUser(): Promise<string> {
-  if (!db) throw new Error("D420 integration DB was not initialized");
+  if (!db) throw new Error("Maintenance integration DB was not initialized");
   const [u] = await db
     .insert(users)
     .values({
-      name: `d420-${Date.now().toString(36)}`,
-      email: `d420-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@test.local`,
+      name: `maintenance-${Date.now().toString(36)}`,
+      email: syntheticFixtureEmail(),
     })
     .returning({ id: users.id });
   if (!u) throw new Error("seed user failed");
@@ -130,7 +131,7 @@ async function seedJob(userId: string): Promise<string> {
 
 const DURATIONS = { leaseMs: 60_000, hardMs: 120_000 };
 
-describe("D420 maintenance lease — singleton + state machine", () => {
+describe("Maintenance maintenance lease — singleton + state machine", () => {
   test("getState seeds the singleton row on first read and reports normal", async () => {
     // Wipe the singleton to prove ensureSingletonRow re-creates it.
     await db.execute(sql`DELETE FROM server_maintenance`);
@@ -252,7 +253,7 @@ describe("D420 maintenance lease — singleton + state machine", () => {
   });
 });
 
-describe("D420 maintenance lease — hard-expiry recovery (R10)", () => {
+describe("Maintenance maintenance lease — hard-expiry recovery (R10)", () => {
   test("recoverExpired reclaims an abandoned applying lease past hard expiry", async () => {
     const op1 = randomUUID();
     const past = new Date(Date.now() - 200_000);
@@ -285,7 +286,7 @@ describe("D420 maintenance lease — hard-expiry recovery (R10)", () => {
   });
 });
 
-describe("D420 maintenance lease — concurrent ownership serialization", () => {
+describe("Maintenance maintenance lease — concurrent ownership serialization", () => {
   test("two concurrent enterDraining calls: exactly one wins, one fails closed", async () => {
     const opA: string = randomUUID();
     const opB: string = randomUUID();
@@ -311,7 +312,7 @@ describe("D420 maintenance lease — concurrent ownership serialization", () => 
   });
 });
 
-describe("D420 work-acceptance ledger — payload-free lifecycle", () => {
+describe("Maintenance work-acceptance ledger — payload-free lifecycle", () => {
   test("insertAcceptance creates an accepted row with no payload columns", async () => {
     const id = await insertAcceptanceWith(db, "foreground");
     const row = await getAcceptanceWith(db, id);
@@ -417,7 +418,7 @@ describe("D420 work-acceptance ledger — payload-free lifecycle", () => {
   });
 });
 
-describe("D420 work-acceptance ledger — user_cancelled (D349 user Stop)", () => {
+describe("Maintenance work-acceptance ledger — user_cancelled ( user Stop)", () => {
   test("userCancelAcceptances terminalizes an exact ID-scoped set as user_cancelled", async () => {
     const ids = await insertAcceptancesWith(db, "foreground", 3);
     const n = await userCancelAcceptancesWith(db, ids, WORK_ACCEPTANCE_REASONS.userStop);

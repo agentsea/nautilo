@@ -1,11 +1,10 @@
 /**
- * D140 — `seedDefaultAgent` post-claim disambiguation (reviewer
- * Finding 1).
+ * `seedDefaultAgent` distinguishes a claimed seed from a foreign-owned Agent.
  *
  * Pins the narrowed fallback predicate: when the default `genie`
  * handle is absent (e.g. claim renamed it), the helper resolves the
  * post-claim agent via `findDefaultAgentForOwnerWithDb(ownerId)`
- * (M128's `actors` mirror row: `owner_id` + `kind='agent'`). If the
+ * (agent `actors` mirror row: `owner_id` + `kind='agent'`). If the
  * owner has no claimed agent
  * AND there are existing agents owned by someone else, the helper
  * must REFUSE rather than guess via "oldest agent first" — that's
@@ -23,6 +22,7 @@ import {
   sql,
   users,
 } from "@nautilo/db";
+import { syntheticFixtureEmail } from "../../../../dev/testing/synthetic-fixture-email";
 import { bootstrapTestDbInstance } from "../../src/testing/instance-guard";
 
 let db: ReturnType<typeof createDirectDb>;
@@ -33,10 +33,13 @@ beforeAll(async () => {
   db = createDirectDb(1);
   // Best-effort cleanup of fixtures from prior runs.
   await db.execute(sql`
-    DELETE FROM users WHERE email LIKE 'd140-disambig-%@test.local';
+    DELETE FROM users
+    WHERE (handle LIKE 'seed-fgn%' AND name LIKE 'Bootstrap-seed foreign %')
+       OR (handle LIKE 'seed-sbj%' AND name LIKE 'Bootstrap-seed subject %')
+       OR (handle LIKE 'seed-own%' AND name LIKE 'Bootstrap-seed owned %');
   `);
   await db.execute(sql`
-    DELETE FROM agents WHERE handle LIKE 'd140-disambig-%';
+    DELETE FROM agents WHERE handle LIKE 'fixture-seed-foreign-%' OR handle LIKE 'fixture-seed-owned-%';
   `);
 });
 
@@ -44,11 +47,11 @@ afterAll(async () => {
   if (db) await db.end();
 });
 
-describe("D140 — seedDefaultAgent post-claim disambiguation", () => {
+describe("Bootstrap-seed — seedDefaultAgent post-claim disambiguation", () => {
   test("refuses 'oldest agent' guess in a multi-agent DB with no owner-agent link", async () => {
     const ts = Date.now().toString(36);
 
-    // Stage the precise shape the reviewer flagged: `genie` handle
+    // Stage a foreign-owned Agent with a reserved `genie` handle
     // absent AND owner has no agent mirror actor AND ≥1 agents owned
     // by someone else.
     //
@@ -58,9 +61,9 @@ describe("D140 — seedDefaultAgent post-claim disambiguation", () => {
     const [foreignOwner] = await db
       .insert(users)
       .values({
-        name: `D140 foreign ${ts}`,
-        email: `d140-disambig-foreign-${ts}@test.local`,
-        handle: `d140fgn${ts}`.slice(0, 20),
+        name: `Bootstrap-seed foreign ${ts}`,
+        email: syntheticFixtureEmail(),
+        handle: `seed-fgn${ts}`.slice(0, 20),
       })
       .returning({ id: users.id });
     if (!foreignOwner) throw new Error("foreign owner seed failed");
@@ -77,7 +80,7 @@ describe("D140 — seedDefaultAgent post-claim disambiguation", () => {
       .returning({ id: actors.id });
     if (!foreignOwnerActor) throw new Error("foreign owner actor seed failed");
 
-    const foreignAgentHandle = `d140-disambig-foreign-${ts}`.slice(0, 32);
+    const foreignAgentHandle = `fixture-seed-foreign-${ts}`.slice(0, 32);
     const [foreignAgent] = await db
       .insert(agents)
       .values({
@@ -103,9 +106,9 @@ describe("D140 — seedDefaultAgent post-claim disambiguation", () => {
     const [subjectOwner] = await db
       .insert(users)
       .values({
-        name: `D140 subject ${ts}`,
-        email: `d140-disambig-subject-${ts}@test.local`,
-        handle: `d140sbj${ts}`.slice(0, 20),
+        name: `Bootstrap-seed subject ${ts}`,
+        email: syntheticFixtureEmail(),
+        handle: `seed-sbj${ts}`.slice(0, 20),
       })
       .returning({ id: users.id });
     if (!subjectOwner) throw new Error("subject owner seed failed");
@@ -121,7 +124,7 @@ describe("D140 — seedDefaultAgent post-claim disambiguation", () => {
       .limit(1);
     if (existingGenie) {
       console.warn(
-        "[d140-disambig] 'genie' handle already exists on this DB; skipping the negative-path test (predicate 1a would short-circuit).",
+        "[fixture-seed-claim-disambig] 'genie' handle already exists on this DB; skipping the negative-path test (predicate 1a would short-circuit).",
       );
       // Cleanup what we inserted.
       await db.delete(actors).where(eq(actors.agentId, foreignAgent.id));
@@ -146,7 +149,7 @@ describe("D140 — seedDefaultAgent post-claim disambiguation", () => {
 
     // Critical post-condition: the foreign agent was NOT touched
     // (no memories/sessions backfill, no mirror actor minted with
-    // the wrong subject owner). The reviewer's worry was exactly
+    // the wrong subject owner). The relevant case is
     // this silent cross-pollution.
     const [foreignAgentAfter] = await db
       .select({ id: agents.id })
@@ -176,9 +179,9 @@ describe("D140 — seedDefaultAgent post-claim disambiguation", () => {
     const [subjectOwner] = await db
       .insert(users)
       .values({
-        name: `D140 owned ${ts}`,
-        email: `d140-disambig-owned-${ts}@test.local`,
-        handle: `d140own${ts}`.slice(0, 20),
+        name: `Bootstrap-seed owned ${ts}`,
+        email: syntheticFixtureEmail(),
+        handle: `seed-own${ts}`.slice(0, 20),
       })
       .returning({ id: users.id });
     if (!subjectOwner) throw new Error("subject owner seed failed");
@@ -195,7 +198,7 @@ describe("D140 — seedDefaultAgent post-claim disambiguation", () => {
     if (!subjectOwnerActor) throw new Error("subject owner actor seed failed");
 
     // Step 2: owned agent + its mirror actor.
-    const ownedAgentHandle = `d140-disambig-owned-${ts}`.slice(0, 32);
+    const ownedAgentHandle = `fixture-seed-owned-${ts}`.slice(0, 32);
     const [ownedAgent] = await db
       .insert(agents)
       .values({
