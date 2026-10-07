@@ -997,10 +997,12 @@ export {
   inspectInitialTaskRuntimeNamespaceAuthority,
   inspectTaskContentNamespaceAuthority,
   withInitialTaskRuntimeRecipientAuthority,
+  withParkedTaskRuntimeNamespaceAuthority,
   withParkedTaskRuntimeRecipientAuthority,
   type InitialTaskRuntimeRecipientAuthority,
   type InitialTaskRuntimeNamespaceAuthority,
   type InitialTaskRuntimeNamespaceFact,
+  type ParkedTaskRuntimeCurrentRoutingFacts,
   type TaskContentNamespaceAuthorityInput,
 } from "./task/initial-task-runtime-namespace-authority.ts";
 

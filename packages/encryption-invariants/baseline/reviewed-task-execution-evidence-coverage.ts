@@ -73,6 +73,7 @@ export const PROTECTED_TASK_CONTINUATION_METADATA_FIELDS = [
   "required_authority_digest",
   "sealed_at",
   "semantic_authority_requirements",
+  "stable_routing_digest",
 ] as const;
 
 const RECEIPT_QUERY =
@@ -128,6 +129,6 @@ export const REVIEWED_TASK_EXECUTION_EVIDENCE_COVERAGE_ENTRIES:
       "packages/db/tests/unit/task-execution-evidence-migration.test.ts",
     ],
     plaintextReason:
-      "The exact schema stores only TaskRun, Job and segment coordinates, closed continuation, reason and effect-disposition codes, bounded opaque interrupt and operation identifiers, fixed 32-byte request and authority digests, seal time, and a digest-bound canonical list of Namespace UUIDs with closed decrypt/encrypt operations. The continuation writer validates and snapshots that list; parked recovery rejects missing or mismatched manifests. It contains no request body, tool payload, checkpoint content, credential or key material.",
+      "The exact schema stores only TaskRun, Job and segment coordinates, closed continuation, reason and effect-disposition codes, bounded opaque interrupt and operation identifiers, fixed 32-byte request, authority and original-routing digests, seal time, and a digest-bound canonical list of Namespace UUIDs with closed decrypt/encrypt operations. The continuation writer validates and snapshots that list and routing digest; parked recovery rejects missing or mismatched evidence. It contains no request body, tool payload, checkpoint content, credential or key material.",
   }),
 ];

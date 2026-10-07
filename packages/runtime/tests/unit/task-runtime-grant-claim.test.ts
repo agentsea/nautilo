@@ -41,6 +41,7 @@ import {
 import {
   createTaskRuntimeGrantClaim,
   taskRuntimeStableIdempotencyKey,
+  taskRuntimeStableRoutingDigest,
   type TaskRuntimeRecipientDeviceBinding,
   type TaskRuntimeGrantClaimPlan,
 } from "../../src/protected-execution/background-authorization/task-runtime-grant-claim";
@@ -629,6 +630,44 @@ describe("Task Runtime grant claim", () => {
       ...continuation,
       resumeContinuationFingerprint: Buffer.from(bytes(24)).toString("base64url"),
     })).not.toBe(resumed);
+  });
+
+  test("retains the routing commitment across segments without temporary grant state", () => {
+    const identity = stableIdentity();
+    const routing = { ...identity, widePrimaryWriteNamespaceId: null };
+    const expected = taskRuntimeStableRoutingDigest(routing);
+    expect(Buffer.from(expected).toString("base64url"))
+      .toBe("TO-6wYuTe_mSOzQ1XC_R3M4yYlGbkBhfQpLnCg6uhrU");
+    const continuation = {
+      ...routing,
+      executionSegment: 2,
+      resumeContinuationFingerprint: Buffer.from(bytes(23)).toString("base64url"),
+    };
+    expect(taskRuntimeStableRoutingDigest(continuation)).toEqual(expected);
+    for (const patch of [
+      { targetRoomId: "90000000-0000-4000-8000-000000000099" },
+      { targetUserIds: ["90000000-0000-4000-8000-000000000099"] },
+      { callingRoomId: null },
+      { scheduleKind: "cron" as const },
+      { memoryMode: "scope" as const, scopeId: "90000000-0000-4000-8000-000000000099" },
+      { contentRevision: identity.contentRevision + 1 },
+    ]) {
+      expect(taskRuntimeStableRoutingDigest({ ...routing, ...patch }))
+        .not.toEqual(expected);
+    }
+    expect(taskRuntimeStableRoutingDigest({
+      ...routing,
+      memoryMode: "wide",
+      widePrimaryWriteNamespaceId: identity.contentNamespaceId,
+    })).not.toEqual(taskRuntimeStableRoutingDigest({
+      ...routing,
+      memoryMode: "wide",
+      widePrimaryWriteNamespaceId:
+        "90000000-0000-4000-8000-000000000099",
+    }));
+    expected.fill(0);
+    expect(Buffer.from(taskRuntimeStableRoutingDigest(routing)).toString("base64url"))
+      .toBe("TO-6wYuTe_mSOzQ1XC_R3M4yYlGbkBhfQpLnCg6uhrU");
   });
 
   test("rejects incomplete and noncanonical continuation identities", () => {

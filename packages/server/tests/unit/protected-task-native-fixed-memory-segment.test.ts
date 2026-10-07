@@ -301,6 +301,7 @@ async function fixture(mode: "namespace" | "scope" = "namespace") {
     predispatch,
     policy,
     reference,
+    stableRoutingDigest: bytes(12),
     record,
     domains,
     scopeMemory: mode === "scope" ? Object.freeze({
@@ -548,6 +549,7 @@ async function executeScenario(
         predispatch: value.predispatch,
         policy: value.policy,
         reference: value.reference,
+        stableRoutingDigest: value.stableRoutingDigest,
         ...(value.scopeMemory === undefined ? {} : {
           scopeMemory: value.scopeMemory,
           scopeWorkIdentity: "fixed-scope-work-identity",
@@ -589,6 +591,7 @@ async function withScenario<Value>(
         predispatch: value.predispatch,
         policy: value.policy,
         reference: value.reference,
+        stableRoutingDigest: value.stableRoutingDigest,
         ...(value.scopeMemory === undefined ? {} : {
           scopeMemory: value.scopeMemory,
           scopeWorkIdentity: "fixed-scope-work-identity",
@@ -705,6 +708,7 @@ describe("protected Task native fixed Memory segment", () => {
           const prepared = await prepare({
             occurrence: value.occurrence, predispatch: value.predispatch,
             policy: value.policy, reference: value.reference,
+            stableRoutingDigest: value.stableRoutingDigest,
           });
           const transient = await prepared.openTransientInput({
             occurrence: value.occurrence, record: value.record,
@@ -776,6 +780,7 @@ describe("protected Task native fixed Memory segment", () => {
           predispatch: value.predispatch,
           policy: value.policy,
           reference: value.reference,
+          stableRoutingDigest: value.stableRoutingDigest,
         });
         const transient = await prepared.openTransientInput({
           occurrence: value.occurrence,
@@ -898,6 +903,7 @@ describe("protected Task native fixed Memory segment", () => {
       predispatch: mutablePredispatch,
       policy: value.policy,
       reference: value.reference,
+      stableRoutingDigest: value.stableRoutingDigest,
     });
     Reflect.set(mutableOccurrence.run, "graphThreadId", "substituted-thread");
     mutableOccurrence.task.cryptoRequiredNamespaceFingerprint.fill(0);
@@ -945,6 +951,7 @@ describe("protected Task native fixed Memory segment", () => {
         revision: 17,
       } as unknown as ProtectedTaskRuntimeMemoryPolicy,
       reference: value.reference,
+      stableRoutingDigest: value.stableRoutingDigest,
     })).toThrow("preparation is not exact");
   });
 
@@ -971,6 +978,7 @@ describe("protected Task native fixed Memory segment", () => {
           predispatch: value.predispatch,
           policy: value.policy,
           reference: value.reference,
+          stableRoutingDigest: value.stableRoutingDigest,
         });
         const transient = await prepared.openTransientInput({
           occurrence: value.occurrence,

@@ -55,6 +55,7 @@ export const protectedTaskContinuationReceipts = pgTable(
     operationId: text("operation_id"),
     requestDigest: bytea("request_digest"),
     requiredAuthorityDigest: bytea("required_authority_digest"),
+    stableRoutingDigest: bytea("stable_routing_digest"),
     semanticAuthorityRequirements: jsonb("semantic_authority_requirements")
       .$type<ProtectedTaskSemanticAuthorityRequirements>(),
     sealedAt: timestamp("sealed_at", { withTimezone: true }).notNull(),
@@ -88,6 +89,7 @@ export const protectedTaskContinuationReceipts = pgTable(
         and ${table.operationId} is null
         and ${table.requestDigest} is null
         and ${table.requiredAuthorityDigest} is null
+        and ${table.stableRoutingDigest} is null
         and ${table.semanticAuthorityRequirements} is null
       ) or (
         ${table.kind} = 'pre_effect_interrupt_v1'
@@ -103,8 +105,13 @@ export const protectedTaskContinuationReceipts = pgTable(
         and octet_length(${table.requiredAuthorityDigest}) = 32
         and (
           ${table.reason} = 'grant_refresh'
+          and ${table.stableRoutingDigest} is null
           and ${table.semanticAuthorityRequirements} is null
           or ${table.reason} = 'additional_authority'
+          and (
+            ${table.stableRoutingDigest} is null
+            or octet_length(${table.stableRoutingDigest}) = 32
+          )
           and (
             ${table.semanticAuthorityRequirements} is null
             or jsonb_typeof(${table.semanticAuthorityRequirements}) = 'array'

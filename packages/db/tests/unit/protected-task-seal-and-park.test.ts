@@ -110,6 +110,7 @@ function input(
       requiredAuthorityDigest: protectedTaskSemanticAuthorityRequirementsDigest(
         semanticAuthorityRequirements,
       ),
+      stableRoutingDigest: digest(5),
       semanticAuthorityRequirements,
     },
     ...overrides,
@@ -436,6 +437,26 @@ describe("protected Task execution seal-and-park owner", () => {
       } as unknown as SealAndParkProtectedTaskRunInput["continuation"],
     }))).rejects.toThrow("continuation is malformed");
     expect(unsupportedRefresh.locks).toEqual([]);
+
+    const missingRouting = harness();
+    const missingContinuation = {
+      ...input().continuation,
+    } as Record<string, unknown>;
+    delete missingContinuation["stableRoutingDigest"];
+    expect(sealAndParkProtectedTaskRun(missingRouting.db, input({
+      continuation: missingContinuation as unknown as
+        SealAndParkProtectedTaskRunInput["continuation"],
+    }))).rejects.toThrow("continuation is malformed");
+    expect(missingRouting.locks).toEqual([]);
+
+    const malformedRouting = harness();
+    expect(sealAndParkProtectedTaskRun(malformedRouting.db, input({
+      continuation: {
+        ...input().continuation,
+        stableRoutingDigest: new Uint8Array(31),
+      },
+    }))).rejects.toThrow("continuation is malformed");
+    expect(malformedRouting.locks).toEqual([]);
   });
 
   test("requires a nonempty native encrypted checkpoint before opening a transaction", async () => {
@@ -460,14 +481,17 @@ describe("protected Task execution seal-and-park owner", () => {
     const checkpointDigest = request.segment.checkpoint.checkpointOrderedDigest!;
     const requestDigest = request.continuation.requestDigest;
     const requiredAuthorityDigest = request.continuation.requiredAuthorityDigest;
+    const stableRoutingDigest = request.continuation.stableRoutingDigest;
     const expectedCheckpointDigest = checkpointDigest.slice();
     const expectedRequestDigest = requestDigest.slice();
     const expectedAuthorityDigest = requiredAuthorityDigest.slice();
+    const expectedStableRoutingDigest = stableRoutingDigest.slice();
 
     const pending = sealAndParkProtectedTaskRun(fixture.db, request);
     checkpointDigest.fill(255);
     requestDigest.fill(254);
     requiredAuthorityDigest.fill(253);
+    stableRoutingDigest.fill(252);
     expect(await pending).toEqual({ status: "parked" });
 
     expect(fixture.state().segments[0]?.checkpointDigest)
@@ -476,6 +500,8 @@ describe("protected Task execution seal-and-park owner", () => {
       .toEqual(expectedRequestDigest);
     expect(fixture.state().continuations[0]?.requiredAuthorityDigest)
       .toEqual(expectedAuthorityDigest);
+    expect(fixture.state().continuations[0]?.stableRoutingDigest)
+      .toEqual(expectedStableRoutingDigest);
     expect(fixture.state().continuations[0]?.semanticAuthorityRequirements)
       .toEqual(semanticAuthorityRequirements);
   });

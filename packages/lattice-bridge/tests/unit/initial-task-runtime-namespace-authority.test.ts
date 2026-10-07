@@ -1,7 +1,22 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, spyOn, test } from "bun:test";
-import type { PostgresJsBridgeConnection, PostgresJsBridgeExecutor, PostgresJsBridgeRow, PostgresJsBridgeScalar } from "@nautilo/db";
+import {
+  canonicalProtectedTaskSemanticAuthorityRequirements,
+  parseParkedProtectedTaskAdditionalAuthority,
+  protectedTaskSemanticAuthorityRequirementsDigest,
+  type ParkedProtectedTaskAdditionalAuthority,
+  type ParkedProtectedTaskAdditionalAuthorityJobRow,
+  type ParkedProtectedTaskAdditionalAuthorityRunRow,
+  type ParkedProtectedTaskAdditionalAuthorityTaskRow,
+  type PostgresJsBridgeConnection,
+  type PostgresJsBridgeExecutor,
+  type PostgresJsBridgeRow,
+  type PostgresJsBridgeScalar,
+  type ProtectedTaskExecutionContinuationProof,
+} from "@nautilo/db";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
-import { inspectInitialTaskRuntimeNamespaceAuthority, inspectTaskContentNamespaceAuthority, withInitialTaskRuntimeRecipientAuthority } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
+import { inspectInitialTaskRuntimeNamespaceAuthority, inspectTaskContentNamespaceAuthority, withInitialTaskRuntimeRecipientAuthority, withParkedTaskRuntimeNamespaceAuthority } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
 
 import { PostgresDeviceAdmissionRepository, type CurrentDeviceAdmissionAuthority } from "../../src/server/device/postgres-device-admission-repository.ts";
 
@@ -11,17 +26,121 @@ const HUMAN = "10000000-0000-4000-8000-000000000002";
 const AGENT_ACTOR = "10000000-0000-4000-8000-000000000003";
 const AGENT = "10000000-0000-4000-8000-000000000004";
 const TASK = "10000000-0000-4000-8000-000000000005";
+const PEER = "10000000-0000-4000-8000-000000000006";
 const ROOMS = ["20000000-0000-4000-8000-000000000001", "20000000-0000-4000-8000-000000000002"] as const;
 const NAMESPACES = ["30000000-0000-4000-8000-000000000001", "30000000-0000-4000-8000-000000000002"] as const;
 const DOMAINS = ["40000000-0000-4000-8000-000000000001", "40000000-0000-4000-8000-000000000002"] as const;
 const SCOPE = "50000000-0000-4000-8000-000000000001";
 const MEMORY_ROOM = "50000000-0000-4000-8000-000000000002";
+const RUN = "60000000-0000-4000-8000-000000000001";
+const JOB = "60000000-0000-4000-8000-000000000002";
+const REQUEST = "authority-request:1";
+const STARTED = new Date("2026-10-07T12:00:00.000Z");
+const PARKED = new Date("2026-10-07T12:34:56.000Z");
+const OBJECT = `task-definition:v1:${"a".repeat(64)}`;
 
 type Input = Parameters<typeof inspectInitialTaskRuntimeNamespaceAuthority>[0];
 type Rows = readonly PostgresJsBridgeRow[];
 type Adjust = (stage: string, rows: Rows) => Rows;
 
-function fixture(adjust: Adjust = (_stage, rows) => rows) {
+type ParkedRows = Readonly<{
+  task: ParkedProtectedTaskAdditionalAuthorityTaskRow;
+  run: ParkedProtectedTaskAdditionalAuthorityRunRow;
+  job: ParkedProtectedTaskAdditionalAuthorityJobRow;
+  proof: ProtectedTaskExecutionContinuationProof;
+}>;
+
+const digest = (seed: number): Uint8Array => new Uint8Array(32).fill(seed);
+
+function resultObjectId(): string {
+  const value = createHash("sha256").update(
+    `nautilo/task-run-result-crypto-object/v1\n${TASK}\n${RUN}\n1`,
+    "utf8",
+  ).digest("hex");
+  return `task-run-result:v1:${value}`;
+}
+
+function parkedRows(): ParkedRows {
+  const requirements = canonicalProtectedTaskSemanticAuthorityRequirements([{
+    namespaceId: NAMESPACES[1],
+    operations: ["decrypt"],
+  }]);
+  return {
+    task: {
+      id: TASK, ownerId: USER, requestorId: USER, agentId: AGENT,
+      callingRoomId: ROOMS[0], scheduleKind: "now", status: "awaiting",
+      contentRepresentation: "protected", contentNamespaceId: NAMESPACES[0],
+      contentRevision: 1, cryptoObjectId: OBJECT, cryptoAccessRevision: 2,
+      cryptoRequiredNamespaceFingerprint: digest(1),
+      cryptoMappingState: "verified", contentPristine: true,
+    },
+    run: {
+      id: RUN, taskId: TASK, jobId: JOB,
+      graphThreadId: `subagent:${TASK}:${RUN}`, status: "awaiting",
+      startedAt: new Date(STARTED), pristine: true,
+    },
+    job: {
+      id: JOB, ownerId: USER, requestorId: USER, laneKey: `task:${TASK}`,
+      type: "foreground", status: "completed", startedAt: new Date(STARTED),
+      completedAt: new Date(PARKED),
+      reference: {
+        kind: "protected_task_run_v1", taskId: TASK, taskRunId: RUN,
+        inputObjectId: OBJECT, resultObjectId: resultObjectId(),
+        authorizationRequestId: "prior-request:1", policyRevision: 7,
+        executionSegment: 1,
+      },
+      parkReceipt: {
+        version: 1, taskId: TASK, taskRunId: RUN, jobId: JOB,
+        graphThreadId: `subagent:${TASK}:${RUN}`, generation: 3,
+        executionSegment: 1,
+        interrupts: [{ id: "interrupt:authority:1",
+          kind: "additional_authority", requestId: REQUEST }],
+        parkedAt: PARKED.toISOString(),
+      },
+      pristine: true,
+    },
+    proof: {
+      segment: {
+        taskRunId: RUN, executionSegment: 1, jobId: JOB,
+        route: "native_langgraph_v1",
+        transcriptContract: "protected_message_associations_v1",
+        expectedTranscriptAssociationCount: 0,
+        transcriptAssociationDigest: digest(2),
+        checkpointContract: "encrypted_langgraph_v1",
+        expectedCheckpointCount: 1, checkpointDigest: digest(3),
+        expectedCheckpointBlobCount: 1, checkpointBlobDigest: digest(4),
+        expectedPendingWriteCount: 0, pendingWriteDigest: digest(5),
+        sealedAt: new Date(PARKED),
+      },
+      continuation: {
+        taskRunId: RUN, executionSegment: 1, jobId: JOB,
+        kind: "pre_effect_interrupt_v1", reason: "additional_authority",
+        effectDisposition: "not_started_v1",
+        interruptId: "interrupt:authority:1", operationId: "tool-call:1",
+        requestDigest: digest(6),
+        requiredAuthorityDigest:
+          protectedTaskSemanticAuthorityRequirementsDigest(requirements),
+        semanticAuthorityRequirements: requirements,
+        stableRoutingDigest: digest(7),
+        sealedAt: new Date(PARKED),
+      },
+    },
+  };
+}
+
+function parkedDescriptor(value = parkedRows()): ParkedProtectedTaskAdditionalAuthority {
+  const descriptor = parseParkedProtectedTaskAdditionalAuthority({
+    ...value,
+    authorizationRequestId: REQUEST,
+  });
+  if (descriptor === null) throw new Error("Parked fixture is invalid");
+  return descriptor;
+}
+
+function fixture(
+  adjust: Adjust = (_stage, rows) => rows,
+  parked: ParkedRows | null = null,
+) {
   const events: string[] = [];
   let productLocked = false;
   let restrictedLocked = false;
@@ -39,10 +158,15 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
       let rows: Rows;
       if (statement.includes('from "tasks"')) {
         stage = "task";
-        rows = [{ id: TASK, requestor_id: USER, agent_id: AGENT,
+        rows = [{ id: TASK, owner_id: USER, requestor_id: USER,
+          agent_id: AGENT, calling_room_id: ROOMS[0], schedule_kind: "now",
+          preset: "task", target_user_ids: [],
           content_namespace_id: NAMESPACES[0], content_representation: "protected",
+          content_revision: 1, crypto_object_id: OBJECT,
+          crypto_access_revision: 2,
+          crypto_required_namespace_fingerprint: digest(1),
           use_scope: false, scope_id: null, target_chat: "last_in_namespace",
-          target_room_id: MEMORY_ROOM }];
+          target_room_id: MEMORY_ROOM, wide_bring_back: true }];
       } else if (statement.includes("identity_probe")) {
         stage = "scope-identity";
         rows = [{ current_user: "nautilo", session_user: "nautilo",
@@ -98,20 +222,52 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
       return adjust(stage, rows) as readonly Row[];
     },
   };
+  let productSelectCall = 0;
   const tx = {
     execute: async () => { events.push("policy-lock"); return []; },
     select: () => {
+      const current = productSelectCall++;
       const query: Record<string, unknown> = {};
       for (const name of ["from", "where"]) query[name] = () => query;
+      query["limit"] = () => query;
+      query["for"] = async () => {
+        if (parked === null) throw new Error("Unexpected parked lock");
+        const parkedStage = current - 1;
+        const stage = ["parked-task", "parked-run", "parked-job"][parkedStage];
+        const rows = [parked.task, parked.run, parked.job][parkedStage];
+        if (stage === undefined || rows === undefined) {
+          throw new Error("Unexpected parked lock order");
+        }
+        events.push(stage);
+        return adjust(stage, [rows] as unknown as Rows);
+      };
       query["then"] = (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) => {
-        events.push("policy");
-        return Promise.resolve(adjust("policy", [{ mode: "encrypted_only", shadowBehavior: "strict", revision: 7 }])).then(resolve, reject);
+        if (current === 0) {
+          events.push("policy");
+          return Promise.resolve(adjust("policy", [{ mode: "encrypted_only", shadowBehavior: "strict", revision: 7 }])).then(resolve, reject);
+        }
+        if (parked === null) return Promise.reject(new Error("Unexpected parked proof")).then(resolve, reject);
+        const proofStage = current - 4;
+        const stage = ["proof-run", "proof-segment", "proof-continuation"][proofStage];
+        const rows = [
+          { id: RUN, taskId: TASK },
+          parked.proof.segment,
+          parked.proof.continuation,
+        ][proofStage];
+        if (stage === undefined || rows === undefined) {
+          return Promise.reject(new Error("Unexpected parked proof order"))
+            .then(resolve, reject);
+        }
+        events.push(stage);
+        return Promise.resolve(adjust(stage, [rows] as unknown as Rows))
+          .then(resolve, reject);
       };
       return query;
     },
   };
   const runner = {
     transaction: async (use: (transaction: unknown, product: PostgresJsBridgeExecutor) => Promise<unknown>) => {
+      productSelectCall = 0;
       productLocked = true;
       try { return await use(tx, executor); }
       finally { productLocked = false; events.push("product-released"); }
@@ -420,6 +576,268 @@ describe("initial Task Runtime Namespace authority", () => {
       expect(error).toBeInstanceOf(TypeError);
       expect(events).toEqual([]);
     }
+  });
+});
+
+describe("parked Task Runtime Namespace authority", () => {
+  test("lends exact current facts after locking the parked proof and before release", async () => {
+    const current = parkedRows();
+    const { input, events } = fixture((_stage, rows) => rows, current);
+    let retained: PostgresJsBridgeConnection | undefined;
+    const result = await withParkedTaskRuntimeNamespaceAuthority({
+      ...input,
+      expected: parkedDescriptor(current),
+      authorizationRequestId: REQUEST,
+      validateCurrentRouting: facts => {
+        expect(facts).toEqual({
+          taskId: TASK,
+          taskRunId: RUN,
+          ownerId: USER,
+          requestorId: USER,
+          agentId: AGENT,
+          callingRoomId: ROOMS[0],
+          scheduleKind: "now",
+          graphThreadId: `subagent:${TASK}:${RUN}`,
+          startedAt: STARTED,
+          sourceRoomId: ROOMS[0],
+          targetRoomId: MEMORY_ROOM,
+          targetUserIds: [USER],
+          memoryMode: "namespace",
+          wideBringBack: true,
+          scopeId: null,
+          contentRepresentation: "protected",
+          contentNamespaceId: NAMESPACES[0],
+          contentRevision: 1,
+          contentObjectId: OBJECT,
+          contentAccessRevision: 2,
+          requiredNamespaceFingerprint: digest(1),
+        });
+        expect(Object.isFrozen(facts)).toBe(true);
+        expect(Object.isFrozen(facts.targetUserIds)).toBe(true);
+        return true;
+      },
+      use: async (authority, restricted) => {
+        retained = restricted;
+        expect(authority).toEqual({
+          sourceRoomId: ROOMS[0],
+          sourceNamespaceId: NAMESPACES[0],
+          facts: NAMESPACES.map((namespaceId, index) => ({
+            namespaceId,
+            domainId: DOMAINS[index]!,
+            expectedAccessRevision: 9 + index,
+            expectedPolicyRevision: 7,
+            expectedDomainEpoch: 2,
+            expectedAuthorizationRevision: 3,
+          })),
+        });
+        expect(Object.isFrozen(authority)).toBe(true);
+        expect(Object.isFrozen(authority.facts)).toBe(true);
+        const role = await restricted.query("SELECT current_user::text");
+        return role[0]?.["current_user"];
+      },
+    });
+
+    expect(result).toBe("nautilo_crypto");
+    expect(events.slice(events.indexOf("parked-task"), events.indexOf("proof-continuation") + 1))
+      .toEqual(["parked-task", "parked-run", "parked-job",
+        "proof-run", "proof-segment", "proof-continuation"]);
+    expect(events.indexOf("proof-continuation"))
+      .toBeLessThan(events.indexOf("candidates"));
+    expect(events.lastIndexOf("namespace"))
+      .toBeLessThan(events.indexOf("domain"));
+    expect(events.slice(-2)).toEqual(["restricted-released", "product-released"]);
+    expect(() => retained?.query("SELECT current_user::text"))
+      .toThrow("Parked Task Runtime authority is not active");
+  });
+
+  test("fails closed on substituted proof or missing crypto authority", async () => {
+    for (const denied of ["proof-continuation", "namespace"] as const) {
+      const current = parkedRows();
+      const { input, events } = fixture((stage, rows) => {
+        if (stage === "proof-continuation") {
+          return denied === stage
+            ? rows.map(row => ({ ...row, requestDigest: digest(9) }))
+            : rows;
+        }
+        return denied === stage ? [] : rows;
+      }, current);
+      let used = false;
+      expect(await withParkedTaskRuntimeNamespaceAuthority({
+        ...input,
+        expected: parkedDescriptor(current),
+        authorizationRequestId: REQUEST,
+        validateCurrentRouting: () => true,
+        use: () => { used = true; },
+      }), denied).toBeNull();
+      expect(used, denied).toBe(false);
+      if (denied === "proof-continuation") {
+        expect(events).not.toContain("restricted");
+      }
+    }
+  });
+
+  test("snapshots proof, coordinates and callback before awaiting", async () => {
+    const current = parkedRows();
+    const expected = parkedDescriptor(current);
+    const { input } = fixture((_stage, rows) => rows, current);
+    const namespaceIds = [...input.namespaceIds];
+    let originalCalls = 0;
+    let originalValidations = 0;
+    let substitutedValidations = 0;
+    let substitutedCalls = 0;
+    const request = {
+      ...input,
+      namespaceIds,
+      expected,
+      authorizationRequestId: REQUEST,
+      validateCurrentRouting: () => {
+        originalValidations += 1;
+        return true;
+      },
+      use: () => {
+        originalCalls += 1;
+        return "original";
+      },
+    };
+    const operation = withParkedTaskRuntimeNamespaceAuthority(request);
+    namespaceIds[0] = TASK;
+    expected.proof.continuation.requestDigest!.fill(0);
+    request.validateCurrentRouting = () => {
+      substitutedValidations += 1;
+      return false;
+    };
+    request.use = () => {
+      substitutedCalls += 1;
+      return "substituted";
+    };
+
+    expect(await operation).toBe("original");
+    expect(originalValidations).toBe(1);
+    expect(substitutedValidations).toBe(0);
+    expect(originalCalls).toBe(1);
+    expect(substitutedCalls).toBe(0);
+  });
+
+  test("requires current routing validation before Namespace authority", async () => {
+    const current = parkedRows();
+    const denied = fixture((_stage, rows) => rows, current);
+    let used = false;
+    expect(await withParkedTaskRuntimeNamespaceAuthority({
+      ...denied.input,
+      expected: parkedDescriptor(current),
+      authorizationRequestId: REQUEST,
+      validateCurrentRouting: () => false,
+      use: () => { used = true; },
+    })).toBeNull();
+    expect(used).toBe(false);
+    expect(denied.events).toContain("proof-continuation");
+    expect(denied.events).not.toContain("candidates");
+    expect(denied.events).not.toContain("restricted");
+
+    const missing = fixture((_stage, rows) => rows, current);
+    expect(await withParkedTaskRuntimeNamespaceAuthority({
+      ...missing.input,
+      expected: parkedDescriptor(current),
+      authorizationRequestId: REQUEST,
+      use: () => { used = true; },
+    } as never)).toBeNull();
+    expect(missing.events).toEqual([]);
+  });
+
+  test("derives canonical audience, Memory mode and wide return intent from the locked Task", async () => {
+    for (const wideBringBack of [true, false]) {
+      const current = parkedRows();
+      const { input } = fixture((stage, rows) => stage === "task"
+        ? rows.map(row => ({ ...row,
+            preset: "in_private_namespace",
+            target_user_ids: [PEER],
+            wide_bring_back: wideBringBack,
+          }))
+        : rows, current);
+      let routing: Parameters<Parameters<
+        typeof withParkedTaskRuntimeNamespaceAuthority
+      >[0]["validateCurrentRouting"]>[0] | undefined;
+      expect(await withParkedTaskRuntimeNamespaceAuthority({
+        ...input,
+        expected: parkedDescriptor(current),
+        authorizationRequestId: REQUEST,
+        validateCurrentRouting: facts => {
+          routing = facts;
+          return true;
+        },
+        use: () => "used",
+      })).toBe("used");
+      expect(routing?.targetUserIds).toEqual([USER, PEER]);
+      expect(routing?.memoryMode).toBe("wide");
+      expect(routing?.wideBringBack).toBe(wideBringBack);
+      expect(routing?.scopeId).toBeNull();
+    }
+  });
+
+  test("rejects missing or malformed projected wide return intent", async () => {
+    {
+      const current = parkedRows();
+      const { input } = fixture((stage, rows) => stage === "task"
+        ? rows.map(row => {
+            const { wide_bring_back: _wideBringBack, ...replacement } = row;
+            return replacement;
+          })
+        : rows, current);
+      let used = false;
+      expect(await withParkedTaskRuntimeNamespaceAuthority({
+        ...input,
+        expected: parkedDescriptor(current),
+        authorizationRequestId: REQUEST,
+        validateCurrentRouting: () => true,
+        use: () => { used = true; },
+      }), "missing").toBeNull();
+      expect(used, "missing").toBe(false);
+    }
+    for (const wideBringBack of ["false", 0, null] as const) {
+      const current = parkedRows();
+      const { input } = fixture((stage, rows) => stage === "task"
+        ? rows.map(row => ({ ...row, wide_bring_back: wideBringBack }))
+        : rows, current);
+      let used = false;
+      expect(await withParkedTaskRuntimeNamespaceAuthority({
+        ...input,
+        expected: parkedDescriptor(current),
+        authorizationRequestId: REQUEST,
+        validateCurrentRouting: () => true,
+        use: () => { used = true; },
+      }), String(wideBringBack)).toBeNull();
+      expect(used, String(wideBringBack)).toBe(false);
+    }
+  });
+
+  test("unwinds both held transactions when the callback rejects", async () => {
+    const current = parkedRows();
+    const { input, events } = fixture((_stage, rows) => rows, current);
+    const failure = new Error("parked preparation failed");
+    expect(await withParkedTaskRuntimeNamespaceAuthority({
+      ...input,
+      expected: parkedDescriptor(current),
+      authorizationRequestId: REQUEST,
+      validateCurrentRouting: () => true,
+      use: async () => { throw failure; },
+    }).catch((error: unknown) => error)).toBe(failure);
+    expect(events.slice(-2)).toEqual(["restricted-released", "product-released"]);
+  });
+
+  test("rejects cross-spliced parked coordinates before taking locks", async () => {
+    const current = parkedRows();
+    const { input, events } = fixture((_stage, rows) => rows, current);
+    let used = false;
+    expect(await withParkedTaskRuntimeNamespaceAuthority({
+      ...input,
+      taskId: USER,
+      expected: parkedDescriptor(current),
+      authorizationRequestId: REQUEST,
+      validateCurrentRouting: () => true,
+      use: () => { used = true; },
+    })).toBeNull();
+    expect(used).toBe(false);
+    expect(events).toEqual([]);
   });
 });
 

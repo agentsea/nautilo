@@ -133,6 +133,7 @@ export {
 
 export {
   taskRuntimeStableIdempotencyKey,
+  taskRuntimeStableRoutingDigest,
   type TaskRuntimeGrantClaimPlan,
   type TaskRuntimeGrantStableIdentity,
 } from "./task-runtime-grant-claim";

@@ -252,6 +252,7 @@ function input(fixture: Fixture): SealAndParkProtectedTaskRunInput {
       requestDigest: new Uint8Array(32).fill(0x53),
       requiredAuthorityDigest:
         protectedTaskSemanticAuthorityRequirementsDigest(requirements),
+      stableRoutingDigest: new Uint8Array(32).fill(0x54),
       semanticAuthorityRequirements: requirements,
     },
   };
@@ -278,6 +279,7 @@ function additionalAuthorityReference(
         operationId: parked.continuation.operationId,
         requestDigest: parked.continuation.requestDigest,
         requiredAuthorityDigest: parked.continuation.requiredAuthorityDigest,
+        stableRoutingDigest: parked.continuation.stableRoutingDigest,
       }),
   });
 }
@@ -325,8 +327,9 @@ function additionalAuthorityStartInput(
       operationId: parked.continuation.operationId,
       requestDigest: parked.continuation.requestDigest,
       requiredAuthorityDigest: parked.continuation.requiredAuthorityDigest,
+      stableRoutingDigest: parked.continuation.stableRoutingDigest,
       semanticAuthorityRequirements:
-        parked.continuation.semanticAuthorityRequirements!,
+        parked.continuation.semanticAuthorityRequirements,
     },
   };
 }

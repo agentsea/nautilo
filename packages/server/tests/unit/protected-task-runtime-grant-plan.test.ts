@@ -15,13 +15,18 @@ import {
   parseDomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
-import type { ScopeMemoryEnvelopeWithOrigin } from "@nautilo/trust";
 import type {
-  ProtectedTaskPredispatchPlan,
-  ProtectedTaskOccurrence,
+  NamespaceMemoryEnvelope,
+  ScopeMemoryEnvelopeWithOrigin,
+} from "@nautilo/trust";
+import {
+  taskRuntimeStableRoutingDigest,
+  type ProtectedTaskPredispatchPlan,
+  type ProtectedTaskOccurrence,
 } from "@nautilo/runtime";
 import {
   createProtectedTaskRuntimeGrantPlanBuilder,
+  createParkedTaskRuntimeRoutingValidator,
   type ProtectedTaskRuntimeNamespaceAuthorityFact,
 } from "../../src/routes/protected-task-runtime-grant-plan";
 
@@ -109,6 +114,26 @@ function predispatch(value: ProtectedTaskOccurrence): ProtectedTaskPredispatchPl
         writableNamespaces: [CONTENT],
         toolPolicy: {},
       }),
+    }),
+  });
+}
+
+function widePredispatch(
+  value: ProtectedTaskOccurrence,
+  primaryWriteNamespaceId: string,
+): ProtectedTaskPredispatchPlan {
+  const base = predispatch(value);
+  const envelope: NamespaceMemoryEnvelope = Object.freeze({
+    ...base.memory.envelope as NamespaceMemoryEnvelope,
+    writableNamespaces: [primaryWriteNamespaceId],
+  });
+  return Object.freeze({
+    ...base,
+    memory: Object.freeze({
+      mode: "wide" as const,
+      authorityStatus: "exact" as const,
+      provenance: "wide_private_namespace" as const,
+      envelope,
     }),
   });
 }
@@ -375,6 +400,7 @@ test("binds distinct per-occurrence executors and transient openers", async () =
   const firstOpener = async () => ({ message: "first" });
   const secondOpener = async () => ({ message: "second" });
   const prepared: string[] = [];
+  const routingDigests = new Map<string, Uint8Array>();
   const build = createProtectedTaskRuntimeGrantPlanBuilder({
     crypto: new LatticeCrypto(),
     recipientTtlMs: 60_000,
@@ -392,6 +418,7 @@ test("binds distinct per-occurrence executors and transient openers", async () =
       predispatch: plan,
       policy,
       reference,
+      stableRoutingDigest,
     }) => {
       expect(plan.occurrence).toBe(value);
       expect(plan.target.roomId).toBe(ROOM);
@@ -403,6 +430,7 @@ test("binds distinct per-occurrence executors and transient openers", async () =
         executionSegment: 1,
       });
       prepared.push(value.run.id);
+      routingDigests.set(value.run.id, stableRoutingDigest.slice());
       return value.run.id === RUN
         ? { executor: firstExecutor, openTransientInput: firstOpener }
         : {
@@ -420,12 +448,78 @@ test("binds distinct per-occurrence executors and transient openers", async () =
     build(second),
   ]);
   expect(prepared.sort()).toEqual([RUN, RUN_TWO].sort());
+  expect(routingDigests.get(RUN)).toEqual(taskRuntimeStableRoutingDigest({
+    ...firstPlan.stableIdentity,
+    widePrimaryWriteNamespaceId: null,
+  }));
+  expect(routingDigests.get(RUN_TWO)).toEqual(taskRuntimeStableRoutingDigest({
+    ...secondPlan.stableIdentity,
+    widePrimaryWriteNamespaceId: null,
+  }));
+  expect(routingDigests.get(RUN)).not.toEqual(routingDigests.get(RUN_TWO));
   expect(firstPlan.executor).toBe(firstExecutor);
   expect(firstPlan.openTransientInput).toBe(firstOpener);
   expect(firstPlan.modelAttribution).toBeUndefined();
   expect(secondPlan.executor).toBe(secondExecutor);
   expect(secondPlan.openTransientInput).toBe(secondOpener);
   expect(secondPlan.modelAttribution).toBe("external");
+});
+
+test("commits the wide primary write target outside the stable request key", async () => {
+  const value = occurrence();
+  const outputFact: ProtectedTaskRuntimeNamespaceAuthorityFact = Object.freeze({
+    namespaceId: OUTPUT,
+    domainId: "c1000000-0000-4000-8000-00000000000c",
+    expectedAccessRevision: 4,
+    expectedPolicyRevision: 7,
+    expectedDomainEpoch: 3,
+    expectedAuthorizationRevision: 11,
+  });
+  async function build(primaryWriteNamespaceId: string) {
+    let routingDigest: Uint8Array | undefined;
+    const plan = await createProtectedTaskRuntimeGrantPlanBuilder({
+      crypto: new LatticeCrypto(),
+      recipientTtlMs: 60_000,
+      now: () => NOW,
+      predispatch: async () => widePredispatch(value, primaryWriteNamespaceId),
+      ...outputPorts(OUTPUT),
+      resolveNamespaceAuthority: async () => ({
+        sourceRoomId: SOURCE_ROOM,
+        sourceNamespaceId: CONTENT,
+        policy: memoryPolicy(),
+        facts: [...facts(), outputFact],
+      }),
+      prepareExecution: async ({ stableRoutingDigest }) => {
+        routingDigest = stableRoutingDigest.slice();
+        return {
+          executor: async function* () { yield* []; },
+          openTransientInput: async () => ({}),
+        };
+      },
+      startProtectedTaskRun: async () => ({ status: "started" }),
+      publishResult: async () => {},
+    })(value);
+    return { plan, routingDigest: routingDigest! };
+  }
+
+  const contentPrimary = await build(CONTENT);
+  const outputPrimary = await build(OUTPUT);
+  const distinctPrivatePrimary = await build(READABLE);
+  expect(distinctPrivatePrimary.routingDigest).toEqual(taskRuntimeStableRoutingDigest({
+    ...distinctPrivatePrimary.plan.stableIdentity,
+    widePrimaryWriteNamespaceId: READABLE,
+  }));
+  expect(contentPrimary.plan.initialRecord.idempotencyKey)
+    .toBe(outputPrimary.plan.initialRecord.idempotencyKey);
+  expect(contentPrimary.routingDigest).not.toEqual(outputPrimary.routingDigest);
+  expect(contentPrimary.routingDigest).toEqual(taskRuntimeStableRoutingDigest({
+    ...contentPrimary.plan.stableIdentity,
+    widePrimaryWriteNamespaceId: CONTENT,
+  }));
+  expect(outputPrimary.routingDigest).toEqual(taskRuntimeStableRoutingDigest({
+    ...outputPrimary.plan.stableIdentity,
+    widePrimaryWriteNamespaceId: OUTPUT,
+  }));
 });
 
 test("refuses substituted predispatch before execution preparation", async () => {
@@ -775,4 +869,198 @@ test("requires concrete execution and publication sinks", () => {
     startProtectedTaskRun: async () => ({ status: "started" as const }),
     publishResult: async () => {},
   } as never)).toThrow("execution sink is unavailable");
+});
+
+test("validates parked routing from immutable evidence without a retained grant row", async () => {
+  const plan = await builder()(occurrence());
+  const output = (await outputPorts().acceptOutputBinding({
+    taskId: TASK,
+    taskRunId: RUN,
+    requiredPolicyRevision: 7,
+    acceptedAt: new Date(NOW),
+  })).binding;
+  const stableRoutingDigest = taskRuntimeStableRoutingDigest({
+    ...plan.stableIdentity,
+    widePrimaryWriteNamespaceId: null,
+  });
+  // The Lattice owner validates the complete parked proof. This isolated
+  // comparator receives only the proof fields it consumes.
+  const expected = {
+    occurrence: occurrence(),
+    priorJob: { reference: plan.reference },
+    proof: { continuation: { stableRoutingDigest } },
+  } as unknown as Parameters<typeof createParkedTaskRuntimeRoutingValidator>[0]["expected"];
+  const current = {
+    ...plan.stableIdentity,
+    startedAt: new Date(plan.stableIdentity.startedAt),
+    requiredNamespaceFingerprint:
+      occurrence().task.cryptoRequiredNamespaceFingerprint,
+    wideBringBack: false,
+  };
+  const validate = createParkedTaskRuntimeRoutingValidator({ expected, output, widePrivateNamespaceId: CONTENT });
+  expect(validate(current)).toBe(true);
+  for (const patch of [
+    { taskRunId: RUN_TWO },
+    { targetRoomId: SOURCE_ROOM },
+    { targetUserIds: [OWNER] },
+    { scheduleKind: "cron" as const },
+    { memoryMode: "scope" as const, scopeId: CONTENT },
+    { contentRevision: current.contentRevision + 1 },
+  ]) {
+    expect(validate({ ...current, ...patch })).toBe(false);
+  }
+  expect(() => createParkedTaskRuntimeRoutingValidator({
+    widePrivateNamespaceId: null,
+    expected,
+    output: { ...output, taskRunId: RUN_TWO },
+  })).toThrow("original routing evidence is unavailable");
+  expect(() => createParkedTaskRuntimeRoutingValidator({
+    widePrivateNamespaceId: null,
+    expected,
+    output: { ...output, destinationRoomId: SOURCE_ROOM },
+  })).toThrow("original routing evidence is unavailable");
+  stableRoutingDigest.fill(0);
+  output.destinationNamespaceId = OUTPUT;
+  expect(validate(current)).toBe(true);
+});
+
+test("binds parked wide bring-back only when it changes the primary write Namespace", async () => {
+  const value = occurrence();
+  const output = (await outputPorts(OUTPUT).acceptOutputBinding({
+    taskId: TASK,
+    taskRunId: RUN,
+    requiredPolicyRevision: 7,
+    acceptedAt: new Date(NOW),
+  })).binding;
+  const namespacePlan = await builder()(value);
+  const stableIdentity = {
+    ...namespacePlan.stableIdentity,
+    memoryMode: "wide" as const,
+    outputNamespaceId: OUTPUT,
+  };
+  const current = {
+    ...stableIdentity,
+    startedAt: new Date(stableIdentity.startedAt),
+    requiredNamespaceFingerprint: value.task.cryptoRequiredNamespaceFingerprint,
+    wideBringBack: false,
+  };
+  const expected = {
+    occurrence: value,
+    priorJob: { reference: namespacePlan.reference },
+    proof: { continuation: {
+      stableRoutingDigest: taskRuntimeStableRoutingDigest({
+        ...stableIdentity,
+        widePrimaryWriteNamespaceId: CONTENT,
+      }),
+    } },
+  } as unknown as Parameters<
+    typeof createParkedTaskRuntimeRoutingValidator
+  >[0]["expected"];
+  const validate = createParkedTaskRuntimeRoutingValidator({ expected, output, widePrivateNamespaceId: CONTENT });
+  expect(validate(current)).toBe(true);
+  expect(validate({ ...current, wideBringBack: true })).toBe(false);
+
+  // Historical duplicate private Rooms can make Wide's canonical private
+  // Namespace differ from the Task's content custody Namespace.
+  const distinctPrivate = READABLE;
+  const distinctPrivateExpected = {
+    ...expected,
+    proof: { continuation: {
+      stableRoutingDigest: taskRuntimeStableRoutingDigest({
+        ...stableIdentity,
+        widePrimaryWriteNamespaceId: distinctPrivate,
+      }),
+    } },
+  } as unknown as typeof expected;
+  const validateDistinctPrivate = createParkedTaskRuntimeRoutingValidator({
+    expected: distinctPrivateExpected, output,
+    widePrivateNamespaceId: distinctPrivate,
+  });
+  expect(validateDistinctPrivate(current)).toBe(true);
+  expect(validateDistinctPrivate({ ...current, wideBringBack: true })).toBe(false);
+  expect(createParkedTaskRuntimeRoutingValidator({
+    expected: distinctPrivateExpected, output,
+    widePrivateNamespaceId: CONTENT,
+  })(current)).toBe(false);
+  expect(createParkedTaskRuntimeRoutingValidator({
+    expected: distinctPrivateExpected, output,
+    widePrivateNamespaceId: null,
+  })(current)).toBe(false);
+
+
+  const sameNamespaceOutput = {
+    ...output,
+    destinationNamespaceId: CONTENT,
+  };
+  const sameNamespaceIdentity = {
+    ...stableIdentity,
+    outputNamespaceId: CONTENT,
+  };
+  const sameNamespaceExpected = {
+    ...expected,
+    proof: { continuation: {
+      stableRoutingDigest: taskRuntimeStableRoutingDigest({
+        ...sameNamespaceIdentity,
+        widePrimaryWriteNamespaceId: CONTENT,
+      }),
+    } },
+  } as unknown as Parameters<
+    typeof createParkedTaskRuntimeRoutingValidator
+  >[0]["expected"];
+  const validateEquivalent = createParkedTaskRuntimeRoutingValidator({
+    widePrivateNamespaceId: CONTENT,
+    expected: sameNamespaceExpected,
+    output: sameNamespaceOutput,
+  });
+  const sameNamespaceCurrent = {
+    ...current,
+    outputNamespaceId: CONTENT,
+  };
+  expect(validateEquivalent(sameNamespaceCurrent)).toBe(true);
+  expect(validateEquivalent({
+    ...sameNamespaceCurrent,
+    wideBringBack: true,
+  })).toBe(true);
+
+  const noCallingRoomIdentity = {
+    ...stableIdentity,
+    callingRoomId: null,
+    outputRoomId: null,
+    outputNamespaceId: null,
+  };
+  const noCallingRoomExpected = {
+    ...expected,
+    occurrence: {
+      ...value,
+      task: { ...value.task, callingRoomId: null },
+    },
+    proof: { continuation: {
+      stableRoutingDigest: taskRuntimeStableRoutingDigest({
+        ...noCallingRoomIdentity,
+        widePrimaryWriteNamespaceId: CONTENT,
+      }),
+    } },
+  } as unknown as Parameters<
+    typeof createParkedTaskRuntimeRoutingValidator
+  >[0]["expected"];
+  const validateNoCallingRoom = createParkedTaskRuntimeRoutingValidator({
+    widePrivateNamespaceId: CONTENT,
+    expected: noCallingRoomExpected,
+    output: {
+      ...output,
+      deliveryMode: "none",
+      destinationRoomId: null,
+      destinationNamespaceId: null,
+    },
+  });
+  const noCallingRoomCurrent = {
+    ...current,
+    callingRoomId: null,
+    wideBringBack: false,
+  };
+  expect(validateNoCallingRoom(noCallingRoomCurrent)).toBe(true);
+  expect(validateNoCallingRoom({
+    ...noCallingRoomCurrent,
+    wideBringBack: true,
+  })).toBe(true);
 });

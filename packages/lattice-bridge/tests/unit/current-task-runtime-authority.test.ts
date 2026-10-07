@@ -137,6 +137,7 @@ function parkedAuthorityRows() {
           semanticAuthorityRequirements,
         ),
       semanticAuthorityRequirements,
+      stableRoutingDigest: new Uint8Array(32).fill(7),
       sealedAt: parkedAt,
     },
   };

@@ -59,6 +59,7 @@ const continuation = Object.freeze({
   requiredAuthorityDigest: protectedTaskSemanticAuthorityRequirementsDigest(
     semanticAuthorityRequirements,
   ),
+  stableRoutingDigest: digest(6),
   semanticAuthorityRequirements,
 });
 const transcriptDigest = new Uint8Array(createHash("sha256").update(
@@ -168,6 +169,7 @@ function input(
       ...continuation,
       requestDigest: continuation.requestDigest.slice(),
       requiredAuthorityDigest: continuation.requiredAuthorityDigest.slice(),
+      stableRoutingDigest: continuation.stableRoutingDigest.slice(),
       semanticAuthorityRequirements,
     },
     ...overrides,
@@ -481,6 +483,8 @@ describe("protected Task additional-authority segment start CAS", () => {
       { options: { segment: segmentReceipt({ expectedCheckpointCount: 0 }) } },
       { options: { segment: segmentReceipt({ transcriptAssociationDigest: digest(8) }) } },
       { options: { continuation: continuationReceipt({ operationId: "tool-call:other" }) } },
+      { options: { continuation: continuationReceipt({ stableRoutingDigest: null }) } },
+      { options: { continuation: continuationReceipt({ stableRoutingDigest: digest(8) }) } },
       { value: input({ checkpointManifest: {
         ...checkpointManifest,
         checkpointOrderedDigest: digest(9),
@@ -560,6 +564,7 @@ describe("protected Task additional-authority segment start CAS", () => {
       transaction: async <T>(operation: (tx: never) => Promise<T>) => {
         value.cryptoRequiredNamespaceFingerprint.fill(0xff);
         value.continuation.requestDigest.fill(0xff);
+        value.continuation.stableRoutingDigest.fill(0xff);
         value.checkpointManifest.checkpointOrderedDigest?.fill(0xff);
         return operation(base.tx as never);
       },

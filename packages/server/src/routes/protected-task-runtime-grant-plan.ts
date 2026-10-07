@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 import {
   authorizationRevision,
@@ -18,16 +18,20 @@ import {
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import {
   copyTaskScopeMemoryBinding,
+  type ParkedTaskRuntimeCurrentRoutingFacts,
   type TaskScopeMemoryBinding,
 } from "@nautilo/lattice-bridge/server";
 import type {
   AcceptProtectedTaskRunOutputBindingInput,
   AcceptProtectedTaskRunOutputBindingResult,
   ProtectedTaskRunOutputDestination,
+  ParkedProtectedTaskAdditionalAuthority,
+  ProtectedTaskRunOutputBinding,
 } from "@nautilo/db";
 import {
   createBackgroundAuthorizationTaskRuntimeRequestV3,
   taskRuntimeStableIdempotencyKey,
+  taskRuntimeStableRoutingDigest,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
   type TaskRuntimeGrantClaimPlan,
   type TaskRuntimeGrantStableIdentity,
@@ -39,6 +43,60 @@ import type {
 } from "./current-protected-task-memory-authority";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/** Compare locked routing with durable park evidence, independently of old grants. */
+export function createParkedTaskRuntimeRoutingValidator(input: Readonly<{
+  expected: ParkedProtectedTaskAdditionalAuthority;
+  output: ProtectedTaskRunOutputBinding;
+  /** Current canonical Wide envelope's private write target, not content custody. */
+  widePrivateNamespaceId: string | null;
+}>): (facts: ParkedTaskRuntimeCurrentRoutingFacts) => boolean {
+  const { expected, output } = input;
+  const widePrivateNamespaceId = input.widePrivateNamespaceId;
+  const taskRunId = expected.occurrence.run.id;
+  const storedDigest = expected.proof.continuation.stableRoutingDigest;
+  if (!(storedDigest instanceof Uint8Array) || storedDigest.length !== 32
+    || (widePrivateNamespaceId !== null && !UUID.test(widePrivateNamespaceId))
+    || output.taskRunId !== taskRunId
+    || output.bindingId !== `task-run-output:${taskRunId}`
+    || output.resultOperationId !== `task-run-result:${taskRunId}`
+    || output.resultObjectId !== expected.priorJob.reference.resultObjectId
+    || output.destinationRoomId !== expected.occurrence.task.callingRoomId
+    || (output.destinationRoomId === null
+      ? output.deliveryMode !== "none" || output.destinationNamespaceId !== null
+      : output.deliveryMode === "none"
+        || output.destinationNamespaceId === null
+        || !UUID.test(output.destinationNamespaceId))) {
+    throw new TypeError("Parked Task original routing evidence is unavailable");
+  }
+  const digest = storedDigest.slice();
+  const outputRoomId = output.destinationRoomId;
+  const outputNamespaceId = output.destinationNamespaceId;
+  return facts => {
+    if (facts.taskRunId !== taskRunId
+      || (facts.memoryMode === "wide" && widePrivateNamespaceId === null)) return false;
+    const widePrimaryWriteNamespaceId = facts.memoryMode === "wide"
+      ? facts.wideBringBack && outputNamespaceId !== null
+        ? outputNamespaceId
+        : widePrivateNamespaceId
+      : null;
+    const current = taskRuntimeStableRoutingDigest({
+      ...facts,
+      startedAt: facts.startedAt.getTime(),
+      requiredNamespaceFingerprint: Buffer.from(
+        facts.requiredNamespaceFingerprint,
+      ).toString("base64url"),
+      outputRoomId,
+      outputNamespaceId,
+      widePrimaryWriteNamespaceId,
+    });
+    try {
+      return timingSafeEqual(digest, current);
+    } finally {
+      current.fill(0);
+    }
+  };
+}
 
 export type ProtectedTaskRuntimeNamespaceAuthorityFact = Readonly<{
   namespaceId: string;
@@ -86,6 +144,8 @@ export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
     predispatch: ProtectedTaskPredispatchPlan;
     policy: ProtectedTaskRuntimeMemoryPolicy;
     reference: TaskRuntimeGrantClaimPlan["reference"];
+    /** Server-derived original routing commitment for a later atomic park. */
+    stableRoutingDigest: Uint8Array;
     scopeMemory?: TaskScopeMemoryBinding;
     /** Exact committed preimage; retained only for fixed Scope execution admission. */
     scopeWorkIdentity?: string;
@@ -453,6 +513,20 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       || output.binding.acceptedPolicyRevision !== authority.policyRevision) {
       throw new TypeError("Protected Task output binding is unavailable");
     }
+    let widePrimaryWriteNamespaceId: string | null = null;
+    if (prepared.memory.mode === "wide") {
+      const envelope = prepared.memory.envelope;
+      const primary = envelope.memoryMode === "scope"
+        ? undefined
+        : envelope.writableNamespaces[0];
+      if (primary === undefined || !UUID.test(primary)
+        || !inventory.namespaceIds.includes(primary)) {
+        throw new TypeError(
+          "Protected Task wide Memory write target is unavailable",
+        );
+      }
+      widePrimaryWriteNamespaceId = primary;
+    }
     const stableIdentity: TaskRuntimeGrantStableIdentity = Object.freeze({
       taskId: occurrence.task.id,
       taskRunId: occurrence.run.id,
@@ -546,6 +620,10 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       predispatch: prepared,
       policy: Object.freeze({ ...resolvedAuthority.policy }),
       reference,
+      stableRoutingDigest: taskRuntimeStableRoutingDigest({
+        ...stableIdentity,
+        widePrimaryWriteNamespaceId,
+      }),
       ...(scopeMemory === undefined ? {} : { scopeMemory, scopeWorkIdentity: workIdentity }),
     }));
     const executionKeys = execution !== null && typeof execution === "object"

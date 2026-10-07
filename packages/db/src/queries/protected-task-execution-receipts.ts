@@ -95,6 +95,7 @@ export type SealProtectedTaskContinuationReceiptInput =
       kind: "checkpoint_safe_v1";
       reason: "manual_pause" | "time_limit" | "grant_refresh";
       effectDisposition: "none_v1";
+      stableRoutingDigest?: never;
     }>)
   | (ContinuationIdentity & Readonly<{
       kind: "pre_effect_interrupt_v1";
@@ -106,10 +107,12 @@ export type SealProtectedTaskContinuationReceiptInput =
     }> & (
       | Readonly<{
           reason: "grant_refresh";
+          stableRoutingDigest?: never;
           semanticAuthorityRequirements?: never;
         }>
       | Readonly<{
           reason: "additional_authority";
+          stableRoutingDigest: Uint8Array;
           semanticAuthorityRequirements:
             ProtectedTaskSemanticAuthorityRequirements;
         }>
@@ -264,6 +267,7 @@ export function protectedTaskAdditionalAuthorityContinuationFingerprint(
     | "operationId"
     | "requestDigest"
     | "requiredAuthorityDigest"
+    | "stableRoutingDigest"
   >,
 ): string {
   if (!CANONICAL_UUID.test(input.taskRunId)
@@ -277,13 +281,14 @@ export function protectedTaskAdditionalAuthorityContinuationFingerprint(
     || typeof input.operationId !== "string"
     || !OPAQUE_COORDINATE.test(input.operationId)
     || !validDigest(input.requestDigest)
-    || !validDigest(input.requiredAuthorityDigest)) {
+    || !validDigest(input.requiredAuthorityDigest)
+    || !validDigest(input.stableRoutingDigest)) {
     throw new TypeError(
       "Protected Task additional-authority continuation is malformed",
     );
   }
   return createHash("sha256").update(JSON.stringify([
-    "protected-task-additional-authority-continuation:v1",
+    "protected-task-additional-authority-continuation:v2",
     input.taskRunId,
     input.executionSegment,
     input.jobId,
@@ -294,6 +299,7 @@ export function protectedTaskAdditionalAuthorityContinuationFingerprint(
     input.operationId,
     Buffer.from(input.requestDigest).toString("base64url"),
     Buffer.from(input.requiredAuthorityDigest).toString("base64url"),
+    Buffer.from(input.stableRoutingDigest).toString("base64url"),
   ])).digest("base64url");
 }
 
@@ -401,6 +407,7 @@ function snapshotContinuationInput(
       && (input.reason === "manual_pause"
         || input.reason === "time_limit"
         || input.reason === "grant_refresh")
+      && !Object.hasOwn(input, "stableRoutingDigest")
       && !Object.hasOwn(input, "semanticAuthorityRequirements")
     : input.kind === "pre_effect_interrupt_v1"
       && input.effectDisposition === "not_started_v1"
@@ -411,9 +418,11 @@ function snapshotContinuationInput(
       && validDigest(input.requestDigest)
       && validDigest(input.requiredAuthorityDigest)
       && (input.reason === "additional_authority"
-        ? semanticAuthorityRequirements !== undefined
+        ? validDigest(input.stableRoutingDigest)
+          && semanticAuthorityRequirements !== undefined
           && semanticDigestMatches
-        : !Object.hasOwn(input, "semanticAuthorityRequirements"));
+        : !Object.hasOwn(input, "stableRoutingDigest")
+          && !Object.hasOwn(input, "semanticAuthorityRequirements"));
   if (!baseValid || !shapeValid) {
     throw new TypeError("Protected Task continuation receipt is malformed");
   }
@@ -445,6 +454,7 @@ function snapshotContinuationInput(
     ? Object.freeze({
         ...interrupt,
         reason: input.reason,
+        stableRoutingDigest: input.stableRoutingDigest.slice(),
         semanticAuthorityRequirements: semanticAuthorityRequirements!,
       })
     : Object.freeze({ ...interrupt, reason: input.reason });
@@ -669,6 +679,10 @@ function continuationValues(
       ? input.requestDigest.slice() : null,
     requiredAuthorityDigest: input.kind === "pre_effect_interrupt_v1"
       ? input.requiredAuthorityDigest.slice() : null,
+    stableRoutingDigest: input.kind === "pre_effect_interrupt_v1"
+        && input.reason === "additional_authority"
+      ? input.stableRoutingDigest.slice()
+      : null,
     semanticAuthorityRequirements: input.kind === "pre_effect_interrupt_v1"
         && input.reason === "additional_authority"
       ? canonicalProtectedTaskSemanticAuthorityRequirements(
@@ -711,6 +725,10 @@ function exactContinuation(
     && sameBytes(
       receipt.requiredAuthorityDigest,
       expected.requiredAuthorityDigest,
+    )
+    && sameBytes(
+      receipt.stableRoutingDigest,
+      expected.stableRoutingDigest,
     )
     && exactSemanticAuthorityRequirements(
       receipt.semanticAuthorityRequirements,
@@ -840,6 +858,7 @@ function cloneContinuation(
     ...receipt,
     requestDigest: receipt.requestDigest?.slice() ?? null,
     requiredAuthorityDigest: receipt.requiredAuthorityDigest?.slice() ?? null,
+    stableRoutingDigest: receipt.stableRoutingDigest?.slice() ?? null,
     semanticAuthorityRequirements:
       receipt.semanticAuthorityRequirements === null
         ? null
@@ -855,9 +874,14 @@ function storedContinuationManifestIsValid(
 ): boolean {
   if (receipt.kind !== "pre_effect_interrupt_v1"
     || receipt.reason !== "additional_authority") {
-    return receipt.semanticAuthorityRequirements === null;
+    return receipt.stableRoutingDigest === null
+      && receipt.semanticAuthorityRequirements === null;
   }
-  if (receipt.semanticAuthorityRequirements === null) return true;
+  if (receipt.semanticAuthorityRequirements === null) {
+    return receipt.stableRoutingDigest === null;
+  }
+  if (receipt.stableRoutingDigest !== null
+    && !validDigest(receipt.stableRoutingDigest)) return false;
   if (!validDigest(receipt.requiredAuthorityDigest)) return false;
   try {
     const digest = protectedTaskSemanticAuthorityRequirementsDigest(

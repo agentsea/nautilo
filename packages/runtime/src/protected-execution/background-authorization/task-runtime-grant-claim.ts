@@ -189,22 +189,14 @@ export type TaskRuntimeGrantStableIdentity = Readonly<{
   requiredNamespaceFingerprint: string;
 }>;
 
-/** Durable commitment to immutable Task/run/routing facts, excluding inventory. */
-export function taskRuntimeStableIdempotencyKey(
-  identity: TaskRuntimeGrantStableIdentity,
-): string {
-  const fingerprint = identity.resumeContinuationFingerprint;
-  if (!Number.isSafeInteger(identity.executionSegment)
-    || identity.executionSegment < 1
-    || (identity.executionSegment === 1
-      ? fingerprint !== null
-      : typeof fingerprint !== "string"
-        || !/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u.test(fingerprint))) {
-    throw new TypeError("Task Runtime execution segment identity is invalid");
-  }
+/** Routing commitment retained independently of temporary grant records. */
+function taskRuntimeStableRoutingTuple(
+  identity: Omit<TaskRuntimeGrantStableIdentity,
+    "executionSegment" | "resumeContinuationFingerprint">,
+): readonly unknown[] {
   const canonicalTargetUserIds = [...identity.targetUserIds].sort();
   // Retain the exact initial-segment preimage for already durable requests.
-  const initial = [
+  return [
     identity.taskId,
     identity.taskRunId,
     identity.ownerId,
@@ -228,6 +220,37 @@ export function taskRuntimeStableIdempotencyKey(
     identity.contentAccessRevision,
     identity.requiredNamespaceFingerprint,
   ];
+}
+
+export function taskRuntimeStableRoutingDigest(
+  identity: Omit<TaskRuntimeGrantStableIdentity,
+    "executionSegment" | "resumeContinuationFingerprint"> & Readonly<{
+      widePrimaryWriteNamespaceId: string | null;
+    }>,
+): Uint8Array {
+  return new Uint8Array(createHash("sha256")
+    .update(JSON.stringify([
+      "task-runtime-stable-routing:v1",
+      taskRuntimeStableRoutingTuple(identity),
+      identity.widePrimaryWriteNamespaceId,
+    ]))
+    .digest());
+}
+
+/** Durable commitment to immutable Task/run/routing facts, excluding inventory. */
+export function taskRuntimeStableIdempotencyKey(
+  identity: TaskRuntimeGrantStableIdentity,
+): string {
+  const fingerprint = identity.resumeContinuationFingerprint;
+  if (!Number.isSafeInteger(identity.executionSegment)
+    || identity.executionSegment < 1
+    || (identity.executionSegment === 1
+      ? fingerprint !== null
+      : typeof fingerprint !== "string"
+        || !/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u.test(fingerprint))) {
+    throw new TypeError("Task Runtime execution segment identity is invalid");
+  }
+  const initial = taskRuntimeStableRoutingTuple(identity);
   const digest = createHash("sha256")
     .update(JSON.stringify(identity.executionSegment === 1 ? initial : [
       "task-runtime-continuation:v1",

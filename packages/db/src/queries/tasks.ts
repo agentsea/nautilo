@@ -2361,7 +2361,7 @@ type WithoutContinuationIdentity<
 export type SealAndParkProtectedTaskRunContinuation = Readonly<
   Omit<WithoutContinuationIdentity<Extract<
     SealProtectedTaskContinuationReceiptInput,
-    { kind: "pre_effect_interrupt_v1" }
+    { kind: "pre_effect_interrupt_v1"; reason: "additional_authority" }
   >>, "reason"> & { reason: "additional_authority" }
 >;
 
@@ -2447,8 +2447,9 @@ export type ParkedProtectedTaskAdditionalAuthorityProof = Readonly<{
   segment: ProtectedTaskExecutionContinuationProof["segment"];
   continuation: Omit<
     ProtectedTaskExecutionContinuationProof["continuation"],
-    "semanticAuthorityRequirements"
+    "semanticAuthorityRequirements" | "stableRoutingDigest"
   > & Readonly<{
+    stableRoutingDigest: Uint8Array;
     semanticAuthorityRequirements: ProtectedTaskSemanticAuthorityRequirements;
   }>;
 }>;
@@ -2525,6 +2526,7 @@ export type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput =
         operationId: string;
         requestDigest: Uint8Array;
         requiredAuthorityDigest: Uint8Array;
+        stableRoutingDigest: Uint8Array;
         semanticAuthorityRequirements:
           ProtectedTaskSemanticAuthorityRequirements;
       }>;
@@ -3070,7 +3072,9 @@ export async function sealAndParkProtectedTaskRun(
     || continuation.kind !== "pre_effect_interrupt_v1"
     || continuation.reason !== "additional_authority"
     || !(continuation.requestDigest instanceof Uint8Array)
-    || !(continuation.requiredAuthorityDigest instanceof Uint8Array)) {
+    || !(continuation.requiredAuthorityDigest instanceof Uint8Array)
+    || !(continuation.stableRoutingDigest instanceof Uint8Array)
+    || continuation.stableRoutingDigest.length !== 32) {
     throw new TypeError("Protected Task seal-and-park continuation is malformed");
   }
   let semanticAuthorityRequirements: ProtectedTaskSemanticAuthorityRequirements;
@@ -3110,6 +3114,7 @@ export async function sealAndParkProtectedTaskRun(
     operationId: continuation.operationId,
     requestDigest: continuation.requestDigest.slice(),
     requiredAuthorityDigest: continuation.requiredAuthorityDigest.slice(),
+    stableRoutingDigest: continuation.stableRoutingDigest.slice(),
     semanticAuthorityRequirements,
   });
   const interrupt = parkReceiptValue.interrupts.find(candidate =>
@@ -3222,6 +3227,8 @@ function cloneProtectedTaskExecutionContinuationProof(
       requestDigest: proof.continuation.requestDigest?.slice() ?? null,
       requiredAuthorityDigest:
         proof.continuation.requiredAuthorityDigest?.slice() ?? null,
+      stableRoutingDigest:
+        proof.continuation.stableRoutingDigest?.slice() ?? null,
       semanticAuthorityRequirements:
         proof.continuation.semanticAuthorityRequirements === null
           ? null
@@ -3401,6 +3408,8 @@ export function parseParkedProtectedTaskAdditionalAuthority(input: Readonly<{
     || continuation.requestDigest.length !== 32
     || !(continuation.requiredAuthorityDigest instanceof Uint8Array)
     || continuation.requiredAuthorityDigest.length !== 32
+    || !(continuation.stableRoutingDigest instanceof Uint8Array)
+    || continuation.stableRoutingDigest.length !== 32
     || continuation.semanticAuthorityRequirements === null
     || !(continuation.sealedAt instanceof Date)
     || continuation.sealedAt.getTime() !== parkedAt.getTime()) return null;
@@ -3433,6 +3442,7 @@ export function parseParkedProtectedTaskAdditionalAuthority(input: Readonly<{
       segment: genericProof.segment,
       continuation: Object.freeze({
         ...genericProof.continuation,
+        stableRoutingDigest: continuation.stableRoutingDigest.slice(),
         semanticAuthorityRequirements,
       }),
     });
@@ -3556,6 +3566,10 @@ export function sameParkedProtectedTaskAdditionalAuthority(
     && sameBytes(
       leftContinuation.requiredAuthorityDigest,
       rightContinuation.requiredAuthorityDigest,
+    )
+    && sameBytes(
+      leftContinuation.stableRoutingDigest,
+      rightContinuation.stableRoutingDigest,
     )
     && leftContinuation.semanticAuthorityRequirements !== null
     && rightContinuation.semanticAuthorityRequirements !== null
@@ -4675,6 +4689,8 @@ export async function startParkedProtectedTaskRunAdditionalAuthoritySegment(
     || continuationInput.requestDigest.length !== 32
     || !(continuationInput.requiredAuthorityDigest instanceof Uint8Array)
     || continuationInput.requiredAuthorityDigest.length !== 32
+    || !(continuationInput.stableRoutingDigest instanceof Uint8Array)
+    || continuationInput.stableRoutingDigest.length !== 32
     || semanticAuthorityRequirements === null
     || !semanticDigestMatches
     || !isRecord(checkpointInput)
@@ -4727,6 +4743,7 @@ export async function startParkedProtectedTaskRunAdditionalAuthoritySegment(
     operationId: continuationInput.operationId,
     requestDigest: continuationInput.requestDigest.slice(),
     requiredAuthorityDigest: continuationInput.requiredAuthorityDigest.slice(),
+    stableRoutingDigest: continuationInput.stableRoutingDigest.slice(),
     semanticAuthorityRequirements,
   });
   const parkedAt = new Date(input.parkedAt.getTime());
@@ -4826,6 +4843,10 @@ export async function startParkedProtectedTaskRunAdditionalAuthoritySegment(
       || !sameBytes(
         proof.continuation.requiredAuthorityDigest,
         continuation.requiredAuthorityDigest,
+      )
+      || !sameBytes(
+        proof.continuation.stableRoutingDigest,
+        continuation.stableRoutingDigest,
       )
       || proof.continuation.semanticAuthorityRequirements === null
       || !sameProtectedTaskSemanticAuthorityRequirements(

@@ -173,6 +173,7 @@ function proof(
       requiredAuthorityDigest: protectedTaskSemanticAuthorityRequirementsDigest(
         semanticAuthorityRequirements,
       ),
+      stableRoutingDigest: digest(7),
       semanticAuthorityRequirements,
       sealedAt: new Date(parkedAt),
       ...overrides.continuation,
@@ -272,6 +273,7 @@ describe("parked protected Task additional-authority discovery", () => {
     taskRow.cryptoRequiredNamespaceFingerprint?.fill(0);
     runRow.startedAt.setTime(0);
     (proofRow.segment.checkpointDigest as Uint8Array).fill(0);
+    (proofRow.continuation.stableRoutingDigest as Uint8Array).fill(0);
     proofRow.segment.sealedAt.setTime(0);
     mutableManifest[0]!.operations[0] = "encrypt";
     expect(candidate?.occurrence.task.cryptoRequiredNamespaceFingerprint)
@@ -281,6 +283,8 @@ describe("parked protected Task additional-authority discovery", () => {
     expect(candidate?.proof.segment.sealedAt).toEqual(parkedAt);
     expect(candidate?.proof.continuation.semanticAuthorityRequirements)
       .toEqual(semanticAuthorityRequirements);
+    expect(candidate?.proof.continuation.stableRoutingDigest)
+      .toEqual(digest(7));
     expect(sameParkedProtectedTaskAdditionalAuthority(candidate!, candidate!))
       .toBe(true);
   });
@@ -327,6 +331,12 @@ describe("parked protected Task additional-authority discovery", () => {
       parse({ proof: proof({ continuation: { sealedAt: startedAt } }) }),
       parse({ proof: proof({ continuation: {
         semanticAuthorityRequirements: null,
+      } }) }),
+      parse({ proof: proof({ continuation: {
+        stableRoutingDigest: null,
+      } }) }),
+      parse({ proof: proof({ continuation: {
+        stableRoutingDigest: new Uint8Array(31),
       } }) }),
     ];
     for (const candidate of invalid) expect(candidate).toBeNull();

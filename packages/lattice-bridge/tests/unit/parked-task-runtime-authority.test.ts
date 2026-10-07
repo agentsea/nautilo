@@ -98,6 +98,7 @@ function proof(): ProtectedTaskExecutionContinuationProof {
       requiredAuthorityDigest:
         protectedTaskSemanticAuthorityRequirementsDigest(requirements),
       semanticAuthorityRequirements: requirements,
+      stableRoutingDigest: digest(7),
       sealedAt: new Date(PARKED),
     },
   };
@@ -297,6 +298,24 @@ describe("parked Task Runtime authority", () => {
           requiredAuthorityDigest:
             protectedTaskSemanticAuthorityRequirementsDigest(substituted),
           semanticAuthorityRequirements: substituted,
+        },
+      },
+    };
+    expect(await lockCurrentParkedTaskAdditionalAuthority({
+      transaction: transactionRows(value, []) as never,
+      expected: descriptor(),
+    })).toBeNull();
+  });
+
+  test("rejects a stable routing digest substituted after discovery", async () => {
+    const original = rows();
+    const value = {
+      ...original,
+      proof: {
+        ...original.proof,
+        continuation: {
+          ...original.proof.continuation,
+          stableRoutingDigest: digest(8),
         },
       },
     };
