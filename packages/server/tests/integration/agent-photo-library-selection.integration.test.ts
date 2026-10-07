@@ -72,7 +72,6 @@ afterAll(async () => {
 });
 
 async function makeFixture(initialAvatar: { kind: "preset"; id: string } | null = { kind: "preset", id: "shell" }): Promise<Fixture> {
-  const nonce = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   const [owner] = await db
     .insert(users)
     .values({
