@@ -35,6 +35,7 @@ import {
 import {
   matchesCurrentTaskRuntimeAuthority,
   withCurrentAcceptedParkedTaskRuntimeAuthority,
+  withCurrentAcceptedTaskRuntimeClaimAuthority,
   withCurrentAcceptedTaskRuntimeAuthority,
   withCurrentTaskRuntimeAuthority,
   type AcceptedTaskRuntimeAuthorizationV3,
@@ -850,6 +851,10 @@ describe("current Task Runtime authority", () => {
       subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
       accepted: value.accepted,
       now: () => NOW + 1,
+      validateCurrentProduct: async () => {
+        events.push("lifecycle");
+        return true;
+      },
       use: async (authority: CurrentTaskRuntimeAuthority) => {
         useCalled = true;
         expect(authority.device.securityRevision).toBe(6);
@@ -863,8 +868,81 @@ describe("current Task Runtime authority", () => {
     expect(result).toBe("accepted");
     expect(useCalled).toBe(true);
     expect(events.slice(0, 2)).toEqual(["policy lock", "policy"]);
+    expect(events.indexOf("lifecycle")).toBeLessThan(events.indexOf("product"));
     expect(events.filter((event) => event === "product").length)
       .toBeGreaterThan(0);
+  });
+
+  test("drains and revokes escaped restricted claim work before commit", async () => {
+    const value = await fixture();
+    const events: string[] = [];
+    const { runner } = productAuthority(value, events);
+    const baseRestricted = restrictedAuthority(value);
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const query: PostgresJsBridgeExecutor["query"] = async (
+      statement,
+      parameters,
+    ) => {
+      if (statement === "SELECT claim_cas") {
+        started.resolve();
+        await release.promise;
+        return [];
+      }
+      return baseRestricted.query(statement, parameters);
+    };
+    const restrictedExecutor: PostgresJsBridgeExecutor = { query };
+    const restricted: PostgresJsBridgeConnection = {
+      query,
+      transaction: async use => use(restrictedExecutor),
+      transactionOnce: async use => use(restrictedExecutor),
+    };
+    let retained: PostgresJsBridgeConnection | null = null;
+    let settled = false;
+    let closeChecks = 0;
+    const operation = withCurrentAcceptedTaskRuntimeClaimAuthority({
+      runner: runner as never,
+      restricted,
+      crypto: value.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+      accepted: value.accepted,
+      now: () => NOW + 1,
+      validateCurrentProduct: async () => true,
+      validateBeforeCommit: () => { closeChecks++; },
+      use: async (_authority, _product, currentRestricted) => {
+        retained = currentRestricted;
+        void currentRestricted.query("SELECT claim_cas");
+        return "unsafe-success";
+      },
+    }).finally(() => { settled = true; });
+    await started.promise;
+    expect(settled).toBe(false);
+    release.resolve();
+    expect(await operation.catch((error: unknown) => error))
+      .toBeInstanceOf(AggregateError);
+    expect(closeChecks).toBe(0);
+    expect(() => retained?.query("SELECT claim_cas"))
+      .toThrow("Parked Task Runtime authority is not active");
+
+    const expiredAtClose = new Error("claim lease expired before commit");
+    const expired = await withCurrentAcceptedTaskRuntimeClaimAuthority({
+      runner: runner as never,
+      restricted: baseRestricted,
+      crypto: value.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+      accepted: value.accepted,
+      now: () => NOW + 1,
+      validateCurrentProduct: async () => true,
+      validateBeforeCommit: () => {
+        closeChecks++;
+        throw expiredAtClose;
+      },
+      use: async () => "claimed",
+    }).catch((error: unknown) => error);
+    expect(expired).toBe(expiredAtClose);
+    expect(closeChecks).toBe(1);
   });
 
   test("holds the exact parked proof before Namespace and restricted authority", async () => {
@@ -1129,6 +1207,7 @@ describe("current Task Runtime authority", () => {
       subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
       accepted: value.accepted,
       now: () => NOW + 1,
+      validateCurrentProduct: async () => true,
       use: async (authority: CurrentTaskRuntimeAuthority) => {
         expect(authority.device.securityRevision).toBe(6);
         return "accepted";
@@ -1175,6 +1254,7 @@ describe("current Task Runtime authority", () => {
         subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
         accepted,
         now: () => NOW + 1,
+        validateCurrentProduct: async () => true,
         use: async () => {
           useCalled = true;
           return "unsafe";

@@ -351,6 +351,7 @@ async function fixture() {
     | null = null;
   let recipientCasArrivals = 0;
   let authorityLocksHeld = false;
+  let beforeClaimAuthorityUse: (() => void) | null = null;
   let clock = NOW + 1;
   let substituteGet: ((record: BackgroundAuthorizationRecord) =>
     BackgroundAuthorizationRecord) | null = null;
@@ -371,7 +372,9 @@ async function fixture() {
         : substituteGet(record);
     },
     compareAndSwap: async (input): Promise<BackgroundAuthorizationCasResult> => {
-      if (input.next.snapshot.state === "claimed") claimCasCount += 1;
+      if (input.next.snapshot.state === "claimed") {
+        throw new Error("claim CAS escaped its held repository");
+      }
       if (input.next.snapshot.state === "awaiting_recipient"
         && input.next.snapshot.lastRetryReason === "attempt_expired") {
         recipientRotationCasCount += 1;
@@ -394,6 +397,14 @@ async function fixture() {
     listEligible: (input) => repository.listEligible(input),
     listAwaitingDevicePage: (input) => repository.listAwaitingDevicePage(input),
     pruneTerminal: (input) => repository.pruneTerminal(input),
+  };
+  const heldClaimRepository = {
+    compareAndSwap: async (input: Parameters<
+      BackgroundAuthorizationTaskRuntimeReplacementRepository["compareAndSwap"]
+    >[0]): Promise<BackgroundAuthorizationCasResult> => {
+      if (input.next.snapshot.state === "claimed") claimCasCount += 1;
+      return repository.compareAndSwap(input);
+    },
   };
   const executor: JobExecutor = async function* () { yield* []; };
   const builtRecipientKeys: string[] = [];
@@ -528,6 +539,22 @@ async function fixture() {
       plan,
       now: () => clock,
       claimId: () => "task-runtime-claim",
+      withCurrentClaimAuthority: async ({ now, use }) => {
+        if (currentAuthority === null) return null;
+        const borrowed = copyAuthority(currentAuthority);
+        beforeClaimAuthorityUse?.();
+        const claimedAt = now();
+        authorityLocksHeld = true;
+        try {
+          return await use({
+            foreground: borrowed,
+            namespaceRequirements: currentNamespaceRequirements,
+          }, heldClaimRepository, claimedAt, NOW + 60_000);
+        } finally {
+          destroyAuthority(borrowed);
+          authorityLocksHeld = false;
+        }
+      },
       withCurrentAuthority: async ({ occurrence: currentOccurrence, use }) => {
         if (currentAuthority === null) return null;
         authorityOccurrences.push(currentOccurrence);
@@ -607,6 +634,9 @@ async function fixture() {
     authorityOccurrences,
     setStartResult: (value: "started" | "stale") => { startResult = value; },
     setClock: (value: number) => { clock = value; },
+    setBeforeClaimAuthorityUse: (value: (() => void) | null) => {
+      beforeClaimAuthorityUse = value;
+    },
     setProvenSourceRoomId: (value: string) => { provenSourceRoomId = value; },
     enableRecipientCasBarrier: () => {
       recipientCasBarrier = Promise.withResolvers<void>();
@@ -1445,6 +1475,7 @@ describe("Task Runtime grant claim", () => {
     expect(JSON.stringify(prepared)).not.toContain(SENTINEL);
 
     await acceptGrant(value);
+    value.setBeforeClaimAuthorityUse(() => value.setClock(NOW + 10));
     const admittedOccurrence = occurrence();
     const result = await value.coordinator.prepareOrClaimExact(admittedOccurrence);
     expect(result.status).toBe("claimed");
@@ -1452,6 +1483,7 @@ describe("Task Runtime grant claim", () => {
     expect(value.claimCasCount()).toBe(1);
     const durable = await value.repository.get(REQUEST);
     expect(durable?.snapshot.state).toBe("claimed");
+    expect(durable?.snapshot.updatedAt).toBe(NOW + 10);
     expect(durable?.snapshot.claimExpiresAt).toBe(NOW + 60_000);
     expect(JSON.stringify(durable)).not.toContain(SENTINEL);
 
@@ -1512,8 +1544,7 @@ describe("Task Runtime grant claim", () => {
     }
     expect(value.openedOccurrences).toHaveLength(1);
     expect(value.publishedOccurrences).toHaveLength(1);
-    expect(value.authorityOccurrences.some(item =>
-      item.run.status === "awaiting" && item.run.jobId === null)).toBe(true);
+    expect(value.authorityOccurrences).toHaveLength(1);
     expect(value.authorityOccurrences.some(item =>
       item.run.status === "running"
       && item.run.jobId === "protected-job-1")).toBe(true);
@@ -1525,7 +1556,7 @@ describe("Task Runtime grant claim", () => {
     expect(completed?.snapshot.state).toBe("completed");
     expect(completed?.snapshot.claimId).toBeNull();
     expect(completed?.snapshot.claimExpiresAt).toBeNull();
-    expect(completed?.finishedAt).toBe(NOW + 3);
+    expect(completed?.finishedAt).toBe(NOW + 10);
     expect(JSON.stringify(completed)).not.toContain(SENTINEL);
   });
 
@@ -1779,11 +1810,18 @@ describe("Task Runtime grant claim", () => {
       plan: value.plan,
       now: () => NOW + 2,
       claimId: () => "stale-task-runtime-claim",
+      withCurrentClaimAuthority: async ({ now, use }) => {
+        const claimedAt = now();
+        return use({
+          foreground: {
+            ...current,
+            recipientRuntimeGeneration: current.recipientRuntimeGeneration + 1,
+          },
+          namespaceRequirements: initialRecord().authoritySet.namespaceRequirements,
+        }, value.trackedRepository, claimedAt, NOW + 60_000);
+      },
       withCurrentAuthority: async ({ use }) => use({
-        foreground: {
-          ...current,
-          recipientRuntimeGeneration: current.recipientRuntimeGeneration + 1,
-        },
+        foreground: current,
         namespaceRequirements: initialRecord().authoritySet.namespaceRequirements,
       }),
     });

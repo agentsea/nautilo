@@ -692,6 +692,82 @@ describe("protected Task native fixed Memory segment", () => {
     expect(scenario.calls).toEqual([]);
   });
 
+  test("constructs the transcript publisher under the signer owner and cleans up construction failure", async () => {
+    const value = await fixture();
+    const calls: string[] = [];
+    const terminal: unknown[] = [];
+    let signerOwnerOpen = false;
+    const base = overrides(calls);
+    if (base === undefined) throw new TypeError("Test overrides are unavailable");
+    const baseWithSigner = base.withSigner!;
+    const prepare = createProtectedTaskNativeFixedMemorySegment({
+      ...compositionInput(value.crypto, runner()),
+      createTranscriptPublisher: async publisher => {
+        calls.push("publisher-build");
+        expect(signerOwnerOpen).toBe(true);
+        expect(publisher.domains).toBe(value.domains);
+        expect(publisher.signer).toMatchObject({
+          agentAuthorizationRevision: 5,
+          runtime: { agentId: AGENT },
+          signerPublication: { agentId: AGENT },
+        });
+        expect(typeof publisher.resolveHistoricalSignerPublicationManager)
+          .toBe("function");
+        throw new Error("publisher construction failed");
+      },
+    }, {
+      ...base,
+      withSigner: async input => {
+        signerOwnerOpen = true;
+        try {
+          return await baseWithSigner(input);
+        } finally {
+          signerOwnerOpen = false;
+        }
+      },
+    });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(withTaskRuntimeExecutionEvidenceV1({
+      evidence: value.evidenceInput,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      execute: async evidence => {
+        const prepared = await prepare({
+          occurrence: value.occurrence,
+          predispatch: value.predispatch,
+          policy: value.policy,
+          reference: value.reference,
+          stableRoutingDigest: value.stableRoutingDigest,
+        });
+        const transient = await prepared.openTransientInput({
+          occurrence: value.runningOccurrence,
+          record: value.record,
+          domains: value.domains,
+          evidence,
+          signal: new AbortController().signal,
+        });
+        await consume(prepared.executor(
+          executorInput(value.occurrence, transient, terminal, calls),
+          JOB,
+          `task:${TASK}`,
+          new AbortController().signal,
+        ));
+      },
+    })).rejects.toThrow("publisher construction failed");
+
+    expect(signerOwnerOpen).toBe(false);
+    expect(terminal).toEqual([]);
+    expect(calls).toEqual([
+      "definition-open",
+      "signer-open",
+      "publisher-build",
+      "signer-close",
+      "definition-close",
+      "request-destroy",
+    ]);
+  });
+
   for (const fails of [false, true]) {
     test(`drains escaped transcript writes before owner close (failure=${fails})`, async () => {
       const value = await fixture();

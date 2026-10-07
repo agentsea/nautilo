@@ -83,6 +83,22 @@ type CurrentTaskRuntimeAuthorityPort = <Value>(input: Readonly<{
   ): Value | Promise<Value>;
 }>) => Promise<Value | null>;
 
+type CurrentTaskRuntimeClaimAuthorityPort = <Value>(input: Readonly<{
+  occurrence: ProtectedTaskOccurrence;
+  record: BackgroundAuthorizationTaskRuntimeRecordV3;
+  request: TaskRuntimeBackgroundAuthorizationRequestV1;
+  now(): number;
+  use(
+    current: HeldTaskRuntimeAuthority,
+    repository: Pick<
+      BackgroundAuthorizationTaskRuntimeReplacementRepository,
+      "compareAndSwap"
+    >,
+    claimedAt: number,
+    claimExpiresAt: number,
+  ): Value | Promise<Value>;
+}>) => Promise<Value | null>;
+
 export type TaskRuntimeRecipientDeviceBinding = Readonly<{
   userId: string;
   humanActorId: string;
@@ -324,6 +340,7 @@ export interface TaskRuntimeGrantClaimDependencies {
   plan(
     occurrence: ProtectedTaskOccurrence,
   ): Promise<TaskRuntimeGrantClaimPlan> | TaskRuntimeGrantClaimPlan;
+  withCurrentClaimAuthority: CurrentTaskRuntimeClaimAuthorityPort;
   withCurrentAuthority: CurrentTaskRuntimeAuthorityPort;
   now?: () => number;
   claimId?: () => string;
@@ -1851,28 +1868,29 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
 
     const request = requestFromRecord(current);
     if (request === null) return Object.freeze({ status: "inactive" as const });
-    const now = this.#now();
-    const claimExpiresAt = Math.min(
-      current.snapshot.recipient.expiresAt,
-      current.acceptedMaterial.authorizationExpiresAt,
-      now + BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
-    );
-    if (
-      now >= current.acceptedMaterial.authorizationExpiresAt
-      || claimExpiresAt <= now
-    ) {
-      destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
-      return Object.freeze({ status: "inactive" as const });
-    }
+    const recipient = current.snapshot.recipient;
+    const acceptedMaterial = current.acceptedMaterial;
     const claimId = this.#claimId();
     try {
-      const claimed = await this.dependencies.withCurrentAuthority({
+      const claimed = await this.dependencies.withCurrentClaimAuthority({
         occurrence,
         record: current,
         request,
-        use: async (authority) => {
+        now: this.#now,
+        use: async (authority, repository, claimedAt, claimExpiresAt) => {
+          const expectedClaimExpiresAt = Math.min(
+            request.deadlineAt,
+            recipient.expiresAt,
+            acceptedMaterial.authorizationExpiresAt,
+            claimedAt + BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
+          );
           if (
-            !currentMatchesRequest(authority.foreground, request)
+            !Number.isSafeInteger(claimedAt)
+            || claimedAt < 0
+            || claimedAt >= acceptedMaterial.authorizationExpiresAt
+            || claimExpiresAt !== expectedClaimExpiresAt
+            || claimExpiresAt <= claimedAt
+            || !currentMatchesRequest(authority.foreground, request)
             || !currentMatchesResult(result, current, authority)
           ) return null;
           const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
@@ -1880,11 +1898,11 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
             snapshot: claimBackgroundAuthorizationRequest(
               current.snapshot,
               claimId,
-              now,
+              claimedAt,
               claimExpiresAt,
             ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
           };
-          return this.dependencies.repository.compareAndSwap({
+          return repository.compareAndSwap({
             expectedRequestRevision: current.snapshot.requestRevision,
             next,
           });

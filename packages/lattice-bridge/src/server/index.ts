@@ -943,6 +943,7 @@ export {
   matchesCurrentTaskRuntimeAuthority,
   withCurrentTaskRuntimeAuthority,
   withCurrentAcceptedTaskRuntimeAuthority,
+  withCurrentAcceptedTaskRuntimeClaimAuthority,
   withCurrentAcceptedParkedTaskRuntimeAuthority,
   type AcceptedTaskRuntimeAuthorizationV3,
   type CurrentTaskRuntimeAuthority,

@@ -479,6 +479,23 @@ type CurrentAcceptedTaskRuntimeAuthorityInput = Readonly<{
 type CurrentAcceptedTaskRuntimeAuthorityUse<Value> =
   | Readonly<{
     kind: "current";
+    scopedRestricted: false;
+    validateCurrentProduct(
+      product: PostgresJsBridgeConnection,
+    ): boolean | Promise<boolean>;
+    use(
+      authority: CurrentTaskRuntimeAuthority,
+      product: PostgresJsBridgeConnection,
+      restricted: PostgresJsBridgeConnection,
+    ): Promise<Value>;
+  }>
+  | Readonly<{
+    kind: "current";
+    scopedRestricted: true;
+    validateCurrentProduct(
+      product: PostgresJsBridgeConnection,
+    ): boolean | Promise<boolean>;
+    validateBeforeCommit(): void | Promise<void>;
     use(
       authority: CurrentTaskRuntimeAuthority,
       product: PostgresJsBridgeConnection,
@@ -607,6 +624,8 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
         parkedTask = locked.task;
       }
       const product = inTransaction(executor);
+      if (authorityUse.kind === "current"
+        && !await authorityUse.validateCurrentProduct(product)) return null;
       return new PostgresNamespaceProductAuthority(product)
         .withCurrentReadableNamespaceSet({
           subjectUserId: input.subject.userId,
@@ -742,7 +761,15 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
               });
               let result: Value;
               if (authorityUse.kind === "current") {
-                result = await authorityUse.use(authority, product, restricted);
+                result = authorityUse.scopedRestricted
+                  ? await withParkedTaskRuntimeRestrictedAuthority(
+                    restricted,
+                    scoped => authorityUse.use(authority, product, scoped),
+                  )
+                  : await authorityUse.use(authority, product, restricted);
+                if (authorityUse.scopedRestricted) {
+                  await authorityUse.validateBeforeCommit();
+                }
               } else {
                 result = await withParkedTaskRuntimeRestrictedAuthority(
                   restricted,
@@ -781,6 +808,9 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
  */
 export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
   input: CurrentAcceptedTaskRuntimeAuthorityInput & Readonly<{
+    validateCurrentProduct(
+      product: PostgresJsBridgeConnection,
+    ): boolean | Promise<boolean>;
     use(
       authority: CurrentTaskRuntimeAuthority,
       product: PostgresJsBridgeConnection,
@@ -790,6 +820,39 @@ export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
 ): Promise<Value | null> {
   return withCurrentAcceptedTaskRuntimeAuthorityInternal(input, {
     kind: "current",
+    scopedRestricted: false,
+    validateCurrentProduct: input.validateCurrentProduct,
+    use: (authority, product, restricted) => input.use(
+      authority,
+      product,
+      restricted,
+    ),
+  });
+}
+
+/**
+ * Accepted current authority with a callback-scoped restricted connection.
+ * Started restricted operations drain before commit and the connection is
+ * revoked when the callback returns.
+ */
+export async function withCurrentAcceptedTaskRuntimeClaimAuthority<Value>(
+  input: CurrentAcceptedTaskRuntimeAuthorityInput & Readonly<{
+    validateCurrentProduct(
+      product: PostgresJsBridgeConnection,
+    ): boolean | Promise<boolean>;
+    use(
+      authority: CurrentTaskRuntimeAuthority,
+      product: PostgresJsBridgeConnection,
+      restricted: PostgresJsBridgeConnection,
+    ): Promise<Value>;
+    validateBeforeCommit(): void | Promise<void>;
+  }>,
+): Promise<Value | null> {
+  return withCurrentAcceptedTaskRuntimeAuthorityInternal(input, {
+    kind: "current",
+    scopedRestricted: true,
+    validateCurrentProduct: input.validateCurrentProduct,
+    validateBeforeCommit: input.validateBeforeCommit,
     use: (authority, product, restricted) => input.use(
       authority,
       product,

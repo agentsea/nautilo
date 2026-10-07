@@ -108,6 +108,11 @@ export type ProtectedTaskNativeFixedMemorySegmentInput = Readonly<{
     predispatch: ProtectedTaskPredispatchPlan;
     protectedMetadata: TaskPayloadV1["protectedMetadata"];
   }>): FixedExecutionContext | Promise<FixedExecutionContext>;
+  /**
+   * Construct one segment-local publisher while its Runtime signer and Domain
+   * keys are held. The callback and returned publisher must not retain those
+   * borrowed values beyond the callback-owned segment run.
+   */
   createTranscriptPublisher(input: Readonly<{
     occurrence: ProtectedTaskRunningOccurrence;
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
@@ -115,6 +120,11 @@ export type ProtectedTaskNativeFixedMemorySegmentInput = Readonly<{
     current: ProtectedTaskMemoryAuthorityInput;
     humanTurnId: string;
     assertCurrentTaskAuthority(): Promise<void>;
+    /** Borrowed only while the current Runtime signer owner remains open. */
+    domains: readonly DomainForegroundSecretEntry[];
+    signer: ProtectedTaskResultSignerAuthority;
+    resolveHistoricalSignerPublicationManager:
+      MemoryRepositoryInput["resolveHistoricalSignerPublicationManager"];
   }>): ProtectedTaskTranscriptMessagePublisher
     | Promise<ProtectedTaskTranscriptMessagePublisher>;
   now?: () => number;
@@ -791,33 +801,36 @@ export function createProtectedTaskNativeFixedMemorySegment(
                   }),
                 );
                 const humanTurnId = runningOccurrence.run.id;
-                const publish = await input.createTranscriptPublisher({
-                  occurrence: runningOccurrence,
-                  record: grant.record,
-                  request,
-                  current,
-                  humanTurnId,
-                  assertCurrentTaskAuthority,
-                });
-                const transcriptPort = dependencies.createTranscriptPort({
-                  identity: {
-                    taskId: runningOccurrence.task.id,
-                    taskRunId: runningOccurrence.run.id,
-                    graphThreadId: runningOccurrence.run.graphThreadId,
-                    roomId: predispatch.scheduling.roomId,
-                    humanTurnId,
-                    agentId: runningOccurrence.task.agentId,
-                  },
-                  signal,
-                  publish,
-                });
                 return dependencies.withSigner({
                   restricted: input.restricted,
                   crypto: input.crypto,
                   evidence: grant.evidence,
                   domains: grant.domains,
-                  use: async (signer, history) =>
-                    dependencies.withMemoryRepository({
+                  use: async (signer, history) => {
+                    const publish = await input.createTranscriptPublisher({
+                      occurrence: runningOccurrence,
+                      record: grant.record,
+                      request,
+                      current,
+                      humanTurnId,
+                      assertCurrentTaskAuthority,
+                      domains: grant.domains,
+                      signer,
+                      resolveHistoricalSignerPublicationManager: history,
+                    });
+                    const transcriptPort = dependencies.createTranscriptPort({
+                      identity: {
+                        taskId: runningOccurrence.task.id,
+                        taskRunId: runningOccurrence.run.id,
+                        graphThreadId: runningOccurrence.run.graphThreadId,
+                        roomId: predispatch.scheduling.roomId,
+                        humanTurnId,
+                        agentId: runningOccurrence.task.agentId,
+                      },
+                      signal,
+                      publish,
+                    });
+                    return dependencies.withMemoryRepository({
                       authority,
                       policy,
                       current,
@@ -917,7 +930,8 @@ export function createProtectedTaskNativeFixedMemorySegment(
                           return result;
                         },
                       }),
-                    }),
+                    });
+                  },
                 });
               },
             });

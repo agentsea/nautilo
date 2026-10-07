@@ -18,18 +18,33 @@ import type {
 } from "@nautilo/lattice-bridge/server";
 import {
   withCurrentAcceptedTaskRuntimeAuthority,
+  withCurrentAcceptedTaskRuntimeClaimAuthority,
 } from "@nautilo/lattice-bridge/server";
 import type {
+  BackgroundAuthorizationCasResult,
   BackgroundAuthorizationTaskRuntimeRecordV3,
+  BackgroundAuthorizationTaskRuntimeReplacementRepository,
   ProtectedTaskOccurrence,
   ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 
 import {
+  createCurrentProtectedTaskRuntimeClaimAuthorityPort,
   createCurrentProtectedTaskRuntimeAuthorityPort,
-  loadCurrentProtectedTaskRuntimeFacts,
+  loadCurrentProtectedTaskRuntimeLifecycleFacts,
+  loadCurrentProtectedTaskRuntimeRequesterRoomFacts,
   type CurrentProtectedTaskRuntimeFacts,
 } from "../../src/routes/task-runtime-current-authority";
+
+function factLoaders(facts: CurrentProtectedTaskRuntimeFacts) {
+  const { requesterPrivateRoom, ...lifecycle } = facts;
+  return {
+    loadCurrentLifecycleFacts: async () => lifecycle,
+    loadCurrentRequesterPrivateRoomFacts: async () => ({
+      requesterPrivateRoom,
+    }),
+  };
+}
 
 async function fixture() {
   const crypto = new LatticeCrypto();
@@ -216,18 +231,19 @@ async function fixture() {
 describe("current protected Task Runtime authority adapter", () => {
   test("rechecks an accepted awaiting run before claim", async () => {
     const f = await fixture();
+    const awaitingFacts: CurrentProtectedTaskRuntimeFacts = {
+      ...f.facts,
+      task: { ...f.facts.task, status: "pending" },
+      run: { ...f.facts.run, status: "awaiting", jobId: null },
+    };
     const port = createCurrentProtectedTaskRuntimeAuthorityPort({
-      loadCurrentFacts: async () => ({
-        ...f.facts,
-        task: { ...f.facts.task, status: "pending" },
-        run: { ...f.facts.run, status: "awaiting", jobId: null },
-      }),
+      ...factLoaders(awaitingFacts),
       withAcceptedAuthority: (async (input: Parameters<
-        typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => input.use(
-        f.authority,
-        {} as never,
-        {} as never,
-      )) as typeof withCurrentAcceptedTaskRuntimeAuthority,
+        typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
+        const product = {} as never;
+        if (!await input.validateCurrentProduct(product)) return null;
+        return input.use(f.authority, product, {} as never);
+      }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
     });
     const result = await port({
       runner: {} as never,
@@ -248,6 +264,143 @@ describe("current protected Task Runtime authority adapter", () => {
     f.signing.privateKey.fill(0);
   });
 
+  test("lends claim CAS only inside the accepted owner after lifecycle locks", async () => {
+    const f = await fixture();
+    const events: string[] = [];
+    let insideAuthority = false;
+    let clock = f.now + 1;
+    const retainedRepository: {current: Pick<
+      BackgroundAuthorizationTaskRuntimeReplacementRepository,
+      "compareAndSwap"
+    > | null} = { current: null };
+    const restricted = {} as never;
+    const grantReady = {
+      ...f.record,
+      snapshot: { ...f.record.snapshot, state: "grant_ready" as const },
+    };
+    const awaitingFacts: CurrentProtectedTaskRuntimeFacts = {
+      ...f.facts,
+      task: { ...f.facts.task, status: "pending" },
+      run: { ...f.facts.run, status: "awaiting", jobId: null },
+    };
+    const port = createCurrentProtectedTaskRuntimeClaimAuthorityPort({
+      loadCurrentLifecycleFacts: async () => {
+        events.push("lifecycle");
+        const { requesterPrivateRoom: _, ...lifecycle } = awaitingFacts;
+        return lifecycle;
+      },
+      loadCurrentRequesterPrivateRoomFacts: async () => {
+        events.push("room");
+        return {
+          requesterPrivateRoom: awaitingFacts.requesterPrivateRoom,
+        };
+      },
+      withAcceptedClaimAuthority: (async (input: Parameters<
+        typeof withCurrentAcceptedTaskRuntimeClaimAuthority>[0]) => {
+        insideAuthority = true;
+        try {
+          const product = {} as never;
+          if (!await input.validateCurrentProduct(product)) return null;
+          events.push("namespace");
+          const value = await input.use(f.authority, product, restricted);
+          await input.validateBeforeCommit();
+          return value;
+        } finally {
+          insideAuthority = false;
+        }
+      }) as typeof withCurrentAcceptedTaskRuntimeClaimAuthority,
+      repository: async connection => {
+        expect(connection).toBe(restricted);
+        clock = f.now + 2;
+        return {
+          compareAndSwap: async input => {
+            if (!insideAuthority) {
+              throw new TypeError("claim repository is not active");
+            }
+            events.push("cas");
+            return {
+              status: "updated",
+              record: input.next,
+            } as BackgroundAuthorizationCasResult;
+          },
+        };
+      },
+    });
+    const result = await port({
+      runner: {} as never,
+      restricted: {} as never,
+      crypto: f.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: f.occurrence.task.requestorId,
+        humanActorId: f.authority.plan.subjectHumanId,
+        deviceId: f.authority.plan.committerDeviceId },
+      occurrence: f.occurrence,
+      record: grantReady,
+      request: f.request,
+      now: () => clock,
+      use: async (current, repository, claimedAt, claimExpiresAt) => {
+        expect(insideAuthority).toBe(true);
+        expect(current.foreground.authorizationId).toBe(f.request.requestId);
+        expect(claimedAt).toBe(f.now + 2);
+        expect(claimExpiresAt).toBe(f.request.deadlineAt);
+        retainedRepository.current = repository;
+        return repository.compareAndSwap({
+          expectedRequestRevision: grantReady.snapshot.requestRevision,
+          next: grantReady,
+        });
+      },
+    });
+    expect(result?.status).toBe("updated");
+    expect(insideAuthority).toBe(false);
+    expect(events).toEqual(["lifecycle", "namespace", "room", "cas"]);
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(retainedRepository.current?.compareAndSwap({
+      expectedRequestRevision: grantReady.snapshot.requestRevision,
+      next: grantReady,
+    })).rejects.toThrow("claim repository is not active");
+
+    let malformedUseCalled = false;
+    expect(await port({
+      runner: {} as never,
+      restricted: {} as never,
+      crypto: f.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: f.occurrence.task.requestorId,
+        humanActorId: f.authority.plan.subjectHumanId,
+        deviceId: f.authority.plan.committerDeviceId },
+      occurrence: {
+        ...f.occurrence,
+        run: { ...f.occurrence.run, jobId: "job:prior" },
+      },
+      record: grantReady,
+      request: f.request,
+      now: () => clock,
+      use: () => { malformedUseCalled = true; },
+    })).toBeNull();
+    expect(malformedUseCalled).toBe(false);
+
+    clock = f.now + 1;
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(port({
+      runner: {} as never,
+      restricted: {} as never,
+      crypto: f.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: f.occurrence.task.requestorId,
+        humanActorId: f.authority.plan.subjectHumanId,
+        deviceId: f.authority.plan.committerDeviceId },
+      occurrence: f.occurrence,
+      record: grantReady,
+      request: f.request,
+      now: () => clock,
+      use: () => {
+        clock = f.request.deadlineAt;
+        return "late";
+      },
+    })).rejects.toThrow("claim authority expired before commit");
+    f.signing.privateKey.fill(0);
+  });
+
   test("rechecks closed current facts under accepted authority and releases locks before use", async () => {
     const f = await fixture();
     const occurrence: ProtectedTaskRunningOccurrence = {
@@ -256,19 +409,30 @@ describe("current protected Task Runtime authority adapter", () => {
     };
     let insideAuthority = false;
     let loaded = 0;
+    const order: string[] = [];
+    const currentFacts = {
+      ...f.facts,
+      task: { ...f.facts.task, callingRoomId: "room:open" },
+    };
     const port = createCurrentProtectedTaskRuntimeAuthorityPort({
-      loadCurrentFacts: async () => {
+      loadCurrentLifecycleFacts: async () => {
         loaded++;
-        return {
-          ...f.facts,
-          task: { ...f.facts.task, callingRoomId: "room:open" },
-        };
+        order.push("lifecycle");
+        const { requesterPrivateRoom: _, ...lifecycle } = currentFacts;
+        return lifecycle;
+      },
+      loadCurrentRequesterPrivateRoomFacts: async () => {
+        order.push("room");
+        return { requesterPrivateRoom: currentFacts.requesterPrivateRoom };
       },
       withAcceptedAuthority: (async (input: Parameters<
         typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
         insideAuthority = true;
         try {
-          return await input.use(f.authority, {} as never, {} as never);
+          const product = {} as never;
+          if (!await input.validateCurrentProduct(product)) return null;
+          order.push("namespace");
+          return await input.use(f.authority, product, {} as never);
         } finally {insideAuthority = false;}
       }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
     });
@@ -285,6 +449,7 @@ describe("current protected Task Runtime authority adapter", () => {
       request: f.request,
       now: () => f.now,
       use: current => {
+        order.push("execution");
         expect(insideAuthority).toBe(false);
         expect(current.foreground.authorizationId).toBe(f.request.requestId);
         expect(current.foreground.roomId).toBe(f.request.sourceRoomId);
@@ -297,6 +462,7 @@ describe("current protected Task Runtime authority adapter", () => {
     });
     expect(result).toBe("current");
     expect(loaded).toBe(1);
+    expect(order).toEqual(["lifecycle", "namespace", "room", "execution"]);
     f.signing.privateKey.fill(0);
   });
 
@@ -307,16 +473,16 @@ describe("current protected Task Runtime authority adapter", () => {
       task: { ...f.runningOccurrence.task, scheduleKind: "cron" },
     };
     const port = createCurrentProtectedTaskRuntimeAuthorityPort({
-      loadCurrentFacts: async () => ({
+      ...factLoaders({
         ...f.facts,
         task: { ...f.facts.task, scheduleKind: "cron", status: "pending" },
       }),
       withAcceptedAuthority: (async (input: Parameters<
-        typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => input.use(
-        f.authority,
-        {} as never,
-        {} as never,
-      )) as typeof withCurrentAcceptedTaskRuntimeAuthority,
+        typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
+        const product = {} as never;
+        if (!await input.validateCurrentProduct(product)) return null;
+        return input.use(f.authority, product, {} as never);
+      }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
     });
     const result = await port({
       runner: {} as never,
@@ -346,13 +512,13 @@ describe("current protected Task Runtime authority adapter", () => {
           : f.facts;
       let used = false;
       const port = createCurrentProtectedTaskRuntimeAuthorityPort({
-        loadCurrentFacts: async () => facts,
+        ...factLoaders(facts),
         withAcceptedAuthority: (async (input: Parameters<
-          typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => input.use(
-          f.authority,
-          {} as never,
-          {} as never,
-        )) as typeof withCurrentAcceptedTaskRuntimeAuthority,
+          typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
+          const product = {} as never;
+          if (!await input.validateCurrentProduct(product)) return null;
+          return input.use(f.authority, product, {} as never);
+        }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
       });
       const request = change === "request"
         ? {...f.request, sourceRoomId: "room:substituted"}
@@ -432,10 +598,17 @@ describe("current protected Task Runtime authority adapter", () => {
           return rows.shift() ?? [];
         },
       } as never;
-      const facts = await loadCurrentProtectedTaskRuntimeFacts({
+      const lifecycle = await loadCurrentProtectedTaskRuntimeLifecycleFacts({
         product,
         occurrence: f.runningOccurrence,
       });
+      const room = lifecycle === null ? null
+        : await loadCurrentProtectedTaskRuntimeRequesterRoomFacts({
+          product,
+          task: lifecycle.task,
+        });
+      const facts = lifecycle === null || room === null
+        ? null : { ...lifecycle, ...room };
       return {facts, statement: statements[0]!};
     };
 

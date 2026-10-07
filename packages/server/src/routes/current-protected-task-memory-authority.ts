@@ -56,7 +56,9 @@ import {
 import {
   acceptedTaskRuntimeRecord,
   destroyAcceptedTaskRuntimeRecord,
-  loadCurrentProtectedTaskRuntimeFacts,
+  loadCurrentProtectedTaskRuntimeLifecycleFacts,
+  loadCurrentProtectedTaskRuntimeRequesterRoomFacts,
+  type CurrentProtectedTaskRuntimeLifecycleFacts,
 } from "./task-runtime-current-authority";
 
 export type ProtectedTaskMemoryAuthorityInput = Readonly<{
@@ -537,22 +539,27 @@ export async function withCurrentProtectedTaskMemoryAuthority<Value>(
           productHandle,
           { transaction: callback => callback(tx, executor) },
         );
+        let lifecycle: CurrentProtectedTaskRuntimeLifecycleFacts | null = null;
         const restricted: PostgresJsBridgeConnection = {
           query: input.restricted.query.bind(input.restricted),
           transaction: input.restricted.transaction.bind(input.restricted),
           transactionOnce: async callback => {
-            const facts = await loadCurrentProtectedTaskRuntimeFacts({
+            const currentLifecycle = lifecycle;
+            if (currentLifecycle === null) {
+              throw new TaskMemoryAuthorityUnavailable();
+            }
+            const room = await loadCurrentProtectedTaskRuntimeRequesterRoomFacts({
               product,
-              occurrence: input.occurrence,
+              task: currentLifecycle.task,
             });
-            if (facts === null || !isCurrentProtectedTaskRunForGrant({
+            if (room === null || !isCurrentProtectedTaskRunForGrant({
               occurrence: input.occurrence,
-              task: facts.task,
-              run: facts.run,
+              task: currentLifecycle.task,
+              run: currentLifecycle.run,
               requestorUserId: input.subject.userId,
               requestWorkId: input.request.workId,
               sourceRoomId: input.request.sourceRoomId,
-              requesterPrivateRoom: facts.requesterPrivateRoom,
+              requesterPrivateRoom: room.requesterPrivateRoom,
               phase: "running",
             })) throw new TaskMemoryAuthorityUnavailable();
 
@@ -585,6 +592,13 @@ export async function withCurrentProtectedTaskMemoryAuthority<Value>(
           accepted,
           now: input.now,
           signal: input.signal,
+          validateCurrentProduct: async currentProduct => {
+            lifecycle = await loadCurrentProtectedTaskRuntimeLifecycleFacts({
+              product: currentProduct,
+              occurrence: input.occurrence,
+            });
+            return lifecycle !== null;
+          },
           use: async (currentRuntime, _product, currentRestricted) => {
             if (scopeMemory !== undefined) {
               // Canonical Namespace locks precede this Room fence. Do not take
