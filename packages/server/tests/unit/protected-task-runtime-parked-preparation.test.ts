@@ -2,7 +2,11 @@ import { expect, test } from "bun:test";
 import {
   LatticeCrypto, TaskRuntimeRecipientRegistry,
 } from "@nautilo/lattice-crypto";
-import { taskRuntimeStableRoutingDigest } from "@nautilo/runtime";
+import {
+  attachBackgroundAuthorizationRecipient,
+  taskRuntimeStableRoutingDigest,
+  type BackgroundAuthorizationTaskRuntimeRecordV3,
+} from "@nautilo/runtime";
 import type { ParkedProtectedTaskAdditionalAuthority, ProtectedTaskRunOutputBinding } from "@nautilo/db";
 import type { ParkedTaskRuntimeCurrentRoutingFacts } from "@nautilo/lattice-bridge/server";
 import type { ParkedProtectedTaskRuntimeMemoryPlan } from "../../src/routes/protected-task-runtime-parked-memory-plan";
@@ -25,6 +29,24 @@ const INPUT = `task-definition:v1:${"a".repeat(64)}`;
 const RESULT = `task-run-result:v1:${"b".repeat(64)}`;
 
 type Overrides = NonNullable<Parameters<typeof createProtectedTaskRuntimeParkedPreparation>[1]>;
+type HeldRepository = Awaited<ReturnType<NonNullable<Overrides["repository"]>>>;
+
+function awaitingDeviceRecord(
+  initial: BackgroundAuthorizationTaskRuntimeRecordV3,
+): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  return {
+    ...initial,
+    snapshot: attachBackgroundAuthorizationRecipient(initial.snapshot, {
+      recipientGeneration: 0,
+      descriptorDigest: "ab".repeat(32),
+      recipientKeyId: `task-runtime:${RUN}:0`,
+      recipientPublicKey: Buffer.alloc(65, 3).toString("base64url"),
+      expiresAt: NOW + 60_000,
+      now: NOW,
+    }) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    descriptorBytes: new Uint8Array([1, 2, 3]),
+  };
+}
 
 function fixture() {
   const facts: ParkedTaskRuntimeCurrentRoutingFacts = {
@@ -111,7 +133,8 @@ function fixture() {
   const run = (patch: Overrides = {}) => createProtectedTaskRuntimeParkedPreparation({
     resolver: {} as Parameters<typeof createProtectedTaskRuntimeParkedPreparation>[0]["resolver"], recipients,
   }, { ...overrides, ...patch })(expected.occurrence);
-  return { expected, output, plan, facts, events, run, overrides, captured: () => captured, recipients };
+  return { expected, output, plan, facts, events, run, overrides,
+    captured: () => captured, isHeld: () => held, recipients };
 }
 
 test("prepares current base plus exact semantic operations only inside held authority", async () => {
@@ -192,3 +215,95 @@ test("held repository failure unwinds without publishing a readiness event", asy
     expect(f.events).toEqual(["validate", "repository", "released"]);
   } finally { f.recipients.close(); }
 });
+
+test("rotates an expired exact replay through the same held repository", async () => {
+  const f = fixture();
+  let selected: BackgroundAuthorizationTaskRuntimeRecordV3 | null = null;
+  const repository = {
+    get: async () => {
+      expect(f.isHeld()).toBe(true);
+      f.events.push("get");
+      return selected;
+    },
+  } as unknown as HeldRepository;
+  try {
+    expect(await f.run({
+      repository: async () => {
+        expect(f.isHeld()).toBe(true);
+        f.events.push("repository");
+        return repository;
+      },
+      prepare: async input => {
+        expect(f.isHeld()).toBe(true);
+        f.events.push("prepare");
+        selected = awaitingDeviceRecord(input.initialRecord);
+        return { status: "exact_replay" };
+      },
+      rotate: async input => {
+        expect(f.isHeld()).toBe(true);
+        expect(input.repository).toBe(repository);
+        expect(input.selected.snapshot.requestId)
+          .toBe(f.expected.authorizationRequestId);
+        expect(input.recipients).toBe(f.recipients);
+        f.events.push("rotate");
+        return { status: "rotated" };
+      },
+    })).toEqual({ status: "rotated" });
+    expect(f.events).toEqual([
+      "validate", "repository", "prepare", "get", "rotate", "released",
+    ]);
+  } finally { f.recipients.close(); }
+});
+
+test("a live exact replay remains exact and preserves recipient custody", async () => {
+  const f = fixture();
+  let selected: BackgroundAuthorizationTaskRuntimeRecordV3 | null = null;
+  const repository = {
+    get: async () => selected,
+  } as unknown as HeldRepository;
+  try {
+    expect(await f.run({
+      repository: async () => repository,
+      prepare: async input => {
+        selected = awaitingDeviceRecord(input.initialRecord);
+        return { status: "exact_replay" };
+      },
+      rotate: async input => {
+        expect(input.repository).toBe(repository);
+        expect(input.recipients).toBe(f.recipients);
+        return { status: "not_due" };
+      },
+    })).toEqual({ status: "exact_replay" });
+    expect(f.recipients.size).toBe(0);
+  } finally { f.recipients.close(); }
+});
+
+test("an exact replay with a stale reread does not enter rotation", async () => {
+  const f = fixture();
+  const repository = { get: async () => null } as unknown as HeldRepository;
+  try {
+    expect(await f.run({
+      repository: async () => repository,
+      prepare: async () => ({ status: "exact_replay" }),
+      rotate: async () => {
+        throw new Error("unexpected rotation");
+      },
+    })).toEqual({ status: "stale" });
+  } finally { f.recipients.close(); }
+});
+
+test.each(["created", "replaced"] as const)(
+  "%s preparation never enters replay rotation",
+  async status => {
+    const f = fixture();
+    try {
+      expect(await f.run({
+        repository: async () => ({
+          get: async () => { throw new Error("unexpected reread"); },
+        }) as unknown as HeldRepository,
+        prepare: async () => ({ status }),
+        rotate: async () => { throw new Error("unexpected rotation"); },
+      })).toEqual({ status });
+    } finally { f.recipients.close(); }
+  },
+);

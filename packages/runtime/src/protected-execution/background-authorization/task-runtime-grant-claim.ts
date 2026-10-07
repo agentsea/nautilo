@@ -110,6 +110,50 @@ export type BindTaskRuntimeRecipientResult = Readonly<{
   requestBytes: Uint8Array;
 }> | null;
 
+/** Exact request construction retained by both initial and parked Task owners. */
+export type TaskRuntimeRecipientRequestPlan = Readonly<{
+  initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3;
+  scopeMemory?: TaskScopeMemoryBinding;
+  recipientAttempt(input: Readonly<{
+    record: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Readonly<{ recipientKeyId: string; expiresAt: number }>;
+  buildRequest(input: Readonly<{
+    record: BackgroundAuthorizationTaskRuntimeRecordV3;
+    attempt: TaskRuntimeRecipientAttempt;
+    binding: TaskRuntimeRecipientDeviceBinding;
+    authority: TaskRuntimeRecipientCurrentAuthority;
+  }>): TaskRuntimeBackgroundAuthorizationRequestV1;
+}>;
+
+export type AttachExactTaskRuntimeRecipientInput = Readonly<{
+  occurrence: ProtectedTaskOccurrence;
+  /** Durable row used by the caller to enter its current-authority owner. */
+  selected: BackgroundAuthorizationTaskRuntimeRecordV3;
+  plan: TaskRuntimeRecipientRequestPlan;
+  binding: TaskRuntimeRecipientDeviceBinding;
+  authority: TaskRuntimeRecipientCurrentAuthority;
+  repository: Pick<BackgroundAuthorizationTaskRuntimeReplacementRepository,
+    "get" | "compareAndSwap">;
+  recipients: TaskRuntimeRecipientRegistry;
+  now: () => number;
+}>;
+
+export type RotateExpiredTaskRuntimeRecipientResult = Readonly<{
+  status: "rotated" | "not_due" | "stale" | "inactive";
+}>;
+
+export type RotateExpiredTaskRuntimeRecipientInput = Readonly<{
+  occurrence: ProtectedTaskOccurrence;
+  /** Durable row selected before entering the mutation boundary. */
+  selected: BackgroundAuthorizationTaskRuntimeRecordV3;
+  initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3;
+  repository: Pick<BackgroundAuthorizationTaskRuntimeReplacementRepository,
+    "get" | "compareAndSwap">;
+  recipients: TaskRuntimeRecipientRegistry;
+  now: () => number;
+}>;
+
 type TaskRuntimeResultBinding = Readonly<{
   taskId: string;
   taskRunId: string;
@@ -481,7 +525,7 @@ function exactUnclaimedParkedInitialRecord(
     && initial.finishedAt === null;
 }
 
-function sameDurablePlan(
+export function sameTaskRuntimeAuthorityPlan(
   current: BackgroundAuthorizationTaskRuntimeRecordV3,
   initial: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): boolean {
@@ -822,6 +866,297 @@ function exactBoundRequest(input: Readonly<{
   }
 }
 
+function copyRecipientCurrentAuthority(
+  authority: TaskRuntimeRecipientCurrentAuthority,
+): TaskRuntimeRecipientCurrentAuthority {
+  return Object.freeze({
+    ...authority,
+    device: Object.freeze({
+      ...authority.device,
+      signingPublicKey: authority.device.signingPublicKey.slice(),
+      headDigest: authority.device.headDigest.slice(),
+    }),
+    domains: Object.freeze(authority.domains.map((domain) => Object.freeze({
+      ...domain,
+      participantDigest: domain.participantDigest.slice(),
+      headDigest: domain.headDigest.slice(),
+      activeNamespaceBindingSetDigest:
+        domain.activeNamespaceBindingSetDigest.slice(),
+    }))),
+    namespaceRequirements: Object.freeze(
+      authority.namespaceRequirements.map((requirement) => Object.freeze({
+        ...requirement,
+        operations: Object.freeze([...requirement.operations]),
+      })),
+    ),
+    ...(authority.scopeMemory === undefined
+      ? {}
+      : { scopeMemory: copyTaskScopeMemoryBinding(authority.scopeMemory) }),
+  });
+}
+
+function copyOccurrence(
+  occurrence: ProtectedTaskOccurrence,
+): ProtectedTaskOccurrence {
+  return Object.freeze({
+    task: Object.freeze({
+      ...occurrence.task,
+      cryptoRequiredNamespaceFingerprint:
+        occurrence.task.cryptoRequiredNamespaceFingerprint.slice(),
+    }),
+    run: Object.freeze({
+      ...occurrence.run,
+      startedAt: new Date(occurrence.run.startedAt.getTime()),
+    }),
+  });
+}
+
+function copyTaskRuntimeRecord(
+  value: BackgroundAuthorizationTaskRuntimeRecordV3,
+  message: string,
+): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const parsed = parseBackgroundAuthorizationRecord(value);
+  if (!isTaskRuntimeRecord(parsed)) throw new TypeError(message);
+  return parsed;
+}
+
+/**
+ * Attach one process-local Task recipient while the caller holds its exact
+ * initial or parked authority. The supplied repository must be bound to that
+ * authority callback; this helper never replaces a changed durable plan.
+ */
+export async function attachExactTaskRuntimeRecipient(
+  input: AttachExactTaskRuntimeRecipientInput,
+): Promise<BindTaskRuntimeRecipientResult> {
+  const occurrence = copyOccurrence(input.occurrence);
+  const selected = copyTaskRuntimeRecord(
+    input.selected,
+    "Task Runtime selected recipient record is invalid",
+  );
+  const initial = copyTaskRuntimeRecord(
+    input.plan.initialRecord,
+    "Task Runtime recipient plan is invalid",
+  );
+  const binding = Object.freeze({ ...input.binding });
+  const authority = copyRecipientCurrentAuthority(input.authority);
+  const scopeMemory = input.plan.scopeMemory === undefined
+    ? undefined
+    : copyTaskScopeMemoryBinding(input.plan.scopeMemory);
+  const recipientAttempt = input.plan.recipientAttempt.bind(input.plan);
+  const buildRequest = input.plan.buildRequest.bind(input.plan);
+  const repository = input.repository;
+  const recipients = input.recipients;
+  const nowClock = input.now;
+  if (typeof repository?.get !== "function"
+    || typeof repository.compareAndSwap !== "function"
+    || typeof recipients?.createAttempt !== "function"
+    || typeof recipients.delete !== "function"
+    || typeof nowClock !== "function"
+    || typeof recipientAttempt !== "function"
+    || typeof buildRequest !== "function"
+    || !exactOccurrenceRecord(occurrence, selected)
+    || !sameTaskRuntimeAuthorityPlan(selected, initial)
+    || selected.snapshot.state !== "awaiting_recipient"
+    || selected.snapshot.recipient !== null
+    || selected.snapshot.descriptorDigest !== null
+    || selected.descriptorBytes !== null) {
+    throw new TypeError("Task Runtime recipient attachment is invalid");
+  }
+
+  const loaded = await repository.get(selected.snapshot.requestId);
+  if (loaded === null) return null;
+  if (!isTaskRuntimeRecord(loaded)
+    || !exactOccurrenceRecord(occurrence, loaded)) {
+    throw new TypeError("Task Runtime durable record was substituted");
+  }
+  if (loaded.snapshot.requestRevision !== selected.snapshot.requestRevision
+    || !sameTaskRuntimeAuthorityPlan(loaded, initial)
+    || loaded.snapshot.state !== "awaiting_recipient"
+    || loaded.snapshot.recipient !== null
+    || loaded.snapshot.descriptorDigest !== null
+    || loaded.descriptorBytes !== null) return null;
+  const durable = copyTaskRuntimeRecord(
+    loaded,
+    "Task Runtime durable record was substituted",
+  );
+  if (!recipientAuthorityIsCurrent({
+    occurrence,
+    record: durable,
+    binding,
+    ...(scopeMemory === undefined ? {} : { scopeMemory }),
+    authority,
+  })) return null;
+
+  const now = nowClock();
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new TypeError("Task Runtime recipient clock is invalid");
+  }
+  const recipient = recipientAttempt({ record: durable, now });
+  const attempt = await recipients.createAttempt({
+    requestId: durable.snapshot.requestId,
+    workId: durable.snapshot.workId,
+    recipientGeneration: durable.snapshot.recipientGeneration,
+    recipientKeyId: recipient.recipientKeyId,
+    expiresAt: recipient.expiresAt,
+  });
+  if (attempt.status !== "created") return null;
+  let retain = false;
+  let request: TaskRuntimeBackgroundAuthorizationRequestV1 | null = null;
+  try {
+    request = buildRequest({
+      record: durable,
+      attempt: attempt.attempt,
+      binding,
+      authority,
+    });
+    if (!exactBoundRequest({
+      occurrence,
+      record: durable,
+      attempt: attempt.attempt,
+      binding,
+      authority,
+      request,
+      now,
+    })) throw new TypeError("Task Runtime request was substituted");
+    const descriptorBytes =
+      encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    const descriptorDigest = createHash("sha256")
+      .update(descriptorBytes)
+      .digest("hex");
+    const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...durable,
+      snapshot: attachBackgroundAuthorizationRecipient(durable.snapshot, {
+        recipientGeneration: durable.snapshot.recipientGeneration,
+        descriptorDigest,
+        recipientKeyId: attempt.attempt.recipientKeyId,
+        recipientPublicKey: Buffer.from(
+          attempt.attempt.recipientPublicKey,
+        ).toString("base64url"),
+        expiresAt: attempt.attempt.expiresAt,
+        now,
+      }) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      descriptorBytes,
+    };
+    const stored = await repository.compareAndSwap({
+      expectedRequestRevision: durable.snapshot.requestRevision,
+      next,
+    });
+    if (stored.status !== "updated") return null;
+    const storedRecipient = stored.record.snapshot.recipient;
+    if (!isTaskRuntimeRecord(stored.record)
+      || !exactOccurrenceRecord(occurrence, stored.record)
+      || !sameTaskRuntimeAuthorityPlan(stored.record, initial)
+      || stored.record.snapshot.state !== "awaiting_device"
+      || stored.record.snapshot.descriptorDigest !== descriptorDigest
+      || stored.record.descriptorBytes === null
+      || !sameBytes(stored.record.descriptorBytes, descriptorBytes)
+      || storedRecipient === null
+      || storedRecipient.recipientKeyId !== attempt.attempt.recipientKeyId
+      || storedRecipient.recipientPublicKey !== Buffer.from(
+        attempt.attempt.recipientPublicKey,
+      ).toString("base64url")
+      || storedRecipient.expiresAt !== attempt.attempt.expiresAt) {
+      throw new TypeError("Task Runtime recipient binding was substituted");
+    }
+    retain = true;
+    return Object.freeze({
+      record: stored.record,
+      requestBytes: descriptorBytes.slice(),
+    });
+  } finally {
+    if (request !== null) destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    if (!retain) {
+      recipients.delete(
+        durable.snapshot.requestId,
+        durable.snapshot.recipientGeneration,
+      );
+    }
+  }
+}
+
+/** Rotate only a durably expired Task recipient; local absence is not expiry. */
+export async function rotateExpiredTaskRuntimeRecipient(
+  input: RotateExpiredTaskRuntimeRecipientInput,
+): Promise<RotateExpiredTaskRuntimeRecipientResult> {
+  const occurrence = copyOccurrence(input.occurrence);
+  const selected = copyTaskRuntimeRecord(
+    input.selected,
+    "Task Runtime selected recipient record is invalid",
+  );
+  const initial = copyTaskRuntimeRecord(
+    input.initialRecord,
+    "Task Runtime recipient plan is invalid",
+  );
+  const repository = input.repository;
+  const recipients = input.recipients;
+  const nowClock = input.now;
+  if (typeof repository?.get !== "function"
+    || typeof repository.compareAndSwap !== "function"
+    || typeof recipients?.delete !== "function"
+    || typeof nowClock !== "function"
+    || !exactOccurrenceRecord(occurrence, selected)
+    || !sameTaskRuntimeAuthorityPlan(selected, initial)) {
+    throw new TypeError("Task Runtime recipient rotation is invalid");
+  }
+  const loaded = await repository.get(selected.snapshot.requestId);
+  if (loaded === null) return Object.freeze({ status: "stale" as const });
+  if (!isTaskRuntimeRecord(loaded)
+    || !exactOccurrenceRecord(occurrence, loaded)) {
+    throw new TypeError("Task Runtime durable record was substituted");
+  }
+  if (loaded.snapshot.requestRevision !== selected.snapshot.requestRevision
+    || !sameTaskRuntimeAuthorityPlan(loaded, initial)) {
+    return Object.freeze({ status: "stale" as const });
+  }
+  if (loaded.snapshot.state !== "awaiting_device"
+    && loaded.snapshot.state !== "grant_ready") {
+    return Object.freeze({ status: "inactive" as const });
+  }
+  const recipient = loaded.snapshot.recipient;
+  if (recipient === null) return Object.freeze({ status: "inactive" as const });
+  const now = nowClock();
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new TypeError("Task Runtime recipient clock is invalid");
+  }
+  if (now < recipient.expiresAt) {
+    return Object.freeze({ status: "not_due" as const });
+  }
+  const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+    ...loaded,
+    snapshot: advanceBackgroundAuthorizationGeneration(loaded.snapshot, {
+      reason: "attempt_expired",
+      now,
+      nextAttemptAt: now,
+    }) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    descriptorBytes: null,
+    acceptedMaterial: null,
+  };
+  const rotated = await repository.compareAndSwap({
+    expectedRequestRevision: loaded.snapshot.requestRevision,
+    next,
+  });
+  if (rotated.status !== "updated") {
+    return Object.freeze({ status: "stale" as const });
+  }
+  if (!isTaskRuntimeRecord(rotated.record)
+    || !exactOccurrenceRecord(occurrence, rotated.record)
+    || !sameTaskRuntimeAuthorityPlan(rotated.record, initial)
+    || rotated.record.snapshot.state !== "awaiting_recipient"
+    || rotated.record.snapshot.recipientGeneration
+      !== loaded.snapshot.recipientGeneration + 1
+    || rotated.record.snapshot.lastRetryReason !== "attempt_expired"
+    || rotated.record.snapshot.recipient !== null
+    || rotated.record.descriptorBytes !== null
+    || rotated.record.acceptedMaterial !== null) {
+    throw new TypeError("Task Runtime recipient rotation was substituted");
+  }
+  recipients.delete(
+    loaded.snapshot.requestId,
+    loaded.snapshot.recipientGeneration,
+  );
+  return Object.freeze({ status: "rotated" as const });
+}
+
 function activeRecipient(
   recipients: TaskRuntimeRecipientRegistry,
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
@@ -939,7 +1274,7 @@ function staleReplacementResult(
   }
   return current !== null
       && isTaskRuntimeRecord(current)
-      && sameDurablePlan(current, replacement)
+      && sameTaskRuntimeAuthorityPlan(current, replacement)
     ? Object.freeze({ status: "awaiting_authorization" as const })
     : Object.freeze({ status: "inactive" as const });
 }
@@ -1005,7 +1340,7 @@ export async function prepareUnclaimedParkedTaskRuntimeAuthority(
     ].includes(record.snapshot.state)) {
       return Object.freeze({ status: "inactive" as const });
     }
-    if (sameDurablePlan(record, initial)) {
+    if (sameTaskRuntimeAuthorityPlan(record, initial)) {
       return Object.freeze({ status: "exact_replay" as const });
     }
     const timestamp = now();
@@ -1355,7 +1690,7 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       || !isTaskRuntimeRecord(durable)
       || !exactOccurrenceRecord(input.occurrence, durable)
     ) throw new TypeError("Task Runtime durable record was substituted");
-    if (!sameDurablePlan(durable, plan.initialRecord)) {
+    if (!sameTaskRuntimeAuthorityPlan(durable, plan.initialRecord)) {
       await this.#replaceChangedPreclaimPlan(durable, plan.initialRecord);
       return null;
     }
@@ -1377,101 +1712,16 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       use: async (authority) => {
         if (used) throw new TypeError("Task Runtime recipient binder is one-use");
         used = true;
-        if (!recipientAuthorityIsCurrent({
+        return attachExactTaskRuntimeRecipient({
           occurrence: input.occurrence,
-          record: durable,
+          selected: durable,
+          plan,
           binding: input.binding,
-          ...(scopeMemory === undefined ? {} : { scopeMemory }),
           authority,
-        })) return null;
-        const now = this.#now();
-        const recipient = plan.recipientAttempt({ record: durable, now });
-        const attempt = await this.dependencies.recipients.createAttempt({
-          requestId: durable.snapshot.requestId,
-          workId: durable.snapshot.workId,
-          recipientGeneration: durable.snapshot.recipientGeneration,
-          recipientKeyId: recipient.recipientKeyId,
-          expiresAt: recipient.expiresAt,
+          repository: this.dependencies.repository,
+          recipients: this.dependencies.recipients,
+          now: this.#now,
         });
-        if (attempt.status !== "created") return null;
-        let retain = false;
-        let request: TaskRuntimeBackgroundAuthorizationRequestV1 | null = null;
-        try {
-          request = plan.buildRequest({
-            record: durable,
-            attempt: attempt.attempt,
-            binding: input.binding,
-            authority,
-          });
-          if (!exactBoundRequest({
-            occurrence: input.occurrence,
-            record: durable,
-            attempt: attempt.attempt,
-            binding: input.binding,
-            authority,
-            request,
-            now,
-          })) throw new TypeError("Task Runtime request was substituted");
-          const descriptorBytes =
-            encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
-          const descriptorDigest = createHash("sha256")
-            .update(descriptorBytes)
-            .digest("hex");
-          const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
-            ...durable,
-            snapshot: attachBackgroundAuthorizationRecipient(
-              durable.snapshot,
-              {
-                recipientGeneration: durable.snapshot.recipientGeneration,
-                descriptorDigest,
-                recipientKeyId: attempt.attempt.recipientKeyId,
-                recipientPublicKey: Buffer.from(
-                  attempt.attempt.recipientPublicKey,
-                ).toString("base64url"),
-                expiresAt: attempt.attempt.expiresAt,
-                now,
-              },
-            ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
-            descriptorBytes,
-          };
-          const stored = await this.dependencies.repository.compareAndSwap({
-            expectedRequestRevision: durable.snapshot.requestRevision,
-            next,
-          });
-          if (stored.status !== "updated") return null;
-          const storedRecipient = stored.record.snapshot.recipient;
-          if (
-            !isTaskRuntimeRecord(stored.record)
-            || !exactOccurrenceRecord(input.occurrence, stored.record)
-            || !sameDurablePlan(stored.record, plan.initialRecord)
-            || stored.record.snapshot.state !== "awaiting_device"
-            || stored.record.snapshot.descriptorDigest !== descriptorDigest
-            || stored.record.descriptorBytes === null
-            || !sameBytes(stored.record.descriptorBytes, descriptorBytes)
-            || storedRecipient === null
-            || storedRecipient.recipientKeyId
-              !== attempt.attempt.recipientKeyId
-            || storedRecipient.recipientPublicKey !== Buffer.from(
-              attempt.attempt.recipientPublicKey,
-            ).toString("base64url")
-            || storedRecipient.expiresAt !== attempt.attempt.expiresAt
-          ) throw new TypeError("Task Runtime recipient binding was substituted");
-          retain = true;
-          return Object.freeze({
-            record: stored.record,
-            requestBytes: descriptorBytes.slice(),
-          });
-        } finally {
-          if (request !== null) {
-            destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
-          }
-          if (!retain) {
-            this.dependencies.recipients.delete(
-              durable.snapshot.requestId,
-              durable.snapshot.recipientGeneration,
-            );
-          }
-        }
       },
     });
     return bound;
@@ -1495,7 +1745,7 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       || !exactOccurrenceRecord(occurrence, durable)) {
       throw new TypeError("Task Runtime durable record was substituted");
     }
-    if (!sameDurablePlan(durable, plan.initialRecord)) {
+    if (!sameTaskRuntimeAuthorityPlan(durable, plan.initialRecord)) {
       return this.#replaceChangedPreclaimPlan(durable, plan.initialRecord);
     }
     const current = durable;
@@ -1506,37 +1756,24 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
 
     if (current.snapshot.state === "awaiting_device"
       || current.snapshot.state === "grant_ready") {
-      const now = this.#now();
-      const recipient = current.snapshot.recipient;
-      if (recipient !== null && (now >= recipient.expiresAt
-        || !activeRecipient(this.dependencies.recipients, current))) {
-        const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
-          ...current,
-          snapshot: advanceBackgroundAuthorizationGeneration(
-            current.snapshot,
-            {
-              reason: now >= recipient.expiresAt
-                ? "attempt_expired" : "recipient_lost",
-              now,
-              nextAttemptAt: now,
-            },
-          ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
-          descriptorBytes: null,
-          acceptedMaterial: null,
-        };
-        const rotated = await this.dependencies.repository.compareAndSwap({
-          expectedRequestRevision: current.snapshot.requestRevision,
-          next,
-        });
-        if (rotated.status === "updated") {
-          this.dependencies.recipients.delete(
-            current.snapshot.requestId,
-            current.snapshot.recipientGeneration,
-          );
-        }
+      const rotation = await rotateExpiredTaskRuntimeRecipient({
+        occurrence,
+        selected: current,
+        initialRecord: plan.initialRecord,
+        repository: this.dependencies.repository,
+        recipients: this.dependencies.recipients,
+        now: this.#now,
+      });
+      if (rotation.status === "rotated" || rotation.status === "stale") {
         return Object.freeze({ status: "awaiting_authorization" as const });
       }
       if (current.snapshot.state === "awaiting_device") {
+        return Object.freeze({ status: "awaiting_authorization" as const });
+      }
+      // A different process can retain the live recipient. Its absence from
+      // this registry cannot invalidate the durable grant before expiry.
+      if (current.snapshot.recipient !== null
+        && !activeRecipient(this.dependencies.recipients, current)) {
         return Object.freeze({ status: "awaiting_authorization" as const });
       }
     }

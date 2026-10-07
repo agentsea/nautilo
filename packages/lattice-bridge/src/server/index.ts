@@ -940,6 +940,7 @@ export {withCurrentStenographerAuthority, matchesCurrentStenographerAuthority, m
   type StenographerRequestAdmission} from "./journal/current-stenographer-authority.ts";
 export { matchesCurrentReflectionAuthority, withCurrentReflectionAuthority } from "./journal/current-reflection-authority.ts";
 export {
+  matchesCurrentTaskRuntimeAuthority,
   withCurrentTaskRuntimeAuthority,
   withCurrentAcceptedTaskRuntimeAuthority,
   withCurrentAcceptedParkedTaskRuntimeAuthority,
@@ -1003,6 +1004,7 @@ export {
   type InitialTaskRuntimeNamespaceAuthority,
   type InitialTaskRuntimeNamespaceFact,
   type ParkedTaskRuntimeCurrentRoutingFacts,
+  type ParkedTaskRuntimeExpectedNamespaceParticipants,
   type TaskContentNamespaceAuthorityInput,
 } from "./task/initial-task-runtime-namespace-authority.ts";
 

@@ -29,6 +29,9 @@ import {
   createParkedTaskRuntimeRoutingValidator,
   type ProtectedTaskRuntimeNamespaceAuthorityFact,
 } from "../../src/routes/protected-task-runtime-grant-plan";
+import {
+  createProtectedTaskRuntimeRecipientRequestPlan,
+} from "../../src/routes/protected-task-runtime-recipient-request-plan";
 
 const NOW = 1_800_500_000_000;
 const OWNER = "10000000-0000-4000-8000-000000000001";
@@ -350,6 +353,147 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
     recipientKeyId: recipient.recipientKeyId,
     domainCount: 2,
   });
+});
+
+test("shared recipient request planning preserves initial wire identity", async () => {
+  const value = occurrence();
+  const plan = await builder()(value);
+  const shared = createProtectedTaskRuntimeRecipientRequestPlan({
+    crypto: new LatticeCrypto(),
+    occurrence: value,
+    initialRecord: plan.initialRecord,
+    sourceRoomId: SOURCE_ROOM,
+    authority: {
+      policyRevision: plan.initialRecord.expectedPolicyRevision,
+      namespaces: plan.initialRecord.authoritySet.namespaceRequirements,
+      domains: plan.initialRecord.authoritySet.domainRequirements,
+    },
+    createdAt: NOW,
+    recipientTtlMs: 60_000,
+  });
+  const originalRecipient = plan.recipientAttempt({
+    record: plan.initialRecord,
+    now: NOW,
+  });
+  const sharedRecipient = shared.recipientAttempt({
+    record: plan.initialRecord,
+    now: NOW,
+  });
+  expect(sharedRecipient).toEqual(originalRecipient);
+  expect(sharedRecipient.recipientKeyId)
+    .toBe(`task-runtime:${RUN}:0`);
+  const attempt = Object.freeze({
+    requestId: plan.initialRecord.snapshot.requestId,
+    workId: RUN,
+    recipientGeneration: 0,
+    recipientKeyId: sharedRecipient.recipientKeyId,
+    recipientPublicKey: new Uint8Array(65).fill(4),
+    expiresAt: sharedRecipient.expiresAt,
+  });
+  const current = {
+    device: {
+      userId: REQUESTOR,
+      humanActorId: HUMAN,
+      deviceId: DEVICE,
+      deviceGeneration: 2,
+      securityRevision: 3,
+    } as never,
+    sourceRoomId: SOURCE_ROOM,
+    policyRevision: 7,
+    namespaceRequirements:
+      plan.initialRecord.authoritySet.namespaceRequirements,
+    domains: Object.freeze([
+      domain(DOMAIN_A, READABLE, 5, 9),
+      domain(DOMAIN_B, CONTENT, 6, 10),
+    ]),
+  };
+  const requestInput = {
+    record: plan.initialRecord,
+    attempt,
+    binding: {
+      userId: REQUESTOR,
+      humanActorId: HUMAN,
+      deviceId: DEVICE,
+    },
+    authority: current,
+  };
+  const originalBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
+    plan.buildRequest(requestInput),
+  );
+  const sharedBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
+    shared.buildRequest(requestInput),
+  );
+  expect(sharedBytes).toEqual(originalBytes);
+});
+
+test("shared recipient request planning rejects bad plans and stale domains", async () => {
+  const value = occurrence();
+  const plan = await builder()(value);
+  const exactAuthority = {
+    policyRevision: plan.initialRecord.expectedPolicyRevision,
+    namespaces: plan.initialRecord.authoritySet.namespaceRequirements,
+    domains: plan.initialRecord.authoritySet.domainRequirements,
+  };
+  expect(() => createProtectedTaskRuntimeRecipientRequestPlan({
+    crypto: new LatticeCrypto(),
+    occurrence: value,
+    initialRecord: plan.initialRecord,
+    sourceRoomId: SOURCE_ROOM,
+    authority: {
+      ...exactAuthority,
+      domains: exactAuthority.domains.map((entry, index) => ({
+        ...entry,
+        expectedEpoch: index === 0
+          ? entry.expectedEpoch + 1
+          : entry.expectedEpoch,
+      })),
+    },
+    createdAt: NOW,
+    recipientTtlMs: 60_000,
+  })).toThrow("recipient plan is not exact");
+
+  const shared = createProtectedTaskRuntimeRecipientRequestPlan({
+    crypto: new LatticeCrypto(),
+    occurrence: value,
+    initialRecord: plan.initialRecord,
+    sourceRoomId: SOURCE_ROOM,
+    authority: exactAuthority,
+    createdAt: NOW,
+    recipientTtlMs: 60_000,
+  });
+  const recipient = shared.recipientAttempt({
+    record: plan.initialRecord,
+    now: NOW,
+  });
+  expect(() => shared.buildRequest({
+    record: plan.initialRecord,
+    attempt: {
+      requestId: plan.initialRecord.snapshot.requestId,
+      workId: RUN,
+      recipientGeneration: 0,
+      recipientKeyId: recipient.recipientKeyId,
+      recipientPublicKey: new Uint8Array(65).fill(4),
+      expiresAt: recipient.expiresAt,
+    },
+    binding: { userId: REQUESTOR, humanActorId: HUMAN, deviceId: DEVICE },
+    authority: {
+      device: {
+        userId: REQUESTOR,
+        humanActorId: HUMAN,
+        deviceId: DEVICE,
+        deviceGeneration: 2,
+        securityRevision: 3,
+      } as never,
+      sourceRoomId: SOURCE_ROOM,
+      policyRevision: 7,
+      namespaceRequirements:
+        plan.initialRecord.authoritySet.namespaceRequirements,
+      domains: Object.freeze([
+        domain(DOMAIN_A, READABLE, 6, 9),
+        domain(DOMAIN_B, CONTENT, 6, 10),
+      ]),
+    },
+  })).toThrow("request authority is not exact");
 });
 
 test("commits stable Task identity while excluding current authority epochs", async () => {

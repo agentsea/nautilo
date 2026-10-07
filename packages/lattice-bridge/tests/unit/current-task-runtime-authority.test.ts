@@ -42,6 +42,8 @@ import {
   type TaskRuntimeDomainAuthorityRequirement,
   type TaskRuntimeNamespaceAuthorityRequirement,
 } from "../../src/server/task/current-task-runtime-authority.ts";
+import type { ParkedTaskRuntimeCurrentRoutingFacts } from
+  "../../src/server/task/parked-task-runtime-authority.ts";
 
 const USER = "10000000-0000-4000-8000-000000000001";
 const HUMAN = "10000000-0000-4000-8000-000000000002";
@@ -50,6 +52,8 @@ const ROOM = "10000000-0000-4000-8000-000000000004";
 const NAMESPACE = "10000000-0000-4000-8000-000000000005";
 const DOMAIN = "10000000-0000-4000-8000-000000000006";
 const AGENT = "10000000-0000-4000-8000-000000000007";
+const OTHER_HUMAN = "10000000-0000-4000-8000-000000000008";
+const SCOPE = "10000000-0000-4000-8000-000000000009";
 const TASK = "20000000-0000-4000-8000-000000000008";
 const RUN = "20000000-0000-4000-8000-000000000009";
 const JOB = "20000000-0000-4000-8000-00000000000a";
@@ -383,6 +387,15 @@ function productAuthority(
   value: Awaited<ReturnType<typeof fixture>>,
   events: string[],
   parked?: ReturnType<typeof parkedAuthorityRows>,
+  routing: Readonly<{
+    preset?: string;
+    targetUserIds?: readonly string[];
+    useScope?: boolean;
+    scopeId?: string | null;
+    targetRoomId?: string | null;
+    wideBringBack?: boolean;
+    participantHumanIds?: readonly string[];
+  }> = {},
 ) {
   const member = { actor_id: HUMAN, kind: "user" };
   const agentMember = { actor_id: AGENT, kind: "agent" };
@@ -391,8 +404,8 @@ function productAuthority(
     namespace_id: NAMESPACE,
     parent_room_id: null,
     namespace_access_revision: 9,
-    human_actor_ids: [HUMAN],
-    effective_human_actor_ids: [HUMAN],
+    human_actor_ids: routing.participantHumanIds ?? [HUMAN],
+    effective_human_actor_ids: routing.participantHumanIds ?? [HUMAN],
   };
   let selected = false;
   const tx = {
@@ -413,7 +426,16 @@ function productAuthority(
         event = "policy";
       } else if (parked && projection
         && Object.hasOwn(projection, "contentPristine")) {
-        rows = [parked.task];
+        rows = [{
+          ...parked.task,
+          preset: routing.preset ?? "task",
+          targetUserIds: routing.targetUserIds ?? [],
+          useScope: routing.useScope ?? false,
+          scopeId: routing.scopeId ?? null,
+          targetChat: "room",
+          targetRoomId: routing.targetRoomId ?? ROOM,
+          wideBringBack: routing.wideBringBack ?? true,
+        }];
         event = "task lock";
       } else if (parked && projection
         && Object.hasOwn(projection, "graphThreadId")) {
@@ -859,6 +881,18 @@ describe("current Task Runtime authority", () => {
       subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
       accepted: value.accepted,
       expected: parked.expected,
+      targetRoomId: ROOM,
+      expectedNamespaceParticipants: [{
+        namespaceId: NAMESPACE,
+        match: "exact",
+        participantHumanIds: [HUMAN],
+      }],
+      validateCurrentRouting: (facts: ParkedTaskRuntimeCurrentRoutingFacts) => {
+        expect(facts.targetRoomId).toBe(ROOM);
+        expect(facts.targetUserIds).toEqual([USER]);
+        expect(facts.memoryMode).toBe("namespace");
+        return true;
+      },
       now: () => NOW + 1,
       use: async (
         _authority: CurrentTaskRuntimeAuthority,
@@ -903,7 +937,10 @@ describe("current Task Runtime authority", () => {
     const gate = new Promise<void>(resolve => { release = resolve; });
     const runnerEntered = new Promise<void>(resolve => { entered = resolve; });
     let originalUse = 0;
+    let originalValidation = 0;
     let substitutedUse = 0;
+    let substitutedValidation = 0;
+    const participantHumanIds = [HUMAN];
     const request = {
       ...product,
       runner: {
@@ -924,6 +961,16 @@ describe("current Task Runtime authority", () => {
       subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
       accepted: value.accepted,
       expected: parked.expected,
+      targetRoomId: ROOM,
+      expectedNamespaceParticipants: [{
+        namespaceId: NAMESPACE,
+        match: "exact",
+        participantHumanIds,
+      }],
+      validateCurrentRouting: () => {
+        originalValidation += 1;
+        return true;
+      },
       now: () => NOW + 1,
       use: async () => {
         originalUse += 1;
@@ -940,10 +987,75 @@ describe("current Task Runtime authority", () => {
       substitutedUse += 1;
       return "substituted";
     };
+    request.validateCurrentRouting = () => {
+      substitutedValidation += 1;
+      return false;
+    };
+    participantHumanIds[0] = OTHER_HUMAN;
     release();
     expect(await operation).toBe("original");
+    expect(originalValidation).toBe(1);
     expect(originalUse).toBe(1);
+    expect(substitutedValidation).toBe(0);
     expect(substitutedUse).toBe(0);
+  });
+
+  test("rejects parked routing, Scope, and audience drift before restricted authority", async () => {
+    const value = await fixture(true);
+    const parked = parkedAuthorityRows();
+    const cases = [
+      {
+        name: "target audience",
+        routing: { targetUserIds: [OTHER_HUMAN] },
+        validate: (facts: { targetUserIds: readonly string[] }) =>
+          facts.targetUserIds.length === 1 && facts.targetUserIds[0] === USER,
+      },
+      {
+        name: "wide return intent",
+        routing: { preset: "in_private_namespace", wideBringBack: false },
+        validate: (facts: { wideBringBack: boolean }) => facts.wideBringBack,
+      },
+      {
+        name: "Scope binding",
+        routing: { useScope: true, scopeId: SCOPE },
+        validate: () => true,
+      },
+      {
+        name: "Namespace audience",
+        routing: { participantHumanIds: [HUMAN, OTHER_HUMAN] },
+        validate: () => true,
+      },
+    ] as const;
+    for (const currentCase of cases) {
+      const events: string[] = [];
+      let used = false;
+      const result = await withCurrentAcceptedParkedTaskRuntimeAuthority({
+        ...productAuthority(value, events, parked, currentCase.routing),
+        restricted: restrictedAuthority(value, { events }),
+        crypto: value.crypto,
+        serverScope: "https://nautilo.example",
+        subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+        accepted: value.accepted,
+        expected: parked.expected,
+        targetRoomId: ROOM,
+        expectedNamespaceParticipants: [{
+          namespaceId: NAMESPACE,
+          match: "exact",
+          participantHumanIds: [HUMAN],
+        }],
+        validateCurrentRouting: currentCase.validate,
+        now: () => NOW + 1,
+        use: async () => {
+          used = true;
+          return "unsafe";
+        },
+      } as unknown as Parameters<
+        typeof withCurrentAcceptedParkedTaskRuntimeAuthority
+      >[0]);
+      expect(result, currentCase.name).toBeNull();
+      expect(used, currentCase.name).toBe(false);
+      expect(events, currentCase.name).not.toContain("role");
+    }
   });
 
   test("rejects changed parked lifecycle before Namespace or crypto", async () => {
@@ -963,6 +1075,8 @@ describe("current Task Runtime authority", () => {
       subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
       accepted: value.accepted,
       expected: parked.expected,
+      targetRoomId: ROOM,
+      validateCurrentRouting: () => true,
       now: () => NOW + 1,
       use: async () => {
         used = true;

@@ -132,11 +132,22 @@ export {
 } from "./dark-background-family-adapter";
 
 export {
+  attachExactTaskRuntimeRecipient,
   prepareUnclaimedParkedTaskRuntimeAuthority,
+  rotateExpiredTaskRuntimeRecipient,
+  sameTaskRuntimeAuthorityPlan,
   taskRuntimeStableIdempotencyKey,
   taskRuntimeStableRoutingDigest,
+  type AttachExactTaskRuntimeRecipientInput,
+  type BindTaskRuntimeRecipientResult,
   type PrepareUnclaimedParkedTaskRuntimeAuthorityInput,
   type PrepareUnclaimedParkedTaskRuntimeAuthorityResult,
+  type RotateExpiredTaskRuntimeRecipientInput,
+  type RotateExpiredTaskRuntimeRecipientResult,
   type TaskRuntimeGrantClaimPlan,
   type TaskRuntimeGrantStableIdentity,
+  type TaskRuntimeRecipientAuthorityPort,
+  type TaskRuntimeRecipientCurrentAuthority,
+  type TaskRuntimeRecipientDeviceBinding,
+  type TaskRuntimeRecipientRequestPlan,
 } from "./task-runtime-grant-claim";

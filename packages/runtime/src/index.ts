@@ -669,6 +669,7 @@ export {
   FOREGROUND_AUTHORIZATION_MAX_CHILD_VIEWS,
   FOREGROUND_AUTHORIZATION_MAX_SESSIONS,
   MAX_FOREGROUND_AUTHORIZATION_OPERATIONS,
+  TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
   ForegroundAuthorizationSessionRegistry,
   createForegroundAuthorizationCapabilityPort,
   type ForegroundAuthorizationBinding,

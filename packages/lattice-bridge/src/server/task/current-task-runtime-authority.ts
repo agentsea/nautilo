@@ -44,9 +44,21 @@ import {
 } from "../storage/postgres-lattice-storage.ts";
 import {
   copyParkedTaskRuntimeAuthority,
-  lockCurrentParkedTaskAdditionalAuthority,
+  copyParkedTaskRuntimeExpectedNamespaceParticipants,
+  currentParkedTaskRuntimeRoutingFacts,
+  exactCurrentParkedTaskScopeMemory,
+  lockCurrentParkedTaskAdditionalAuthorityWithRouting,
+  parkedTaskRuntimeNamespaceParticipantsMatch,
+  parkedTaskRuntimeScopeBindingMatches,
   withParkedTaskRuntimeRestrictedAuthority,
+  type ParkedTaskRuntimeCurrentRoutingFacts,
+  type ParkedTaskRuntimeExpectedNamespaceParticipants,
+  type ParkedTaskRuntimeLockedRoutingTask,
 } from "./parked-task-runtime-authority.ts";
+import {
+  copyTaskScopeMemoryBinding,
+  type TaskScopeMemoryBinding,
+} from "./task-scope-memory-metadata.ts";
 
 export type TaskRuntimeNamespaceAuthorityRequirement = Readonly<{
   ordinal: number;
@@ -476,6 +488,12 @@ type CurrentAcceptedTaskRuntimeAuthorityUse<Value> =
   | Readonly<{
     kind: "parked";
     expected: ParkedProtectedTaskAdditionalAuthority;
+    targetRoomId: string;
+    scopeMemory?: TaskScopeMemoryBinding;
+    expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants;
+    validateCurrentRouting(
+      facts: ParkedTaskRuntimeCurrentRoutingFacts,
+    ): boolean | Promise<boolean>;
     use(
       authority: CurrentTaskRuntimeAuthority,
       restricted: PostgresJsBridgeConnection,
@@ -564,11 +582,30 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
         || input.now() >= accepted.authorizationExpiresAt
         || namespaces.some((requirement) =>
           requirement.expectedPolicyRevision !== policy.revision)) return null;
-      if (authorityUse.kind === "parked"
-        && await lockCurrentParkedTaskAdditionalAuthority({
+      let parkedTask: ParkedTaskRuntimeLockedRoutingTask | undefined;
+      if (authorityUse.kind === "parked") {
+        const locked = await lockCurrentParkedTaskAdditionalAuthorityWithRouting({
           transaction: tx,
           expected: authorityUse.expected,
-        }) === null) return null;
+        });
+        if (locked === null) return null;
+        const facts = currentParkedTaskRuntimeRoutingFacts({
+          sourceRoomId: request.sourceRoomId,
+          targetRoomId: authorityUse.targetRoomId,
+          task: locked.task,
+          current: locked.current,
+        });
+        if (facts === null
+          || !parkedTaskRuntimeScopeBindingMatches({
+            task: locked.task,
+            sourceRoomId: request.sourceRoomId,
+            namespaceIds: namespaces.map(requirement =>
+              requirement.namespaceId),
+            scopeMemory: authorityUse.scopeMemory,
+          })
+          || !await authorityUse.validateCurrentRouting(facts)) return null;
+        parkedTask = locked.task;
+      }
       const product = inTransaction(executor);
       return new PostgresNamespaceProductAuthority(product)
         .withCurrentReadableNamespaceSet({
@@ -588,11 +625,26 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
                 if (requirement === undefined
                   || entry.namespaceId !== requirement.namespaceId
                   || current.accessRevision
-                    !== requirement.expectedAccessRevision) return null;
+                    !== requirement.expectedAccessRevision
+                  || authorityUse.kind === "parked"
+                    && !parkedTaskRuntimeNamespaceParticipantsMatch(
+                      entry.namespaceId,
+                      current.participantHumanIds,
+                      authorityUse.expectedNamespaceParticipants,
+                    )) return null;
               } finally {
                 current.audienceFingerprint.fill(0);
               }
             }
+            if (authorityUse.kind === "parked"
+              && (parkedTask === undefined
+                || !await exactCurrentParkedTaskScopeMemory({
+                  product,
+                  task: parkedTask,
+                  sourceRoomId: request.sourceRoomId,
+                  requesterHumanId: input.subject.humanActorId,
+                  scopeMemory: authorityUse.scopeMemory,
+                }))) return null;
             input.signal?.throwIfAborted();
             return input.restricted.transactionOnce(async (restrictedTx) => {
               const restricted = inTransaction(restrictedTx);
@@ -754,6 +806,12 @@ export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
 export async function withCurrentAcceptedParkedTaskRuntimeAuthority<Value>(
   input: CurrentAcceptedTaskRuntimeAuthorityInput & Readonly<{
     expected: ParkedProtectedTaskAdditionalAuthority;
+    targetRoomId: string;
+    scopeMemory?: TaskScopeMemoryBinding;
+    expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants;
+    validateCurrentRouting(
+      facts: ParkedTaskRuntimeCurrentRoutingFacts,
+    ): boolean | Promise<boolean>;
     use(
       authority: CurrentTaskRuntimeAuthority,
       restricted: PostgresJsBridgeConnection,
@@ -761,9 +819,29 @@ export async function withCurrentAcceptedParkedTaskRuntimeAuthority<Value>(
   }>,
 ): Promise<Value | null> {
   const use = input.use;
+  const validateCurrentRouting = input.validateCurrentRouting;
   const expected = copyParkedTaskRuntimeAuthority(input.expected);
   const subject = Object.freeze({ ...input.subject });
-  if (input.accepted.requestId !== expected.authorizationRequestId
+  const scopeMemory = input.scopeMemory === undefined
+    ? undefined
+    : copyTaskScopeMemoryBinding(input.scopeMemory);
+  const suppliedNamespaceParticipants = input.expectedNamespaceParticipants;
+  let expectedNamespaceParticipants:
+    ParkedTaskRuntimeExpectedNamespaceParticipants | undefined;
+  if (suppliedNamespaceParticipants !== undefined) {
+    const copied = copyParkedTaskRuntimeExpectedNamespaceParticipants(
+      suppliedNamespaceParticipants,
+    );
+    if (copied === null) return null;
+    expectedNamespaceParticipants = copied;
+  }
+  const namespaceIds = input.accepted.namespaceRequirements.map(
+    requirement => requirement.namespaceId,
+  );
+  if (typeof use !== "function" || typeof validateCurrentRouting !== "function"
+    || expectedNamespaceParticipants?.some(value =>
+      !namespaceIds.includes(value.namespaceId)) === true
+    || input.accepted.requestId !== expected.authorizationRequestId
     || input.accepted.workId !== expected.occurrence.run.id
     || input.accepted.workKind !== "task.execute"
     || input.accepted.workPurpose !== "task.execute"
@@ -775,6 +853,12 @@ export async function withCurrentAcceptedParkedTaskRuntimeAuthority<Value>(
     Object.freeze({ ...input, subject }), {
     kind: "parked",
     expected,
+    targetRoomId: input.targetRoomId,
+    ...(scopeMemory === undefined ? {} : { scopeMemory }),
+    ...(expectedNamespaceParticipants === undefined
+      ? {}
+      : { expectedNamespaceParticipants }),
+    validateCurrentRouting,
     use: (authority, restricted) => use(authority, restricted),
   });
 }

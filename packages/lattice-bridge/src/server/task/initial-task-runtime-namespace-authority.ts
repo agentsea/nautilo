@@ -49,10 +49,21 @@ import {
 } from "./task-scope-memory-metadata.ts";
 import {
   copyParkedTaskRuntimeAuthority,
+  copyParkedTaskRuntimeExpectedNamespaceParticipants,
+  currentParkedTaskRuntimeRoutingFacts,
   lockCurrentParkedTaskAdditionalAuthority,
+  parkedTaskRuntimeNamespaceParticipantsMatch,
   withParkedTaskRuntimeRestrictedAuthority,
+  type ParkedTaskRuntimeCurrentRoutingFacts,
+  type ParkedTaskRuntimeExpectedNamespaceParticipants,
+  type ParkedTaskRuntimeLockedRoutingTask,
 } from "./parked-task-runtime-authority.ts";
 import type { CanonicalTranscriptTx } from "@nautilo/trust";
+
+export type {
+  ParkedTaskRuntimeCurrentRoutingFacts,
+  ParkedTaskRuntimeExpectedNamespaceParticipants,
+} from "./parked-task-runtime-authority.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
@@ -69,31 +80,6 @@ export type InitialTaskRuntimeNamespaceAuthority = Readonly<{
   sourceRoomId: string;
   sourceNamespaceId: string;
   facts: readonly InitialTaskRuntimeNamespaceFact[];
-}>;
-
-/** Content-free locked routing facts used to verify the parked grant identity. */
-export type ParkedTaskRuntimeCurrentRoutingFacts = Readonly<{
-  taskId: string;
-  taskRunId: string;
-  ownerId: string;
-  requestorId: string;
-  agentId: string;
-  callingRoomId: string | null;
-  scheduleKind: "now" | "one_shot" | "cron";
-  graphThreadId: string;
-  startedAt: Date;
-  sourceRoomId: string;
-  targetRoomId: string;
-  targetUserIds: readonly string[];
-  memoryMode: "scope" | "wide" | "namespace";
-  wideBringBack: boolean;
-  scopeId: string | null;
-  contentRepresentation: "dual" | "protected";
-  contentNamespaceId: string;
-  contentRevision: number;
-  contentObjectId: string;
-  contentAccessRevision: number;
-  requiredNamespaceFingerprint: Uint8Array;
 }>;
 
 type LockedTaskRuntimeRoutingRow = Readonly<{
@@ -161,55 +147,9 @@ type TaskRuntimeProductAuthorityInput =
       namespaceIds: readonly [string];
     }>);
 
-type ExpectedNamespaceParticipants = readonly Readonly<{
-  namespaceId: string;
-  match: "exact" | "includes";
-  participantHumanIds: readonly string[];
-}>[];
-
 function sameIds(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length
     && left.every((entry, index) => entry === right[index]);
-}
-
-function uuidArray(value: unknown): value is readonly string[] {
-  return Array.isArray(value)
-    && value.every(entry => typeof entry === "string" && UUID.test(entry));
-}
-
-function copyExpectedNamespaceParticipants(
-  value: unknown,
-): ExpectedNamespaceParticipants | null {
-  if (!Array.isArray(value) || value.length < 1) return null;
-  const entries: readonly unknown[] = value;
-  const copied: Array<ExpectedNamespaceParticipants[number]> = [];
-  for (const [index, entry] of entries.entries()) {
-    if (entry === null || typeof entry !== "object"
-      || Object.keys(entry).sort().join(",")
-        !== "match,namespaceId,participantHumanIds") return null;
-    const record = entry as Record<string, unknown>;
-    const namespaceId = record["namespaceId"];
-    const match = record["match"];
-    const participantValues = record["participantHumanIds"];
-    if (typeof namespaceId !== "string" || !UUID.test(namespaceId)
-      || match !== "exact" && match !== "includes"
-      || index > 0 && copied[index - 1]!.namespaceId >= namespaceId
-      || !Array.isArray(participantValues)
-      || participantValues.length < 1) return null;
-    const participantHumanIds: string[] = [];
-    for (const participant of participantValues as readonly unknown[]) {
-      const previous = participantHumanIds.at(-1);
-      if (typeof participant !== "string" || !UUID.test(participant)
-        || previous !== undefined && previous >= participant) return null;
-      participantHumanIds.push(participant);
-    }
-    copied.push(Object.freeze({
-      namespaceId,
-      match,
-      participantHumanIds: Object.freeze(participantHumanIds),
-    }));
-  }
-  return Object.freeze(copied);
 }
 
 async function withInitialTaskRuntimeProductAuthority<Value>(
@@ -224,7 +164,7 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
     transaction: CanonicalTranscriptTx,
     task: LockedTaskRuntimeRoutingRow,
   ) => Promise<boolean>,
-  expectedNamespaceParticipants?: ExpectedNamespaceParticipants,
+  expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants,
 ): Promise<Value | null> {
   // Snapshot caller-owned coordinates before the first asynchronous boundary.
   const scopeMemory = input.purpose !== "initial_execution"
@@ -367,23 +307,14 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
           for (const [index, entry] of entries.entries()) {
             const snapshot = inspectNamespaceProductAuthoritySnapshot(entry.authority);
             try {
-              const expectedParticipants = expectedNamespaceParticipants?.find(
-                value => value.namespaceId === entry.namespaceId,
-              );
               if (entry.namespaceId !== request.namespaceIds[index]
                 || snapshot.namespaceId !== entry.namespaceId
                 || snapshot.subjectHumanId !== request.requesterHumanId
-                || expectedParticipants !== undefined
-                  && (expectedParticipants.match === "exact"
-                    ? !sameIds(
-                        snapshot.participantHumanIds,
-                        expectedParticipants.participantHumanIds,
-                      )
-                    : expectedParticipants.participantHumanIds.some(
-                        participantId => !snapshot.participantHumanIds.some(
-                          candidate => candidate === participantId,
-                        ),
-                      ))) return null;
+                || !parkedTaskRuntimeNamespaceParticipantsMatch(
+                  entry.namespaceId,
+                  snapshot.participantHumanIds,
+                  expectedNamespaceParticipants,
+                )) return null;
               accessRevisions.push(snapshot.accessRevision);
             } finally {
               snapshot.audienceFingerprint.fill(0);
@@ -458,7 +389,7 @@ async function withTaskRuntimeNamespaceAuthority<Value>(
     restricted: PostgresJsBridgeConnection,
   ) => Value | Promise<Value>,
   onNamespaceReadinessUnavailable?: (namespaceId: string) => void,
-  expectedNamespaceParticipants?: ExpectedNamespaceParticipants,
+  expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants,
 ): Promise<Value | null> {
   const request: TaskRuntimeProductAuthorityInput = input.purpose
     === "initial_execution"
@@ -556,67 +487,30 @@ async function withTaskRuntimeNamespaceAuthority<Value>(
   );
 }
 
-function currentParkedTaskRuntimeRoutingFacts(
-  request: InitialTaskRuntimeNamespaceInput,
+function normalizeLockedTaskRuntimeRouting(
   task: LockedTaskRuntimeRoutingRow,
-  current: ParkedProtectedTaskAdditionalAuthority,
-): ParkedTaskRuntimeCurrentRoutingFacts | null {
-  const occurrence = current.occurrence;
-  const fingerprint = task.crypto_required_namespace_fingerprint;
-  const memoryMode = task.use_scope
-    ? "scope" as const
-    : task.preset === "in_private_namespace"
-      ? "wide" as const
-      : "namespace" as const;
-  if (task.id !== occurrence.task.id
-    || task.owner_id !== occurrence.task.ownerId
-    || task.requestor_id !== occurrence.task.requestorId
-    || task.agent_id !== occurrence.task.agentId
-    || task.calling_room_id !== occurrence.task.callingRoomId
-    || task.schedule_kind !== occurrence.task.scheduleKind
-    || task.target_room_id !== request.targetRoomId
-    || typeof task.wide_bring_back !== "boolean"
-    || !uuidArray(task.target_user_ids)
-    || new Set(task.target_user_ids).size !== task.target_user_ids.length
-    || task.content_representation !== occurrence.task.contentRepresentation
-    || task.content_namespace_id !== occurrence.task.contentNamespaceId
-    || task.content_revision !== occurrence.task.contentRevision
-    || task.crypto_object_id !== occurrence.task.cryptoObjectId
-    || task.crypto_access_revision !== occurrence.task.cryptoAccessRevision
-    || !(fingerprint instanceof Uint8Array)
-    || fingerprint.length !== 32
-    || fingerprint.length
-      !== occurrence.task.cryptoRequiredNamespaceFingerprint.length
-    || !fingerprint.every((byte, index) =>
-      byte === occurrence.task.cryptoRequiredNamespaceFingerprint[index])
-    || (memoryMode === "scope"
-      ? task.scope_id === null || !UUID.test(task.scope_id)
-      : false)) return null;
-  const targetUserIds = [
-    ...new Set([task.requestor_id, ...task.target_user_ids]),
-  ].sort();
+): ParkedTaskRuntimeLockedRoutingTask {
   return Object.freeze({
-    taskId: task.id,
-    taskRunId: occurrence.run.id,
+    id: task.id,
     ownerId: task.owner_id,
     requestorId: task.requestor_id,
     agentId: task.agent_id,
     callingRoomId: task.calling_room_id,
     scheduleKind: task.schedule_kind,
-    graphThreadId: occurrence.run.graphThreadId,
-    startedAt: new Date(occurrence.run.startedAt.getTime()),
-    sourceRoomId: request.sourceRoomId,
-    targetRoomId: request.targetRoomId,
-    targetUserIds: Object.freeze(targetUserIds),
-    memoryMode,
+    contentRepresentation: task.content_representation,
+    contentNamespaceId: task.content_namespace_id,
+    contentRevision: task.content_revision,
+    cryptoObjectId: task.crypto_object_id,
+    cryptoAccessRevision: task.crypto_access_revision,
+    cryptoRequiredNamespaceFingerprint:
+      task.crypto_required_namespace_fingerprint,
+    preset: task.preset,
+    targetUserIds: task.target_user_ids,
+    useScope: task.use_scope,
+    scopeId: task.scope_id,
+    targetChat: task.target_chat,
+    targetRoomId: task.target_room_id,
     wideBringBack: task.wide_bring_back,
-    scopeId: memoryMode === "scope" ? task.scope_id : null,
-    contentRepresentation: occurrence.task.contentRepresentation,
-    contentNamespaceId: occurrence.task.contentNamespaceId,
-    contentRevision: occurrence.task.contentRevision,
-    contentObjectId: occurrence.task.cryptoObjectId,
-    contentAccessRevision: occurrence.task.cryptoAccessRevision,
-    requiredNamespaceFingerprint: new Uint8Array(fingerprint),
   });
 }
 
@@ -663,7 +557,7 @@ export async function withParkedTaskRuntimeNamespaceAuthority<Value>(
       facts: ParkedTaskRuntimeCurrentRoutingFacts,
     ): boolean | Promise<boolean>;
     onNamespaceReadinessUnavailable?(namespaceId: string): void;
-    expectedNamespaceParticipants?: ExpectedNamespaceParticipants;
+    expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants;
     use(
       authority: InitialTaskRuntimeNamespaceAuthority,
       restricted: PostgresJsBridgeConnection,
@@ -675,9 +569,10 @@ export async function withParkedTaskRuntimeNamespaceAuthority<Value>(
   const onNamespaceReadinessUnavailable =
     input.onNamespaceReadinessUnavailable;
   const suppliedNamespaceParticipants = input.expectedNamespaceParticipants;
-  let expectedNamespaceParticipants: ExpectedNamespaceParticipants | undefined;
+  let expectedNamespaceParticipants:
+    ParkedTaskRuntimeExpectedNamespaceParticipants | undefined;
   if (suppliedNamespaceParticipants !== undefined) {
-    const copied = copyExpectedNamespaceParticipants(
+    const copied = copyParkedTaskRuntimeExpectedNamespaceParticipants(
       suppliedNamespaceParticipants,
     );
     if (copied === null) return null;
@@ -719,11 +614,12 @@ export async function withParkedTaskRuntimeNamespaceAuthority<Value>(
         expected,
       });
       if (current === null) return false;
-      const facts = currentParkedTaskRuntimeRoutingFacts(
-        coordinates,
-        task,
+      const facts = currentParkedTaskRuntimeRoutingFacts({
+        sourceRoomId: coordinates.sourceRoomId,
+        targetRoomId: coordinates.targetRoomId,
+        task: normalizeLockedTaskRuntimeRouting(task),
         current,
-      );
+      });
       return facts !== null && await validateCurrentRouting(facts);
     },
     (authority, restricted) => withParkedTaskRuntimeRestrictedAuthority(
@@ -770,12 +666,14 @@ async function withTaskRuntimeRecipientAuthority<Value>(
   validateCurrentTaskRun: (
     product: PostgresJsBridgeConnection,
     transaction: CanonicalTranscriptTx,
+    task: LockedTaskRuntimeRoutingRow,
   ) => Promise<boolean>,
   use: (
     authority: InitialTaskRuntimeRecipientAuthority,
     restricted: PostgresJsBridgeConnection,
     request: TaskRuntimeRecipientAuthorityInput,
   ) => Value | Promise<Value>,
+  expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants,
 ): Promise<Value | null> {
   const namespaces = Object.freeze(input.namespaceRequirements.map((entry) => Object.freeze({
     ...entry, operations: Object.freeze([...entry.operations]),
@@ -872,7 +770,7 @@ async function withTaskRuntimeRecipientAuthority<Value>(
       request.signal?.throwIfAborted();
       return value;
     } finally { for (const bytes of owned) bytes.fill(0); }
-  }, validateCurrentTaskRun);
+  }, validateCurrentTaskRun, expectedNamespaceParticipants);
 }
 
 export async function withInitialTaskRuntimeRecipientAuthority<Value>(
@@ -900,6 +798,10 @@ export async function withParkedTaskRuntimeRecipientAuthority<Value>(
   input: TaskRuntimeRecipientAuthorityInput & Readonly<{
     expected: ParkedProtectedTaskAdditionalAuthority;
     authorizationRequestId: string;
+    validateCurrentRouting(
+      facts: ParkedTaskRuntimeCurrentRoutingFacts,
+    ): boolean | Promise<boolean>;
+    expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants;
     use(
       authority: InitialTaskRuntimeRecipientAuthority,
       restricted: PostgresJsBridgeConnection,
@@ -907,8 +809,24 @@ export async function withParkedTaskRuntimeRecipientAuthority<Value>(
   }>,
 ): Promise<Value | null> {
   const use = input.use;
+  const validateCurrentRouting = input.validateCurrentRouting;
+  const sourceRoomId = input.sourceRoomId;
+  const targetRoomId = input.targetRoomId;
+  const suppliedNamespaceParticipants = input.expectedNamespaceParticipants;
+  let expectedNamespaceParticipants:
+    ParkedTaskRuntimeExpectedNamespaceParticipants | undefined;
+  if (suppliedNamespaceParticipants !== undefined) {
+    const copied = copyParkedTaskRuntimeExpectedNamespaceParticipants(
+      suppliedNamespaceParticipants,
+    );
+    if (copied === null) return null;
+    expectedNamespaceParticipants = copied;
+  }
   const expected = copyParkedTaskRuntimeAuthority(input.expected);
-  if (input.authorizationRequestId !== expected.authorizationRequestId
+  if (typeof use !== "function" || typeof validateCurrentRouting !== "function"
+    || expectedNamespaceParticipants?.some(value =>
+      !input.namespaceIds.includes(value.namespaceId)) === true
+    || input.authorizationRequestId !== expected.authorizationRequestId
     || input.taskId !== expected.occurrence.task.id
     || input.requesterUserId !== expected.occurrence.task.requestorId
     || input.agentId !== expected.occurrence.task.agentId
@@ -916,14 +834,24 @@ export async function withParkedTaskRuntimeRecipientAuthority<Value>(
       !== expected.occurrence.task.contentNamespaceId) return null;
   return withTaskRuntimeRecipientAuthority(
     input,
-    async (_product, transaction) =>
-      await lockCurrentParkedTaskAdditionalAuthority({
+    async (_product, transaction, task) => {
+      const current = await lockCurrentParkedTaskAdditionalAuthority({
         transaction,
         expected,
-      }) !== null,
+      });
+      if (current === null) return false;
+      const facts = currentParkedTaskRuntimeRoutingFacts({
+        sourceRoomId,
+        targetRoomId,
+        task: normalizeLockedTaskRuntimeRouting(task),
+        current,
+      });
+      return facts !== null && await validateCurrentRouting(facts);
+    },
     (authority, restricted) => withParkedTaskRuntimeRestrictedAuthority(
       restricted,
       scoped => Promise.resolve(use(authority, scoped)),
     ),
+    expectedNamespaceParticipants,
   );
 }

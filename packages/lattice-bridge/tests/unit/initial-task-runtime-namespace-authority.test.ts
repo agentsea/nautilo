@@ -16,7 +16,7 @@ import {
   type ProtectedTaskExecutionContinuationProof,
 } from "@nautilo/db";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
-import { inspectInitialTaskRuntimeNamespaceAuthority, inspectTaskContentNamespaceAuthority, withInitialTaskRuntimeRecipientAuthority, withParkedTaskRuntimeNamespaceAuthority } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
+import { inspectInitialTaskRuntimeNamespaceAuthority, inspectTaskContentNamespaceAuthority, withInitialTaskRuntimeRecipientAuthority, withParkedTaskRuntimeNamespaceAuthority, withParkedTaskRuntimeRecipientAuthority } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
 
 import { PostgresDeviceAdmissionRepository, type CurrentDeviceAdmissionAuthority } from "../../src/server/device/postgres-device-admission-repository.ts";
 
@@ -1254,5 +1254,91 @@ describe("initial Task Runtime recipient authority", () => {
     const controller = new AbortController(); controller.abort();
     expect(await withInitialTaskRuntimeRecipientAuthority({ ...exact, signal: controller.signal, use: () => true }).catch((error: unknown) => error)).toBeInstanceOf(Error);
     expect(events).toEqual([]);
+  });
+});
+
+describe("parked Task Runtime recipient authority", () => {
+  test("revalidates locked routing and all pinned base Namespace audiences", async () => {
+    const parked = parkedRows();
+    const { input, events } = fixture((_stage, rows) => rows, parked);
+    const admission = spyOn(
+      PostgresDeviceAdmissionRepository.prototype,
+      "currentAuthorityForDelegation",
+    ).mockImplementation(async () => device());
+    let validated = 0;
+    let used = 0;
+    try {
+      const result = await withParkedTaskRuntimeRecipientAuthority({
+        ...recipientInput(input),
+        expected: parkedDescriptor(parked),
+        authorizationRequestId: REQUEST,
+        expectedNamespaceParticipants: [
+          { namespaceId: NAMESPACES[0], match: "exact",
+            participantHumanIds: [HUMAN] },
+          { namespaceId: NAMESPACES[1], match: "includes",
+            participantHumanIds: [HUMAN] },
+        ],
+        validateCurrentRouting: facts => {
+          validated += 1;
+          expect(facts.targetRoomId).toBe(MEMORY_ROOM);
+          expect(facts.targetUserIds).toEqual([USER]);
+          expect(facts.memoryMode).toBe("namespace");
+          return true;
+        },
+        use: async (_authority, restricted) => {
+          used += 1;
+          await restricted.query("SELECT current_user::text");
+          return "ready";
+        },
+      });
+      expect(result).toBe("ready");
+      expect(validated).toBe(1);
+      expect(used).toBe(1);
+      expect(events.indexOf("proof-continuation"))
+        .toBeLessThan(events.indexOf("candidates"));
+      expect(events.indexOf("target-members"))
+        .toBeLessThan(events.indexOf("restricted"));
+    } finally {
+      admission.mockRestore();
+    }
+  });
+
+  test("rejects routing and audience drift before restricted recipient work", async () => {
+    const parked = parkedRows();
+    for (const currentCase of ["routing", "audience"] as const) {
+      const { input, events } = fixture(
+        (stage, rows) => currentCase === "audience" && stage === "targets"
+          ? rows.map((row, index) => index === 0
+            ? { ...row, human_actor_ids: [HUMAN, OTHER_HUMAN],
+              effective_human_actor_ids: [HUMAN, OTHER_HUMAN] }
+            : row)
+          : rows,
+        parked,
+      );
+      const admission = spyOn(
+        PostgresDeviceAdmissionRepository.prototype,
+        "currentAuthorityForDelegation",
+      ).mockImplementation(async () => device());
+      let used = false;
+      try {
+        const result = await withParkedTaskRuntimeRecipientAuthority({
+          ...recipientInput(input),
+          expected: parkedDescriptor(parked),
+          authorizationRequestId: REQUEST,
+          expectedNamespaceParticipants: [{
+            namespaceId: NAMESPACES[0],
+            match: "exact",
+            participantHumanIds: [HUMAN],
+          }],
+          validateCurrentRouting: () => currentCase !== "routing",
+          use: () => { used = true; },
+        });
+        expect(result, currentCase).toBeNull();
+        expect(used, currentCase).toBe(false);
+        expect(events, currentCase).not.toContain("restricted");
+      } finally {
+        admission.mockRestore();
+      }
+    }
   });
 });

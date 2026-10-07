@@ -1,19 +1,10 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
 import {
-  authorizationRevision,
-  createDomainForegroundAuthorizationPlan,
-  cryptoDeviceId,
-  humanId,
   type LatticeCrypto,
 } from "@nautilo/lattice-crypto";
 import {
-  createTaskRuntimeBackgroundAuthorizationRequestV1,
-} from "@nautilo/lattice-crypto/background";
-import {
-  DOMAIN_FOREGROUND_AUTHORIZATION_MAX_SECRET_BYTES_V2,
   DOMAIN_FOREGROUND_AUTHORIZATION_MAX_TTL_MS_V2,
-  destroyDomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import {
@@ -41,6 +32,9 @@ import {
 import type {
   CurrentProtectedTaskMemoryPolicy,
 } from "./current-protected-task-memory-authority";
+import {
+  createProtectedTaskRuntimeRecipientRequestPlan,
+} from "./protected-task-runtime-recipient-request-plan";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
@@ -313,29 +307,6 @@ export function canonicalProtectedTaskRuntimeAuthority(input: Readonly<{
       expectedAuthorizationRevision: fact.expectedAuthorizationRevision,
     })));
   return Object.freeze({ policyRevision, namespaces, domains });
-}
-
-function sameRequirements(
-  current: readonly Readonly<{
-    ordinal: number;
-    namespaceId: string;
-    domainId: string;
-    operations: readonly ("decrypt" | "encrypt")[];
-    expectedAccessRevision: number;
-    expectedPolicyRevision: number;
-  }>[],
-  expected: BackgroundAuthorizationTaskRuntimeRecordV3["authoritySet"]["namespaceRequirements"],
-): boolean {
-  return current.length === expected.length && current.every((value, index) => {
-    const other = expected[index];
-    return other !== undefined
-      && value.ordinal === other.ordinal
-      && value.namespaceId === other.namespaceId
-      && value.domainId === other.domainId
-      && value.expectedAccessRevision === other.expectedAccessRevision
-      && value.expectedPolicyRevision === other.expectedPolicyRevision
-      && value.operations.join(",") === other.operations.join(",");
-  });
 }
 
 /**
@@ -644,6 +615,15 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       || prepared.scheduling.roomId !== prepared.target.roomId) {
       throw new TypeError("Protected Task execution preparation changed predispatch");
     }
+    const recipientRequest = createProtectedTaskRuntimeRecipientRequestPlan({
+      crypto: dependencies.crypto,
+      occurrence,
+      initialRecord,
+      sourceRoomId: resolvedAuthority.sourceRoomId,
+      authority,
+      createdAt,
+      recipientTtlMs: dependencies.recipientTtlMs,
+    });
 
     return Object.freeze({
       stableIdentity,
@@ -653,103 +633,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       ...(scopeMemory === undefined ? {} : { scopeMemory }),
       executor: execution.executor,
       startProtectedTaskRun: dependencies.startProtectedTaskRun,
-      recipientAttempt: ({ record, now: attemptAt }) => {
-        if (record.snapshot.requestId !== requestId
-          || record.snapshot.workId !== occurrence.run.id
-          || record.expectedPolicyRevision !== authority.policyRevision
-          || record.idempotencyKey !== initialRecord.idempotencyKey
-          || !sameBytes(record.workIdentityHash, initialRecord.workIdentityHash)) {
-          throw new TypeError("Protected Task recipient record is not exact");
-        }
-        const expiresAt = attemptAt + dependencies.recipientTtlMs;
-        if (!Number.isSafeInteger(attemptAt) || attemptAt < createdAt
-          || !Number.isSafeInteger(expiresAt)) {
-          throw new TypeError("Protected Task recipient deadline is invalid");
-        }
-        return Object.freeze({
-          recipientKeyId:
-            `task-runtime:${occurrence.run.id}:${record.snapshot.recipientGeneration}`,
-          expiresAt,
-        });
-      },
-      buildRequest: ({ record, attempt, binding, authority: current }) => {
-        const issuedAt = attempt.expiresAt - dependencies.recipientTtlMs;
-        const currentDomains = [...current.domains]
-          .sort((left, right) => left.domainId.localeCompare(right.domainId));
-        if (record.snapshot.requestId !== requestId
-          || record.snapshot.workId !== occurrence.run.id
-          || record.idempotencyKey !== initialRecord.idempotencyKey
-          || !sameBytes(record.workIdentityHash, initialRecord.workIdentityHash)
-          || attempt.requestId !== requestId
-          || attempt.workId !== occurrence.run.id
-          || attempt.recipientGeneration !== record.snapshot.recipientGeneration
-          || attempt.recipientKeyId
-            !== `task-runtime:${occurrence.run.id}:${attempt.recipientGeneration}`
-          || binding.userId !== occurrence.task.requestorId
-          || current.device.userId !== binding.userId
-          || current.device.humanActorId !== binding.humanActorId
-          || current.device.deviceId !== binding.deviceId
-          || current.sourceRoomId !== resolvedAuthority.sourceRoomId
-          || current.policyRevision !== authority.policyRevision
-          || !sameRequirements(current.namespaceRequirements, authority.namespaces)
-          || currentDomains.length !== authority.domains.length
-          || currentDomains.some((domain, index) => {
-            const expected = authority.domains[index];
-            return expected === undefined
-              || domain.domainId !== expected.domainId
-              || domain.domainKeyGeneration !== expected.expectedEpoch
-              || domain.authorizationRevision
-                !== expected.expectedAuthorizationRevision;
-          })
-          || !Number.isSafeInteger(issuedAt)
-          || issuedAt < createdAt
-          || issuedAt >= attempt.expiresAt) {
-          throw new TypeError("Protected Task request authority is not exact");
-        }
-        const grant = createDomainForegroundAuthorizationPlan(
-          dependencies.crypto,
-          {
-            authorizationId: requestId,
-            policyRevision: authority.policyRevision,
-            sessionId: `task-run:${occurrence.run.id}`,
-            roomId: current.sourceRoomId,
-            subjectHumanId: humanId(binding.humanActorId),
-            committerDeviceId: cryptoDeviceId(binding.deviceId),
-            committerDeviceSigningGeneration: current.device.deviceGeneration,
-            hostAuthorizationRevision:
-              authorizationRevision(current.device.securityRevision),
-            recipientKind: "runtime",
-            recipientPrincipalId: "nautilo_task_runtime",
-            recipientAuthorizationRevision: authorizationRevision(0),
-            recipientRuntimeGeneration: attempt.recipientGeneration,
-            recipientKeyId: attempt.recipientKeyId,
-            operations: ["decrypt", "encrypt"],
-            issuedAt,
-            deadlineAt: attempt.expiresAt,
-            maximumSecretBytes:
-              DOMAIN_FOREGROUND_AUTHORIZATION_MAX_SECRET_BYTES_V2,
-            domains: currentDomains,
-          },
-        );
-        try {
-          return createTaskRuntimeBackgroundAuthorizationRequestV1({
-            requestId,
-            workId: occurrence.run.id,
-            workKind: "task.execute",
-            workPurpose: "task.execute",
-            recipientGeneration: attempt.recipientGeneration,
-            episodeId: grant.sessionId,
-            sourceRoomId: current.sourceRoomId,
-            recipientKeyId: attempt.recipientKeyId,
-            recipientPublicKey: attempt.recipientPublicKey,
-            authorizationPlan: grant,
-            issuedAt,
-            deadlineAt: attempt.expiresAt,
-          });
-        } finally {
-          destroyDomainForegroundAuthorizationPlanV2(grant);
-        }
-      },
+      ...recipientRequest,
       openTransientInput: execution.openTransientInput,
       publishResult: dependencies.publishResult,
       ...(execution.modelAttribution === undefined

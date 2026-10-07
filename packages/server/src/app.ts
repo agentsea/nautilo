@@ -11,6 +11,7 @@ import { bindReflectionSemanticDataOperationPort, resolveReflectionSemanticStage
 import { LatticeCrypto, TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
 import { createParkedProtectedTaskOccurrenceCoordinator } from "@nautilo/runtime";
 import { createProtectedTaskRuntimeParkedPreparation } from "./routes/protected-task-runtime-parked-preparation";
+import { createProtectedTaskRuntimeParkedDeviceAuthorization } from "./routes/protected-task-runtime-parked-device-authorization";
 import {decodeBackgroundProcessorWorkDescriptorV2} from "@nautilo/lattice-crypto/background";
 import { createHmacProtectedStenographerRecordCommitmentPort, createHmacRecordSemanticCommitmentPort, verifyRecordProductPostgresHandle } from "@nautilo/reflection-bridge/server";
 import { createProductionProtectedStenographerComposition } from "./background/stenographer-composition";
@@ -3037,7 +3038,18 @@ export async function createApp(options?: CreateAppOptions) {
   });
   personalEncryptionCoverageRoutes(app);
   messageBackfillRoutes(app);
+  const taskRuntimeRecipients = policyResolver === null
+    ? null : new TaskRuntimeRecipientRegistry(new LatticeCrypto());
+  app.addHook("onClose", () => {
+    taskRuntimeRecipients?.close();
+    return Promise.resolve();
+  });
+  const parkedTaskDeviceAuthorization = policyResolver === null || taskRuntimeRecipients === null
+    ? {} : createProtectedTaskRuntimeParkedDeviceAuthorization({
+      resolver: policyResolver, recipients: taskRuntimeRecipients,
+    });
   backgroundAuthorizationRoutes(app, createProductionBackgroundAuthorizationComposition({
+    ...parkedTaskDeviceAuthorization,
     wakeProtectedTask: () => getTaskObserver()?.kick(),
   }));
   deviceAdmissionRoutes(app, {
@@ -3916,18 +3928,12 @@ export async function createApp(options?: CreateAppOptions) {
   let moderationEffectRecovery: ReturnType<typeof createModerationEffectRecovery> | null = null;
   // Only already parked protected runs enter request preparation. Initial
   // protected dispatch remains unavailable until the execution owner is complete.
-  const taskRuntimeRecipients = policyResolver === null
-    ? null : new TaskRuntimeRecipientRegistry(new LatticeCrypto());
   const parkedTaskPreparation = policyResolver === null || taskRuntimeRecipients === null
     ? undefined : createParkedProtectedTaskOccurrenceCoordinator({
         prepare: createProtectedTaskRuntimeParkedPreparation({
           resolver: policyResolver, recipients: taskRuntimeRecipients,
         }),
       });
-  app.addHook("onClose", () => {
-    taskRuntimeRecipients?.close();
-    return Promise.resolve();
-  });
   const taskObserver = new TaskObserver({
     db: getServerDirectDb(),
     jobManager,

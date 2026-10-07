@@ -39,11 +39,15 @@ import {
   type BackgroundAuthorizationTaskRuntimeRecordV3,
 } from "../../src/protected-execution/background-authorization/repository";
 import {
+  attachExactTaskRuntimeRecipient,
   createTaskRuntimeGrantClaim,
   prepareUnclaimedParkedTaskRuntimeAuthority,
+  rotateExpiredTaskRuntimeRecipient,
+  sameTaskRuntimeAuthorityPlan,
   taskRuntimeStableIdempotencyKey,
   taskRuntimeStableRoutingDigest,
   type TaskRuntimeRecipientDeviceBinding,
+  type TaskRuntimeRecipientCurrentAuthority,
   type TaskRuntimeGrantClaimPlan,
 } from "../../src/protected-execution/background-authorization/task-runtime-grant-claim";
 import type { ProtectedTaskOccurrence } from "../../src/tasks/task-observer";
@@ -213,6 +217,24 @@ function initialRecord(): BackgroundAuthorizationTaskRuntimeRecordV3 {
   });
 }
 
+function requiredTaskRuntimeRecord(
+  value: BackgroundAuthorizationRecord | null,
+): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const snapshot = value?.snapshot;
+  if (
+    value === null
+    || snapshot === undefined
+    || snapshot.formatVersion !== 3
+    || snapshot.credentialSubject.kind !== "runtime"
+    || snapshot.credentialSubject.runtimeKind !== "task"
+    || snapshot.credentialSubject.runtimeVersion !== 1
+    || value.authoritySet === undefined
+  ) {
+    throw new Error("selected Task Runtime record missing");
+  }
+  return value as BackgroundAuthorizationTaskRuntimeRecordV3;
+}
+
 function parkedPreparation() {
   const initialOccurrence = occurrence();
   const parkedOccurrence: ProtectedTaskOccurrence = Object.freeze({
@@ -319,6 +341,7 @@ async function fixture() {
     .authoritySet.namespaceRequirements;
   let grantPlan: DomainForegroundAuthorizationPlanV2 | null = null;
   let claimCasCount = 0;
+  let recipientRotationCasCount = 0;
   let replacementCasCount = 0;
   let recipientCasBarrier: ReturnType<typeof Promise.withResolvers<void>>
     | null = null;
@@ -342,6 +365,10 @@ async function fixture() {
     },
     compareAndSwap: async (input): Promise<BackgroundAuthorizationCasResult> => {
       if (input.next.snapshot.state === "claimed") claimCasCount += 1;
+      if (input.next.snapshot.state === "awaiting_recipient"
+        && input.next.snapshot.lastRetryReason === "attempt_expired") {
+        recipientRotationCasCount += 1;
+      }
       if (
         input.next.snapshot.state === "awaiting_device"
         && recipientCasBarrier !== null
@@ -506,6 +533,29 @@ async function fixture() {
       },
     });
   const coordinator = createCoordinator(recipients);
+  const recipientAuthority = (
+    currentScopeMemory?: TaskScopeMemoryBinding,
+  ): TaskRuntimeRecipientCurrentAuthority => ({
+    device: {
+      userId: binding.userId,
+      humanActorId: binding.humanActorId,
+      deviceId: binding.deviceId,
+      deviceGeneration: 2,
+      signingPublicKey: signing.publicKey,
+      serverInstanceId: "task-runtime-server",
+      lineageGeneration: 1,
+      epoch: 1,
+      securityRevision: 6,
+      headDigest: bytes(6),
+    },
+    domains: [domain],
+    namespaceRequirements: currentNamespaceRequirements,
+    policyRevision: 7,
+    sourceRoomId: provenSourceRoomId,
+    ...(currentScopeMemory === undefined
+      ? {}
+      : { scopeMemory: currentScopeMemory }),
+  });
   const bindRecipient = (
     owner = coordinator,
     currentBinding: TaskRuntimeRecipientDeviceBinding = binding,
@@ -516,27 +566,7 @@ async function fixture() {
     binding: currentBinding,
     withCurrentAuthority: async ({ scopeMemory, targetRoomId, use }) => {
       expect(targetRoomId).toBe(ROOM);
-      return use({
-      device: {
-        userId: binding.userId,
-        humanActorId: binding.humanActorId,
-        deviceId: binding.deviceId,
-        deviceGeneration: 2,
-        signingPublicKey: signing.publicKey,
-        serverInstanceId: "task-runtime-server",
-        lineageGeneration: 1,
-        epoch: 1,
-        securityRevision: 6,
-        headDigest: bytes(6),
-      },
-      domains: [domain],
-      namespaceRequirements: currentNamespaceRequirements,
-      policyRevision: 7,
-      sourceRoomId: provenSourceRoomId,
-      ...((currentScopeMemory ?? scopeMemory) === undefined
-        ? {}
-        : { scopeMemory: currentScopeMemory ?? scopeMemory }),
-      });
+      return use(recipientAuthority(currentScopeMemory ?? scopeMemory));
     },
   });
   return {
@@ -548,12 +578,14 @@ async function fixture() {
     coordinator,
     createCoordinator,
     binding,
+    recipientAuthority,
     bindRecipient,
     builtRecipientKeys,
     plan,
     getPlan: () => grantPlan,
     getCurrent: () => currentAuthority,
     claimCasCount: () => claimCasCount,
+    recipientRotationCasCount: () => recipientRotationCasCount,
     replacementCasCount: () => replacementCasCount,
     authorityLocksHeld: () => authorityLocksHeld,
     startInputs,
@@ -751,6 +783,185 @@ describe("parked Task Runtime authority preparation", () => {
       recipients,
       now: () => NOW,
     })).rejects.toThrow("preparation is invalid");
+  });
+});
+
+describe("exact Task Runtime recipient kernels", () => {
+  test("attaches once, retains the winner, and rejects a stale selected revision", async () => {
+    const value = await fixture();
+    const currentOccurrence = occurrence();
+    const plan = value.plan(currentOccurrence);
+    await value.repository.create(plan.initialRecord);
+    const selected = requiredTaskRuntimeRecord(
+      await value.repository.get(REQUEST),
+    );
+    const attached = await attachExactTaskRuntimeRecipient({
+      occurrence: currentOccurrence,
+      selected,
+      plan,
+      binding: value.binding,
+      authority: value.recipientAuthority(),
+      repository: value.trackedRepository,
+      recipients: value.recipients,
+      now: () => NOW,
+    });
+    expect(attached?.record.snapshot.state).toBe("awaiting_device");
+    expect(value.recipients.size).toBe(1);
+
+    const losingRecipients = new TaskRuntimeRecipientRegistry(value.crypto, {
+      now: () => NOW,
+    });
+    expect(await attachExactTaskRuntimeRecipient({
+      occurrence: currentOccurrence,
+      selected,
+      plan,
+      binding: value.binding,
+      authority: value.recipientAuthority(),
+      repository: value.trackedRepository,
+      recipients: losingRecipients,
+      now: () => NOW,
+    })).toBeNull();
+    expect(losingRecipients.size).toBe(0);
+    expect(value.recipients.size).toBe(1);
+    losingRecipients.close();
+    value.recipients.close();
+  });
+
+  test("rejects mismatched authority and a changed exact plan before attachment", async () => {
+    const value = await fixture();
+    const currentOccurrence = occurrence();
+    const plan = value.plan(currentOccurrence);
+    await value.repository.create(plan.initialRecord);
+    const selected = requiredTaskRuntimeRecord(
+      await value.repository.get(REQUEST),
+    );
+    expect(await attachExactTaskRuntimeRecipient({
+      occurrence: currentOccurrence,
+      selected,
+      plan,
+      binding: value.binding,
+      authority: {
+        ...value.recipientAuthority(),
+        policyRevision: 8,
+      },
+      repository: value.trackedRepository,
+      recipients: value.recipients,
+      now: () => NOW,
+    })).toBeNull();
+    expect(value.recipients.size).toBe(0);
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(attachExactTaskRuntimeRecipient({
+      occurrence: currentOccurrence,
+      selected,
+      plan: {
+        ...plan,
+        initialRecord: {
+          ...plan.initialRecord,
+          workIdentityHash: bytes(99),
+        },
+      },
+      binding: value.binding,
+      authority: value.recipientAuthority(),
+      repository: value.trackedRepository,
+      recipients: value.recipients,
+      now: () => NOW,
+    })).rejects.toThrow("attachment is invalid");
+    expect(value.recipients.size).toBe(0);
+    value.recipients.close();
+  });
+
+  test("destroys the new attempt when the attachment CAS throws", async () => {
+    const value = await fixture();
+    const currentOccurrence = occurrence();
+    const plan = value.plan(currentOccurrence);
+    await value.repository.create(plan.initialRecord);
+    const selected = requiredTaskRuntimeRecord(
+      await value.repository.get(REQUEST),
+    );
+    const throwingRepository = {
+      get: value.trackedRepository.get.bind(value.trackedRepository),
+      compareAndSwap: () => Promise.reject(new Error("attachment CAS failed")),
+    };
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(attachExactTaskRuntimeRecipient({
+      occurrence: currentOccurrence,
+      selected,
+      plan,
+      binding: value.binding,
+      authority: value.recipientAuthority(),
+      repository: throwingRepository,
+      recipients: value.recipients,
+      now: () => NOW,
+    })).rejects.toThrow("attachment CAS failed");
+    expect(value.recipients.size).toBe(0);
+    value.recipients.close();
+  });
+
+  test("compares immutable authority plans independently of lifecycle state", () => {
+    const initial = initialRecord();
+    expect(sameTaskRuntimeAuthorityPlan({
+      ...initial,
+      snapshot: {
+        ...initial.snapshot,
+        state: "awaiting_device",
+        requestRevision: 1,
+      },
+    } as BackgroundAuthorizationTaskRuntimeRecordV3, initial)).toBe(true);
+    expect(sameTaskRuntimeAuthorityPlan({
+      ...initial,
+      workIdentityHash: bytes(99),
+    }, initial)).toBe(false);
+  });
+
+  test("rotates an expired recipient once and does not delete custody on a CAS loser", async () => {
+    const winner = await fixture();
+    await prepareAndBind(winner);
+    const selected = requiredTaskRuntimeRecord(
+      await winner.repository.get(REQUEST),
+    );
+    winner.setClock(NOW + 60_000);
+    expect(await rotateExpiredTaskRuntimeRecipient({
+      occurrence: occurrence(),
+      selected,
+      initialRecord: winner.plan(occurrence()).initialRecord,
+      repository: winner.trackedRepository,
+      recipients: winner.recipients,
+      now: () => NOW + 60_000,
+    })).toEqual({ status: "rotated" });
+    expect(winner.recipients.size).toBe(0);
+    expect(await rotateExpiredTaskRuntimeRecipient({
+      occurrence: occurrence(),
+      selected,
+      initialRecord: winner.plan(occurrence()).initialRecord,
+      repository: winner.trackedRepository,
+      recipients: winner.recipients,
+      now: () => NOW + 60_000,
+    })).toEqual({ status: "stale" });
+    winner.recipients.close();
+
+    const loser = await fixture();
+    await prepareAndBind(loser);
+    const losingSelected = requiredTaskRuntimeRecord(
+      await loser.repository.get(REQUEST),
+    );
+    const staleRepository = {
+      get: loser.trackedRepository.get.bind(loser.trackedRepository),
+      compareAndSwap: async () => ({
+        status: "stale" as const,
+        current: losingSelected,
+      }),
+    };
+    expect(await rotateExpiredTaskRuntimeRecipient({
+      occurrence: occurrence(),
+      selected: losingSelected,
+      initialRecord: loser.plan(occurrence()).initialRecord,
+      repository: staleRepository,
+      recipients: loser.recipients,
+      now: () => NOW + 60_000,
+    })).toEqual({ status: "stale" });
+    expect(loser.recipients.size).toBe(1);
+    loser.recipients.close();
   });
 });
 
@@ -1154,23 +1365,27 @@ describe("Task Runtime grant claim", () => {
     expect(await value.repository.get(REQUEST)).toBeNull();
   });
 
-  test("rotates an unconsumed request after its process-local recipient is lost", async () => {
+  test("does not rotate another process's live unconsumed recipient", async () => {
     const value = await fixture();
     await prepareAndBind(value);
     await acceptGrant(value);
-    const recovered = value.createCoordinator(
-      new TaskRuntimeRecipientRegistry(value.crypto, { now: () => NOW + 4 }),
+    const recoveredRecipients = new TaskRuntimeRecipientRegistry(
+      value.crypto,
+      { now: () => NOW + 4 },
     );
+    const recovered = value.createCoordinator(recoveredRecipients);
 
     expect(await recovered.prepareOrClaimExact(occurrence()))
       .toEqual({ status: "awaiting_authorization" });
     const durable = await value.repository.get(REQUEST);
-    expect(durable?.snapshot.state).toBe("awaiting_recipient");
-    expect(durable?.snapshot.recipientGeneration).toBe(1);
-    expect(durable?.snapshot.lastRetryReason).toBe("recipient_lost");
-    expect(durable?.descriptorBytes).toBeNull();
-    expect(durable?.acceptedMaterial).toBeNull();
+    expect(durable?.snapshot.state).toBe("grant_ready");
+    expect(durable?.snapshot.recipientGeneration).toBe(0);
+    expect(durable?.snapshot.lastRetryReason).toBeNull();
+    expect(durable?.descriptorBytes).not.toBeNull();
+    expect(durable?.acceptedMaterial).not.toBeNull();
     expect(value.claimCasCount()).toBe(0);
+    expect(value.recipientRotationCasCount()).toBe(0);
+    recoveredRecipients.close();
   });
 
   test("rotates an expired device request even if the old process still holds its key", async () => {
@@ -1185,6 +1400,12 @@ describe("Task Runtime grant claim", () => {
     expect(durable?.snapshot.recipientGeneration).toBe(1);
     expect(durable?.snapshot.lastRetryReason).toBe("attempt_expired");
     expect(value.recipients.size).toBe(0);
+    expect(value.recipientRotationCasCount()).toBe(1);
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    expect((await value.repository.get(REQUEST))?.snapshot.recipientGeneration)
+      .toBe(1);
+    expect(value.recipientRotationCasCount()).toBe(1);
   });
 
   test("claims one accepted grant and opens transient input only inside a one-use candidate", async () => {
