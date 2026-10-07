@@ -21,6 +21,10 @@ type Dependencies = Readonly<{
   withCurrentAuthority: CurrentProtectedTaskRuntimeAuthorityPort;
 }>;
 
+type Options = Readonly<{
+  requireNativeExecution?: true;
+}>;
+
 const productionDependencies: Dependencies = Object.freeze({
   withCurrentAuthority: createCurrentProtectedTaskRuntimeAuthorityPort(),
 });
@@ -55,6 +59,7 @@ function hasExactDefinitionCoordinates(
  */
 export function createCurrentNativeProtectedTaskDefinitionOccurrenceLoader(
   dependencies: Partial<Dependencies> = {},
+  options: Options = {},
 ): (
   input: LoadCurrentNativeProtectedTaskDefinitionOccurrenceInput,
 ) => Promise<NativeProtectedTaskDefinitionOccurrenceV1 | null> {
@@ -67,6 +72,8 @@ export function createCurrentNativeProtectedTaskDefinitionOccurrenceLoader(
     return withCurrentAuthority({
       ...input,
       use: current => {
+        if (options.requireNativeExecution === true
+          && current.nativeExecutionSupported !== true) return null;
         const matching = current.namespaceRequirements.filter(requirement =>
           requirement.namespaceId === occurrence.task.contentNamespaceId
         );

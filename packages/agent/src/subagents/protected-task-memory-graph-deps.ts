@@ -6,8 +6,10 @@ import type {
 } from "@nautilo/lattice-bridge";
 import {
   isNamespaceMemoryEnvelope,
+  isScopeMemoryEnvelope,
   type MemoryAccessEnvelope,
   type NamespaceMemoryEnvelope,
+  type ScopeMemoryEnvelope,
 } from "@nautilo/trust";
 
 import type { NautiloGraphDeps } from "../agent/graph";
@@ -32,8 +34,8 @@ export type ProtectedTaskMemoryGraphIdentity = Readonly<{
 export type ProtectedTaskMemoryGraphHandoff = Readonly<{
   search: ProtectedAgentMemorySearchPort;
   repository: ProtectedAgentMemoryRepository;
-  access: ProtectedAgentMemoryAccessPort;
-  projection: ProtectedAgentMemoryProjectionPort;
+  access?: ProtectedAgentMemoryAccessPort;
+  projection?: ProtectedAgentMemoryProjectionPort;
   /** Trusted policy-owner decision. This adapter never derives a mode. */
   fullEncryptionOnly: boolean;
 }>;
@@ -74,9 +76,13 @@ function validateHandoff(handoff: ProtectedTaskMemoryGraphHandoff): void {
   for (const method of ["search", "save", "replace", "setTier"] as const) {
     requiredMethod(handoff?.repository, method, "repository");
   }
-  requiredMethod(handoff?.access, "change", "access port");
-  for (const method of ["prepare", "publish"] as const) {
-    requiredMethod(handoff?.projection, method, "projection port");
+  if (handoff?.access !== undefined) {
+    requiredMethod(handoff.access, "change", "access port");
+  }
+  if (handoff?.projection !== undefined) {
+    for (const method of ["prepare", "publish"] as const) {
+      requiredMethod(handoff.projection, method, "projection port");
+    }
   }
   if (typeof handoff?.fullEncryptionOnly !== "boolean") {
     throw new TypeError(
@@ -112,39 +118,110 @@ function sameToolPolicy(
 
 function sameEnvelope(
   current: MemoryAccessEnvelope | null | undefined,
-  expected: NamespaceMemoryEnvelope,
+  expected: BoundMemoryAccessEnvelope,
 ): boolean {
-  return isNamespaceMemoryEnvelope(current)
-    && sameStrings(
-      Object.keys(current).sort(),
-      Object.keys(expected).sort(),
-    )
-    && current.memoryMode === expected.memoryMode
-    && current.ownerId === expected.ownerId
-    && current.actorId === expected.actorId
-    && current.agentId === expected.agentId
-    && current.roomId === expected.roomId
-    && sameStrings(current.readableNamespaces, expected.readableNamespaces)
-    && sameStrings(current.mutableNamespaces, expected.mutableNamespaces)
-    && sameStrings(current.writableNamespaces, expected.writableNamespaces)
-    && sameToolPolicy(current.toolPolicy, expected.toolPolicy);
+  if (current === null || current === undefined
+    || !sameStrings(Object.keys(current).sort(), Object.keys(expected).sort())
+    || current.memoryMode !== expected.memoryMode
+    || current.ownerId !== expected.ownerId
+  ) return false;
+  if (current.actorId !== expected.actorId
+    || current.agentId !== expected.agentId
+    || current.roomId !== expected.roomId
+    || !sameToolPolicy(current.toolPolicy, expected.toolPolicy)) return false;
+  if (isNamespaceMemoryEnvelope(expected)) {
+    return isNamespaceMemoryEnvelope(current)
+      && sameStrings(current.readableNamespaces, expected.readableNamespaces)
+      && sameStrings(current.mutableNamespaces, expected.mutableNamespaces)
+      && sameStrings(current.writableNamespaces, expected.writableNamespaces);
+  }
+  if (!isScopeMemoryEnvelope(current)) return false;
+  const currentOrigin = Object.hasOwn(current, "originWritableNamespaceId")
+    ? (current as ScopeMemoryEnvelopeWithOptionalOrigin)
+      .originWritableNamespaceId
+    : undefined;
+  const expectedOrigin = Object.hasOwn(expected, "originWritableNamespaceId")
+    ? expected.originWritableNamespaceId
+    : undefined;
+  return current.scopeId === expected.scopeId
+    && currentOrigin === expectedOrigin;
 }
+
+type ScopeMemoryEnvelopeWithOptionalOrigin = ScopeMemoryEnvelope & Readonly<{
+  originWritableNamespaceId?: string;
+}>;
+
+type BoundMemoryAccessEnvelope =
+  | NamespaceMemoryEnvelope
+  | ScopeMemoryEnvelopeWithOptionalOrigin;
+
+const NAMESPACE_ENVELOPE_KEYS = Object.freeze([
+  "actorId",
+  "agentId",
+  "mutableNamespaces",
+  "ownerId",
+  "readableNamespaces",
+  "roomId",
+  "toolPolicy",
+  "writableNamespaces",
+]);
+
+const SCOPE_ENVELOPE_KEYS = Object.freeze([
+  "actorId",
+  "agentId",
+  "memoryMode",
+  "ownerId",
+  "roomId",
+  "scopeId",
+  "toolPolicy",
+]);
 
 function cloneEnvelope(
   envelope: MemoryAccessEnvelope,
-): NamespaceMemoryEnvelope {
-  if (!isNamespaceMemoryEnvelope(envelope)) {
-    throw new TypeError(
-      "Protected Task Scope Memory graph handoff is unavailable",
-    );
+): BoundMemoryAccessEnvelope {
+  if (isNamespaceMemoryEnvelope(envelope)) {
+    const hasMemoryMode = Object.hasOwn(envelope, "memoryMode");
+    const expectedKeys = hasMemoryMode
+      ? [...NAMESPACE_ENVELOPE_KEYS, "memoryMode"].sort()
+      : NAMESPACE_ENVELOPE_KEYS;
+    if (!sameStrings(Object.keys(envelope).sort(), expectedKeys)) {
+      throw new TypeError("Protected Task Memory envelope shape changed");
+    }
+    return Object.freeze({
+      ...(hasMemoryMode ? { memoryMode: envelope.memoryMode } : {}),
+      ownerId: envelope.ownerId,
+      actorId: envelope.actorId,
+      agentId: envelope.agentId,
+      roomId: envelope.roomId,
+      readableNamespaces: Object.freeze([...envelope.readableNamespaces]),
+      mutableNamespaces: Object.freeze([...envelope.mutableNamespaces]),
+      writableNamespaces: Object.freeze([...envelope.writableNamespaces]),
+      toolPolicy: Object.freeze({ ...envelope.toolPolicy }),
+    }) as NamespaceMemoryEnvelope;
+  }
+  if (!isScopeMemoryEnvelope(envelope)) {
+    throw new TypeError("Protected Task Memory envelope shape changed");
+  }
+  const withOrigin = envelope as ScopeMemoryEnvelopeWithOptionalOrigin;
+  const hasOrigin = Object.hasOwn(envelope, "originWritableNamespaceId");
+  const expectedKeys = hasOrigin
+    ? [...SCOPE_ENVELOPE_KEYS, "originWritableNamespaceId"].sort()
+    : SCOPE_ENVELOPE_KEYS;
+  if (!sameStrings(Object.keys(envelope).sort(), expectedKeys)) {
+    throw new TypeError("Protected Task Memory envelope shape changed");
   }
   return Object.freeze({
-    ...envelope,
-    readableNamespaces: Object.freeze([...envelope.readableNamespaces]),
-    mutableNamespaces: Object.freeze([...envelope.mutableNamespaces]),
-    writableNamespaces: Object.freeze([...envelope.writableNamespaces]),
+    memoryMode: envelope.memoryMode,
+    ownerId: envelope.ownerId,
+    actorId: envelope.actorId,
+    agentId: envelope.agentId,
+    roomId: envelope.roomId,
+    scopeId: envelope.scopeId,
+    ...(hasOrigin
+      ? { originWritableNamespaceId: withOrigin.originWritableNamespaceId }
+      : {}),
     toolPolicy: Object.freeze({ ...envelope.toolPolicy }),
-  }) as NamespaceMemoryEnvelope;
+  }) as ScopeMemoryEnvelopeWithOptionalOrigin;
 }
 
 /**
@@ -160,8 +237,10 @@ export function createProtectedTaskMemoryGraphDeps(
   const boundHandoff = Object.freeze({
     search: handoff.search,
     repository: handoff.repository,
-    access: handoff.access,
-    projection: handoff.projection,
+    ...(handoff.access === undefined ? {} : { access: handoff.access }),
+    ...(handoff.projection === undefined
+      ? {}
+      : { projection: handoff.projection }),
     fullEncryptionOnly: handoff.fullEncryptionOnly,
   });
   for (const [name, value] of [
@@ -222,14 +301,18 @@ export function createProtectedTaskMemoryGraphDeps(
       assertCurrent(state);
       return boundHandoff.repository;
     },
-    protectedMemoryAccessPortForState: (state: NautiloState) => {
-      assertCurrent(state);
-      return boundHandoff.access;
-    },
-    protectedMemoryProjectionPortForState: (state: NautiloState) => {
-      assertCurrent(state);
-      return boundHandoff.projection;
-    },
+    ...(!("access" in boundHandoff) ? {} : {
+      protectedMemoryAccessPortForState: (state: NautiloState) => {
+        assertCurrent(state);
+        return boundHandoff.access;
+      },
+    }),
+    ...(!("projection" in boundHandoff) ? {} : {
+      protectedMemoryProjectionPortForState: (state: NautiloState) => {
+        assertCurrent(state);
+        return boundHandoff.projection;
+      },
+    }),
     fullEncryptionOnlyForState: (state: NautiloState) => {
       assertCurrent(state);
       return boundHandoff.fullEncryptionOnly;

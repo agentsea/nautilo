@@ -24,6 +24,9 @@ import {
 import { getServerDirectDb } from "../lib/server-direct-db";
 import { createHumanProductTransactionContext } from
   "./human-message-product-store";
+import type {
+  ProtectedTaskRuntimeMemoryPolicy,
+} from "./protected-task-runtime-grant-plan";
 
 type ResolverInput = Readonly<{
   occurrence: ProtectedTaskOccurrence;
@@ -36,6 +39,12 @@ type ProductContext = Awaited<ReturnType<
   typeof createHumanProductTransactionContext
 >>;
 
+export type ProtectedTaskRuntimeNamespaceAuthorityResolution = Readonly<
+  InitialTaskRuntimeNamespaceAuthority & {
+    policy: ProtectedTaskRuntimeMemoryPolicy;
+  }
+>;
+
 export type ProtectedTaskRuntimeNamespaceAuthorityResolverDependencies =
   Readonly<{
     crypto: LatticeCrypto;
@@ -44,6 +53,7 @@ export type ProtectedTaskRuntimeNamespaceAuthorityResolverDependencies =
     restricted(): PostgresJsBridgeConnection;
     readPolicy(): Promise<Readonly<{
       mode: "plaintext_only" | "shadow_encryption" | "encrypted_only";
+      shadowBehavior: "fallback" | "strict";
       revision: number;
     }>>;
     resolveRequesterHuman(userId: string): Promise<Readonly<{
@@ -97,7 +107,9 @@ function executionModeMatchesDefinition(
 export function createProtectedTaskRuntimeNamespaceAuthorityResolver(
   overrides: Partial<ProtectedTaskRuntimeNamespaceAuthorityResolverDependencies>
     = {},
-): (input: ResolverInput) => Promise<InitialTaskRuntimeNamespaceAuthority> {
+): (
+  input: ResolverInput,
+) => Promise<ProtectedTaskRuntimeNamespaceAuthorityResolution> {
   const db = overrides.db ?? getServerDirectDb();
   const crypto = overrides.crypto ?? new LatticeCrypto();
   const serverScope = overrides.serverScope
@@ -142,6 +154,7 @@ export function createProtectedTaskRuntimeNamespaceAuthorityResolver(
     if (requesterHuman === null
       || sourceRoom === null
       || sourceRoom.namespaceId !== occurrence.task.contentNamespaceId
+      || policy.mode === "plaintext_only"
       || !executionModeMatchesDefinition(
         occurrence.task.contentRepresentation,
         policy.mode,
@@ -179,6 +192,15 @@ export function createProtectedTaskRuntimeNamespaceAuthorityResolver(
         "Protected Task Runtime Namespace authority changed",
       );
     }
-    return authority;
+    return Object.freeze({
+      sourceRoomId: authority.sourceRoomId,
+      sourceNamespaceId: authority.sourceNamespaceId,
+      facts: authority.facts,
+      policy: Object.freeze({
+        mode: policy.mode,
+        shadowBehavior: policy.shadowBehavior,
+        revision: policy.revision,
+      }),
+    });
   };
 }

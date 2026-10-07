@@ -67,6 +67,7 @@ function held(overrides: Readonly<{
   roomId?: string;
   policyRevision?: number;
   accessRevision?: number;
+  nativeExecutionSupported?: boolean;
 }> = {}): HeldProtectedTaskRuntimeAuthority {
   const policyRevision = overrides.policyRevision ?? 7;
   return {
@@ -97,6 +98,9 @@ function held(overrides: Readonly<{
       expectedAccessRevision: overrides.accessRevision ?? 3,
       expectedPolicyRevision: policyRevision,
     }],
+    ...(overrides.nativeExecutionSupported === undefined
+      ? {}
+      : { nativeExecutionSupported: overrides.nativeExecutionSupported }),
   };
 }
 
@@ -244,5 +248,29 @@ describe("native protected Task definition occurrence loader", () => {
     expect(await loader(input(wrongObject))).toBeNull();
     expect(await loader(input(wrongRevision))).toBeNull();
     expect(authorityCalls).toBe(0);
+  });
+
+  test("requires an explicit current native route only when requested", async () => {
+    for (const current of [
+      held({ nativeExecutionSupported: false }),
+      held(),
+    ]) {
+      const loader = createCurrentNativeProtectedTaskDefinitionOccurrenceLoader(
+        { withCurrentAuthority: port(current) },
+        { requireNativeExecution: true },
+      );
+      expect(await loader(input())).toBeNull();
+    }
+
+    const required = createCurrentNativeProtectedTaskDefinitionOccurrenceLoader(
+      { withCurrentAuthority: port(held({ nativeExecutionSupported: true })) },
+      { requireNativeExecution: true },
+    );
+    expect(await required(input())).not.toBeNull();
+
+    const compatible = createCurrentNativeProtectedTaskDefinitionOccurrenceLoader({
+      withCurrentAuthority: port(held()),
+    });
+    expect(await compatible(input())).not.toBeNull();
   });
 });

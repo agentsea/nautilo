@@ -26,6 +26,7 @@ import type {
 
 import {
   createCurrentProtectedTaskRuntimeAuthorityPort,
+  loadCurrentProtectedTaskRuntimeFacts,
   type CurrentProtectedTaskRuntimeFacts,
 } from "../../src/routes/task-runtime-current-authority";
 
@@ -134,6 +135,7 @@ async function fixture() {
       roomId: request.sourceRoomId,
       namespaceId: occurrence.task.contentNamespaceId,
     },
+    nativeExecutionSupported: true,
   };
   const record = {
     snapshot: {
@@ -279,6 +281,7 @@ describe("current protected Task Runtime authority adapter", () => {
         expect(current.namespaceRequirements).toEqual(
           f.record.authoritySet.namespaceRequirements,
         );
+        expect(current.nativeExecutionSupported).toBe(true);
         return "current";
       },
     });
@@ -362,5 +365,94 @@ describe("current protected Task Runtime authority adapter", () => {
       expect(used).toBe(false);
       f.signing.privateKey.fill(0);
     }
+  });
+
+  test("projects only content-free native route admission from the locked Task", async () => {
+    const f = await fixture();
+    const load = async (nativeExecutionSupported: boolean) => {
+      const statements: Readonly<{sql: string; params: readonly unknown[]}>[] = [];
+      const rows: unknown[][] = [
+        [{
+          id: f.facts.task.id,
+          owner_id: f.facts.task.ownerId,
+          requestor_id: f.facts.task.requestorId,
+          agent_id: f.facts.task.agentId,
+          calling_room_id: f.facts.task.callingRoomId,
+          status: f.facts.task.status,
+          schedule_kind: f.facts.task.scheduleKind,
+          content_representation: f.facts.task.contentRepresentation,
+          content_namespace_id: f.facts.task.contentNamespaceId,
+          content_revision: f.facts.task.contentRevision,
+          crypto_object_id: f.facts.task.cryptoObjectId,
+          crypto_access_revision: f.facts.task.cryptoAccessRevision,
+          crypto_required_namespace_fingerprint:
+            f.facts.task.cryptoRequiredNamespaceFingerprint,
+          crypto_mapping_state: f.facts.task.cryptoMappingState,
+          native_execution_supported: nativeExecutionSupported,
+        }],
+        [{
+          id: f.facts.run.id,
+          task_id: f.facts.run.taskId,
+          job_id: f.facts.run.jobId,
+          graph_thread_id: f.facts.run.graphThreadId,
+          status: f.facts.run.status,
+          result_representation: f.facts.run.resultRepresentation,
+          result_content_namespace_id: f.facts.run.resultContentNamespaceId,
+          result_revision: f.facts.run.resultRevision,
+          result_crypto_object_id: f.facts.run.resultCryptoObjectId,
+          result_crypto_access_revision: f.facts.run.resultCryptoAccessRevision,
+          result_crypto_required_namespace_fingerprint:
+            f.facts.run.resultCryptoRequiredNamespaceFingerprint,
+          result_crypto_mapping_state: f.facts.run.resultCryptoMappingState,
+        }],
+        [{ id: f.authority.plan.subjectHumanId }],
+        [{
+          id: f.request.sourceRoomId,
+          namespace_id: f.occurrence.task.contentNamespaceId,
+          human_actor_ids: [f.authority.plan.subjectHumanId],
+        }],
+        [
+          { id: f.authority.plan.subjectHumanId, kind: "user", agent_id: null },
+          { id: "actor:agent", kind: "agent", agent_id: f.occurrence.task.agentId },
+        ],
+      ];
+      const product = {
+        query: async (sql: string, params: readonly unknown[]) => {
+          statements.push({sql, params});
+          return rows.shift() ?? [];
+        },
+      } as never;
+      const facts = await loadCurrentProtectedTaskRuntimeFacts({
+        product,
+        occurrence: f.occurrence,
+      });
+      return {facts, statement: statements[0]!};
+    };
+
+    const admitted = await load(true);
+    expect(admitted.facts?.nativeExecutionSupported).toBe(true);
+    expect(Object.hasOwn(admitted.facts?.task ?? {}, "metadata")).toBe(false);
+    expect(Object.hasOwn(admitted.facts?.task ?? {}, "preset")).toBe(false);
+    expect(admitted.statement.sql).toContain(
+      `case\n      when jsonb_typeof("metadata") = 'object' then coalesce(`,
+    );
+    expect(admitted.statement.sql).toContain(
+      `"metadata" - 'preparation' - 'lastInterruption'`,
+    );
+    expect(admitted.statement.sql).toContain(
+      `as "native_execution_supported"`,
+    );
+    expect(admitted.statement.sql).not.toContain(`, "preset",`);
+    expect(admitted.statement.sql).not.toContain(`, "metadata",`);
+    expect(admitted.statement.params.slice(0, 5)).toEqual([
+      "task",
+      "in_scope",
+      "in_private_namespace",
+      "in_background",
+      "schedule",
+    ]);
+
+    expect((await load(false)).facts?.nativeExecutionSupported).toBe(false);
+    f.signing.privateKey.fill(0);
   });
 });

@@ -134,6 +134,14 @@ function facts(): readonly ProtectedTaskRuntimeNamespaceAuthorityFact[] {
   ]);
 }
 
+function memoryPolicy() {
+  return Object.freeze({
+    mode: "encrypted_only" as const,
+    shadowBehavior: "strict" as const,
+    revision: 7,
+  });
+}
+
 function domain(
   domainId: string,
   sourceNamespaceId: string,
@@ -212,6 +220,7 @@ function builder(
       return {
         sourceRoomId,
         sourceNamespaceId,
+        policy: memoryPolicy(),
         facts: authorityFacts,
       };
     },
@@ -375,11 +384,24 @@ test("binds distinct per-occurrence executors and transient openers", async () =
     resolveNamespaceAuthority: async () => ({
       sourceRoomId: SOURCE_ROOM,
       sourceNamespaceId: CONTENT,
+      policy: memoryPolicy(),
       facts: facts(),
     }),
-    prepareExecution: async ({ occurrence: value, predispatch: plan }) => {
+    prepareExecution: async ({
+      occurrence: value,
+      predispatch: plan,
+      policy,
+      reference,
+    }) => {
       expect(plan.occurrence).toBe(value);
       expect(plan.target.roomId).toBe(ROOM);
+      expect(policy).toEqual(memoryPolicy());
+      expect(reference).toMatchObject({
+        taskId: value.task.id,
+        taskRunId: value.run.id,
+        policyRevision: 7,
+        executionSegment: 1,
+      });
       prepared.push(value.run.id);
       return value.run.id === RUN
         ? { executor: firstExecutor, openTransientInput: firstOpener }
@@ -418,6 +440,7 @@ test("refuses substituted predispatch before execution preparation", async () =>
     resolveNamespaceAuthority: async () => ({
       sourceRoomId: SOURCE_ROOM,
       sourceNamespaceId: CONTENT,
+      policy: memoryPolicy(),
       facts: facts(),
     }),
     prepareExecution: async () => {
@@ -554,6 +577,7 @@ test("includes the exact Scope origin and distinct output Namespaces", async () 
       return {
         sourceRoomId: SOURCE_ROOM,
         sourceNamespaceId: CONTENT,
+        policy: memoryPolicy(),
         facts: [...facts(), outputFact, seedFact],
       };
     },
@@ -598,6 +622,7 @@ test("includes the exact Scope origin and distinct output Namespaces", async () 
     resolveNamespaceAuthority: async () => ({
       sourceRoomId: SOURCE_ROOM,
       sourceNamespaceId: CONTENT,
+      policy: memoryPolicy(),
       facts: [...facts(), outputFact],
     }),
     prepareExecution: async () => ({
@@ -643,6 +668,7 @@ test("requires and pins an exact Scope inventory", async () => {
     resolveNamespaceAuthority: async () => ({
       sourceRoomId: SOURCE_ROOM,
       sourceNamespaceId: CONTENT,
+      policy: memoryPolicy(),
       facts: facts(),
     }),
     prepareExecution: async () => ({
@@ -671,6 +697,7 @@ test("requires and pins an exact Scope inventory", async () => {
       return {
         sourceRoomId: SOURCE_ROOM,
         sourceNamespaceId: CONTENT,
+        policy: memoryPolicy(),
         facts: facts(),
       };
     },
@@ -699,6 +726,7 @@ test("grants decrypt and encrypt only to the exact distinct output Namespace", a
       return {
         sourceRoomId: SOURCE_ROOM,
         sourceNamespaceId: CONTENT,
+        policy: memoryPolicy(),
         facts: [...facts(), extra],
       };
     },
@@ -740,6 +768,7 @@ test("requires concrete execution and publication sinks", () => {
     resolveNamespaceAuthority: async () => ({
       sourceRoomId: SOURCE_ROOM,
       sourceNamespaceId: CONTENT,
+      policy: memoryPolicy(),
       facts: facts(),
     }),
     prepareExecution: undefined,

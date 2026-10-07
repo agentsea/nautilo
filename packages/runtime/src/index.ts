@@ -370,7 +370,6 @@ export {
 export {
   runProtectedTaskNativeSegment,
   type ProtectedTaskNativeExecution,
-  type ProtectedTaskNativeResultPublicationPort,
   type ProtectedTaskNativeRunnerDependencies,
   type ProtectedTaskNativeSegmentMode,
   type ProtectedTaskNativeSegmentResult,

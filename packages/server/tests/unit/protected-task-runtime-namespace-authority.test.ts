@@ -106,7 +106,11 @@ function dependencies(
         "restricted"
       ] extends () => infer Value ? Value : never
     ),
-    readPolicy: async () => ({ mode: "encrypted_only", revision: 7 }),
+    readPolicy: async () => ({
+      mode: "encrypted_only",
+      shadowBehavior: "strict",
+      revision: 7,
+    }),
     resolveRequesterHuman: async () => ({ id: HUMAN }),
     resolveRequesterPrivateRoom: async () => ({
       roomId: SOURCE_ROOM,
@@ -141,7 +145,14 @@ test("passes exact discovered Task authority into the locked bridge owner", asyn
     namespaceIds: [CONTENT, READABLE],
   });
   (plan.target as { roomId: string }).roomId = SOURCE_ROOM;
-  await Promise.resolve(expect(resolving).resolves.toBe(current));
+  await Promise.resolve(expect(resolving).resolves.toEqual({
+    ...current,
+    policy: {
+      mode: "encrypted_only",
+      shadowBehavior: "strict",
+      revision: 7,
+    },
+  }));
   expect(inspected).toMatchObject({
     serverScope: "https://server.example.test",
     taskId: TASK,
@@ -182,7 +193,14 @@ test("copies and passes a fixed Scope inventory into the locked bridge owner", a
   });
   readableNamespaceIds[0] = CONTENT;
 
-  await Promise.resolve(expect(resolving).resolves.toBe(current));
+  await Promise.resolve(expect(resolving).resolves.toEqual({
+    ...current,
+    policy: {
+      mode: "encrypted_only",
+      shadowBehavior: "strict",
+      revision: 7,
+    },
+  }));
   const captured = inspected as Parameters<
     ProtectedTaskRuntimeNamespaceAuthorityResolverDependencies["inspectAuthority"]
   >[0] | null;
@@ -206,7 +224,11 @@ test("admits a dual Task in Shadow and parks it after transition to Full", async
         expect(input.expectedPolicyRevision).toBe(7);
         return current;
       }),
-      readPolicy: async () => ({ mode: "shadow_encryption", revision: 7 }),
+      readPolicy: async () => ({
+        mode: "shadow_encryption",
+        shadowBehavior: "fallback",
+        revision: 7,
+      }),
     },
   );
 
@@ -214,7 +236,14 @@ test("admits a dual Task in Shadow and parks it after transition to Full", async
     occurrence: value,
     predispatch: predispatch(value),
     namespaceIds: [CONTENT, READABLE],
-  })).resolves.toBe(current));
+  })).resolves.toEqual({
+    ...current,
+    policy: {
+      mode: "shadow_encryption",
+      shadowBehavior: "fallback",
+      revision: 7,
+    },
+  }));
   expect(inspections).toBe(1);
 
   const full = createProtectedTaskRuntimeNamespaceAuthorityResolver(
@@ -287,7 +316,11 @@ test("rejects policy and Namespace coordinate drift before bridge inspection", a
   });
   const plain = createProtectedTaskRuntimeNamespaceAuthorityResolver({
     ...base,
-    readPolicy: async () => ({ mode: "plaintext_only", revision: 7 }),
+    readPolicy: async () => ({
+      mode: "plaintext_only",
+      shadowBehavior: "fallback",
+      revision: 7,
+    }),
   });
   await Promise.resolve(expect(plain({
     occurrence: value,

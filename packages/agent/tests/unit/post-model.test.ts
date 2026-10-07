@@ -1,4 +1,4 @@
-import { afterEach, describe, test, expect } from "bun:test";
+import { afterEach, describe, test, expect, spyOn } from "bun:test";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { Command, END, MemorySaver, START, StateGraph } from "@langchain/langgraph";
@@ -15,6 +15,7 @@ import type { PostModelDeps } from "../../src/nodes/post-model";
 import { clearToolCatalog, initToolCatalog, ToolCatalog } from "@nautilo/catalog";
 import { registerAllTools } from "../../src/tools/register-all";
 import type { ProjectionSnapshot } from "../../src/tools/memory/projection-sharing";
+import * as shareMemory from "../../src/tools/memory/share-memory";
 import { setOrdinaryHostResolver } from "../../src/runtime/ordinary-host-resolver";
 
 afterEach(() => {
@@ -336,6 +337,78 @@ describe("postModelNode (with resolver)", () => {
     expect(correction.content).toContain("No separate message was sent");
     expect(correction.content).toContain("final answer");
     expect(correction.content).not.toContain("denied by owner");
+  });
+
+  test("protected fixed Memory authority rejects attach sharing before ordinary preview and keeps a sibling", async () => {
+    const preview = spyOn(shareMemory, "computeShareMemoryApprovalPreview").mockImplementation(async () => {
+      throw new Error("ordinary preview must not run");
+    });
+    const unavailable = async () => ({ status: "unavailable" as const, reason: "authorization_required" as const });
+    try {
+      for (const fullWithoutRepository of [false, true]) {
+        for (const decision of [
+          { type: "allow" as const },
+          { type: "require_approval" as const, route: { type: "prove_it" as const, approvers: ["test-owner"] } },
+          { type: "forbidden" as const, reason: "policy denies sharing" },
+        ]) {
+          const state = makeState([new AIMessage({ content: "", tool_calls: [
+            { id: "share", name: "share_memory", args: { memory_id: "memory-1", target_handle: "alice" } },
+            { id: "read", name: "search_memory", args: { query: "context" } },
+          ] })]);
+          state.taskRun = true;
+          state.subagentRun = true;
+          const result = await createPostModelNode(makeMockResolver({ share_memory: decision }), {
+            ...NO_MATCH,
+            protectedMemoryRepositoryForState: () => fullWithoutRepository ? undefined : ({ search: unavailable, save: unavailable, replace: unavailable, setTier: unavailable }),
+            fullEncryptionOnlyForState: () => fullWithoutRepository,
+          })(state);
+          expect(result.approvedToolCalls?.map((call) => call.id)).toEqual(["read"]);
+          expect(result.pendingApproval).toEqual([]);
+          expect(result.approvalDenied).toBe(true);
+          const denial = result.messages?.at(-1) as ToolMessage;
+          expect(denial.tool_call_id).toBe("share");
+          expect(denial.status).toBe("error");
+          if (decision.type === "forbidden") {
+            expect(denial.content).not.toContain("Protected Memory sharing authority");
+          } else {
+            expect(denial.content).toContain("Protected Memory sharing authority is unavailable");
+          }
+        }
+      }
+      expect(preview).not.toHaveBeenCalled();
+    } finally {
+      preview.mockRestore();
+    }
+  });
+
+  test("Plain Task sharing still enriches its ordinary approval interrupt", async () => {
+    const snippet = "ordinary Memory preview";
+    const preview = spyOn(shareMemory, "computeShareMemoryApprovalPreview").mockResolvedValue({
+      memoryContentSnippet: snippet, memoryType: "note", targetHandle: "alice",
+      targetDisplayName: "Alice", roomLabel: null, wouldCreate: true, sensitivity: "normal",
+    });
+    try {
+      const state = makeState([new AIMessage({ content: "", tool_calls: [
+        { id: "plain-share", name: "share_memory", args: { memory_id: "memory-1", target_handle: "alice" } },
+      ] })]);
+      state.threadId = 54;
+      state.taskRun = true;
+      state.subagentRun = true;
+      const graph = new StateGraph(NautiloStateAnnotation)
+        .addNode("post_model", createPostModelNode(makeMockResolver({
+          share_memory: { type: "require_approval", route: { type: "prove_it", approvers: ["test-owner"] } },
+        }), { ...NO_MATCH, matchCapabilityApproval: async () => null }))
+        .addEdge(START, "post_model")
+        .addEdge("post_model", END)
+        .compile({ checkpointer: new MemorySaver() });
+      const result = await graph.invoke(state, { configurable: { thread_id: "plain-task-memory-share" } });
+      expect(preview).toHaveBeenCalledTimes(1);
+      expect(preview.mock.calls[0]?.[1]).not.toHaveProperty("protectedMemoryAccessPort");
+      expect(JSON.stringify(result)).toContain(snippet);
+      expect(result).toHaveProperty("__interrupt__");
+    } finally {
+      preview.mockRestore();
+    }
   });
 
   test("approved tools go to approvedToolCalls", async () => {

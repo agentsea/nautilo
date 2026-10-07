@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 import {
   actors,
@@ -51,6 +51,8 @@ export type CurrentProtectedTaskRuntimeFacts = Readonly<{
   task: CurrentTask;
   run: CurrentRun;
   requesterPrivateRoom: Readonly<{roomId: string; namespaceId: string}> | null;
+  /** Content-free result of inspecting the locked Task's execution route. */
+  nativeExecutionSupported: boolean;
 }>;
 
 type LoadCurrentFacts = (input: Readonly<{
@@ -63,7 +65,17 @@ type WithAcceptedAuthority = typeof withCurrentAcceptedTaskRuntimeAuthority;
 export type HeldProtectedTaskRuntimeAuthority = Readonly<{
   foreground: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
   namespaceRequirements: CurrentTaskRuntimeAuthority["namespaceRequirements"];
+  /** Absent on legacy/test adapters; native execution must treat absence as false. */
+  nativeExecutionSupported?: boolean;
 }>;
+
+const NATIVE_TASK_PRESETS: readonly Task["preset"][] = [
+  "task",
+  "in_scope",
+  "in_private_namespace",
+  "in_background",
+  "schedule",
+];
 
 export type CurrentProtectedTaskRuntimeAuthorityPort = <Value>(input: Readonly<{
   runner: ConversationProductCanonicalTransactionRunner;
@@ -133,6 +145,7 @@ export function destroyAcceptedTaskRuntimeRecord(
 
 function copyHeldAuthority(
   authority: CurrentTaskRuntimeAuthority,
+  nativeExecutionSupported: boolean,
 ): HeldProtectedTaskRuntimeAuthority {
   const plan = authority.plan;
   return Object.freeze({
@@ -169,6 +182,7 @@ function copyHeldAuthority(
         operations: Object.freeze([...requirement.operations]),
       })),
     ),
+    nativeExecutionSupported,
   });
 }
 
@@ -201,6 +215,14 @@ export async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
     crypto_required_namespace_fingerprint:
       tasks.cryptoRequiredNamespaceFingerprint,
     crypto_mapping_state: tasks.cryptoMappingState,
+    native_execution_supported: sql<boolean>`case
+      when jsonb_typeof(${tasks.metadata}) = 'object' then coalesce(
+        ${inArray(tasks.preset, NATIVE_TASK_PRESETS)}
+        and (${tasks.metadata} - 'preparation' - 'lastInterruption') = '{}'::jsonb,
+        false
+      )
+      else false
+    end`.as("native_execution_supported"),
   }).from(tasks).where(eq(tasks.id, input.occurrence.task.id))
     .limit(2).for("update"));
   if (taskRows.length !== 1) return null;
@@ -297,7 +319,12 @@ export async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
       namespaceId: room.namespace_id,
     });
   }
-  return Object.freeze({task: Object.freeze(task), run: Object.freeze(run), requesterPrivateRoom});
+  return Object.freeze({
+    task: Object.freeze(task),
+    run: Object.freeze(run),
+    requesterPrivateRoom,
+    nativeExecutionSupported: taskRow.native_execution_supported === true,
+  });
 }
 
 /**
@@ -366,7 +393,7 @@ export function createCurrentProtectedTaskRuntimeAuthorityPort(
             requesterPrivateRoom: facts.requesterPrivateRoom,
             phase,
           })) return null;
-          return copyHeldAuthority(authority);
+          return copyHeldAuthority(authority, facts.nativeExecutionSupported);
         },
       });
     } finally {

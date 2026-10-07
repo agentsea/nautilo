@@ -23,14 +23,6 @@ export type ProtectedTaskNativeSegmentMode =
   | "deep_research"
   | "complex";
 
-/**
- * One-use result publication owned by the live Task authorization callback.
- * Implementations encrypt and durably publish the payload before resolving.
- */
-export interface ProtectedTaskNativeResultPublicationPort {
-  publish(payload: TaskRunResultPayloadV1): Promise<void>;
-}
-
 /** Safe graph inputs for one native protected Task segment. */
 export type ProtectedTaskNativeExecution = Readonly<{
   parentThreadId: string;
@@ -132,22 +124,6 @@ function exactIdentity(input: RunProtectedTaskNativeSegmentInput): void {
       "Protected native Task execution requires one exact supported segment",
     );
   }
-}
-
-function resultPublication(
-  transientInput: Record<string, unknown>,
-): ProtectedTaskNativeResultPublicationPort {
-  const value = transientInput["protectedTaskResultPublication"];
-  if (
-    typeof value !== "object"
-    || value === null
-    || typeof (value as { publish?: unknown }).publish !== "function"
-  ) {
-    throw new TypeError(
-      "Protected native Task execution requires result publication authority",
-    );
-  }
-  return value as ProtectedTaskNativeResultPublicationPort;
 }
 
 function failedPayload(): TaskRunResultPayloadV1 {
@@ -294,13 +270,16 @@ function runnerOptions(
 /**
  * Runs one protected native graph segment without ordinary Task completion,
  * checkpoint, transcript, Room-event, or artifact-card publication paths.
+ * Return the terminal payload to the grant owner: it must first close the
+ * running-Task repository/definition/checkpoint owners, then await protected
+ * result publication before releasing the grant. Publishing inside these
+ * callbacks would invalidate their mandatory running-Task closure checks.
  */
 export async function runProtectedTaskNativeSegment(
   input: RunProtectedTaskNativeSegmentInput,
   dependencies: ProtectedTaskNativeRunnerDependencies = productionDependencies,
 ): Promise<ProtectedTaskNativeSegmentResult> {
   exactIdentity(input);
-  const publication = resultPublication(input.transientInput);
   if (input.signal.aborted) return Object.freeze({ status: "aborted" });
 
   let result: RunScopeSubagentResult;
@@ -308,16 +287,12 @@ export async function runProtectedTaskNativeSegment(
     result = await dependencies.runScopeSubagent(runnerOptions(input));
   } catch {
     if (input.signal.aborted) return Object.freeze({ status: "aborted" });
-    const payload = failedPayload();
-    await publication.publish(payload);
-    return payload;
+    return failedPayload();
   }
 
   if (input.signal.aborted) return Object.freeze({ status: "aborted" });
   if (result.threadId !== input.graphThreadId) {
-    const payload = failedPayload();
-    await publication.publish(payload);
-    return payload;
+    return failedPayload();
   }
   if (result.status === "interrupted") {
     const interruptCoordinates = exactInterruptCoordinates(
@@ -331,7 +306,5 @@ export async function runProtectedTaskNativeSegment(
     });
   }
 
-  const payload = completedPayload(result.finalResponseText);
-  await publication.publish(payload);
-  return payload;
+  return completedPayload(result.finalResponseText);
 }

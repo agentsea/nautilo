@@ -34,6 +34,9 @@ import {
   type ProtectedTaskPredispatchPlan,
   type ProtectedTaskOccurrence,
 } from "@nautilo/runtime";
+import type {
+  CurrentProtectedTaskMemoryPolicy,
+} from "./current-protected-task-memory-authority";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
@@ -45,6 +48,9 @@ export type ProtectedTaskRuntimeNamespaceAuthorityFact = Readonly<{
   expectedDomainEpoch: number;
   expectedAuthorizationRevision: number;
 }>;
+
+export type ProtectedTaskRuntimeMemoryPolicy =
+  CurrentProtectedTaskMemoryPolicy;
 
 export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
   crypto: Pick<LatticeCrypto, "hash">;
@@ -65,6 +71,8 @@ export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
     /** Current requester-private Room anchoring the protected Task definition. */
     sourceRoomId: string;
     sourceNamespaceId: string;
+    /** Process-local policy selected under the same revision fence. */
+    policy: ProtectedTaskRuntimeMemoryPolicy;
     facts: readonly ProtectedTaskRuntimeNamespaceAuthorityFact[];
   }>>;
   resolveOutputDestination(
@@ -76,6 +84,8 @@ export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
   prepareExecution(input: Readonly<{
     occurrence: ProtectedTaskOccurrence;
     predispatch: ProtectedTaskPredispatchPlan;
+    policy: ProtectedTaskRuntimeMemoryPolicy;
+    reference: TaskRuntimeGrantClaimPlan["reference"];
     scopeMemory?: TaskScopeMemoryBinding;
     /** Exact committed preimage; retained only for fixed Scope execution admission. */
     scopeWorkIdentity?: string;
@@ -385,7 +395,16 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
     });
     if (!UUID.test(resolvedAuthority.sourceRoomId)
       || resolvedAuthority.sourceNamespaceId
-        !== occurrence.task.contentNamespaceId) {
+        !== occurrence.task.contentNamespaceId
+      || resolvedAuthority.policy.revision < 1
+      || !Number.isSafeInteger(resolvedAuthority.policy.revision)
+      || (resolvedAuthority.policy.shadowBehavior !== "fallback"
+        && resolvedAuthority.policy.shadowBehavior !== "strict")
+      || (resolvedAuthority.policy.mode === "shadow_encryption"
+        ? occurrence.task.contentRepresentation !== "dual"
+        : resolvedAuthority.policy.mode === "encrypted_only"
+          ? occurrence.task.contentRepresentation !== "protected"
+          : true)) {
       throw new TypeError("Protected Task source Room authority is unavailable");
     }
     const authority = canonicalAuthority({
@@ -393,6 +412,9 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       inventory,
       facts: resolvedAuthority.facts,
     });
+    if (resolvedAuthority.policy.revision !== authority.policyRevision) {
+      throw new TypeError("Protected Task policy authority is unavailable");
+    }
     const contentAuthority = authority.namespaces.find((entry) =>
       entry.namespaceId === occurrence.task.contentNamespaceId)!;
     const contentDomain = authority.domains.find((entry) =>
@@ -520,6 +542,8 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
     const execution = await dependencies.prepareExecution(Object.freeze({
       occurrence,
       predispatch: prepared,
+      policy: Object.freeze({ ...resolvedAuthority.policy }),
+      reference,
       ...(scopeMemory === undefined ? {} : { scopeMemory, scopeWorkIdentity: workIdentity }),
     }));
     const executionKeys = execution !== null && typeof execution === "object"

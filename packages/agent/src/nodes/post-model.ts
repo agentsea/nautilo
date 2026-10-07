@@ -9,7 +9,7 @@ import { causalHumanForExecution } from "../runtime/causal-human-context";
 import { findLocalUserByHandle, type PolicyResolver, type ToolAccessDecision } from "@nautilo/trust";
 import { getToolCatalog } from "@nautilo/catalog";
 import { modelSupportsInput } from "@nautilo/model-capabilities";
-import type { ProtectedAgentMemoryAccessPort } from "@nautilo/lattice-bridge";
+import type { ProtectedAgentMemoryAccessPort, ProtectedAgentMemoryRepository } from "@nautilo/lattice-bridge";
 import { ProtectedMemoryToolUnavailableError } from "../tools/memory/protected-memory-ports";
 import { fromRuntimeConfig } from "@nautilo/config";
 import type { NetworkAllowRule } from "@nautilo/config";
@@ -160,6 +160,9 @@ export interface PostModelDeps {
   isRedundantScheduledSelfContact?: (state: NautiloState, call: ToolCall) => Promise<boolean>;
   /** Live Server policy selection; never inferred from protected-port absence. */
   ordinaryContentAccessForState?: OrdinaryContentAccessForState;
+  protectedMemoryRepositoryForState?: (
+    state: NautiloState,
+  ) => ProtectedAgentMemoryRepository | undefined;
   protectedMemoryAccessPortForState?: (
     state: NautiloState,
   ) => ProtectedAgentMemoryAccessPort | undefined;
@@ -591,6 +594,7 @@ export function createPostModelNode(
     const protectedMemoryEntries = new Map<ToolCall, ProveItToolInfo>();
     const memoryPreparationFailures = new Map<ToolCall, string>();
     const protectedMemoryAccessPort = deps?.protectedMemoryAccessPortForState?.(state);
+    const protectedMemoryRepository = deps?.protectedMemoryRepositoryForState?.(state);
     const ordinarySelection = await deps?.ordinaryContentAccessForState?.(state);
     const invalidOrdinaryBatch = toolCalls.some((tc) => {
       const binding = state.ordinaryContentAccessBindings?.[tc.id ?? ""];
@@ -687,6 +691,15 @@ export function createPostModelNode(
       }
       // Protected preparation is authority, not optional preview decoration.
       // Never ask for consent to a call that already lacks its exact binding.
+      if (decision.type !== "forbidden" && tc.name === "share_memory"
+        && !isProjectionLikeShareCall(tc)
+        && (protectedMemoryRepository !== undefined || exposureOptions.fullEncryptionOnly)
+        && protectedMemoryAccessPort === undefined) {
+        const reason = "Protected Memory sharing authority is unavailable. No sharing operation was executed.";
+        memoryPreparationFailures.set(tc, reason);
+        forbidden.push({ tc, reason });
+        continue;
+      }
       if (decision.type !== "forbidden" && tc.name === "share_memory"
         && !isProjectionLikeShareCall(tc) && protectedMemoryAccessPort !== undefined) {
         try {

@@ -13,6 +13,9 @@ const OWNER_ID = "owner-1";
 const AGENT_ID = "agent-1";
 const ROOM_ID = "room-1";
 const NAMESPACE_ID = "namespace-1";
+const SCOPE_ID = "scope-1";
+const SCOPE_ROOM_ID = "scope-room-1";
+const ORIGIN_NAMESPACE_ID = "namespace-origin-1";
 const TURN_ID = "turn-1";
 
 const unavailable = async () => Object.freeze({
@@ -22,7 +25,10 @@ const unavailable = async () => Object.freeze({
 
 function handoff(
   fullEncryptionOnly = false,
-): ProtectedTaskMemoryGraphHandoff {
+): ProtectedTaskMemoryGraphHandoff & Required<Pick<
+  ProtectedTaskMemoryGraphHandoff,
+  "access" | "projection"
+>> {
   return Object.freeze({
     search: Object.freeze({ search: unavailable }),
     repository: Object.freeze({
@@ -40,7 +46,53 @@ function handoff(
   });
 }
 
-function identity(): ProtectedTaskMemoryGraphIdentity {
+function fixedHandoff(
+  fullEncryptionOnly = false,
+): ProtectedTaskMemoryGraphHandoff {
+  const complete = handoff(fullEncryptionOnly);
+  return Object.freeze({
+    search: complete.search,
+    repository: complete.repository,
+    fullEncryptionOnly,
+  });
+}
+
+function namespaceEnvelope(
+  withMemoryMode = true,
+): ProtectedTaskMemoryGraphIdentity["envelope"] {
+  return Object.freeze({
+    ...(withMemoryMode ? { memoryMode: "namespace" as const } : {}),
+    ownerId: OWNER_ID,
+    actorId: "actor-1",
+    agentId: AGENT_ID,
+    roomId: "memory-room-1",
+    readableNamespaces: [NAMESPACE_ID],
+    mutableNamespaces: [NAMESPACE_ID],
+    writableNamespaces: [NAMESPACE_ID],
+    toolPolicy: { search_memory: "allow" as const },
+  });
+}
+
+function scopeEnvelope(
+  withOrigin = true,
+): ProtectedTaskMemoryGraphIdentity["envelope"] {
+  return Object.freeze({
+    memoryMode: "scope" as const,
+    ownerId: OWNER_ID,
+    actorId: "actor-1",
+    agentId: AGENT_ID,
+    roomId: SCOPE_ROOM_ID,
+    scopeId: SCOPE_ID,
+    ...(withOrigin
+      ? { originWritableNamespaceId: ORIGIN_NAMESPACE_ID }
+      : {}),
+    toolPolicy: { search_memory: "allow" as const },
+  });
+}
+
+function identity(
+  envelope = namespaceEnvelope(),
+): ProtectedTaskMemoryGraphIdentity {
   return Object.freeze({
     taskId: TASK_ID,
     taskRunId: RUN_ID,
@@ -53,22 +105,13 @@ function identity(): ProtectedTaskMemoryGraphIdentity {
     turnId: TURN_ID,
     approvalLaneKey: `task:${TASK_ID}`,
     actorRole: "owner",
-    envelope: Object.freeze({
-      memoryMode: "namespace" as const,
-      ownerId: OWNER_ID,
-      actorId: "actor-1",
-      agentId: AGENT_ID,
-      roomId: "memory-room-1",
-      readableNamespaces: [NAMESPACE_ID],
-      mutableNamespaces: [NAMESPACE_ID],
-      writableNamespaces: [NAMESPACE_ID],
-      toolPolicy: { search_memory: "allow" as const },
-    }),
+    envelope,
   });
 }
 
-function state(): NautiloState {
-  const expected = identity();
+function state(
+  envelope = namespaceEnvelope(),
+): NautiloState {
   return {
     taskRun: true,
     subagentRun: true,
@@ -88,13 +131,7 @@ function state(): NautiloState {
     verifiedOrdinaryOrigin: null,
     memoryBrief: "",
     memoryDelta: "",
-    memoryAccessEnvelope: {
-      ...expected.envelope,
-      readableNamespaces: [NAMESPACE_ID],
-      mutableNamespaces: [NAMESPACE_ID],
-      writableNamespaces: [NAMESPACE_ID],
-      toolPolicy: { search_memory: "allow" },
-    },
+    memoryAccessEnvelope: envelope,
   } as unknown as NautiloState;
 }
 
@@ -103,15 +140,7 @@ describe("protected Task Memory graph handoff", () => {
     expect(createProtectedTaskMemoryGraphDeps({
       ...identity(),
       taskId: "",
-      envelope: {
-        memoryMode: "scope",
-        ownerId: OWNER_ID,
-        actorId: "actor-1",
-        agentId: AGENT_ID,
-        roomId: "scope-room-1",
-        scopeId: "scope-1",
-        toolPolicy: {},
-      },
+      envelope: scopeEnvelope(),
     }, undefined)).toEqual({});
   });
 
@@ -133,6 +162,48 @@ describe("protected Task Memory graph handoff", () => {
         .toBe(expectedHandoff.projection);
       expect(deps.fullEncryptionOnlyForState?.(current))
         .toBe(fullEncryptionOnly);
+    }
+  });
+
+  test("binds Namespace and Scope fixed ports without inventing dynamic authority", () => {
+    for (const envelope of [
+      namespaceEnvelope(),
+      namespaceEnvelope(false),
+      scopeEnvelope(),
+      scopeEnvelope(false),
+    ]) {
+      const expectedHandoff = fixedHandoff(true);
+      const deps = createProtectedTaskMemoryGraphDeps(
+        identity(envelope),
+        expectedHandoff,
+      );
+      const current = state(envelope);
+      expect(deps.protectedMemorySearchForState?.(current))
+        .toBe(expectedHandoff.search);
+      expect(deps.protectedMemoryRepositoryForState?.(current))
+        .toBe(expectedHandoff.repository);
+      expect(deps.fullEncryptionOnlyForState?.(current)).toBe(true);
+      expect("protectedMemoryAccessPortForState" in deps).toBe(false);
+      expect("protectedMemoryProjectionPortForState" in deps).toBe(false);
+    }
+  });
+
+  test("binds access and projection independently when each is supplied", () => {
+    const complete = handoff();
+    for (const [field, expectedPort, absentField] of [
+      ["access", complete.access, "protectedMemoryProjectionPortForState"],
+      ["projection", complete.projection, "protectedMemoryAccessPortForState"],
+    ] as const) {
+      const deps = createProtectedTaskMemoryGraphDeps(identity(scopeEnvelope()), {
+        ...fixedHandoff(),
+        [field]: expectedPort,
+      });
+      const current = state(scopeEnvelope());
+      const resolver = field === "access"
+        ? deps.protectedMemoryAccessPortForState
+        : deps.protectedMemoryProjectionPortForState;
+      expect(resolver?.(current)).toBe(expectedPort);
+      expect(absentField in deps).toBe(false);
     }
   });
 
@@ -158,15 +229,13 @@ describe("protected Task Memory graph handoff", () => {
     expect(deps.fullEncryptionOnlyForState?.(current)).toBe(false);
   });
 
-  test("rejects every absent or malformed required handoff port at runtime", () => {
+  test("rejects absent fixed ports and malformed supplied dynamic ports", () => {
     for (const [field, replacement] of [
       ["search", undefined],
       ["search", {}],
       ["repository", undefined],
       ["repository", { search: unavailable }],
-      ["access", undefined],
       ["access", {}],
-      ["projection", undefined],
       ["projection", { prepare: unavailable }],
       ["fullEncryptionOnly", undefined],
       ["fullEncryptionOnly", "false"],
@@ -178,19 +247,15 @@ describe("protected Task Memory graph handoff", () => {
     }
   });
 
-  test("rejects Scope handoff until protected Scope execution is composed", () => {
-    expect(() => createProtectedTaskMemoryGraphDeps({
-      ...identity(),
-      envelope: {
-        memoryMode: "scope",
-        ownerId: OWNER_ID,
-        actorId: "actor-1",
-        agentId: AGENT_ID,
-        roomId: "scope-room-1",
-        scopeId: "scope-1",
-        toolPolicy: {},
-      },
-    }, handoff())).toThrow("Scope Memory graph handoff is unavailable");
+  test("rejects unknown initial envelope fields instead of checkpointing them", () => {
+    for (const envelope of [namespaceEnvelope(), scopeEnvelope()]) {
+      expect(() => createProtectedTaskMemoryGraphDeps(identity({
+        ...envelope,
+        substitutedCapability: "must-not-be-retained",
+      } as never), fixedHandoff())).toThrow(
+        "Protected Task Memory envelope shape changed",
+      );
+    }
   });
 
   test("rejects substituted Task and Memory state before exposing any port", () => {
@@ -232,5 +297,60 @@ describe("protected Task Memory graph handoff", () => {
         );
       }
     }
+  });
+
+  test("binds the exact presence of the optional Namespace discriminator", () => {
+    for (const withMemoryMode of [false, true]) {
+      const envelope = namespaceEnvelope(withMemoryMode);
+      const deps = createProtectedTaskMemoryGraphDeps(
+        identity(envelope),
+        fixedHandoff(),
+      );
+      const substituted = withMemoryMode
+        ? Object.fromEntries(Object.entries(envelope).filter(
+            ([key]) => key !== "memoryMode",
+          ))
+        : { ...envelope, memoryMode: "namespace" as const };
+      expect(() => deps.protectedMemoryRepositoryForState?.(
+        state(substituted as never),
+      )).toThrow("Protected Task Memory graph identity changed");
+    }
+  });
+
+  test("rejects substituted Scope identity, origin presence, policy, and shape", () => {
+    const envelope = scopeEnvelope();
+    const deps = createProtectedTaskMemoryGraphDeps(
+      identity(envelope),
+      fixedHandoff(),
+    );
+    const resolve = deps.protectedMemoryRepositoryForState!;
+    const substitutions = [
+      { ...envelope, ownerId: "substituted-owner" },
+      { ...envelope, actorId: "substituted-actor" },
+      { ...envelope, agentId: "substituted-agent" },
+      { ...envelope, roomId: "substituted-room" },
+      { ...envelope, scopeId: "substituted-scope" },
+      { ...envelope, originWritableNamespaceId: "substituted-origin" },
+      Object.fromEntries(Object.entries(envelope).filter(
+        ([key]) => key !== "originWritableNamespaceId",
+      )),
+      { ...envelope, toolPolicy: { search_memory: "forbidden" as const } },
+      { ...envelope, unknown: "field" },
+    ];
+    for (const substituted of substitutions) {
+      expect(() => resolve(state(substituted as never))).toThrow(
+        "Protected Task Memory graph identity changed",
+      );
+    }
+
+    const withoutOrigin = scopeEnvelope(false);
+    const withoutOriginDeps = createProtectedTaskMemoryGraphDeps(
+      identity(withoutOrigin),
+      fixedHandoff(),
+    );
+    expect(() => withoutOriginDeps.protectedMemoryRepositoryForState?.(state({
+      ...withoutOrigin,
+      originWritableNamespaceId: ORIGIN_NAMESPACE_ID,
+    } as never))).toThrow("Protected Task Memory graph identity changed");
   });
 });

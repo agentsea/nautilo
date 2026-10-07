@@ -138,7 +138,7 @@ async function expectRejected(
 }
 
 describe("protected Task native runner", () => {
-  test("passes the exact protected Task authority and publishes only the canonical result", async () => {
+  test("passes the exact protected Task authority and returns the canonical result without terminalizing", async () => {
     const scenario = fixture();
     let captured: RunScopeSubagentOpts | undefined;
     const dependencies: ProtectedTaskNativeRunnerDependencies = {
@@ -163,7 +163,7 @@ describe("protected Task native runner", () => {
       resultText: "Protected result",
       lastError: null,
     });
-    expect(scenario.published).toEqual([result]);
+    expect(scenario.published).toEqual([]);
     expect(captured).toBeDefined();
     expect(captured).toMatchObject({
       parentThreadId: `task:${TASK_ID}`,
@@ -200,7 +200,20 @@ describe("protected Task native runner", () => {
     expect("deferAssistantOutputToReportBack" in captured!).toBe(false);
   });
 
-  test("publishes a protected error payload without ordinary report-back", async () => {
+  test("runs with identity-only transient input and leaves publication to the closing owner", async () => {
+    const scenario = fixture();
+    const { protectedTaskResultPublication: _publication, ...identityOnly } = scenario.input.transientInput;
+    const result = await runProtectedTaskNativeSegment({ ...scenario.input, transientInput: identityOnly }, {
+      runScopeSubagent: async () => ({
+        status: "completed", threadId: GRAPH_THREAD_ID,
+        finalText: "internal", finalResponseText: "Complete",
+      }),
+    });
+    expect(result).toEqual({ formatVersion: 1, resultText: "Complete", lastError: null });
+    expect(scenario.published).toEqual([]);
+  });
+
+  test("returns a protected error payload without ordinary report-back", async () => {
     const scenario = fixture();
     const result = await runProtectedTaskNativeSegment(scenario.input, {
       runScopeSubagent: async () => {
@@ -213,10 +226,10 @@ describe("protected Task native runner", () => {
       resultText: null,
       lastError: "Protected Task execution failed",
     });
-    expect(scenario.published).toEqual([result]);
+    expect(scenario.published).toEqual([]);
   });
 
-  test("terminalizes a substituted graph result with a safe protected error", async () => {
+  test("returns a safe protected error for a substituted graph result", async () => {
     const scenario = fixture();
     const result = await runProtectedTaskNativeSegment(scenario.input, {
       runScopeSubagent: async () => ({
@@ -232,7 +245,7 @@ describe("protected Task native runner", () => {
       resultText: null,
       lastError: "Protected Task execution failed",
     });
-    expect(scenario.published).toEqual([result]);
+    expect(scenario.published).toEqual([]);
   });
 
   test("returns interruptions and aborts in memory without publishing a result", async () => {
@@ -355,21 +368,6 @@ describe("protected Task native runner", () => {
     }), "exact supported segment");
     expect(graphStarted).toBe(false);
     expect(conflicting.published).toEqual([]);
-
-    const missingPublicationBase = fixture();
-    const {
-      protectedTaskResultPublication: _publication,
-      ...identityOnlyInput
-    } = missingPublicationBase.input.transientInput;
-    const missingPublication = fixture({ transientInput: identityOnlyInput });
-    await expectRejected(runProtectedTaskNativeSegment(missingPublication.input, {
-      runScopeSubagent: async () => {
-        graphStarted = true;
-        throw new Error("must not run");
-      },
-    }), "result publication authority");
-    expect(graphStarted).toBe(false);
-    expect(missingPublication.published).toEqual([]);
 
     const missingMemory = fixture({ memoryHandoff: undefined as never });
     await expectRejected(runProtectedTaskNativeSegment(missingMemory.input, {
