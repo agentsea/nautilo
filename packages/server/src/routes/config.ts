@@ -250,13 +250,20 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
       env: {},
     });
     const resolved = await Promise.all(
-      candidates.map(async (candidate) =>
-        (await resolveAvailability(
+      candidates.map(async (candidate) => {
+        const availability = await resolveAvailability(
           humanUserId,
           candidate.id,
           { purpose: "chat-tools", allowChinaUpstream, env: {} },
-        )).model,
-      ),
+        );
+        return {
+          ...availability.model,
+          ...(availability.funding ? {
+            fundingSource: availability.funding.kind,
+            fundingProviderRoute: availability.funding.providerRoute,
+          } : {}),
+        };
+      }),
     );
     return reply.send(
       includeUnavailable

@@ -79,7 +79,9 @@ describe("Railway provider-only TOML", () => {
       typesafe: "synthetic-typesafe-key",
       cloudconvert: ["eyJ" + "a".repeat(70), "b".repeat(70), "c".repeat(70)].join("."),
       google: "g".repeat(40),
+      xai: "synthetic-xai-key",
       fireworks: `fw_${"f".repeat(40)}`,
+      together: "synthetic-together-key",
       groq: `gsk_${"q".repeat(40)}`,
       gateway: "synthetic-gateway-value",
     };
@@ -112,13 +114,13 @@ describe("Railway provider-only TOML", () => {
       expect(plan.providers.find((provider) => provider.provider === "surplus")).toMatchObject({
         selected: true,
         state: "configured",
-        capabilities: [],
+        capabilities: ["chat"],
       });
       for (const value of Object.values(values)) expect(JSON.stringify(plan)).not.toContain(value);
     }
   });
 
-  test("adopts a Surplus key without treating it as qualified chat capability", async () => {
+  test("adopts a Surplus marketplace chat key without claiming embeddings or non-text coverage", async () => {
     const config = join(root, "providers.toml");
     const value = "inf_surplus-provider-config-key";
     await writeProviderConfig(config, [
@@ -145,9 +147,13 @@ describe("Railway provider-only TOML", () => {
       infrastructure: "planned",
       coreDegradedConsent: false,
     });
-    expect(plan.providers.find((provider) => provider.provider === "surplus")?.capabilities).toEqual([]);
+    expect(plan.providers.find((provider) => provider.provider === "surplus")?.capabilities).toEqual(["chat"]);
     expect(plan.capabilities.find((capability) => capability.capability === "chat")?.experience)
-      .toBe("unavailable");
+      .toBe("baseline");
+    for (const capability of ["embeddings", "search", "tts", "stt"] as const) {
+      expect(plan.capabilities.find((candidate) => candidate.capability === capability)?.experience)
+        .toBe("unavailable");
+    }
     expect(plan.readiness.coreReadiness).toBe("blocked");
   });
 
@@ -242,7 +248,9 @@ describe("Railway provider-only TOML", () => {
         ANTHROPIC_API_KEY: `sk-ant-${"a".repeat(40)}`,
         BROWSER_USE_API_KEY: `bu_${"b".repeat(40)}`,
         GOOGLE_API_KEY: "g".repeat(40),
+        XAI_API_KEY: "synthetic-xai-key",
         FIREWORKS_API_KEY: `fw_${"f".repeat(40)}`,
+        TOGETHER_API_KEY: "synthetic-together-key",
         GROQ_API_KEY: `gsk_${"q".repeat(40)}`,
         SURPLUS_API_KEY: "inf_surplus-environment-key",
         NAUTILO_GATEWAY_API_KEY: "synthetic-gateway-key",

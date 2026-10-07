@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronDown, Check, Eye, Brain } from "lucide-react";
 import { type AssistantModelSummary } from "@nautilo/api-client/browser";
@@ -30,11 +30,11 @@ import {
 type PickerPanel = "model" | "reasoning" | "serving";
 
 /**
- * Browser API contract supplied by D462's Room+Agent route. Kept narrow here
+ * Browser API contract supplied by the Room+Agent route. Kept narrow here
  * so the composer cannot accidentally reach profile/default-model methods.
  */
 /**
- * D462 — fast, Room-local model controls in the composer's left cluster.
+ * fast, Room-local model controls in the composer's left cluster.
  *
  * Settings remains the owner of Agent defaults. This picker saves the complete
  * safe selection tuple for the current Room and lets the server translate it
@@ -44,12 +44,16 @@ export function ModelSwitcher({
   roomId,
   agentId,
   compact = false,
+  onModelChange,
+  openRequest = 0,
 }: {
   roomId: string | null;
   /** Exact active Agent in this Room; null means the Room target is ambiguous. */
   agentId: string | null;
   /** Shorten the trigger label when the composer is in the reader rail. */
   compact?: boolean;
+  onModelChange?: (model: AssistantModelSummary | null) => void;
+  openRequest?: number;
 }) {
   const { response } = useProfile();
   const profile = response?.viewerRole === "owner" ? response.agent : null;
@@ -58,6 +62,7 @@ export function ModelSwitcher({
 
   const [models, setModels] = useState<AssistantModelSummary[] | null>(null);
   const [roomSelection, setRoomSelection] = useState<RoomModelControlSelection | null>(null);
+  const [resolvedModelId, setResolvedModelId] = useState<string | null>(null);
   const [selectionLoaded, setSelectionLoaded] = useState(false);
   const [open, setOpen] = useState(false);
   const [panel, setPanel] = useState<PickerPanel>("model");
@@ -79,9 +84,7 @@ export function ModelSwitcher({
     let cancelled = false;
     void (async () => {
       try {
-        const retainedIds = [roomSelection?.modelId, defaultModelId].filter(
-          (id): id is string => !!id,
-        );
+        const retainedIds = defaultModelId ? [defaultModelId] : [];
         const rows = await loadCallerModelRows(apiClient, retainedIds);
         if (cancelled) return;
         setModels(rows);
@@ -92,20 +95,22 @@ export function ModelSwitcher({
     return () => {
       cancelled = true;
     };
-  }, [defaultModelId, isOwner, modelRefresh, profile?.agentIdentity, roomSelection?.modelId]);
+  }, [defaultModelId, isOwner, modelRefresh, profile?.agentIdentity]);
 
   useEffect(() => {
     if (!isOwner || !roomId || !agentId) {
       setRoomSelection(null);
+      setResolvedModelId(null);
       setSelectionLoaded(true);
       return;
     }
     let cancelled = false;
     setSelectionLoaded(false);
+    setResolvedModelId(null);
     void (async () => {
       try {
-        const selection = await apiClient.getRoomModelControlSelection(roomId, agentId);
-        if (!cancelled) setRoomSelection(selection);
+        const state = await apiClient.getRoomModelControlState(roomId, agentId);
+        if (!cancelled) { setRoomSelection(state.selection); setResolvedModelId(state.effectiveModelId ?? null); }
       } catch {
         // The model picker remains usable with the Agent default; a later write
         // will surface its own actionable error to the owner.
@@ -122,11 +127,30 @@ export function ModelSwitcher({
   // A null Agent default means the server resolves the shared chat-role
   // policy. The browser must not guess that result from catalog priority.
   const agentDefaultId = defaultModelId;
-  const effectiveId = roomSelection?.modelId ?? agentDefaultId;
+  const effectiveId = roomSelection?.modelId ?? resolvedModelId ?? agentDefaultId;
+  useEffect(() => {
+    if (!models || !effectiveId || models.some((model) => model.id === effectiveId)) return;
+    let cancelled = false;
+    // A saved legacy choice may be absent from the caller catalog. Resolve
+    // just that choice without refetching eligibility for every model.
+    void loadCallerModelRows(apiClient, [effectiveId], models).then((rows) => {
+      if (!cancelled && rows.some((model) => model.id === effectiveId)) setModels(rows);
+    }).catch(() => { /* The existing picker can still select an available row. */ });
+    return () => { cancelled = true; };
+  }, [effectiveId, models]);
   const currentModel = useMemo(
     () => (effectiveId ? models?.find((model) => model.id === effectiveId) ?? null : null),
     [models, effectiveId],
   );
+  const modelChangeRef = useRef(onModelChange);
+  modelChangeRef.current = onModelChange;
+  useEffect(() => {
+    modelChangeRef.current?.(selectionLoaded ? currentModel : null);
+  }, [currentModel, selectionLoaded, roomId, agentId]);
+  useEffect(() => {
+    if (openRequest > 0) { setPanel("model"); setQuery(""); setOpen(true); }
+  }, [openRequest]);
+
   const effectiveSelection = useMemo(
     () =>
       currentModel && isSelectableModel(currentModel)
@@ -151,7 +175,9 @@ export function ModelSwitcher({
   if (!isOwner) return null;
 
   const fullLabel =
-    currentModel?.displayName ?? (effectiveId ? effectiveId.split(":").pop() ?? effectiveId : "Server default");
+    currentModel?.displayName ?? (!selectionLoaded || models === null
+      ? "Loading model…"
+      : effectiveId ? "Saved model" : "Server default");
   const triggerLabel = compact ? fullLabel.replace(/\s*\([^)]*\)\s*$/, "") : fullLabel;
 
   const closePicker = (): void => {
@@ -166,6 +192,10 @@ export function ModelSwitcher({
     try {
       const saved = await apiClient.updateRoomModelControlSelection(roomId, agentId, next);
       setRoomSelection(saved);
+      if (!saved) {
+        const state = await apiClient.getRoomModelControlState(roomId, agentId);
+        setResolvedModelId(state.effectiveModelId ?? null);
+      }
       setSaveState("idle");
       if (close) closePicker();
     } catch (error) {

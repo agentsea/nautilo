@@ -51,7 +51,7 @@ value = { value = "REPLACE_with_OpenRouter_key" }
 # key = "VENICE_API_KEY"
 # value = { value = "REPLACE_with_Venice_key" }
 
-# Surplus: marketplace serving for qualified routes. A key alone does not enable chat.
+# Surplus: marketplace chat for signed routes when Prefer Surplus is enabled.
 # [[providers]]
 # key = "SURPLUS_API_KEY"
 # value = { value = "REPLACE_with_Surplus_key" }
@@ -72,8 +72,16 @@ value = { value = "REPLACE_with_OpenRouter_key" }
 # value = { value = "REPLACE_with_Google_key" }
 
 # [[providers]]
+# key = "XAI_API_KEY"
+# value = { value = "REPLACE_with_xAI_key" }
+
+# [[providers]]
 # key = "FIREWORKS_API_KEY"
 # value = { value = "REPLACE_with_Fireworks_key" }
+
+# [[providers]]
+# key = "TOGETHER_API_KEY"
+# value = { value = "REPLACE_with_Together_AI_key" }
 
 # [[providers]]
 # key = "GROQ_API_KEY"

@@ -2,13 +2,26 @@ import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "r
 
 import { getApiClient } from "@/lib/api";
 import { useRealtime } from "@/providers/realtime";
-import { isMissingTaskContentProjection } from "./task-content-mobile";
+import type { NautiloApiClient } from "@nautilo/api-client/browser";
+import { requiresTaskContentProjection } from "./task-content-mobile";
 import {
   createTaskWorkController,
   taskWorkViewState,
   type TaskWorkApi,
 } from "./task-work-state";
 import { useTaskWorkScope } from "./use-task-work-scope";
+
+export async function listPlainTaskWork(
+  client: Pick<NautiloApiClient, "listTasks" | "listTaskContentV1">,
+) {
+  const query = { includeTerminal: true, recentTerminalLimit: 5 } as const;
+  try {
+    return await client.listTasks(query);
+  } catch (error) {
+    if (!requiresTaskContentProjection(error)) throw error;
+    return [...await client.listTaskContentV1(query)];
+  }
+}
 
 /**
  * Binds the one Task controller to the active verified owner. This deliberately
@@ -42,13 +55,7 @@ export function useTaskWork({
     async list(requestScope) {
       if (!server || server.id !== requestScope.serverId) throw new Error("Active server changed.");
       const client = getApiClient(server.serverUrl);
-      const query = { includeTerminal: true, recentTerminalLimit: 5 };
-      try {
-        return [...await client.listTaskContentV1(query)];
-      } catch (error) {
-        if (!isMissingTaskContentProjection(error)) throw error;
-        return client.listTasks(query);
-      }
+      return listPlainTaskWork(client);
     },
   }), [server]);
   const subscribe = useCallback((listener: () => void) => controller.subscribe(listener), [controller]);

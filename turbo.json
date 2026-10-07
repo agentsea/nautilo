@@ -3,6 +3,10 @@
   "globalDependencies": ["**/.env.*local"],
   "globalPassThroughEnv": ["TMPDIR"],
   "tasks": {
+    "@nautilo/agent#typecheck": {
+      "dependsOn": ["transit", "@nautilo/office-docs#build"],
+      "outputs": []
+    },
     "@nautilo/office-docs#transit": {
       "dependsOn": ["^transit", "build"]
     },

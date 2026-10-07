@@ -69,6 +69,7 @@ function buildApp(
       (agentId === AGENT_ID || agentId === SECONDARY_AGENT_ID)
         ? {}
         : null,
+    resolveEffectiveModelId: async () => "fireworks:accounts/fireworks/models/glm-5p3",
     getSelection: async (roomId, agentId) => {
       getCalls.push({ roomId, agentId });
       return agentId === AGENT_ID
@@ -96,7 +97,23 @@ function buildApp(
   return { app, getCalls, setCalls, resetCalls };
 }
 
-describe("D462 room model-control selection routes", () => {
+describe("room model-control selection routes", () => {
+  test("opt-in effective model projection retains the existing authorized endpoint", async () => {
+    const { app } = buildApp();
+    try {
+      const response = await app.inject({ method: "GET",
+        url: `/api/rooms/${ROOM_ID}/agents/${AGENT_ID}/model-control-selection?includeEffectiveModel=true`,
+        headers: { "x-test-user": USER_ID, "x-test-actor": USER_ACTOR_ID } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json<{ effectiveModelId?: string }>().effectiveModelId).toBe("fireworks:accounts/fireworks/models/glm-5p3");
+      const denied = await app.inject({ method: "GET",
+        url: `/api/rooms/${ROOM_ID}/agents/foreign-agent/model-control-selection?includeEffectiveModel=true`,
+        headers: { "x-test-user": USER_ID, "x-test-actor": USER_ACTOR_ID } });
+      expect(denied.statusCode).toBe(404);
+      expect(denied.json<{ effectiveModelId?: string }>().effectiveModelId).toBeUndefined();
+    } finally { await app.close(); }
+  });
+
   let app: FastifyInstance;
   let getCalls: Array<{ roomId: string; agentId: string }>;
   let setCalls: Array<{ roomId: string; agentId: string; selection: ModelControlSelection }>;

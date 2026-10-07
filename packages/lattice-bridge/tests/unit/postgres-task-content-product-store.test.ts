@@ -212,6 +212,62 @@ describe("PostgresTaskContentProductStore", () => {
     expect(connection.isolations).toEqual(["serializable"]);
   });
 
+  test.each([
+    "2026-10-02T09:08:07.123Z",
+    "2026-10-02 12:08:07.123+03",
+    "2026-10-02 09:08:07.123456+00",
+  ])("decodes canonical storage timestamp %s", async (nextAttemptAt) => {
+    const coordinate = definition();
+    const row = lifecycleRow(coordinate, {
+      next_attempt_at: nextAttemptAt,
+    });
+    const { store } = await setup([
+      ...emptyOperations,
+      { contains: 'from "task_definition_crypto_revisions"', rows: [] },
+      requesterOwner,
+      { contains: 'from "tasks"', rows: [] },
+      { contains: 'insert into "task_definition_crypto_revisions"', rows: [row] },
+      { contains: 'from "tasks"', rows: [] },
+    ]);
+    const reserved = await store.reserveRevision(reservation(coordinate));
+    expect(reserved.status).toBe("reserved");
+    if (reserved.status !== "reserved") return;
+    expect(reserved.state.lifecycle.nextAttemptAt).toEqual(new Date(nextAttemptAt));
+  });
+
+  test.each([
+    "",
+    "not-a-timestamp",
+    "0",
+    "2026-10-02",
+    "2026-02-30T09:08:07.123Z",
+    "2026-02-30 09:08:07.123+00",
+    "2026-10-02 09:08:07.123+99",
+    1,
+    {},
+    new Date(Number.NaN),
+  ])(
+    "rejects malformed storage timestamp %p",
+    async (stored) => {
+      const coordinate = definition();
+      const { store } = await setup([
+        ...emptyOperations,
+        { contains: 'from "task_definition_crypto_revisions"', rows: [] },
+        requesterOwner,
+        { contains: 'from "tasks"', rows: [] },
+        {
+          contains: 'insert into "task_definition_crypto_revisions"',
+          rows: [lifecycleRow(coordinate, { next_attempt_at: stored })],
+        },
+      ]);
+      const error = await store.reserveRevision(reservation(coordinate))
+        .then(() => null, (reason: unknown) => reason);
+      expect(error).toBeInstanceOf(TypeError);
+      expect((error as Error).message)
+        .toBe("next_attempt_at is not a timestamp");
+    },
+  );
+
   test("enforces exact update predecessor and TaskRun parent binding", async () => {
     const update = definition(2);
     const updateRow = lifecycleRow(update);

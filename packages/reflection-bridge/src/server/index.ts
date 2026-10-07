@@ -44,3 +44,5 @@ export * from "./postgres-protected-stenographer-converter";
 export * from "./protected-stenographer-record-attachment";
 export * from "./protected-stenographer-record-commitment";
 export * from "./postgres-ordinary-stenographer-journal";
+
+export { PostgresGroundedDependencyRecordState } from "./postgres-dependency-record-state";

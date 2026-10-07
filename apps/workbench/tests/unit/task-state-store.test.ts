@@ -25,10 +25,12 @@ function task(over: Partial<TaskSummary> = {}): TaskSummary {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 describe("shouldSuppressWsOpenSeed", () => {
@@ -166,6 +168,32 @@ describe("createTaskStateStore — lifecycle reconciliation", () => {
     expect(store.getSnapshot().taskMap["sched-1"]?.status).toBe("paused");
     expect(listCalls).toBe(2);
   });
+
+  test("failed lifecycle mutation does not leave an invalidated seed loading", async () => {
+    const pendingSeed = deferred<TaskSummary[]>();
+    let listCalls = 0;
+    const store = createTaskStateStore({
+      listActiveTasks: async () => {
+        listCalls += 1;
+        return listCalls === 1 ? [task({ id: "sched-1" })] : pendingSeed.promise;
+      },
+      lifecycle: {
+        pauseTask: async () => { throw new Error("pause failed"); },
+        unpauseTask: async () => ({}),
+        stopTask: async () => ({}),
+      },
+    });
+    await store.seed("mount");
+
+    const reseed = store.seed("mount");
+    expect(store.getSnapshot().loading).toBe(true);
+    await store.pauseTask("sched-1");
+    pendingSeed.resolve([task({ id: "stale-before-pause" })]);
+    await reseed;
+
+    expect(store.getSnapshot().loading).toBe(false);
+    expect(store.getSnapshot().tasks.map((row) => row.id)).toEqual(["sched-1"]);
+  });
 });
 
 describe("createTaskStateStore — non-overlapping refresh/poll", () => {
@@ -246,6 +274,47 @@ describe("createTaskStateStore — viewer scope", () => {
     expect(cleared.tasks).toHaveLength(0);
     expect(cleared.loading).toBe(true);
     expect(Object.keys(cleared.runningSubagentsMap)).toHaveLength(0);
+  });
+
+  test("stale seed settlement cannot clear or publish over a new viewer seed", async () => {
+    for (const oldOutcome of ["success", "error"] as const) {
+      const oldSeed = deferred<TaskSummary[]>();
+      const currentSeed = deferred<TaskSummary[]>();
+      let calls = 0;
+      const store = createTaskStateStore({
+        listActiveTasks: () => ++calls === 1 ? oldSeed.promise : currentSeed.promise,
+      });
+      let emissions = 0;
+      store.subscribe(() => { emissions += 1; });
+
+      const staleRun = store.seed("mount");
+      store.clearForViewerChange();
+      const currentRun = store.seed("mount");
+      const emissionsBeforeStaleSettlement = emissions;
+
+      if (oldOutcome === "success") {
+        oldSeed.resolve([task({ id: "old-viewer-task" })]);
+      } else {
+        oldSeed.reject(new Error("old viewer failed"));
+      }
+      await staleRun;
+
+      expect(emissions).toBe(emissionsBeforeStaleSettlement);
+      expect(store.getSnapshot()).toMatchObject({
+        loading: true,
+        error: null,
+        tasks: [],
+      });
+
+      currentSeed.resolve([task({ id: "current-viewer-task" })]);
+      await currentRun;
+      expect(store.getSnapshot()).toMatchObject({
+        loading: false,
+        error: null,
+      });
+      expect(store.getSnapshot().tasks.map((row) => row.id))
+        .toEqual(["current-viewer-task"]);
+    }
   });
 });
 

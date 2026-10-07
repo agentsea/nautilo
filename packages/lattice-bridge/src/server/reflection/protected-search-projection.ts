@@ -14,6 +14,7 @@ import type {ReflectionSemanticOperationPort} from "./semantic-operation.ts";
 export interface ProtectedReflectionSearchMetadata {
   readonly recordRef: string;
   readonly processingGeneration: number;
+  readonly structuralHeight: number;
   readonly representationGeneration: number;
   readonly producerPolicyVersion: string;
   readonly lifecycle: "current" | "stale" | "superseded" | "resolved" | "sunset";
@@ -22,6 +23,7 @@ export interface ProtectedReflectionSearchMetadata {
   readonly currentProjection: Readonly<{
     recordRef: string; recordProcessingGeneration: number; projectionVersion: number; projectionGeneration: number;
     embeddingProvider: string; embeddingCanonicalModel: string; embeddingDimensions: number; embeddingContractVersion: number;
+    roomAnchorCommitment: string | null;
   }> | null;
 }
 
@@ -30,9 +32,15 @@ export interface ProtectedReflectionSearchProjectionPorts {
   readonly embedding: RecordEmbeddingPort;
   /** Resolves currently eligible protected metadata, including the exact selected Namespace. */
   readonly resolveMetadata: (claim: DurableSleepClaim, signal?: AbortSignal) => Promise<ProtectedReflectionSearchMetadata | null>;
+  /** Resolves a keyed exact-Room coordinate only from the granted canonical payload. */
+  readonly resolveRoomAnchorCommitment: (
+    metadata: ProtectedReflectionSearchMetadata,
+    payload: RecordPayloadV1,
+  ) => Promise<string | null>;
   /** Uses the existing search store within this held product transaction and the exact live claim/source fence. */
   readonly publish: (input: Readonly<{
     claim: DurableSleepClaim; metadata: ProtectedReflectionSearchMetadata; projection: RecordSearchProjectionV1;
+    roomAnchorCommitment: string;
     expectedProjectionGeneration: number | null; held: CurrentProcessorHeldAuthority;
     authorizeCommit: () => Promise<number>; signal: AbortSignal;
   }>) => Promise<"published" | "replayed" | "replaced" | "record_unavailable" | "stale" | "conflict">;
@@ -52,11 +60,13 @@ function currentProjectionMatches(metadata: ProtectedReflectionSearchMetadata): 
     && projection.recordProcessingGeneration === metadata.processingGeneration
     && projection.projectionVersion === RECORD_SEARCH_POLICY_V1.projectionVersion
     && projection.embeddingProvider === expected.provider && projection.embeddingCanonicalModel === expected.canonicalModel
-    && projection.embeddingDimensions === expected.dimensions && projection.embeddingContractVersion === expected.contractVersion;
+    && projection.embeddingDimensions === expected.dimensions && projection.embeddingContractVersion === expected.contractVersion
+    && typeof projection.roomAnchorCommitment === "string"
+    && /^h1\.[A-Za-z0-9_-]{43}$/u.test(projection.roomAnchorCommitment);
 }
 
 function sourceCoordinate(metadata: ProtectedReflectionSearchMetadata): string {
-  return JSON.stringify([metadata.recordRef, metadata.processingGeneration, metadata.representationGeneration, metadata.producerPolicyVersion,
+  return JSON.stringify([metadata.recordRef, metadata.processingGeneration, metadata.structuralHeight, metadata.representationGeneration, metadata.producerPolicyVersion,
     metadata.lifecycle, metadata.inputBinding.objectId, metadata.inputBinding.namespaceId, metadata.inputBinding.objectType,
     metadata.expectedEmbeddingProvenance.provider, metadata.expectedEmbeddingProvenance.canonicalModel,
     metadata.expectedEmbeddingProvenance.dimensions, metadata.expectedEmbeddingProvenance.contractVersion]);
@@ -74,14 +84,18 @@ export function createProtectedReflectionSearchProjection(ports: ProtectedReflec
       const metadata = structuredClone(resolved);
       if (metadata.recordRef !== claim.recordRef || metadata.lifecycle !== "current"
         || !Number.isSafeInteger(metadata.processingGeneration) || metadata.processingGeneration < 1
+        || !Number.isSafeInteger(metadata.structuralHeight) || metadata.structuralHeight < 0
         || !Number.isSafeInteger(metadata.representationGeneration) || metadata.representationGeneration < 1
         || metadata.inputBinding.objectType !== "nautilo.reflection.record.v1") throw stale();
       try {assertRecordEmbeddingProvenanceV1(metadata.expectedEmbeddingProvenance);} catch {throw integrity();}
       if (currentProjectionMatches(metadata)) return {status: "ready"};
       const initialCoordinate = sourceCoordinate(metadata);
       const expectedProjectionGeneration = metadata.currentProjection?.projectionGeneration ?? null;
+      const expectedRoomAnchorCommitment =
+        metadata.currentProjection?.roomAnchorCommitment ?? null;
       let closed = false, executed = false, attached = false;
       let projection: RecordSearchProjectionV1 | undefined;
+      let roomAnchorCommitment: string | undefined;
       let vector: number[] | undefined;
       const wipe = () => {vector?.fill(0); vector = undefined; projection = undefined;};
       const active = (currentSignal?: AbortSignal) => {
@@ -93,7 +107,9 @@ export function createProtectedReflectionSearchProjection(ports: ProtectedReflec
         const current = await ports.resolveMetadata(claim, currentSignal);
         active(currentSignal);
         if (current === null || sourceCoordinate(current) !== initialCoordinate
-          || (current.currentProjection?.projectionGeneration ?? null) !== expectedProjectionGeneration) throw stale();
+          || (current.currentProjection?.projectionGeneration ?? null) !== expectedProjectionGeneration
+          || (current.currentProjection?.roomAnchorCommitment ?? null)
+            !== expectedRoomAnchorCommitment) throw stale();
       };
       const decode = (bytes: Uint8Array): RecordPayloadV1 => {
         try {
@@ -128,6 +144,16 @@ export function createProtectedReflectionSearchProjection(ports: ProtectedReflec
               || input.objectType !== metadata.inputBinding.objectType) throw integrity();
             await verifyMetadata(executionSignal);
             const payload = decode(input.plaintext);
+            const resolvedRoomAnchorCommitment = await ports.resolveRoomAnchorCommitment(
+              metadata,
+              payload,
+            );
+            active(executionSignal);
+            if (
+              resolvedRoomAnchorCommitment === null
+              || !/^h1\.[A-Za-z0-9_-]{43}$/u.test(resolvedRoomAnchorCommitment)
+            ) throw stale();
+            roomAnchorCommitment = resolvedRoomAnchorCommitment;
             const request = {purpose: "record.statement_embedding" as const, plaintext: payload.statement, signal: executionSignal};
             try {assertRecordEmbeddingRequest(request);} catch {throw integrity();}
             const embedded = await ports.embedding.embed(request);
@@ -147,11 +173,16 @@ export function createProtectedReflectionSearchProjection(ports: ProtectedReflec
           },
           attach: async request => {
             active(request.signal);
-            if (attached || request.output !== null || projection === undefined) throw integrity();
+            if (
+              attached
+              || request.output !== null
+              || projection === undefined
+              || roomAnchorCommitment === undefined
+            ) throw integrity();
             await verifyMetadata(request.signal);
             let authorized = false;
             let authorizationFailure: Error | undefined;
-            const result = await ports.publish({claim, metadata, projection, expectedProjectionGeneration, held: request.held, signal: request.signal,
+            const result = await ports.publish({claim, metadata, projection, roomAnchorCommitment, expectedProjectionGeneration, held: request.held, signal: request.signal,
               authorizeCommit: async () => {
                 active(request.signal);
                 if (authorized) {authorizationFailure = integrity(); throw authorizationFailure;} authorized = true;
@@ -170,7 +201,12 @@ export function createProtectedReflectionSearchProjection(ports: ProtectedReflec
         if (result.status === "reconciliation_required") {
           const current = await ports.resolveMetadata(claim, signal);
           active();
-          if (current !== null && sourceCoordinate(current) === initialCoordinate && currentProjectionMatches(current)) return {status: "ready"};
+          if (
+            current !== null
+            && sourceCoordinate(current) === initialCoordinate
+            && currentProjectionMatches(current)
+            && current.currentProjection?.roomAnchorCommitment === roomAnchorCommitment
+          ) return {status: "ready"};
           return {status: "unavailable", failureCode: "projection_unavailable"};
         }
         throw integrity();

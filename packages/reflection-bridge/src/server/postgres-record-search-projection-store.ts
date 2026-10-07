@@ -43,6 +43,12 @@ export interface CurrentRecordSearchProjectionCoordinate {
   readonly embeddingCanonicalModel: string;
   readonly embeddingDimensions: number;
   readonly embeddingContractVersion: 1;
+  readonly roomAnchorCommitment: string | null;
+}
+
+export interface CurrentRoomBoundRecordSearchProjection
+  extends RecordSearchProjectionV1 {
+  readonly roomAnchorCommitment: string;
 }
 
 const SERIALIZATION_FAILURE = "40001";
@@ -88,6 +94,7 @@ function returnedVector(value: unknown): readonly number[] {
 
 function projectionParameters(
   projection: RecordSearchProjectionV1,
+  roomAnchorCommitment: string,
 ): readonly (string | number)[] {
   return [
     projection.recordRef,
@@ -99,12 +106,20 @@ function projectionParameters(
     projection.embedding.provenance.dimensions,
     projection.embedding.provenance.contractVersion,
     vectorLiteral(projection.embedding.vector),
+    roomAnchorCommitment,
   ];
+}
+
+function assertRoomAnchorCommitment(value: string): void {
+  if (!/^h1\.[A-Za-z0-9_-]{43}$/u.test(value)) {
+    throw new TypeError("Invalid Record search Room anchor commitment");
+  }
 }
 
 async function exactExisting(
   transaction: RecordProductPostgresExecutor,
   projection: RecordSearchProjectionV1,
+  roomAnchorCommitment: string,
 ): Promise<Readonly<{ generation: number; exact: boolean }> | null> {
   const rows = await transaction.query(
     `SELECT projection_generation,
@@ -115,11 +130,12 @@ async function exactExisting(
               AND embedding_canonical_model = $6
               AND embedding_dimensions = $7
               AND embedding_contract_version = $8
-              AND embedding = $9::vector AS exact_match
+              AND embedding = $9::vector
+              AND room_anchor_commitment = $10 AS exact_match
        FROM reflection_record_search_projections
       WHERE record_id = $1
       FOR UPDATE`,
-    projectionParameters(projection),
+    projectionParameters(projection, roomAnchorCommitment),
   );
   if (rows.length > 1) throw new Error("Duplicate Record search projection");
   const row = rows[0];
@@ -174,6 +190,8 @@ export class PostgresRecordSearchProjectionStore {
         embedding_dimensions: reflectionRecordSearchProjections.embeddingDimensions,
         embedding_contract_version:
           reflectionRecordSearchProjections.embeddingContractVersion,
+        room_anchor_commitment:
+          reflectionRecordSearchProjections.roomAnchorCommitment,
       })
         .from(reflectionRecordSearchProjections)
         .where(eq(reflectionRecordSearchProjections.recordId, recordRef)));
@@ -194,6 +212,12 @@ export class PostgresRecordSearchProjectionStore {
       || typeof canonicalModel !== "string"
       || canonicalModel.length === 0
     ) throw new TypeError("Invalid Record search projection row");
+    const roomAnchorCommitment = row["room_anchor_commitment"];
+    if (typeof roomAnchorCommitment === "string") {
+      assertRoomAnchorCommitment(roomAnchorCommitment);
+    } else if (roomAnchorCommitment !== null) {
+      throw new TypeError("Invalid Record search projection row");
+    }
     return {
       recordRef,
       recordProcessingGeneration: rowInteger(row, "record_processing_generation"),
@@ -203,6 +227,7 @@ export class PostgresRecordSearchProjectionStore {
       embeddingCanonicalModel: canonicalModel,
       embeddingDimensions: rowInteger(row, "embedding_dimensions"),
       embeddingContractVersion: 1,
+      roomAnchorCommitment,
     };
   }
 
@@ -213,7 +238,7 @@ export class PostgresRecordSearchProjectionStore {
    */
   async readCurrentEmbedding(
     recordRef: string,
-  ): Promise<RecordSearchProjectionV1 | null> {
+  ): Promise<CurrentRoomBoundRecordSearchProjection | null> {
     if (recordRef.length === 0) {
       throw new TypeError("Record search projection read requires a Record");
     }
@@ -230,6 +255,8 @@ export class PostgresRecordSearchProjectionStore {
         embedding_dimensions: reflectionRecordSearchProjections.embeddingDimensions,
         embedding_contract_version:
           reflectionRecordSearchProjections.embeddingContractVersion,
+        room_anchor_commitment:
+          reflectionRecordSearchProjections.roomAnchorCommitment,
         embedding: reflectionRecordSearchProjections.embedding,
       })
         .from(reflectionRecordSearchProjections)
@@ -271,15 +298,20 @@ export class PostgresRecordSearchProjectionStore {
       embedding,
     };
     validateRecordSearchProjectionV1(projection);
-    return projection;
+    const roomAnchorCommitment = row["room_anchor_commitment"];
+    if (typeof roomAnchorCommitment !== "string") return null;
+    assertRoomAnchorCommitment(roomAnchorCommitment);
+    return { ...projection, roomAnchorCommitment };
   }
 
   publish(
     projection: RecordSearchProjectionV1,
+    roomAnchorCommitment: string,
   ): Promise<RecordSearchProjectionPublicationResult> {
     validateRecordSearchProjectionV1(projection);
+    assertRoomAnchorCommitment(roomAnchorCommitment);
     return this.#serializable(async (transaction) => {
-      const current = await exactExisting(transaction, projection);
+      const current = await exactExisting(transaction, projection, roomAnchorCommitment);
       if (current !== null) return current.exact ? "replayed" : "conflict";
       if (!(await recordAcceptsProjection(transaction, projection))) {
         return "record_unavailable";
@@ -289,9 +321,9 @@ export class PostgresRecordSearchProjectionStore {
            record_id, record_processing_generation, projection_version,
            projection_generation, embedding_provider,
            embedding_canonical_model, embedding_dimensions,
-           embedding_contract_version, embedding
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector)`,
-        projectionParameters(projection),
+           embedding_contract_version, embedding, room_anchor_commitment
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10)`,
+        projectionParameters(projection, roomAnchorCommitment),
       );
       return "published";
     });
@@ -300,8 +332,10 @@ export class PostgresRecordSearchProjectionStore {
   replace(input: Readonly<{
     expectedProjectionGeneration: number;
     projection: RecordSearchProjectionV1;
+    roomAnchorCommitment: string;
   }>): Promise<RecordSearchProjectionReplacementResult> {
     validateRecordSearchProjectionV1(input.projection);
+    assertRoomAnchorCommitment(input.roomAnchorCommitment);
     if (
       !Number.isSafeInteger(input.expectedProjectionGeneration)
       || input.expectedProjectionGeneration < 1
@@ -311,7 +345,11 @@ export class PostgresRecordSearchProjectionStore {
       throw new RangeError("Record search projection replacement generation is invalid");
     }
     return this.#serializable(async (transaction) => {
-      const current = await exactExisting(transaction, input.projection);
+      const current = await exactExisting(
+        transaction,
+        input.projection,
+        input.roomAnchorCommitment,
+      );
       if (current === null) return "stale";
       if (current.generation === input.projection.projectionGeneration) {
         return current.exact ? "replayed" : "conflict";
@@ -330,9 +368,10 @@ export class PostgresRecordSearchProjectionStore {
                 embedding_dimensions = $7,
                 embedding_contract_version = $8,
                 embedding = $9::vector,
+                room_anchor_commitment = $10,
                 updated_at = now()
           WHERE record_id = $1`,
-        projectionParameters(input.projection),
+        projectionParameters(input.projection, input.roomAnchorCommitment),
       );
       return "replaced";
     });

@@ -481,7 +481,7 @@ export function ModelsSection() {
                     Prefer Surplus
                   </label>
                   <p className="mt-1 text-[11px] text-foreground-muted">
-                    For server-funded calls on supported catalogue providers, try Surplus Intelligence first, then the configured original provider and model fallback chain. Surplus and its selected seller receive request content, and actual pricing varies by offer.
+                    For supported text calls, try Surplus Intelligence first using the admitted server or personal key, then eligible direct providers and the model fallback chain within that funding source. Surplus and its selected seller receive request content, and actual pricing varies by offer.
                   </p>
                 </div>
                 <input

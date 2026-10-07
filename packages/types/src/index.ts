@@ -25,6 +25,8 @@ export * from "./message-action-contract";
 export * from "./mobile-user-agreement";
 export * from "./model-selection";
 export * from "./profile";
+export * from "./personal-costs";
+export * from "./provider-key-catalogue";
 export * from "./public-product-links";
 export * from "./protected-message";
 export * from "./protected-message-realtime";

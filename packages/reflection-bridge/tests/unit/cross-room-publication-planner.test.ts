@@ -55,6 +55,8 @@ function planner(options: Readonly<{
   outputAccessAudienceUnavailable?: boolean;
   revalidationAccessAudienceUnavailable?: boolean;
   changedLifecycle?: "current" | "stale";
+  changedAuthorityUnavailable?: boolean;
+  changedBindingGeneration?: () => number;
 }> = {}) {
   const audiences = new Map([
     ["access:a", ["human:alice", "human:bob"]],
@@ -94,6 +96,9 @@ function planner(options: Readonly<{
     } as never,
     authority: {
       async readCurrent(recordRef: string) {
+        if (recordRef === "record:a" && options.changedAuthorityUnavailable === true) {
+          return null;
+        }
         return {
           recordRef,
           recordLifecycle: recordRef === "record:a"
@@ -147,7 +152,9 @@ function planner(options: Readonly<{
         return Promise.resolve({
           originPublicationBindingRef: bindingRef,
           currentAccessBindingRefs: [bindingRef],
-          representationGeneration: 1,
+          representationGeneration: recordRef === "record:a"
+            ? options.changedBindingGeneration?.() ?? 1
+            : 1,
           authorityProjectionGeneration: 1,
         });
       },
@@ -199,7 +206,7 @@ describe("exact cross-Room publication planner", () => {
         terminalAuthorityLeafHandles: ["namespace:a", "namespace:b"],
       },
     };
-    const result = await planner().planDependencyLoss({
+    const result = await planner({ changedAuthorityUnavailable: true }).planDependencyLoss({
       predecessor,
       proposal: {
         operation: "supersede_parent",
@@ -208,11 +215,23 @@ describe("exact cross-Room publication planner", () => {
         childRecordRefs: ["record:b"],
         sourceDependencies: [],
       },
+      modelExposureDependencies: [{
+        kind: "record",
+        recordRef: "record:b",
+        observedProcessingGeneration: 1,
+        terminalAuthorityLeafHandles: ["record:b"],
+      }],
       idempotencyKey: "sleep-dependency-loss:record:a:1",
     });
     expect(result.status).toBe("planned");
     if (result.status !== "planned") return;
     expect(result.plan.predecessorOnlyRecordRef).toBe("record:a");
+    expect(result.plan.modelExposureDependencies).toEqual([{
+      kind: "record",
+      recordRef: "record:b",
+      observedProcessingGeneration: 1,
+      terminalAuthorityLeafHandles: ["record:b"],
+    }]);
     expect(result.plan.selectedInputs.map((input) => input.kind === "record"
       ? `${input.role}:${input.recordRef}`
       : input.logicalSourceRef)).toEqual([
@@ -253,6 +272,12 @@ describe("exact cross-Room publication planner", () => {
         childRecordRefs: ["record:b"],
         sourceDependencies: [],
       },
+      modelExposureDependencies: [{
+        kind: "record",
+        recordRef: "record:b",
+        observedProcessingGeneration: 1,
+        terminalAuthorityLeafHandles: ["record:b"],
+      }],
       idempotencyKey: "sleep-dependency-loss:record:a:2",
     });
     expect(planned.status).toBe("planned");
@@ -264,6 +289,157 @@ describe("exact cross-Room publication planner", () => {
       status: "current",
       predecessorAudience: "different",
     });
+  });
+
+  test("rejects a dependency-loss plan after the predecessor binding races", async () => {
+    let bindingGeneration = 1;
+    const subject = planner({ changedBindingGeneration: () => bindingGeneration });
+    const predecessor = {
+      recordRef: "record:a",
+      lifecycle: "current" as const,
+      structuralHeight: 1,
+      processingGeneration: 1,
+      semantic: {
+        observedContentFingerprint: "fingerprint:record:a",
+        posture: "derived" as const,
+        statement: "Old parent.",
+        sourceDependencies: [],
+        anchors: [],
+        childRecordRefs: ["record:b"],
+        producer: { producerRef: "reflection", policyVersion: "v1" },
+        terminalAuthorityLeafHandles: ["namespace:a", "namespace:b"],
+      },
+    };
+    const planned = await subject.planDependencyLoss({
+      predecessor,
+      proposal: {
+        operation: "supersede_parent",
+        parentRecordRef: "record:a",
+        statement: "Remaining evidence.",
+        childRecordRefs: ["record:b"],
+        sourceDependencies: [],
+      },
+      modelExposureDependencies: [{
+        kind: "record",
+        recordRef: "record:b",
+        observedProcessingGeneration: 1,
+        terminalAuthorityLeafHandles: ["record:b"],
+      }],
+      idempotencyKey: "sleep-dependency-loss:record:a:race",
+    });
+    expect(planned.status).toBe("planned");
+    if (planned.status !== "planned") return;
+    bindingGeneration = 2;
+    expect(await subject.revalidate({
+      plan: planned.plan,
+      predecessorRecordRef: "record:a",
+    })).toEqual({
+      status: "stale",
+      failureDetail: "publication_authority_fence_stale",
+    });
+  });
+
+  test("plans an exact revision-zero Message survivor", async () => {
+    const result = await planner({
+      sourceAuthorityHumanRefs: ["human:alice"],
+    }).planDependencyLoss({
+      predecessor: {
+        recordRef: "record:a",
+        lifecycle: "current",
+        structuralHeight: 1,
+        processingGeneration: 1,
+        semantic: {
+          observedContentFingerprint: "fingerprint:record:a",
+          posture: "derived",
+          statement: "Old parent.",
+          sourceDependencies: [],
+          anchors: [],
+          childRecordRefs: ["record:b"],
+          producer: { producerRef: "reflection", policyVersion: "v1" },
+          terminalAuthorityLeafHandles: ["namespace:a", "namespace:b"],
+        },
+      },
+      proposal: {
+        operation: "supersede_parent",
+        parentRecordRef: "record:a",
+        statement: "Remaining evidence.",
+        childRecordRefs: ["record:b"],
+        sourceDependencies: [],
+      },
+      modelExposureDependencies: [{
+        kind: "record",
+        recordRef: "record:b",
+        observedProcessingGeneration: 1,
+        terminalAuthorityLeafHandles: ["record:b"],
+      }, {
+        kind: "source",
+        sourceKind: "message",
+        logicalSourceRef: "message:17",
+        observedRevision: "0",
+        terminalAuthorityLeafHandle: "namespace:memory",
+      }],
+      idempotencyKey: "sleep-dependency-loss:record:a:message",
+    });
+    expect(result.status).toBe("planned");
+    if (result.status !== "planned") return;
+    expect(result.plan.selectedInputs[2]).toMatchObject({
+      kind: "source",
+      logicalSourceRef: "message:17",
+      contentGeneration: 0,
+      representationGeneration: 1,
+    });
+  });
+
+  test("plans a dependency repair supported only by an exact Memory source", async () => {
+    const source = {
+      sourceKind: "memory" as const,
+      logicalSourceRef: "memory:one",
+      observedRevision: "1",
+      observedContentFingerprint: "fingerprint:memory:one",
+      terminalAuthorityLeafHandle: "namespace:memory",
+      authorityBearing: true,
+    };
+    const result = await planner({
+      sourceAuthorityHumanRefs: ["human:alice"],
+    }).planDependencyLoss({
+      predecessor: {
+        recordRef: "record:a",
+        lifecycle: "current",
+        structuralHeight: 1,
+        processingGeneration: 1,
+        semantic: {
+          observedContentFingerprint: "fingerprint:record:a",
+          posture: "derived",
+          statement: "Old parent.",
+          sourceDependencies: [source],
+          anchors: [],
+          childRecordRefs: [],
+          producer: { producerRef: "reflection", policyVersion: "v1" },
+          terminalAuthorityLeafHandles: ["namespace:a"],
+        },
+      },
+      proposal: {
+        operation: "supersede_parent",
+        parentRecordRef: "record:a",
+        statement: "Remaining source evidence.",
+        childRecordRefs: [],
+        sourceDependencies: [source],
+      },
+      modelExposureDependencies: [{
+        kind: "source",
+        sourceKind: source.sourceKind,
+        logicalSourceRef: source.logicalSourceRef,
+        observedRevision: source.observedRevision,
+        observedContentFingerprint: source.observedContentFingerprint,
+        terminalAuthorityLeafHandle: source.terminalAuthorityLeafHandle,
+      }],
+      idempotencyKey: "sleep-dependency-loss:record:a:source-only",
+    });
+    expect(result.status).toBe("planned");
+    if (result.status !== "planned") return;
+    expect(result.plan.selectedInputs.map((coordinate) => coordinate.kind === "record"
+      ? coordinate.recordRef
+      : coordinate.logicalSourceRef)).toEqual(["record:a", "memory:one"]);
   });
 
   test("materializes only the selected dependencies' Human intersection", async () => {

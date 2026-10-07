@@ -28,7 +28,7 @@ import {
 } from "../providers/surplus-route";
 import { canUseQualifiedSurplusChatRoute, invokeSurplusChatAttempt } from "../providers/surplus-attempt";
 import { SurplusOutcomeUnknownError } from "../providers/surplus-transport";
-import { DEFAULT_REASONING_EFFORT } from "../providers/factory";
+import { DEFAULT_REASONING_EFFORT, shouldUseOpenAIResponsesApi } from "../providers/factory";
 import { isDirectGpt6Model } from "../providers/openai-compat";
 import { modelRouteProvider } from "../providers/model-route";
 import { resolveOpenRouterTransport } from "../providers/openrouter-transport";
@@ -60,10 +60,17 @@ import {
   classifyModelStreamProgress,
   type ResolvedModelAttemptPolicy,
 } from "./model-attempt-policy";
-import type {
-  ForegroundChatFundingAttempt,
-  ForegroundChatFundingSession,
+import {
+  PersonalDirectFundingUnavailableError,
+  PersonalModelFundingUnavailableError,
+  type ForegroundChatFundingAttempt,
+  type ForegroundChatFundingSession,
 } from "../runtime/foreground-chat-funding";
+import {
+  runPersonalLlmAttempt,
+  PersonalAttemptInvocationError,
+  PersonalAttemptLedgerUnavailableError,
+} from "../usage/personal-llm-attempt";
 import { filterPersonalTaskControlTools } from "../runtime/personal-task-controls";
 
 /**
@@ -119,6 +126,32 @@ class ProviderAttemptError extends Error {
   constructor(override readonly cause: unknown) {
     super("Foreground provider attempt failed");
     this.name = "ProviderAttemptError";
+  }
+}
+
+class PersonalSurplusDirectFallbackUnavailableError extends SurplusDirectFallbackUnavailableError {
+  constructor(
+    reason: "surplus-unavailable" | "request-not-qualified",
+    readonly personalFundingError: PersonalDirectFundingUnavailableError,
+  ) {
+    super(reason);
+    this.name = "PersonalSurplusDirectFallbackUnavailableError";
+  }
+}
+
+async function runPersonalDirectFallback<T>(
+  fundingSession: ForegroundChatFundingSession,
+  modelId: string,
+  run: (attempt: ForegroundChatFundingAttempt) => Promise<T>,
+  reason: "surplus-unavailable" | "request-not-qualified",
+): Promise<T> {
+  try {
+    return await fundingSession.runAttempt(modelId, run, "direct");
+  } catch (error) {
+    if (error instanceof PersonalDirectFundingUnavailableError) {
+      throw new PersonalSurplusDirectFallbackUnavailableError(reason, error);
+    }
+    throw error;
   }
 }
 
@@ -451,6 +484,7 @@ async function invokeOnceWithShortRetries(
   fundingSession: ForegroundChatFundingSession | undefined,
   agentId: string | null,
   attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean },
+  endpoint: string,
   maximumAttempts = SAME_MODEL_RETRYABLE_ATTEMPTS,
 ): Promise<AIMessage> {
   for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
@@ -462,7 +496,8 @@ async function invokeOnceWithShortRetries(
     if (attempt > 1) {
       if (fundingSession) {
         try {
-          await fundingSession.recheckAttempt(modelId);
+          await fundingSession.recheckAttempt(modelId,
+            getUsageContext()?.funding?.providerRoute === "surplus" ? "surplus" : "direct");
         } catch (error) {
           throw new ForegroundFundingRecheckError(error);
         }
@@ -479,17 +514,29 @@ async function invokeOnceWithShortRetries(
         ...attemptPolicyOptions,
         ...(firstTokenTimeoutMsOverride === undefined ? {} : { firstProgressMsOverride: firstTokenTimeoutMsOverride }),
       });
-      return await invokeModelWithAttemptSupervisor(modelWithTools, messages, llmCallConfig, agentId, attemptPolicy, attemptPolicyOptions.isolatedProgress);
+      return await runPersonalLlmAttempt({ modelId,
+        endpoint,
+        signal: llmCallConfig.signal,
+        hasObservedProviderWork: () => hasAssistantVisibleOutputForCurrentTurn(agentId),
+        invoke: () => invokeModelWithAttemptSupervisor(modelWithTools, messages, llmCallConfig, agentId, attemptPolicy, attemptPolicyOptions.isolatedProgress),
+      });
     } catch (error) {
+      const personalAttemptError = error instanceof PersonalAttemptInvocationError ? error : undefined;
+      const providerError = personalAttemptError?.cause ?? error;
       // Caller cancellation is a terminal control-flow outcome, not a model
       // failure. Never turn it into a same-model retry because a provider's
       // cooperative AbortError happens to resemble a timeout.
       if (llmCallConfig.signal?.aborted) throw error;
       // Unknown/visible timeout outcomes cannot be replayed. Safe supervised timeouts
       // use the existing bounded same-model retry policy, including strict model mode.
-      if (isProviderTimeoutError(error) && (!isSafelyRetryableProviderTimeout(error)
+      if (isProviderTimeoutError(providerError) && (!isSafelyRetryableProviderTimeout(providerError)
         || hasAssistantVisibleOutputForCurrentTurn(agentId))) throw error;
-      const classified = classifyError(error);
+      if (personalAttemptError && hasAssistantVisibleOutputForCurrentTurn(agentId)) throw error;
+      // Personal unknown/cancelled attempts are terminal even when the raw
+      // transport shape (503, 408, ECONNRESET) would normally be retryable.
+      if (personalAttemptError?.disposition !== undefined
+        && personalAttemptError.disposition !== "safe_refusal") throw error;
+      const classified = classifyError(providerError);
       if (attempt >= maximumAttempts || !classified.retryable) throw error;
       const strategy = getRetryStrategy(classified);
       if (!strategy.shouldRetry) throw error;
@@ -520,6 +567,7 @@ async function invokeForegroundAttemptWithUsageContext(
   useOpenAIResponsesApi: boolean,
   sameModelRetryMode: "none" | "short",
   attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean },
+  endpoint: string,
 ): Promise<AIMessage> {
   const invoke = () => invokeOnceWithShortRetries(
     modelWithTools,
@@ -531,6 +579,7 @@ async function invokeForegroundAttemptWithUsageContext(
     fundingSession,
     agentId,
     attemptPolicyOptions,
+    endpoint,
     sameModelRetryMode === "none" ? 1 : SAME_MODEL_RETRYABLE_ATTEMPTS,
   );
   const directGpt6Responses = useOpenAIResponsesApi && isDirectGpt6Model(modelId);
@@ -967,12 +1016,13 @@ export async function invokeChatModelWithFallback(
         }
         let directUsageFunding = usageFunding;
         try {
-          // This is a server-wide serving preference, never a personal-key
-          // transport or another catalogue model. Supported routes reuse the
-          // current signed catalogue and preserve the selected provider pin.
-          if (usageFunding.kind !== "personal") {
+          // Apply the server-wide serving preference inside the admitted payer.
+          // Supported routes reuse the current signed catalogue and preserve
+          // the selected provider pin.
+          if (usageFunding.kind !== "personal" || usageFunding.providerRoute === "surplus") {
             kickServerModelConfigRefresh();
-            const surplusKey = resolveProviderKey("surplus");
+            const surplusKey = usageFunding.kind === "personal"
+              ? personalCredential?.apiKey ?? null : resolveProviderKey("surplus");
             const surplus = resolveSurplusChatServingAvailability({
               catalogModelId: currentModelId,
               policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
@@ -1027,10 +1077,22 @@ export async function invokeChatModelWithFallback(
                     ...(callerFirstProgressTimeoutMs === undefined ? {} : { firstProgressTimeoutMs: callerFirstProgressTimeoutMs }),
                     ...(invokeOptions?.isolatedProgress ? { isolatedProgress: true } : {}),
                   },
+                  "/v1/chat/completions",
                 ),
               });
               if (result.kind === "served") {
                 return result.response;
+              }
+              if (usageFunding.kind === "personal") {
+                // The funding owner admits the caller's direct credential anew;
+                // the marketplace secret must never reach the original provider.
+                if (!fundingSession) throw new SurplusDirectFallbackUnavailableError();
+                return await runPersonalDirectFallback(
+                  fundingSession,
+                  currentModelId,
+                  runProviderAttempt,
+                  "surplus-unavailable",
+                );
               }
               // A definitive pre-service refusal can switch transports.
               // Its cost stays unknown until a receipt confirms it. Recheck
@@ -1044,6 +1106,14 @@ export async function invokeChatModelWithFallback(
               } catch (error) {
                 throw new ForegroundFundingRecheckError(error);
               }
+            } else if (usageFunding.kind === "personal" && usageFunding.providerRoute === "surplus") {
+              if (!fundingSession) throw new SurplusDirectFallbackUnavailableError("request-not-qualified");
+              return await runPersonalDirectFallback(
+                fundingSession,
+                currentModelId,
+                runProviderAttempt,
+                "request-not-qualified",
+              );
             } else if (surplus.status === "available"
               && !modelHasRunnableCredentials(currentModelId, process.env)) {
               // The route can make the model selectable, but this request is
@@ -1077,6 +1147,14 @@ export async function invokeChatModelWithFallback(
             ...(personalCredential === undefined ? {} : { personalCredential }),
           });
           const modelWithTools = model.bindTools!(tools);
+          const endpoint = currentModelId.startsWith("anthropic:") ? "/v1/messages"
+            : currentModelId.startsWith("google:")
+              ? `/v1beta/models/${currentModelId.slice("google:".length)}:generateContent`
+            : shouldUseOpenAIResponsesApi({ modelId: currentModelId, maxTokens,
+                ...(requestedReasoningEffort === undefined ? {} : { reasoningEffort: requestedReasoningEffort }),
+                ...(invokeOptions?.useOpenAIResponsesApi === true ? { useOpenAIResponsesApi: true } : {}),
+                ...(openAIExplicitPromptCache ? { openAIExplicitPromptCache: true } : {}),
+              }, maxTokens) ? "/v1/responses" : "/v1/chat/completions";
           return await invokeForegroundAttemptWithUsageContext(
             modelWithTools,
             attemptMessages,
@@ -1097,9 +1175,11 @@ export async function invokeChatModelWithFallback(
               ...(callerFirstProgressTimeoutMs === undefined ? {} : { firstProgressTimeoutMs: callerFirstProgressTimeoutMs }),
               ...(invokeOptions?.isolatedProgress ? { isolatedProgress: true } : {}),
             },
+            endpoint,
           );
         } catch (error) {
           if (error instanceof ForegroundFundingRecheckError) throw error.cause;
+          if (error instanceof PersonalAttemptLedgerUnavailableError) throw error;
           throw new ProviderAttemptError(error);
         }
       };
@@ -1136,21 +1216,47 @@ export async function invokeChatModelWithFallback(
       // Admission, policy, revision, custody, and credential decryption
       // failures are session errors. They must never be classified as a
       // provider failure or unlock another fallback/funding source.
+      if (error instanceof PersonalModelFundingUnavailableError) {
+        const nextModelId = nextInUserChain(
+          currentModelId,
+          policy,
+          needsVision,
+          requiresTools,
+          initialModelId,
+          strictNoChain,
+          personalFunding,
+        );
+        if (!nextModelId) throw error;
+        emitFallbackHop(currentModelId, nextModelId, "bad_request", laneKey);
+        log(`[nautilo/agent] Skipping personally unfunded model ${currentModelId}; trying ${nextModelId}`);
+        currentModelId = nextModelId;
+        continue;
+      }
       if (!(error instanceof ProviderAttemptError)) throw error;
       const providerError = error.cause;
-      if (providerError instanceof SurplusOutcomeUnknownError) throw providerError;
+      const personalAttemptError = providerError instanceof PersonalAttemptInvocationError
+        ? providerError : undefined;
+      const providerFailure = personalAttemptError?.cause ?? providerError;
+      if (providerFailure instanceof SurplusOutcomeUnknownError) throw providerFailure;
       // The caller owns this cancellation. It must bypass error
       // classification, health cooldown, reasoning retries, and chain
       // fallback even if the provider surfaced a timeout-shaped AbortError.
       if (invocationConfig?.signal?.aborted) {
         throw personalFunding
           ? invocationConfig.signal.reason ?? new Error("Model invocation cancelled by caller")
-          : providerError;
+          : providerFailure;
       }
-      const classified = classifyError(providerError);
+      const classified = classifyError(providerFailure);
       const terminalProviderError = personalFunding
+        && !(providerFailure instanceof SurplusDirectFallbackUnavailableError)
         ? new PersonalProviderInvocationError(classified.category)
-        : providerError;
+        : providerFailure;
+      // The short-retry loop preserves this explicit disposition. Honor it
+      // again at the chain boundary before reasoning, recovery, or fallback.
+      if (personalAttemptError?.disposition !== undefined
+        && personalAttemptError.disposition !== "safe_refusal") {
+        throw terminalProviderError;
+      }
       if (classified.category === "TOKEN_LIMIT" && invokeOptions?.recoverContext) {
         // Never retry after visible partial output, or echo a provider error
         // that could include the rejected source payload.
@@ -1188,7 +1294,10 @@ export async function invokeChatModelWithFallback(
       }
       disableReasoningOutput = false;
 
-      const surplusDirectUnavailable = providerError instanceof SurplusDirectFallbackUnavailableError;
+      const surplusDirectUnavailable = providerFailure instanceof SurplusDirectFallbackUnavailableError;
+      const personalDirectUnavailable = providerFailure instanceof PersonalSurplusDirectFallbackUnavailableError
+        ? providerFailure.personalFundingError
+        : undefined;
       // A missing original credential after a safe Surplus refusal does not
       // exhaust the configured chain. A rejected original credential likewise
       // leaves other provider routes usable; personal funding stays separate.
@@ -1200,7 +1309,7 @@ export async function invokeChatModelWithFallback(
         log(
           `[nautilo/agent] Refusing fallback from ${currentModelId} after assistant-visible output this turn`,
         );
-        throw terminalProviderError;
+        throw personalDirectUnavailable ?? terminalProviderError;
       }
 
       const nextModelId = nextInUserChain(currentModelId, policy, needsVision, requiresTools, initialModelId, strictNoChain, personalFunding);
@@ -1208,7 +1317,7 @@ export async function invokeChatModelWithFallback(
         // No more chain entries (or policy disabled). Friendly-error
         // translator in runtime/job.ts picks up the throw and converts it to
         // the bracketed `[MDL00x]` chat message.
-        throw terminalProviderError;
+        throw personalDirectUnavailable ?? terminalProviderError;
       }
       // surface the hop to the user via the room-scoped
       // `model.fallback` WS event so the workbench can render the

@@ -1,5 +1,6 @@
 import {
   durableEnvelopeToRecordSnapshot,
+  type DurableModelExposureDependency,
   type DurableRecordEnvelope,
   type DurableRecordReadPort,
   type DurableSourceDependency,
@@ -290,6 +291,7 @@ export interface CrossRoomOrganizerPartitionPort {
   planDependencyLoss?(input: Readonly<{
     predecessor: DurableRecordEnvelope;
     proposal: Extract<PartitionedOrganizeProposal, { operation: "supersede_parent" }>;
+    modelExposureDependencies: readonly DurableModelExposureDependency[];
     idempotencyKey: string;
     signal?: AbortSignal;
   }>): Promise<CrossRoomOrganizerPublicationPlanningResult>;
@@ -305,6 +307,8 @@ export type GroundedDependencyLossDecision =
       modelCalls: 1 | 2;
       remainingChildRecordRefs: readonly string[];
       remainingSourceDependencies: readonly DurableSourceDependency[];
+      /** Exact current evidence exposed while regenerating the replacement. */
+      remainingModelExposureDependencies: readonly DurableModelExposureDependency[];
     }>;
 
 /** Exact selected-mode dependency revalidation and grounded rewrite seam. */
@@ -313,6 +317,7 @@ export interface GroundedDependencyLossPort {
     claim: DurableSleepClaim;
     record: DurableRecordEnvelope;
     binding: SameRoomSemanticBinding;
+    maxVisitedRecords: number;
     assertCurrent?: () => Promise<void>;
     signal?: AbortSignal;
   }>): Promise<GroundedDependencyLossDecision>;
@@ -777,6 +782,7 @@ implements DurableSleepSemanticPort {
       claim: input.claim,
       record: opened.record,
       binding: resolved.binding,
+      maxVisitedRecords: input.budget.maxVisitedRecords,
       ...(input.publication ? { assertCurrent: () => input.publication!.assertCurrent() } : {}),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
@@ -797,11 +803,9 @@ implements DurableSleepSemanticPort {
           sourceDependencies: loss.remainingSourceDependencies,
     };
     let publicationPlan: CrossRoomPublicationPlan | undefined;
-    const requiresExactDependencyLossPlan = loss.status === "partial_loss"
-      && (
-        loss.remainingSourceDependencies.length === 0
-        || opened.record.semantic.terminalAuthorityLeafHandles.length > 1
-      );
+    // Every rewrite persists and fences the complete evidence actually exposed
+    // to the model, including uncited inputs.
+    const requiresExactDependencyLossPlan = loss.status === "partial_loss";
     if (requiresExactDependencyLossPlan) {
       const crossRoom = this.ports.crossRoom;
       if (crossRoom?.planDependencyLoss === undefined) {
@@ -817,6 +821,7 @@ implements DurableSleepSemanticPort {
             PartitionedOrganizeProposal,
             { operation: "supersede_parent" }
           >,
+          modelExposureDependencies: loss.remainingModelExposureDependencies,
           idempotencyKey: input.idempotencyKey,
           ...(input.signal === undefined ? {} : { signal: input.signal }),
         });

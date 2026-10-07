@@ -781,7 +781,7 @@ describe("qualified Surplus route selection", () => {
     expect(resolveSurplusChatServingAvailability({
       catalogModelId: VENICE_ROUTE.catalogModelId,
       policyEnabled: true, keyConfigured: true, fundingKind: "personal", routes,
-    }).status).toBe("qualified-unavailable");
+    }).status).toBe("available");
     expect(resolveSurplusChatServingAvailability({
       catalogModelId: VENICE_ROUTE.catalogModelId,
       policyEnabled: true, keyConfigured: true, fundingKind: "server", routes,

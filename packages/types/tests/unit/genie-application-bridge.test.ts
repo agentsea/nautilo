@@ -37,7 +37,7 @@ const actionNow = Date.UTC(2026, 7, 11, 12, 0, 0);
 const actionExpiry = new Date(actionNow + UI_ACTION_EVENT_TTL_MS).toISOString();
 
 test("the v1 registry is finite, semantic, and covers every target exactly once", () => {
-  expect(UI_TARGET_DEFINITIONS_V1).toHaveLength(56);
+  expect(UI_TARGET_DEFINITIONS_V1).toHaveLength(57);
   expect(UI_TARGET_DEFINITIONS_V1.map((definition) => definition.target).sort()).toEqual([...UI_TARGET_IDS_V1].sort());
   expect(new Set(UI_TARGET_DEFINITIONS_V1.map((definition) => definition.target)).size).toBe(UI_TARGET_IDS_V1.length);
   for (const definition of UI_TARGET_DEFINITIONS_V1) {

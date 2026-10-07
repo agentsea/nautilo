@@ -45,6 +45,7 @@ import {
 import { AgentToolCallTracker, setAgentEventSink } from "../../src/runtime-hooks";
 import type { NautiloState } from "../../src/agent/state";
 import { MAX_SUBAGENT_DEPTH } from "../../src/agent/state";
+import { createSkipTool } from "../../src/tools/skip";
 
 // ---------------------------------------------------------------------------
 // Fixtures (kept self-contained — unlike tools-relay-scan-parity.test.ts
@@ -57,6 +58,8 @@ type RelayResult = {
   error?: string;
   durationMs?: number;
 };
+
+let skipInvocationCount = 0;
 
 function makeMockRelayRegistry(
   onDispatch: () => Promise<RelayResult>,
@@ -190,6 +193,28 @@ function buildTestCatalog(): ToolCatalog {
     resultScanPolicy: "never",
   });
   catalog.register({
+    name: "skip",
+    factory: (context) => {
+      const skip = createSkipTool(context);
+      return new DynamicStructuredTool({
+        name: skip.name,
+        description: skip.description,
+        schema: skip.schema,
+        func: async (args) => {
+          skipInvocationCount += 1;
+          return String(await skip.invoke(args));
+        },
+      });
+    },
+    category: "meta",
+    trustTier: "standard",
+    impact: "low",
+    exposure: "core",
+    requiredCapabilities: [],
+    tags: [],
+    resultScanPolicy: "never",
+  });
+  catalog.register({
     name: "search_memory",
     factory: () => new DynamicStructuredTool({
       name: "search_memory",
@@ -258,6 +283,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  skipInvocationCount = 0;
   // Default security level is "standard". Previously this set
   // NAUTILO_SECURITY_LEVEL explicitly — env var deleted in D060
   // Sprint 1 (security ship plan v3, G5.6).
@@ -273,6 +299,53 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("tools node — lifecycle event emission (D082 follow-up)", () => {
+  test("skip executes once and preserves its audit ToolMessage without lifecycle events", async () => {
+    const state = makeState("skip", { reason: "No response needed" });
+    const capture = captureEvents();
+    capture.start();
+    const update = await toolsNode(state);
+    const events = capture.stop();
+
+    expect(skipInvocationCount).toBe(1);
+    expect(events.filter(
+      (event) => event.type === "tool.start" || event.type === "tool.end",
+    )).toEqual([]);
+
+    const toolMessage = update.messages?.find(
+      (message): message is ToolMessage => message instanceof ToolMessage,
+    );
+    expect(toolMessage).toBeDefined();
+    expect(toolMessage?.name).toBe("skip");
+    expect(toolMessage?.tool_call_id).toBe("tc-skip-1");
+    expect(typeof toolMessage?.content).toBe("string");
+    expect(JSON.parse(toolMessage?.content as string)).toEqual({
+      skipped: true,
+      reason: "No response needed",
+    });
+  });
+
+  test("rejected redirect stays model-readable without lifecycle events", async () => {
+    const capture = captureEvents();
+    capture.start();
+    const update = await toolsNode(makeState("skip", { target_handle: "@invalid" }));
+    const events = capture.stop();
+
+    expect(skipInvocationCount).toBe(1);
+    expect(events.filter(
+      (event) => event.type === "tool.start" || event.type === "tool.end",
+    )).toEqual([]);
+
+    const toolMessage = update.messages?.find(
+      (message): message is ToolMessage => message instanceof ToolMessage,
+    );
+    expect(toolMessage?.name).toBe("skip");
+    expect(typeof toolMessage?.content).toBe("string");
+    expect(JSON.parse(toolMessage?.content as string)).toEqual({
+      recorded: false,
+      reason: "invalid_target",
+    });
+  });
+
   test("successful relay dispatch emits tool.start then tool.end(success)", async () => {
     const registry = makeMockRelayRegistry(() =>
       Promise.resolve({ status: "ok", result: "ok output" }),

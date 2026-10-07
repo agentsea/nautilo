@@ -7,6 +7,50 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Reflection allows up to ten minutes per poll, preserves completed batch results
+  when repair runs out of time, and gives other eligible records a turn after
+  timed-out work yields.
+- Reflection automatically reassesses older quarantined work after an upgrade,
+  clears obsolete or already-covered work, rebuilds missing search projections,
+  and repairs derived records from their surviving current evidence. Retry
+  cooldowns survive restarts, older failures retain their place in the queue,
+  and durable diagnostics distinguish waiting, failed, repaired, and retired work.
+- Members can use personal Surplus keys for supported text chat and native text
+  Tasks under the administrator's funding priority and Prefer Surplus setting.
+  Personal key setup excludes custom OpenAI-compatible Gateway routes.
+  Saving a key checks it without a paid request and reports receipt-read access
+  separately. Workbench and Mobile show the selected payer and personal costs,
+  including estimates, delayed receipts, and charges that remain unknown.
+  Administrator and personal costs share the summary and dashboard layout. Key
+  lists render immediately while saved status loads, and personal-key settings
+  clearly explain disabled server policy without treating it as a key failure.
+  When personal keys are disabled, members see only the warning if no keys are
+  saved, or their saved keys with Delete controls. Cleanup remains available
+  without permission to spend or access to the credential encryption key.
+  Uncertain personal requests stop automatic retries; transient accounting
+  writes retry without repeating inference. Repaired personal Surplus keys can
+  recover authenticated original receipts while retaining their original payer.
+  Server key repair also resumes blocked receipts; interrupted Surplus
+  Tasks retain known charges and expose unresolved recovery. Mobile key errors
+  offer readable recovery guidance and refresh saved-key status after uncertain
+  saves or stale validation. A safe personal Surplus refusal can continue through
+  the configured model fallback chain when the same-model direct key is absent;
+  exact-model Tasks retain their selected model.
+  Mobile cost amounts use the same rounding and tiny-amount display as Workbench.
+
+- Text-only chat models reject new image attachments with clear removal/model
+  selection guidance. Queued images remain editable after a model switch;
+  earlier image history stays saved and text conversations can continue with
+  an explicit image-context notice.
+  Returning to the app keeps chat visible while access refreshes, and model
+  changes avoid repeated full-catalog work and temporary raw provider IDs.
+  On Mobile, tapping the image attachment button for a text-only model explains
+  the restriction without opening the photo picker.
+
+- Successful skips end the agent turn without another model call. Silence and
+  hand-off control activity stays out of chat while rejected hand-offs remain
+  recoverable and already-admitted sibling tools finish normally.
+
 - The text editor serializes first saves of empty documents and preserves edits
   made while a save is in progress. Conflict recovery reports failed latest-version
   reads with a retry action, accepts empty latest content, and saves merged drafts

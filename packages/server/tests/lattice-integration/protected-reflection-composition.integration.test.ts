@@ -82,6 +82,7 @@ import {
 import { decodeRecordPayloadV1, encodeRecordPayloadV1 } from "@nautilo/reflection-bridge";
 import type { DurableSleepClaim } from "@nautilo/reflection";
 import {
+  createHmacRecordSearchCommitmentPort,
   createHmacRecordSemanticCommitmentPort,
   PostgresAuthorityProjectionStore,
   PostgresCurrentRecordPublicationBinding,
@@ -138,7 +139,7 @@ const ADMIN_URL = requiredEnvironment("LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL");
 const PRODUCT_URL = requiredEnvironment("LATTICE_BRIDGE_TEST_APP_DATABASE_URL");
 const CRYPTO_URL = requiredEnvironment("LATTICE_BRIDGE_TEST_DATABASE_URL");
 const SERVER_SCOPE = process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001";
-const RESIDUE_PATH = "/tmp/m327-protected-reflection-composition-residue.json";
+const RESIDUE_PATH = "/tmp/protected-reflection-protected-reflection-composition-residue.json";
 process.env["DB_DIRECT_CONNECTION"] = ADMIN_URL;
 
 const admin = postgres(ADMIN_URL, { max: 2, prepare: false });
@@ -247,7 +248,7 @@ async function currentPolicy(): Promise<{mode: string; revision: number}> {
     "SELECT mode, revision FROM encryption_transition_policy WHERE id = 'server'",
   );
   if (row === undefined || row.mode === "plaintext_only") {
-    throw new Error("Owned M327 clone must have protected encryption enabled");
+    throw new Error("Owned Protected Reflection clone must have protected encryption enabled");
   }
   return {mode: row.mode, revision: Number(row.revision)};
 }
@@ -269,8 +270,8 @@ async function establishFixture(
   const accessNamespaceId = randomUUID();
   const recordId = randomUUID();
   const batchId = randomUUID();
-  const deviceId = `m327-device-${runId}`;
-  const sourceObjectId = `m327-source-${runId}`;
+  const deviceId = `protected-reflection-device-${runId}`;
+  const sourceObjectId = `protected-reflection-source-${runId}`;
   const extraHumanActorId = topology === "shared-domain" ? null : randomUUID();
   const authorityExtraHumanActorId = isCrossRoomTopology(topology) ? randomUUID() : null;
   const sourceHumanActorIds = extraHumanActorId === null
@@ -292,36 +293,42 @@ async function establishFixture(
   if (identity === undefined) throw new Error("Owned clone instance identity is missing");
 
   await admin.begin(async tx => {
-    await tx.unsafe("INSERT INTO users (id, name) VALUES ($1, 'M327 composition integration')", [userId]);
+    await tx.unsafe("INSERT INTO users (id, name) VALUES ($1, 'Protected Reflection composition integration')", [userId]);
     if (extraUserId !== null) {
-      await tx.unsafe("INSERT INTO users (id, name) VALUES ($1, 'M327 source-only participant')", [extraUserId]);
+      await tx.unsafe("INSERT INTO users (id, name) VALUES ($1, 'Protected Reflection source-only participant')", [extraUserId]);
     }
     if (authorityExtraUserId !== null) {
-      await tx.unsafe("INSERT INTO users (id, name) VALUES ($1, 'M327 authority-only participant')", [authorityExtraUserId]);
+      await tx.unsafe("INSERT INTO users (id, name) VALUES ($1, 'Protected Reflection authority-only participant')", [authorityExtraUserId]);
     }
     await tx.unsafe(
+      `INSERT INTO server_admission (user_id, epoch, admitted)
+       SELECT user_id, 0, true FROM unnest($1::uuid[]) AS admitted(user_id)`,
+      [[userId, extraUserId, authorityExtraUserId]
+        .filter((value): value is NonNullable<typeof value> => value !== null)],
+    );
+    await tx.unsafe(
       `INSERT INTO actors (id, owner_id, display_name, trust_state, kind)
-       VALUES ($1, $2, 'M327 composition Human', 'verified', 'user')`,
+       VALUES ($1, $2, 'Protected Reflection composition Human', 'verified', 'user')`,
       [humanActorId, userId],
     );
     if (extraHumanActorId !== null) {
       await tx.unsafe(
         `INSERT INTO actors (id, owner_id, display_name, trust_state, kind)
-         VALUES ($1, $2, 'M327 source-only Human', 'verified', 'user')`,
+         VALUES ($1, $2, 'Protected Reflection source-only Human', 'verified', 'user')`,
         [extraHumanActorId, extraUserId],
       );
     }
     if (authorityExtraHumanActorId !== null) {
       await tx.unsafe(
         `INSERT INTO actors (id, owner_id, display_name, trust_state, kind)
-         VALUES ($1, $2, 'M327 authority-only Human', 'verified', 'user')`,
+         VALUES ($1, $2, 'Protected Reflection authority-only Human', 'verified', 'user')`,
         [authorityExtraHumanActorId, authorityExtraUserId],
       );
     }
     await tx.unsafe(
       `INSERT INTO namespaces (id, scope, label) VALUES
-         ($1, 'room', 'M327 source'), ($2, 'private', 'M327 access')
-         ${topology !== "shared-domain" ? ", ($3, 'room', 'M327 authority')" : ""}`,
+         ($1, 'room', 'Protected Reflection source'), ($2, 'private', 'Protected Reflection access')
+         ${topology !== "shared-domain" ? ", ($3, 'room', 'Protected Reflection authority')" : ""}`,
       topology !== "shared-domain"
         ? [sourceNamespaceId, accessNamespaceId, authorityNamespaceId]
         : [sourceNamespaceId, accessNamespaceId],
@@ -329,23 +336,23 @@ async function establishFixture(
     await tx.unsafe(
       `INSERT INTO rooms (id, owner_id, type, label, graph_thread_id, namespace_id, human_actor_ids, kind, created_by)
        VALUES
-         ($1, $2, 'private', 'M327 source', $3, $4, ${extraHumanActorId === null ? "ARRAY[$5::uuid]" : "ARRAY[$9::uuid, $10::uuid]"}, 'private', $5),
-         ($6, $2, 'private', 'M327 access', $7, $8, ARRAY[$5::uuid], 'access', $5)`,
+         ($1, $2, 'private', 'Protected Reflection source', $3, $4, ${extraHumanActorId === null ? "ARRAY[$5::uuid]" : "ARRAY[$9::uuid, $10::uuid]"}, 'private', $5),
+         ($6, $2, 'private', 'Protected Reflection access', $7, $8, ARRAY[$5::uuid], 'access', $5)`,
       extraHumanActorId === null
-        ? [sourceRoomId, userId, `m327:source:${runId}`, sourceNamespaceId, humanActorId,
+        ? [sourceRoomId, userId, `protected-reflection:source:${runId}`, sourceNamespaceId, humanActorId,
           accessRoomId, `record-access:${humanActorId}`, accessNamespaceId]
-        : [sourceRoomId, userId, `m327:source:${runId}`, sourceNamespaceId, humanActorId,
+        : [sourceRoomId, userId, `protected-reflection:source:${runId}`, sourceNamespaceId, humanActorId,
           accessRoomId, `record-access:${humanActorId}`, accessNamespaceId, ...sourceHumanActorIds],
     );
     if (topology !== "shared-domain") {
       await tx.unsafe(
         `INSERT INTO rooms (id, owner_id, type, label, graph_thread_id, namespace_id, human_actor_ids, kind, created_by)
-         VALUES ($1, $2, 'private', 'M327 authority', $3, $4,
+         VALUES ($1, $2, 'private', 'Protected Reflection authority', $3, $4,
            ${authorityExtraHumanActorId === null ? "ARRAY[$5::uuid]" : "ARRAY[$5::uuid, $6::uuid]"},
            'private', ${authorityExtraHumanActorId === null ? "$5" : "$7"})`,
         authorityExtraHumanActorId === null
-          ? [authorityRoomId, userId, `m327:authority:${runId}`, authorityNamespaceId, humanActorId]
-          : [authorityRoomId, userId, `m327:authority:${runId}`, authorityNamespaceId,
+          ? [authorityRoomId, userId, `protected-reflection:authority:${runId}`, authorityNamespaceId, humanActorId]
+          : [authorityRoomId, userId, `protected-reflection:authority:${runId}`, authorityNamespaceId,
             ...authorityHumanActorIds, humanActorId],
       );
     }
@@ -386,7 +393,7 @@ async function establishFixture(
          public_key_digest, archive_hash, issuer_device_id, state, activated_at,
          retired_at, revision
        ) VALUES ($1, 1, $2, 1, $3, $4, $5, $6, 'current', $7, NULL, 1)`,
-      [humanActorId, `m327-recovery-${runId}`, recovery.publicKey, crypto.hash(recovery.publicKey),
+      [humanActorId, `protected-reflection-recovery-${runId}`, recovery.publicKey, crypto.hash(recovery.publicKey),
         digest(`archive:${runId}`), deviceId, new Date(now).toISOString()],
     );
   });
@@ -442,7 +449,7 @@ async function establishFixture(
     authority => domains.planHead({ authority, keyClass: "ai", clientDeviceId: deviceId, now }),
   );
   if (headPlan?.status !== "create_required") {
-    throw new Error(`M327 Domain head was not creatable: ${headPlan?.status ?? "missing"}:${
+    throw new Error(`Protected Reflection Domain head was not creatable: ${headPlan?.status ?? "missing"}:${
       headPlan?.status === "unavailable" ? headPlan.reason : "unexpected"}`);
   }
   const domainKey = generateDomainKey(crypto);
@@ -455,7 +462,7 @@ async function establishFixture(
     domainKeyGeneration: headPlan.domainKeyGeneration,
     authorizationRevision: authorizationRevision(headPlan.authorizationRevision),
     previousHeadDigest: headPlan.previousHeadDigest,
-    publicationOperationId: `m327-head-${runId}`,
+    publicationOperationId: `protected-reflection-head-${runId}`,
     issuerHumanId: humanId(headPlan.issuerHumanId),
     issuerDeviceId: cryptoDeviceId(headPlan.issuerDeviceId),
     issuerDeviceSigningGeneration: headPlan.issuerDeviceSigningGeneration,
@@ -525,7 +532,7 @@ async function establishFixture(
       keyClass: "ai",
       clientDeviceId: deviceId,
       operationId: head.head.publicationOperationId,
-      idempotencyKey: `m327-head-request-${runId}`,
+      idempotencyKey: `protected-reflection-head-request-${runId}`,
       headBytes: head.bytes,
       envelopeBytes: deviceEnvelope.bytes,
       authorizationBytes: deviceAuthorization.bytes,
@@ -534,16 +541,16 @@ async function establishFixture(
       now: now + 1,
     }),
   );
-  if (published?.status !== "published") throw new Error("M327 Domain head was not published");
+  if (published?.status !== "published") throw new Error("Protected Reflection Domain head was not published");
   const [deviceRow] = await admin.unsafe<{ device_generation: number; revision: number }[]>(
     "SELECT device_generation, revision FROM human_crypto_devices WHERE device_id = $1",
     [deviceId],
   );
-  if (deviceRow === undefined) throw new Error("M327 current device is missing");
+  if (deviceRow === undefined) throw new Error("Protected Reflection current device is missing");
   const acknowledgement = prepareDomainKeyAcknowledgement(crypto, {
     formatVersion: 2,
     purpose: "domain_key.acknowledgement",
-    acknowledgementId: `m327-ack-${runId}`,
+    acknowledgementId: `protected-reflection-ack-${runId}`,
     serverId: SERVER_SCOPE,
     humanId: humanId(humanActorId),
     deviceId: cryptoDeviceId(deviceId),
@@ -576,7 +583,7 @@ async function establishFixture(
       now: now + 3,
     }),
   );
-  if (acknowledged?.status !== "acknowledged") throw new Error("M327 Domain envelope was not acknowledged");
+  if (acknowledged?.status !== "acknowledged") throw new Error("Protected Reflection Domain envelope was not acknowledged");
 
   let targetHeadPlan = headPlan;
   let targetDomainKey = domainKey;
@@ -587,7 +594,7 @@ async function establishFixture(
       authority => domains.planHead({ authority, keyClass: "ai", clientDeviceId: deviceId, now: now + 6 }),
     );
     if (plan?.status !== "create_required") {
-      throw new Error(`M327 target Domain head was not creatable: ${
+      throw new Error(`Protected Reflection target Domain head was not creatable: ${
         plan?.status ?? "missing"
       }:${plan?.status === "unavailable" ? plan.reason : "unexpected"}`);
     }
@@ -602,7 +609,7 @@ async function establishFixture(
       domainKeyGeneration: plan.domainKeyGeneration,
       authorizationRevision: authorizationRevision(plan.authorizationRevision),
       previousHeadDigest: plan.previousHeadDigest,
-      publicationOperationId: `m327-target-head-${runId}`,
+      publicationOperationId: `protected-reflection-target-head-${runId}`,
       issuerHumanId: humanId(plan.issuerHumanId),
       issuerDeviceId: cryptoDeviceId(plan.issuerDeviceId),
       issuerDeviceSigningGeneration: plan.issuerDeviceSigningGeneration,
@@ -670,7 +677,7 @@ async function establishFixture(
         keyClass: "ai",
         clientDeviceId: deviceId,
         operationId: targetHead.head.publicationOperationId,
-        idempotencyKey: `m327-target-head-request-${runId}`,
+        idempotencyKey: `protected-reflection-target-head-request-${runId}`,
         headBytes: targetHead.bytes,
         envelopeBytes: targetDeviceEnvelope.bytes,
         authorizationBytes: targetAuthorizationFor(targetDeviceEnvelope).bytes,
@@ -679,11 +686,11 @@ async function establishFixture(
         now: now + 7,
       }),
     );
-    if (targetPublished?.status !== "published") throw new Error("M327 target Domain head was not published");
+    if (targetPublished?.status !== "published") throw new Error("Protected Reflection target Domain head was not published");
     const targetAcknowledgement = prepareDomainKeyAcknowledgement(crypto, {
       formatVersion: 2,
       purpose: "domain_key.acknowledgement",
-      acknowledgementId: `m327-target-ack-${runId}`,
+      acknowledgementId: `protected-reflection-target-ack-${runId}`,
       serverId: SERVER_SCOPE,
       humanId: humanId(humanActorId),
       deviceId: cryptoDeviceId(deviceId),
@@ -717,7 +724,7 @@ async function establishFixture(
       }),
     );
     if (targetAcknowledged?.status !== "acknowledged") {
-      throw new Error("M327 target Domain envelope was not acknowledged");
+      throw new Error("Protected Reflection target Domain envelope was not acknowledged");
     }
   }
 
@@ -738,7 +745,7 @@ async function establishFixture(
       }),
     );
     if (planned?.status !== "create_required") {
-      throw new Error(`M327 ${label} Domain head was not creatable`);
+      throw new Error(`Protected Reflection ${label} Domain head was not creatable`);
     }
     const key = generateDomainKey(crypto);
     const preparedHead = prepareDomainKeyHead(crypto, {
@@ -750,7 +757,7 @@ async function establishFixture(
       domainKeyGeneration: planned.domainKeyGeneration,
       authorizationRevision: authorizationRevision(planned.authorizationRevision),
       previousHeadDigest: planned.previousHeadDigest,
-      publicationOperationId: `m327-${label}-head-${runId}`,
+      publicationOperationId: `protected-reflection-${label}-head-${runId}`,
       issuerHumanId: humanId(planned.issuerHumanId),
       issuerDeviceId: cryptoDeviceId(planned.issuerDeviceId),
       issuerDeviceSigningGeneration: planned.issuerDeviceSigningGeneration,
@@ -811,7 +818,7 @@ async function establishFixture(
         keyClass: "ai",
         clientDeviceId: deviceId,
         operationId: preparedHead.head.publicationOperationId,
-        idempotencyKey: `m327-${label}-head-request-${runId}`,
+        idempotencyKey: `protected-reflection-${label}-head-request-${runId}`,
         headBytes: preparedHead.bytes,
         envelopeBytes: deviceEnvelopeForDomain.bytes,
         authorizationBytes: authorizeEnvelope(deviceEnvelopeForDomain).bytes,
@@ -821,12 +828,12 @@ async function establishFixture(
       }),
     );
     if (publishedDomain?.status !== "published") {
-      throw new Error(`M327 ${label} Domain head was not published`);
+      throw new Error(`Protected Reflection ${label} Domain head was not published`);
     }
     const acknowledgementForDomain = prepareDomainKeyAcknowledgement(crypto, {
       formatVersion: 2,
       purpose: "domain_key.acknowledgement",
-      acknowledgementId: `m327-${label}-ack-${runId}`,
+      acknowledgementId: `protected-reflection-${label}-ack-${runId}`,
       serverId: SERVER_SCOPE,
       humanId: humanId(humanActorId),
       deviceId: cryptoDeviceId(deviceId),
@@ -860,7 +867,7 @@ async function establishFixture(
       }),
     );
     if (acknowledgedDomain?.status !== "acknowledged") {
-      throw new Error(`M327 ${label} Domain envelope was not acknowledged`);
+      throw new Error(`Protected Reflection ${label} Domain envelope was not acknowledged`);
     }
     return {plan: planned, key};
   };
@@ -897,9 +904,9 @@ async function establishFixture(
       coordinate.namespaceId,
       authority => domains.planNamespaceBundle({ authority, keyClass: "ai", clientDeviceId: deviceId }),
     );
-    if (plan?.status !== "create_required") throw new Error("M327 Namespace bundle was not creatable");
+    if (plan?.status !== "create_required") throw new Error("Protected Reflection Namespace bundle was not creatable");
     const domain = domainPlans.get(coordinate.namespaceId);
-    if (domain === undefined) throw new Error("M327 Namespace Domain material is missing");
+    if (domain === undefined) throw new Error("Protected Reflection Namespace Domain material is missing");
     const coordinateHeadPlan = domain.plan;
     const coordinateDomainKey = domain.key;
     expect(plan.domainId).toBe(coordinateHeadPlan.domainId);
@@ -921,7 +928,7 @@ async function establishFixture(
     })];
     const retainedDigest = domainNamespaceRetainedAuthoritySetDigest(crypto, retained);
     const bundle = prepareDomainNamespaceBundle(crypto, {
-      operationId: `m327-bundle-${coordinate.namespaceId}`,
+      operationId: `protected-reflection-bundle-${coordinate.namespaceId}`,
       bundle: {
         formatVersion: 2,
         purpose: "domain_key.namespace_bundle",
@@ -958,17 +965,17 @@ async function establishFixture(
         keyClass: "ai",
         clientDeviceId: deviceId,
         operationId: bundle.binding.operationId,
-        idempotencyKey: `m327-bundle-request-${coordinate.namespaceId}`,
+        idempotencyKey: `protected-reflection-bundle-request-${coordinate.namespaceId}`,
         bindingBytes: bundle.bytes,
         now: now + 5,
       }),
     );
-    if (result?.status !== "published") throw new Error("M327 Namespace bundle was not published");
+    if (result?.status !== "published") throw new Error("Protected Reflection Namespace bundle was not published");
     const inspected = await domains.inspectForegroundNamespaceAuthority({
       namespaceId: coordinate.namespaceId,
       keyClass: "ai",
     });
-    if (inspected.status !== "ready") throw new Error("M327 Namespace authority was not current");
+    if (inspected.status !== "ready") throw new Error("Protected Reflection Namespace authority was not current");
     namespaceMaterials.set(coordinate.namespaceId, {
       ...coordinate,
       generationKey,
@@ -1056,7 +1063,7 @@ async function establishFixture(
   ): void => {
     const material = namespaceMaterials.get(exactNamespaceId);
     if (material === undefined) {
-      throw new Error("M327 opened Namespace material is missing");
+      throw new Error("Protected Reflection opened Namespace material is missing");
     }
     const authority: OpenedDomainKeyAuthorityV2 = {
       serverId: SERVER_SCOPE,
@@ -1083,7 +1090,7 @@ async function establishFixture(
         [coordinate.roomId, coordinate.namespaceId],
       );
       if (room === undefined) {
-        throw new Error("M327 requested access Room is missing");
+        throw new Error("Protected Reflection requested access Room is missing");
       }
       const audienceKey = [...room.human_actor_ids].sort().join(":");
       domain = audienceDomainPlans.get(audienceKey);
@@ -1097,7 +1104,7 @@ async function establishFixture(
         audienceDomainPlans.set(audienceKey, domain);
       }
       if (domain === undefined) {
-        throw new Error("M327 requested access audience has no Domain material");
+        throw new Error("Protected Reflection requested access audience has no Domain material");
       }
       domainPlans.set(coordinate.namespaceId, domain);
     }
@@ -1136,22 +1143,22 @@ async function persistNativeProtectedRecord(
   const payload = encodeRecordPayloadV1({
     formatVersion: 1,
     posture: "derived",
-    observedContentFingerprint: `m327-observation-${fixture.runId}`,
+    observedContentFingerprint: `protected-reflection-observation-${fixture.runId}`,
     sourceOwnedKind: "journal_event:fact",
     observedLogicalObjectRef: fixture.recordId,
     observedRevision: "1",
-    statement: options.statement ?? "M327 protected Reflection foreground proof",
+    statement: options.statement ?? "Protected Reflection protected Reflection foreground proof",
     sourceDependencies: fixture.topology === "shared-domain" ? [{
       sourceKind: "message",
       logicalObjectRef: `message:${journalSequence}`,
       observedRevision: "1",
-      observedContentFingerprint: `m327-message-${journalSequence}-${fixture.runId}`,
+      observedContentFingerprint: `protected-reflection-message-${journalSequence}-${fixture.runId}`,
       terminalAuthorityLeafHandle: fixture.sourceNamespaceId,
       authorityBearing: true,
     }] : [],
     anchors: [{ kind: "room", anchorRef: fixture.sourceRoomId, role: "origin" }],
     childRecordIds: [],
-    producer: { producerRef: "stenographer", policyVersion: "m327-composition-v1" },
+    producer: { producerRef: "stenographer", policyVersion: "protected-reflection-composition-v1" },
     terminalAuthorityLeafHandles: [
       options.terminalAuthorityNamespaceId ?? fixture.authorityNamespaceId,
     ],
@@ -1173,8 +1180,8 @@ async function persistNativeProtectedRecord(
   encrypted.dek.fill(0);
   const envelopeBytes = encodeNamespaceObjectEnvelopeV2(envelope);
   const recipient = await crypto.generateEncryptionKeyPair();
-  const sourceRequestId = `m327-source-request-${fixture.runId}`;
-  const sourceWorkId = `m327-source-work-${fixture.runId}`;
+  const sourceRequestId = `protected-reflection-source-request-${fixture.runId}`;
+  const sourceWorkId = `protected-reflection-source-work-${fixture.runId}`;
   const descriptor: BackgroundProcessorWorkDescriptorV2 = {
     formatVersion: 2,
     requestId: sourceRequestId,
@@ -1204,12 +1211,12 @@ async function persistNativeProtectedRecord(
     }],
     maximumPlaintextBytes: 64 * 1_024,
     maximumCiphertextBytes: 96 * 1_024,
-    recipientKeyId: `m327-source-recipient-${fixture.runId}`,
+    recipientKeyId: `protected-reflection-source-recipient-${fixture.runId}`,
     recipientPublicKey: recipient.publicKey,
     issuedAt: fixture.now,
     notBefore: fixture.now,
     expiresAt: fixture.now + 300_000,
-    idempotencyId: `m327-source-idempotency-${fixture.runId}`,
+    idempotencyId: `protected-reflection-source-idempotency-${fixture.runId}`,
   };
   const descriptorBytes = encodeBackgroundWorkDescriptorV2(descriptor);
   const device = await new PostgresDeviceAdmissionRepository(
@@ -1220,7 +1227,7 @@ async function persistNativeProtectedRecord(
     humanActorId: fixture.humanActorId,
     deviceId: fixture.deviceId,
   });
-  if (device === null) throw new Error("M327 current device authority is missing");
+  if (device === null) throw new Error("Protected Reflection current device authority is missing");
   const issuer: BackgroundAuthorizationIssuerV2 = {
     humanId: device.humanActorId,
     deviceId: device.deviceId,
@@ -1233,7 +1240,7 @@ async function persistNativeProtectedRecord(
     signingPublicKeyHash: crypto.hash(device.signingPublicKey),
   };
   const responseBytes = await createBackgroundAuthorizationResponseV2(crypto, {
-    credentialId: `m327-source-credential-${fixture.runId}`,
+    credentialId: `protected-reflection-source-credential-${fixture.runId}`,
     descriptorBytes,
     issuer,
     issuerSigningPrivateKey: fixture.signing.privateKey,
@@ -1350,7 +1357,7 @@ async function persistNativeProtectedRecord(
       `INSERT INTO room_journal_state (
          room_id, last_processed_message_id, extractor_version, historical_backfill_status,
          rebuild_generation, created_at, updated_at
-       ) VALUES ($1, 1, 'm327-composition-v1', 'not_needed', 0, $2, $2)`,
+       ) VALUES ($1, 1, 'protected-reflection-composition-v1', 'not_needed', 0, $2, $2)`,
       [fixture.sourceRoomId, new Date(fixture.now).toISOString()],
     );
     else await tx.unsafe(
@@ -1365,14 +1372,14 @@ async function persistNativeProtectedRecord(
          id, room_id, from_message_id_exclusive, through_message_id_inclusive,
          extractor_version, observation_publication_version, lane, status,
          attempt_count, operation_count, started_at, completed_at, created_at
-       ) VALUES ($1, $2, $3, $4, 'm327-composition-v1', 1, 'live', 'completed', 1, 1, $5, $5, $5)`,
+       ) VALUES ($1, $2, $3, $4, 'protected-reflection-composition-v1', 1, 'live', 'completed', 1, 1, $5, $5, $5)`,
       [fixture.batchId, fixture.sourceRoomId, journalSequence - 1, journalSequence,
         new Date(fixture.now).toISOString()],
     );
     await tx.unsafe(
       `INSERT INTO reflection_records (
          record_id, lifecycle, structural_height, producer_policy_version, processing_generation
-       ) VALUES ($1, 'current', 0, 'm327-composition-v1', 1)`,
+       ) VALUES ($1, 'current', 0, 'protected-reflection-composition-v1', 1)`,
       [fixture.recordId],
     );
     await tx.unsafe(
@@ -1397,7 +1404,7 @@ async function persistNativeProtectedRecord(
          source_batch_id, batch_local_ordinal, extractor_version, projection_kind,
          record_id, native_attached_at, created_at
        ) VALUES ($1::uuid, $2, $3::integer, 'fact', NULL, 'active', ARRAY[$3::integer], $4, 0,
-         'm327-composition-v1', 'native', ($1::uuid)::text, $5, $5)`,
+         'protected-reflection-composition-v1', 'native', ($1::uuid)::text, $5, $5)`,
       [fixture.recordId, fixture.sourceRoomId, journalSequence, fixture.batchId,
         new Date(fixture.now).toISOString()],
     );
@@ -1418,13 +1425,13 @@ async function persistNativeProtectedRecord(
   });
   const durableSource = await repository.get(sourceRequestId);
   if (durableSource === null || durableSource.snapshot.state !== "grant_ready") {
-    throw new Error("M327 source certificate request was not accepted");
+    throw new Error("Protected Reflection source certificate request was not accepted");
   }
   const claimedSource = {
     ...durableSource,
     snapshot: claimBackgroundAuthorizationRequest(
       durableSource.snapshot,
-      `m327-source-claim-${fixture.runId}`,
+      `protected-reflection-source-claim-${fixture.runId}`,
       fixture.now + 3,
       fixture.now + 60_003,
     ),
@@ -1432,7 +1439,7 @@ async function persistNativeProtectedRecord(
   if ((await repository.compareAndSwap({
     expectedRequestRevision: durableSource.snapshot.requestRevision,
     next: claimedSource,
-  })).status !== "updated") throw new Error("M327 source certificate request was not claimed");
+  })).status !== "updated") throw new Error("Protected Reflection source certificate request was not claimed");
   const runningSource = {
     ...claimedSource,
     snapshot: markBackgroundAuthorizationRunning(claimedSource.snapshot, fixture.now + 4),
@@ -1440,7 +1447,7 @@ async function persistNativeProtectedRecord(
   if ((await repository.compareAndSwap({
     expectedRequestRevision: claimedSource.snapshot.requestRevision,
     next: runningSource,
-  })).status !== "updated") throw new Error("M327 source certificate request was not started");
+  })).status !== "updated") throw new Error("Protected Reflection source certificate request was not started");
   const completedSource = {
     ...runningSource,
     snapshot: completeBackgroundAuthorizationRequest(runningSource.snapshot, fixture.now + 5),
@@ -1449,7 +1456,7 @@ async function persistNativeProtectedRecord(
   if ((await repository.compareAndSwap({
     expectedRequestRevision: runningSource.snapshot.requestRevision,
     next: completedSource,
-  })).status !== "updated") throw new Error("M327 source certificate request was not completed");
+  })).status !== "updated") throw new Error("Protected Reflection source certificate request was not completed");
   recipient.privateKey.fill(0);
   responseBytes.fill(0);
   payloadBytes.fill(0);
@@ -1474,12 +1481,12 @@ async function persistAuthoredProtectedMemory(
   });
   const namespace = fixture.namespaces.get(fixture.authorityNamespaceId);
   if (namespace === undefined) {
-    throw new Error("M327 authored Memory Namespace material is missing");
+    throw new Error("Protected Reflection authored Memory Namespace material is missing");
   }
   const plaintext = encodeMemoryPayloadV1({
     formatVersion: 1,
     type: "preference",
-    content: "M327 protected authored Memory candidate",
+    content: "Protected Reflection protected authored Memory candidate",
   });
   const encrypted = encryptObjectPayload(crypto, {
     objectId: objectId(cryptoObjectId),
@@ -1599,7 +1606,7 @@ async function seedSupersededRequests(
   const ids: string[] = [];
   const source = fixture.namespaces.get(fixture.sourceNamespaceId)!;
   for (let index = 0; index < 257; index += 1) {
-    const requestId = `m327-prior-${fixture.runId}-${String(index).padStart(3, "0")}`;
+    const requestId = `protected-reflection-prior-${fixture.runId}-${String(index).padStart(3, "0")}`;
     const record: BackgroundAuthorizationRecord = {
       snapshot: createBackgroundAuthorizationRequestV2({
         requestId,
@@ -1678,7 +1685,7 @@ async function authorizeReflectionRequest(
   now: number,
 ): Promise<void> {
   if (request.descriptorBytes === null) {
-    throw new Error("M327 current device request has no descriptor");
+    throw new Error("Protected Reflection current device request has no descriptor");
   }
   const currentDevice = await new PostgresDeviceAdmissionRepository(
     await verifyCryptoPostgresHandle(connection(restricted)),
@@ -1688,7 +1695,7 @@ async function authorizeReflectionRequest(
     humanActorId: fixture.humanActorId,
     deviceId: fixture.deviceId,
   });
-  if (currentDevice === null) throw new Error("M327 current signing device disappeared");
+  if (currentDevice === null) throw new Error("Protected Reflection current signing device disappeared");
   const issuer: BackgroundAuthorizationIssuerV2 = {
     humanId: currentDevice.humanActorId,
     deviceId: currentDevice.deviceId,
@@ -1708,7 +1715,7 @@ async function authorizeReflectionRequest(
     crypto,
     serverId: SERVER_SCOPE,
     now: () => now,
-    createId: () => `m327-reflection-credential-${randomUUID()}`,
+    createId: () => `protected-reflection-reflection-credential-${randomUUID()}`,
     withCurrentSigningAuthority: async use => use({
       issuer,
       signingPrivateKey: fixture.signing.privateKey,
@@ -1717,7 +1724,7 @@ async function authorizeReflectionRequest(
     }),
   });
   expect(response.status).toBe("ready");
-  if (response.status !== "ready") throw new Error(`M327 response was ${response.status}`);
+  if (response.status !== "ready") throw new Error(`Protected Reflection response was ${response.status}`);
   const inspected = inspectBackgroundAuthorizationResponseV2(response.responseBytes);
   expect(inspected.descriptorHash).toEqual(crypto.hash(request.descriptorBytes));
   const verified = await verifyBackgroundAuthorizationResponseV2(crypto, {
@@ -1761,12 +1768,12 @@ async function markFixturePurged(
   }
   await restricted.unsafe(
     `DELETE FROM processor_crypto_signer_authorizations WHERE request_id = ANY($1::text[])
-       AND request_id LIKE 'm327-prior-%'`,
+       AND request_id LIKE 'protected-reflection-prior-%'`,
     [priorRequestIds],
   ).catch(() => undefined);
   await restricted.unsafe(
     `DELETE FROM background_crypto_authorization_requests WHERE request_id = ANY($1::text[])
-       AND request_id LIKE 'm327-prior-%'`,
+       AND request_id LIKE 'protected-reflection-prior-%'`,
     [priorRequestIds],
   ).catch(() => undefined);
   await writeFile(RESIDUE_PATH, `${JSON.stringify({
@@ -1789,7 +1796,7 @@ afterAll(async () => {
   await Promise.all([admin.end(), product.end(), restricted.end()]);
 });
 
-describe.serial("M327 protected Reflection production composition", () => {
+describe.serial("Protected Reflection protected Reflection production composition", () => {
   for (const topology of [
     "shared-domain",
     "distinct-domain",
@@ -1836,7 +1843,7 @@ describe.serial("M327 protected Reflection production composition", () => {
       runId: `${fixture.runId}-candidate`,
       recordId: randomUUID(),
       batchId: randomUUID(),
-      sourceObjectId: `m327-source-${fixture.runId}-candidate`,
+      sourceObjectId: `protected-reflection-source-${fixture.runId}-candidate`,
       ...(isCrossRoomTopology(topology) ? {
         sourceRoomId: fixture.authorityRoomId,
         sourceNamespaceId: fixture.authorityNamespaceId,
@@ -1850,7 +1857,7 @@ describe.serial("M327 protected Reflection production composition", () => {
       runId: `${fixture.runId}-support`,
       recordId: randomUUID(),
       batchId: randomUUID(),
-      sourceObjectId: `m327-source-${fixture.runId}-support`,
+      sourceObjectId: `protected-reflection-source-${fixture.runId}-support`,
     }) : undefined;
     const citedSibling = supportFixture ?? candidateFixture;
     const recordProductHandle = await verifyRecordProductPostgresHandle(connection(product));
@@ -1896,6 +1903,7 @@ describe.serial("M327 protected Reflection production composition", () => {
       now: () => clock,
     });
     let createdParentRecordRef: string | undefined;
+    let repairedParentRecordRef: string | undefined;
     let authoredMemoryId: string | undefined;
     try {
       const claim = {
@@ -1904,7 +1912,7 @@ describe.serial("M327 protected Reflection production composition", () => {
         recordRef: fixture.recordId,
         changeReason: "created" as const,
         stage: "authority_projection" as const,
-        leaseToken: `m327-lease-${fixture.runId}`,
+        leaseToken: `protected-reflection-lease-${fixture.runId}`,
       };
       let first: Awaited<ReturnType<typeof maintenance.ensureAuthority>> | undefined;
       for (let attempt = 0; attempt < 8 && requestedRecords.length === 0; attempt += 1) {
@@ -1924,7 +1932,7 @@ describe.serial("M327 protected Reflection production composition", () => {
       }
       const currentRequest = requestedRecords.at(-1);
       if (currentRequest === undefined || currentRequest.descriptorBytes === null) {
-        throw new Error("M327 current device request was not prepared");
+        throw new Error("Protected Reflection current device request was not prepared");
       }
       const descriptorBytes = currentRequest.descriptorBytes;
       expect(currentRequest.snapshot.state).toBe("awaiting_device");
@@ -1945,7 +1953,7 @@ describe.serial("M327 protected Reflection production composition", () => {
           humanActorId: fixture.humanActorId,
           deviceId: fixture.deviceId,
         });
-      if (currentDevice === null) throw new Error("M327 current signing device disappeared");
+      if (currentDevice === null) throw new Error("Protected Reflection current signing device disappeared");
       const signingProbe = digest(`signing-probe:${fixture.runId}`);
       const signingProbeSignature = crypto.sign(fixture.signing.privateKey, signingProbe);
       expect(crypto.verify(currentDevice.signingPublicKey, signingProbe, signingProbeSignature)).toBe(true);
@@ -1970,7 +1978,7 @@ describe.serial("M327 protected Reflection production composition", () => {
         crypto,
         serverId: SERVER_SCOPE,
         now: () => clock + 1,
-        createId: () => `m327-reflection-credential-${fixture.runId}`,
+        createId: () => `protected-reflection-reflection-credential-${fixture.runId}`,
         withCurrentSigningAuthority: async use => use({
           issuer,
           signingPrivateKey: fixture.signing.privateKey,
@@ -1979,7 +1987,7 @@ describe.serial("M327 protected Reflection production composition", () => {
         }),
       });
       expect(response.status).toBe("ready");
-      if (response.status !== "ready") throw new Error(`M327 response was ${response.status}`);
+      if (response.status !== "ready") throw new Error(`Protected Reflection response was ${response.status}`);
       const inspectedResponse = inspectBackgroundAuthorizationResponseV2(response.responseBytes);
       expect(inspectedResponse.descriptorHash).toEqual(crypto.hash(descriptorBytes));
       expect(inspectedResponse.issuer.signingPublicKeyHash).toEqual(crypto.hash(currentDevice.signingPublicKey));
@@ -2054,7 +2062,7 @@ describe.serial("M327 protected Reflection production composition", () => {
           initializeRoomState: false,
           journalSequence,
           terminalAuthorityNamespaceId,
-          statement: "M327 protected Reflection sibling proof",
+          statement: "Protected Reflection protected Reflection sibling proof",
         });
         if (fixture.topology !== "shared-domain") {
           expect(await new PostgresAuthorityProjectionStore(recordProductHandle).installInitialClosure({
@@ -2067,9 +2075,14 @@ describe.serial("M327 protected Reflection production composition", () => {
           `INSERT INTO reflection_record_search_projections (
              record_id, record_processing_generation, projection_version,
              projection_generation, embedding_provider, embedding_canonical_model,
-             embedding_dimensions, embedding_contract_version, embedding
-           ) VALUES ($1, 1, 1, 1, 'openai', 'text-embedding-3-small', 1536, 1, $2)`,
-          [additionalFixture.recordId, `[${embedding.join(",")}]`],
+             embedding_dimensions, embedding_contract_version, embedding,
+             room_anchor_commitment
+           ) VALUES ($1, 1, 1, 1, 'openai', 'text-embedding-3-small', 1536, 1, $2, $3)`,
+          [additionalFixture.recordId, `[${embedding.join(",")}]`,
+            createHmacRecordSearchCommitmentPort(
+              digest(`semantic-commitment:${fixture.runId}`),
+            )
+              .roomAnchor(additionalFixture.sourceRoomId)],
         );
         const candidateAuthorityClaim = {
           logicalObjectRef: additionalFixture.recordId,
@@ -2077,7 +2090,7 @@ describe.serial("M327 protected Reflection production composition", () => {
           recordRef: additionalFixture.recordId,
           changeReason: "created" as const,
           stage: "authority_projection" as const,
-          leaseToken: `m327-lease-${additionalFixture.runId}`,
+          leaseToken: `protected-reflection-lease-${additionalFixture.runId}`,
         };
         const candidateRequestOffset = requestedRecords.length;
         let candidateReadiness: Awaited<ReturnType<typeof maintenance.ensureAuthority>> | undefined;
@@ -2087,7 +2100,7 @@ describe.serial("M327 protected Reflection production composition", () => {
         }
         expect(candidateReadiness).toMatchObject({status: "waiting"});
         const candidateRequest = requestedRecords.at(candidateRequestOffset);
-        if (candidateRequest === undefined) throw new Error("M327 candidate authority grant was not requested");
+        if (candidateRequest === undefined) throw new Error("Protected Reflection candidate authority grant was not requested");
         await authorizeReflectionRequest(additionalFixture, crypto, repository, candidateRequest, clock + 1);
         clock += 3;
         expect(await maintenance.ensureAuthority(candidateAuthorityClaim)).toEqual({status: "ready"});
@@ -2203,7 +2216,7 @@ describe.serial("M327 protected Reflection production composition", () => {
             } },
           }],
         });
-        if (journalSelection === null) throw new Error("M327 native Journal selection is missing");
+        if (journalSelection === null) throw new Error("Protected Reflection native Journal selection is missing");
         const journalSources = await loadPostgresForegroundJournalRepairSources({
           product: conversationProduct,
           snapshot: journalSelection,
@@ -2299,7 +2312,7 @@ describe.serial("M327 protected Reflection production composition", () => {
               roomId: fixture.sourceRoomId,
               sequence: 1,
               kind: "fact",
-              statement: "M327 protected Reflection foreground proof",
+              statement: "Protected Reflection protected Reflection foreground proof",
               status: "active",
               supersedesEventId: null,
               resolvesEventId: null,
@@ -2308,7 +2321,7 @@ describe.serial("M327 protected Reflection production composition", () => {
               roomId: fixture.sourceRoomId,
               sequence: 2,
               kind: "fact",
-              statement: "M327 protected Reflection sibling proof",
+              statement: "Protected Reflection protected Reflection sibling proof",
               status: "active",
               supersedesEventId: null,
               resolvesEventId: null,
@@ -2375,7 +2388,7 @@ describe.serial("M327 protected Reflection production composition", () => {
           [recordRef, new Date(claimNow).toISOString(), leaseToken,
             new Date(claimNow + 120_000).toISOString(), stage],
         );
-        if (claimed === undefined) throw new Error(`M327 ${stage} work was not claimable`);
+        if (claimed === undefined) throw new Error(`Protected Reflection ${stage} work was not claimable`);
         return {
           logicalObjectRef: recordRef,
           generation: claimed.generation,
@@ -2399,6 +2412,7 @@ describe.serial("M327 protected Reflection production composition", () => {
       let embeddingCalls = 0;
       const protectedSearch = await createProductionProtectedReflectionSearchComposition({
         db,
+        selection: { selectedRepresentation: "protected", migrationGeneration: 1 },
         commitmentKey: semanticCommitmentKey,
         runSemantic: maintenance.runSemantic,
         embedding: {embed: async () => {
@@ -2417,7 +2431,7 @@ describe.serial("M327 protected Reflection production composition", () => {
       expect(await protectedSearch.ensureSearchProjection(searchClaim)).toMatchObject({status: "waiting"});
       expect(embeddingCalls).toBe(0);
       const searchRequest = requestedRecords.at(searchRequestOffset);
-      if (searchRequest === undefined) throw new Error("M327 protected search grant was not requested");
+      if (searchRequest === undefined) throw new Error("Protected Reflection protected search grant was not requested");
       await authorizeReflectionRequest(fixture, crypto, repository, searchRequest, clock + 1);
       clock += 3;
       expect(await protectedSearch.ensureSearchProjection(searchClaim)).toEqual({status: "ready"});
@@ -2439,6 +2453,7 @@ describe.serial("M327 protected Reflection production composition", () => {
       expect(searchCoordinates).toEqual({processing_generation: 1, record_processing_generation: 1});
 
       let modelCalls = 0;
+      const modelPrompts: string[] = [];
       const protectedSemantics = createProductionProtectedReflectionSemantics({
         db,
         productHandle: recordProductHandle,
@@ -2447,9 +2462,13 @@ describe.serial("M327 protected Reflection production composition", () => {
         operation: maintenance,
         readiness: {ensureAuthority: maintenance.ensureAuthority, ensureSearchProjection: protectedSearch.ensureSearchProjection},
         model: {
-          invoke: async () => {
+          invoke: async (_claim, prompt) => {
             modelCalls += 1;
-            return '{"operation":"create_parent","statement":"M327 protected sibling synthesis","childRecordRefs":["R1","C1"]}';
+            modelPrompts.push(prompt);
+            if (prompt.includes("You are repairing one derived memory statement")) {
+              return '{"statement":"Protected Reflection surviving protected evidence"}';
+            }
+            return '{"operation":"create_parent","statement":"Protected Reflection protected sibling synthesis","childRecordRefs":["R1","C1"]}';
           },
           invokeBatch: async claims => {
             modelCalls += 1;
@@ -2478,14 +2497,14 @@ describe.serial("M327 protected Reflection production composition", () => {
       }
       expect(initialOrganizerView).toMatchObject({status: "waiting"});
       expect(modelCalls).toBe(0);
-      if (firstAttempt === undefined) throw new Error("M327 protected Organizer attempt was not prepared");
+      if (firstAttempt === undefined) throw new Error("Protected Reflection protected Organizer attempt was not prepared");
       await firstAttempt.close("unavailable");
       expect(await semanticWork.pause({claim: firstOrganizationClaim})).toMatchObject({status: "accepted"});
       const organizationRequest = requestedRecords.at(organizationRequestOffset);
-      if (organizationRequest === undefined) throw new Error("M327 protected Organizer grant was not requested");
+      if (organizationRequest === undefined) throw new Error("Protected Reflection protected Organizer grant was not requested");
       if (isCrossRoomTopology(topology)) {
         if (organizationRequest.descriptorBytes === null) {
-          throw new Error("M327 cross-Room Organizer descriptor was not prepared");
+          throw new Error("Protected Reflection cross-Room Organizer descriptor was not prepared");
         }
         const descriptor = decodeBackgroundWorkDescriptorV2(
           organizationRequest.descriptorBytes,
@@ -2500,8 +2519,14 @@ describe.serial("M327 protected Reflection production composition", () => {
           objectId(authoredMemory?.objectId
             ?? `${workId(candidateFixture.recordId)}:record`),
         ];
-        expect(new Set(descriptor.inputBindings.map(input => input.objectId)))
-          .toEqual(new Set(expectedInputObjectIds));
+        const actualInputObjectIds = new Set(
+          descriptor.inputBindings.map(input => input.objectId),
+        );
+        expect({
+          anchor: actualInputObjectIds.has(expectedInputObjectIds[0]!),
+          support: actualInputObjectIds.has(expectedInputObjectIds[1]!),
+          candidate: actualInputObjectIds.has(expectedInputObjectIds[2]!),
+        }).toEqual({anchor: true, support: true, candidate: true});
         expect(descriptor.inputBindings).toHaveLength(3);
         const bindingReader = new PostgresCurrentRecordPublicationBinding(
           recordProductHandle,
@@ -2535,11 +2560,11 @@ describe.serial("M327 protected Reflection production composition", () => {
       try {
         organizerView = await protectedSemantics.loadOrganizerView(organizationClaim);
       } catch (error) {
-        throw new Error("M327 authorized Organizer view threw", {cause: error});
+        throw new Error("Protected Reflection authorized Organizer view threw", {cause: error});
       }
       expect(organizerView).toMatchObject({status: "ready", view: {changed: {snapshot: {
         recordRef: fixture.recordId,
-        statement: "M327 protected Reflection foreground proof",
+        statement: "Protected Reflection protected Reflection foreground proof",
       }}}});
       if (organizerView.status !== "ready") throw new Error("Organizer not ready");
       expect(new Set(organizerView.view.candidates.map(candidate => candidate.snapshot.recordRef)))
@@ -2552,23 +2577,23 @@ describe.serial("M327 protected Reflection production composition", () => {
           candidate.snapshot.recordRef === authoredMemory.logicalSourceRef))
           .toMatchObject({snapshot: {
             recordRef: authoredMemory.logicalSourceRef,
-            statement: "M327 protected authored Memory candidate",
+            statement: "Protected Reflection protected authored Memory candidate",
           }});
       }
       const modelResponse = await protectedSemantics.invokeOrganizer(
         organizationClaim,
-        "M327 deterministic protected Organizer prompt",
+        "Protected Reflection deterministic protected Organizer prompt",
       );
       expect(JSON.parse(modelResponse)).toEqual({
         operation: "create_parent",
-        statement: "M327 protected sibling synthesis",
+        statement: "Protected Reflection protected sibling synthesis",
         childRecordRefs: ["R1", "C1"],
       });
       const application = await organizationAttempt.publish(() => protectedSemantics.applyProposal({
         claim: organizationClaim,
         proposal: {
           operation: "create_parent",
-          statement: "M327 protected sibling synthesis",
+          statement: "Protected Reflection protected sibling synthesis",
           childRecordRefs: [fixture.recordId, citedSibling.recordId],
           sourceDependencies: [],
         },
@@ -2580,7 +2605,7 @@ describe.serial("M327 protected Reflection production composition", () => {
         generation: 1,
       }});
       if (application.status !== "applied" || application.changedRecord === undefined) {
-        throw new Error("M327 protected parent was not published");
+        throw new Error("Protected Reflection protected parent was not published");
       }
       const parentRecordRef = application.changedRecord.recordRef;
       createdParentRecordRef = parentRecordRef;
@@ -2709,7 +2734,7 @@ describe.serial("M327 protected Reflection production composition", () => {
           row => row.representation === "protected",
         )?.crypto_object_id;
         if (protectedObjectId === null || protectedObjectId === undefined) {
-          throw new Error("M327 cross-Room protected parent object is missing");
+          throw new Error("Protected Reflection cross-Room protected parent object is missing");
         }
         let authenticated: Awaited<ReturnType<typeof readVerifiedDeviceWrappedAgentObject>>;
         try {
@@ -2722,10 +2747,10 @@ describe.serial("M327 protected Reflection production composition", () => {
             resolveHistoricalAgentSignerAuthority: () => null,
           });
         } catch (error) {
-          throw new Error("M327 cross-Room parent authentication threw", {cause: error});
+          throw new Error("Protected Reflection cross-Room parent authentication threw", {cause: error});
         }
         if (authenticated === null || authenticated.namespaceEnvelopes.length !== 1) {
-          throw new Error("M327 cross-Room protected parent did not authenticate");
+          throw new Error("Protected Reflection cross-Room protected parent did not authenticate");
         }
         const plaintext = decryptObjectThroughNamespace(
           crypto,
@@ -2733,7 +2758,7 @@ describe.serial("M327 protected Reflection production composition", () => {
           decodeNamespaceObjectEnvelopeV2(authenticated.namespaceEnvelopes[0]!.envelopeBytes),
           decodeEncryptedPayloadV2(authenticated.payloadBytes),
         );
-        if (plaintext === null) throw new Error("M327 cross-Room parent did not decrypt");
+        if (plaintext === null) throw new Error("Protected Reflection cross-Room parent did not decrypt");
         try {
           const decoded = decodeRecordPayloadV1(plaintext);
           expect(decoded.childRecordIds).toEqual([
@@ -2806,7 +2831,7 @@ describe.serial("M327 protected Reflection production composition", () => {
           .toMatchObject({status: "waiting"});
         const parentSearchRequest = requestedRecords.at(requestOffset);
         if (parentSearchRequest === undefined) {
-          throw new Error("M327 cross-Room parent search grant was not requested");
+          throw new Error("Protected Reflection cross-Room parent search grant was not requested");
         }
         await authorizeReflectionRequest(
           fixture,
@@ -2890,7 +2915,7 @@ describe.serial("M327 protected Reflection production composition", () => {
         expect(bobView).toMatchObject({status: "ok"});
         expect(carolView).toMatchObject({status: "ok"});
         if (bobView.status !== "ok" || carolView.status !== "ok") {
-          throw new Error("M327 cross-Room participant search was unavailable");
+          throw new Error("Protected Reflection cross-Room participant search was unavailable");
         }
         expect(bobView.records.map(record => record.recordRef)).toContain(fixture.recordId);
         if (authoredMemory === undefined) {
@@ -2905,7 +2930,7 @@ describe.serial("M327 protected Reflection production composition", () => {
       expect(localVectorizations).toBe(topology === "shared-domain" ? 1 : isCrossRoomTopology(topology) ? 3 : 2);
       expect(search.status).toBe("ok");
       if (search.status !== "ok") {
-        throw new Error("M327 structural projection was not selected");
+        throw new Error("Protected Reflection structural projection was not selected");
       }
       if (fixture.policyMode === "encrypted_only" && isCrossRoomTopology(topology)) {
         // This structural-only fixture has no protected body opener, so it cannot
@@ -2926,7 +2951,7 @@ describe.serial("M327 protected Reflection production composition", () => {
       }
       const recalledRecordRef = isCrossRoomTopology(topology) ? parentRecordRef : fixture.recordId;
       const fixtureSelection = search.records.find(record => record.recordRef === recalledRecordRef);
-      if (fixtureSelection === undefined) throw new Error("M327 changed Record projection was not selected");
+      if (fixtureSelection === undefined) throw new Error("Protected Reflection changed Record projection was not selected");
       const productHandle = await verifyConversationProductPostgresHandle(connection(product));
       const entityAuthority = (material: NamespaceMaterial): ForegroundAgentEntityNamespaceAuthority => ({
         namespaceId: material.authority.namespaceId,
@@ -2992,7 +3017,7 @@ describe.serial("M327 protected Reflection production composition", () => {
         status: "verified",
         records: [{
           recordRef: recalledRecordRef,
-          statement: isCrossRoomTopology(topology) ? "M327 protected sibling synthesis" : "M327 protected Reflection foreground proof",
+          statement: isCrossRoomTopology(topology) ? "Protected Reflection protected sibling synthesis" : "Protected Reflection protected Reflection foreground proof",
           lifecycle: "current",
           structuralHeight: isCrossRoomTopology(topology) ? 1 : 0,
         }],
@@ -3009,7 +3034,7 @@ describe.serial("M327 protected Reflection production composition", () => {
         status: "verified",
         records: [{
           recordRef: parentRecordRef,
-          statement: "M327 protected sibling synthesis",
+          statement: "Protected Reflection protected sibling synthesis",
           lifecycle: "current",
           structuralHeight: 1,
         }],
@@ -3036,11 +3061,17 @@ describe.serial("M327 protected Reflection production composition", () => {
             // Drain canonical repair pages, including earlier fixture notifications.
           }
         } else {
-          await admin.unsafe("UPDATE memories SET tier = 3 WHERE id = $1", [authoredMemory.memoryId]);
+          // Advance the exact source coordinate. Dependency repair must classify
+          // the observed revision as changed and must never request the prior
+          // protected Memory object as a model input.
+          await admin.unsafe(
+            "UPDATE memories SET content_revision = content_revision + 1 WHERE id = $1",
+            [authoredMemory.memoryId],
+          );
           expect(await runtime.authoredMemoryChanges.admit({
             memoryId: authoredMemory.memoryId,
             changeKind: "archive",
-            changeRef: `m327-memory-archive:${fixture.runId}`,
+            changeRef: `protected-reflection-memory-archive:${fixture.runId}`,
           })).toEqual({admitted: 1});
           while ((await runtime.semanticWork.repairSourceDependentsPage({limit: 16})).consumed > 0) {
             // Drain durable Memory-source repair through its canonical owner.
@@ -3063,6 +3094,155 @@ describe.serial("M327 protected Reflection production composition", () => {
           stage: "authority_projection",
           state: "due",
         });
+        if (topology === "cross-room-memory") {
+          if (supportFixture === undefined) throw new Error("protected recovery support fixture is missing");
+          if (authoredMemoryId === undefined) throw new Error("protected recovery Memory fixture is missing");
+          await prepareAdditionalRecord(
+            candidateFixture,
+            4,
+            fixture.sourceNamespaceId,
+          );
+          const [supportRepresentation] = await product.unsafe<{crypto_object_id: string}[]>(
+            `SELECT payload.crypto_object_id
+               FROM reflection_record_payload_representation_heads head
+               JOIN reflection_record_payload_representations payload
+                 ON payload.record_id = head.record_id
+                AND payload.representation = head.representation
+                AND payload.representation_generation = head.current_representation_generation
+              WHERE head.record_id = $1 AND head.representation = 'protected'`,
+            [supportFixture.recordId],
+          );
+          if (supportRepresentation === undefined) throw new Error("protected recovery support payload is missing");
+          await product.unsafe(
+            `UPDATE reflection_records
+                SET lifecycle = 'superseded',
+                    processing_generation = processing_generation + 1
+              WHERE record_id = $1`,
+            [supportFixture.recordId],
+          );
+          await product.unsafe(
+            `INSERT INTO reflection_record_successors (
+               predecessor_record_id, successor_record_id, relation
+             ) VALUES ($1, $2, 'supersedes')`,
+            [supportFixture.recordId, candidateFixture.recordId],
+          );
+          await admin.unsafe(
+            "DELETE FROM object_crypto_namespace_envelopes WHERE object_id = $1",
+            [supportRepresentation.crypto_object_id],
+          );
+        }
+
+        const dependencyAuthorityClaim = await claimStage("authority_projection", parentRecordRef);
+        expect(await maintenance.ensureAuthority(dependencyAuthorityClaim)).toEqual({status: "ready"});
+        expect(await semanticWork.checkpoint({
+          claim: dependencyAuthorityClaim,
+          completedStage: "authority_projection",
+        })).toMatchObject({status: "accepted"});
+        const dependencySearchClaim = await claimStage("search_projection", parentRecordRef);
+        expect(await protectedSearch.ensureSearchProjection(dependencySearchClaim)).toEqual({status: "ready"});
+        expect(await semanticWork.checkpoint({
+          claim: dependencySearchClaim,
+          completedStage: "search_projection",
+        })).toMatchObject({status: "accepted"});
+        const dependencyOrganizationClaim = await claimStage("organization", parentRecordRef);
+        const dependencyApplication = {
+          claim: dependencyOrganizationClaim,
+          idempotencyKey: `sleep:${parentRecordRef}:${dependencyOrganizationClaim.generation}:dependency`,
+          budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
+        };
+        const modelCallsBeforeRepair = modelCalls;
+        let dependencyResult: Awaited<ReturnType<typeof protectedSemantics.resolveDependencyLoss>> | undefined;
+        let dependencyRequestCursor = requestedRecords.length;
+        const dependencyRequestOffset = dependencyRequestCursor;
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          dependencyResult = await protectedSemantics.resolveDependencyLoss(dependencyApplication);
+          if (dependencyResult.status !== "waiting") break;
+          const request = requestedRecords.at(dependencyRequestCursor);
+          if (request === undefined) {
+            clock += 15_001;
+            continue;
+          }
+          await authorizeReflectionRequest(fixture, crypto, repository, request, clock + 1);
+          dependencyRequestCursor += 1;
+          clock += 3;
+        }
+        if (topology === "cross-room") {
+          expect(dependencyResult).toMatchObject({status: "unavailable"});
+          expect(modelCalls).toBe(modelCallsBeforeRepair);
+        } else {
+          const dependencyRequest = requestedRecords.at(dependencyRequestOffset);
+          const dependencyDescriptor = dependencyRequest?.descriptorBytes === null
+            || dependencyRequest?.descriptorBytes === undefined
+            ? undefined
+            : decodeBackgroundWorkDescriptorV2(dependencyRequest.descriptorBytes);
+          const dependencyInputIds = new Set(
+            dependencyDescriptor?.inputBindings.map(value => value.objectId) ?? [],
+          );
+          expect({
+            result: dependencyResult,
+            modelCallDelta: modelCalls - modelCallsBeforeRepair,
+            authorizationRequests: dependencyRequestCursor - dependencyRequestOffset,
+            grantedInputs: {
+              originalChild: dependencyInputIds.has(objectId(`${workId(fixture.recordId)}:record`)),
+              obsoleteSupport: dependencyInputIds.has(objectId(`${workId(supportFixture!.recordId)}:record`)),
+              survivor: dependencyInputIds.has(objectId(`${workId(candidateFixture.recordId)}:record`)),
+              lostMemory: dependencyInputIds.has(objectId(authoredMemory!.objectId)),
+            },
+          }).toMatchObject({
+            result: {status: "applied", outcome: "partial_replacement"},
+            modelCallDelta: 1,
+            authorizationRequests: 1,
+            grantedInputs: {originalChild: true, obsoleteSupport: false, survivor: true, lostMemory: false},
+          });
+          expect(modelCalls).toBe(modelCallsBeforeRepair + 1);
+          const rewritePrompt = modelPrompts.at(-1);
+          expect(rewritePrompt).toContain("Protected Reflection protected Reflection sibling proof");
+          expect(rewritePrompt).toContain("Protected Reflection protected Reflection foreground proof");
+          expect(rewritePrompt).not.toContain("Protected Reflection protected sibling synthesis");
+          expect(rewritePrompt).not.toContain("Protected Reflection protected authored Memory candidate");
+          if (dependencyResult?.status !== "applied" || dependencyResult.changedRecord === undefined) {
+            throw new Error("protected dependency repair did not publish a successor");
+          }
+          repairedParentRecordRef = dependencyResult.changedRecord.recordRef;
+          const repairedChildren = await product.unsafe<{child_record_id: string}[]>(
+            `SELECT child_record_id
+               FROM reflection_record_dependencies
+              WHERE parent_record_id = $1
+              ORDER BY child_record_id`,
+            [repairedParentRecordRef],
+          );
+          expect([...repairedChildren]).toEqual(
+            [fixture.recordId, candidateFixture.recordId]
+              .sort()
+              .map(child_record_id => ({child_record_id})),
+          );
+          const repairedExposures = await product.unsafe<{dependency_record_id: string}[]>(
+            `SELECT dependency_record_id
+               FROM reflection_record_authority_dependencies
+              WHERE record_id = $1
+              ORDER BY dependency_record_id`,
+            [repairedParentRecordRef],
+          );
+          expect([...repairedExposures]).toEqual(
+            [fixture.recordId, candidateFixture.recordId]
+              .sort()
+              .map(dependency_record_id => ({dependency_record_id})),
+          );
+          const successorCount = async () => product.unsafe<{count: string}[]>(
+            `SELECT count(*)::text AS count
+               FROM reflection_record_successors
+              WHERE predecessor_record_id = $1`,
+            [parentRecordRef],
+          );
+          expect([...(await successorCount())]).toEqual([{count: "1"}]);
+          const callsBeforeRestart = modelCalls;
+          const restarted = await protectedSemantics.resolveDependencyLoss(dependencyApplication)
+            .then(value => value, (error: unknown) => error);
+          expect(restarted).not.toMatchObject({status: "applied"});
+          expect(modelCalls).toBe(callsBeforeRestart);
+          expect([...(await successorCount())]).toEqual([{count: "1"}]);
+        }
+        if (topology === "cross-room") {
         // Revoke Alice from the AC source audience, then let the existing
         // authority owner dirty and rebuild every dependent projection.
         await product.unsafe("UPDATE rooms SET human_actor_ids = $2 WHERE id = $1", [
@@ -3070,7 +3250,7 @@ describe.serial("M327 protected Reflection production composition", () => {
         ]);
         const authorityStore = new PostgresAuthorityProjectionStore(recordProductHandle);
         expect(await authorityStore.admitSourceChange({
-          changeRef: `m327-revoke:${fixture.runId}`,
+          changeRef: `protected-reflection-revoke:${fixture.runId}`,
           terminalAuthorityLeafHandle: fixture.authorityNamespaceId,
           sourceChangeGeneration: 2,
         })).toMatchObject({replayed: false});
@@ -3086,17 +3266,18 @@ describe.serial("M327 protected Reflection production composition", () => {
         try {
           afterRevocation = await searchAfterRevocation();
         } catch (error) {
-          throw new Error("M327 cross-Room revoked structural read threw", {cause: error});
+          throw new Error("Protected Reflection cross-Room revoked structural read threw", {cause: error});
         }
         expect(afterRevocation).toMatchObject({status: "ok"});
         if (afterRevocation.status !== "ok") {
-          throw new Error("M327 revoked cross-Room projection search was unavailable");
+          throw new Error("Protected Reflection revoked cross-Room projection search was unavailable");
         }
         // Structural search is content-free; the foreground owner must refuse
         // the stale body even if a candidate pointer was already returned.
         expect(await foreground.protect({records: [{
           representation: "structural", recordRef: parentRecordRef, structuralHeight: 1,
         }]})).toEqual({status: "waiting_for_authority", reason: "record_authority_converging"});
+        }
       }
     } finally {
       await maintenance.dispose();
@@ -3107,6 +3288,12 @@ describe.serial("M327 protected Reflection production composition", () => {
         await admin.unsafe(
           "UPDATE reflection_records SET disposition = 'purged' WHERE record_id = $1",
           [createdParentRecordRef],
+        ).catch(() => undefined);
+      }
+      if (repairedParentRecordRef !== undefined) {
+        await admin.unsafe(
+          "UPDATE reflection_records SET disposition = 'purged' WHERE record_id = $1",
+          [repairedParentRecordRef],
         ).catch(() => undefined);
       }
       await markFixturePurged(candidateFixture, [], repository);

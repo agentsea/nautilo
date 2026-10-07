@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { resolveNautiloRootDir } from "@nautilo/config";
-import { getAllKeyDefinitions, maskValue } from "@nautilo/config-guard";
+import { maskValue } from "@nautilo/config-guard";
 import {
   PERSONAL_PROVIDER_IDS,
   createPersonalProviderCredentialIdentity,
@@ -11,6 +11,7 @@ import {
   insertPersonalProviderCredential,
   listPersonalProviderCredentials,
   replacePersonalProviderCredential,
+  requeueBlockedPersonalSurplusAttempts,
   setPersonalProviderCredentialValidation,
   type PersonalProviderCredentialRecord,
   type PersonalProviderId,
@@ -23,8 +24,14 @@ import {
   type PersonalProviderCustody,
 } from "@nautilo/operator-secrets";
 import { getUserCapabilities } from "@nautilo/trust";
-import { PERSONAL_CHAT_PROVIDER_IDS } from "../lib/model-funding";
+import {
+  PERSONAL_PROVIDER_KEY_CATALOGUE,
+  orderProviderKeys,
+} from "@nautilo/types";
 import { readPersonalProviderCustody } from "../lib/personal-provider-custody";
+import {
+  validatePersonalGatewayDestination,
+} from "../lib/personal-provider-destination";
 import { validatePersonalProviderCredential } from "../lib/personal-provider-validation";
 import { writeSecurityAuditEvent, type PersonalProviderCredentialAuditEvent } from "../lib/security-audit-log";
 import { getServerDirectDb } from "../lib/server-direct-db";
@@ -33,21 +40,21 @@ type ErrorCode =
   | "authentication_required" | "personal_credentials_forbidden" | "personal_credentials_disabled"
   | "personal_credentials_unavailable" | "credential_custody_unavailable"
   | "credential_reenrollment_required" | "invalid_provider" | "invalid_credential_request"
-  | "credential_conflict" | "credential_not_found";
+  | "credential_conflict" | "credential_not_found"
+  | "credential_destination_unavailable" | "credential_destination_changed";
 
-const personalChatProviderIds = new Set<string>(PERSONAL_CHAT_PROVIDER_IDS);
-const retainedServerGatewayProviderIds = new Set(["nautilo-gateway", "gateway"]);
-const personalProviderCatalog = getAllKeyDefinitions()
-  .filter((definition) => !retainedServerGatewayProviderIds.has(definition.id))
-  .map((definition) => ({
+const canonicalPersonalProviderIds = new Set(PERSONAL_PROVIDER_KEY_CATALOGUE.map(({ id }) => id));
+
+function personalProviderCatalog() {
+  return orderProviderKeys(PERSONAL_PROVIDER_KEY_CATALOGUE).map((definition) => ({
     id: definition.id,
     name: definition.name,
     purpose: definition.purpose,
     ...(definition.signupUrl ? { signupUrl: definition.signupUrl } : {}),
     ...(definition.formatHint ? { formatHint: definition.formatHint } : {}),
-    personalCapabilities: personalChatProviderIds.has(definition.id) ? ["chat"] : [],
+    personalCapabilities: definition.personalCapabilities,
   }));
-const canonicalPersonalProviderIds = new Set(personalProviderCatalog.map(({ id }) => id));
+}
 
 function failure(
   error: ErrorCode,
@@ -115,6 +122,7 @@ function credentialAccess(
 }
 
 function metadata(record: PersonalProviderCredentialRecord, access: CredentialAccess) {
+  const destinationMatches = validatePersonalGatewayDestination(record);
   return {
     provider: record.provider,
     id: record.id,
@@ -123,8 +131,26 @@ function metadata(record: PersonalProviderCredentialRecord, access: CredentialAc
     updatedAt: record.updatedAt.toISOString(),
     validationStatus: access.state === "reenroll" ? "unverified" as const : record.validationStatus,
     validatedAt: access.state === "reenroll" ? null : record.validatedAt?.toISOString() ?? null,
-    requiresReplacement: access.state === "reenroll",
+    destination: record.destination,
+    receiptReadStatus: access.state === "reenroll" ? "unknown" as const : record.receiptReadStatus,
+    requiresReplacement: access.state === "reenroll" || !destinationMatches,
     masked: access.masked,
+  };
+}
+
+function disabledMetadata(record: PersonalProviderCredentialRecord) {
+  return {
+    provider: record.provider,
+    id: record.id,
+    revision: record.revision,
+    createdAt: record.createdAt.toISOString(),
+    updatedAt: record.updatedAt.toISOString(),
+    validationStatus: record.validationStatus,
+    validatedAt: record.validatedAt?.toISOString() ?? null,
+    destination: record.destination,
+    receiptReadStatus: record.receiptReadStatus,
+    requiresReplacement: false,
+    masked: null,
   };
 }
 
@@ -159,6 +185,7 @@ export interface PersonalProviderCredentialRouteDeps {
   deleteCredential?: typeof deletePersonalProviderCredential;
   setValidation?: typeof setPersonalProviderCredentialValidation;
   validate?: typeof validatePersonalProviderCredential;
+  requeueBlockedSurplusAttempts?: typeof requeueBlockedPersonalSurplusAttempts;
   auditEvent?: typeof audit;
 }
 
@@ -175,8 +202,22 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
     deleteCredential: overrides.deleteCredential ?? deletePersonalProviderCredential,
     setValidation: overrides.setValidation ?? setPersonalProviderCredentialValidation,
     validate: overrides.validate ?? validatePersonalProviderCredential,
+    requeueBlockedSurplusAttempts: overrides.requeueBlockedSurplusAttempts
+      ?? requeueBlockedPersonalSurplusAttempts,
     auditEvent: overrides.auditEvent ?? audit,
   };
+
+  async function requeueReceipts(userId: string, record: PersonalProviderCredentialRecord): Promise<void> {
+    try {
+      await deps.requeueBlockedSurplusAttempts({
+        payerHumanId: userId, credentialId: record.id, credentialRevision: record.revision,
+      });
+    } catch {
+      // Enrollment has already committed. A later Check again retries this wake;
+      // never tell the caller to replay a successful credential replacement.
+      warn("[personal-provider-credentials] receipt recovery wake failed; validate the saved key again");
+    }
+  }
 
   function emitAudit(request: FastifyRequest, event: Omit<PersonalProviderCredentialAuditEvent, "ts" | "ip" | "userAgent">): void {
     try {
@@ -186,7 +227,11 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
     }
   }
 
-  async function admit(request: FastifyRequest, reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
+  async function admit(
+    request: FastifyRequest,
+    reply: { code: (status: number) => { send: (body: unknown) => unknown } },
+    options: { allowDisabled?: boolean } = {},
+  ): Promise<{ userId: string; allowPersonalProviderKeys: boolean } | null> {
     const userId = request.sessionUserId;
     if (!userId) {
       reply.code(401).send(failure("authentication_required"));
@@ -200,6 +245,7 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
       return null;
     }
     if (!policy.allowPersonalProviderKeys) {
+      if (options.allowDisabled) return { userId, allowPersonalProviderKeys: false };
       reply.code(404).send(failure("personal_credentials_disabled"));
       return null;
     }
@@ -213,7 +259,7 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
       reply.code(503).send(failure("personal_credentials_unavailable", false, true, "retry"));
       return null;
     }
-    return userId;
+    return { userId, allowPersonalProviderKeys: true };
   }
 
   async function readCustody(reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
@@ -225,16 +271,53 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
     }
   }
 
-  app.get("/api/account/provider-credentials", { logLevel: "silent" }, async (request, reply) => {
-    const userId = await admit(request, reply);
-    if (!userId) return;
-    const custody = await readCustody(reply);
-    if (!custody) return;
+  async function observeCredential(
+    request: FastifyRequest,
+    provider: PersonalProviderId,
+    apiKey: string,
+    destination: string | null,
+    unavailableOnFailure = false,
+  ) {
+    const cancellation = new AbortController();
+    const abort = () => cancellation.abort();
+    request.raw.once("aborted", abort);
     try {
-      const records = await deps.listCredentials(deps.getDb(), userId);
+      try {
+        return await deps.validate(
+          provider,
+          apiKey,
+          cancellation.signal,
+          destination,
+        );
+      } catch (error) {
+        if (unavailableOnFailure) {
+          return { status: "unavailable" as const, receiptReadStatus: "unknown" as const };
+        }
+        throw error;
+      }
+    } finally {
+      request.raw.off("aborted", abort);
+    }
+  }
+
+  app.get("/api/account/provider-credentials", { logLevel: "silent" }, async (request, reply) => {
+    const admission = await admit(request, reply, { allowDisabled: true });
+    if (!admission) return;
+    try {
+      const records = await deps.listCredentials(deps.getDb(), admission.userId);
+      if (!admission.allowPersonalProviderKeys) {
+        return reply.send({
+          allowPersonalProviderKeys: false,
+          credentials: records.map(disabledMetadata),
+          providers: personalProviderCatalog(),
+        });
+      }
+      const custody = await readCustody(reply);
+      if (!custody) return;
       return reply.send({
+        allowPersonalProviderKeys: true,
         credentials: records.map((record) => metadata(record, credentialAccess(record, custody))),
-        providers: personalProviderCatalog,
+        providers: personalProviderCatalog(),
       });
     } catch (error) {
       return unavailableAfter(error, reply, "retry");
@@ -242,11 +325,16 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
   });
 
   app.put("/api/account/provider-credentials/:provider", { logLevel: "silent" }, async (request, reply) => {
-    const userId = await admit(request, reply);
-    if (!userId) return;
+    const admission = await admit(request, reply);
+    if (!admission) return;
+    const { userId } = admission;
     const provider = parseProvider(request);
     const body = parseWrite(request.body);
     if (!provider || !body) return reply.code(422).send(failure(provider ? "invalid_credential_request" : "invalid_provider"));
+    // Gateway remains a server-admin provider. Historical personal rows are
+    // listed so their owners can remove them, but they cannot be renewed.
+    if (provider === "gateway" || provider === "nautilo-gateway") return reply.code(422).send(failure("invalid_provider"));
+    const destination = null;
     const custody = await readCustody(reply);
     if (!custody) return;
     try {
@@ -257,16 +345,28 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
           return reply.code(409).send(failure("credential_conflict", false, false, "reread_metadata"));
         }
         credentialAccess(current, custody); // Reset provenance may permit re-enrollment without the lost key.
+        const observation = await observeCredential(
+          request, provider, body.apiKey, destination, true,
+        );
+        if (!await admit(request, reply)) return;
         const envelope = encryptPersonalProviderCredential(custody, body.apiKey, {
           userId, provider, id: current.id, revision: current.revision + 1,
+          destination,
         });
         const result = await deps.replaceCredential(db, {
           userId, provider, id: current.id, expectedRevision: current.revision, envelope,
+          destination,
+          validationStatus: observation.status,
+          validatedAt: new Date(),
+          receiptReadStatus: observation.receiptReadStatus ?? "unknown",
         });
         if (result.status !== "replaced") {
           return reply.code(409).send(failure("credential_conflict", false, false, "reread_metadata"));
         }
         emitAudit(request, { kind: "personal_provider_credential_changed", actorId: userId, provider, credentialId: result.credential.id, revision: result.credential.revision, action: "replaced" });
+        if (provider === "surplus" && observation.status === "accepted") {
+          await requeueReceipts(userId, result.credential);
+        }
         return reply.send({ credential: metadata(result.credential, credentialAccess(result.credential, custody)), committed: true });
       }
       if (body.expectedRevision !== undefined) {
@@ -275,13 +375,27 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
       if (!canonicalPersonalProviderIds.has(provider)) {
         return reply.code(422).send(failure("invalid_provider"));
       }
+      const observation = await observeCredential(
+        request, provider, body.apiKey, destination, true,
+      );
+      if (!await admit(request, reply)) return;
       const identity = createPersonalProviderCredentialIdentity();
-      const envelope = encryptPersonalProviderCredential(custody, body.apiKey, { userId, provider, ...identity });
-      const result = await deps.insertCredential(db, { identity, userId, provider, envelope });
+      const envelope = encryptPersonalProviderCredential(custody, body.apiKey, {
+        userId, provider, ...identity, destination,
+      });
+      const result = await deps.insertCredential(db, {
+        identity, userId, provider, envelope, destination,
+        validationStatus: observation.status,
+        validatedAt: new Date(),
+        receiptReadStatus: observation.receiptReadStatus ?? "unknown",
+      });
       if (result.status !== "created") {
         return reply.code(409).send(failure("credential_conflict", false, false, "reread_metadata"));
       }
       emitAudit(request, { kind: "personal_provider_credential_changed", actorId: userId, provider, credentialId: result.credential.id, revision: result.credential.revision, action: "created" });
+      if (provider === "surplus" && observation.status === "accepted") {
+        await requeueReceipts(userId, result.credential);
+      }
       return reply.send({ credential: metadata(result.credential, credentialAccess(result.credential, custody)), committed: true });
     } catch (error) {
       return unavailableAfter(error, reply, "reread_metadata");
@@ -289,11 +403,13 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
   });
 
   app.post("/api/account/provider-credentials/:provider/validate", { logLevel: "silent" }, async (request, reply) => {
-    const userId = await admit(request, reply);
-    if (!userId) return;
+    const admission = await admit(request, reply);
+    if (!admission) return;
+    const { userId } = admission;
     const provider = parseProvider(request);
     const expectedRevision = parseRevisionBody(request.body);
     if (!provider || expectedRevision === null) return reply.code(422).send(failure(provider ? "invalid_credential_request" : "invalid_provider"));
+    if (provider === "gateway" || provider === "nautilo-gateway") return reply.code(422).send(failure("invalid_provider"));
     const custody = await readCustody(reply);
     if (!custody) return;
     try {
@@ -305,26 +421,29 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
       if (access.state === "reenroll") {
         return reply.code(409).send(failure("credential_reenrollment_required", false, false, "replace_credential"));
       }
-      const cancellation = new AbortController();
-      const abort = () => cancellation.abort();
-      request.raw.once("aborted", abort);
-      const observation = await (async () => {
-        try {
-          return await deps.validate(provider, access.apiKey, cancellation.signal);
-        } finally {
-          request.raw.off("aborted", abort);
-        }
-      })();
+      if (!validatePersonalGatewayDestination(record)) {
+        return reply.code(409).send(failure(
+          "credential_destination_changed", false, false, "replace_credential",
+        ));
+      }
+      const observation = await observeCredential(
+        request, provider, access.apiKey, record.destination,
+      );
       // A switch or capability revocation during a network call cannot publish status.
       if (!await admit(request, reply)) return;
       const result = await deps.setValidation(db, {
         userId, provider, id: record.id, expectedRevision,
         status: observation.status, validatedAt: new Date(),
+        receiptReadStatus: observation.receiptReadStatus ?? "unknown",
       });
       if (result.status !== "updated") {
         return reply.code(409).send(failure("credential_conflict", false, false, "reread_metadata"));
       }
       emitAudit(request, { kind: "personal_provider_credential_changed", actorId: userId, provider, credentialId: record.id, revision: expectedRevision, action: "validated", validationStatus: observation.status });
+      if (provider === "surplus"
+        && observation.status === "accepted") {
+        await requeueReceipts(userId, result.credential);
+      }
       return reply.send({ credential: metadata(result.credential, access), committed: false });
     } catch (error) {
       return unavailableAfter(error, reply, "retry_validation");
@@ -332,19 +451,20 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
   });
 
   app.delete("/api/account/provider-credentials/:provider", { logLevel: "silent" }, async (request, reply) => {
-    const userId = await admit(request, reply);
-    if (!userId) return;
+    const admission = await admit(request, reply, { allowDisabled: true });
+    if (!admission) return;
+    const { userId } = admission;
     const provider = parseProvider(request);
     const expectedRevision = parseRevisionBody(request.body);
     if (!provider || expectedRevision === null) return reply.code(422).send(failure(provider ? "invalid_credential_request" : "invalid_provider"));
-    const custody = await readCustody(reply);
-    if (!custody) return;
+    const custody = admission.allowPersonalProviderKeys ? await readCustody(reply) : null;
+    if (admission.allowPersonalProviderKeys && !custody) return;
     try {
       const db = deps.getDb();
       const record = await deps.getCredential(db, userId, provider);
       if (!record) return reply.send({ deleted: true, committed: true });
       if (record.revision !== expectedRevision) return reply.code(409).send(failure("credential_conflict", false, false, "reread_metadata"));
-      credentialAccess(record, custody);
+      if (custody) credentialAccess(record, custody);
       const result = await deps.deleteCredential(db, { userId, provider, id: record.id, expectedRevision });
       if (result.status === "conflict") return reply.code(409).send(failure("credential_conflict", false, false, "reread_metadata"));
       if (result.status === "deleted") {

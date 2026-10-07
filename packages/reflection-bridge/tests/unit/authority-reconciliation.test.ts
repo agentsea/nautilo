@@ -563,7 +563,7 @@ describe("shared logical receipt protected augmentation", () => {
 
   test("protected semantic readiness cannot trust a Plain-updated shared projection", async () => {
     const value = harness(leaves); await finish("ordinary", value, 50);
-    const readiness = new DurableRecordSemanticReadiness({repository: {} as never, bindings: {} as never,
+    const readiness = new DurableRecordSemanticReadiness({commitments: {roomAnchor: () => `h1.${"a".repeat(43)}`}, repository: {} as never, bindings: {} as never,
       eligibility: {} as never, embedding: {} as never, searchProjections: {} as never,
       authorityProjections: value.projections, authorityReconciliation: {...value.ports,
         selection: {selectedRepresentation: "protected", migrationGeneration: 1}}});

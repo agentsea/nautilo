@@ -16,7 +16,9 @@ const COVERAGE_ROWS = [
       ["openai", "OpenAI"],
       ["anthropic", "Anthropic"],
       ["google", "Google"],
+      ["xai", "xAI"],
       ["fireworks", "Fireworks"],
+      ["together", "Together AI"],
       ["gateway", "OpenAI-compatible Gateway"],
     ],
   },
@@ -63,7 +65,10 @@ function isConfigured(status: KeyReport["status"]): boolean {
   return status === "present" || status === "verified";
 }
 
-export function ProviderKeyCoverage({ keys }: { keys: KeyReport[] }) {
+export function ProviderKeyCoverage({
+  keys,
+  unknownStatusLabel,
+}: { keys: KeyReport[]; unknownStatusLabel?: string }) {
   const configuredProviderIds = new Set(
     keys.filter((key) => isConfigured(key.status)).map((key) => key.id),
   );
@@ -85,6 +90,7 @@ export function ProviderKeyCoverage({ keys }: { keys: KeyReport[] }) {
       <ProviderKeyCoverageTable
         configuredProviderIds={configuredProviderIds}
         rows={COVERAGE_ROWS}
+        unknownStatusLabel={unknownStatusLabel}
       />
     </section>
   );

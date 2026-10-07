@@ -1,3 +1,4 @@
+import { IMAGE_ATTACHMENT_SELECTION_HINT, isComposerImageAttachment } from "@nautilo/attachments/composer-chat-extensions";
 // Shared chat composer strip. Consumes a `RoomChatController`
 // and renders the transcript-adjacent controls: auto-approve/stop-note bar,
 // approval card, typing indicator, routing receipt, inline reply preview, and
@@ -50,6 +51,8 @@ export function RoomChatComposer({
 }: RoomChatComposerProps) {
   const t = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
+  const imageSelectionRejected = c.attachPermissionNote === IMAGE_ATTACHMENT_SELECTION_HINT;
+  const visibleAttachPermissionNote = imageSelectionRejected ? null : c.attachPermissionNote;
   const statusLeading =
     c.typing || c.workingAgentName || c.stopNoteVisible ? (
       <>
@@ -142,6 +145,31 @@ export function RoomChatComposer({
           <Text style={styles.capabilityErrorText}>{c.capabilityError}</Text>
         </View>
       ) : null}
+      {c.imageAttachmentError ? (
+        <View style={styles.capabilityError} accessibilityRole="alert">
+          <Text style={styles.capabilityErrorText}>{c.imageAttachmentError}</Text>
+          <Pressable onPress={() => { for (const attachment of c.attachments) {
+            if (isComposerImageAttachment(attachment.name, attachment.mimeType)) c.handleRemoveAttachment(attachment.localId);
+          } }}
+            accessibilityRole="button" accessibilityLabel="Remove images"><Text style={styles.capabilityErrorText}>Remove images</Text></Pressable>
+          <Pressable onPress={onOpenModelSheet} accessibilityRole="button"
+            accessibilityLabel="Choose a model that supports images"><Text style={styles.capabilityErrorText}>Choose a model that supports images</Text></Pressable>
+        </View>
+      ) : null}
+      {c.imageInputUnsupported && !c.imageAttachmentConflict && imageSelectionRejected ? (
+        <View style={styles.contextNotice} accessibilityRole="alert">
+          <Text style={styles.imageWarningText}>{IMAGE_ATTACHMENT_SELECTION_HINT}</Text>
+          <Pressable onPress={c.dismissImageSelectionNotice} accessibilityRole="button"
+            accessibilityLabel="Dismiss image attachment warning"><Text style={styles.imageWarningText}>Dismiss</Text></Pressable>
+        </View>
+      ) : null}
+      {c.imageHistoryNotice && !c.imageAttachmentConflict && !imageSelectionRejected ? (
+        <View style={styles.contextNotice} accessibilityRole="text">
+          <Text style={styles.attachPermissionNote}>{c.imageHistoryNotice}</Text>
+          <Pressable onPress={c.dismissImageHistoryNotice} accessibilityRole="button"
+            accessibilityLabel="Dismiss image history notice"><Text style={styles.attachPermissionNote}>Dismiss</Text></Pressable>
+        </View>
+      ) : null}
       {c.contentFilterNotice ? (
         <View style={styles.capabilityError} accessibilityRole="alert">
           <Text style={styles.capabilityErrorText}>{c.contentFilterNotice}</Text>
@@ -165,6 +193,7 @@ export function RoomChatComposer({
         serverUrl={c.serverUrl}
         disabled={c.sending || interactionDisabled || c.directHumanInteractionBlocked}
         busy={c.busy}
+        sendDisabled={c.imageAttachmentConflict}
         onStop={() => void c.handleStop()}
         hasAttachments={
           capabilities.attachments && c.attachments.some((a) => a.status === "ready")
@@ -180,10 +209,10 @@ export function RoomChatComposer({
         )}
         attachmentsSlot={
           capabilities.attachments &&
-          (c.attachments.length > 0 || c.attachPermissionNote) ? (
+          (c.attachments.length > 0 || visibleAttachPermissionNote) ? (
             <View style={styles.attachmentsSlot}>
-              {c.attachPermissionNote ? (
-                <Text style={styles.attachPermissionNote}>{c.attachPermissionNote}</Text>
+              {visibleAttachPermissionNote ? (
+                <Text style={styles.attachPermissionNote}>{visibleAttachPermissionNote}</Text>
               ) : null}
               {c.attachments.length > 0 ? (
                 <View style={styles.attachmentChips}>
@@ -376,6 +405,14 @@ function createStyles(t: AppTheme) {
     capabilityErrorText: {
       ...t.typography.caption,
       color: t.color.status.error,
+    },
+    contextNotice: {
+      paddingHorizontal: t.spacing.lg,
+      paddingVertical: t.spacing.sm,
+    },
+    imageWarningText: {
+      ...t.typography.caption,
+      color: t.color.status.warning,
     },
     blockedNotice: {
       paddingHorizontal: t.spacing.lg,

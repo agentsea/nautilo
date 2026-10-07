@@ -5,7 +5,10 @@ import type { ReactNode } from "react";
 import type { TaskSummary } from "@nautilo/types";
 import type { ProtectedScheduledTaskProjection } from
   "../../src/lib/protected-human-task-controller";
-import { ConversationEncryptionPolicyModeContext } from
+import {
+  ConversationEncryptionPolicyModeContext,
+  type ConversationEncryptionPolicyMode,
+} from
   "../../src/adapters/runtime-contexts";
 
 const controller = Object.freeze({});
@@ -74,21 +77,18 @@ const { useScheduledTasks } = await import(
   "../../src/pages/scheduled-tasks/use-scheduled-tasks"
 );
 
-function wrapper({ children }: { children: ReactNode }) {
-  return (
-    <ConversationEncryptionPolicyModeContext.Provider value="encrypted_only">
-      {children}
-    </ConversationEncryptionPolicyModeContext.Provider>
-  );
+function policyWrapper(mode: ConversationEncryptionPolicyMode) {
+  return function PolicyWrapper({ children }: { children: ReactNode }) {
+    return (
+      <ConversationEncryptionPolicyModeContext.Provider value={mode}>
+        {children}
+      </ConversationEncryptionPolicyModeContext.Provider>
+    );
+  };
 }
 
-function plainWrapper({ children }: { children: ReactNode }) {
-  return (
-    <ConversationEncryptionPolicyModeContext.Provider value="plaintext_only">
-      {children}
-    </ConversationEncryptionPolicyModeContext.Provider>
-  );
-}
+const fullWrapper = policyWrapper("encrypted_only");
+const plainWrapper = policyWrapper("plaintext_only");
 
 function unavailableRow(id: string): ProtectedScheduledTaskProjection {
   return {
@@ -118,7 +118,7 @@ describe("useScheduledTasks protected refresh", () => {
   });
 
   test("rechecks after a successful ordinary refresh and fences the stale read", async () => {
-    const view = renderHook(() => useScheduledTasks(), { wrapper });
+    const view = renderHook(() => useScheduledTasks(), { wrapper: fullWrapper });
     await waitFor(() => expect(listProtected).toHaveBeenCalledTimes(1));
 
     lastSuccessfulAtMs = 100;
@@ -134,8 +134,29 @@ describe("useScheduledTasks protected refresh", () => {
     expect(view.result.current.protectedTasks).toEqual([current]);
   });
 
-  test("keeps a dormant protected route quiet across ordinary refreshes", async () => {
-    const view = renderHook(() => useScheduledTasks(), { wrapper });
+  test.each([
+    ["Fallback Shadow", "shadow_encryption"],
+    ["Strict Shadow", "shadow_encryption"],
+    ["Full", "encrypted_only"],
+  ] as const)("keeps the dormant route quiet in %s", async (_policy, clientMode) => {
+    const task = {
+      id: `ordinary-${clientMode}`,
+      parentTaskId: null,
+      depth: 0,
+      status: "pending",
+      preset: "schedule",
+      prompt: "send weekly digest",
+      scheduleKind: "cron",
+      cron: "0 9 * * 1",
+      nextFireAt: "2026-10-01T09:00:00.000Z",
+      callingRoomId: null,
+    } as TaskSummary;
+    ordinaryTasks = [task];
+    // Workbench intentionally projects both Shadow behaviors to the same
+    // client mode; the server policy retains the Fallback/Strict distinction.
+    const view = renderHook(() => useScheduledTasks(), {
+      wrapper: policyWrapper(clientMode),
+    });
     await waitFor(() => expect(listProtected).toHaveBeenCalledTimes(1));
 
     requests[0]?.reject(Object.assign(new Error("not mounted"), { status: 404 }));
@@ -146,6 +167,7 @@ describe("useScheduledTasks protected refresh", () => {
     await Promise.resolve();
     expect(listProtected).toHaveBeenCalledTimes(1);
     expect(view.result.current.protectedTasks).toEqual([]);
+    expect(view.result.current.tasks).toEqual([task]);
   });
 
   test("Plain schedules remain visible after refresh without protected custody", async () => {

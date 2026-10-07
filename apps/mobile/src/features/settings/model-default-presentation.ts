@@ -63,7 +63,7 @@ export function modelDefaultDisplay(
   return {
     id: model.id,
     label: model.displayName || model.id,
-    detail: `${model.id} · ${providerLabel(model)}`,
+    detail: `${model.id} · ${providerLabel(model)}${fundingLabel(model) ? ` · ${fundingLabel(model)}` : ""}`,
     selectable: true,
   };
 }
@@ -100,7 +100,7 @@ export function modelPickerGroups(
           id: model.id,
           label: model.displayName || model.id,
           description: isSelectableModel(model)
-            ? `${model.id} · ${provider}`
+            ? `${model.id} · ${provider}${fundingLabel(model) ? ` · ${fundingLabel(model)}` : ""}`
             : `${model.id} · ${unavailableDescription(model)}`,
           selectable: isSelectableModel(model),
           selected: model.id === selectedId,
@@ -119,4 +119,10 @@ function unavailableDescription(model: AssistantModelSummary): string {
 
 function providerLabel(model: AssistantModelSummary): string {
   return model.provider?.trim() || model.id.split(":", 1)[0] || "Other";
+}
+
+function fundingLabel(model: AssistantModelSummary): string | null {
+  if (model.fundingSource === "personal") return "Your key";
+  if (model.fundingSource === "server") return "Server key";
+  return null;
 }

@@ -1373,13 +1373,11 @@ export class JobManager {
     if (armedProtectedTaskExecution !== undefined) {
       try {
         eventBus.emit(dispatchedEvent);
-      } catch (error) {
+      } catch {
         // Listener diagnostics must not strand an exact TaskRun after its
         // protected lifecycle has durably entered running.
         log(
-          `[lane] protected Task job=${job.id} dispatch event listener failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `[lane] protected Task job=${job.id} dispatch event listener failed code=PROTECTED_DISPATCH_LISTENER_RETRY`,
         );
       }
     } else {

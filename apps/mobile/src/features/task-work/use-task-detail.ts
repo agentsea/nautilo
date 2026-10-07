@@ -3,7 +3,8 @@ import { useFocusEffect } from "expo-router";
 
 import { getApiClient } from "@/lib/api";
 import { useRealtime } from "@/providers/realtime";
-import { isMissingTaskContentProjection } from "./task-content-mobile";
+import type { NautiloApiClient } from "@nautilo/api-client/browser";
+import { requiresTaskContentProjection } from "./task-content-mobile";
 import {
   createTaskDetailController,
   isExactTaskId,
@@ -23,6 +24,16 @@ import {
 } from "./task-detail-lifecycle";
 import { taskDetailFocusRefreshDecision } from "./task-detail-focus";
 import { useTaskWorkScope } from "./use-task-work-scope";
+
+export function readPlainTaskDetail(
+  client: Pick<NautiloApiClient, "getTask" | "getTaskContentV1">,
+  taskId: string,
+) {
+  return client.getTask(taskId).catch(error => {
+    if (!requiresTaskContentProjection(error)) throw error;
+    return client.getTaskContentV1(taskId);
+  });
+}
 
 /** Binds a route-owned exact Task reader to the active authenticated identity. */
 export function useTaskDetail({
@@ -61,12 +72,7 @@ export function useTaskDetail({
         throw new Error("Active server changed.");
       }
       const client = getApiClient(requestTarget.serverUrl);
-      try {
-        return await client.getTaskContentV1(requestTarget.taskId);
-      } catch (error) {
-        if (!isMissingTaskContentProjection(error)) throw error;
-        return client.getTask(requestTarget.taskId);
-      }
+      return readPlainTaskDetail(client, requestTarget.taskId);
     },
   }), [server]);
   const lifecycleApi = useMemo<TaskDetailLifecycleApi>(() => ({

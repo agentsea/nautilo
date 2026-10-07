@@ -3,8 +3,10 @@ import { dirname } from "node:path";
 import { isCloudMode } from "@nautilo/config";
 import { resolveDotenvPath } from "@nautilo/config-guard";
 import {
+  getPersonalProviderCredential,
   getPersonalProviderCredentialCustodyEvidence,
   listPersonalProviderCredentialsForCustody,
+  type PersonalProviderCredentialReceiptReadStatus,
 } from "@nautilo/db";
 import {
   PersonalProviderCustodyError,
@@ -29,6 +31,72 @@ export async function readPersonalProviderCustody(): Promise<PersonalProviderCus
   } catch (error) {
     if (error instanceof PersonalProviderCustodyError) throw error;
     throw new PersonalProviderCustodyError("custody_unavailable");
+  }
+}
+
+export type PersonalSurplusReceiptCredentialResult =
+  | Readonly<{
+      status: "available";
+      apiKey: string;
+      receiptReadStatus: PersonalProviderCredentialReceiptReadStatus;
+      replacement: boolean;
+    }>
+  | Readonly<{
+      status: "blocked_repair";
+      reason: "missing" | "replaced" | "custody_unavailable";
+    }>;
+
+interface PersonalSurplusReceiptCredentialDeps {
+  readonly getCredential?: typeof getPersonalProviderCredential;
+  readonly getDb?: typeof getServerDirectDb;
+  readonly readCustody?: typeof readPersonalProviderCustody;
+}
+
+/**
+ * Resolves the payer-owned key for a read of an already bound exact receipt.
+ * A replacement is only a lookup candidate: the provider must authorize access
+ * to that original request before any financial settlement. This never admits
+ * inference or changes the attempt's original credential provenance.
+ */
+export async function resolvePersonalSurplusReceiptCredential(
+  input: Readonly<{
+    userId: string;
+    credentialId: string;
+    credentialRevision: number;
+  }>,
+  overrides: PersonalSurplusReceiptCredentialDeps = {},
+): Promise<PersonalSurplusReceiptCredentialResult> {
+  const getCredential = overrides.getCredential ?? getPersonalProviderCredential;
+  const getDb = overrides.getDb ?? getServerDirectDb;
+  const readCustody = overrides.readCustody ?? readPersonalProviderCustody;
+
+  // Database transport failures remain retryable at the reconciliation owner;
+  // they must not be persisted as a credential repair requirement.
+  const record = await getCredential(getDb(), input.userId, "surplus");
+  if (!record) return { status: "blocked_repair", reason: "missing" };
+  if (record.userId !== input.userId || record.provider !== "surplus") {
+    return { status: "blocked_repair", reason: "missing" };
+  }
+
+  try {
+    const custody = await readCustody();
+    if (record.envelope.keyId === custody.resetFromKeyId
+      || record.envelope.keyId !== custody.keyId) {
+      return { status: "blocked_repair", reason: "custody_unavailable" };
+    }
+    return {
+      status: "available",
+      apiKey: decryptPersonalProviderCredential(
+        custody,
+        record.envelope,
+        record,
+      ),
+      receiptReadStatus: record.receiptReadStatus,
+      replacement: record.id !== input.credentialId
+        || record.revision !== input.credentialRevision,
+    };
+  } catch {
+    return { status: "blocked_repair", reason: "custody_unavailable" };
   }
 }
 

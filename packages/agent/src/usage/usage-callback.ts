@@ -6,7 +6,7 @@ import { getUsageContext, normalizeUsageRoomId } from "./usage-context";
 import { createToolProviderCostRecorder } from "./provider-cost-recorder";
 import { estimateProviderToolCostUsd } from "@nautilo/db";
 
-interface ExtractedUsage {
+export interface ExtractedUsage {
   inputTokens: number;
   outputTokens: number;
   totalTokens?: number;
@@ -14,6 +14,8 @@ interface ExtractedUsage {
   cachedInputTokens: number;
   cacheCreationTokens: number;
   actualCostUsd: number | null;
+  /** Content-free provider response/request identity when the adapter exposes one. */
+  providerRequestId?: string;
 }
 
 function asRecord(v: unknown): Record<string, unknown> | undefined {
@@ -22,6 +24,31 @@ function asRecord(v: unknown): Record<string, unknown> | undefined {
 
 function num(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+function explicitProviderRequestId(record: Record<string, unknown> | undefined): string | undefined {
+  if (!record) return undefined;
+  for (const key of [
+    "request_id", "requestID", "requestId", "_request_id",
+    "response_id", "responseId", "id",
+  ] as const) {
+    const candidate = record[key];
+    if (typeof candidate !== "string") continue;
+    const normalized = candidate.trim();
+    if (!normalized || /^(?:run|lc[_-]?run|langchain)[_:-]/iu.test(normalized)) continue;
+    return normalized;
+  }
+  return undefined;
+}
+
+function recognizedProviderMessageId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  // LangChain callback run ids are commonly UUIDs or `run-*`. Only accept
+  // provider-owned response-id namespaces from AIMessage.id.
+  return /^(?:chatcmpl-|resp_|msg_|gen-)/u.test(normalized)
+    ? normalized
+    : undefined;
 }
 
 export function extractNativeWebSearchRequests(output: LLMResult): number {
@@ -61,14 +88,20 @@ export function extractUsageFromLLMResult(output: LLMResult): ExtractedUsage | n
   let cachedInputTokens = 0;
   let cacheCreationTokens = 0;
   let actualCostUsd: number | null = null;
+  const explicitMetadataRequestIds = new Set<string>();
+  const fallbackMessageRequestIds = new Set<string>();
 
   const generations = (output.generations ?? []) as unknown[][];
   for (const row of generations) {
     for (const gen of row) {
       const message = asRecord(asRecord(gen)?.["message"]);
+      const messageRequestId = recognizedProviderMessageId(message?.["id"]);
       const um = asRecord(message?.["usage_metadata"]);
       const respMeta = asRecord(message?.["response_metadata"]);
       const respUsage = asRecord(respMeta?.["usage"]);
+      const responseRequestId = explicitProviderRequestId(respMeta);
+      if (responseRequestId) explicitMetadataRequestIds.add(responseRequestId);
+      else if (messageRequestId) fallbackMessageRequestIds.add(messageRequestId);
       if (um) {
         inputTokens += num(um["input_tokens"]);
         outputTokens += num(um["output_tokens"]);
@@ -101,14 +134,15 @@ export function extractUsageFromLLMResult(output: LLMResult): ExtractedUsage | n
       }
       // Provider-reported cost (OpenRouter surfaces `usage.cost` on response_metadata).
       const cost = respUsage?.["cost"] ?? respMeta?.["cost"];
-      if (typeof cost === "number" && Number.isFinite(cost) && cost > 0) {
+      if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) {
         actualCostUsd = (actualCostUsd ?? 0) + cost;
       }
     }
   }
 
+  const llmOutput = asRecord(output.llmOutput);
+  const outputRequestId = explicitProviderRequestId(llmOutput);
   if (inputTokens === 0 && outputTokens === 0) {
-    const llmOutput = asRecord(output.llmOutput);
     const tokenUsage = asRecord(llmOutput?.["tokenUsage"]) ?? asRecord(llmOutput?.["estimatedTokenUsage"]);
     if (tokenUsage) {
       inputTokens = num(tokenUsage["promptTokens"]);
@@ -117,7 +151,19 @@ export function extractUsageFromLLMResult(output: LLMResult): ExtractedUsage | n
     }
   }
 
-  if (inputTokens === 0 && outputTokens === 0) return null;
+  // Prefer an adapter's explicit request reference over its response/message
+  // identity. Some providers expose both for the same wire and they need not
+  // be equal. Conflicting ids at the same evidence level remain unbound.
+  const providerRequestId = explicitMetadataRequestIds.size > 0
+    ? explicitMetadataRequestIds.size === 1
+      ? explicitMetadataRequestIds.values().next().value as string
+      : undefined
+    : outputRequestId
+      ?? (fallbackMessageRequestIds.size === 1
+        ? fallbackMessageRequestIds.values().next().value as string
+        : undefined);
+  if (inputTokens === 0 && outputTokens === 0 && actualCostUsd === null
+    && providerRequestId === undefined) return null;
 
   return {
     inputTokens,
@@ -127,6 +173,7 @@ export function extractUsageFromLLMResult(output: LLMResult): ExtractedUsage | n
     cachedInputTokens,
     cacheCreationTokens,
     actualCostUsd,
+    ...(providerRequestId === undefined ? {} : { providerRequestId }),
   };
 }
 
@@ -163,6 +210,10 @@ class UsageCallbackHandler extends BaseCallbackHandler {
     // Surplus has a durable pre-wire attempt row and exact buyer receipt.
     // Recording a second callback row would double-count this invocation.
     if (ctx?.funding?.providerRoute === "surplus") return;
+    if (ctx?.trackedAttemptId) {
+      if (usage) ctx.onAttemptUsage?.(usage);
+      return;
+    }
     const nativeSearchRequests = extractNativeWebSearchRequests(output);
     const nativeSearchProvider = this.modelId.startsWith("openai:")
       ? "openai"

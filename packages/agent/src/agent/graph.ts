@@ -3,7 +3,7 @@ import {
   END,
   type BaseCheckpointSaver,
 } from "@langchain/langgraph";
-import { AIMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import type { PolicyResolver } from "@nautilo/trust";
 import type {
   ProtectedAgentMemoryAccessPort,
@@ -73,8 +73,7 @@ function parseToolResult(content: unknown): Record<string, unknown> | null {
  * tool result; malformed, failed, and unrelated results remain empty-response
  * failures.
  */
-function followsSuccessfulIntentionalSilence(state: NautiloState): boolean {
-  const priorMessage = state.messages[state.messages.length - 2];
+function successfulIntentionalSilenceResult(priorMessage: BaseMessage | undefined): boolean {
   if (
     !priorMessage || !ToolMessage.isInstance(priorMessage) ||
     priorMessage.additional_kwargs?.["nautilo_tool_status"] !== "success"
@@ -88,6 +87,10 @@ function followsSuccessfulIntentionalSilence(state: NautiloState): boolean {
     return result["skipped"] === true || result["recorded"] === true;
   }
   return false;
+}
+
+function followsSuccessfulIntentionalSilence(state: NautiloState): boolean {
+  return successfulIntentionalSilenceResult(state.messages[state.messages.length - 2]);
 }
 
 /** @internal Exported for unit testing only. */
@@ -135,11 +138,20 @@ export function shouldContinue(
  */
 export function shouldContinueAfterTools(
   state: NautiloState,
-): "tools" | "pre_model" | "browser_decision" {
+): "tools" | "pre_model" | "browser_decision" | typeof END {
   if (state.approvedToolCalls?.length) return "tools";
   if (state.noProgressPendingCorrection || state.noProgressPendingStop || state.approvalDenied
     || state.modelRejectedToolCallIds?.length || state.projectionRejectedToolCallIds?.length
     || state.ordinaryContentAccessRejectedToolCallIds?.length) return "pre_model";
+  // Complete admitted siblings first, then honor a successful skip anywhere
+  // in this tool batch. Returning to the model can otherwise repeat skip
+  // indefinitely. An older batch or a rejected hand-off cannot end this turn.
+  for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+    const message = state.messages[index];
+    if (SystemMessage.isInstance(message)) continue;
+    if (!ToolMessage.isInstance(message)) break;
+    if (message.name === "skip" && successfulIntentionalSilenceResult(message)) return END;
+  }
   const decision = currentBrowserDecision(state);
   return decision?.phase === "decide" || decision?.phase === "observe" ? "browser_decision" : "pre_model";
 }

@@ -1,6 +1,11 @@
 import type { CheckSummary, KeyReport, TransactionDetail } from "@nautilo/config-guard";
 import { z } from "zod";
-import type { ModerationCommand, ServerModerationPolicy } from "@nautilo/types";
+import type {
+  ModerationCommand,
+  PersonalCostsRangeKey,
+  PersonalCostsSummary,
+  ServerModerationPolicy,
+} from "@nautilo/types";
 import { moderationPolicySchema, moderationPolicyUpdateSchema, moderationPersonSchema, moderationReceiptSchema,
   enrollmentStatusSchema, enrollmentPageSchema, moderationPeopleSchema } from "./schemas/moderation";
 import {
@@ -1556,7 +1561,9 @@ const LLM_KEY_IDS = new Set<string>([
   "openrouter",
   "gateway",
   "google",
+  "xai",
   "fireworks",
+  "together",
   "venice",
   "surplus",
 ]);
@@ -1678,6 +1685,10 @@ export const assistantModelSummarySchema = z
       ])
       .optional(),
     unavailableReason: z.string().optional(),
+    /** Authenticated caller's currently admitted payer source; checked again at dispatch. */
+    fundingSource: z.enum(["personal", "server"]).optional(),
+    /** Secret-free effective transport family for the admitted source. */
+    fundingProviderRoute: z.string().min(1).optional(),
     capabilities: z
       .object({
         tools: z.boolean(),
@@ -2267,6 +2278,10 @@ export interface CredentialMetadata {
   readonly validatedAt: string | null;
   readonly requiresReplacement: boolean;
   readonly masked: string | null;
+  /** Fixed provider destination captured by this credential revision. */
+  readonly destination: string | null;
+  /** Whether marketplace request receipts can currently be read for cost settlement. */
+  readonly receiptReadStatus: "available" | "unavailable" | "unknown";
 }
 
 /** Secret-free provider metadata available for personal credential enrollment. */
@@ -2277,6 +2292,8 @@ export interface PersonalProviderCatalogEntry {
   readonly signupUrl?: string | undefined;
   readonly formatHint?: string | undefined;
   readonly personalCapabilities: readonly "chat"[];
+  /** Fixed server-owned destination. Humans cannot supply or edit this value. */
+  readonly destination: string | null;
 }
 
 export interface PutProviderCredentialInput {
@@ -2314,6 +2331,8 @@ const credentialMetadataSchema = z.object({
   requiresReplacement: z.boolean(),
   // Older servers do not project a preview during a rolling upgrade.
   masked: z.string().min(1).nullable().optional().default(null),
+  destination: z.string().min(1).nullable().optional().default(null),
+  receiptReadStatus: z.enum(["available", "unavailable", "unknown"]).optional().default("unknown"),
 }).strict();
 
 const personalProviderCatalogEntrySchema: z.ZodType<PersonalProviderCatalogEntry> = z.object({
@@ -2323,9 +2342,12 @@ const personalProviderCatalogEntrySchema: z.ZodType<PersonalProviderCatalogEntry
   signupUrl: z.string().min(1).optional(),
   formatHint: z.string().min(1).optional(),
   personalCapabilities: z.array(z.literal("chat")),
+  destination: z.string().min(1).nullable().optional().default(null),
 }).strict();
 
 const listProviderCredentialsResponseSchema = z.object({
+  // Older enabled servers do not project the policy state yet.
+  allowPersonalProviderKeys: z.boolean().optional().default(true),
   credentials: z.array(credentialMetadataSchema),
   // During a rolling upgrade an older server may not project its registry yet.
   providers: z.array(personalProviderCatalogEntrySchema).optional().default([]),
@@ -2346,12 +2368,113 @@ const deleteProviderCredentialResponseSchema = z.object({
   committed: z.literal(true),
 }).strict();
 
+const personalCostsMoneySchema = z.number().finite().nonnegative();
+const personalCostsCountSchema = z.number().int().nonnegative();
+const personalCostsSummarySchema: z.ZodType<PersonalCostsSummary> = z.object({
+  currency: z.literal("USD"),
+  range: z.object({
+    key: z.enum(["7d", "30d", "90d"]),
+    since: z.string().min(1),
+    until: z.string().min(1),
+  }).strict(),
+  pricingVersion: z.string().min(1),
+  entry: z.object({
+    available: z.boolean(),
+    hasPersonalCredentials: z.boolean(),
+    hasHistory: z.boolean(),
+  }).strict(),
+  totals: z.object({
+    calls: personalCostsCountSchema,
+    providerOperations: personalCostsCountSchema,
+    unknownProviderOperations: personalCostsCountSchema.optional().default(0),
+    inputTokens: personalCostsCountSchema,
+    cachedInputTokens: personalCostsCountSchema,
+    outputTokens: personalCostsCountSchema,
+    totalTokens: personalCostsCountSchema,
+    estimatedCostUsd: personalCostsMoneySchema,
+    actualCostUsd: personalCostsMoneySchema,
+    totalCostUsd: personalCostsMoneySchema,
+    pendingAttempts: personalCostsCountSchema,
+    unknownAttempts: personalCostsCountSchema,
+    retryableAttempts: personalCostsCountSchema,
+    blockedAttempts: personalCostsCountSchema,
+  }).strict(),
+  byModel: z.array(z.object({
+    model: z.string().min(1),
+    provider: z.string().min(1),
+    displayName: z.string().min(1),
+    calls: personalCostsCountSchema,
+    inputTokens: personalCostsCountSchema,
+    outputTokens: personalCostsCountSchema,
+    estimatedCostUsd: personalCostsMoneySchema,
+    actualCostUsd: personalCostsMoneySchema,
+    totalCostUsd: personalCostsMoneySchema,
+    hasActual: z.boolean(),
+    hasFallbackEstimate: z.boolean(),
+    pendingAttempts: personalCostsCountSchema,
+    unknownAttempts: personalCostsCountSchema,
+    blockedAttempts: personalCostsCountSchema,
+  }).strict()),
+  byCallType: z.array(z.object({
+    callType: z.string().min(1),
+    calls: personalCostsCountSchema,
+    totalCostUsd: personalCostsMoneySchema,
+  }).strict()),
+  byProvider: z.array(z.object({
+    provider: z.string().min(1),
+    operation: z.string().min(1),
+    operations: personalCostsCountSchema,
+    unknownOperations: personalCostsCountSchema,
+    estimatedCostUsd: personalCostsMoneySchema,
+    actualCostUsd: personalCostsMoneySchema,
+    totalCostUsd: personalCostsMoneySchema,
+  }).strict()),
+  byTask: z.array(z.object({
+    taskId: z.uuid(),
+    calls: personalCostsCountSchema,
+    estimatedCostUsd: personalCostsMoneySchema,
+    actualCostUsd: personalCostsMoneySchema,
+    totalCostUsd: personalCostsMoneySchema,
+    pendingAttempts: personalCostsCountSchema,
+    unknownAttempts: personalCostsCountSchema,
+  }).strict()).optional().default([]),
+  timeSeries: z.array(z.object({
+    day: z.string().min(1),
+    estimatedCostUsd: personalCostsMoneySchema,
+    actualCostUsd: personalCostsMoneySchema,
+    totalCostUsd: personalCostsMoneySchema,
+  }).strict()),
+  recovery: z.object({
+    pendingAttempts: personalCostsCountSchema,
+    retryableAttempts: personalCostsCountSchema,
+    blockedAttempts: personalCostsCountSchema,
+    unknownAttempts: personalCostsCountSchema,
+    attempts: z.array(z.object({
+      attemptId: z.uuid(),
+      status: z.enum(["pending", "retryable", "blocked", "unrecoverable"]),
+      reason: z.string().regex(/^[a-z0-9_]+$/),
+      providerRoute: z.string().min(1),
+      requestReference: z.string().regex(/^req_[0-9a-f]{12}$/).nullable(),
+      lastObservedAt: z.string().min(1),
+      repairAction: z.enum([
+        "wait_for_receipt",
+        "retry_receipt_read",
+        "check_receipt_access",
+        "contact_operator",
+        "review_cost",
+      ]),
+      taskId: z.uuid().nullable(),
+    }).strict()).optional().default([]),
+  }).strict(),
+}).strict();
+
 const providerCredentialErrorSchema = z.object({
   error: z.enum([
     "authentication_required", "personal_credentials_forbidden", "personal_credentials_disabled",
     "personal_credentials_unavailable", "credential_custody_unavailable",
     "credential_reenrollment_required", "invalid_provider", "invalid_credential_request",
-    "credential_conflict", "credential_not_found",
+    "credential_conflict", "credential_not_found", "credential_destination_unavailable",
+    "credential_destination_changed",
   ]),
   committed: z.boolean(),
   retryable: z.boolean(),
@@ -5766,6 +5889,7 @@ export class NautiloApiClient {
   }
 
   async listProviderCredentials(): Promise<{
+    allowPersonalProviderKeys?: boolean;
     credentials: CredentialMetadata[];
     providers: PersonalProviderCatalogEntry[];
   }> {
@@ -5812,6 +5936,19 @@ export class NautiloApiClient {
       body: input,
       schema: deleteProviderCredentialResponseSchema,
       statusErrors: providerCredentialStatusErrors,
+    });
+  }
+
+  /** Account-scoped spend for the authenticated Human; no billing-admin capability is required. */
+  async getPersonalCosts(
+    range: PersonalCostsRangeKey,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<PersonalCostsSummary> {
+    return this.request({
+      path: `/api/account/costs?range=${encodeURIComponent(range)}`,
+      schema: personalCostsSummarySchema,
+      defaultErrorPrefix: "GET /api/account/costs",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }
 
@@ -10624,6 +10761,19 @@ export class NautiloApiClient {
       defaultErrorPrefix: `GET room model control selection`,
     });
     return normalizeModelControlSelection(response.selection);
+  }
+
+  /** Same authorized selection endpoint, with the executor-resolved model projection. */
+  async getRoomModelControlState(roomId: string, agentId: string): Promise<{
+    selection: ModelControlSelection | null; effectiveModelId?: string;
+  }> {
+    const response = await this.request({
+      path: `/api/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}/model-control-selection?includeEffectiveModel=true`,
+      schema: z.object({ selection: modelControlSelectionSchema.nullable(), effectiveModelId: z.string().optional() }).strict(),
+      defaultErrorPrefix: "GET room model control state",
+    });
+    return { selection: normalizeModelControlSelection(response.selection),
+      ...(response.effectiveModelId ? { effectiveModelId: response.effectiveModelId } : {}) };
   }
 
   /**

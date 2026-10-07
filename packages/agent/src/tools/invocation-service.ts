@@ -1333,6 +1333,11 @@ export function createNautiloToolInvocationSession(
       // admission receipt can prove approval provenance, but cannot resurrect
       // a tool removed by current actor/catalog/model/relay policy.
       const toolCallId = tc.id ?? `${tc.name}_${Date.now()}`;
+      // `skip` is internal control flow: its ToolMessage remains in graph and
+      // audit state so redirect rejection can guide model recovery, but live
+      // clients must not render a transient activity/card for intentional
+      // silence. Keep the ordinary telemetry contract for every other tool.
+      const publishToolTelemetry = allowToolTelemetry && tc.name !== "skip";
       const connectedPlan = tc.name === "control_connected_web_operation" ? interpretBrowserDecisionCall(tc) : null;
       if (connectedPlan?.kind === "invalid") {
         const tm = new ToolMessage({
@@ -1482,7 +1487,7 @@ export function createNautiloToolInvocationSession(
         // Emit start+end as a pair so the UI records the attempt —
         // "we tried to run X, it was blocked before execution." Gives
         // the user visible feedback even for blocked calls.
-        if (allowToolTelemetry) {
+        if (publishToolTelemetry) {
           emitAgentEvent(toolTracker.toolStart(toolCallId, tc.name, sanitizeToolCallArgsForEvent(tc, state)));
           emitAgentEvent(
             toolTracker.toolEnd(toolCallId, tc.name, "error", blockedContent),
@@ -1523,7 +1528,7 @@ export function createNautiloToolInvocationSession(
           || !requiredRelayId
         ) {
           const message = `Error: ${tc.name} requires a verified request and exact authorized computer selection.`;
-          if (allowToolTelemetry) {
+          if (publishToolTelemetry) {
             emitAgentEvent(toolTracker.toolStart(toolCallId, tc.name, sanitizeToolCallArgsForEvent(tc, state)));
             emitAgentEvent(toolTracker.toolEnd(toolCallId, tc.name, "error", message));
           }
@@ -1537,7 +1542,7 @@ export function createNautiloToolInvocationSession(
       // Fire tool.start BEFORE execution so the UI can render
       // "running…" state for the duration. toolTracker stashes
       // startTime internally; toolEnd uses it to compute duration.
-      if (allowToolTelemetry) {
+      if (publishToolTelemetry) {
         emitAgentEvent(toolTracker.toolStart(toolCallId, tc.name, sanitizeToolCallArgsForEvent(tc, state)));
       }
 
@@ -1637,7 +1642,7 @@ export function createNautiloToolInvocationSession(
                     });
                     assignStableToolMessageId(tm);
                     setToolMessageStatus(tm, "error");
-                    if (allowToolTelemetry) {
+                    if (publishToolTelemetry) {
                       emitAgentEvent(
                         toolTracker.toolEnd(
                           toolCallId,
@@ -1655,7 +1660,7 @@ export function createNautiloToolInvocationSession(
                     toolCallId,
                     { ...approvedRetry.multimodal, text: scanned.content },
                   );
-                  if (allowToolTelemetry) {
+                  if (publishToolTelemetry) {
                     emitAgentEvent(
                       toolTracker.toolEnd(toolCallId, tc.name, "success", undefined, contentForEvent),
                     );
@@ -1665,7 +1670,7 @@ export function createNautiloToolInvocationSession(
                 rawContent = approvedRetry.rawContent;
                 relayToolError = approvedRetry.toolError ?? null;
               } else {
-                if (allowToolTelemetry) {
+                if (publishToolTelemetry) {
                   emitAgentEvent(
                     toolTracker.toolEnd(toolCallId, tc.name, "error", approvedRetry.errorMessage),
                   );
@@ -1695,7 +1700,7 @@ export function createNautiloToolInvocationSession(
             // routes it through `reportBackTaskError`. Foreground / in-chat
             // scope runs (`taskRun` false) keep the existing tool-message UX.
             if (state.taskRun && relayResult.relayUnavailable) {
-              if (allowToolTelemetry) {
+              if (publishToolTelemetry) {
                 emitAgentEvent(
                   toolTracker.toolEnd(
                     toolCallId,
@@ -1714,7 +1719,7 @@ export function createNautiloToolInvocationSession(
               }
               throw new RelayUnavailableError(safeRelayError);
             }
-            if (allowToolTelemetry) {
+            if (publishToolTelemetry) {
               emitAgentEvent(
                 toolTracker.toolEnd(
                   toolCallId,
@@ -1753,7 +1758,7 @@ export function createNautiloToolInvocationSession(
               });
               assignStableToolMessageId(tm);
               setToolMessageStatus(tm, "error");
-              if (allowToolTelemetry) {
+              if (publishToolTelemetry) {
                 emitAgentEvent(
                   toolTracker.toolEnd(
                     toolCallId,
@@ -1771,7 +1776,7 @@ export function createNautiloToolInvocationSession(
               toolCallId,
               { ...relayResult.multimodal, text: scanned.content },
             );
-            if (allowToolTelemetry) {
+            if (publishToolTelemetry) {
               emitAgentEvent(
                 toolTracker.toolEnd(toolCallId, tc.name, "success", undefined, contentForEvent),
               );
@@ -1921,17 +1926,19 @@ export function createNautiloToolInvocationSession(
             // `file` multimodal read never calls `fileToolError`, so
             // `fileStatus` is "success" here; non-file tools default
             // to "success". The model-facing `content` is preserved
-            // byte-for-byte. Emit is unconditional, matching the
-            // pre- multimodal path.
-            emitAgentEvent(
-              toolTracker.toolEnd(
-                toolCallId,
-                tc.name,
-                fileStatus,
-                undefined,
-                contentForEvent,
-              ),
-            );
+            // byte-for-byte. Presentation follows the same telemetry policy
+            // as string results.
+            if (publishToolTelemetry) {
+              emitAgentEvent(
+                toolTracker.toolEnd(
+                  toolCallId,
+                  tc.name,
+                  fileStatus,
+                  undefined,
+                  contentForEvent,
+                ),
+              );
+            }
             const tm = new ToolMessage({
               content: r.content,
               tool_call_id: toolCallId,
@@ -1971,7 +1978,7 @@ export function createNautiloToolInvocationSession(
           // audit — the client sees a single bounded,
           // human-safe reason and the safe replacement, never raw scanner
           // identifiers. Detailed identifiers remain in the warning above.
-          if (allowToolTelemetry) {
+          if (publishToolTelemetry) {
             emitAgentEvent(
               toolTracker.toolEnd(
                 toolCallId,
@@ -2029,7 +2036,7 @@ export function createNautiloToolInvocationSession(
           try { taskReadError = isTaskReadErrorReceipt(JSON.parse(rawContent)); } catch { /* Not a typed Task read receipt. */ }
         }
         if (fileStatus === "error" || projectionError !== null || relayToolError !== null || taskReadError || connectedBrowserError || ordinaryContentAccessErrors.has(toolCallId)) {
-          if (allowToolTelemetry) {
+          if (publishToolTelemetry) {
             emitAgentEvent(
               toolTracker.toolEnd(
                 toolCallId,
@@ -2051,7 +2058,7 @@ export function createNautiloToolInvocationSession(
           return tm;
         }
 
-        if (allowToolTelemetry) {
+        if (publishToolTelemetry) {
           emitAgentEvent(
             toolTracker.toolEnd(
               toolCallId,
@@ -2085,7 +2092,7 @@ export function createNautiloToolInvocationSession(
 
         const msg = redactSecrets(error instanceof Error ? error.message : String(error)).text;
         warn(`[nautilo/tools] Tool ${formatToolLogLabel(tc)} failed: ${msg}`);
-        if (allowToolTelemetry) {
+        if (publishToolTelemetry) {
           emitAgentEvent(toolTracker.toolEnd(toolCallId, tc.name, "error", msg));
         }
         const tm = new ToolMessage({

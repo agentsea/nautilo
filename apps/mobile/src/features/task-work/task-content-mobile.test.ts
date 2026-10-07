@@ -3,7 +3,6 @@ import type { TaskContentDetailV1, TaskContentSummaryV1, TaskDetail, TaskSummary
 import {
   MOBILE_PROTECTED_TASK_DETAIL,
   MOBILE_PROTECTED_TASK_LABEL,
-  isMissingTaskContentProjection,
   mobileTaskDefinitionContent,
   mobileTaskRunContent,
   mobileTaskSummaryContent,
@@ -90,14 +89,6 @@ describe("Mobile Task content projection", () => {
     expect(mobileTaskTranscript(mixedDetail)).toEqual([]);
   });
 
-  test("only missing projection endpoints permit an older-server fallback", () => {
-    expect(isMissingTaskContentProjection({ status: 404 })).toBe(true);
-    expect(isMissingTaskContentProjection({ status: 405 })).toBe(true);
-    expect(isMissingTaskContentProjection({ status: 501 })).toBe(true);
-    expect(isMissingTaskContentProjection({ status: 409 })).toBe(false);
-    expect(isMissingTaskContentProjection({ status: 403 })).toBe(false);
-  });
-
   test("keeps the Plain detail presentation identical across legacy and content-v1 shapes", () => {
     const transcript = [{
       role: "assistant",
@@ -171,10 +162,4 @@ describe("Mobile Task content projection", () => {
     expect(mobileTaskTranscript(current)[0]?.content).toBe("  preserve exact Plain response text  ");
   });
 
-  test("does not treat auth, policy, or schema failures as an old-server fallback", () => {
-    for (const status of [400, 401, 403, 409, 422, 500, null]) {
-      expect(isMissingTaskContentProjection(status === null ? new Error("schema") : { status }))
-        .toBe(false);
-    }
-  });
 });

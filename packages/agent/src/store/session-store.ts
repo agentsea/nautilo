@@ -11,6 +11,9 @@ import {
   getAttachmentsForTurns,
   eq,
   and,
+  or,
+  ne,
+  isNull,
   sql,
   asc,
   desc,
@@ -1023,9 +1026,51 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
           // A scheduled Task can execute on this same bot session. Its tagged
           // internal answer stays hidden; peer Task replies remain visible.
           sql`(${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'task' AND (${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'connected_web_operation' AND (${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'scheduled_task_internal'`,
-          // D430 — hide known react tool rows. Legacy NULL tool names remain
-          // visible because the schema cannot distinguish their historical tool.
-          sql`${sessionMessages.toolName} IS DISTINCT FROM 'react'`,
+          // Internal control tools do not produce Human-visible transcript
+          // cards. Legacy NULL tool names remain visible because the schema
+          // cannot distinguish their historical tool.
+          or(
+            isNull(sessionMessages.toolName),
+            and(
+              ne(sessionMessages.toolName, "react"),
+              ne(sessionMessages.toolName, "skip"),
+            ),
+          ),
+          // Filter skip-only assistant parents before the SQL limit so hidden
+          // control rows cannot consume a visible page slot. `tool_calls` is
+          // historical text. SQL/JSON accepts some values that JSONB rejects
+          // (for example escaped NULs and out-of-range numbers), so guard the
+          // cast with `pg_input_is_valid` first and check array shape only in
+          // its nested branch. Unknown, malformed, empty, and mixed call arrays
+          // remain visible; only a nonempty array whose canonical names all
+          // resolve to `skip` is hidden. Name resolution mirrors transcript
+          // parsing: prefer top-level `name`, then the provider `function.name`
+          // envelope. The raw row remains in the audit transcript.
+          sql`CASE
+            WHEN ${sessionMessages.role} = 'assistant' THEN CASE
+              WHEN pg_input_is_valid(${sessionMessages.toolCalls}, 'jsonb') THEN CASE
+                WHEN ${sessionMessages.toolCalls} IS JSON ARRAY THEN NOT (
+                  jsonb_array_length((${sessionMessages.toolCalls})::jsonb) > 0
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements((${sessionMessages.toolCalls})::jsonb) AS transcript_call(value)
+                    WHERE jsonb_typeof(transcript_call.value) IS DISTINCT FROM 'object'
+                      OR CASE
+                        WHEN jsonb_typeof(transcript_call.value->'name') = 'string'
+                          THEN transcript_call.value->>'name'
+                        WHEN jsonb_typeof(transcript_call.value->'function') = 'object'
+                          AND jsonb_typeof(transcript_call.value->'function'->'name') = 'string'
+                          THEN transcript_call.value->'function'->>'name'
+                        ELSE NULL
+                      END IS DISTINCT FROM 'skip'
+                  )
+                )
+                ELSE TRUE
+              END
+              ELSE TRUE
+            END
+            ELSE TRUE
+          END`,
           sql`(${sessionMessages.createdAt} < ${beforeCreatedAtIso}::timestamptz OR (${sessionMessages.createdAt} = ${beforeCreatedAtIso}::timestamptz AND ${sessionMessages.id} < ${args.beforeId}))`,
         ),
       )
@@ -1355,6 +1400,13 @@ export function sanitizeMessageForTranscript(message: BaseMessage): BaseMessage 
  * typed the literal string `[image]`.
  */
 export function visibleTranscriptContent(message: BaseMessage): string {
+  // `skip` is internal turn control. A provider may attach prose to the same
+  // assistant message as the call; omit that prose from the durable visible
+  // transcript while retaining the untouched graph/checkpoint message.
+  if (AIMessage.isInstance(message)
+    && message.tool_calls?.some((call) => call.name === "skip")) {
+    return "";
+  }
   if (message instanceof ToolMessage) {
     if (message.additional_kwargs["nautilo_browser_decision_observation"] === true) {
       let receipt: Record<string, unknown> = {};

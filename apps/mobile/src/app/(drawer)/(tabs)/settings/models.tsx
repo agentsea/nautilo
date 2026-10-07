@@ -93,6 +93,7 @@ export default function ModelsAndDefaultsScreen() {
             </Pressable>
             <Text style={[styles.helper, !current.selectable && styles.unavailable]}>{current.detail}</Text>
             <Text style={styles.helper}>Used when a Room has no override.</Text>
+            <Text style={styles.helper}>The displayed key source reflects current admission and is checked again when each request starts. Your costs shows attempts actually paid by you.</Text>
             {/* Reasoning and Serving are intentionally absent: current bytes only expose Room-scoped D462 controls. */}
             <Pressable
               style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}

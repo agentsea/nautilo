@@ -27,7 +27,8 @@ import type {
   ResolveHistoricalAgentRuntimeSignerManagerAuthority,
 } from "../storage/agent-runtime-signer-history.ts";
 import {
-  cryptoTypedDb, executeTypedCryptoQuery, verifyCryptoPostgresHandle,
+  cryptoTypedDb, executeTypedCryptoQuery,
+  readCryptoStorageInteger, verifyCryptoPostgresHandle,
   withVerifiedCryptoPostgresTransaction, type CryptoPostgresExecutor,
 } from "../storage/postgres-lattice-storage.ts";
 import {
@@ -91,19 +92,6 @@ function rowBytes(row: DatabaseRow, field: string): Uint8Array {
     throw new TypeError(`Native Task Message ${field} is invalid`);
   }
   return value.slice();
-}
-
-function rowCounter(row: DatabaseRow, field: string): number {
-  const raw = row[field];
-  const value = typeof raw === "bigint"
-    ? Number(raw)
-    : typeof raw === "string" && /^(0|[1-9][0-9]*)$/u.test(raw)
-    ? Number(raw)
-    : raw;
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw new TypeError(`Native Task Message ${field} is invalid`);
-  }
-  return value as number;
 }
 
 function destroyNamespaceAuthority(
@@ -292,10 +280,10 @@ async function readVerifiedMessage(
     if ([object, head, manifestRow, envelopeRow].some(
       (row) => row["object_id"] !== target.objectId,
     )
-      || rowCounter(head, "access_revision") !== target.cryptoAccessRevision
-      || rowCounter(manifestRow, "access_revision") !== target.cryptoAccessRevision
-      || rowCounter(envelopeRow, "access_revision") !== target.cryptoAccessRevision
-      || rowCounter(envelopeRow, "ordinal") !== 0
+      || readCryptoStorageInteger(head, "access_revision") !== target.cryptoAccessRevision
+      || readCryptoStorageInteger(manifestRow, "access_revision") !== target.cryptoAccessRevision
+      || readCryptoStorageInteger(envelopeRow, "access_revision") !== target.cryptoAccessRevision
+      || readCryptoStorageInteger(envelopeRow, "ordinal") !== 0
       || manifestRow["previous_manifest_hash"] !== null
       || envelopeRow["namespace_id"] !== target.namespaceId
       || !sameBytes(crypto.hash(payloadBytes), payloadHash)
@@ -437,9 +425,9 @@ export async function withNativeTaskMessageV1<Value>(input: Readonly<{
     assertActive();
     if (rows.length !== 1 || row === undefined
       || row.domain_id !== domain.domainId
-      || row.domain_key_generation !== domain.domainKeyGeneration
-      || row.authorization_revision !== domain.authorizationRevision
-      || row.participant_count !== domain.participantCount
+      || readCryptoStorageInteger(row, "domain_key_generation") !== domain.domainKeyGeneration
+      || readCryptoStorageInteger(row, "authorization_revision") !== domain.authorizationRevision
+      || readCryptoStorageInteger(row, "participant_count") !== domain.participantCount
       || !(row.head_digest instanceof Uint8Array)
       || !(row.participant_digest instanceof Uint8Array)
       || !sameBytes(row.head_digest, domain.headDigest)

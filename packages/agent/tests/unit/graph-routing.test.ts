@@ -1,4 +1,4 @@
-import { AIMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { describe, test, expect } from "bun:test";
 import { END } from "@langchain/langgraph";
 import { shouldContinue, shouldContinueAfterTools } from "../../src/agent/graph";
@@ -245,6 +245,66 @@ describe("shouldContinue", () => {
 });
 
 describe("shouldContinueAfterTools", () => {
+  function skipResult(content: string, status = "success"): ToolMessage {
+    return new ToolMessage({
+      content, name: "skip", tool_call_id: "tc-skip",
+      additional_kwargs: { nautilo_tool_status: status },
+    });
+  }
+
+  test("ends successful silence without another model turn", () => {
+    expect(shouldContinueAfterTools(makeState({
+      messages: [skipResult(JSON.stringify({ skipped: true }))],
+    }))).toBe(END);
+  });
+
+  test("ends an accepted hand-off without another model turn", () => {
+    expect(shouldContinueAfterTools(makeState({
+      messages: [skipResult(JSON.stringify({ recorded: true, target_handle: "peer" }))],
+    }))).toBe(END);
+  });
+
+  test("rejected, failed, and malformed skips return to the model for recovery", () => {
+    for (const message of [
+      skipResult(JSON.stringify({ recorded: false, reason: "self_target" })),
+      skipResult(JSON.stringify({ skipped: true }), "error"),
+      skipResult("not json"),
+      skipResult(JSON.stringify({ skipped: "true" })),
+    ]) {
+      expect(shouldContinueAfterTools(makeState({ messages: [message] }))).toBe("pre_model");
+    }
+  });
+
+  test("finishes admitted siblings before ending a batch that skipped", () => {
+    const skipped = skipResult(JSON.stringify({ skipped: true }));
+    expect(shouldContinueAfterTools(makeState({
+      messages: [skipped],
+      approvedToolCalls: [{ id: "tc-sibling", name: "get_current_time", args: {} }],
+    }))).toBe("tools");
+    expect(shouldContinueAfterTools(makeState({
+      messages: [skipped, new ToolMessage({
+        content: "time", name: "get_current_time", tool_call_id: "tc-sibling",
+        additional_kwargs: { nautilo_tool_status: "success" },
+      })],
+    }))).toBe(END);
+  });
+
+  test("a historical skip cannot end a later tool batch", () => {
+    expect(shouldContinueAfterTools(makeState({ messages: [
+      skipResult(JSON.stringify({ skipped: true })),
+      new AIMessage({ content: "", tool_calls: [{ id: "tc-time", name: "get_current_time", args: {} }] }),
+      new ToolMessage({ content: "time", name: "get_current_time", tool_call_id: "tc-time" }),
+    ] }))).toBe("pre_model");
+  });
+
+  test("a tool-generated hand-off message does not hide a completed skip", () => {
+    expect(shouldContinueAfterTools(makeState({ messages: [
+      new AIMessage({ content: "", tool_calls: [{ id: "tc-skip", name: "skip", args: {} }] }),
+      skipResult(JSON.stringify({ skipped: true })),
+      new SystemMessage("The sibling browser delegation did not start."),
+    ] }))).toBe(END);
+  });
+
   test("routes a checkpointed remainder through another tools invocation", () => {
     expect(shouldContinueAfterTools(makeState({
       approvedToolCalls: [{ id: "tc-later", name: "run_shell", args: {}, type: "tool_call" }],

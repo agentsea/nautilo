@@ -90,6 +90,7 @@ describe("production Reflection semantic policy", () => {
                 ? { status: "claimed" as const, claim }
                 : { status: "empty" as const };
             };
+            if (property === "settleCurrentState") return async () => ({status: "active" as const});
             if (property === "checkpoint") return async () => {
               checkpointCalls += 1;
               return { status: "accepted" as const };
@@ -180,7 +181,7 @@ describe("production Reflection semantic policy", () => {
     const stageGate = source.indexOf(
       'pageInput.stageAdmission.maximumStage !== "organization"',
     );
-    const candidateRecovery = source.indexOf("recoverCandidatePolicyQuarantinesPage");
+    const candidateRecovery = source.indexOf("admitMissingRoomProjectionPage");
     expect(stageGate).toBeGreaterThan(-1);
     expect(candidateRecovery).toBeGreaterThan(stageGate);
     expect(source.slice(stageGate, candidateRecovery)).toContain(
@@ -207,10 +208,14 @@ describe("production Reflection semantic policy", () => {
     );
   });
 
-  test("allows a slow Reflection batch sixty seconds within the independent poll watchdog", () => {
+  test("shares the 600-second deadline and keeps the lease through settlement", () => {
     expect(
       REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.modelInvocation.maximumElapsedMilliseconds,
-    ).toBe(60_000);
+    ).toBe(600_000);
+    expect(REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.leaseMilliseconds).toBe(610_000);
+    expect(REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.leaseMilliseconds).toBeGreaterThan(
+      REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.pressure.maxPollElapsedMs,
+    );
   });
 
   test("keeps legacy same-Room publication single-leaf", () => {

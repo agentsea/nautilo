@@ -4,13 +4,17 @@ import type { PersonalChatReadiness } from "../components/provider-setup-empty-s
 /** Reads current caller-scoped APIs; neither a server setup flag nor a saved secret is authority. */
 export async function readPersonalChatReadiness(deps: {
   listCredentials: () => Promise<{
+    allowPersonalProviderKeys?: boolean;
     credentials: readonly { provider?: string; requiresReplacement: boolean }[];
     providers?: readonly { id: string; personalCapabilities: readonly string[] }[];
   }>;
   getCallerModels: () => Promise<readonly { availability?: string }[]>;
 }, options: { serverFallbackAvailable?: boolean } = {}): Promise<PersonalChatReadiness> {
   try {
-    const { credentials, providers } = await deps.listCredentials();
+    const { credentials, providers, allowPersonalProviderKeys } = await deps.listCredentials();
+    if (allowPersonalProviderKeys === false) {
+      return options.serverFallbackAvailable ? "ready" : "disabled";
+    }
     const catalogProviders = providers?.length ? new Set(providers.map((provider) => provider.id)) : null;
     const chatProviders = catalogProviders && new Set((providers ?? [])
       .filter((provider) => provider.personalCapabilities.includes("chat"))
