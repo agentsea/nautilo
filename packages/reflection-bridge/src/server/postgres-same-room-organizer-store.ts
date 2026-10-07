@@ -171,6 +171,12 @@ function assertPortable(value: string, label: string): void {
   ) throw new TypeError(`${label} is invalid`);
 }
 
+function assertRoomAnchorCommitment(value: string): void {
+  if (!/^h1\.[A-Za-z0-9_-]{43}$/u.test(value)) {
+    throw new TypeError("Organizer Room anchor commitment is invalid");
+  }
+}
+
 function coordinate(row: RecordProductPostgresRow): RankedRecordCoordinate {
   const value = Object.freeze({
     recordRef: rowString(row, "record_id"),
@@ -297,6 +303,7 @@ export class PostgresSameRoomOrganizerStore {
     publicationBindingRef: string;
     changedRecordRef: string;
     intent: SameRoomOrganizerQueryIntent;
+    roomAnchorCommitment: string;
     limit?: 8 | 16 | 32;
   }>): Promise<SameRoomOrganizerRankResult> {
     assertCanonicalRecordEmbeddingV1(input.embedding);
@@ -304,6 +311,7 @@ export class PostgresSameRoomOrganizerStore {
     assertSelection(input.selection);
     assertPortable(input.publicationBindingRef, "Organizer publication binding");
     assertPortable(input.changedRecordRef, "Organizer changed Record");
+    assertRoomAnchorCommitment(input.roomAnchorCommitment);
     if (input.intent !== "attachment" && input.intent !== "promotion") {
       throw new TypeError("Organizer query intent is invalid");
     }
@@ -367,6 +375,7 @@ export class PostgresSameRoomOrganizerStore {
                 AND search_projection.embedding_canonical_model = $3
                 AND search_projection.embedding_dimensions = $4
                 AND search_projection.embedding_contract_version = $5
+                AND search_projection.room_anchor_commitment = $15
            )
            SELECT record_id, structural_height, processing_generation,
                   authority_projection_generation,
@@ -391,6 +400,7 @@ export class PostgresSameRoomOrganizerStore {
             CANDIDATE_POLICY_V1.semanticMinimumScore,
             limit,
             DURABLE_SLEEP_WORK_INTENT_POLICY_V1.promotionDelayMilliseconds,
+            input.roomAnchorCommitment,
           ],
         );
       }, { isolationLevel: "serializable" });
@@ -417,12 +427,14 @@ export class PostgresSameRoomOrganizerStore {
     publicationBindingRef: string;
     changedRecordRef: string;
     intent: SameRoomOrganizerQueryIntent;
+    roomAnchorCommitment: string;
     rankedCoordinates: readonly RankedRecordCoordinate[];
   }>): Promise<SameRoomOrganizerTopologyResult> {
     const humanActorIds = canonicalHumanActorIds(input.invocationAudience);
     assertSelection(input.selection);
     assertPortable(input.publicationBindingRef, "Organizer publication binding");
     assertPortable(input.changedRecordRef, "Organizer changed Record");
+    assertRoomAnchorCommitment(input.roomAnchorCommitment);
     if (
       input.rankedCoordinates.length
         > SAME_ROOM_ORGANIZER_QUERY_POLICY_V1.overfetchMaximum
@@ -465,6 +477,7 @@ export class PostgresSameRoomOrganizerStore {
                  ON search_projection.record_id = record.record_id
                 AND search_projection.record_processing_generation
                   = record.processing_generation
+                AND search_projection.room_anchor_commitment = $8
                ${audienceEligibilitySql(2)}
               WHERE ${eligibleWhereSql()}
                 AND direct_dependency.child_record_id = $6
@@ -594,6 +607,7 @@ export class PostgresSameRoomOrganizerStore {
             input.publicationBindingRef,
             input.changedRecordRef,
             input.intent === "promotion",
+            input.roomAnchorCommitment,
           ],
         );
         const seedRecordRefs = [
@@ -656,6 +670,7 @@ export class PostgresSameRoomOrganizerStore {
                  ON search_projection.record_id = record.record_id
                 AND search_projection.record_processing_generation
                   = record.processing_generation
+                AND search_projection.room_anchor_commitment = $6
                ${audienceEligibilitySql(2)}
               WHERE ${eligibleWhereSql()}
                 AND NOT walk.cycle
@@ -673,6 +688,7 @@ export class PostgresSameRoomOrganizerStore {
             input.invocationAudience.includesPublicBoundary,
             input.selection.selectedRepresentation,
             input.publicationBindingRef,
+            input.roomAnchorCommitment,
           ],
         );
         return { rows, parentRows, seedRecordRefs };
@@ -784,11 +800,13 @@ export class PostgresSameRoomOrganizerStore {
     invocationAudience: EffectiveAudienceAlternative;
     selection: RecordRepositorySelection;
     publicationBindingRef: string;
+    roomAnchorCommitment: string;
     coordinates: readonly RankedRecordCoordinate[];
   }>): Promise<SameRoomOrganizerFenceResult> {
     const humanActorIds = canonicalHumanActorIds(input.invocationAudience);
     assertSelection(input.selection);
     assertPortable(input.publicationBindingRef, "Organizer publication binding");
+    assertRoomAnchorCommitment(input.roomAnchorCommitment);
     if (input.coordinates.length > 8) {
       throw new RangeError("Organizer final fence exceeds selected-input policy");
     }
@@ -835,6 +853,7 @@ export class PostgresSameRoomOrganizerStore {
                  ON search_projection.record_id = record.record_id
                 AND search_projection.record_processing_generation
                   = record.processing_generation
+                AND search_projection.room_anchor_commitment = $10
                ${audienceEligibilitySql(6)}
               WHERE ${eligibleWhereSql()}
                 AND record.processing_generation
@@ -858,6 +877,7 @@ export class PostgresSameRoomOrganizerStore {
             input.invocationAudience.includesPublicBoundary,
             input.selection.selectedRepresentation,
             input.publicationBindingRef,
+            input.roomAnchorCommitment,
           ],
         );
       }, { isolationLevel: "serializable" });

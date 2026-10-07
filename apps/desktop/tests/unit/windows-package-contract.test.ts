@@ -19,3 +19,18 @@ test("Windows CI is triggered by its host, protocol, and Bun pin", () => {
     expect(workflow.on.pull_request.paths.some(pattern => new Bun.Glob(pattern).match(path))).toBe(true);
   }
 });
+
+test("Windows validation retains the portable regression suites for its changed runtime contracts", () => {
+  const gate = readFileSync(join(repositoryRoot, "dev/scripts/windows-unit-gate.ts"), "utf8");
+  for (const path of [
+    "apps/desktop/tests/unit/relay-binary-resolution.test.ts",
+    "apps/desktop/tests/unit/desktop-license-payload.test.ts",
+    "bin/nautilo-dev/tests/unit/migrate-add-agent-role.test.ts",
+    "bin/nautilo-dev/tests/unit/bootstrap-claim-invite.test.ts",
+    "packages/server/tests/unit/agent-browser-server-vendor.test.ts",
+    "packages/server/tests/unit/seed-first-party-apps.test.ts",
+    "packages/server/tests/unit/runtime-dependency-snapshot.test.ts",
+  ]) {
+    expect(gate, `Windows unit gate must run ${path}`).toContain(`"${path}"`);
+  }
+});

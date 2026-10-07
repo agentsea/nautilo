@@ -10,7 +10,7 @@ const migration = readFileSync(
     "../../src/migrations/0222_vengeful_gorgon.sql",
   ),
   "utf8",
-);
+).replaceAll("\r\n", "\n");
 
 describe("M304 generated Human-device membership migration", () => {
   test("adds one head, ordered commits, target Welcome, and acknowledgements", () => {

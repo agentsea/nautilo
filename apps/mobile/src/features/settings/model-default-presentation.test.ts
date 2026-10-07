@@ -34,4 +34,12 @@ describe("model-default presentation", () => {
     expect(stale.detail).toContain("no longer");
     expect(modelDefaultDisplay("openai:missing", [model({ id: "openai:missing", availability: "missing-key" })])).toMatchObject({ selectable: false });
   });
+
+  test("labels the current admitted payer without exposing credential identity", () => {
+    const personal = modelDefaultDisplay("openai:gpt-5", [model({ fundingSource: "personal", fundingProviderRoute: "surplus" })]);
+    expect(personal.detail).toContain("Your key");
+    expect(personal.detail).not.toContain("surplus");
+    const server = modelPickerGroups([model({ fundingSource: "server" })], "", null)[0]?.rows[0];
+    expect(server?.description).toContain("Server key");
+  });
 });

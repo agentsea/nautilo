@@ -392,6 +392,30 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(supply.on.schedule).toEqual([{ cron: "0 4 * * 1" }]);
   });
 
+  test("Windows validation covers its transitive workspaces and root build inputs", async () => {
+    const windows = await workflow("windows-desktop.yml");
+    expect(Object.keys(windows.on).sort()).toEqual(["pull_request", "workflow_dispatch"]);
+    expect(eventConfig(windows.on.pull_request).branches).toEqual(["main"]);
+    const paths = eventPaths(windows.on.pull_request);
+    for (const name of [
+      "@nautilo/desktop", "@nautilo/workbench", "@nautilo/server",
+      "@nautilo/dev-tools", "@nautilo/relay-bin", "@nautilo/server-bin",
+    ]) {
+      expectPathsCover(paths, await workspacePathsFor(name));
+    }
+    expectPathsCover(paths, await firstPartyRuntimeWorkspacePaths());
+    for (const file of [
+      "package.json", "bun.lock", "bunfig.toml", ".bun-version", ".gitattributes", "turbo.json",
+      "tsconfig.base.json", "patches/dependency.patch",
+      "dev/scripts/install-first-party-apps.ts", "dev/scripts/windows-unit-gate.ts",
+      "dev/scripts/fix-node-pty-perms.ts", "dev/scripts/prepare-board.ts",
+      "dev/scripts/prepare-sheets.ts", "dev/scripts/prepare-slides.ts",
+      "dev/scripts/vendor-agent-browser.ts", ".github/workflows/windows-desktop.yml",
+    ]) {
+      expect(paths.some((pattern) => new Bun.Glob(pattern).match(file)), `Windows workflow must cover ${file}`).toBe(true);
+    }
+  });
+
   test("every Actions Bun cache is versioned and architecture-safe", async () => {
     const workflowNames = (await readdir(workflowsRoot))
       .filter((name) => name.endsWith(".yml"));

@@ -205,7 +205,6 @@ describe("resolveModelRole", () => {
       }
       if (provider !== "openai") {
         expect(resolveModelRole("webSearchSynthesis", { env })).toBe(ids[1]);
-        expect(resolveModelRole("visionFallback", { env })).toBe(ids[1]);
       }
     }
   });
@@ -215,7 +214,7 @@ describe("resolveModelRole", () => {
     await hydrateRuntimeModelCatalog();
 
     const minimaxRoles = ["chat", "conductor", "stenographer", "sessionSearch", "memoryFlush",
-      "memoryReview", "webSearchSynthesis", "systemTasks", "visionFallback"] as const;
+      "memoryReview", "webSearchSynthesis", "systemTasks"] as const;
     for (const role of minimaxRoles) {
       expect(resolveModelRole(role, { env: { OPENROUTER_API_KEY: "or" } }), role)
         .toBe("openrouter:minimax/minimax-m3");

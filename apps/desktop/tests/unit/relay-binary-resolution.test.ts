@@ -103,7 +103,7 @@ describe("relay binary resolution conventions", () => {
 
   test("agent-browser provider plugin uses bundled Bun runtime, not ambient node", () => {
     const runtime = readFileSync(providerRuntimePath, "utf8");
-    expect(runtime).toContain('path.join(process.resourcesPath, "bun", process.arch, "bun")');
+    expect(runtime).toMatch(/path\.join\(\s*process\.resourcesPath,\s*"bun",\s*process\.arch,\s*process\.platform === "win32" \? "bun\.exe" : "bun"\s*\)/);
     expect(runtime).toContain("function resolvePluginRuntimeBin()");
     expect(runtime).toContain("command: resolvePluginRuntimeBin()");
     expect(runtime).not.toContain('command: "node"');

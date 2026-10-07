@@ -5,8 +5,8 @@ const DATABASE_EVIDENCE = [
   "packages/db/tests/integration/d487-owned-photo-library.integration.test.ts",
 ] as const;
 const ROUTE_EVIDENCE = [
-  "packages/server/tests/integration/d487-agent-photo-library-read.integration.test.ts",
-  "packages/server/tests/integration/d487-agent-photo-library-selection.integration.test.ts",
+  "packages/server/tests/integration/agent-photo-library-read.integration.test.ts",
+  "packages/server/tests/integration/agent-photo-library-selection.integration.test.ts",
 ] as const;
 
 const DATABASE_FIELDS = {

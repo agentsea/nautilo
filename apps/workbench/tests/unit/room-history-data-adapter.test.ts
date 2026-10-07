@@ -11,6 +11,7 @@ import type {
 } from "@nautilo/lattice-bridge/client/browser";
 
 import { createRoomHistoryDataAdapter } from "../../src/adapters/room-history-data-adapter";
+import { restoreSessionMessages } from "../../src/adapters/session-rehydrate";
 
 const ROOM_ID = "40000000-0000-4000-8000-000000000313";
 const SESSION_ID = "41000000-0000-4000-8000-000000000313";
@@ -49,6 +50,83 @@ function authority(keyClass: "human" | "ai", domainKeyGeneration: number) {
 }
 
 describe("Room history data adapter", () => {
+  test.each(["strict", "fallback"] as const)("authenticates helper coordinates before hiding them under %s", async (shadowBehavior) => {
+    const summary = { status: "completed" as const, modelId: "model-a", modelDisplayName: "Model A", attachmentIds: ["image-a"] };
+    const payloads = [
+      { role: "assistant" as const, content: "", toolCalls: [{ id: "image-assistance:digest", name: "image_assistance", args: {} }] },
+      { role: "tool" as const, content: JSON.stringify({ ...summary, inputDigest: "digest", observations: "Retained private image evidence" }), toolName: "image_assistance", sensitiveMetadata: { toolCallId: "image-assistance:digest", toolStatus: "success" } },
+      { role: "assistant" as const, content: "The invoice total is 123.45.", sensitiveMetadata: { imageAssistance: summary } },
+    ];
+    const messages = payloads.map((payload, index) => ({
+      id: String(27 + index), sessionId: SESSION_ID, role: payload.role,
+      content: payload.content, editRevision: 0, logicalMessageKey: `logical:${27 + index}`,
+      ...(payload.role === "tool" ? { toolName: payload.toolName } : {}),
+      ...(payload.role === "assistant" ? { toolCalls: JSON.stringify(payload.toolCalls ?? []) } : {}),
+      ...(index === 2 ? { imageAssistance: summary } : {}),
+    }));
+    const coordinates = messages.map((message) => ({
+      sessionId: SESSION_ID, messageId: Number(message.id), editRevision: 0,
+      role: message.role, logicalMessageKey: message.logicalMessageKey,
+    }));
+    const sidecar = roomHistoryShadowReadResponseV1Schema.parse({
+      responseVersion: 1, status: "ready", operationId: "history:helper-pair",
+      clientRequestKey: "history:helper-page", selectedCoordinateDigestBase64url: DIGEST,
+      selectedCount: 3, selectedCoordinates: coordinates, eligibleCount: 3,
+      authority: authority("ai", 8), signerEvidence: [],
+      acknowledgement: { status: "already_recorded" },
+      records: coordinates.map((coordinate) => ({
+        kind: "live_shadow", coordinate, shadowOperationId: "helper:turn",
+        shadowOperationFamily: "shared_execution", shadowTranscriptOrdinal: coordinate.messageId - 26,
+        ordinaryPayloadBytesBase64url: base64url(encodeMessagePayloadV2(payloads[coordinate.messageId - 27])),
+        protectedMessage: {
+          dtoVersion: 2, projection: { ...coordinate, messageId: String(coordinate.messageId),
+            roomId: ROOM_ID, namespaceId: NAMESPACE_ID, createdAt: "2026-09-08T12:00:00.000Z" },
+          protectedPayload: { status: "pending", reason: "shadow_pending" },
+        },
+        retainedGeneration: { namespaceGeneration: 5, accessRevision: 4,
+          headDigestBase64url: DIGEST, publicationDigestBase64url: DIGEST,
+          publicationSetDigestBase64url: DIGEST, audienceFingerprintBase64url: DIGEST },
+      })),
+    });
+    let calls = 0;
+    const adapter = createRoomHistoryDataAdapter({
+      readerDeviceId: "device:browser",
+      owner: bindEncryptionDataOperationOwner({ policy: {
+        resolve: async () => ({ policy: { mode: "shadow_encryption", shadowBehavior }, revalidationToken: 1 }),
+        revalidate: async () => undefined,
+      } }),
+      read: async (readerInput, acknowledgement) => {
+        calls += 1;
+        expect(readerInput.records.map((record) => record.messageId)).toEqual(["27", "28", "29"]);
+        expect(acknowledgement.selectedCoordinates).toEqual(coordinates);
+        expect(acknowledgement.eligibleCoordinates).toEqual(coordinates);
+        expect(acknowledgement.eligibleRecords).toHaveLength(3);
+        expect(readerInput.records[0]?.ordinarySibling?.payload).toEqual(payloads[0]);
+        expect(readerInput.records[2]?.ordinarySibling?.payload).toEqual(payloads[2]);
+        return shadowBehavior === "strict" ? {
+          records: messages.map((message, index) => ({ sessionId: SESSION_ID, messageId: message.id,
+            editRevision: 0, status: "verified" as const, verification: "signed_representation_authenticated" as const,
+            payload: payloads[index] })), eligibleCount: 3, verifiedCount: 3, fallbackCounts: {},
+        } : {
+          records: messages.map((message) => ({ sessionId: SESSION_ID, messageId: message.id,
+            editRevision: 0, status: "fallback" as const, reason: "retained_key_material_unavailable" as const })),
+          eligibleCount: 3, verifiedCount: 0, fallbackCounts: { retained_key_material_unavailable: 3 },
+        };
+      },
+    });
+    const reconciled = await adapter.reconcile({ roomId: ROOM_ID, messages, sidecar });
+    expect(reconciled).toHaveLength(3);
+    const displayed = restoreSessionMessages(reconciled);
+    expect(displayed).toHaveLength(1);
+    expect(displayed[0]?.id).toBe("29");
+    expect(displayed[0]?.metadata?.custom?.imageAssistance).toEqual(summary);
+    expect(JSON.stringify(displayed)).not.toContain("Retained private image evidence");
+    const missingPair = await adapter.reconcile({ roomId: ROOM_ID, messages: [messages[2]], sidecar })
+      .then(() => null, (error: unknown) => error);
+    expect(missingPair).toMatchObject({ failureClass: "integrity" });
+    expect(calls).toBe(1);
+  });
+
   test.each(["fallback", "strict"] as const)("pending public membership keys preserve %s policy", async (shadowBehavior) => {
     const waitingRooms: string[] = [];
     const adapter = createRoomHistoryDataAdapter({

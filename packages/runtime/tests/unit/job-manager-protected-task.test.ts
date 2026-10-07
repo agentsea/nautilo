@@ -327,9 +327,17 @@ describe("JobManager protected Task execution", () => {
 
   test("a protected dispatch listener failure cannot strand execution after start", async () => {
     let executed = 0;
+    let diagnosticInspected = false;
+    const error = new Error();
+    Object.defineProperty(error, "message", {
+      get() {
+        diagnosticInspected = true;
+        throw new Error("protected diagnostic must remain opaque");
+      },
+    });
     const listener = (event: ServerEvent) => {
       if (event.type === "job.dispatched" && event.jobId === "protected-job-event") {
-        throw new Error("listener unavailable");
+        throw error;
       }
     };
     eventBus.on(listener);
@@ -359,6 +367,7 @@ describe("JobManager protected Task execution", () => {
         },
       });
       await waitFor(() => executed === 1);
+      expect(diagnosticInspected).toBe(false);
     } finally {
       eventBus.off(listener);
     }

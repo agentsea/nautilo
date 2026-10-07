@@ -7,6 +7,7 @@ import { MessageTimestamp } from '@/components/message-timestamp';
 import { AssistantChatMarkdown } from '@/components/assistant-chat-markdown';
 import { MessageActionRail } from '@/components/message-action-rail';
 import type { MessageAttachmentPreview, MessageReaction } from '@/lib/messages';
+import type { ImageAssistanceSummary } from '@nautilo/types';
 import { stripAssistantArtifacts } from '@/lib/strip-assistant-artifacts';
 import { useAppTheme } from '@/providers/theme';
 import type { AppTheme } from '@/theme/tokens';
@@ -36,10 +37,11 @@ type MessageBubbleProps = {
   sentAt?: string;
   pending?: boolean;
   failed?: boolean;
-  /** D382 — optional local preview URIs rendered as thumbnails above the text. */
+  /** optional local preview URIs rendered as thumbnails above the text. */
   attachments?: MessageAttachmentPreview[];
+  imageAssistance?: ImageAssistanceSummary;
   onAttachmentPress?: (attachment: MessageAttachmentPreview) => void;
-  /** D408 — aggregated reactions (persisted messages only). */
+  /** aggregated reactions (persisted messages only). */
   reactions?: MessageReaction[];
   /** Persisted server message id — required for reaction toggles. */
   messageId?: string;
@@ -56,7 +58,7 @@ type MessageBubbleProps = {
   selectableContent?: boolean;
   actionRailVisible?: boolean;
   onActionRailReveal?: (request: MessageActionRailRevealRequest) => void;
-  /** D408 — grouped multi-participant chrome (group rooms only). */
+  /** grouped multi-participant chrome (group rooms only). */
   grouped?: boolean;
   senderName?: string;
   showSenderName?: boolean;
@@ -66,14 +68,14 @@ type MessageBubbleProps = {
   senderAgentAvatar?: AvatarRef | null;
   roomId?: string;
   serverUrl?: string;
-  /** D408 stub — agent-focus / member-info wiring is a later task. */
+  /**  stub — agent-focus / member-info wiring is a later task. */
   onAvatarPress?: () => void;
-  /** D408 — inline quote-reply header (resolved by the screen). */
+  /** inline quote-reply header (resolved by the screen). */
   replyToSenderName?: string;
   replyToSnippet?: string;
   onReplyHeaderPress?: () => void;
   onReplyPress?: (messageId: string) => void;
-  /** D426 — visible entry into the canonical child thread. */
+  /** visible entry into the canonical child thread. */
   replyCount?: number;
   onThreadPress?: (messageId: string) => void;
   editedAt?: string | null;
@@ -87,6 +89,7 @@ export function MessageBubble({
   pending = false,
   failed = false,
   attachments,
+  imageAssistance,
   onAttachmentPress,
   reactions,
   messageId,
@@ -295,6 +298,9 @@ export function MessageBubble({
               {displayContent}
             </Text>
           ) : null}
+          {role === "assistant" && imageAssistance?.status === "completed" ? (
+            <Text style={styles.imageAssistanceNote}>Image read by {imageAssistance.modelDisplayName}</Text>
+          ) : null}
         </View>
       </Pressable>
       {!pending && !failed ? (
@@ -455,6 +461,7 @@ function createStyles(t: AppTheme) {
     contentAssistant: {
       color: t.color.text.foreground,
     },
+    imageAssistanceNote: { ...t.typography.caption, color: t.color.text.muted, marginTop: t.spacing.xs },
     attachmentGrid: {
       flexDirection: 'row',
       flexWrap: 'wrap',

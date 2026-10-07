@@ -1,3 +1,4 @@
+import { REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS } from "../../baseline/reviewed-task-foundation-source-alarms";
 import { REVIEWED_REFLECTION_REPLAY_SOURCE_ALARMS } from "../../baseline/reviewed-main-2026-09-12-reflection";
 import { REVIEWED_D581_SOURCE_ALARMS } from "../../baseline/reviewed-d581-research-continuity";
 import {
@@ -342,7 +343,8 @@ export const CURRENT_SOURCE_ALARM_REVIEWS: readonly SourceAlarmReview[] = [
   .concat(REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS)
   .concat(REVIEWED_REFLECTION_REPLAY_SOURCE_ALARMS)
   .filter((review) => !SUPERSEDED_MAIN_2026_09_17_SOURCE_ALARM_LOCATORS.has(review.locator))
-  .concat(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS);
+  .concat(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS)
+  .concat(REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS);
 
 const LOCATOR_PATTERN =
   /^(?<path>[^#]+)#(?<kind>[a-z_]+):(?<signature>[0-9a-f]{16}):(?<occurrence>[1-9][0-9]*)$/u;

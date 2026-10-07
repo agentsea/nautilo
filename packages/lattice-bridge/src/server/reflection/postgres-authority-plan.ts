@@ -190,7 +190,8 @@ export async function withPostgresReflectionAuthoritySourcePlan<Value>(input: Re
           .select({ revision: rooms.namespaceAccessRevision }).from(rooms)
           .where(and(eq(rooms.id, coordinate.roomId), eq(rooms.namespaceId, coordinate.namespaceId))));
         if (current.status !== "ready" || authorityRows.length !== 1
-          || authorityRows[0]!.namespace_access_revision !== current.namespaceAccessRevision) {
+          || String(authorityRows[0]!.namespace_access_revision)
+            !== String(current.namespaceAccessRevision)) {
           if (current.status === "ready") {
             for (const digest of [current.namespaceHeadDigest, current.namespacePublicationDigest,
               current.namespacePublicationSetDigest, current.namespaceAudienceFingerprint,

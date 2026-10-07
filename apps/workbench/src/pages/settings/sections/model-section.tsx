@@ -39,16 +39,16 @@ type ChoiceMode = "default" | "catalog" | "unavailable";
 // runtime here (its `index.ts` transitively pulls `node:path` via
 // `@nautilo/config`, which Vite externalizes and crashes the renderer on
 // first evaluation). Keep in sync with `LLM_KEY_IDS` in
-// `packages/api-client/src/client.ts`. Providers not in `key-registry.ts`
-// (e.g. xai, together) won't surface a key hint here until they are added
-// to the registry — that's the consolidation trade-off (D086 Phase 5.2).
+// `packages/api-client/src/client.ts`.
 const LLM_KEY_IDS = new Set<string>([
   "anthropic",
   "openai",
   "openrouter",
   "gateway",
   "google",
+  "xai",
   "fireworks",
+  "together",
   "venice",
   "surplus",
 ]);
@@ -326,6 +326,9 @@ export function ModelSection({ showProviderKeyStatus = true }: { showProviderKey
               </>
             ) : null}
           </p>
+          <p className="text-xs text-foreground-muted">
+            The server&apos;s funding priority chooses a server or personal key when each request starts. Afterward, <Link to="/account/costs" className="font-medium text-foreground underline">Your costs</Link> shows the attempts actually paid by you.
+          </p>
           {selectableModels.length === 0 ? (
             <p className="rounded-md border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-3 py-2 text-xs text-foreground">
               {canUsePersonalProviderCredentials ? (
@@ -364,6 +367,11 @@ export function ModelSection({ showProviderKeyStatus = true }: { showProviderKey
                         : "Unavailable"}
                   </StatusPill>
                   <StatusPill tone="muted">{formatProviderGroupLabel(currentProvider)}</StatusPill>
+                  {effectiveModel?.fundingSource ? (
+                    <StatusPill tone={effectiveModel.fundingSource === "personal" ? "ok" : "muted"}>
+                      {effectiveModel.fundingSource === "personal" ? "Your key" : "Server key"}
+                    </StatusPill>
+                  ) : null}
                 </div>
                 <p className="mt-2 text-sm font-medium text-foreground">
                   {effectiveModel?.displayName ?? (current ? current : "Resolved by server")}
@@ -371,6 +379,9 @@ export function ModelSection({ showProviderKeyStatus = true }: { showProviderKey
                 <code className="mt-1 block truncate font-mono text-[11px] text-foreground-muted">
                   {current ?? "server chat-role policy"}
                 </code>
+                <p className="mt-1 text-[11px] text-foreground-muted">
+                  Funding is checked again when each request starts{effectiveModel?.fundingProviderRoute ? ` · ${effectiveModel.fundingProviderRoute}` : ""}.
+                </p>
               </div>
             </div>
             {showKeyHint && keyReports === null ? (

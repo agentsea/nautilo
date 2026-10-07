@@ -25,6 +25,8 @@ describe("Settings landing route inventory", () => {
       ["commands", "/settings/commands"],
       ["human-profile", "/settings/human-profile"],
       ["security", "/settings/security"],
+      ["provider-keys", "/settings/provider-keys"],
+      ["personal-costs", "/settings/personal-costs"],
       ["approvals", "/settings/approvals"],
       ["account-deletion", "/settings/account-deletion"],
       ["appearance", "/settings/appearance"],
@@ -89,4 +91,15 @@ describe("Settings landing route inventory", () => {
     expect(rows.some((row) => row.id === "user-agreement")).toBe(false);
     expect(rows.some((row) => row.id === "security")).toBe(true);
   });
+});
+
+
+test("personal settings keep their native header and back navigation visible", async () => {
+  const layout = await Bun.file(new URL("../../app/(drawer)/(tabs)/settings/_layout.tsx", import.meta.url)).text();
+  for (const route of ["provider-keys", "personal-costs"]) {
+    expect(layout).toContain(`name="${route}" options={{ headerShown: true }}`);
+    const screen = await Bun.file(new URL(`../../app/(drawer)/(tabs)/settings/${route}.tsx`, import.meta.url)).text();
+    expect(screen).toContain("<AppBar");
+    expect(screen).toContain("<AppBarBackButton");
+  }
 });

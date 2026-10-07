@@ -1,0 +1,3 @@
+# Preserve migration hashes and executable shell scripts on Windows checkouts.
+*.sql text eol=lf
+*.sh text eol=lf

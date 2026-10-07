@@ -1,4 +1,4 @@
-import { SquareCheck, X } from "lucide-react";
+import { Minus, SquareCheck, X } from "lucide-react";
 
 export interface ProviderKeyCoverageRow {
   functionality: string;
@@ -8,11 +8,14 @@ export interface ProviderKeyCoverageRow {
 interface ProviderKeyCoverageTableProps {
   configuredProviderIds: ReadonlySet<string>;
   rows: readonly ProviderKeyCoverageRow[];
+  /** Keep the table stable without inventing key absence before status is known. */
+  unknownStatusLabel?: string;
 }
 
 export function ProviderKeyCoverageTable({
   configuredProviderIds,
   rows,
+  unknownStatusLabel,
 }: ProviderKeyCoverageTableProps) {
   return (
     <table className="mt-3 w-full table-fixed border-collapse text-left text-xs">
@@ -36,7 +39,13 @@ export function ProviderKeyCoverageTable({
             >
               <th scope="row" className="py-2 pr-3 align-top font-medium text-foreground">
                 <span className="flex min-w-0 items-start gap-2">
-                  {covered ? (
+                  {unknownStatusLabel ? (
+                    <Minus
+                      role="img"
+                      aria-label={`${functionality}: ${unknownStatusLabel}`}
+                      className="mt-0.5 size-4 shrink-0 text-foreground-muted"
+                    />
+                  ) : covered ? (
                     <SquareCheck
                       role="img"
                       aria-label={`${functionality}: supporting API key configured`}
@@ -55,11 +64,11 @@ export function ProviderKeyCoverageTable({
               <td className="py-2 align-top">
                 <div className="flex min-w-0 flex-wrap gap-1.5">
                   {providers.map(([id, name]) => {
-                    const configured = configuredProviderIds.has(id);
+                    const configured = !unknownStatusLabel && configuredProviderIds.has(id);
                     return (
                       <span
                         key={id}
-                        aria-label={`${name}: ${configured ? "API key configured" : "API key not configured"}`}
+                        aria-label={`${name}: ${unknownStatusLabel ?? (configured ? "API key configured" : "API key not configured")}`}
                         className={
                           configured
                             ? "max-w-full break-words rounded-full bg-[var(--success)]/15 px-2 py-0.5 font-medium text-[var(--success)]"

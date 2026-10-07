@@ -1,4 +1,6 @@
-// D424 Phase 4.1 — room-independent chat controller extracted from the
+import { isComposerImageAttachment, IMAGE_ATTACHMENT_SELECTION_HINT, IMAGE_HISTORY_NOTICE,
+  imageAttachmentModelError } from "@nautilo/attachments/composer-chat-extensions";
+// room-independent chat controller extracted from the
 // monolithic `app/chat/[roomId].tsx` screen. Owns transcript state, the
 // realtime streaming subscription, send path, reactions, typing, paging,
 // approvals wiring, voice input, attachments, model selection, routing
@@ -121,7 +123,7 @@ import {
 
 const INITIAL_LIMIT = 30;
 const PAGE_LIMIT = 30;
-// D181 cursor sentinels for the initial "latest page" room-history request.
+// cursor sentinels for the initial "latest page" room-history request.
 // Keep the id within Postgres int4 range; see session-rehydrate.ts.
 const INITIAL_BEFORE_ID = "2147483647";
 const INITIAL_BEFORE_CREATED_AT = "2099-12-31T00:00:00.000Z";
@@ -130,7 +132,7 @@ const INITIAL_BEFORE_CREATED_AT = "2099-12-31T00:00:00.000Z";
 const MARK_READ_THROTTLE_MS = 2000;
 const MOBILE_CONTENT_FILTER_ENABLED = Platform.OS === "ios" || Platform.OS === "android";
 
-// D382 — pending composer attachment (image). `status` drives the chip UI:
+// pending composer attachment (image). `status` drives the chip UI:
 // "uploading" → spinner overlay; "ready" → ready to send;
 // "failed" → error indicator + tap to retry.
 export type PendingAttachment = {
@@ -162,7 +164,7 @@ type PageInfo = {
   oldestCursor: { id: string; createdAt: string } | null;
 };
 
-/** D408 — active inline-reply target (persisted messages only). */
+/** active inline-reply target (persisted messages only). */
 export type ReplyTarget = {
   messageId: number;
   senderName: string;
@@ -184,7 +186,7 @@ function messageSnippet(item: MessageItem): string {
   return "a message";
 }
 
-// D391 — resolve history attachment refs to authed byte-route sources.
+// resolve history attachment refs to authed byte-route sources.
 // Loads the server bearer once so `<Image>` can fetch the retained blob
 // (the byte route is namespace-gated; a missing token just yields 401 on
 // the image load, not a crash).
@@ -201,7 +203,7 @@ async function buildAttachmentResolver(serverUrl: string, roomId: string): Promi
 
 /**
  * Composer capabilities for a chat surface. The full-screen chat enables
- * everything; the docked artifact-viewer pane (D424 Phase 4.2) disables only
+ * everything; the docked artifact-viewer pane disables only
  * the features its compact layout intentionally omits. Keep this
  * explicit so the docked pane is a real, opt-in consumer of the same
  * controller — not an opaque wrapper.
@@ -281,7 +283,7 @@ export function useRoomChatController({
   // Requester-private settled Conductor decision. It remains until dismissed
   // or replaced by a newer receipt for this room.
   const [routingReceipt, setRoutingReceipt] = useState<RoutingReceiptData | null>(null);
-  // D524 — an ambiguous route is an ephemeral, requester-private recovery
+  // an ambiguous route is an ephemeral, requester-private recovery
   // action. It holds only the exact server-issued candidates and correlation
   // needed to re-send the already-persisted Human row once.
   const [askUserChoice, setAskUserChoice] = useState<AskUserRoutingState | null>(null);
@@ -309,10 +311,10 @@ export function useRoomChatController({
     setLiveJobIds(new Set());
   }, [roomId]);
   const stopNoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // D412 — session-only model selection is keyed by paired server + room.
+  // session-only model selection is keyed by paired server + room.
   // This revision counter only re-renders after a store write; it does not
   // retain a selection itself.
-  const [, refreshModelSelection] = useReducer((revision: number) => revision + 1, 0);
+  const [modelAvailabilityRevision, refreshModelSelection] = useReducer((revision: number) => revision + 1, 0);
   // Best-effort model list fetch so the chip can resolve the selected id to a
   // display name. The ModelSwitcherSheet fetches its own copy on open; this
   // one is the chip's label source. Failure is silent (chip falls back to
@@ -323,7 +325,7 @@ export function useRoomChatController({
   // Keep that inherited value explicit so the chip never lies with a generic
   // "Model" placeholder.
   const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
-  // D382 — pending image attachments; the chip row is
+  // pending image attachments; the chip row is
   // rendered above the composer input via `attachmentsSlot`. Cleared after
   // a successful send.
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
@@ -404,7 +406,7 @@ export function useRoomChatController({
   const sending = sendingOperation !== null && roomOperationGuardRef.current.isCurrent(sendingOperation);
   const pagingLoading = pagingOperation !== null
     && roomOperationGuardRef.current.isCurrentPaging(pagingOperation);
-  // D471 — encrypted, per-server/per-viewer/per-Room text draft recovery.
+  // encrypted, per-server/per-viewer/per-Room text draft recovery.
   // A draft is never a pending send: only the explicit Send handler can use it.
   const [draftText, setDraftTextState] = useState("");
   const draftTextRef = useRef(draftText);
@@ -471,7 +473,7 @@ export function useRoomChatController({
   const reconciledIdentityScopeRef = useRef<string | null>(null);
   const verifiedViewerIdentityScopeRef = useRef(verifiedViewerIdentityScope);
   verifiedViewerIdentityScopeRef.current = verifiedViewerIdentityScope;
-  // D408 — room roster for multi-participant sender labels + avatars.
+  // room roster for multi-participant sender labels + avatars.
   const [roomMembers, setRoomMembers] = useState<RoomMemberDto[]>([]);
   // Do not briefly render a group conversation as 1:1 while its roster loads:
   // the roster determines the transcript's stable incoming gutter.
@@ -484,7 +486,7 @@ export function useRoomChatController({
   // fetch; the route owns navigation.setOptions).
   const [roomLabel, setRoomLabel] = useState("Chat");
   const [roomType, setRoomType] = useState<string | null>(null);
-  // D408 — inline quote-reply composer target.
+  // inline quote-reply composer target.
   const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
   const listRef = useRef<FlatList<ChatItem>>(null);
   const [latestViewportRequest, setLatestViewportRequest] = useState<{
@@ -736,23 +738,33 @@ export function useRoomChatController({
       try {
         const api = getApiClient(activeServer.serverUrl);
         const profile = await api.getProfile().catch(() => null);
+        const ownedRoomAgents = profile?.viewerRole === "owner"
+          ? profile.ownedAgents.filter((agent) => roomMembers.some((member) =>
+            member.kind === "agent" && member.agentId === agent.agentId)) : [];
+        const ownedRoomAgentId = ownedRoomAgents.length === 1 ? ownedRoomAgents[0]?.agentId : null;
+        const modelState = ownedRoomAgentId && roomId
+          ? await api.getRoomModelControlState(roomId, ownedRoomAgentId).catch(() => null) : null;
+        const inheritedModelId = modelState?.effectiveModelId
+          ?? (profile?.viewerRole === "owner" ? profile.agent.defaultModel : null);
         const retainedIds = [
           modelId,
-          profile?.viewerRole === "owner" ? profile.agent.defaultModel : null,
+          inheritedModelId,
         ].filter((id): id is string => !!id);
         const [list, retained] = await Promise.all([
-          api.getModels(),
+          api.getCallerModels({ includeUnavailable: true }),
           retainedIds.length > 0
             ? api.resolveRetainedModels(retainedIds)
             : Promise.resolve([]),
         ]);
         if (cancelled) return;
         const byId = new Map(list.map((model) => [model.id, model]));
-        for (const model of retained) byId.set(model.id, model);
+        for (const model of retained) {
+          if (byId.has(model.id)) continue;
+          byId.set(model.id, { ...model, availability: "filtered",
+            unavailableReason: "This saved model is not available for your account." });
+        }
         setModels(Array.from(byId.values()));
-        setDefaultModelId(
-          profile?.viewerRole === "owner" ? profile.agent.defaultModel : null,
-        );
+        setDefaultModelId(inheritedModelId);
       } catch {
         if (!cancelled) {
           setModels([]);
@@ -763,7 +775,7 @@ export function useRoomChatController({
     return () => {
       cancelled = true;
     };
-  }, [activeServer, canInvokeAgents, roomMembersLoading, directHumanRoom, modelId]);
+  }, [activeServer, canInvokeAgents, roomMembersLoading, directHumanRoom, modelId, roomId, roomMembers, appIsActive, recoveryRevision, modelAvailabilityRevision]);
 
   const defaultModelLabel = useMemo(() => {
     if (!defaultModelId) return "Server default";
@@ -777,6 +789,27 @@ export function useRoomChatController({
     const found = models.find((m) => m.id === modelId);
     return found?.displayName || modelId;
   }, [defaultModelLabel, modelId, models]);
+
+  const effectiveComposerModel = models.find((candidate) => candidate.id === (modelId ?? defaultModelId));
+  const imageInputUnsupported = canInvokeAgents && !directHumanRoom
+    && (effectiveComposerModel?.imageInput !== undefined
+      ? effectiveComposerModel.imageInput === "unavailable"
+      : effectiveComposerModel?.capabilities?.vision === false);
+  const imageAttachmentConflict = imageInputUnsupported
+    && attachments.some((attachment) => isComposerImageAttachment(attachment.name, attachment.mimeType));
+  const imageAttachmentError = imageAttachmentConflict ? imageAttachmentModelError(modelLabel) : null;
+  const [imageHistoryDismissed, setImageHistoryDismissed] = useState(false);
+  useEffect(() => { setImageHistoryDismissed(false); }, [roomId, effectiveComposerModel?.id]);
+  const dismissImageHistoryNotice = useCallback(() => setImageHistoryDismissed(true), []);
+  const dismissImageSelectionNotice = useCallback(() => setAttachPermissionNote((previous) =>
+    previous === IMAGE_ATTACHMENT_SELECTION_HINT ? null : previous), []);
+  const imageHistoryNotice = imageInputUnsupported && !imageHistoryDismissed && items.some((item) =>
+    item.kind === "message" && item.attachments?.some((attachment) => attachment.kind === "local" || attachment.mimeType?.startsWith("image/"))) ? IMAGE_HISTORY_NOTICE : null;
+
+  useEffect(() => {
+    setAttachPermissionNote((previous) =>
+      previous === IMAGE_ATTACHMENT_SELECTION_HINT ? null : previous);
+  }, [roomId, effectiveComposerModel?.id, imageAttachmentConflict]);
 
   // ---- Initial load (latest room history page) ----
   const loadInitial = useCallback(async (options?: { background?: boolean }) => {
@@ -1059,6 +1092,9 @@ export function useRoomChatController({
         return;
       }
       if (event.type === "job.status") {
+        if (roomIdFromLaneKey(event.laneKey) === roomId && event.errorCode === "image_assistance_failed") {
+          setItems((previous) => applyStreamEvent(previous, event));
+        }
         const terminal =
           event.status === "completed" ||
           event.status === "failed" ||
@@ -1137,8 +1173,8 @@ export function useRoomChatController({
         return;
       }
       if (event.type === "tool.start" || event.type === "tool.end") {
-        // D212 — the agent `react` tool surfaces via reaction.added/removed on
-        // the target message, not as a ToolCard. D408 — still clear any empty
+        // the agent `react` tool surfaces via reaction.added/removed on
+        // the target message, not as a ToolCard. still clear any empty
         // streaming assistant placeholder the turn may have opened.
         if (event.toolName === "react") {
           if (event.type === "tool.end") {
@@ -1269,6 +1305,7 @@ export function useRoomChatController({
 
   const handleAttach = useCallback(async () => {
     if (!activeServer || !roomIdValid) return;
+    if (imageInputUnsupported) { setAttachPermissionNote(IMAGE_ATTACHMENT_SELECTION_HINT); return; }
     setAttachPermissionNote(null);
     const remaining = MAX_CHAT_ATTACHMENTS_PER_MESSAGE - attachments.length;
     if (remaining <= 0) {
@@ -1306,7 +1343,7 @@ export function useRoomChatController({
         mimeType: chip.mimeType,
       });
     }
-  }, [activeServer, roomIdValid, attachments.length, uploadAttachmentChip]);
+  }, [activeServer, roomIdValid, attachments.length, uploadAttachmentChip, imageInputUnsupported]);
 
   const handleRetry = useCallback(
     (localId: string) => {
@@ -1331,6 +1368,7 @@ export function useRoomChatController({
 
   const handleRemoveAttachment = useCallback((localId: string) => {
     setContentFilterNotice(null);
+    setAttachPermissionNote((previous) => previous === IMAGE_ATTACHMENT_SELECTION_HINT ? null : previous);
     const target = attachmentsRef.current.find((attachment) => attachment.localId === localId);
     const next = attachmentsRef.current.filter((attachment) => attachment.localId !== localId);
     setAttachments(next);
@@ -1354,6 +1392,7 @@ export function useRoomChatController({
     async (text: string, resume?: AskUserResumeBody): Promise<boolean> => {
       if (!activeServer || !roomIdValid || !roomId) return false;
       if (resume && !canInvokeAgents) return false;
+      if (!resume && imageAttachmentConflict) return false;
       const readyAttachments = attachments.filter((attachment) => attachment.status === "ready");
       if (!resume && MOBILE_CONTENT_FILTER_ENABLED && assessMobileHumanPosting({
         text,
@@ -1367,7 +1406,7 @@ export function useRoomChatController({
       setCapabilityError(null);
       const operation = roomOperationGuardRef.current.begin();
       if (!roomOperationGuardRef.current.acquireSend(operation)) return false;
-      // Product policy locked by D528: an accepted deliberate local send
+      // Product policy: an accepted deliberate local send
       // explicitly returns to newest. Remote run/message events never call it.
       requestLatestViewport("local-send", !resume);
       // Only ready attachments are sent; still-uploading ones are dropped
@@ -1433,7 +1472,7 @@ export function useRoomChatController({
           mobileOriginProof ? { mobileOriginProof } : undefined,
         );
         if (!roomOperationGuardRef.current.isCurrent(operation)) return false;
-        // The server does NOT echo our own message.new back (D124 B3), so
+        // The server does NOT echo our own message.new back, so
         // mark the optimistic item sent here. If the server returned a
         // messageId, update the id so future reloads dedupe cleanly.
         if (!resume) {
@@ -1472,6 +1511,7 @@ export function useRoomChatController({
             }
           }
           // Clear attachments + reply target on a successful ordinary send.
+          setAttachPermissionNote(null);
           setAttachments([]);
           setReplyTarget(null);
           const scope = draftScopeRef.current;
@@ -1517,6 +1557,7 @@ export function useRoomChatController({
       emitTypingPing,
       modelId,
       attachments,
+      imageAttachmentConflict,
       artifactRefs,
       voiceEnabled,
       autoApproveEnabled,
@@ -1951,7 +1992,7 @@ export function useRoomChatController({
     [focusTranscriptTarget, renderItems],
   );
 
-  // D424 — agent avatar → focus is a full-screen-only room target (the
+  // agent avatar → focus is a full-screen-only room target (the
   // AgentFocusBar lives in the route). The route passes its `toggleFocus` to
   // the shared pane's `onAgentAvatarPress` so the message column can wire
   // onAvatarPress without the controller owning the focus provider.
@@ -2088,6 +2129,7 @@ export function useRoomChatController({
     defaultModelLabel,
     models,
     handleModelSelect,
+    refreshModelAvailability: refreshModelSelection,
     // send / stop / mic
     handleSend,
     handleStop,
@@ -2099,6 +2141,12 @@ export function useRoomChatController({
     toggleVoice: handleToggleVoice,
     stopVoice,
     speaking,
+    imageInputUnsupported,
+    imageAttachmentConflict,
+    imageAttachmentError,
+    imageHistoryNotice,
+    dismissImageHistoryNotice,
+    dismissImageSelectionNotice,
     // attachments
     attachments,
     attachPermissionNote,

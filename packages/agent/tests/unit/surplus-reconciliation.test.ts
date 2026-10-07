@@ -65,20 +65,35 @@ describe("Surplus financial receipt boundary", () => {
       calls.push({ url, ...(init?.method ? { method: init.method } : {}), ...(init?.redirect ? { redirect: init.redirect } : {}) });
       return Response.json(receipt);
     }) as typeof fetch;
-    expect(await fetchSurplusSettlement({ binding, apiKey: "synthetic-key", signal: new AbortController().signal, fetchImpl })).toBe(283);
+    expect(await fetchSurplusSettlement({ binding, apiKey: "synthetic-key", signal: new AbortController().signal, fetchImpl })).toEqual({
+      status: "settled", costMicro: 283,
+    });
     expect(calls).toEqual([{
       url: "https://api.surplusintelligence.ai/v1/requests/request-1", method: "GET", redirect: "error",
     }]);
     const forbidden = (async () => new Response("not a receipt", { status: 403 })) as unknown as typeof fetch;
-    expect(await fetchSurplusSettlement({ binding, apiKey: "synthetic-key", signal: new AbortController().signal, fetchImpl: forbidden })).toBeNull();
-    expect(await fetchSurplusSettlement({ binding: { ...binding, requestId: "../keys" }, apiKey: "synthetic-key", signal: new AbortController().signal, fetchImpl })).toBeNull();
+    expect(await fetchSurplusSettlement({ binding, apiKey: "synthetic-key", signal: new AbortController().signal, fetchImpl: forbidden })).toEqual({
+      status: "blocked_repair", failureCode: "receipt_read_unauthorized",
+    });
+    expect(await fetchSurplusSettlement({ binding: { ...binding, requestId: "../keys" }, apiKey: "synthetic-key", signal: new AbortController().signal, fetchImpl })).toEqual({
+      status: "blocked_repair", failureCode: "receipt_request_rejected",
+    });
     expect(calls).toHaveLength(1);
   });
 
   test("bounds and ignores malformed or oversized response bodies", async () => {
     for (const body of ["{", "x".repeat(65_537)]) {
       const fetchImpl = (async () => new Response(body)) as unknown as typeof fetch;
-      expect(await fetchSurplusSettlement({ binding, apiKey: "synthetic-key", signal: new AbortController().signal, fetchImpl })).toBeNull();
+      expect(await fetchSurplusSettlement({ binding, apiKey: "synthetic-key", signal: new AbortController().signal, fetchImpl })).toEqual({
+        status: "retryable", failureCode: "receipt_not_confirmed",
+      });
     }
+  });
+
+  test("keeps undocumented request-detail absence retryable", async () => {
+    const notFound = (async () => new Response(null, { status: 404 })) as unknown as typeof fetch;
+    expect(await fetchSurplusSettlement({
+      binding, apiKey: "synthetic-key", signal: new AbortController().signal, fetchImpl: notFound,
+    })).toEqual({ status: "retryable", failureCode: "receipt_not_found" });
   });
 });

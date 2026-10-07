@@ -1,3 +1,4 @@
+import { retainedImageAssistance } from "../../src/executors/image-assistance";
 import { describe, expect, test } from "bun:test";
 import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import { ROOM_CONTEXT_MESSAGE_HEADER } from "@nautilo/agent";
@@ -11,10 +12,10 @@ import {
 import { assertTranscriptCovers } from "./build-transcript-context.test";
 
 /**
- * M168 Commit 2 / M171 (Phase H) — unit coverage for the executor's
+ * Unit coverage for the executor's
  * history-resolution seam with an INJECTED fake `deps`. Proves the builder is
  * the history source on fresh room turns, R3 (one reader, three scopes), R5
- * (current-turn exclusion), the M171 no-`roomId`/`resume` → **`[]`** contract
+ * (current-turn exclusion), the no-`roomId`/`resume` → **`[]`** contract
  * (the checkpoint-history fallback was removed in Phase H), and the R9 coverage
  * harness for the three flows.
  */
@@ -45,14 +46,14 @@ function capturingDeps(hits: RoomHistoryHit[]): {
         return hits;
       },
       readSubagentTranscript(): Promise<never> {
-        return Promise.reject(new Error("subagent reader must not be called in M168"));
+        return Promise.reject(new Error("subagent reader must not be called for room history"));
       },
     },
     scopes,
   };
 }
 
-describe("resolveForegroundHistoryMessages (M168 seam / M171 no-checkpoint)", () => {
+describe("resolveForegroundHistoryMessages", () => {
   test("DM fresh turn builds from the transcript", async () => {
     const { deps, scopes } = capturingDeps([
       makeHit("alice", "Alice", "hello", "2026-06-01T10:00:00Z"),
@@ -123,7 +124,7 @@ describe("resolveForegroundHistoryMessages (M168 seam / M171 no-checkpoint)", ()
     expect(scopes[0]!.subthread).toEqual({ parentRoomId: "parent-room", anchorMessageId: 77 });
   });
 
-  test("M171 — no roomId returns [] without touching the builder", async () => {
+  test("no roomId returns [] without touching the builder", async () => {
     const { deps, scopes } = capturingDeps([makeHit("x", "X", "should not appear", "2026-06-01T10:00:00Z")]);
 
     const out = await resolveForegroundHistoryMessages(
@@ -140,7 +141,7 @@ describe("resolveForegroundHistoryMessages (M168 seam / M171 no-checkpoint)", ()
     expect(out).toHaveLength(0);
   });
 
-  test("M171 — resume turnKind returns [] without rebuilding", async () => {
+  test("resume turnKind returns [] without rebuilding", async () => {
     const { deps, scopes } = capturingDeps([makeHit("x", "X", "nope", "2026-06-01T10:00:00Z")]);
 
     const out = await resolveForegroundHistoryMessages(
@@ -281,4 +282,21 @@ describe("R9 coverage gate — assertTranscriptCovers per flow", () => {
     );
     assertTranscriptCovers(checkpointMsgs, block);
   });
+});
+
+
+test("authorized same-turn image observations are captured before narration and never become provider ToolMessages", async () => {
+  const observation = { status: "completed", modelId: "vision-a", modelDisplayName: "Vision A", attachmentIds: ["image-a"], turnId: "turn-a", inputDigest: "digest-a", observations: "Exact total 123.45" };
+  const { deps, scopes } = capturingDeps([{ ...makeHit("genie", "Genie", JSON.stringify(observation), "2026-06-01T10:00:02Z"), messageId: 43, role: "tool", toolName: "image_assistance" }]);
+  const retained: unknown[] = [];
+  const messages = await resolveForegroundHistoryMessages({
+    turnKind: "fresh", roomId: "room-a", transcriptOwnerId: "human-a", agentId: "agent-a",
+    currentMessageId: 42, imageAssistanceTurnId: "turn-a", onAuthorizedHistory: (hits) => retained.push(...retainedImageAssistance(hits)),
+  }, deps);
+  expect(scopes[0]).toMatchObject({ excludeMessageId: 42, imageAssistanceTurnId: "turn-a" });
+  expect(retained).toEqual([observation]);
+  expect(messages.every((message) => HumanMessage.isInstance(message))).toBe(true);
+  expect(messages.some((message) => ToolMessage.isInstance(message))).toBe(false);
+  expect(JSON.stringify(messages)).toContain("Exact total 123.45");
+  expect(JSON.stringify(messages)).toContain("not access to original pixels");
 });

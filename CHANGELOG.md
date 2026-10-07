@@ -21,8 +21,73 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   app copies preserve resolved package versions and dependency cycles.
 - Contributor scripts and tests convert file URLs to native filesystem paths,
   including Windows drive letters and encoded characters.
+- SQL migrations and shell scripts retain LF line endings in Windows checkouts,
+  preserving migration hashes and native Git Bash execution.
 - Contributor Git hooks execute their affected checks on Windows, and repository
   invariants compare portable paths without changing their ownership rules.
+- Database role repair rolls back the complete SQL batch if any statement fails.
+- First-party app seeding rebuilds isolated dependencies when seed metadata is
+  invalid, while still reporting filesystem errors.
+
+- Server native image checks recognize the patched Sharp and libvips packages.
+
+- Update the MCP transport and image-processing libraries to their supported
+  patched releases, and retire obsolete server security decisions.
+
+- Mobile model search keeps its field and scrollable choices above the keyboard
+  on compact screens; selecting a result works on the first tap.
+
+- Mobile personal key and cost settings retain their header and Back action above
+  the safe area.
+
+- Reflection allows up to ten minutes per poll, preserves completed batch results
+  when repair runs out of time, and gives other eligible records a turn after
+  timed-out work yields.
+- Reflection automatically reassesses older quarantined work after an upgrade,
+  clears obsolete or already-covered work, rebuilds missing search projections,
+  and repairs derived records from their surviving current evidence. Retry
+  cooldowns survive restarts, older failures retain their place in the queue,
+  and durable diagnostics distinguish waiting, failed, repaired, and retired work.
+- Members can use personal Surplus keys for supported text chat and native text
+  Tasks under the administrator's funding priority and Prefer Surplus setting.
+  Personal key setup excludes custom OpenAI-compatible Gateway routes.
+  Saving a key checks it without a paid request and reports receipt-read access
+  separately. Workbench and Mobile show the selected payer and personal costs,
+  including estimates, delayed receipts, and charges that remain unknown.
+  Administrator and personal costs share the summary and dashboard layout. Key
+  lists render immediately while saved status loads, and personal-key settings
+  clearly explain disabled server policy without treating it as a key failure.
+  When personal keys are disabled, members see only the warning if no keys are
+  saved, or their saved keys with Delete controls. Cleanup remains available
+  without permission to spend or access to the credential encryption key.
+  Uncertain personal requests stop automatic retries; transient accounting
+  writes retry without repeating inference. Repaired personal Surplus keys can
+  recover authenticated original receipts while retaining their original payer.
+  Server key repair also resumes blocked receipts; interrupted Surplus
+  Tasks retain known charges and expose unresolved recovery. Mobile key errors
+  offer readable recovery guidance and refresh saved-key status after uncertain
+  saves or stale validation. A safe personal Surplus refusal can continue through
+  the configured model fallback chain when the same-model direct key is absent;
+  exact-model Tasks retain their selected model.
+  Mobile cost amounts use the same rounding and tiny-amount display as Workbench.
+
+- Text-only chat models can use an available image-reading model automatically,
+  while keeping the selected chat model. Selection uses the current model
+  catalog, authorized credentials, privacy requirements and estimated cost.
+  Answers identify the image-reading model; completed observations remain
+  available for follow-up questions. When no supported image route is available,
+  attachments show clear removal/model selection guidance. Queued images remain
+  editable after a model switch, and earlier image history stays saved.
+  Returning to the app keeps chat visible while access refreshes, and model
+  changes avoid repeated full-catalog work and temporary raw provider IDs.
+  On Mobile, tapping the image attachment button when no image route is available
+  explains the restriction without opening the photo picker.
+  Long Mobile drafts and attachment guidance remain scrollable on compact screens,
+  with message actions kept above the software keyboard.
+
+- Successful skips end the agent turn without another model call. Silence and
+  hand-off control activity stays out of chat while rejected hand-offs remain
+  recoverable and already-admitted sibling tools finish normally.
 
 - The text editor serializes first saves of empty documents and preserves edits
   made while a save is in progress. Conflict recovery reports failed latest-version

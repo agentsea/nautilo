@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 
 import {
+  alias,
   and,
   asc,
   eq,
@@ -14,6 +15,7 @@ import {
   reflectionRecordDependencyChangeRepairs,
   reflectionRecordSemanticWork,
   reflectionRecordSemanticWorkAdmissions,
+  reflectionRecordSearchProjections,
   reflectionRecordSourceChangeRepairs,
   reflectionRecordSourceDependencyIndex,
   reflectionRecords,
@@ -25,14 +27,14 @@ import type {
   DurableSleepClaimResult,
   DurableParentConflictResolutionResult,
   DurableSleepDeferralResult,
-  DurableSleepFailureCode,
-  DurableSleepOrdinaryFallbackReason,
   DurableSleepLeaseResult,
+  DurableSleepSettlementResult,
   DurableSleepStage,
   DurableSleepWorkPort,
 } from "@nautilo/reflection";
 import {
   DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1,
+  DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_VERSION,
   DURABLE_SLEEP_WORK_INTENT_POLICY_V1,
 } from "@nautilo/reflection";
 import type {
@@ -56,6 +58,7 @@ const MAXIMUM_REPAIR_PAGE = 256;
 const COMMITMENT_BYTES = 32;
 const MAXIMUM_DATE_EPOCH_MILLISECONDS = 8_640_000_000_000_000;
 const encoder = new TextEncoder();
+const settlementParentRecords = alias(reflectionRecords, "settlement_parent");
 
 const SEMANTIC_STAGE_RANK: Readonly<Record<DurableSleepStage, number>> =
   Object.freeze({
@@ -119,6 +122,12 @@ export interface RecordSemanticCommitmentPort {
   candidatePolicyRecovery(input: Readonly<{
     recordRef: string;
     processingGeneration: number;
+    policyVersion: string;
+  }>): Uint8Array;
+  projectionRefresh(input: Readonly<{
+    recordRef: string;
+    processingGeneration: number;
+    completedWorkGeneration: number;
     policyVersion: string;
   }>): Uint8Array;
   parentConflict(input: Readonly<{
@@ -286,6 +295,28 @@ export function createHmacRecordSemanticCommitmentPort(
           input.policyVersion,
           input.recordRef,
           String(input.processingGeneration),
+        ],
+      );
+    },
+    projectionRefresh(input) {
+      assertOpaque(input.recordRef, "projection-refresh Record reference");
+      assertOpaque(input.policyVersion, "projection-refresh policy version");
+      if (
+        !Number.isSafeInteger(input.processingGeneration)
+        || input.processingGeneration < 1
+        || !Number.isSafeInteger(input.completedWorkGeneration)
+        || input.completedWorkGeneration < 1
+      ) {
+        throw new RangeError("projection-refresh generations must be positive");
+      }
+      return semanticHmac(
+        ownedKey,
+        "nautilo/reflection/projection-refresh/v1",
+        [
+          input.policyVersion,
+          input.recordRef,
+          String(input.processingGeneration),
+          String(input.completedWorkGeneration),
         ],
       );
     },
@@ -611,6 +642,10 @@ export async function admitSemanticWorkWithinTransaction(
         nextAttemptAt: effectiveNextAttemptAt,
         recoverAfter: null,
         failureCode: null,
+        failureDetail: null,
+        waitingReason: null,
+        completionOutcome: null,
+        projectionRefreshOnly: false,
         ordinaryFallbackReason: null,
         dueSince: sql`greatest(${reflectionRecordSemanticWork.dueSince}, ${input.now})`,
         startedAt: null,
@@ -1058,7 +1093,13 @@ export class PostgresSemanticWorkStore
       const rows = await tx.query(
         `WITH candidate AS (
             SELECT work.record_id,
+                  work.projection_refresh_only,
                   work.state = 'quarantined' AS recovered_from_quarantine,
+                  work.failure_code = 'authority_unavailable'
+                    AND record.structural_height > 0
+                    AND work.change_reason <> 'parent_conflict'
+                    AND NOT work.projection_refresh_only
+                    AS reclassified_dependency_loss,
                   CASE
                     WHEN $6::text IS NULL THEN NULL
                     WHEN $6 = 'any' THEN 'ordinary'
@@ -1119,9 +1160,22 @@ export class PostgresSemanticWorkStore
                   AND work.next_attempt_at <= $1)
                 OR (work.attempt_count < $2
                   AND work.state = 'claimed' AND work.lease_expires_at <= $1)
-                OR (work.state = 'quarantined' AND work.recover_after <= $1)
+                OR (work.state = 'quarantined' AND (
+                  work.recover_after <= $1
+                  OR work.recovery_policy_version < ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_VERSION}
+                ))
               )
             ORDER BY CASE
+                       WHEN work.state = 'quarantined'
+                         AND work.recovery_policy_version
+                           < ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_VERSION}
+                         THEN work.due_since
+                       WHEN work.state = 'quarantined' THEN work.recover_after
+                       WHEN work.state = 'claimed'
+                         AND work.lease_expires_at <= $1 THEN work.lease_expires_at
+                       ELSE GREATEST(work.due_since, work.updated_at)
+                     END ASC,
+                     CASE
                        WHEN work.change_reason = 'parent_conflict' THEN 0
                        ELSE 1
                      END ASC,
@@ -1137,7 +1191,7 @@ export class PostgresSemanticWorkStore
                        WHEN 'revised' THEN 1
                        ELSE 0
                      END DESC,
-                     work.due_since,
+                     GREATEST(work.due_since, work.updated_at),
                      work.record_id
             FOR UPDATE OF work SKIP LOCKED
             LIMIT 1
@@ -1145,6 +1199,15 @@ export class PostgresSemanticWorkStore
          UPDATE reflection_record_semantic_work AS work
             SET state = 'claimed',
                 claim_generation = work.generation,
+                change_reason = CASE
+                  WHEN candidate.reclassified_dependency_loss
+                    THEN 'dependency_lost'
+                  ELSE work.change_reason
+                END,
+                projection_refresh_only = CASE
+                  WHEN candidate.reclassified_dependency_loss THEN false
+                  ELSE work.projection_refresh_only
+                END,
                 attempt_count = CASE
                   WHEN candidate.recovered_from_quarantine THEN 1
                   ELSE work.attempt_count + 1
@@ -1153,7 +1216,14 @@ export class PostgresSemanticWorkStore
                 lease_expires_at = $4,
                 next_attempt_at = null,
                 recover_after = null,
+                recovery_policy_version = GREATEST(
+                  work.recovery_policy_version,
+                  ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_VERSION}
+                ),
                 failure_code = null,
+                failure_detail = null,
+                waiting_reason = null,
+                completion_outcome = null,
                 started_at = coalesce(work.started_at, $1),
                 completed_at = null,
                 updated_at = greatest(work.updated_at, $1)
@@ -1163,7 +1233,8 @@ export class PostgresSemanticWorkStore
                   work.stage, work.lease_token, work.due_since, work.started_at,
                   candidate.recovered_from_quarantine,
                   candidate.execution_representation,
-                  candidate.execution_maximum_stage`,
+                  candidate.execution_maximum_stage,
+                  work.projection_refresh_only`,
         [
           now,
           MAXIMUM_ATTEMPTS,
@@ -1215,6 +1286,9 @@ export class PostgresSemanticWorkStore
           },
           ...(row["recovered_from_quarantine"] === true
             ? { recoveredFromQuarantine: true }
+            : {}),
+          ...(row["projection_refresh_only"] === true
+            ? { projectionRefreshOnly: true }
             : {}),
         },
         ...(representationAdmission === undefined
@@ -1274,6 +1348,144 @@ export class PostgresSemanticWorkStore
     return rows.length === 1;
   }
 
+  async settleCurrentState(input: Readonly<{
+    claim: DurableSleepClaim;
+  }>): Promise<DurableSleepSettlementResult> {
+    if (input.claim.logicalObjectRef !== input.claim.recordRef) {
+      return { status: "lease_lost" };
+    }
+    const mutationStartedAt = performance.now();
+    const result = await this.options.handle.transaction(async (tx) => {
+      const now = this.#clock();
+      await tx.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [input.claim.recordRef],
+      );
+      const rows = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          generation: reflectionRecordSemanticWork.generation,
+          completed_generation: reflectionRecordSemanticWork.completedGeneration,
+          claim_generation: reflectionRecordSemanticWork.claimGeneration,
+          lease_token: reflectionRecordSemanticWork.leaseToken,
+          lease_expires_at: reflectionRecordSemanticWork.leaseExpiresAt,
+          state: reflectionRecordSemanticWork.state,
+          stage: reflectionRecordSemanticWork.stage,
+          change_reason: reflectionRecordSemanticWork.changeReason,
+          projection_refresh_only: reflectionRecordSemanticWork.projectionRefreshOnly,
+          lifecycle: reflectionRecords.lifecycle,
+          disposition: reflectionRecords.disposition,
+        }).from(reflectionRecordSemanticWork)
+          .innerJoin(
+            reflectionRecords,
+            eq(reflectionRecords.recordId, reflectionRecordSemanticWork.recordId),
+          )
+          .where(eq(reflectionRecordSemanticWork.recordId, input.claim.recordRef))
+          .for("update"));
+      const row = rows[0];
+      if (row === undefined) return { status: "lease_lost" as const };
+      const generation = rowInteger(row, "generation");
+      if (generation > input.claim.generation) return { status: "superseded" as const };
+      if (generation < input.claim.generation) return { status: "lease_lost" as const };
+      if (rowInteger(row, "completed_generation") >= input.claim.generation) {
+        return {
+          status: "settled" as const,
+          reason: "publication_reconciled" as const,
+          completedAtEpochMs: now.getTime(),
+        };
+      }
+      if (row["disposition"] !== "available") {
+        return { status: "lease_lost" as const };
+      }
+      const leaseExpiresAt = rowDate(row, "lease_expires_at");
+      if (
+        row["claim_generation"] !== input.claim.generation
+        || row["lease_token"] !== input.claim.leaseToken
+        || row["state"] !== "claimed"
+        || row["stage"] !== input.claim.stage
+        || row["change_reason"] !== input.claim.changeReason
+        || leaseExpiresAt === null
+        || leaseExpiresAt.getTime() <= now.getTime()
+      ) return { status: "lease_lost" as const };
+
+      let reason: "record_lifecycle_obsolete" | "already_covered" | undefined;
+      if (
+        row["disposition"] === "available"
+        && ["superseded", "resolved", "sunset"].includes(String(row["lifecycle"]))
+      ) {
+        reason = "record_lifecycle_obsolete";
+      } else if (
+        row["disposition"] === "available"
+        && row["lifecycle"] === "current"
+        && ["created", "revised"].includes(input.claim.changeReason)
+        && row["projection_refresh_only"] !== true
+      ) {
+        const parents = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.select({
+            record_id: settlementParentRecords.recordId,
+          }).from(reflectionRecordDependencies)
+            .innerJoin(
+              settlementParentRecords,
+              eq(
+                settlementParentRecords.recordId,
+                reflectionRecordDependencies.parentRecordId,
+              ),
+            )
+            .where(and(
+              eq(reflectionRecordDependencies.childRecordId, input.claim.recordRef),
+              eq(settlementParentRecords.disposition, "available"),
+              eq(settlementParentRecords.lifecycle, "current"),
+            ))
+            .orderBy(asc(settlementParentRecords.recordId))
+            .limit(2));
+        if (parents.length === 1) reason = "already_covered";
+      }
+      if (reason === undefined) return { status: "active" as const };
+
+      const updated = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.update(reflectionRecordSemanticWork)
+          .set({
+            state: "complete",
+            completedGeneration: reflectionRecordSemanticWork.generation,
+            claimGeneration: null,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            nextAttemptAt: null,
+            quarantineRound: 0,
+            recoverAfter: null,
+            failureCode: null,
+            failureDetail: null,
+            waitingReason: null,
+            ordinaryFallbackReason: null,
+            completionOutcome: reason,
+            completedAt: now,
+            updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
+          })
+          .where(and(
+            eq(reflectionRecordSemanticWork.recordId, input.claim.recordRef),
+            eq(reflectionRecordSemanticWork.generation, input.claim.generation),
+            eq(reflectionRecordSemanticWork.claimGeneration, input.claim.generation),
+            eq(reflectionRecordSemanticWork.leaseToken, input.claim.leaseToken),
+            eq(reflectionRecordSemanticWork.state, "claimed"),
+            gt(reflectionRecordSemanticWork.leaseExpiresAt, now),
+          ))
+          .returning({ record_id: reflectionRecordSemanticWork.recordId }));
+      return updated.length === 1
+        ? { status: "settled" as const, reason, completedAtEpochMs: now.getTime() }
+        : this.#miss(tx, input.claim);
+    }, { isolationLevel: "serializable" });
+    if (result.status !== "settled" || result.completedAtEpochMs === undefined) {
+      return result;
+    }
+    return {
+      status: "settled",
+      reason: result.reason,
+      timing: {
+        completedAtEpochMs: result.completedAtEpochMs,
+        mutationElapsedMs: Math.max(0, Math.round(performance.now() - mutationStartedAt)),
+      },
+    };
+  }
+
   /** Keep the exact worker lease current through a product publication commit. */
   async withClaimPublicationFence<Value>(
     claim: DurableSleepClaim,
@@ -1302,6 +1514,8 @@ export class PostgresSemanticWorkStore
     if (input.claim.stage !== input.completedStage) {
       return Promise.resolve({ status: "lease_lost" });
     }
+    const completesProjectionRefresh = input.completedStage === "search_projection"
+      && input.claim.projectionRefreshOnly === true;
     const nextStage = input.completedStage === "authority_projection"
       ? "search_projection"
       : "organization";
@@ -1309,16 +1523,23 @@ export class PostgresSemanticWorkStore
       const rows = await executeTypedRecordProductQuery(tx,
         recordProductTypedDb.update(reflectionRecordSemanticWork)
           .set({
-            stage: nextStage,
-            state: "checkpointed",
+            stage: completesProjectionRefresh ? "search_projection" : nextStage,
+            state: completesProjectionRefresh ? "complete" : "checkpointed",
+            completedGeneration: completesProjectionRefresh
+              ? input.claim.generation
+              : undefined,
             claimGeneration: null,
             attemptCount: 0,
+            quarantineRound: completesProjectionRefresh ? 0 : undefined,
             leaseToken: null,
             leaseExpiresAt: null,
-            nextAttemptAt: now,
+            nextAttemptAt: completesProjectionRefresh ? null : now,
             recoverAfter: null,
             failureCode: null,
-            completedAt: null,
+            failureDetail: null,
+            waitingReason: null,
+            completionOutcome: completesProjectionRefresh ? "completed" : null,
+            completedAt: completesProjectionRefresh ? now : null,
             updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
           })
           .where(and(
@@ -1366,6 +1587,9 @@ export class PostgresSemanticWorkStore
             nextAttemptAt,
             recoverAfter: null,
             failureCode: null,
+            failureDetail: null,
+            waitingReason: input.waitingReason ?? null,
+            completionOutcome: null,
             completedAt: null,
             updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
           })
@@ -1407,16 +1631,17 @@ export class PostgresSemanticWorkStore
         completedGeneration: input.generation,
         ...(current ? {state: "complete" as const, claimGeneration: null, leaseToken: null,
           leaseExpiresAt: null, nextAttemptAt: null, quarantineRound: 0, recoverAfter: null,
-          failureCode: null, ordinaryFallbackReason: null, completedAt: sql`now()`} : {}),
+          failureCode: null, failureDetail: null, waitingReason: null,
+          ordinaryFallbackReason: null, completionOutcome: "completed" as const,
+          completedAt: sql`now()`} : {}),
         updatedAt: sql`greatest(${table.updatedAt}, now())`,
       }).where(eq(table.recordId, input.recordRef)));
     }, {isolationLevel: "read committed"});
   }
 
-  complete(input: Readonly<{
-    claim: DurableSleepClaim;
-    ordinaryFallbackReason?: DurableSleepOrdinaryFallbackReason;
-  }>): Promise<DurableSleepLeaseResult> {
+  complete(
+    input: Parameters<DurableSleepWorkPort["complete"]>[0],
+  ): Promise<DurableSleepLeaseResult> {
     if (
       input.claim.stage !== "organization"
       && input.claim.changeReason !== "parent_conflict"
@@ -1436,7 +1661,10 @@ export class PostgresSemanticWorkStore
             quarantineRound: 0,
             recoverAfter: null,
             failureCode: null,
+            failureDetail: null,
+            waitingReason: null,
             ordinaryFallbackReason: input.ordinaryFallbackReason ?? null,
+            completionOutcome: input.completionOutcome ?? "completed",
             completedAt: now,
             updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
           })
@@ -1461,10 +1689,9 @@ export class PostgresSemanticWorkStore
     });
   }
 
-  defer(input: Readonly<{
-    claim: DurableSleepClaim;
-    failureCode: DurableSleepFailureCode;
-  }>): Promise<DurableSleepDeferralResult> {
+  defer(
+    input: Parameters<DurableSleepWorkPort["defer"]>[0],
+  ): Promise<DurableSleepDeferralResult> {
     return this.#claimedDeferral(input.claim, async (tx, now) => {
       const exhausted = sql`${reflectionRecordSemanticWork.attemptCount}
         >= ${MAXIMUM_ATTEMPTS}`;
@@ -1493,6 +1720,9 @@ export class PostgresSemanticWorkStore
               ) * interval '1 millisecond'
               else null end`,
             failureCode: input.failureCode,
+            failureDetail: input.failureDetail ?? null,
+            waitingReason: null,
+            completionOutcome: null,
             completedAt: null,
             updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
           })
@@ -1516,7 +1746,7 @@ export class PostgresSemanticWorkStore
     const rows = await executeTypedRecordProductQuery(this.options.handle,
       recordProductTypedDb.select({
         backlog: sql<bigint>`count(*) filter (where ${reflectionRecordSemanticWork.state}
-          in ('due', 'claimed', 'checkpointed', 'deferred'))::bigint`.as("backlog"),
+          <> 'complete')::bigint`.as("backlog"),
         ready: sql<bigint>`count(*) filter (where (
           (${reflectionRecordSemanticWork.attemptCount} < ${MAXIMUM_ATTEMPTS}
             and ${reflectionRecordSemanticWork.state} in ('due', 'checkpointed', 'deferred')
@@ -1524,8 +1754,11 @@ export class PostgresSemanticWorkStore
           or (${reflectionRecordSemanticWork.attemptCount} < ${MAXIMUM_ATTEMPTS}
             and ${reflectionRecordSemanticWork.state} = 'claimed'
             and ${reflectionRecordSemanticWork.leaseExpiresAt} <= now())
-          or (${reflectionRecordSemanticWork.state} = 'quarantined'
-            and ${reflectionRecordSemanticWork.recoverAfter} <= now())
+          or (${reflectionRecordSemanticWork.state} = 'quarantined' and (
+            ${reflectionRecordSemanticWork.recoverAfter} <= now()
+            or ${reflectionRecordSemanticWork.recoveryPolicyVersion}
+              < ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_VERSION}
+          ))
         ))::bigint`.as("ready"),
         claimed: sql<bigint>`count(*) filter (where ${reflectionRecordSemanticWork.state}
           = 'claimed')::bigint`.as("claimed"),
@@ -1533,10 +1766,11 @@ export class PostgresSemanticWorkStore
           = 'quarantined')::bigint`.as("quarantined"),
         maximum_attempts: sql<number>`coalesce(max(${
           reflectionRecordSemanticWork.attemptCount
-        }), 0)::integer`.as("maximum_attempts"),
+        }) filter (where ${reflectionRecordSemanticWork.state} <> 'complete'), 0)
+          ::integer`.as("maximum_attempts"),
         oldest_due_at: sql<Date | null>`min(${reflectionRecordSemanticWork.dueSince})
           filter (where ${reflectionRecordSemanticWork.state}
-            in ('due', 'claimed', 'checkpointed', 'deferred'))`.as("oldest_due_at"),
+            <> 'complete')`.as("oldest_due_at"),
       }).from(reflectionRecordSemanticWork)
         .innerJoin(
           reflectionRecords,
@@ -1631,6 +1865,142 @@ export class PostgresSemanticWorkStore
               }),
         });
         if (result.admitted) admitted += 1;
+      }
+      const continuation = rows.length > input.limit
+        ? rowString(selected.at(-1)!, "record_id")
+        : undefined;
+      return {
+        admitted,
+        ...(continuation === undefined ? {} : { continuation }),
+      };
+    }, { isolationLevel: "read committed" });
+  }
+
+  /**
+   * Admit or restage a bounded page whose legacy search projection lacks the
+   * current Room anchor. Completed work receives a receipt-backed projection
+   * refresh generation; outstanding organization work returns to its search
+   * checkpoint within the same generation and keeps its retry/recovery state.
+   */
+  admitMissingRoomProjectionPage(input: Readonly<{
+    limit: number;
+    policyVersion: string;
+    continuation?: string;
+  }>): Promise<SemanticWorkRepairPage> {
+    assertPageLimit(input.limit);
+    assertOpaque(input.policyVersion, "Room projection policy version");
+    if (input.continuation !== undefined) {
+      assertOpaque(input.continuation, "Room projection continuation");
+    }
+    return this.options.handle.transaction(async (tx) => {
+      const rows = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          record_id: reflectionRecords.recordId,
+          processing_generation: reflectionRecords.processingGeneration,
+          structural_height: reflectionRecords.structuralHeight,
+          generation: reflectionRecordSemanticWork.generation,
+          completed_generation: reflectionRecordSemanticWork.completedGeneration,
+          state: reflectionRecordSemanticWork.state,
+        }).from(reflectionRecords)
+          .innerJoin(
+            reflectionRecordSemanticWork,
+            eq(reflectionRecordSemanticWork.recordId, reflectionRecords.recordId),
+          )
+          .leftJoin(
+            reflectionRecordSearchProjections,
+            eq(reflectionRecordSearchProjections.recordId, reflectionRecords.recordId),
+          )
+          .where(and(
+            eq(reflectionRecords.lifecycle, "current"),
+            eq(reflectionRecords.disposition, "available"),
+            or(
+              and(
+                eq(reflectionRecordSemanticWork.state, "complete"),
+                or(
+                  isNull(reflectionRecordSearchProjections.recordId),
+                  isNull(reflectionRecordSearchProjections.roomAnchorCommitment),
+                  ne(
+                    reflectionRecordSearchProjections.recordProcessingGeneration,
+                    reflectionRecords.processingGeneration,
+                  ),
+                ),
+              ),
+              and(
+                ne(reflectionRecordSemanticWork.state, "claimed"),
+                eq(reflectionRecordSemanticWork.stage, "organization"),
+                ne(reflectionRecordSemanticWork.changeReason, "dependency_lost"),
+                sql`${reflectionRecordSemanticWork.completedGeneration}
+                  < ${reflectionRecordSemanticWork.generation}`,
+                or(
+                  isNull(reflectionRecordSearchProjections.recordId),
+                  isNull(reflectionRecordSearchProjections.roomAnchorCommitment),
+                ),
+              ),
+            ),
+            input.continuation === undefined
+              ? undefined
+              : gt(reflectionRecords.recordId, input.continuation),
+          ))
+          .orderBy(asc(reflectionRecords.recordId))
+          .limit(input.limit + 1)
+          .for("update", {
+            of: reflectionRecordSemanticWork,
+            skipLocked: true,
+          }));
+      const selected = rows.slice(0, input.limit);
+      const now = this.#clock();
+      let admitted = 0;
+      for (const row of selected) {
+        const recordRef = rowString(row, "record_id");
+        const generation = rowInteger(row, "generation");
+        if (rowString(row, "state") === "complete") {
+          const processingGeneration = rowInteger(row, "processing_generation");
+          const completedWorkGeneration = rowInteger(row, "completed_generation");
+          const structuralHeight = rowInteger(row, "structural_height");
+          const admission = await admitSemanticWorkWithinTransaction(tx, {
+            recordRef,
+            changeReason: structuralHeight === 0 ? "created" : "scheduled_review",
+            admissionCommitment: this.options.commitments.projectionRefresh({
+              recordRef,
+              processingGeneration,
+              completedWorkGeneration,
+              policyVersion: input.policyVersion,
+            }),
+            now,
+          });
+          if (!admission.admitted) continue;
+          const marked = await executeTypedRecordProductQuery(tx,
+            recordProductTypedDb.update(reflectionRecordSemanticWork)
+              .set({ projectionRefreshOnly: true })
+              .where(and(
+                eq(reflectionRecordSemanticWork.recordId, recordRef),
+                eq(reflectionRecordSemanticWork.generation, admission.generation),
+                eq(reflectionRecordSemanticWork.state, "due"),
+                eq(reflectionRecordSemanticWork.stage, "authority_projection"),
+              ))
+              .returning({ record_id: reflectionRecordSemanticWork.recordId }));
+          if (marked.length !== 1) {
+            throw new Error("Room projection refresh admission lost its generation fence");
+          }
+          admitted += 1;
+          continue;
+        }
+        const restaged = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.update(reflectionRecordSemanticWork)
+            .set({
+              stage: "search_projection",
+              projectionRefreshOnly: false,
+            })
+            .where(and(
+              eq(reflectionRecordSemanticWork.recordId, recordRef),
+              eq(reflectionRecordSemanticWork.generation, generation),
+              ne(reflectionRecordSemanticWork.state, "claimed"),
+              eq(reflectionRecordSemanticWork.stage, "organization"),
+              sql`${reflectionRecordSemanticWork.completedGeneration}
+                < ${reflectionRecordSemanticWork.generation}`,
+            ))
+            .returning({ record_id: reflectionRecordSemanticWork.recordId }));
+        if (restaged.length === 1) admitted += 1;
       }
       const continuation = rows.length > input.limit
         ? rowString(selected.at(-1)!, "record_id")

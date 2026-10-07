@@ -42,17 +42,14 @@ function codePoints(value: string): number {
 }
 
 function prompt(input: Readonly<{
-  previousStatement: string;
   remainingSupportStatements: readonly string[];
 }>): string | null {
   if (
-    input.previousStatement.trim().length === 0
-    || input.remainingSupportStatements.length < 1
+    input.remainingSupportStatements.length < 1
     || input.remainingSupportStatements.length > MAX_SUPPORT_STATEMENTS
     || input.remainingSupportStatements.some((value) => value.trim().length === 0)
   ) return null;
   return `${DEPENDENCY_LOSS_REWRITE_CONTRACT}\n\n[Untrusted remaining support]\n${JSON.stringify({
-    previousStatement: input.previousStatement,
     remainingSupportStatements: input.remainingSupportStatements,
   })}`;
 }
@@ -69,7 +66,6 @@ function parse(value: string): string | null {
 
 /** Pure semantic owner for a grounded partial-dependency-loss rewrite. */
 export async function runDependencyLossRewrite(input: Readonly<{
-  previousStatement: string;
   remainingSupportStatements: readonly string[];
   invoke: OrganizerModelInvoker;
   signal?: AbortSignal;
@@ -81,22 +77,13 @@ export async function runDependencyLossRewrite(input: Readonly<{
   if (codePoints(projected) > ORGANIZER_INPUT_MAX_CODE_POINTS) {
     return { ok: false, errorCode: "input_too_large", attempts: 0 };
   }
-  let response: string;
-  try {
-    response = await input.invoke(projected, input.signal);
-  } catch {
-    return { ok: false, errorCode: "invalid_output", attempts: 2 };
-  }
+  let response = await input.invoke(projected, input.signal);
   const first = parse(response);
   if (first !== null) return { ok: true, statement: first, attempts: 1 };
-  try {
-    response = await input.invoke(
-      `${projected}\n\nYour previous response was invalid. Return only the required JSON object.`,
-      input.signal,
-    );
-  } catch {
-    return { ok: false, errorCode: "invalid_output", attempts: 2 };
-  }
+  response = await input.invoke(
+    `${projected}\n\nYour previous response was invalid. Return only the required JSON object.`,
+    input.signal,
+  );
   const repaired = parse(response);
   return repaired === null
     ? { ok: false, errorCode: "invalid_output", attempts: 2 }

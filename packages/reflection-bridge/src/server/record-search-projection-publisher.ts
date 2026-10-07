@@ -10,6 +10,8 @@ import {
   type RecordSearchProjectionMutationResult,
 } from "@nautilo/reflection/search";
 
+import type { SameRoomSemanticBindingPort } from "./durable-semantic-composition";
+import type { RecordSearchCommitmentPort } from "./record-search-composition";
 import type { RecordRepositoryPort } from "./contracts";
 import type { PostgresRecordSearchProjectionStore } from "./postgres-record-search-projection-store";
 
@@ -18,6 +20,8 @@ export class DualModeRecordSearchProjectionPublisher
 implements RecordSearchProjectionMutationPort {
   constructor(private readonly ports: Readonly<{
     repository: RecordRepositoryPort;
+    bindings: SameRoomSemanticBindingPort;
+    commitments: Pick<RecordSearchCommitmentPort, "roomAnchor">;
     embedding: RecordEmbeddingPort;
     projections: PostgresRecordSearchProjectionStore;
   }>) {}
@@ -57,6 +61,9 @@ implements RecordSearchProjectionMutationPort {
       opened.status !== "available"
       || opened.record.processingGeneration !== input.recordProcessingGeneration
     ) return { status: "rejected", reason: "record_unavailable" };
+    const binding = await this.ports.bindings.resolve(opened.record);
+    if (binding.status !== "available") return { status: "rejected", reason: "record_unavailable" };
+    const roomAnchorCommitment = this.ports.commitments.roomAnchor(binding.binding.roomAnchorRef);
     const embedded = await this.ports.embedding.embed({
       purpose: "record.statement_embedding",
       plaintext: opened.record.semantic.statement,
@@ -77,8 +84,8 @@ implements RecordSearchProjectionMutationPort {
       return { status: "rejected", reason: "invalid_projection" };
     }
     const result = expectedProjectionGeneration === undefined
-      ? await this.ports.projections.publish(projection)
-      : await this.ports.projections.replace({ expectedProjectionGeneration, projection });
+      ? await this.ports.projections.publish(projection, roomAnchorCommitment)
+      : await this.ports.projections.replace({ expectedProjectionGeneration, projection, roomAnchorCommitment });
     if (result === "published" || result === "replayed" || result === "replaced") {
       return { status: result, projectionGeneration: projection.projectionGeneration };
     }

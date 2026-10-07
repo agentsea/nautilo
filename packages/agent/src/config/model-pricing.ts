@@ -351,7 +351,11 @@ export interface UsageTokens {
  * output → outputPerMtok (reasoning tokens are already inside output)
  */
 export function estimateCostUsd(modelId: string, tokens: UsageTokens, servingProfileId?: string): number {
-  const resolvedPrice = resolveModelPrice(modelId, servingProfileId).price;
+  return estimateCostFromPrice(resolveModelPrice(modelId, servingProfileId).price, tokens);
+}
+
+/** Apply the pricing snapshot captured before a provider attempt. */
+export function estimateCostFromPrice(resolvedPrice: ModelPrice, tokens: UsageTokens): number {
   const input = Math.max(0, tokens.inputTokens ?? 0);
   const output = Math.max(0, tokens.outputTokens ?? 0);
   const price = resolvedPrice.longContext && input > resolvedPrice.longContext.inputTokensAbove

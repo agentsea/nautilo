@@ -8,10 +8,12 @@ import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from "bun:test";
+import { createTask as dbCreateTask, eq, tasks } from "@nautilo/db";
 import { JobManager } from "../../src/job-manager";
 import { eventBus } from "../../src/event-bus";
 import { forkLanggraphExecutor } from "../../src/executors/fork-langgraph-executor";
 import type { ForkRunMetadata } from "../../src/fork/fork-metadata";
+import { setTaskRunDb } from "../../src/tasks/task-runtime-context";
 import {
   __setStubModelForTests,
   createCheckpointSaver,
@@ -26,6 +28,7 @@ import {
 import {
   cleanupTestUserWithDestructivePermission,
   closeDirectDb,
+  getDirectDb,
   pollUntilComplete,
   collectEvents,
   waitForRunningForegroundJob,
@@ -168,6 +171,100 @@ describe("Graph plumbing (stub LLM, M067D)", () => {
       cleanup();
     }
     expect(stub.remaining).toBe(0);
+  });
+
+  test("task report-back skip terminates after one model invocation with durable audit", async () => {
+    const stub = createStubProvider({
+      responses: [{
+        type: "tool_call",
+        name: "skip",
+        args: { reason: "No actionable change." },
+        id: "skip-report-back",
+      }],
+    });
+    __setStubModelForTests(stub.asChatModel());
+
+    const { events, cleanup } = collectEvents(eventBus);
+    const threadId = `stub-skip-report-back-${randomUUID()}`;
+    const db = getDirectDb();
+    // Task-originated foreground turns revalidate their durable funding owner
+    // before graph construction. Seed the minimal terminal legacy-funded Task
+    // that a production report-back wake names; no funding policy is bypassed.
+    const task = await dbCreateTask(db, {
+      ownerId: userId,
+      requestorId: userId,
+      agentId,
+      prompt: "Report only when something changes.",
+      scheduleKind: "now",
+      targetChat: "orphan",
+      toolsMode: "none",
+      callingRoomId: null,
+      resultDelivery: "wake",
+      nextFireAt: new Date(),
+      status: "completed",
+    });
+    setTaskRunDb(db);
+    try {
+      // System report-backs bypass the coalescer, so subscribe before dispatch.
+      const dispatched = waitForRunningForegroundJob(jobManager);
+      await jobManager.createSystemForegroundJob(userId, userId, `lane:${threadId}`, {
+        message: "[TASK RESULT] No actionable change. Notify only when something changes.",
+        ownerId: userId,
+        requestorId: userId,
+        causalHumanUserId: userId,
+        agentId,
+        actorRole: "owner",
+        threadId,
+        workspacePath: workspaceRoot,
+        currentFolder: workspaceRoot,
+        turnId: randomUUID(),
+        metadata: { originatedBy: "task", taskId: task.id },
+      });
+
+      const job = await dispatched;
+      await pollUntilComplete(job, 60_000);
+      expect(job.status).toBe("completed");
+      expect(stub.invocations).toHaveLength(1);
+      expect(stub.remaining).toBe(0);
+      expect(events.filter((event) =>
+        (event.type === "tool.start" || event.type === "tool.end")
+        && event.toolName === "skip"
+      )).toEqual([]);
+
+      const transcript = await getTranscriptMessages(threadId);
+      const assistantAudit = transcript.find((message) =>
+        message.role === "assistant"
+        && extractToolCalls([message]).includes("skip")
+      );
+      expect(assistantAudit).toBeDefined();
+      expect(assistantAudit?.content).toBe("");
+      const skipResult = transcript.find((message) =>
+        message.role === "tool" && message.toolName === "skip"
+      );
+      expect(skipResult).toBeDefined();
+      expect(JSON.parse(skipResult?.content ?? "null")).toMatchObject({ skipped: true });
+
+      const graph = createNautiloGraph(createCheckpointSaver());
+      const checkpoint = await graph.getState({ configurable: { thread_id: threadId } });
+      expect(checkpoint && "next" in checkpoint ? checkpoint.next : undefined).toEqual([]);
+      expect(checkpoint?.values["approvedToolCalls"]).toEqual([]);
+      const checkpointMessages = checkpoint?.values["messages"];
+      expect(Array.isArray(checkpointMessages)).toBe(true);
+      if (!Array.isArray(checkpointMessages)) throw new Error("Expected checkpoint messages");
+      const checkpointSkipResults = checkpointMessages.filter((message) =>
+        message !== null
+        && typeof message === "object"
+        && (message as { name?: unknown }).name === "skip"
+      );
+      expect(checkpointSkipResults).toHaveLength(1);
+      expect(JSON.parse(String(
+        (checkpointSkipResults[0] as { content?: unknown }).content,
+      ))).toMatchObject({ skipped: true });
+    } finally {
+      cleanup();
+      setTaskRunDb(null);
+      await db.delete(tasks).where(eq(tasks.id, task.id));
+    }
   });
 
   test("model invoke error fails the job (terminal failed)", async () => {

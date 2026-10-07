@@ -9,7 +9,7 @@ import {
 } from "@nautilo/runtime";
 
 /**
- * M168 Commit 1 — unit coverage for the transcript readers + production deps
+ * unit coverage for the transcript readers + production deps
  * factory, exercised with fake `TypedRoomHistorySearchDb` handles (no DB). SQL-level
  * filtering (deaf windows, `excludeMessageId`) is proven against real Postgres
  * in `transcript-context-flows.integration.test.ts`; here we cover the TS-side
@@ -125,7 +125,7 @@ function parameterValues(query: SQL): unknown[] {
   return values;
 }
 
-describe("allRoomMessages (M168 R4)", () => {
+describe("allRoomMessages ", () => {
   test("maps user/assistant/tool authors and returns oldest-first", async () => {
     // SQL returns newest-first; the reader reverses to oldest-first.
     const rows = [
@@ -188,7 +188,7 @@ describe("allRoomMessages (M168 R4)", () => {
   });
 });
 
-describe("recentBoundedRoomMessages (M219 full retained evidence)", () => {
+describe("recentBoundedRoomMessages (full retained evidence)", () => {
   test("preserves full user, assistant, and tool content", async () => {
     const longUser = `user:${"u".repeat(400)}`;
     const longAssistant = `assistant:${"a".repeat(400)}`;
@@ -227,7 +227,7 @@ describe("recentBoundedRoomMessages (M219 full retained evidence)", () => {
   });
 });
 
-describe("defaultBuildTranscriptContextDeps (M168 Commit 1, M219 bounded context)", () => {
+describe("defaultBuildTranscriptContextDeps (bounded context)", () => {
   test("reads the latest rollup and active events after it", async () => {
     const { db, calls } = scriptedDb([
       [{ rebuildRequestedAt: null }],
@@ -405,8 +405,8 @@ describe("defaultBuildTranscriptContextDeps (M168 Commit 1, M219 bounded context
     expect(hits.map((h) => h.snippet)).toEqual(["SUB ONLY"]);
   });
 
-  test("readSubagentTranscript is wired to readSubagentRunTranscript (M169 Phase F)", () => {
-    // M169 replaced M168's Phase-F throw-stub: the slot now delegates to the
+  test("readSubagentTranscript is wired to readSubagentRunTranscript ", () => {
+    // The slot delegates to the
     // dormant `readSubagentRunTranscript` reader (still called by NO production
     // `buildTranscriptContext({kind:"subagent"})` path — R2). The reader uses
     // its own `@nautilo/agent` queries (not the factory's `RoomHistorySearchDb`
@@ -416,4 +416,23 @@ describe("defaultBuildTranscriptContextDeps (M168 Commit 1, M219 bounded context
     expect(typeof deps.readSubagentTranscript).toBe("function");
     expect(typeof readSubagentRunTranscript).toBe("function");
   });
+});
+
+
+test("same-turn image result is selected past the Human fence without widening other history", async () => {
+  const queries: SQL[] = [];
+  await recentBoundedRoomMessages({ execute: async (query) => { queries.push(query); return []; } }, {
+    roomId: "room-a", agentId: "agent-a", excludeMessageId: 42, imageAssistanceTurnId: "turn-a",
+  });
+  const text = JSON.stringify(queries[0]);
+  const parameters = parameterValues(queries[0]!);
+  expect(text).toContain("sm.id <");
+  expect(text).toContain("current_image_result");
+  expect(text).toContain("nautilo_tool_result");
+  expect(text).toContain("starts_with");
+  expect(text).toContain("s.agent_id =");
+  expect(text).toContain("LEFT JOIN earliest first ON true");
+  expect(parameters).toContain("image-assistance:turn-a:");
+  expect(parameters).toContain("agent-a");
+  expect(parameters).toContain(42);
 });

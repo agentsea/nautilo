@@ -156,6 +156,10 @@ describe("Workbench Genie application target registry", () => {
 
   test("keeps Workbench routes local and returns durable truthful fallback for unknown inputs", () => {
     expect(WORKBENCH_APPLICATION_TARGETS["connections.google"].href).toBe("/connections#google");
+    expect(WORKBENCH_APPLICATION_TARGETS["costs.personal"]).toMatchObject({
+      href: "/account/costs",
+      availability: { verified: true },
+    });
     expect(WORKBENCH_APPLICATION_TARGETS["connections.local_mcp"].presentation.focusAnchorId).toBe("local-mcp");
     for (const input of [
       { version: 2, target: "connections.google" },
@@ -220,7 +224,7 @@ describe("Workbench Genie application target registry", () => {
     });
     expect(effective.filter(({ presentation }) => presentation === "spotlight").map(({ target }) => target).sort())
       .toEqual(["connections.codex", "connections.github_cli", "connections.google", "connections.local_mcp", "connections.ssh"]);
-    expect(effective.filter(({ presentation }) => presentation === "reveal")).toHaveLength(51);
+    expect(effective.filter(({ presentation }) => presentation === "reveal")).toHaveLength(52);
     expect(resolveWorkbenchApplicationPresentation({ version: 2, target: "admin.provider_credentials", presentation: "spotlight" }).kind).toBe("unsupported");
     expect(resolveWorkbenchApplicationPresentation({ version: 1, target: "connections.unknown", presentation: "spotlight" }).kind).toBe("unsupported");
     expect(resolveWorkbenchApplicationPresentation({ version: 1, target: "admin.provider_credentials", presentation: "click" }).kind).toBe("unsupported");

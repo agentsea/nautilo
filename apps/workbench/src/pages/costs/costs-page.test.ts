@@ -5,6 +5,7 @@ import {
   COSTS_ADMIN_RETURN_PATH,
   shouldReturnFromCostsOnEscape,
 } from "./costs-page";
+import { PERSONAL_COSTS_RETURN_PATH } from "./personal-costs-page";
 
 test("Costs is an integrated billing-only Admin destination", () => {
   expect(ADMIN_SECTIONS.find((section) => section.id === "costs")).toMatchObject({
@@ -14,6 +15,10 @@ test("Costs is an integrated billing-only Admin destination", () => {
   });
   expect(WORKBENCH_APPLICATION_TARGETS["admin.costs"].availability)
     .toEqual({ anyCapabilities: ["manage_billing"] });
+});
+
+test("Personal costs returns to its Settings summary", () => {
+  expect(PERSONAL_COSTS_RETURN_PATH).toBe("/settings#personal-costs");
 });
 
 test("Costs breadcrumb and Escape return to its Admin section", () => {

@@ -12,25 +12,42 @@ import {
 import type {
   DurableSleepSemanticPort,
 } from "@nautilo/reflection/durable";
+import {
+  encodeRecordPayloadV1,
+  type RecordPayloadV1,
+} from "@nautilo/reflection/payload";
 import type {
   RecordEmbeddingPort,
   RecordEmbeddingProvenanceV1,
 } from "@nautilo/reflection/search";
 import {
   PostgresRecordSearchProjectionStore,
+  PostgresCurrentRecordPublicationBinding,
   PostgresSemanticWorkStore,
+  createHmacRecordSearchCommitmentPort,
   createHmacRecordSemanticCommitmentPort,
+  decodeDurableRecordEnvelope,
   verifyRecordProductPostgresHandle,
   type RecordProductPostgresConnection,
   type RecordProductPostgresExecutor,
+  type RecordRepositorySelection,
 } from "@nautilo/reflection-bridge/server";
-import { REFLECTION_SEMANTIC_RUNTIME_POLICY_V1 } from "@nautilo/runtime";
+import {
+  createCanonicalSameRoomBindingPorts,
+  REFLECTION_SEMANTIC_RUNTIME_POLICY_V1,
+  type CanonicalRoomAuthorityQueries,
+} from "@nautilo/runtime";
 
 type SearchSemanticPort = Pick<DurableSleepSemanticPort, "ensureSearchProjection">;
 
 interface FactoryDependencies {
   readonly connect?: (db: DirectDatabase) => RecordProductPostgresConnection;
   readonly configuredEmbedding?: () => RecordEmbeddingProvenanceV1;
+  readonly roomQueries?: CanonicalRoomAuthorityQueries;
+  readonly resolveRoomAnchorCommitment?: (
+    metadata: ProtectedReflectionSearchMetadata,
+    payload: RecordPayloadV1,
+  ) => Promise<string | null>;
 }
 
 function configuredEmbedding(): RecordEmbeddingProvenanceV1 {
@@ -68,6 +85,7 @@ function heldConnection(
 export async function createProductionProtectedReflectionSearchComposition(
   input: Readonly<{
     db: DirectDatabase;
+    selection: RecordRepositorySelection;
     commitmentKey: Uint8Array;
     runSemantic: ReflectionSemanticOperationPort["runSemantic"];
     embedding: RecordEmbeddingPort;
@@ -86,17 +104,53 @@ export async function createProductionProtectedReflectionSearchComposition(
   });
   const now = input.now ?? Date.now;
   const commitments = createHmacRecordSemanticCommitmentPort(input.commitmentKey);
+  const searchCommitments = createHmacRecordSearchCommitmentPort(input.commitmentKey);
+  const publications = new PostgresCurrentRecordPublicationBinding(
+    handle,
+    input.selection,
+  );
+  const bindings = createCanonicalSameRoomBindingPorts({
+    selection: input.selection,
+    publications,
+    searchCommitments,
+    ...(dependencies.roomQueries === undefined
+      ? {}
+      : { roomQueries: dependencies.roomQueries }),
+  });
 
   return createProtectedReflectionSearchProjection({
     operation: { runSemantic: input.runSemantic },
     embedding: input.embedding,
     resolveMetadata: (claim, signal) => metadata.resolve(claim, signal),
+    resolveRoomAnchorCommitment: dependencies.resolveRoomAnchorCommitment ?? (async (
+      current,
+      payload,
+    ) => {
+      const payloadBytes = encodeRecordPayloadV1(payload);
+      try {
+        const resolved = await bindings.semantic.resolve(
+          decodeDurableRecordEnvelope({
+            recordRef: current.recordRef,
+            lifecycle: current.lifecycle,
+            structuralHeight: current.structuralHeight,
+            processingGeneration: current.processingGeneration,
+            payloadBytes,
+          }),
+        );
+        return resolved.status === "available"
+          ? searchCommitments.roomAnchor(resolved.binding.roomAnchorRef)
+          : null;
+      } finally {
+        payloadBytes.fill(0);
+      }
+    }),
     nextRetryAt: () => now()
       + REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.scanIntervalMilliseconds,
     async publish({
       claim,
       metadata,
       projection,
+      roomAnchorCommitment,
       expectedProjectionGeneration,
       held,
       authorizeCommit,
@@ -121,10 +175,11 @@ export async function createProductionProtectedReflectionSearchComposition(
           await authorizeCommit();
           const projections = new PostgresRecordSearchProjectionStore(heldHandle);
           return expectedProjectionGeneration === null
-            ? projections.publish(projection)
+            ? projections.publish(projection, roomAnchorCommitment)
             : projections.replace({
                 expectedProjectionGeneration,
                 projection,
+                roomAnchorCommitment,
               });
         },
       );

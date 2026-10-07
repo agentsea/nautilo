@@ -148,7 +148,9 @@ function readPersonalCredential(
   ) {
     throw new Error("A valid personal provider credential is required.");
   }
-  return { apiKey: (candidate as { apiKey: string }).apiKey };
+  const destination = (candidate as { destination?: unknown }).destination;
+  return { apiKey: (candidate as { apiKey: string }).apiKey,
+    ...(typeof destination === "string" ? { destination } : {}) };
 }
 
 function readHeaders(value: unknown): Record<string, string> | undefined {
@@ -218,7 +220,7 @@ export function buildOpenRouterCreateModelOptions(
   return options;
 }
 
-function normalizeGatewayBaseUrl(value: unknown): string | undefined {
+export function normalizeGatewayBaseUrl(value: unknown): string | undefined {
   const baseUrl = nonEmptyString(value);
   if (!baseUrl) return undefined;
   try {
@@ -408,6 +410,8 @@ async function createUniversalModelInternal(
   delete cleanOptions["useAnthropicLongContext"];
 
   const factoryOpts: CreateModelOptions = { modelId: id };
+  // The durable personal attempt owner accounts for each retry before the wire.
+  if (personalCredential) factoryOpts.maxRetries = 0;
   if (usageCallbacks) factoryOpts.callbacks = usageCallbacks;
   const apiKey = personalCredential?.apiKey ?? cleanOptions["apiKey"] as string | undefined;
   const baseUrl = (cleanOptions["baseUrl"] ?? cleanOptions["baseURL"]) as string | undefined;
@@ -514,6 +518,7 @@ async function createUniversalModelInternal(
         usageCallbacks,
         personalCredential,
       );
+      if (personalCredential) orOpts.maxRetries = 0;
       if (resolvedMaxTokens !== undefined) orOpts.maxTokens = resolvedMaxTokens;
       if (resolvedTimeoutMs !== undefined) orOpts.timeoutMs = resolvedTimeoutMs;
       orOpts.reasoningOutput = reasoningOutput;

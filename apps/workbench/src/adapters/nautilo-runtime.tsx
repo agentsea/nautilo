@@ -4471,6 +4471,7 @@ export function NautiloRuntimeProvider({
           ) {
             const artifacts = dedupeMessageArtifactOpenRefs(event.artifacts);
             const custom = {
+              ...(event.imageAssistance ? { imageAssistance: event.imageAssistance } : {}),
               ...(event.createdAt ? { sentAt: event.createdAt } : {}),
               ...(typeof event.authorAgentId === "string" && event.authorAgentId.length > 0
                 ? { authorAgentId: event.authorAgentId }
@@ -4997,6 +4998,17 @@ export function NautiloRuntimeProvider({
             clearAgentStreamingVisibleOutput();
             setIsRunning(hasLiveJobForActiveRoom());
             setModelFallbackStatus(null);
+          }
+          if (event.status === "failed" && event.errorCode === "image_assistance_failed"
+            && terminalRoomId !== null && terminalRoomId === activeRoomIdRef.current) {
+            if (!messagesRef.current.some((message) => message.id === `image-read-error:${event.jobId}`)) addMessage({
+              id: `image-read-error:${event.jobId}`,
+              role: "system",
+              content: [{ type: "text", text: "Image reading failed. Your images remain in this chat. Try again by reattaching them, or choose a model that supports images." }],
+            });
+            setIsRunning(hasLiveJobForActiveRoom());
+            setModelFallbackStatus(null);
+            break;
           }
           if (event.status === "failed") {
             // render the friendly translator's one-line
@@ -8105,7 +8117,11 @@ export function NautiloRuntimeProvider({
   });
 
   return (
-    <TaskStateProvider wsState={wsState} bridgeRef={taskStateBridgeRef}>
+    <TaskStateProvider
+      wsState={wsState}
+      bridgeRef={taskStateBridgeRef}
+      policyMode={shadowPolicyMode}
+    >
     <RunningSubagentsFromTaskState>
     <WsStateContext.Provider value={{ state: wsState, lastOpenAt }}>
       <ProtectedRoomAccessContext.Provider value={protectedRoomAccess}>

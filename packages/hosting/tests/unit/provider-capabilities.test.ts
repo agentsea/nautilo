@@ -41,7 +41,9 @@ describe("resolveProviderCapabilities", () => {
       "openrouter",
       "gateway",
       "google",
+      "xai",
       "fireworks",
+      "together",
       "venice",
       "surplus",
       "typesafe",
@@ -68,7 +70,7 @@ describe("resolveProviderCapabilities", () => {
     expect(result.readiness.coreReadiness).toBe("blocked");
   });
 
-  test("Surplus credentials remain selectable without claiming an unqualified chat route", () => {
+  test("Surplus credentials project the marketplace chat rail without claiming embeddings", () => {
     const result = resolve({
       allProviders: true,
       references: [{ provider: "surplus", state: "configured", source: "environment" }],
@@ -77,12 +79,32 @@ describe("resolveProviderCapabilities", () => {
     expect(result.providers.find((provider) => provider.provider === "surplus")).toMatchObject({
       selected: true,
       state: "configured",
-      capabilities: [],
+      capabilities: ["chat"],
     });
-    for (const name of HOSTING_CAPABILITIES) {
+    expect(capability(result, "chat").experience).toBe("baseline");
+    for (const name of ["embeddings", "search", "tts", "stt"] as const) {
       expect(capability(result, name).experience).toBe("unavailable");
     }
     expect(result.readiness.coreReadiness).toBe("blocked");
+  });
+
+  test("xAI and Together project direct chat only", () => {
+    for (const provider of ["xai", "together"] as const) {
+      const result = resolve({
+        allProviders: true,
+        references: [{ provider, state: "configured", source: "environment" }],
+      });
+      expect(result.issues).toEqual([]);
+      expect(result.providers.find((candidate) => candidate.provider === provider)).toMatchObject({
+        selected: true,
+        state: "configured",
+        capabilities: ["chat"],
+      });
+      expect(capability(result, "chat").experience).toBe("baseline");
+      for (const name of ["embeddings", "search", "tts", "stt"] as const) {
+        expect(capability(result, name).experience).toBe("unavailable");
+      }
+    }
   });
 
   test("all-providers selects only recognized supplied references in stable order", () => {

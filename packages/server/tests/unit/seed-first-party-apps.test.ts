@@ -7,6 +7,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   symlink,
@@ -443,6 +444,47 @@ describe("seedFirstPartyApps", () => {
     expect(videoMarker["sourceHash"]).toMatch(/^[a-f0-9]{64}$/);
     await stat(join(videoDir, "app.json"));
     await stat(join(videoDir, "main.ts"));
+  });
+});
+
+describe("isolated seed metadata recovery", () => {
+  async function fixture() {
+    const sourceRoot = await makeTempDir("nautilo-seed-marker-source-");
+    const appsRoot = await makeTempDir("nautilo-seed-marker-apps-");
+    await makeFakeAppSource(sourceRoot, "writer", "nautilo-writer");
+    const source = join(sourceRoot, "writer");
+    await mkdir(join(source, "node_modules", ".bun"), { recursive: true });
+    await writeFile(join(source, "package.json"), JSON.stringify({ name: "writer", dependencies: {} }));
+    const options = { sourceRoot, appsRoot, appIds: ["nautilo-writer"] };
+    await seedFirstPartyApps(options);
+    const installed = join(appsRoot, "nautilo-writer");
+    return { options, installed, marker: join(installed, ".nautilo-seed.json") };
+  }
+
+  test.each(["{broken", "null", "[]", "42", "{}"])("reseeds invalid marker contents %s and then becomes a no-op", async (contents) => {
+    const f = await fixture();
+    const entry = await readFile(join(f.installed, "main.ts"), "utf8");
+    await writeFile(f.marker, contents);
+    expect((await seedFirstPartyApps(f.options)).seeded).toEqual(["nautilo-writer"]);
+    expect(JSON.parse(await readFile(f.marker, "utf8"))).toMatchObject({
+      seededFrom: "first-party", appId: "nautilo-writer", dependencyLayout: "runtime-graph",
+    });
+    expect(await readFile(join(f.installed, "main.ts"), "utf8")).toBe(entry);
+    expect((await seedFirstPartyApps(f.options)).seeded).toEqual([]);
+  });
+
+  test("preserves filesystem errors while reading the marker", async () => {
+    const f = await fixture();
+    const entry = await readFile(join(f.installed, "main.ts"), "utf8");
+    await rename(f.marker, join(f.options.appsRoot, "saved-marker.json"));
+    await mkdir(f.marker);
+    const readError = await readFile(f.marker, "utf8").catch((error: unknown) => error);
+    expect(readError).toBeInstanceOf(Error);
+    const result = await seedFirstPartyApps(f.options).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect((result as NodeJS.ErrnoException).code).toBe((readError as NodeJS.ErrnoException).code);
+    expect((await stat(f.marker)).isDirectory()).toBe(true);
+    expect(await readFile(join(f.installed, "main.ts"), "utf8")).toBe(entry);
   });
 });
 

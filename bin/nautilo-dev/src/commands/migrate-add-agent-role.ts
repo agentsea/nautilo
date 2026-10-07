@@ -107,7 +107,7 @@ function defaultClusterExec(): ClusterExec {
       const target = db ?? "postgres";
       return execFileSync(
         "docker",
-        ["exec", "-i", container, "psql", "-U", superuser, "-t", "-A", "-v", "ON_ERROR_STOP=1", target],
+        ["exec", "-i", container, "psql", "-U", superuser, "-t", "-A", "-v", "ON_ERROR_STOP=1", "--single-transaction", "--file=-", target],
         { input: `${sql.trim()}\n`, stdio: ["pipe", "pipe", "pipe"] },
       )
         .toString()

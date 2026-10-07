@@ -6,7 +6,7 @@ import packageJson from "../../package.json";
 
 const tag = "0168_dapper_spiral";
 const migrations = resolve(import.meta.dir, "../../src/migrations");
-const migration = readFileSync(resolve(migrations, `${tag}.sql`), "utf8");
+const migration = readFileSync(resolve(migrations, `${tag}.sql`), "utf8").replaceAll("\r\n", "\n");
 const journal = JSON.parse(
   readFileSync(resolve(migrations, "meta/_journal.json"), "utf8"),
 ) as { entries: readonly { idx: number; tag: string }[] };

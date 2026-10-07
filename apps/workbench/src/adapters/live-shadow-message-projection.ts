@@ -1,5 +1,6 @@
 import {
   projectToolResultForEvent,
+  parseImageAssistanceSummary,
   type FullEncryptionMessageRealtimeContentEventV2,
   type LiveShadowMessageRealtimeEventV1,
   type ServerEvent,
@@ -79,8 +80,10 @@ export function projectLiveShadowMessageResult(input: Readonly<{
 
   const payload = opened.payload;
   if (payload.role === "assistant") {
+    const imageAssistance = parseImageAssistanceSummary(payload.sensitiveMetadata?.["imageAssistance"]);
     const events: ServerEvent[] = [];
     for (const call of payload.toolCalls ?? []) {
+      if (call.name === "image_assistance") continue;
       if (typeof call.id !== "string" || call.id.length === 0) continue;
       events.push(Object.freeze({
         type: "tool.start" as const,
@@ -100,6 +103,7 @@ export function projectLiveShadowMessageResult(input: Readonly<{
         ...("protectedMessage" in input.event ? { createdAt: input.event.protectedMessage.projection.createdAt } : {}),
         role: "ai" as const,
         content: payload.content,
+        ...(imageAssistance ? { imageAssistance } : {}),
         authorAgentId: opened.authorAgentId,
         ...(opened.assistantMessageKey === null
           ? {}
@@ -109,6 +113,7 @@ export function projectLiveShadowMessageResult(input: Readonly<{
     return Object.freeze(events);
   }
 
+  if (payload.role === "tool" && payload.toolName === "image_assistance") return Object.freeze([]);
   const callId = payload.sensitiveMetadata?.["toolCallId"];
   if (
     payload.role !== "tool"

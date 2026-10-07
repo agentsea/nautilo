@@ -30,6 +30,7 @@ describe("protected Reflection search metadata", () => {
           return [{
             record_id: claim.recordRef,
             processing_generation: 3,
+            structural_height: 0,
             producer_policy_version: "policy:v1",
             lifecycle: "current",
             disposition: "available",
@@ -53,6 +54,7 @@ describe("protected Reflection search metadata", () => {
     expect(await metadata.resolve(claim)).toEqual({
       recordRef: claim.recordRef,
       processingGeneration: 3,
+      structuralHeight: 0,
       representationGeneration: 4,
       producerPolicyVersion: "policy:v1",
       lifecycle: "current",
@@ -76,6 +78,7 @@ describe("protected Reflection search metadata", () => {
     const row = {
       record_id: claim.recordRef,
       processing_generation: 3,
+      structural_height: 0,
       producer_policy_version: "policy:v1",
       lifecycle: "current",
       disposition: "available",
@@ -93,5 +96,49 @@ describe("protected Reflection search metadata", () => {
     });
 
     expect(await metadata.resolve(claim)).toBeNull();
+  });
+
+  test("surfaces a legacy null Room commitment so the granted path rebuilds it", async () => {
+    const product = {
+      async query(statement: string) {
+        if (statement.includes('"reflection_record_payload_representation_heads"')) {
+          return [{
+            record_id: claim.recordRef,
+            processing_generation: 3,
+            structural_height: 0,
+            producer_policy_version: "policy:v1",
+            lifecycle: "current",
+            disposition: "available",
+            representation_generation: 4,
+            crypto_object_id: "object:four",
+            processing_state: "current",
+            access_namespace_id: "namespace:one",
+          }];
+        }
+        if (statement.includes('from "reflection_record_search_projections"')) {
+          return [{
+            record_id: claim.recordRef,
+            record_processing_generation: 3,
+            projection_version: 1,
+            projection_generation: 7,
+            embedding_provider: provenance.provider,
+            embedding_canonical_model: provenance.canonicalModel,
+            embedding_dimensions: provenance.dimensions,
+            embedding_contract_version: provenance.contractVersion,
+            room_anchor_commitment: null,
+          }];
+        }
+        throw new Error(`Unexpected query: ${statement}`);
+      },
+    } as Pick<PostgresJsBridgeConnection, "query">;
+    const metadata = new PostgresProtectedReflectionSearchMetadata({
+      product,
+      configuredEmbedding: () => provenance,
+    });
+
+    expect((await metadata.resolve(claim))?.currentProjection).toMatchObject({
+      projectionGeneration: 7,
+      roomAnchorCommitment: null,
+    });
   });
 });

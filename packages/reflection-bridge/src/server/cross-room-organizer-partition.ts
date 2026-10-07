@@ -140,6 +140,7 @@ export interface CrossRoomPublicationPlanBuilderPort {
   planDependencyLoss?(input: Readonly<{
     predecessor: DurableRecordEnvelope;
     proposal: Extract<PartitionedOrganizeProposal, { operation: "supersede_parent" }>;
+    modelExposureDependencies: readonly DurableModelExposureDependency[];
     idempotencyKey: string;
     signal?: AbortSignal;
   }>): Promise<CrossRoomOrganizerPublicationPlanningResult>;

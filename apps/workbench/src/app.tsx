@@ -56,6 +56,9 @@ const AccessControlPage = deploymentSafeLazy(() =>
 const CostsPage = deploymentSafeLazy(() =>
   import("./pages/costs/costs-page").then((m) => ({ default: m.CostsPage })),
 );
+const PersonalCostsPage = deploymentSafeLazy(() =>
+  import("./pages/costs/personal-costs-page").then((m) => ({ default: m.PersonalCostsPage })),
+);
 const SkillsPage = deploymentSafeLazy(() =>
   import("./pages/skills/skills-page").then((m) => ({ default: m.SkillsPage })),
 );
@@ -90,6 +93,7 @@ const STABLE_APPLICATION_ROUTES_V1 = [
   { id: "admin", catalogueTarget: "admin", path: "/admin", element: <LazyManagementRoute Page={AdminPage} /> },
   { id: "access-control", catalogueTarget: "admin.access_control", path: ADMIN_ACCESS_CONTROL_ROUTE, element: <LazyManagementRoute Page={AccessControlPage} /> },
   { id: "costs", catalogueTarget: "costs", path: "/costs", element: <LazyManagementRoute Page={CostsPage} /> },
+  { id: "personal-costs", catalogueTarget: "costs.personal", path: "/account/costs", element: <LazyManagementRoute Page={PersonalCostsPage} /> },
   { id: "skills", catalogueTarget: "skills", path: "/skills", element: <LazyManagementRoute Page={SkillsPage} /> },
   { id: "connections", catalogueTarget: "connections", path: "/connections", element: <LazyManagementRoute Page={ConnectionsPage} /> },
   { id: "commands", catalogueTarget: "commands", path: "/commands", element: <LazyManagementRoute Page={CommandsPage} /> },

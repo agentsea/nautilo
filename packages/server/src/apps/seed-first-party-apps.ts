@@ -95,6 +95,17 @@ function isEnoent(err: unknown): boolean {
   return (err as NodeJS.ErrnoException).code === "ENOENT";
 }
 
+function hasRuntimeDependencyLayout(contents: string): boolean {
+  try {
+    const marker: unknown = JSON.parse(contents);
+    return typeof marker === "object" && marker !== null && !Array.isArray(marker)
+      && "dependencyLayout" in marker && marker.dependencyLayout === "runtime-graph";
+  } catch (error) {
+    if (error instanceof SyntaxError) return false;
+    throw error;
+  }
+}
+
 async function createTemporarySibling(appsRoot: string, appId: string, purpose: string): Promise<string> {
   const path = await mkdtemp(join(appsRoot, `.${appId}.${purpose}-`));
   // `mkdtemp` creates the directory, while `cp(..., { errorOnExist: true })`
@@ -263,8 +274,8 @@ export async function seedFirstPartyApps(
 
     if (!shouldCopy && await pathExists(join(sourceDir, "node_modules", ".bun"))) {
       try {
-        const marker = JSON.parse(await readFile(join(destRoot, SEED_MARKER_FILE), "utf8")) as { dependencyLayout?: string };
-        shouldCopy = marker.dependencyLayout !== "runtime-graph";
+        const contents = await readFile(join(destRoot, SEED_MARKER_FILE), "utf8");
+        shouldCopy = !hasRuntimeDependencyLayout(contents);
       } catch (err) {
         if (!isEnoent(err)) throw err;
         shouldCopy = true;

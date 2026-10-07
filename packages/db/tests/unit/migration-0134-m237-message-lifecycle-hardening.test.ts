@@ -18,7 +18,7 @@ const migration = migrationEntry === undefined
   : readFileSync(
     resolve(migrations, `${migrationEntry.tag}.sql`),
     "utf8",
-  );
+  ).replaceAll("\r\n", "\n");
 
 describe("M237 lifecycle hardening", () => {
   test("generates bounded edit-group and quarantine receipts", () => {

@@ -28,6 +28,7 @@ export const PERSONAL_PROVIDER_IDS = [
   "tavily",
   "browser-use",
   "cloudconvert",
+  "surplus",
 ] as const;
 
 export type PersonalProviderId = (typeof PERSONAL_PROVIDER_IDS)[number];
@@ -41,6 +42,15 @@ export const PERSONAL_PROVIDER_CREDENTIAL_VALIDATION_STATUSES = [
 
 export type PersonalProviderCredentialValidationStatus =
   (typeof PERSONAL_PROVIDER_CREDENTIAL_VALIDATION_STATUSES)[number];
+
+export const PERSONAL_PROVIDER_CREDENTIAL_RECEIPT_READ_STATUSES = [
+  "available",
+  "unavailable",
+  "unknown",
+] as const;
+
+export type PersonalProviderCredentialReceiptReadStatus =
+  (typeof PERSONAL_PROVIDER_CREDENTIAL_RECEIPT_READ_STATUSES)[number];
 
 /**
  * One current encrypted provider credential per Human and direct provider.
@@ -63,6 +73,7 @@ export const personalProviderCredentials = pgTable(
     nonceBase64: text("nonce_base64").notNull(),
     ciphertextBase64: text("ciphertext_base64").notNull(),
     authTagBase64: text("auth_tag_base64").notNull(),
+    destination: text("destination"),
     validationStatus: varchar("validation_status", {
       length: 16,
       enum: PERSONAL_PROVIDER_CREDENTIAL_VALIDATION_STATUSES,
@@ -70,6 +81,12 @@ export const personalProviderCredentials = pgTable(
       .notNull()
       .default("unverified"),
     validatedAt: timestamp("validated_at", { withTimezone: true }),
+    receiptReadStatus: varchar("receipt_read_status", {
+      length: 16,
+      enum: PERSONAL_PROVIDER_CREDENTIAL_RECEIPT_READ_STATUSES,
+    })
+      .notNull()
+      .default("unknown"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -84,7 +101,7 @@ export const personalProviderCredentials = pgTable(
     ),
     check(
       "personal_provider_credentials_provider_check",
-      sql`${table.provider} in ('typesafe', 'anthropic', 'openai', 'openrouter', 'nautilo-gateway', 'gateway', 'google', 'xai', 'fireworks', 'together', 'venice', 'elevenlabs', 'groq', 'tavily', 'browser-use', 'cloudconvert')`,
+      sql`${table.provider} in ('typesafe', 'anthropic', 'openai', 'openrouter', 'nautilo-gateway', 'gateway', 'google', 'xai', 'fireworks', 'together', 'venice', 'elevenlabs', 'groq', 'tavily', 'browser-use', 'cloudconvert', 'surplus')`,
     ),
     check(
       "personal_provider_credentials_revision_check",
@@ -101,6 +118,18 @@ export const personalProviderCredentials = pgTable(
     check(
       "personal_provider_credentials_validation_status_check",
       sql`${table.validationStatus} in ('unverified', 'accepted', 'rejected', 'unavailable')`,
+    ),
+    check(
+      "personal_provider_credentials_destination_check",
+      sql`${table.destination} is null or ${table.provider} = 'gateway'`,
+    ),
+    check(
+      "personal_provider_credentials_receipt_read_status_check",
+      sql`${table.receiptReadStatus} in ('available', 'unavailable', 'unknown')`,
+    ),
+    check(
+      "personal_provider_credentials_receipt_read_provider_check",
+      sql`${table.receiptReadStatus} = 'unknown' or ${table.provider} = 'surplus'`,
     ),
   ],
 );

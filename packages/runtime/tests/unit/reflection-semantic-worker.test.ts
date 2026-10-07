@@ -191,6 +191,47 @@ class VirtualClock {
 }
 
 describe("ReflectionSemanticWorker", () => {
+  test("rejects a reserve that would leave no time for semantic work", () => {
+    expect(() => new ReflectionSemanticWorker(baseDeps(), {
+      pressure: { maxPollElapsedMs: 100 },
+    })).toThrow("settlement reserve must be shorter");
+    expect(() => new ReflectionSemanticWorker(baseDeps(), {
+      shutdownWaitMs: 100,
+      pressure: { maxPollElapsedMs: 100 },
+    })).toThrow("settlement reserve must be shorter");
+  });
+  test("accounts for bootstrap time in the execution window and reserves settlement", async () => {
+    const clock = new VirtualClock();
+    let remainingAtSleep = -1;
+    let remainingAfterPreparation = -1;
+    let reserve = -1;
+    const worker = new ReflectionSemanticWorker(baseDeps({
+      bootstrap: {
+        bootstrapPage: async () => {
+          clock.nowMs += 25;
+          return { admitted: 0 };
+        },
+      },
+      runSleep: async (input) => {
+        remainingAtSleep = input.executionWindow!.remainingMilliseconds();
+        reserve = input.executionWindow!.settlementReserveMilliseconds;
+        clock.nowMs += 15;
+        remainingAfterPreparation = input.executionWindow!.remainingMilliseconds();
+        expect(input.now!()).toBe(clock.nowMs);
+        return EMPTY_RESULT;
+      },
+    }), {
+      clock: clock.adapter,
+      shutdownWaitMs: 10,
+      pressure: { maxPollElapsedMs: 100 },
+    });
+    worker.start();
+    await clock.advanceBy(0);
+    expect(remainingAtSleep).toBe(75);
+    expect(remainingAfterPreparation).toBe(60);
+    expect(reserve).toBe(10);
+    await worker.stop();
+  });
   test("aggregates completed items by lane and resets the numeric window on stop", async () => {
     const worker = new ReflectionSemanticWorker(baseDeps({
       runSleep: async () => ({
@@ -827,6 +868,7 @@ describe("ReflectionSemanticWorker", () => {
       },
     }), {
       scanIntervalMs: 20,
+      shutdownWaitMs: 10,
       pressure: { maxPollElapsedMs: 100, pressureProbeIntervalMs: 1_000 },
       clock: clock.adapter,
     });
@@ -860,6 +902,7 @@ describe("ReflectionSemanticWorker", () => {
       },
     }), {
       scanIntervalMs: 20,
+      shutdownWaitMs: 10,
       pressure: { maxPollElapsedMs: 100, pressureProbeIntervalMs: 1_000 },
       clock: clock.adapter,
     });
@@ -904,6 +947,7 @@ describe("ReflectionSemanticWorker", () => {
       runSleep: async () => EMPTY_RESULT,
     }), {
       scanIntervalMs: 20,
+      shutdownWaitMs: 10,
       pressure: { maxPollElapsedMs: 100, pressureProbeIntervalMs: 1_000 },
       clock: clock.adapter,
     });

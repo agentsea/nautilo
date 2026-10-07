@@ -1,3 +1,4 @@
+import { PROVIDER_KEY_CATALOGUE, type ProviderKeyCatalogueEntry } from "@nautilo/types";
 import type { KeyDefinition } from "./types";
 
 export const BROWSER_USE_API_KEY_ENV_VAR = "BROWSER_USE_API_KEY";
@@ -9,28 +10,26 @@ function isSinglePrintableAsciiLine(value: string): boolean {
   });
 }
 
+type KeyBehaviour = Omit<KeyDefinition, keyof ProviderKeyCatalogueEntry>;
+
+function providerKey(id: string, behaviour: KeyBehaviour): KeyDefinition {
+  const presentation: ProviderKeyCatalogueEntry | undefined = PROVIDER_KEY_CATALOGUE
+    .find((entry) => entry.id === id);
+  if (!presentation) throw new Error(`Missing provider-key presentation for ${id}`);
+  return {
+    ...presentation,
+    signupUrl: presentation.signupUrl ?? "",
+    formatHint: presentation.formatHint ?? "",
+    ...behaviour,
+  };
+}
+
 export const KEY_REGISTRY: KeyDefinition[] = [
-  {
-    id: "typesafe",
-    name: "TypeSafe",
-    envVar: "TYPESAFE_API_KEY",
-    category: "decision",
-    purpose: "Jev classification, probability judgments and rubric scoring",
-    required: false,
-    signupUrl: "https://console.typesafe.ai/",
-    formatHint: "raw opaque API key",
+  providerKey("typesafe", {
     formatCheck: (value) => value.length > 0 && isSinglePrintableAsciiLine(value) && !/^Bearer\s/i.test(value),
     doctorHints: [],
-  },
-  {
-    id: "anthropic",
-    name: "Anthropic",
-    envVar: "ANTHROPIC_API_KEY",
-    category: "llm",
-    purpose: "Anthropic models",
-    required: false,
-    signupUrl: "https://platform.claude.com/settings/keys",
-    formatHint: "sk-ant-api03-...",
+  }),
+  providerKey("anthropic", {
     formatCheck: (v) => v.startsWith("sk-ant-") && v.length > 20,
     doctorHints: [
       {
@@ -46,16 +45,8 @@ export const KEY_REGISTRY: KeyDefinition[] = [
         message: "Key appears truncated",
       },
     ],
-  },
-  {
-    id: "openai",
-    name: "OpenAI",
-    envVar: "OPENAI_API_KEY",
-    category: "llm+embeddings",
-    purpose: "GPT models + embeddings",
-    required: false,
-    signupUrl: "https://platform.openai.com/api-keys",
-    formatHint: "sk-proj-...",
+  }),
+  providerKey("openai", {
     formatCheck: (v) => v.startsWith("sk-") && v.length > 20,
     doctorHints: [
       {
@@ -67,16 +58,8 @@ export const KEY_REGISTRY: KeyDefinition[] = [
         message: "Key has leading/trailing whitespace",
       },
     ],
-  },
-  {
-    id: "openrouter",
-    name: "OpenRouter",
-    envVar: "OPENROUTER_API_KEY",
-    category: "llm",
-    purpose: "OpenRouter-compatible chat models through one gateway key",
-    required: false,
-    signupUrl: "https://openrouter.ai/settings/keys",
-    formatHint: "sk-or-v1-...",
+  }),
+  providerKey("openrouter", {
     formatCheck: (v) => v.startsWith("sk-or-v1-") && v.length > 20,
     doctorHints: [
       {
@@ -96,17 +79,8 @@ export const KEY_REGISTRY: KeyDefinition[] = [
         message: "Key appears truncated",
       },
     ],
-  },
-  {
-    id: "gateway",
-    name: "OpenAI-Compatible Gateway",
-    envVar: "NAUTILO_GATEWAY_API_KEY",
-    category: "llm",
-    purpose: "Custom OpenAI-compatible chat endpoint. Also requires NAUTILO_GATEWAY_BASE_URL and a gateway model selection.",
-    required: false,
-    // Custom endpoints have no universal key-issuance page.
-    signupUrl: "",
-    formatHint: "opaque gateway API key",
+  }),
+  providerKey("gateway", {
     formatCheck: (v) => v.trim().length > 0,
     doctorHints: [
       {
@@ -118,19 +92,11 @@ export const KEY_REGISTRY: KeyDefinition[] = [
         message: "Key appears very short; confirm this gateway accepts it",
       },
     ],
-  },
-  {
-    id: "google",
-    name: "Google",
-    envVar: "GOOGLE_API_KEY",
-    category: "llm",
-    purpose: "Gemini models",
-    required: false,
-    signupUrl: "https://aistudio.google.com/apikey",
+  }),
+  providerKey("google", {
     // Google keys are opaque: classic AI Studio keys are AIzaSy…, but Cloud /
     // Gemini console also issues other prefixes (e.g. AQ.…). Accept any
     // non-trivial length; live validity is checked by health-checker.
-    formatHint: "opaque API key (20+ chars)",
     formatCheck: (v) => v.trim().length >= 20,
     doctorHints: [
       {
@@ -146,31 +112,53 @@ export const KEY_REGISTRY: KeyDefinition[] = [
         message: "Key appears truncated",
       },
     ],
-  },
-  {
-    id: "fireworks",
-    name: "Fireworks",
-    envVar: "FIREWORKS_API_KEY",
-    category: "llm",
-    purpose: "Fireworks AI models",
-    required: false,
-    signupUrl: "https://app.fireworks.ai/settings/users/api-keys",
-    formatHint: "fw_...",
+  }),
+  providerKey("xai", {
+    formatCheck: (value) => (
+      value.length > 0
+      && value.trim() === value
+      && !/^Bearer\s/i.test(value)
+      && isSinglePrintableAsciiLine(value)
+    ),
+    doctorHints: [
+      {
+        condition: (value) => value.trim() !== value,
+        message: "Key has leading/trailing whitespace",
+      },
+      {
+        condition: (value) => /^Bearer\s/i.test(value.trimStart()),
+        message: "Paste the raw xAI key only — do not include a 'Bearer ' prefix",
+      },
+    ],
+    healthCheck: "format_only",
+  }),
+  providerKey("fireworks", {
     formatCheck: (v) => v.startsWith("fw_") && v.length > 10,
     doctorHints: [],
-  },
-  {
-    id: "venice",
-    name: "Venice",
-    envVar: "VENICE_API_KEY",
-    category: "llm",
-    purpose: "Venice AI — no-log inference proxy, anchor of the Paranoid tier",
-    required: false,
-    signupUrl: "https://venice.ai/settings/api",
+  }),
+  providerKey("together", {
+    formatCheck: (value) => (
+      value.length > 0
+      && value.trim() === value
+      && !/^Bearer\s/i.test(value)
+      && isSinglePrintableAsciiLine(value)
+    ),
+    doctorHints: [
+      {
+        condition: (value) => value.trim() !== value,
+        message: "Key has leading/trailing whitespace",
+      },
+      {
+        condition: (value) => /^Bearer\s/i.test(value.trimStart()),
+        message: "Paste the raw Together AI key only — do not include a 'Bearer ' prefix",
+      },
+    ],
+    healthCheck: "format_only",
+  }),
+  providerKey("venice", {
     // Venice publishes opaque tokens without a stable prefix convention.
     // Reject paste/transport mistakes locally, then let the live models probe
     // be the authority on whether an otherwise-plausible token is valid.
-    formatHint: "raw opaque API key (single printable line, 20+ chars)",
     formatCheck: (v) => (
       v.length >= 20
       && v.trim() === v
@@ -211,16 +199,8 @@ export const KEY_REGISTRY: KeyDefinition[] = [
         message: "Key appears truncated",
       },
     ],
-  },
-  {
-    id: "surplus",
-    name: "Surplus Intelligence",
-    envVar: "SURPLUS_API_KEY",
-    category: "llm",
-    purpose: "Marketplace serving for qualified server-funded model routes",
-    required: false,
-    signupUrl: "https://www.surplusintelligence.ai/",
-    formatHint: "raw Surplus buyer API key",
+  }),
+  providerKey("surplus", {
     formatCheck: (value) => (
       value.length > 0
       && value.trim() === value
@@ -237,16 +217,8 @@ export const KEY_REGISTRY: KeyDefinition[] = [
         message: "Paste the raw Surplus key only — do not include a 'Bearer ' prefix",
       },
     ],
-  },
-  {
-    id: "elevenlabs",
-    name: "ElevenLabs",
-    envVar: "ELEVENLABS_API_KEY",
-    category: "voice",
-    purpose: "Text-to-speech — gives the assistant a voice",
-    required: false,
-    signupUrl: "https://elevenlabs.io/app/developers/api-keys",
-    formatHint: "sk_...",
+  }),
+  providerKey("elevenlabs", {
     formatCheck: (v) => v.startsWith("sk_") && v.length >= 20,
     doctorHints: [
       {
@@ -254,16 +226,8 @@ export const KEY_REGISTRY: KeyDefinition[] = [
         message: "This looks like an Anthropic key, not ElevenLabs",
       },
     ],
-  },
-  {
-    id: "groq",
-    name: "Groq",
-    envVar: "GROQ_API_KEY",
-    category: "voice",
-    purpose: "Speech-to-text transcription (Whisper)",
-    required: false,
-    signupUrl: "https://console.groq.com/keys",
-    formatHint: "gsk_...",
+  }),
+  providerKey("groq", {
     formatCheck: (v) => v.startsWith("gsk_") && v.length > 20,
     doctorHints: [
       {
@@ -275,28 +239,12 @@ export const KEY_REGISTRY: KeyDefinition[] = [
         message: "Key has leading/trailing whitespace",
       },
     ],
-  },
-  {
-    id: "tavily",
-    name: "Tavily",
-    envVar: "TAVILY_API_KEY",
-    category: "search",
-    purpose: "Web search — enables internet access",
-    required: false,
-    signupUrl: "https://app.tavily.com/home",
-    formatHint: "tvly-...",
+  }),
+  providerKey("tavily", {
     formatCheck: (v) => v.startsWith("tvly-") && v.length > 10,
     doctorHints: [],
-  },
-  {
-    id: "browser-use",
-    name: "Browser Use",
-    envVar: BROWSER_USE_API_KEY_ENV_VAR,
-    category: "browser",
-    purpose: "Protected website sign-in and cloud browser automation",
-    required: false,
-    signupUrl: "https://cloud.browser-use.com/settings?tab=api-keys&new=1",
-    formatHint: "bu_...",
+  }),
+  providerKey("browser-use", {
     formatCheck: (v) => (
       v.startsWith("bu_")
       && v.length > 10
@@ -319,19 +267,11 @@ export const KEY_REGISTRY: KeyDefinition[] = [
     ],
     // Browser Use V4 documents no non-mutating credential-health endpoint.
     healthCheck: "format_only",
-  },
-  {
-    id: "cloudconvert",
-    name: "CloudConvert",
-    envVar: "CLOUDCONVERT_API_KEY",
-    category: "conversion",
-    purpose: "Cloud file conversion — unlocks the CloudConvert backend for the convert tool",
-    required: false,
-    signupUrl: "https://cloudconvert.com/dashboard/api/v2/keys",
+  }),
+  providerKey("cloudconvert", {
     // CloudConvert v2 keys are JWTs (typically ~800–1200 chars, three
     // base64url segments). Short / two-segment pastes are almost always
     // truncated copies and fail live auth with Unauthenticated.
-    formatHint: "JWT (eyJ… three segments, usually ~1000 chars)",
     formatCheck: (v) => {
       const t = v.trim();
       if (t.startsWith("Bearer ")) return false;
@@ -373,7 +313,7 @@ export const KEY_REGISTRY: KeyDefinition[] = [
         message: "Key has leading/trailing whitespace",
       },
     ],
-  },
+  }),
 ];
 
 export function getAllKeyDefinitions(): KeyDefinition[] {

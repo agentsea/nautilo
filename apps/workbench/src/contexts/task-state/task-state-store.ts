@@ -20,6 +20,10 @@ import {
   type RunningSubagentOverlay,
 } from "./running-subagent-projection";
 import {
+  isOrdinaryTaskStateRecord,
+  type TaskStateRecord,
+} from "./task-state-content";
+import {
   isTerminalStatus,
   TERMINAL_LINGER_MS,
   type RunningSubagent,
@@ -131,7 +135,7 @@ export const SEED_SUPPRESS_AFTER_MOUNT_MS = 2000;
 export type TaskSeedSource = "mount" | "ws-open";
 
 export interface TaskStateSnapshot {
-  readonly taskMap: Readonly<Record<string, TaskSummary>>;
+  readonly taskMap: Readonly<Record<string, TaskStateRecord>>;
   readonly tasks: readonly TaskSummary[];
   readonly loading: boolean;
   readonly error: string | null;
@@ -151,7 +155,7 @@ export interface TaskLifecycleApi {
 }
 
 export interface TaskListApi {
-  listActiveTasks(): Promise<TaskSummary[]>;
+  listActiveTasks(): Promise<TaskStateRecord[]>;
 }
 
 export interface CreateTaskStateStoreOptions {
@@ -180,7 +184,7 @@ export interface TaskStateStore {
 }
 
 interface MutableTaskState {
-  taskMap: Record<string, TaskSummary>;
+  taskMap: Record<string, TaskStateRecord>;
   loading: boolean;
   error: string | null;
   busyIds: Set<string>;
@@ -191,9 +195,9 @@ interface MutableTaskState {
 }
 
 function tasksFromMap(
-  taskMap: Readonly<Record<string, TaskSummary>>,
+  taskMap: Readonly<Record<string, TaskStateRecord>>,
 ): TaskSummary[] {
-  return Object.values(taskMap);
+  return Object.values(taskMap).filter(isOrdinaryTaskStateRecord);
 }
 
 export function shouldSuppressWsOpenSeed(input: {
@@ -227,6 +231,7 @@ export function createTaskStateStore(
   let dashboardPollingEnabled = false;
   let pollChainScheduled = false;
   let taskListRevision = 0;
+  let taskListRequestId = 0;
 
   const state: MutableTaskState = {
     taskMap: {},
@@ -271,8 +276,8 @@ export function createTaskStateStore(
     }
   };
 
-  const applyTaskList = (tasks: TaskSummary[], opts?: { recomputeRunning?: boolean }): void => {
-    const nextMap: Record<string, TaskSummary> = {};
+  const applyTaskList = (tasks: TaskStateRecord[], opts?: { recomputeRunning?: boolean }): void => {
+    const nextMap: Record<string, TaskStateRecord> = {};
     for (const task of tasks) {
       const prior = state.taskMap[task.id];
       // A verified same-run recovery can leave terminal state without a new
@@ -293,7 +298,7 @@ export function createTaskStateStore(
     }
   };
 
-  const recomputeVisibleRunningFromSeed = (tasks: readonly TaskSummary[]): void => {
+  const recomputeVisibleRunningFromSeed = (tasks: readonly TaskStateRecord[]): void => {
     const nextVisible = new Set<string>();
     for (const task of tasks) {
       const mapped = taskSummaryToRunningSubagent(task);
@@ -355,14 +360,17 @@ export function createTaskStateStore(
 
   const fetchTasks = async (): Promise<void> => {
     const revision = taskListRevision;
+    const requestId = ++taskListRequestId;
     try {
       const tasks = await options.listActiveTasks();
       if (revision === taskListRevision) applyTaskList(tasks);
     } catch (err) {
       if (revision === taskListRevision) state.error = err instanceof Error ? err.message : String(err);
     } finally {
-      state.loading = false;
-      emit();
+      if (requestId === taskListRequestId) {
+        state.loading = false;
+        emit();
+      }
     }
   };
 
@@ -671,6 +679,7 @@ export function createTaskStateStore(
 
   const clearForViewerChange = (): void => {
     taskListRevision += 1;
+    taskListRequestId += 1;
     clearPollTimeout();
     seedInflight = null;
     refreshInflight = null;

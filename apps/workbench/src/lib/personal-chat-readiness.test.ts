@@ -87,3 +87,15 @@ test("switch-off and transport failure have distinct recovery states", async () 
   });
   expect(unavailable).toBe("unavailable");
 });
+
+
+test("policy-off metadata remains cleanup-only and does not make personal chat ready", async () => {
+  let lookups = 0;
+  const deps = {
+    listCredentials: async () => ({ allowPersonalProviderKeys: false, credentials: [{ requiresReplacement: false }] }),
+    getCallerModels: async () => { lookups++; return [{ availability: "selectable" }]; },
+  };
+  expect(await readPersonalChatReadiness(deps)).toBe("disabled");
+  expect(await readPersonalChatReadiness(deps, { serverFallbackAvailable: true })).toBe("ready");
+  expect(lookups).toBe(0);
+});

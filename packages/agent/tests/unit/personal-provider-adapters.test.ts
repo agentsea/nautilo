@@ -55,7 +55,7 @@ function modelUsesExactApiKey(model: unknown, apiKey: string): boolean {
     || (candidate.bound !== model && modelUsesExactApiKey(candidate.bound, apiKey));
 }
 
-beforeAll(async () => activateModelCatalogForTests(MODEL_IDS));
+beforeAll(async () => activateModelCatalogForTests([...MODEL_IDS, "gateway:local-model"]));
 afterAll(() => {
   resetRuntimeModelCatalog();
   restoreEnv();
@@ -88,8 +88,8 @@ describe("personal provider chat adapters", () => {
     } as Record<string, unknown>)).rejects.toThrow("valid personal provider credential");
   });
 
-  test("rejects personal credentials for the generic gateway and unknown providers", async () => {
-    for (const modelId of ["gateway:local-model", "unknown:model"]) {
+  test("rejects personal credentials for unknown providers", async () => {
+    for (const modelId of ["unknown:model"]) {
       expect(createUnmeteredEvaluationModel(modelId, {
         personalCredential: { apiKey: "personal-key" },
       })).rejects.toThrow("Personal credentials are not supported");
@@ -98,6 +98,21 @@ describe("personal provider chat adapters", () => {
 });
 
 describe("personal OpenRouter transport", () => {
+  test("leaves retry ownership to the durable attempt ledger", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async (_input: string | URL | Request, _init?: RequestInit) => {
+      calls++;
+      return Response.json({ error: { message: "temporarily unavailable" } }, { status: 503 });
+    }) as typeof fetch;
+    try {
+      const model = await createUnmeteredEvaluationModel("openrouter:moonshotai/kimi-k2.6", {
+        personalCredential: { apiKey: "synthetic-personal-key" },
+      });
+      try { await model.invoke([new HumanMessage("synthetic")]); } catch { /* Expected provider refusal. */ }
+      expect(calls).toBe(1);
+    } finally { globalThis.fetch = originalFetch; }
+  });
   test("sends the personal key through direct OpenRouter transport without leaking it into the request body", async () => {
     const personalApiKey = "sk-personal-openrouter-transport";
     const serverDirectApiKey = "sk-server-openrouter-must-not-be-used";
@@ -172,4 +187,16 @@ describe("personal OpenRouter transport", () => {
     });
   });
 
+});
+
+
+describe("personal generic Gateway retirement", () => {
+  test("rejects a personal Gateway credential before creating a provider client", async () => {
+    expect(createUnmeteredEvaluationModel("gateway:local-model", {
+      personalCredential: {
+        apiKey: "personal-gateway-secret",
+        destination: "https://gateway.invalid/tenant-a/v1",
+      },
+    })).rejects.toThrow('Personal credentials are not supported for model provider "gateway".');
+  });
 });

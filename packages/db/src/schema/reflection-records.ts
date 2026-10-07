@@ -94,6 +94,78 @@ export const REFLECTION_RECORD_SEMANTIC_WORK_FAILURE_CODES = Object.freeze([
 export type ReflectionRecordSemanticWorkFailureCode =
   (typeof REFLECTION_RECORD_SEMANTIC_WORK_FAILURE_CODES)[number];
 
+export const REFLECTION_RECORD_SEMANTIC_WORK_WAITING_REASONS = Object.freeze([
+  "authority",
+  "search_projection",
+  "provider",
+  "capacity",
+] as const);
+
+export const REFLECTION_RECORD_SEMANTIC_WORK_COMPLETION_OUTCOMES = Object.freeze([
+  "record_lifecycle_obsolete",
+  "already_covered",
+  "publication_reconciled",
+  "dependency_repaired",
+  "dependency_retired",
+  "completed",
+  "provider_outcome_unknown",
+] as const);
+
+export const REFLECTION_RECORD_SEMANTIC_WORK_FAILURE_DETAILS = Object.freeze([
+  "candidate_projection_stale",
+  "candidate_rank_timeout",
+  "candidate_rank_storage_unavailable",
+  "candidate_topology_timeout",
+  "candidate_topology_storage_unavailable",
+  "candidate_topology_capacity_exceeded",
+  "candidate_fence_stale",
+  "candidate_fence_timeout",
+  "candidate_fence_storage_unavailable",
+  "candidate_record_changed",
+  "candidate_selection_invalid",
+  "parent_conflict_capacity_exceeded",
+  "parent_conflict_storage_unavailable",
+  "publication_source_unavailable",
+  "publication_evidence_unavailable",
+  "publication_validation_unavailable",
+  "publication_budget_exhausted",
+  "publication_integrity_unavailable",
+  "publication_repository_rejected",
+  "publication_unexpected_exception",
+  "publication_record_already_exists",
+  "publication_invalid_record_shape",
+  "publication_child_unavailable",
+  "publication_child_parent_changed",
+  "publication_height_mismatch",
+  "publication_ancestor_cycle",
+  "publication_predecessor_changed",
+  "publication_successor_changed",
+  "publication_plan_stale",
+  "publication_authority_fence_stale",
+  "publication_plan_invalid",
+  "publication_memory_fence_unavailable",
+  "publication_access_audience_unavailable",
+  "publication_legacy_leaf_unavailable",
+  "publication_input_access_audience_unavailable",
+  "publication_output_access_audience_unavailable",
+  "publication_revalidation_access_audience_unavailable",
+  "publication_source_authority_unavailable",
+  "publication_incomplete",
+  "unexpected_authority_stage_failure",
+  "unexpected_search_projection_stage_failure",
+  "unexpected_dependency_loss_stage_failure",
+  "unexpected_candidate_stage_failure",
+  "unexpected_model_invocation_failure",
+  "unexpected_proposal_validation_failure",
+  "unexpected_publication_stage_failure",
+  "unexpected_work_mutation_failure",
+] as const);
+
+const REFLECTION_RECORD_SEMANTIC_WORK_FAILURE_DETAILS_SQL =
+  REFLECTION_RECORD_SEMANTIC_WORK_FAILURE_DETAILS
+    .map(value => `'${value}'`)
+    .join(", ");
+
 export function nextReflectionRecordSemanticWorkStage(
   stage: ReflectionRecordSemanticWorkStage,
 ): ReflectionRecordSemanticWorkStage | undefined {
@@ -854,12 +926,23 @@ export const reflectionRecordSemanticWork = pgTable(
     claimGeneration: integer("claim_generation"),
     attemptCount: smallint("attempt_count").notNull().default(0),
     quarantineRound: integer("quarantine_round").notNull().default(0),
+    recoveryPolicyVersion: integer("recovery_policy_version").notNull().default(0),
+    projectionRefreshOnly: boolean("projection_refresh_only").notNull().default(false),
     leaseToken: uuid("lease_token"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
     recoverAfter: timestamp("recover_after", { withTimezone: true }),
     failureCode: text("failure_code", {
       enum: REFLECTION_RECORD_SEMANTIC_WORK_FAILURE_CODES,
+    }),
+    failureDetail: text("failure_detail", {
+      enum: REFLECTION_RECORD_SEMANTIC_WORK_FAILURE_DETAILS,
+    }),
+    waitingReason: text("waiting_reason", {
+      enum: REFLECTION_RECORD_SEMANTIC_WORK_WAITING_REASONS,
+    }),
+    completionOutcome: text("completion_outcome", {
+      enum: REFLECTION_RECORD_SEMANTIC_WORK_COMPLETION_OUTCOMES,
     }),
     ordinaryFallbackReason: text("ordinary_fallback_reason", {
       enum: REFLECTION_RECORD_SEMANTIC_WORK_ORDINARY_FALLBACK_REASONS,
@@ -913,6 +996,10 @@ export const reflectionRecordSemanticWork = pgTable(
       sql`${table.quarantineRound} >= 0`,
     ),
     check(
+      "reflection_record_semantic_work_recovery_policy_version_bound",
+      sql`${table.recoveryPolicyVersion} >= 0`,
+    ),
+    check(
       "reflection_record_semantic_work_claim_coherent",
       sql`(
         ${table.state} = 'claimed'
@@ -940,6 +1027,33 @@ export const reflectionRecordSemanticWork = pgTable(
       "reflection_record_semantic_work_failure_coherent",
       sql`(${table.state} in ('deferred', 'quarantined'))
         = (${table.failureCode} is not null)`,
+    ),
+    check(
+      "reflection_record_semantic_work_failure_detail_coherent",
+      sql`${table.failureDetail} is null
+        or (
+          ${table.state} in ('deferred', 'quarantined')
+          and ${table.failureDetail} in (
+            ${sql.raw(REFLECTION_RECORD_SEMANTIC_WORK_FAILURE_DETAILS_SQL)}
+          )
+        )`,
+    ),
+    check(
+      "reflection_record_semantic_work_waiting_reason_coherent",
+      sql`${table.waitingReason} is null
+        or (
+          ${table.state} in ('due', 'checkpointed', 'deferred')
+          and ${table.waitingReason} in ('authority', 'search_projection', 'provider', 'capacity')
+        )`,
+    ),
+    check(
+      "reflection_record_semantic_work_completion_outcome_coherent",
+      sql`(${table.state} = 'complete') = (${table.completionOutcome} is not null)
+        and (${table.completionOutcome} is null or ${table.completionOutcome} in (
+          'record_lifecycle_obsolete', 'already_covered', 'publication_reconciled',
+          'dependency_repaired', 'dependency_retired', 'completed',
+          'provider_outcome_unknown'
+        ))`,
     ),
     check(
       "reflection_record_semantic_work_ordinary_fallback_coherent",
@@ -972,6 +1086,11 @@ export const reflectionRecordSemanticWork = pgTable(
         and (
           ${table.stage} = 'organization'
           or ${table.changeReason} = 'parent_conflict'
+          or (${table.stage} = 'search_projection' and ${table.projectionRefreshOnly})
+          or ${table.completionOutcome} in (
+            'record_lifecycle_obsolete', 'already_covered',
+            'publication_reconciled'
+          )
         )
         and ${table.completedGeneration} = ${table.generation}
         and ${table.completedAt} is not null
@@ -1439,6 +1558,8 @@ export const reflectionRecordSearchProjections = pgTable(
     embeddingContractVersion: smallint(
       "embedding_contract_version",
     ).notNull(),
+    /** Keyed exact-Room equality coordinate; nullable only for legacy rows. */
+    roomAnchorCommitment: text("room_anchor_commitment"),
     embedding: vector("embedding", {
       dimensions: REFLECTION_RECORD_SEARCH_PROJECTION_LIMITS.dimensions,
     }).notNull(),
@@ -1493,6 +1614,10 @@ export const reflectionRecordSearchProjections = pgTable(
       sql`${table.embeddingContractVersion} = ${
         sql.raw(String(REFLECTION_RECORD_SEARCH_PROJECTION_LIMITS.embeddingContractVersion))
       }`,
+    ),
+    portableId(
+      "reflection_record_search_projections_room_anchor_commitment_portable",
+      table.roomAnchorCommitment,
     ),
     index("idx_reflection_record_search_projections_provenance").on(
       table.projectionVersion,

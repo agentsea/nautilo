@@ -864,6 +864,91 @@ describe("M274 Admin encryption transition route", () => {
     expect(inputs).toHaveLength(2);
   });
 
+  test("keeps the pre-Task transition cycle and CAS contract with an empty Task inventory", async () => {
+    let durable: LiveShadowEncryptionTransitionPolicy = { ...policy };
+    const inputs: unknown[] = [];
+    let activityReads = 0;
+    const now = new Date("2026-08-14T06:10:00.000Z");
+    const call = routeHarness({
+      getCapabilities: async () => ["manage_server_settings"],
+      getDb: () => ({}) as never,
+      getPolicy: async () => durable,
+      getExecutableActivity: async () => {
+        activityReads += 1;
+        return {
+          runningForegroundJobs: 0,
+          runningBackgroundJobs: 0,
+          queuedTurns: 0,
+          bufferedLanes: 0,
+          acceptedWork: 0,
+          runningTaskRuns: 0,
+          claimedTasks: 0,
+        };
+      },
+      casPolicy: async (_db, input) => {
+        inputs.push(input);
+        durable = {
+          ...durable,
+          mode: input.targetMode,
+          shadowBehavior: input.targetShadowBehavior,
+          revision: durable.revision + 1,
+          shadowEncryptionStartedAt: input.targetMode === "plaintext_only"
+            ? null
+            : durable.shadowEncryptionStartedAt ?? now,
+          updatedAt: input.now ?? durable.updatedAt,
+        };
+        return durable;
+      },
+      getDashboard: async () => dashboard,
+      getObservationPressure: async () => pressure,
+      auditEvent: () => undefined,
+      now: () => now,
+    });
+
+    const transitions = [
+      {
+        expectedRevision: 2,
+        targetMode: "shadow_encryption",
+        targetShadowBehavior: "fallback",
+        confirmation: ENABLE_SHADOW_ENCRYPTION_CONFIRMATION,
+      },
+      {
+        expectedRevision: 3,
+        targetMode: "shadow_encryption",
+        targetShadowBehavior: "strict",
+        confirmation: ENABLE_STRICT_SHADOW_CONFIRMATION,
+      },
+      {
+        expectedRevision: 4,
+        targetMode: "encrypted_only",
+        targetShadowBehavior: "strict",
+        confirmation: ENABLE_FULL_ENCRYPTION_CONFIRMATION,
+      },
+      {
+        expectedRevision: 5,
+        targetMode: "plaintext_only",
+        targetShadowBehavior: "fallback",
+        confirmation: DISABLE_SHADOW_ENCRYPTION_CONFIRMATION,
+      },
+    ] as const;
+
+    for (const transition of transitions) {
+      expect(await call("POST", {
+        ...request,
+        body: { requestVersion: 2, ...transition },
+      })).toMatchObject({
+        status: 200,
+        body: { policy: { revision: transition.expectedRevision + 1 } },
+      });
+    }
+
+    expect(activityReads).toBe(2);
+    expect(inputs).toEqual(transitions.map(({
+      confirmation: _confirmation,
+      ...transition
+    }) => ({ ...transition, now })));
+  });
+
   test("rejects future modes, bad confirmation, stale CAS, and unsupported durable state", async () => {
     const stale = routeHarness({
       getCapabilities: async () => ["read_server_settings", "manage_server_settings"],

@@ -48,11 +48,13 @@ export type TranscriptContextScope =
       /** Woken agent (marks "this is you" / self lines); optional for DMs. */
       agentId?: string;
       /**
-       * M168 R5 — drop this `session_messages.id` from the rebuilt history (the
+       * Drop this `session_messages.id` from the rebuilt history (the
        * already-persisted triggering human row, which is re-injected as the
        * live turn message). Passed straight through to the room reader.
        */
       excludeMessageId?: number;
+      /** Exact current turn observation can be newer than its persisted Human input. */
+      imageAssistanceTurnId?: string;
       /** Subthread anchoring (optional): include parent up-to-anchor window. */
       subthread?: { parentRoomId: string; anchorMessageId: number };
     }
@@ -115,7 +117,7 @@ export interface BuildTranscriptContextDeps {
   readSubagentTranscript(
     scope: Extract<TranscriptContextScope, { kind: "subagent" }>,
   ): Promise<RoomHistoryHit[]>;
-  /** M219 Room-owned semantic continuity, absent for subagent runs. */
+  /** Room-owned semantic continuity, absent for subagent runs. */
   readRoomJournal?(
     scope: Extract<TranscriptContextScope, { kind: "room" }>,
   ): Promise<RoomJournalContext>;
@@ -303,7 +305,7 @@ function roomContextMaximumCharacters(input: Readonly<{
 }
 
 /**
- * Applies the M219 Room-only input budget after the cache-stable prompt.
+ * Applies the Room-only input budget after the cache-stable prompt.
  * Newest complete turns are indivisible while they fit; the configured
  * percentage is authoritative when even the minimum suffix is oversized.
  */

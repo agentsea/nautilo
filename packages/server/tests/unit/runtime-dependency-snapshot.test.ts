@@ -12,9 +12,16 @@ interface CycleModule {
 }
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
-async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "nautilo-runtime-graph-"));
-  roots.push(root);
+async function fixture(viaAlias = false) {
+  const temporaryRoot = await realpath(await mkdtemp(join(tmpdir(), "nautilo-runtime-graph-")));
+  roots.push(temporaryRoot);
+  let root = temporaryRoot;
+  if (viaAlias) {
+    const target = join(temporaryRoot, "target");
+    await mkdir(target);
+    root = join(temporaryRoot, "alias");
+    await symlink(target, root, process.platform === "win32" ? "junction" : "dir");
+  }
   const app = join(root, "source");
   const staging = join(root, "staging");
   const published = join(root, "published");
@@ -56,8 +63,8 @@ test("a direct local source does not replace a nested different version", async 
   expect(await readFile(join(f.published, "node_modules", "shared", "index.cjs"), "utf8")).toContain("fresh-one");
 });
 
-test("a cycle through multiple versions preserves package identities and terminates", async () => {
-  const f = await fixture();
+test.each([false, true])("a cycle preserves package identities and terminates through a directory alias: %s", async (viaAlias) => {
+  const f = await fixture(viaAlias);
   const a1 = await f.packageAt("a1", "a", "1", { b: "1" }, 'exports.id = "a1"; exports.next = () => require("b");');
   const b1 = await f.packageAt("b1", "b", "1", { a: "2" }, 'exports.id = "b1"; exports.next = () => require("a");');
   const a2 = await f.packageAt("a2", "a", "2", { b: "2" }, 'exports.id = "a2"; exports.next = () => require("b");');
@@ -74,5 +81,6 @@ test("a cycle through multiple versions preserves package identities and termina
   expect(first.next().next().next().next()).toBe(first);
   expect(await readdir(join(f.published, "node_modules", ".nautilo-packages"))).toHaveLength(4);
   const actual = await realpath(join(f.published, "node_modules", "a"));
-  expect(actual.startsWith(f.published + sep)).toBe(true);
+  const publishedRoot = await realpath(f.published);
+  expect(actual.startsWith(publishedRoot + sep)).toBe(true);
 });

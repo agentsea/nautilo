@@ -43,6 +43,10 @@ export type {
   DeleteProviderCredentialResponse,
 } from "./client";
 export type {
+  PersonalCostsRangeKey,
+  PersonalCostsSummary,
+} from "@nautilo/types";
+export type {
   EventFeedErrorCode,
   EventFeedListOptions,
   EventFeedMarkAllReadResult,

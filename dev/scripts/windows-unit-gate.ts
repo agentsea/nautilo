@@ -16,6 +16,8 @@ const packageChecks = [
 const sourceTests = [
   "apps/desktop/tests/unit/windows-package-contract.test.ts",
   "apps/desktop/tests/unit/bun-vendor-cache.test.ts",
+  "apps/desktop/tests/unit/relay-binary-resolution.test.ts",
+  "apps/desktop/tests/unit/desktop-license-payload.test.ts",
   "dev/tests/repo-invariants/test-first-party-app-production-install.test.ts",
   "packages/server/tests/unit/seed-first-party-apps.test.ts",
   "packages/server/tests/unit/runtime-dependency-snapshot.test.ts",
@@ -30,8 +32,11 @@ const sourceTests = [
   "apps/workbench/tests/unit-isolated/maintenance-applying-boundary.test.tsx",
   "scripts/stack309-ios-simulator-input-helper.test.ts",
   "bin/nautilo-dev/tests/unit/agent-browser-preflight.test.ts",
+  "bin/nautilo-dev/tests/unit/migrate-add-agent-role.test.ts",
+  "bin/nautilo-dev/tests/unit/bootstrap-claim-invite.test.ts",
   "apps/desktop/tests/unit-isolated/relay-sidecar-client.test.ts",
   "packages/server/tests/unit/connected-web-account-direct-browser-harness.test.ts",
+  "packages/server/tests/unit/agent-browser-server-vendor.test.ts",
   "packaging/openconnector/provenance.test.ts",
 ] as const;
 

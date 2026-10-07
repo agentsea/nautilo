@@ -51,9 +51,11 @@
     "@hono/node-server": "1.19.15",
     "@langchain/langgraph-checkpoint": "1.0.1",
     "@langchain/openai": "1.4.5",
+    "@modelcontextprotocol/sdk": "1.31.0",
     "body-parser": "2.3.0",
     "hono": "4.12.34",
     "jose": "6.2.3",
+    "proxy-addr": "2.0.8",
     "qs": "6.15.3",
     "brace-expansion": "5.0.11"
   }

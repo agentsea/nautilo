@@ -47,6 +47,10 @@ export type {
   ValidateProviderCredentialResponse,
   DeleteProviderCredentialResponse,
 } from "./client";
+export type {
+  PersonalCostsRangeKey,
+  PersonalCostsSummary,
+} from "@nautilo/types";
 
 export {
   createRemotePairingChallengeRequestSchema,

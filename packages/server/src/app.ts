@@ -28,6 +28,7 @@ import { setWorkspaceArtifactCreatedSink } from "@nautilo/agent";
 import { createServerMemoryReviewRuntime } from "./lib/memory-review-runtime";
 import { createSurplusCostRecovery } from "./lib/surplus-cost-reconciliation";
 import { openForegroundChatFundingSession } from "./lib/foreground-chat-funding";
+import { openImageAssistance } from "./lib/image-assistance";
 import {
   assertRunnableNativeTaskSelection,
   isPersonalOnlyNativeTaskSelection,
@@ -2042,7 +2043,7 @@ export async function createApp(options?: CreateAppOptions) {
               const authority = await reflectionAuthority();
               const db = getServerDirectDb();
               const commitmentKey = getReflectionCommitmentKey();
-              const search = await createProductionProtectedReflectionSearchComposition({db, commitmentKey, embedding, runSemantic: authority.runSemantic});
+              const search = await createProductionProtectedReflectionSearchComposition({db, selection: {...recordRepositorySelection, selectedRepresentation: "protected"}, commitmentKey, embedding, runSemantic: authority.runSemantic});
               return createProductionProtectedReflectionSemantics({db,
                 productHandle: await verifyRecordProductPostgresHandle(createPostgresJsBridgeConnection(db)),
                 selection: {...recordRepositorySelection, selectedRepresentation: "protected"}, commitmentKey,
@@ -2085,7 +2086,7 @@ export async function createApp(options?: CreateAppOptions) {
   const reflectionSleepController = new ReflectionSleepController({
     resolveWorker: async () => (await reflectionRuntime()).worker,
   });
-  installForegroundChatFundingPort({ openSession: openForegroundChatFundingSession });
+  installForegroundChatFundingPort({ openSession: openForegroundChatFundingSession, openImageAssistance });
   installTaskFundingPort(nativeTaskFundingPort);
   app.addHook("onClose", () => {
     uninstallForegroundChatFundingPort();

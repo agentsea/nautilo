@@ -752,6 +752,11 @@ export class TaskObserver implements Observer {
         await pauseTask({ db: this.db, jobManager: this.jobManager }, task.id, "time_limit");
         log(`[task-observer] time-limit reached → paused task=${task.id}`);
       } catch (err) {
+        if (task.contentRepresentation !== "ordinary") {
+          // Protected diagnostics must not inspect provider/tool error text.
+          log("[task-observer] protected time-limit pause deferred code=PROTECTED_TIME_LIMIT_PAUSE_RETRY");
+          continue;
+        }
         log(
           `[task-observer] time-limit pause failed for task=${task.id}: ${err instanceof Error ? err.message : String(err)}`,
         );

@@ -15,6 +15,7 @@ import {
 } from "../../src/server";
 
 const HUMAN = "11111111-1111-4111-8111-111111111111";
+const ROOM_COMMITMENT = `h1.${"a".repeat(43)}`;
 
 const EMBEDDING: RecordEmbeddingV1 = {
   provenance: {
@@ -82,6 +83,7 @@ const base = {
   selection: { selectedRepresentation: "ordinary", migrationGeneration: 1 },
   publicationBindingRef: "binding:room-one",
   changedRecordRef: "record:changed",
+  roomAnchorCommitment: ROOM_COMMITMENT,
   intent: "attachment",
 } as const;
 
@@ -124,10 +126,12 @@ describe("exact-Room Organizer PostgreSQL store", () => {
     expect(sql).toContain("successor.predecessor_record_id = record.record_id");
     expect(sql).toContain("record.record_id <> $10");
     expect(sql).toContain("score >= $12::real");
+    expect(sql).toContain("search_projection.room_anchor_commitment = $15");
     expect(sql).toContain("ORDER BY score DESC, structural_height DESC, record_id ASC");
     expect(value.queries[3]!.parameters[7]).toBe("ordinary");
     expect(value.queries[3]!.parameters[8]).toBe("binding:room-one");
     expect(value.queries[3]!.parameters[12]).toBe(16);
+    expect(value.queries[3]!.parameters[14]).toBe(ROOM_COMMITMENT);
   });
 
   test("promotion ranking excludes leaves inside the pre-vector eligible set", async () => {
@@ -465,6 +469,7 @@ describe("exact-Room Organizer PostgreSQL store", () => {
       invocationAudience: base.invocationAudience,
       selection: { selectedRepresentation: "protected", migrationGeneration: 9 },
       publicationBindingRef: base.publicationBindingRef,
+      roomAnchorCommitment: ROOM_COMMITMENT,
       coordinates: [coordinate()],
     })).toEqual({ status: "current" });
     const sql = value.queries[2]!.statement;
@@ -474,6 +479,7 @@ describe("exact-Room Organizer PostgreSQL store", () => {
     expect(sql).toContain("authority.projection_generation");
     expect(sql).toContain("representation_head.current_representation_generation");
     expect(sql).toContain("search_projection.projection_generation");
+    expect(sql).toContain("search_projection.room_anchor_commitment = $10");
     expect(value.queries[2]!.parameters[7]).toBe("protected");
   });
 

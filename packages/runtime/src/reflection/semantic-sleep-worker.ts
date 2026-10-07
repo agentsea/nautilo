@@ -91,19 +91,19 @@ export interface ReflectionSemanticWorkerOptions {
 
 const DEFAULT_SCAN_INTERVAL_MS = 15_000;
 const DEFAULT_CATCH_UP_INTERVAL_MS = 2_000;
-const DEFAULT_SHUTDOWN_WAIT_MS = 10_000;
+export const REFLECTION_SEMANTIC_SETTLEMENT_RESERVE_MS = 10_000;
 const MAX_COUNTER = Number.MAX_SAFE_INTEGER;
 
 /**
- * V1 is anchored to existing contracts: one poll cannot outlive the two-minute
- * semantic-work lease; three failed polls match the existing degraded-attempt
+ * V1 permits a ten-minute poll; production leases cover that window plus
+ * settlement cleanup; three failed polls match the existing degraded-attempt
  * threshold; four 15-second growth samples require a full delayed-health minute;
- * and an eight-poll window spans one lease. Parent-creation ratios remain an
- * operator diagnostic, but durable FIFO work admission—not a global pause—owns
+ * and an eight-poll window retains recent pressure samples. Parent-creation
+ * ratios remain an operator diagnostic, but durable FIFO work admission—not a global pause—owns
  * recursive follow-up. A breaker probes real pressure every five minutes.
  */
 export const REFLECTION_SEMANTIC_PRESSURE_POLICY_V1 = Object.freeze({
-  maxPollElapsedMs: 2 * 60 * 1_000,
+  maxPollElapsedMs: 600 * 1_000,
   pressureProbeIntervalMs: 5 * 60 * 1_000,
   repeatedFailureThreshold: 3,
   backlogGrowthPolls: 4,
@@ -350,7 +350,7 @@ export class ReflectionSemanticWorker {
     );
     this.shutdownWaitMs = requirePositiveMilliseconds(
       "Reflection semantic shutdown wait",
-      options.shutdownWaitMs ?? DEFAULT_SHUTDOWN_WAIT_MS,
+      options.shutdownWaitMs ?? REFLECTION_SEMANTIC_SETTLEMENT_RESERVE_MS,
     );
     this.pressure = Object.freeze({
       ...REFLECTION_SEMANTIC_PRESSURE_POLICY_V1,
@@ -360,6 +360,9 @@ export class ReflectionSemanticWorker {
       "Reflection semantic maximum poll elapsed",
       this.pressure.maxPollElapsedMs,
     );
+    if (this.shutdownWaitMs >= this.pressure.maxPollElapsedMs) {
+      throw new RangeError("Reflection semantic settlement reserve must be shorter than the poll deadline");
+    }
     requirePositiveMilliseconds(
       "Reflection semantic pressure probe interval",
       this.pressure.pressureProbeIntervalMs,
@@ -491,15 +494,15 @@ export class ReflectionSemanticWorker {
       controller.abort();
       // Abort is cooperative, so a provider may never settle. Detach this poll
       // generation at the deadline and schedule the breaker probe directly.
-      // The token fences eventual completion; the probe interval exceeds the
-      // durable lease, which fences any persisted work from this stale owner.
+      // The token fences eventual completion; production leases expire before
+      // the next breaker probe, fencing persisted work from this stale owner.
       this.lifecycleToken = {};
       this.activeController = null;
       this.inFlight = null;
       this.scheduleAt(this.pressureProbeAtMs ?? this.clock.now());
     }, this.pressure.maxPollElapsedMs);
 
-    const running = this.runOnce(controller.signal)
+    const running = this.runOnce(controller.signal, startedAt)
       .then((outcome) => {
         if (this.lifecycleToken === lifecycleToken) {
           this.finishPoll(outcome, startedAt, admissionsAtStart);
@@ -538,7 +541,7 @@ export class ReflectionSemanticWorker {
     this.inFlight = running;
   }
 
-  private async runOnce(signal: AbortSignal): Promise<PollOutcome> {
+  private async runOnce(signal: AbortSignal, startedAt: number): Promise<PollOutcome> {
     if (this.stopped || signal.aborted) return { status: "aborted" };
     if (!(await runPollPhase(
       "maintenance_gate",
@@ -593,6 +596,14 @@ export class ReflectionSemanticWorker {
           budget: this.deps.budget,
           stageAdmission,
           signal,
+          now: () => this.clock.now(),
+          executionWindow: {
+            remainingMilliseconds: () => Math.max(
+              0,
+              startedAt + this.pressure.maxPollElapsedMs - this.clock.now(),
+            ),
+            settlementReserveMilliseconds: this.shutdownWaitMs,
+          },
         }));
     if (signal.aborted || this.stopped) return { status: "aborted" };
     const pressure = await runPollPhase("pressure_read", () => this.readPressure());
