@@ -5,5 +5,5 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "include": ["generate-application-catalogue.ts", "install-first-party-apps.ts", "vendor-agent-browser.ts", "windows-unit-gate.ts", "prepare-sheets.ts", "prepare-slides.ts"]
+  "include": ["generate-application-catalogue.ts", "install-first-party-apps.ts", "vendor-agent-browser.ts", "windows-unit-gate.ts", "test-repo-invariants.ts", "prepare-sheets.ts", "prepare-slides.ts"]
 }

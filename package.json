@@ -12,7 +12,7 @@
     "test:unit": "turbo run test:unit",
     "test:moderation": "bun dev/scripts/test-community-moderation.ts",
     "test:integration": "turbo run test:integration --concurrency=1",
-    "test:invariants": "bun test --timeout 60000 ./dev/tests/repo-invariants/",
+    "test:invariants": "bun dev/scripts/test-repo-invariants.ts --timeout 60000",
     "encryption:inventory": "bun run --cwd packages/encryption-invariants inventory",
     "encryption:check": "bun run --cwd packages/encryption-invariants check",
     "encryption:indicators": "bash dev/scripts/ci-gates.sh encryption-indicators",

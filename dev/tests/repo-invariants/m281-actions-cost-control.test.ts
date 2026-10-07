@@ -408,6 +408,7 @@ describe("M281 GitHub Actions cost controls", () => {
       "package.json", "bun.lock", "bunfig.toml", ".bun-version", ".gitattributes", "turbo.json",
       "tsconfig.base.json", "patches/dependency.patch",
       "dev/scripts/install-first-party-apps.ts", "dev/scripts/windows-unit-gate.ts",
+      "dev/scripts/test-repo-invariants.ts",
       "dev/scripts/fix-node-pty-perms.ts", "dev/scripts/prepare-board.ts",
       "dev/scripts/prepare-sheets.ts", "dev/scripts/prepare-slides.ts",
       "dev/scripts/vendor-agent-browser.ts", ".github/workflows/windows-desktop.yml",

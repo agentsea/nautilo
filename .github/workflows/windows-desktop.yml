@@ -19,6 +19,7 @@ on:
       - "dev/scripts/prepare-*.ts"
       - "dev/scripts/vendor-agent-browser.ts"
       - "dev/scripts/windows-unit-gate.ts"
+      - "dev/scripts/test-repo-invariants.ts"
       - "dev/scripts/pre-push-gate.sh"
       - "dev/scripts/ci-gates.sh"
       - "dev/scripts/tsconfig.json"

@@ -25,6 +25,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   preserving migration hashes and native Git Bash execution.
 - Contributor Git hooks execute their affected checks on Windows, and repository
   invariants compare portable paths without changing their ownership rules.
+- Windows repository invariant files run in separate Bun processes to avoid
+  a crash in the combined test run.
 - Database role repair rolls back the complete SQL batch if any statement fails.
 - First-party app seeding rebuilds isolated dependencies when seed metadata is
   invalid, while still reporting filesystem errors.
