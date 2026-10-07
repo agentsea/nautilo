@@ -456,6 +456,8 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
     const stableIdentity: TaskRuntimeGrantStableIdentity = Object.freeze({
       taskId: occurrence.task.id,
       taskRunId: occurrence.run.id,
+      executionSegment: 1,
+      resumeContinuationFingerprint: null,
       ownerId: occurrence.task.ownerId,
       requestorId: occurrence.task.requestorId,
       agentId: occurrence.task.agentId,

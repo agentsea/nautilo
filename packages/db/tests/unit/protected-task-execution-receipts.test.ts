@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
   PROTECTED_TASK_EXECUTION_ROUTES,
+  protectedTaskAdditionalAuthorityContinuationFingerprint,
   readProtectedTaskExecutionContinuationProof,
   sealProtectedTaskContinuationReceiptInTx,
   sealProtectedTaskExecutionSegmentReceiptInTx,
@@ -32,6 +33,19 @@ const ids = {
 const sealedAt = new Date("2026-10-06T10:00:00.000Z");
 const digest = (seed: number): Uint8Array =>
   new Uint8Array(Array.from({ length: 32 }, (_, index) => seed + index));
+
+const authorityFingerprintInput = () => ({
+  taskRunId: ids.run,
+  executionSegment: 1,
+  jobId: ids.job,
+  kind: "pre_effect_interrupt_v1" as const,
+  reason: "additional_authority" as const,
+  effectDisposition: "not_started_v1" as const,
+  interruptId: "interrupt:task-effect:1",
+  operationId: "task-effect:1",
+  requestDigest: digest(5),
+  requiredAuthorityDigest: digest(6),
+});
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
@@ -255,6 +269,37 @@ async function sealSegment(target = harness()) {
 }
 
 describe("protected Task execution receipts", () => {
+  test("derives one canonical additional-authority continuation identity", () => {
+    const value = authorityFingerprintInput();
+    expect(protectedTaskAdditionalAuthorityContinuationFingerprint(value))
+      .toBe("dvRpDbrJHb9WYEFC3pCl67VQq9tygVTUf2gPFqrBpss");
+    expect(protectedTaskAdditionalAuthorityContinuationFingerprint({
+      ...value,
+      requestDigest: value.requestDigest.slice(),
+      requiredAuthorityDigest: value.requiredAuthorityDigest.slice(),
+    })).toBe("dvRpDbrJHb9WYEFC3pCl67VQq9tygVTUf2gPFqrBpss");
+    expect(protectedTaskAdditionalAuthorityContinuationFingerprint({
+      ...value,
+      requiredAuthorityDigest: digest(7),
+    })).not.toBe("dvRpDbrJHb9WYEFC3pCl67VQq9tygVTUf2gPFqrBpss");
+  });
+
+  test("rejects malformed authority continuation identity fields", () => {
+    const value = authorityFingerprintInput();
+    for (const malformed of [
+      { ...value, taskRunId: "not-a-run" },
+      { ...value, executionSegment: 0 },
+      { ...value, reason: "grant_refresh" },
+      { ...value, effectDisposition: "uncertain_v1" },
+      { ...value, interruptId: "contains space" },
+      { ...value, requestDigest: new Uint8Array(31) },
+    ]) {
+      expect(() => protectedTaskAdditionalAuthorityContinuationFingerprint(
+        malformed as typeof value,
+      )).toThrow("continuation is malformed");
+    }
+  });
+
   test("seals one exact writer manifest and replays it immutably", async () => {
     const target = harness();
     const first = await sealProtectedTaskExecutionSegmentReceiptInTx(

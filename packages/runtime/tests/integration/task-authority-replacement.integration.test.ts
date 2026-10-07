@@ -125,6 +125,8 @@ function taskRecord(input: Readonly<{
     idempotencyKey: taskRuntimeStableIdempotencyKey({
       taskId: `task-${input.suffix}`,
       taskRunId: input.taskRunId,
+      executionSegment: 1,
+      resumeContinuationFingerprint: null,
       ownerId: `owner-${input.suffix}`,
       requestorId: `requestor-${input.suffix}`,
       agentId: `agent-${input.suffix}`,

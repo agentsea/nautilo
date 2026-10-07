@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, asc, eq, or } from "drizzle-orm";
 
 import type { DirectDatabase } from "../config/direct-database";
@@ -135,6 +136,53 @@ function validSegment(value: number): boolean {
 
 function validDigest(value: Uint8Array | null): value is Uint8Array {
   return value instanceof Uint8Array && value.length === DIGEST_BYTES;
+}
+
+/** Canonical immutable identity for one pre-effect authority continuation. */
+export function protectedTaskAdditionalAuthorityContinuationFingerprint(
+  input: Pick<
+    ProtectedTaskContinuationReceipt,
+    | "taskRunId"
+    | "executionSegment"
+    | "jobId"
+    | "kind"
+    | "reason"
+    | "effectDisposition"
+    | "interruptId"
+    | "operationId"
+    | "requestDigest"
+    | "requiredAuthorityDigest"
+  >,
+): string {
+  if (!CANONICAL_UUID.test(input.taskRunId)
+    || !CANONICAL_UUID.test(input.jobId)
+    || !validSegment(input.executionSegment)
+    || input.kind !== "pre_effect_interrupt_v1"
+    || input.reason !== "additional_authority"
+    || input.effectDisposition !== "not_started_v1"
+    || typeof input.interruptId !== "string"
+    || !OPAQUE_COORDINATE.test(input.interruptId)
+    || typeof input.operationId !== "string"
+    || !OPAQUE_COORDINATE.test(input.operationId)
+    || !validDigest(input.requestDigest)
+    || !validDigest(input.requiredAuthorityDigest)) {
+    throw new TypeError(
+      "Protected Task additional-authority continuation is malformed",
+    );
+  }
+  return createHash("sha256").update(JSON.stringify([
+    "protected-task-additional-authority-continuation:v1",
+    input.taskRunId,
+    input.executionSegment,
+    input.jobId,
+    input.kind,
+    input.reason,
+    input.effectDisposition,
+    input.interruptId,
+    input.operationId,
+    Buffer.from(input.requestDigest).toString("base64url"),
+    Buffer.from(input.requiredAuthorityDigest).toString("base64url"),
+  ])).digest("base64url");
 }
 
 function sameBytes(

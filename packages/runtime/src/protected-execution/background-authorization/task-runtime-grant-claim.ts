@@ -165,6 +165,8 @@ export type TaskRuntimeGrantClaimPlan = Readonly<{
 export type TaskRuntimeGrantStableIdentity = Readonly<{
   taskId: string;
   taskRunId: string;
+  executionSegment: number;
+  resumeContinuationFingerprint: string | null;
   ownerId: string;
   requestorId: string;
   agentId: string;
@@ -191,31 +193,47 @@ export type TaskRuntimeGrantStableIdentity = Readonly<{
 export function taskRuntimeStableIdempotencyKey(
   identity: TaskRuntimeGrantStableIdentity,
 ): string {
+  const fingerprint = identity.resumeContinuationFingerprint;
+  if (!Number.isSafeInteger(identity.executionSegment)
+    || identity.executionSegment < 1
+    || (identity.executionSegment === 1
+      ? fingerprint !== null
+      : typeof fingerprint !== "string"
+        || !/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u.test(fingerprint))) {
+    throw new TypeError("Task Runtime execution segment identity is invalid");
+  }
   const canonicalTargetUserIds = [...identity.targetUserIds].sort();
+  // Retain the exact initial-segment preimage for already durable requests.
+  const initial = [
+    identity.taskId,
+    identity.taskRunId,
+    identity.ownerId,
+    identity.requestorId,
+    identity.agentId,
+    identity.callingRoomId,
+    identity.scheduleKind,
+    identity.graphThreadId,
+    identity.startedAt,
+    identity.sourceRoomId,
+    identity.targetRoomId,
+    canonicalTargetUserIds,
+    identity.outputRoomId,
+    identity.outputNamespaceId,
+    identity.memoryMode,
+    identity.scopeId,
+    identity.contentRepresentation,
+    identity.contentNamespaceId,
+    identity.contentRevision,
+    identity.contentObjectId,
+    identity.contentAccessRevision,
+    identity.requiredNamespaceFingerprint,
+  ];
   const digest = createHash("sha256")
-    .update(JSON.stringify([
-      identity.taskId,
-      identity.taskRunId,
-      identity.ownerId,
-      identity.requestorId,
-      identity.agentId,
-      identity.callingRoomId,
-      identity.scheduleKind,
-      identity.graphThreadId,
-      identity.startedAt,
-      identity.sourceRoomId,
-      identity.targetRoomId,
-      canonicalTargetUserIds,
-      identity.outputRoomId,
-      identity.outputNamespaceId,
-      identity.memoryMode,
-      identity.scopeId,
-      identity.contentRepresentation,
-      identity.contentNamespaceId,
-      identity.contentRevision,
-      identity.contentObjectId,
-      identity.contentAccessRevision,
-      identity.requiredNamespaceFingerprint,
+    .update(JSON.stringify(identity.executionSegment === 1 ? initial : [
+      "task-runtime-continuation:v1",
+      initial,
+      identity.executionSegment,
+      fingerprint,
     ]))
     .digest("base64url");
   const key = `${TASK_RUNTIME_STABLE_IDEMPOTENCY_PREFIX}:${identity.taskRunId}:${digest}`;
@@ -399,7 +417,14 @@ function stableIdentityMatchesOccurrence(
 ): boolean {
   const identity = plan.stableIdentity;
   const canonicalTargetUserIds = [...identity.targetUserIds].sort();
-  return identity.taskId === occurrence.task.id
+  // This coordinator still owns initial starts. A continuation must use the
+  // dedicated proof-consuming start plan before it can attach a recipient.
+  return identity.executionSegment === 1
+    && identity.resumeContinuationFingerprint === null
+    && plan.reference.executionSegment === 1
+    && !Object.hasOwn(plan.reference, "resumeAcceptanceId")
+    && !Object.hasOwn(plan.reference, "resumeContinuationFingerprint")
+    && identity.taskId === occurrence.task.id
     && identity.taskRunId === occurrence.run.id
     && identity.ownerId === occurrence.task.ownerId
     && identity.requestorId === occurrence.task.requestorId

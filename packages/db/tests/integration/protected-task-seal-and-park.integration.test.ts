@@ -11,9 +11,11 @@ import {
   jobs,
   namespaces,
   protectedTaskContinuationReceipts,
+  protectedTaskAdditionalAuthorityContinuationFingerprint,
   protectedTaskExecutionSegmentReceipts,
   resolveAppDatabaseConnectionString,
   sealAndParkProtectedTaskRun,
+  startParkedProtectedTaskRunAdditionalAuthoritySegment,
   sql,
   taskDefinitionCryptoRevisions,
   taskRuns,
@@ -22,6 +24,7 @@ import {
   users,
   type ProtectedTaskDurableJobReference,
   type SealAndParkProtectedTaskRunInput,
+  type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
 } from "@nautilo/db";
 import { protectedTaskRunResultObjectId } from
   "../../src/queries/protected-task-output-binding-identities";
@@ -38,6 +41,8 @@ type Fixture = Readonly<{
   taskId: string;
   taskRunId: string;
   jobId: string;
+  nextJobId: string;
+  alternateNextJobId: string;
   cryptoObjectId: string;
   graphThreadId: string;
   jobReference: ProtectedTaskDurableJobReference;
@@ -77,6 +82,8 @@ function fixtureIds(): Fixture {
     taskId,
     taskRunId,
     jobId: randomUUID(),
+    nextJobId: randomUUID(),
+    alternateNextJobId: randomUUID(),
     cryptoObjectId,
     graphThreadId: `subagent:task-seal-and-park:${taskRunId}`,
     jobReference: Object.freeze({
@@ -96,6 +103,8 @@ async function cleanupFixture(fixture: Fixture): Promise<void> {
   await admin.delete(tasks).where(eq(tasks.id, fixture.taskId));
   await admin.delete(taskRuns).where(eq(taskRuns.id, fixture.taskRunId));
   await admin.delete(jobs).where(eq(jobs.id, fixture.jobId));
+  await admin.delete(jobs).where(eq(jobs.id, fixture.nextJobId));
+  await admin.delete(jobs).where(eq(jobs.id, fixture.alternateNextJobId));
   await admin.delete(taskDefinitionCryptoRevisions).where(eq(
     taskDefinitionCryptoRevisions.taskId,
     fixture.taskId,
@@ -232,6 +241,78 @@ function input(fixture: Fixture): SealAndParkProtectedTaskRunInput {
       operationId: "task-effect:1",
       requestDigest: new Uint8Array(32).fill(0x53),
       requiredAuthorityDigest: new Uint8Array(32).fill(0x54),
+    },
+  };
+}
+
+function additionalAuthorityReference(
+  fixture: Fixture,
+): ProtectedTaskDurableJobReference {
+  const parked = input(fixture);
+  return Object.freeze({
+    ...fixture.jobReference,
+    authorizationRequestId: "authority-request:1",
+    policyRevision: 2,
+    executionSegment: 2,
+    resumeContinuationFingerprint:
+      protectedTaskAdditionalAuthorityContinuationFingerprint({
+        taskRunId: fixture.taskRunId,
+        executionSegment: 1,
+        jobId: fixture.jobId,
+        kind: "pre_effect_interrupt_v1",
+        reason: "additional_authority",
+        effectDisposition: "not_started_v1",
+        interruptId: parked.continuation.interruptId,
+        operationId: parked.continuation.operationId,
+        requestDigest: parked.continuation.requestDigest,
+        requiredAuthorityDigest: parked.continuation.requiredAuthorityDigest,
+      }),
+  });
+}
+
+async function insertAdditionalAuthorityJob(
+  fixture: Fixture,
+  jobId = fixture.nextJobId,
+): Promise<void> {
+  await admin.insert(jobs).values({
+    id: jobId,
+    ownerId: fixture.userId,
+    requestorId: fixture.userId,
+    laneKey: `task:${fixture.taskId}`,
+    type: "foreground",
+    status: "queued",
+    input: additionalAuthorityReference(fixture),
+  });
+}
+
+function additionalAuthorityStartInput(
+  fixture: Fixture,
+  jobId = fixture.nextJobId,
+): StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput {
+  const parked = input(fixture);
+  return {
+    taskId: fixture.taskId,
+    taskRunId: fixture.taskRunId,
+    graphThreadId: fixture.graphThreadId,
+    priorJobId: fixture.jobId,
+    jobId,
+    generation: parked.park.generation,
+    interrupts: parked.park.interrupts,
+    parkedAt: parked.park.parkedAt,
+    contentRepresentation: "protected",
+    contentNamespaceId: fixture.namespaceId,
+    contentRevision: 1,
+    cryptoObjectId: fixture.cryptoObjectId,
+    cryptoAccessRevision: 0,
+    cryptoRequiredNamespaceFingerprint: new Uint8Array(32).fill(0x41),
+    priorJobReference: fixture.jobReference,
+    jobReference: additionalAuthorityReference(fixture),
+    checkpointManifest: parked.segment.checkpoint,
+    continuation: {
+      interruptId: parked.continuation.interruptId,
+      operationId: parked.continuation.operationId,
+      requestDigest: parked.continuation.requestDigest,
+      requiredAuthorityDigest: parked.continuation.requiredAuthorityDigest,
     },
   };
 }
@@ -397,6 +478,125 @@ test("cancellation and atomic park serialize without retaining loser receipts", 
       expect(segments).toEqual([]);
       expect(continuations).toEqual([]);
     }
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+test("product-role continuation start has one durable next-Job winner", async () => {
+  const fixture = await createFixture();
+  try {
+    expect(await sealAndParkProtectedTaskRun(productA, input(fixture)))
+      .toMatchObject({ status: "parked" });
+    await insertAdditionalAuthorityJob(fixture);
+    const conflict: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput = {
+      ...additionalAuthorityStartInput(fixture),
+      checkpointManifest: {
+        ...additionalAuthorityStartInput(fixture).checkpointManifest,
+        checkpointOrderedDigest: new Uint8Array(32).fill(0x71),
+      },
+    };
+    expect(await startParkedProtectedTaskRunAdditionalAuthoritySegment(
+      productA,
+      conflict,
+    )).toEqual({ status: "rejected", reason: "conflict" });
+
+    await insertAdditionalAuthorityJob(fixture, fixture.alternateNextJobId);
+    const candidates = [
+      additionalAuthorityStartInput(fixture),
+      additionalAuthorityStartInput(fixture, fixture.alternateNextJobId),
+    ] as const;
+    const results = await Promise.all([
+      startParkedProtectedTaskRunAdditionalAuthoritySegment(
+        productA,
+        candidates[0],
+      ),
+      startParkedProtectedTaskRunAdditionalAuthoritySegment(
+        productB,
+        candidates[1],
+      ),
+    ]);
+    expect(results.filter(result => result.status === "started")).toHaveLength(1);
+    expect(results.filter(result =>
+      result.status === "rejected" && result.reason === "stale"
+    )).toHaveLength(1);
+    const winnerIndex = results.findIndex(result => result.status === "started");
+    expect(await startParkedProtectedTaskRunAdditionalAuthoritySegment(
+      productA,
+      candidates[winnerIndex]!,
+    )).toEqual({ status: "exact_replay" });
+
+    const [persistedRun] = await productA.select().from(taskRuns)
+      .where(eq(taskRuns.id, fixture.taskRunId)).limit(1);
+    expect(persistedRun).toMatchObject({
+      status: "running",
+      jobId: candidates[winnerIndex]!.jobId,
+    });
+    expect(await productA.select().from(protectedTaskExecutionSegmentReceipts)
+      .where(eq(
+        protectedTaskExecutionSegmentReceipts.taskRunId,
+        fixture.taskRunId,
+      ))).toHaveLength(1);
+    expect(await productA.select().from(protectedTaskContinuationReceipts)
+      .where(eq(
+        protectedTaskContinuationReceipts.taskRunId,
+        fixture.taskRunId,
+      ))).toHaveLength(1);
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+test("cancellation and additional-authority start serialize on the Task", async () => {
+  const fixture = await createFixture();
+  try {
+    expect(await sealAndParkProtectedTaskRun(productA, input(fixture)))
+      .toMatchObject({ status: "parked" });
+    await insertAdditionalAuthorityJob(fixture);
+    const cancelledAt = new Date("2026-10-07T12:40:00.000Z");
+    const [startResult, cancellationResult] = await Promise.all([
+      startParkedProtectedTaskRunAdditionalAuthoritySegment(
+        productA,
+        additionalAuthorityStartInput(fixture),
+      ),
+      transitionTaskLifecycleTerminal(productB, {
+        taskId: fixture.taskId,
+        taskStatus: "cancelled",
+        taskPatch: { cancelledAt },
+        runId: fixture.taskRunId,
+        runStatus: "cancelled",
+        runPatch: { completedAt: cancelledAt },
+      }),
+    ]);
+
+    if (startResult.status === "started") {
+      expect(cancellationResult).toMatchObject({
+        transitioned: true,
+        outcome: "transitioned",
+      });
+    } else {
+      expect(startResult).toEqual({ status: "rejected", reason: "stale" });
+      expect(cancellationResult).toMatchObject({
+        transitioned: true,
+        outcome: "transitioned",
+      });
+    }
+    const [persistedTask] = await productA.select().from(tasks)
+      .where(eq(tasks.id, fixture.taskId)).limit(1);
+    const [persistedRun] = await productA.select().from(taskRuns)
+      .where(eq(taskRuns.id, fixture.taskRunId)).limit(1);
+    expect(persistedTask?.status).toBe("cancelled");
+    expect(persistedRun?.status).toBe("cancelled");
+    expect(await productA.select().from(protectedTaskExecutionSegmentReceipts)
+      .where(eq(
+        protectedTaskExecutionSegmentReceipts.taskRunId,
+        fixture.taskRunId,
+      ))).toHaveLength(1);
+    expect(await productA.select().from(protectedTaskContinuationReceipts)
+      .where(eq(
+        protectedTaskContinuationReceipts.taskRunId,
+        fixture.taskRunId,
+      ))).toHaveLength(1);
   } finally {
     await cleanupFixture(fixture);
   }

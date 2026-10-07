@@ -456,6 +456,22 @@ describe("protected TaskRun result terminal CAS", () => {
     expect(stale.writes).toEqual([]);
   });
 
+  test("accepts the canonical authority-continuation Job reference", async () => {
+    const fixture = harness({
+      job: job({
+        input: {
+          ...jobReference(),
+          authorizationRequestId: `task-run-authorization:${ids.run}:segment:2`,
+          executionSegment: 2,
+          resumeContinuationFingerprint: "A".repeat(43),
+        },
+      }),
+    });
+
+    expect(await terminalizeProtectedTaskRunResult(fixture.db, input()))
+      .toEqual({ status: "transitioned" });
+  });
+
   test("accepts replay only with the exact Job receipt and mapped ledger", async () => {
     const fixture = harness({
       task: task({ status: "completed" }),
@@ -520,6 +536,13 @@ describe("protected TaskRun result terminal CAS", () => {
       { resultRevision: resultRevision({ requestDigest: new Uint8Array(32) }) },
       { job: job({ status: "queued" }) },
       { job: job({ input: { ...jobReference(), resultObjectId: `${resultObjectId}:other` } }) },
+      { job: job({ input: {
+        ...jobReference(),
+        authorizationRequestId: `task-run-authorization:${ids.run}:segment:2`,
+        executionSegment: 2,
+        resumeAcceptanceId: "acceptance:1",
+        resumeContinuationFingerprint: "A".repeat(43),
+      } }) },
       { policy: policy({ revision: 10 }) },
       { policy: policy({ mode: "shadow_encryption" }) },
       { outputBinding: undefined },

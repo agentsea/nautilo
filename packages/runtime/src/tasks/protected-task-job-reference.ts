@@ -3,6 +3,7 @@ import { BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES } from
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const PORTABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u;
+const SHA256_BASE64URL = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u;
 const TASK_DEFINITION_OBJECT_ID = /^task-definition:v1:[0-9a-f]{64}$/u;
 const TASK_RUN_RESULT_OBJECT_ID = /^task-run-result:v1:[0-9a-f]{64}$/u;
 const encoder = new TextEncoder();
@@ -14,7 +15,7 @@ const encoder = new TextEncoder();
  * authorization request id identifies durable lifecycle state; loading it
  * cannot reconstruct a process-local accepted authority.
  */
-export type ProtectedTaskJobReferenceV1 = Readonly<{
+type ProtectedTaskJobReferenceIdentityV1 = Readonly<{
   kind: "protected_task_run_v1";
   taskId: string;
   taskRunId: string;
@@ -23,8 +24,25 @@ export type ProtectedTaskJobReferenceV1 = Readonly<{
   authorizationRequestId: string;
   policyRevision: number;
   executionSegment: number;
-  resumeAcceptanceId?: string;
 }>;
+
+type ProtectedTaskJobResumeBindingV1 =
+  | Readonly<{
+      resumeAcceptanceId?: never;
+      resumeContinuationFingerprint?: never;
+    }>
+  | Readonly<{
+      resumeAcceptanceId: string;
+      resumeContinuationFingerprint?: never;
+    }>
+  | Readonly<{
+      resumeAcceptanceId?: never;
+      resumeContinuationFingerprint: string;
+    }>;
+
+export type ProtectedTaskJobReferenceV1 = Readonly<
+  ProtectedTaskJobReferenceIdentityV1 & ProtectedTaskJobResumeBindingV1
+>;
 
 function isPortableIdentifier(value: unknown): value is string {
   return typeof value === "string"
@@ -42,11 +60,18 @@ export function assertProtectedTaskJobReferenceV1(
   const reference = value as Record<string, unknown>;
   const resumed = Number.isSafeInteger(reference["executionSegment"])
     && (reference["executionSegment"] as number) > 1;
+  const hasAcceptance = Object.hasOwn(reference, "resumeAcceptanceId");
+  const hasContinuation = Object.hasOwn(
+    reference,
+    "resumeContinuationFingerprint",
+  );
+  const expectedKeys = resumed
+    ? hasAcceptance
+      ? "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,resumeAcceptanceId,taskId,taskRunId"
+      : "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,resumeContinuationFingerprint,taskId,taskRunId"
+    : "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,taskId,taskRunId";
   if (
-    Object.keys(reference).sort().join(",")
-      !== (resumed
-        ? "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,resumeAcceptanceId,taskId,taskRunId"
-        : "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,taskId,taskRunId")
+    Object.keys(reference).sort().join(",") !== expectedKeys
     || reference["kind"] !== "protected_task_run_v1"
     || typeof reference["taskId"] !== "string"
     || !UUID.test(reference["taskId"])
@@ -61,7 +86,16 @@ export function assertProtectedTaskJobReferenceV1(
     || (reference["policyRevision"] as number) < 1
     || !Number.isSafeInteger(reference["executionSegment"])
     || (reference["executionSegment"] as number) < 1
-    || (resumed && !isPortableIdentifier(reference["resumeAcceptanceId"]))
+    || (resumed
+      ? hasAcceptance === hasContinuation
+      : hasAcceptance || hasContinuation)
+    || (hasAcceptance
+      && !isPortableIdentifier(reference["resumeAcceptanceId"]))
+    || (hasContinuation
+      && (typeof reference["resumeContinuationFingerprint"] !== "string"
+        || !SHA256_BASE64URL.test(
+          reference["resumeContinuationFingerprint"],
+        )))
   ) {
     throw new TypeError("Protected Task durable Job reference is invalid");
   }

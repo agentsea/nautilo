@@ -144,6 +144,8 @@ function stableIdentity(value = occurrence()): TaskRuntimeGrantClaimPlan["stable
   return Object.freeze({
     taskId: value.task.id,
     taskRunId: value.run.id,
+    executionSegment: 1,
+    resumeContinuationFingerprint: null,
     ownerId: value.task.ownerId,
     requestorId: value.task.requestorId,
     agentId: value.task.agentId,
@@ -609,6 +611,56 @@ async function prepareAndBind(value: Fixture): Promise<void> {
 }
 
 describe("Task Runtime grant claim", () => {
+  test("preserves the durable initial request key and isolates continuation segments", () => {
+    const identity = stableIdentity();
+    const initial = taskRuntimeStableIdempotencyKey(identity);
+    expect(initial).toBe("task-runtime-stable-v1:60000000-0000-4000-8000-000000000006:optuWJwLFjptlXGvTHSrBRnKjfqM5oYKzKpKbAIYJOQ");
+    const continuation = {
+      ...identity,
+      executionSegment: 2,
+      resumeContinuationFingerprint: Buffer.from(bytes(23)).toString("base64url"),
+    };
+    const resumed = taskRuntimeStableIdempotencyKey(continuation);
+    expect(resumed).not.toBe(initial);
+    expect(taskRuntimeStableIdempotencyKey({
+      ...continuation, executionSegment: 3,
+    })).not.toBe(resumed);
+    expect(taskRuntimeStableIdempotencyKey({
+      ...continuation,
+      resumeContinuationFingerprint: Buffer.from(bytes(24)).toString("base64url"),
+    })).not.toBe(resumed);
+  });
+
+  test("rejects incomplete and noncanonical continuation identities", () => {
+    for (const binding of [
+      { executionSegment: 0, resumeContinuationFingerprint: null },
+      { executionSegment: 1.5, resumeContinuationFingerprint: null },
+      { executionSegment: 1, resumeContinuationFingerprint: "A".repeat(43) },
+      { executionSegment: 2, resumeContinuationFingerprint: null },
+      { executionSegment: 2, resumeContinuationFingerprint: "A".repeat(42) + "B" },
+    ]) {
+      expect(() => taskRuntimeStableIdempotencyKey({ ...stableIdentity(), ...binding }))
+        .toThrow("execution segment identity is invalid");
+    }
+  });
+
+  test("keeps continuation admission out of the initial-only grant coordinator", async () => {
+    const value = await fixture();
+    value.setSubstitutePlan(plan => Object.freeze({
+      ...plan,
+      stableIdentity: Object.freeze({
+        ...plan.stableIdentity,
+        executionSegment: 2,
+        resumeContinuationFingerprint: Buffer.from(bytes(23)).toString("base64url"),
+      }),
+    }));
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+      .rejects.toThrow("disagrees with its occurrence");
+    expect(await value.repository.get(REQUEST)).toBeNull();
+    expect(value.recipients.size).toBe(0);
+  });
+
   test("canonicalizes target ordering in the immutable plan commitment", () => {
     const identity = stableIdentity();
     const forward = taskRuntimeStableIdempotencyKey({

@@ -265,7 +265,7 @@ describe("Job", () => {
     }
   });
 
-  test("resumed protected Task Jobs require one opaque acceptance binding", () => {
+  test("resumed protected Task Jobs require one exact resume binding", () => {
     const initial = {
       kind: "protected_task_run_v1",
       taskId: "10000000-0000-4000-8000-000000000001",
@@ -282,10 +282,30 @@ describe("Job", () => {
       executionSegment: 2,
       resumeAcceptanceId: "await-reply-acceptance:1",
     })).not.toThrow();
+    expect(() => assertProtectedTaskJobReferenceV1({
+      ...initial,
+      executionSegment: 2,
+      resumeContinuationFingerprint: "A".repeat(43),
+    })).not.toThrow();
     for (const invalid of [
       { ...initial, executionSegment: 2 },
       { ...initial, resumeAcceptanceId: "await-reply-acceptance:1" },
+      { ...initial, resumeContinuationFingerprint: "A".repeat(43) },
       { ...initial, executionSegment: 2, resumeAcceptanceId: "contains spaces" },
+      {
+        ...initial,
+        executionSegment: 2,
+        resumeAcceptanceId: "await-reply-acceptance:1",
+        resumeContinuationFingerprint: "A".repeat(43),
+      },
+      { ...initial, executionSegment: 2, resumeAcceptanceId: undefined },
+      { ...initial, executionSegment: 2, resumeContinuationFingerprint: undefined },
+      { ...initial, executionSegment: 2, resumeContinuationFingerprint: "A".repeat(42) },
+      {
+        ...initial,
+        executionSegment: 2,
+        resumeContinuationFingerprint: `${"A".repeat(42)}B`,
+      },
     ]) {
       expect(() => assertProtectedTaskJobReferenceV1(invalid)).toThrow(
         "Protected Task durable Job reference is invalid",

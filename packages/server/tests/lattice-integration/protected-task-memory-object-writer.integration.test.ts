@@ -1415,6 +1415,8 @@ async function createScenario(
   const stableIdentity = Object.freeze({
     taskId,
     taskRunId,
+    executionSegment: 1,
+    resumeContinuationFingerprint: null,
     ownerId: base.userId,
     requestorId: base.userId,
     agentId: base.productAgentId,
