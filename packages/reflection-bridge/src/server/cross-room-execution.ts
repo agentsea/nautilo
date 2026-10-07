@@ -595,18 +595,24 @@ function assertOutputCoordinate(output: CrossRoomOutputCoordinate): void {
 function assertModelExposureDependencies(
   dependencies: readonly DurableModelExposureDependency[] | undefined,
   inputs: readonly CrossRoomInputCoordinate[],
+  predecessorOnlyRecordRef?: string,
 ): void {
   if (dependencies === undefined) return;
+  const exposedInputs = predecessorOnlyRecordRef === undefined
+    ? inputs
+    : inputs.filter((input) =>
+      input.kind !== "record" || input.recordRef !== predecessorOnlyRecordRef
+    );
   const identities = dependencies.map((dependency) => dependency.kind === "record"
     ? `record\0${dependency.recordRef}`
     : `source\0${dependency.sourceKind}\0${dependency.logicalSourceRef}`);
   if (
-    identities.length !== inputs.length
+    identities.length !== exposedInputs.length
     || new Set(identities).size !== identities.length
   ) {
     throw new TypeError("model exposure must match the full cross-Room input set");
   }
-  for (const input of inputs) {
+  for (const input of exposedInputs) {
     const identity = coordinateIdentity(input);
     const index = identities.indexOf(identity);
     const dependency = dependencies[index];
@@ -690,6 +696,7 @@ export function assertCrossRoomPublicationPlan(
   assertModelExposureDependencies(
     plan.modelExposureDependencies,
     plan.selectedInputs,
+    plan.predecessorOnlyRecordRef,
   );
   if (plan.predecessorOnlyRecordRef !== undefined) {
     assertPortableRecordSearchIdentifier(

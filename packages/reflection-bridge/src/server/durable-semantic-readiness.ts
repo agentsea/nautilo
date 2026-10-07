@@ -24,6 +24,7 @@ import type {
   DurableSemanticReadinessPort,
   SameRoomSemanticBindingPort,
 } from "./durable-semantic-composition";
+import type { RecordSearchCommitmentPort } from "./record-search-composition";
 
 const AUTHORITY_WORK_MAXIMUM = 256;
 
@@ -60,6 +61,7 @@ implements DurableSemanticReadinessPort {
     authorityReconciliation: AuthorityReconciliationPorts;
     embedding: RecordEmbeddingPort;
     searchProjections: PostgresRecordSearchProjectionStore;
+    commitments: Pick<RecordSearchCommitmentPort, "roomAnchor">;
   }>) {}
 
   async ensureAuthority(
@@ -204,6 +206,11 @@ implements DurableSemanticReadinessPort {
       readBindingRef: work.readBindingRef,
     });
     if (opened.status !== "available") return unavailable("record_unavailable");
+    const resolved = await this.ports.bindings.resolve(opened.record);
+    if (resolved.status !== "available") return unavailable("authority_unavailable");
+    const roomAnchorCommitment = this.ports.commitments.roomAnchor(
+      resolved.binding.roomAnchorRef,
+    );
     const embedded = await this.ports.embedding.embed({
       purpose: "record.statement_embedding",
       plaintext: opened.record.semantic.statement,
@@ -218,14 +225,19 @@ implements DurableSemanticReadinessPort {
       projectionGeneration: current === null ? 1 : current.projectionGeneration + 1,
       embedding: embedded.embedding,
     };
-    if (current !== null && projectionMatches(current, desired)) {
+    if (
+      current !== null
+      && current.roomAnchorCommitment === roomAnchorCommitment
+      && projectionMatches(current, desired)
+    ) {
       return { status: "ready" };
     }
     const result = current === null
-      ? await this.ports.searchProjections.publish(desired)
+      ? await this.ports.searchProjections.publish(desired, roomAnchorCommitment)
       : await this.ports.searchProjections.replace({
           expectedProjectionGeneration: current.projectionGeneration,
           projection: desired,
+          roomAnchorCommitment,
         });
     return result === "published" || result === "replayed" || result === "replaced"
       ? { status: "ready" }

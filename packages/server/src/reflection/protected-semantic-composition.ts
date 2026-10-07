@@ -15,7 +15,7 @@ import {
   type DurableSleepSemanticPort, type DurableSleepClaim, type DurableSleepOrganizerViewResult, type DurableSleepOrganizerView,
 } from "@nautilo/reflection/durable";
 import {
-  DualModeRecordRepository, PostgresRecordProductStore, PostgresSemanticWorkStore,
+  DualModeRecordRepository, PostgresRecordProductStore, PostgresSemanticWorkStore, PostgresGroundedDependencyRecordState, resolveCurrentDependencyInputRef,
   PostgresCurrentRecordPublicationBinding, PostgresAuthorityProjectionStore,
   PostgresRecordSearchProjectionStore, PostgresSameRoomOrganizerStore, PostgresSameRoomOrganizerNeighbors,
   PostgresCrossRoomOrganizerStore, SameRoomDurableSemanticComposition, ExactCrossRoomPublicationPlanner,
@@ -389,7 +389,14 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
     publish: () => Promise.reject(unavailable()), verify: () => Promise.resolve("incomplete"), retire: () => Promise.reject(unavailable())};
   const metadataRepository = new DualModeRecordRepository({selection, product, commitment: createHmacRecordRequestCommitmentPort(input.commitmentKey), protectedPublication: denied});
   const crossRoomStore = new PostgresCrossRoomOrganizerStore(input.productHandle);
-  const discovery = new PostgresSameRoomOrganizerNeighbors({selection, projections, store, repository: metadataRepository});
+  const dependencyRecordState = new PostgresGroundedDependencyRecordState(input.productHandle);
+  const currentDependencyInputRef = async (recordRef: string, signal?: AbortSignal): Promise<string | null> => {
+    const current = await resolveCurrentDependencyInputRef({recordState: dependencyRecordState, recordRef,
+      maxVisitedRecords: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy.maxVisitedRecords,
+      ...(signal === undefined ? {} : {signal})});
+    return current.status === "current" ? current.recordRef : null;
+  };
+  const discovery = new PostgresSameRoomOrganizerNeighbors({commitments: createHmacRecordSearchCommitmentPort(input.commitmentKey), selection, projections, store, repository: metadataRepository});
   type FamilyValue = ProtectedReflectionSemanticQuestionValue & {
     resolveDependencyLoss(application: Parameters<DurableSleepSemanticPort["resolveDependencyLoss"]>[0], complete: CompleteOutput,
       assertCurrent: () => Promise<void>): ReturnType<DurableSleepSemanticPort["resolveDependencyLoss"]>;
@@ -468,9 +475,26 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
       exact.set(changed.recordRef, {metadata: changed, bindingRef: current.bindingRef});
       const pending = [...new Set([claim.recordRef, ...coordinates.map(value => value.recordRef)])];
       const queued = new Set(pending);
+      if (dependencyMode) {
+        // Keep expanded record inputs across the wait for a device grant, just
+        // as Memory/Message inputs above. Otherwise each poll would discard
+        // the requested expansion before the authorized attempt could use it.
+        for (const previous of previousInputs) {
+          if (previous.objectType !== "nautilo.reflection.record.v1") continue;
+          const recordRef = await dependencyRecordState.readRecordRefForProtectedObject(previous.objectId);
+          if (recordRef === null || queued.has(recordRef)) continue;
+          queued.add(recordRef); pending.push(recordRef);
+          if (pending.length > REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy.maxVisitedRecords) return rejectedView;
+        }
+      }
       for (let cursor = 0; cursor < pending.length; cursor++) {
         signal?.throwIfAborted();
-        const recordRef = pending[cursor]!;
+        const requestedRef = pending[cursor]!;
+        // Resolve a withdrawn child's canonical successor before asking for any
+        // payload binding. Recovery must not need the obsolete ciphertext.
+        const recordRef = dependencyMode && requestedRef !== claim.recordRef
+          ? await currentDependencyInputRef(requestedRef, signal) : requestedRef;
+        if (recordRef === null) continue;
         if (!exact.has(recordRef)) {
           const access = await readBinding(recordRef); if (access === null) {if (dependencyMode) continue; return rejectedView;}
           const expected = coordinates.find(value => value.recordRef === recordRef);
@@ -490,6 +514,9 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
           }
           exact.set(recordRef, {metadata: value, bindingRef: access.bindingRef});
         }
+        // Repair reads direct survivors; a child's current authorized summary
+        // is its own evidence boundary, so its descendants are not model inputs.
+        if (dependencyMode && recordRef !== claim.recordRef) continue;
         let continuation: string | undefined;
         do {
           const page = await product.readGraphPage({recordId: recordRef, direction: "dependencies", limit: DURABLE_RECORD_PAGE_LIMIT_MAX,
@@ -516,7 +543,10 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
         memoryBindings.set(value.logicalSourceRef, {roomAnchorRef: room.roomId, readBindingRef});
       }
       await assertCrossRoomCurrent();
-      const output = await resolveProtectedReflectionOutputAudience({inputBindings: exactInputs, accessAudiences,
+      const survivorInputs = dependencyMode
+        ? exactInputs.filter(value => value.objectId !== changed.inputBinding.objectId)
+        : exactInputs;
+      const output = await resolveProtectedReflectionOutputAudience({inputBindings: survivorInputs.length === 0 ? exactInputs : survivorInputs, accessAudiences,
         sourceAuthority: new CanonicalRoomNamespaceSourceAuthority(), ...(signal === undefined ? {} : {signal})});
       if (output === null) return rejectedView;
       let publication: ReturnType<typeof createGateBoundReflectionRecordPublication> | undefined;
@@ -567,7 +597,7 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
           if (outputObjectId === undefined) throw unavailable();
           const payloads = new Map(opened.map(value => [value.objectId, value]));
           let expanded = false;
-          for (const entry of exact.values()) {
+          for (const entry of [...exact.values()]) {
             const payload = payloads.get(entry.metadata.inputBinding.objectId);
             if (payload === undefined) throw unavailable();
             const record = decodeDurableRecordEnvelope({...entry.metadata, payloadBytes: payload.plaintext});
@@ -576,9 +606,25 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
             // dependency rewriting reads the anchor's direct sources only.
             if (dependencyMode ? record.recordRef !== claim.recordRef
               : record.recordRef !== claim.recordRef && !coordinates.some(value => value.recordRef === record.recordRef)) continue;
-            for (const dependency of record.semantic.sourceDependencies) {
+            if (dependencyMode) {
+              for (const exposure of record.semantic.modelExposureDependencies ?? []) {
+                if (exposure.kind !== "record" || exact.has(exposure.recordRef)) continue;
+                const recordRef = await currentDependencyInputRef(exposure.recordRef, executionSignal);
+                if (recordRef === null || exact.has(recordRef)) continue;
+                const access = await readBinding(recordRef);
+                if (access === null) throw new PendingReflectionInputsRequired();
+                const value = await metadata.resolveRecord({recordRef, namespaceId: access.namespaceId, signal: executionSignal});
+                if (value === null) continue;
+                if (exact.size + exactMemories.size + exactMessages.size >= REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy.maxVisitedRecords) throw unavailable();
+                exact.set(recordRef, {metadata: value, bindingRef: access.bindingRef});
+                expanded = true;
+              }
+            }
+            const sourceDependencies = [...record.semantic.sourceDependencies,
+              ...(record.semantic.modelExposureDependencies ?? []).flatMap(exposure => exposure.kind === "source"
+                ? [{...exposure, authorityBearing: true}] : [])];
+            for (const dependency of sourceDependencies) {
               if (dependencyMode && dependency.sourceKind === "message") {
-                if (exactMessages.has(dependency.logicalSourceRef)) continue;
                 const match = /^message:([1-9][0-9]*)$/.exec(dependency.logicalSourceRef);
                 if (match === null || !Number.isSafeInteger(Number(match[1]))) throw unavailable();
                 const message = await messageMetadata.resolveMessage({messageId: Number(match[1]), roomId: origin.roomId,
@@ -586,7 +632,11 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
                   ...(dependency.observedRevision === undefined ? {} : {observedRevision: dependency.observedRevision}), signal: executionSignal});
                 if (message.status === "waiting") throw new PendingReflectionInputsRequired();
                 if (message.status === "unavailable") throw unavailable();
-                if (message.status !== "available") continue;
+                if (message.status !== "available") {
+                  if (exactMessages.delete(dependency.logicalSourceRef)) expanded = true;
+                  continue;
+                }
+                if (exactMessages.has(dependency.logicalSourceRef)) continue;
                 if (exact.size + exactMemories.size + exactMessages.size >= REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy.maxVisitedRecords) throw unavailable();
                 exactMessages.set(message.metadata.logicalSourceRef, message.metadata); expanded = true;
                 continue;
@@ -595,13 +645,23 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
                 if (dependencyMode) throw unavailable();
                 continue;
               }
-              if (exactMemories.has(dependency.logicalSourceRef)) continue;
+              if (!dependencyMode && exactMemories.has(dependency.logicalSourceRef)) continue;
               const memory = await metadata.resolveMemoryDependency({memoryRef: dependency.logicalSourceRef.slice(7),
                 namespaceId: dependency.terminalAuthorityLeafHandle,
                 ...(dependency.observedRevision === undefined ? {} : {observedRevision: dependency.observedRevision}), signal: executionSignal});
               if (memory.status === "waiting") throw new PendingReflectionInputsRequired();
               if (memory.status === "unavailable") throw unavailable();
-              if (memory.status !== "available") {if (dependencyMode) continue; throw unavailable();}
+              if (memory.status !== "available") {
+                if (dependencyMode) {
+                  // A pending grant may have been prepared before this source
+                  // changed. Rebuild its exact input set instead of retaining
+                  // the lost source in every subsequent output-audience plan.
+                  if (exactMemories.delete(dependency.logicalSourceRef)) expanded = true;
+                  continue;
+                }
+                throw unavailable();
+              }
+              if (exactMemories.has(dependency.logicalSourceRef)) continue;
               if (exact.size + exactMemories.size + exactMessages.size >= REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy.maxVisitedRecords) throw unavailable();
               exactMemories.set(memory.metadata.logicalSourceRef, memory.metadata); expanded = true;
             }
@@ -636,8 +696,9 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
             }});
           const repository = new DualModeRecordRepository({selection, product: questionProduct,
             commitment: createHmacRecordRequestCommitmentPort(input.commitmentKey), protectedPublication: publication.publication});
-          const questionNeighbors = new PostgresSameRoomOrganizerNeighbors({selection, projections, store, repository});
+          const questionNeighbors = new PostgresSameRoomOrganizerNeighbors({commitments: createHmacRecordSearchCommitmentPort(input.commitmentKey), selection, projections, store, repository});
           let checkQuestionCurrent: (() => Promise<void>) | undefined;
+          let plan: CrossRoomPublicationPlan | undefined;
           const composition = new SameRoomDurableSemanticComposition({repository, readiness: input.readiness, bindings: bindings.semantic,
             organizerNeighbors: {discover: () => discovered === undefined ? Promise.reject(unavailable()) : Promise.resolve(discovered), openSelected: value => questionNeighbors.openSelected(value)},
             memories: {async search() {
@@ -652,17 +713,28 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
             }}, model: input.model,
             proposals: {apply: application => {if (claim.changeReason === "parent_conflict") throw unavailable(); return publisher.apply({proposal: application.proposal, changedRecordRef: claim.recordRef,
               idempotencyKey: application.idempotencyKey, budget: application.budget, changeReason: claim.changeReason,
-              publicationPlan: plan, signal: executionSignal});}},
+              ...(plan === undefined ? {} : {publicationPlan: plan}), signal: executionSignal});}},
             ...(dependencyMode ? {crossRoom: {augment: () => Promise.reject(unavailable()), planPublication: () => Promise.reject(unavailable()),
-              planDependencyLoss: () => Promise.resolve({status: "planned" as const, plan})}}
+              planDependencyLoss: async operation => {
+                const planned = await planner.planDependencyLoss(operation);
+                if (planned.status !== "planned") return planned;
+                // The granted output must remain the exact namespace authorized
+                // before any protected content was opened.
+                if (planned.plan.output.accessNamespaceRef !== output.accessNamespaceId
+                  || planned.plan.output.accessRoomRef !== output.accessRoomId) {
+                  return {status: "unavailable" as const, failureDetail: "publication_output_access_audience_unavailable" as const};
+                }
+                plan = planned.plan;
+                return planned;
+              }}}
               : crossRoom === undefined ? {} : {crossRoom: createPreparedReflectionCrossRoomPartition({discovery: crossRoom,
                 records: new Map([...exact.values()].map(value => [value.metadata.recordRef, decodeDurableRecordEnvelope({...value.metadata,
                   payloadBytes: payloads.get(value.metadata.inputBinding.objectId)!.plaintext})])), memories: memoryValues,
-                assertCurrent: async () => {executionSignal.throwIfAborted(); await assertCrossRoomCurrent();}, publicationPlan: () => plan})}),
-            dependencyLoss: {resolve: loss => new ExactGroundedDependencyLossResolver({repository, recordBindings: publications,
+                assertCurrent: async () => {executionSignal.throwIfAborted(); await assertCrossRoomCurrent();}, publicationPlan: () => {if (plan === undefined) throw unavailable(); return plan;}})}),
+            dependencyLoss: {resolve: loss => new ExactGroundedDependencyLossResolver({repository, recordState: dependencyRecordState, recordBindings: publications,
               eligibility: new ProjectedAuthorityEligibility({projections: new PostgresAuthorityProjectionStore(input.productHandle, selection), accessAudiences}),
               source: sources, invalidation: input.sourceInvalidation, statements: {async rewrite(rewrite) {
-                const result = await runDependencyLossRewrite({previousStatement: rewrite.previousStatement,
+                const result = await runDependencyLossRewrite({
                   remainingSupportStatements: rewrite.remainingSupportStatements,
                   invoke: async (prompt, modelSignal) => {if (checkQuestionCurrent === undefined) throw unavailable(); await checkQuestionCurrent();
                     return input.model.invoke(claim, prompt, modelSignal);}, signal: executionSignal});
@@ -737,11 +809,13 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
             return {kind: "record" as const, recordRef: value.recordRef, observedProcessingGeneration: value.processingGeneration,
               terminalAuthorityLeafHandles: envelope.semantic.terminalAuthorityLeafHandles};
           });
-          const fixed = await planner.planExposure({applicationPlanToken: crossRoomApplicationPlanToken(`protected.${digest(candidatePlan)}`),
-            candidatePlan, modelExposureDependencies, signal: executionSignal});
-          if (fixed.status !== "planned" || fixed.plan.output.accessNamespaceRef !== output.accessNamespaceId
-            || fixed.plan.output.accessRoomRef !== output.accessRoomId) throw unavailable();
-          const plan: CrossRoomPublicationPlan = fixed.plan;
+          if (!dependencyMode) {
+            const fixed = await planner.planExposure({applicationPlanToken: crossRoomApplicationPlanToken(`protected.${digest(candidatePlan)}`),
+              candidatePlan, modelExposureDependencies, signal: executionSignal});
+            if (fixed.status !== "planned" || fixed.plan.output.accessNamespaceRef !== output.accessNamespaceId
+              || fixed.plan.output.accessRoomRef !== output.accessRoomId) throw unavailable();
+            plan = fixed.plan;
+          }
           const gatePublication = publication;
           const publisher = new OrganizerProposalPublisher({repository: {
             read: value => repository.read(value), readCompletedPublication: value => repository.readCompletedPublication(value),
@@ -758,7 +832,7 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
               if (application.claim !== claim || application.claim.changeReason === "parent_conflict") throw unavailable();
               const result = await publisher.apply({proposal: application.proposal, changedRecordRef: claim.recordRef,
                 idempotencyKey: application.idempotencyKey, budget: application.budget, changeReason: application.claim.changeReason,
-                publicationPlan: plan, signal: executionSignal});
+                ...(plan === undefined ? {} : {publicationPlan: plan}), signal: executionSignal});
               if (result.status === "applied" && result.operation === "no_change") await gatePublication.finishNoChange();
               return result;
             } finally {gatePublication.dispose();}
@@ -791,6 +865,10 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
     async assertClaimCurrent(claim, signal) {signal?.throwIfAborted(); if (!await work.isClaimCurrent(claim)) throw unavailable(); signal?.throwIfAborted();},
     prepareQuestion,
     async resolveDependencyLoss(application) {
+      // Protected payload access still requires the crypto authority owner to
+      // reconcile current grants; the dependency route never substitutes old access.
+      const authority = await input.readiness.ensureAuthority(application.claim, application.signal);
+      if (authority.status !== "ready") return authority;
       const question = await prepareQuestion(application.claim, application.signal, true);
       if (question.status !== "ready") return question.status === "waiting" ? question : {status: "unavailable", failureCode: "candidate_unavailable"};
       try {

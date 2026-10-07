@@ -20,6 +20,8 @@ const record: DurableRecordEnvelope = {
   processingGeneration: 2,
 };
 
+const ROOM_COMMITMENT = `h1.${"a".repeat(43)}`;
+
 const claim = {
   logicalObjectRef: record.recordRef,
   generation: 1,
@@ -36,6 +38,7 @@ const vector = Object.freeze(
 describe("durable semantic readiness", () => {
   test("generic protected Records without public closure remain unavailable without opening a body", async () => {
     const readiness = new DurableRecordSemanticReadiness({
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
       repository: {read() {throw new Error("no ungranted body read");}} as never,
       bindings: {resolveWork() {throw new Error("no dependency traversal");}} as never,
       eligibility: {} as never, embedding: {} as never, searchProjections: {} as never,
@@ -48,6 +51,7 @@ describe("durable semantic readiness", () => {
     const calls: string[] = [];
     let published: unknown;
     const readiness = new DurableRecordSemanticReadiness({
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
       repository: {
         async read() {
           calls.push("open");
@@ -64,6 +68,19 @@ describe("durable semantic readiness", () => {
               includesPublicBoundary: false,
             },
           };
+        },
+        async resolve() {
+          calls.push("room-binding");
+          return {
+            status: "available",
+            binding: {
+              roomAnchorRef: "room:one",
+              invocationAudience: { humanRefs: ["human:one"], includesPublicBoundary: false },
+              readBindingRef: "read:one",
+              searchBindingRef: "search:one",
+              publicationBindingRef: "publish:one",
+            },
+          } as const;
         },
       } as never,
       eligibility: {
@@ -96,9 +113,9 @@ describe("durable semantic readiness", () => {
           calls.push("projection-read");
           return null;
         },
-        async publish(value: unknown) {
+        async publish(value: unknown, commitment: string) {
           calls.push("projection-publish");
-          published = value;
+          published = { value, commitment };
           return "published";
         },
       } as never,
@@ -109,14 +126,111 @@ describe("durable semantic readiness", () => {
       "binding",
       "authority",
       "open",
+      "room-binding",
       "embed",
       "projection-read",
       "projection-publish",
     ]);
     expect(published).toMatchObject({
-      recordRef: "record:one",
-      recordProcessingGeneration: 2,
-      projectionGeneration: 1,
+      commitment: ROOM_COMMITMENT,
+      value: {
+        recordRef: "record:one",
+        recordProcessingGeneration: 2,
+        projectionGeneration: 1,
+      },
+    });
+  });
+
+  test("replaces a legacy projection that lacks an exact Room commitment", async () => {
+    let replacement: unknown;
+    const readiness = new DurableRecordSemanticReadiness({
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
+      repository: {
+        async read() {
+          return { status: "available", record };
+        },
+      } as never,
+      bindings: {
+        async resolveWork() {
+          return {
+            readBindingRef: "read:one",
+            invocationAudience: {
+              humanRefs: ["human:one"],
+              includesPublicBoundary: false,
+            },
+          };
+        },
+        async resolve() {
+          return {
+            status: "available",
+            binding: {
+              roomAnchorRef: "room:one",
+              invocationAudience: { humanRefs: ["human:one"], includesPublicBoundary: false },
+              readBindingRef: "read:one",
+              searchBindingRef: "search:one",
+              publicationBindingRef: "publish:one",
+            },
+          } as const;
+        },
+      } as never,
+      eligibility: {
+        async check() {
+          return { status: "eligible" };
+        },
+      } as never,
+      authorityProjections: {} as never,
+      authorityReconciliation: {} as never,
+      embedding: {
+        async embed() {
+          return {
+            status: "available",
+            embedding: {
+              provenance: {
+                provider: "openai",
+                canonicalModel: "text-embedding-3-small",
+                dimensions: 1_536,
+                contractVersion: 1,
+              },
+              vector,
+            },
+          };
+        },
+      },
+      searchProjections: {
+        async readCurrent() {
+          return {
+            recordRef: record.recordRef,
+            recordProcessingGeneration: record.processingGeneration,
+            projectionVersion: "record-search-v1",
+            projectionGeneration: 4,
+            embedding: {
+              provenance: {
+                provider: "openai",
+                canonicalModel: "text-embedding-3-small",
+                dimensions: 1_536,
+                contractVersion: 1,
+              },
+              vector,
+            },
+            roomAnchorCommitment: null,
+          };
+        },
+        async replace(input: unknown) {
+          replacement = input;
+          return "replaced";
+        },
+      } as never,
+    });
+
+    expect(await readiness.ensureSearchProjection(claim)).toEqual({ status: "ready" });
+    expect(replacement).toMatchObject({
+      expectedProjectionGeneration: 4,
+      roomAnchorCommitment: ROOM_COMMITMENT,
+      projection: {
+        recordRef: record.recordRef,
+        recordProcessingGeneration: record.processingGeneration,
+        projectionGeneration: 5,
+      },
     });
   });
 
@@ -179,6 +293,7 @@ describe("durable semantic readiness", () => {
     };
     let closureInstalled = false;
     const readiness = new DurableRecordSemanticReadiness({
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
       repository: {
         async read(input: { recordRef: string }) {
           reads.push(input.recordRef);
@@ -252,6 +367,7 @@ describe("durable semantic readiness", () => {
     };
     let installations = 0;
     const readiness = new DurableRecordSemanticReadiness({
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
       repository: {
         read(input: { recordRef: string }) {
           return Promise.resolve({
@@ -335,6 +451,7 @@ describe("durable semantic readiness", () => {
     const reads: string[] = [];
     let installations = 0;
     const readiness = new DurableRecordSemanticReadiness({
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
       repository: {
         read(input: { recordRef: string }) {
           reads.push(input.recordRef);

@@ -131,6 +131,36 @@ describe("cross-Room exact-set execution contract", () => {
     })).toThrow("requires model exposure");
   });
 
+  test("excludes only the predecessor lifecycle coordinate from model exposure", () => {
+    const plan = publicationPlan();
+    const survivorExposures = plan.selectedInputs.slice(1).map((input) =>
+      input.kind === "record"
+        ? {
+            kind: "record" as const,
+            recordRef: input.recordRef,
+            observedProcessingGeneration: input.processingGeneration,
+            terminalAuthorityLeafHandles: [input.read.namespaceRef],
+          }
+        : {
+            kind: "source" as const,
+            sourceKind: input.sourceKind,
+            logicalSourceRef: input.logicalSourceRef,
+            observedRevision: String(input.contentGeneration),
+            terminalAuthorityLeafHandle: input.read.namespaceRef,
+          }
+    );
+    expect(() => assertCrossRoomPublicationPlan({
+      ...plan,
+      predecessorOnlyRecordRef: "record:changed",
+      modelExposureDependencies: survivorExposures,
+    })).not.toThrow();
+    expect(() => assertCrossRoomPublicationPlan({
+      ...plan,
+      predecessorOnlyRecordRef: "record:changed",
+      modelExposureDependencies: survivorExposures.slice(1),
+    })).toThrow("model exposure must match");
+  });
+
   test("rejects every publication subset that omits the changed Record", () => {
     const withoutChanged = publicationPlan();
     expect(() => assertCrossRoomPublicationPlan({

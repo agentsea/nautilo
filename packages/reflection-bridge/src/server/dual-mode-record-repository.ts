@@ -96,7 +96,8 @@ export class DualModeRecordRepository implements RecordRepositoryPort {
     if (publication.predecessor !== undefined) {
       const predecessor = await this.read({
         recordRef: publication.predecessor.recordRef,
-        readBindingRef: publication.publicationBindingRef,
+        readBindingRef: publication.predecessorReadBindingRef
+          ?? publication.publicationBindingRef,
       });
       if (predecessor.status !== "available") {
         return {

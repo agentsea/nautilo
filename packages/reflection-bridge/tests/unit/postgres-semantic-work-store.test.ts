@@ -136,6 +136,23 @@ describe("PostgreSQL semantic work commitments and admission", () => {
       recordRef: "record:one",
       processingGeneration: 1,
     }));
+    const projectionRefresh = commitments.projectionRefresh({
+      recordRef: "record:one",
+      processingGeneration: 1,
+      completedWorkGeneration: 4,
+      policyVersion: "room-anchor-v1",
+    });
+    expect(projectionRefresh).not.toEqual(commitments.projectionRefresh({
+      recordRef: "record:one",
+      processingGeneration: 1,
+      completedWorkGeneration: 5,
+      policyVersion: "room-anchor-v1",
+    }));
+    expect(projectionRefresh).not.toEqual(commitments.candidatePolicyRecovery({
+      recordRef: "record:one",
+      processingGeneration: 1,
+      policyVersion: "room-anchor-v1",
+    }));
     const parents = [
       { recordRef: "record:parent-b", processingGeneration: 2 },
       { recordRef: "record:parent-a", processingGeneration: 1 },
@@ -442,6 +459,130 @@ describe("PostgreSQL semantic work leases", () => {
     expect(value.queries).toHaveLength(2);
   });
 
+  test.each([
+    ["superseded", "revised", 0, "record_lifecycle_obsolete"],
+    ["resolved", "created", 0, "record_lifecycle_obsolete"],
+    ["sunset", "created", 0, "record_lifecycle_obsolete"],
+    ["current", "revised", 1, "already_covered"],
+  ] as const)(
+    "atomically settles canonical %s/%s work",
+    async (lifecycle, changeReason, parentCount, expectedReason) => {
+      const now = new Date("2026-09-05T10:00:00.000Z");
+      const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+        statement: string,
+      ) => {
+        const normalized = normalizedSql(statement);
+        if (normalized.includes("pg_advisory_xact_lock")) return [];
+        if (normalized.includes("from reflection_record_semantic_work inner join reflection_records")
+          && normalized.endsWith("for update")) {
+          return [{
+            generation: 3,
+            completed_generation: 2,
+            claim_generation: 3,
+            lease_token: "11111111-1111-4111-8111-111111111111",
+            lease_expires_at: new Date(now.getTime() + 30_000),
+            state: "claimed",
+            stage: "authority_projection",
+            change_reason: changeReason,
+            lifecycle,
+            disposition: "available",
+          }] as unknown as Row[];
+        }
+        if (normalized.includes("from reflection_record_dependencies")
+          && normalized.includes("settlement_parent")) {
+          return Array.from({ length: parentCount }, (_, index) => ({
+            record_id: `record:parent:${index}`,
+          })) as unknown as Row[];
+        }
+        if (normalized.startsWith("update reflection_record_semantic_work")) {
+          return [{ record_id: "record:one" }] as unknown as Row[];
+        }
+        throw new Error(`unexpected SQL: ${statement}`);
+      });
+      const store = new PostgresSemanticWorkStore({
+        handle: value.handle,
+        commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(3)),
+        clock: () => now,
+      });
+      const claim: DurableSleepClaim = {
+        logicalObjectRef: "record:one",
+        generation: 3,
+        recordRef: "record:one",
+        changeReason,
+        stage: "authority_projection",
+        leaseToken: "11111111-1111-4111-8111-111111111111",
+      };
+
+      expect(await store.settleCurrentState({ claim })).toMatchObject({
+        status: "settled",
+        reason: expectedReason,
+      });
+      const update = value.queries.find(query =>
+        normalizedSql(query.statement).startsWith("update reflection_record_semantic_work")
+      );
+      expect(update?.parameters).toContain(expectedReason);
+      expect(normalizedSql(update?.statement ?? "")).toContain("lease_expires_at >");
+    },
+  );
+
+  test("keeps stale and multiply-parented work active", async () => {
+    const now = new Date("2026-09-05T10:00:00.000Z");
+    for (const [lifecycle, parentCount, projectionRefreshOnly] of [
+      ["stale", 1, false],
+      ["current", 2, false],
+      ["current", 1, true],
+    ] as const) {
+      const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+        statement: string,
+      ) => {
+        const normalized = normalizedSql(statement);
+        if (normalized.includes("pg_advisory_xact_lock")) return [];
+        if (normalized.includes("from reflection_record_semantic_work inner join reflection_records")
+          && normalized.endsWith("for update")) {
+          return [{
+            generation: 3,
+            completed_generation: 2,
+            claim_generation: 3,
+            lease_token: "11111111-1111-4111-8111-111111111111",
+            lease_expires_at: new Date(now.getTime() + 30_000),
+            state: "claimed",
+            stage: "authority_projection",
+            change_reason: "revised",
+            projection_refresh_only: projectionRefreshOnly,
+            lifecycle,
+            disposition: "available",
+          }] as unknown as Row[];
+        }
+        if (normalized.includes("from reflection_record_dependencies")
+          && normalized.includes("settlement_parent")) {
+          return Array.from({ length: parentCount }, (_, index) => ({
+            record_id: `record:parent:${index}`,
+          })) as unknown as Row[];
+        }
+        throw new Error(`unexpected SQL: ${statement}`);
+      });
+      const store = new PostgresSemanticWorkStore({
+        handle: value.handle,
+        commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(3)),
+        clock: () => now,
+      });
+      expect(await store.settleCurrentState({
+        claim: {
+          logicalObjectRef: "record:one",
+          generation: 3,
+          recordRef: "record:one",
+          changeReason: "revised",
+          stage: "authority_projection",
+          leaseToken: "11111111-1111-4111-8111-111111111111",
+          ...(projectionRefreshOnly ? { projectionRefreshOnly: true } : {}),
+        },
+      })).toEqual({ status: "active" });
+      expect(value.queries.some(query =>
+        normalizedSql(query.statement).startsWith("update reflection_record_semantic_work")
+      )).toBe(false);
+    }
+  });
+
   test("claims one expired-or-due row and checkpoints the exact live lease", async () => {
     const now = new Date("2026-08-14T10:00:00.000Z");
     const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
@@ -507,7 +648,30 @@ describe("PostgreSQL semantic work leases", () => {
       "when work.change_reason = 'parent_conflict' then 0 else 1 end asc",
     );
     expect(normalizedSql(claimSql?.statement ?? "")).toContain(
-      "work.attempt_count asc, case work.change_reason when 'dependency_lost' then 2 when 'revised' then 1 else 0 end desc, work.due_since",
+      "work.recovery_policy_version < 2",
+    );
+    expect(normalizedSql(claimSql?.statement ?? "")).toContain(
+      "then work.due_since when work.state = 'quarantined' then work.recover_after",
+    );
+    expect(normalizedSql(claimSql?.statement ?? "").indexOf(
+      "then work.due_since when work.state = 'quarantined' then work.recover_after",
+    )).toBeLessThan(normalizedSql(claimSql?.statement ?? "").indexOf(
+      "when work.change_reason = 'parent_conflict' then 0",
+    ));
+    expect(normalizedSql(claimSql?.statement ?? "")).toContain(
+      "recovery_policy_version = greatest( work.recovery_policy_version, 2 )",
+    );
+    expect(normalizedSql(claimSql?.statement ?? "")).toContain(
+      "then 'dependency_lost' else work.change_reason end",
+    );
+    expect(normalizedSql(claimSql?.statement ?? "")).toContain(
+      "when candidate.reclassified_dependency_loss then false else work.projection_refresh_only end",
+    );
+    expect(normalizedSql(claimSql?.statement ?? "")).toContain(
+      "work.failure_code = 'authority_unavailable' and record.structural_height > 0 and work.change_reason <> 'parent_conflict' and not work.projection_refresh_only",
+    );
+    expect(normalizedSql(claimSql?.statement ?? "")).toContain(
+      "work.attempt_count asc, case work.change_reason when 'dependency_lost' then 2 when 'revised' then 1 else 0 end desc, greatest(work.due_since, work.updated_at), work.record_id",
     );
     expect(normalizedSql(claimSql?.statement ?? "")).not.toContain(
       "when 'created' then",
@@ -527,6 +691,57 @@ describe("PostgreSQL semantic work leases", () => {
       normalizedSql(query.statement).startsWith("update reflection_record_semantic_work")
         && normalizedSql(query.statement).includes("returning record_id")
     )?.statement ?? "")).toContain("lease_expires_at >");
+  });
+
+  test("carries projection refresh claims and completes them at the search checkpoint", async () => {
+    const now = new Date("2026-10-06T10:00:00.000Z");
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.startsWith("update reflection_record_semantic_work")
+        && !normalized.includes("returning")) return [];
+      if (statement.includes("WITH candidate AS")) {
+        return [{
+          record_id: "record:projection-refresh",
+          generation: 5,
+          change_reason: "scheduled_review",
+          stage: "search_projection",
+          lease_token: "11111111-1111-4111-8111-111111111111",
+          due_since: now,
+          started_at: now,
+          projection_refresh_only: true,
+        }] as unknown as Row[];
+      }
+      if (normalized.startsWith("update reflection_record_semantic_work")
+        && normalized.includes("returning record_id")) {
+        return [{ record_id: "record:projection-refresh" }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(3)),
+      clock: () => now,
+    });
+    const claimed = await store.claimNext();
+    expect(claimed).toMatchObject({
+      status: "claimed",
+      claim: { projectionRefreshOnly: true, stage: "search_projection" },
+    });
+    if (claimed.status !== "claimed") throw new Error("expected claim");
+    expect(await store.checkpoint({
+      claim: claimed.claim,
+      completedStage: "search_projection",
+    })).toMatchObject({ status: "accepted" });
+    const checkpointSql = value.queries.find((query) =>
+      normalizedSql(query.statement).startsWith("update reflection_record_semantic_work")
+      && normalizedSql(query.statement).includes("completed_generation")
+    );
+    expect(normalizedSql(checkpointSql?.statement ?? "")).toContain("state =");
+    expect(checkpointSql?.parameters).toContain("complete");
+    expect(checkpointSql?.parameters).toContain("completed");
+    expect(checkpointSql?.parameters).toContain(5);
   });
 
   test("pauses a live claim until an exact future retry without charging its attempt", async () => {
@@ -556,12 +771,19 @@ describe("PostgreSQL semantic work leases", () => {
     expect(await store.pause({
       claim: waitingClaim,
       nextAttemptAt: retryAt,
+      waitingReason: "provider",
     })).toMatchObject({ status: "accepted" });
     const pause = value.queries[0]!;
     const statement = normalizedSql(pause.statement);
     expect(statement).toContain("attempt_count = greatest(");
     expect(statement).toContain("attempt_count -");
     expect(statement).toContain("next_attempt_at =");
+    expect(statement).toContain("waiting_reason =");
+    expect(pause.parameters).toContain("provider");
+    expect(statement).toContain(
+      "updated_at = greatest(reflection_record_semantic_work.updated_at,",
+    );
+    expect(statement).not.toContain("due_since =");
     expect(pause.parameters).toContain(new Date(retryAt).toISOString());
   });
 
@@ -889,7 +1111,11 @@ describe("PostgreSQL semantic work leases", () => {
       leaseToken: "11111111-1111-4111-8111-111111111111",
     };
     expect(await store.complete({ claim })).toEqual({ status: "superseded" });
-    expect(await store.defer({ claim, failureCode: "unexpected_failure" }))
+    expect(await store.defer({
+      claim,
+      failureCode: "unexpected_failure",
+      failureDetail: "unexpected_candidate_stage_failure",
+    }))
       .toEqual({ status: "quarantined" });
     expect(deferring).toBeTrue();
     const deferSql = normalizedSql(value.queries.find((query) =>
@@ -897,6 +1123,11 @@ describe("PostgreSQL semantic work leases", () => {
     )?.statement ?? "");
     expect(deferSql).toContain("recover_after = case");
     expect(deferSql).toContain("failure_code =");
+    expect(deferSql).toContain("failure_detail =");
+    expect(deferSql).not.toContain("recovery_policy_version =");
+    expect(value.queries.find((query) =>
+      normalizedSql(query.statement).includes("returning state")
+    )?.parameters).toContain("unexpected_candidate_stage_failure");
   });
 
   test.each([
@@ -972,7 +1203,11 @@ describe("PostgreSQL semantic work leases", () => {
     });
     const claimSql = value.queries.find((query) => query.statement.includes("WITH candidate AS"));
     expect(claimSql?.statement).toContain("work.recover_after <= $1");
+    expect(claimSql?.statement).toContain("work.recovery_policy_version < 2");
     expect(claimSql?.statement).toContain("WHEN candidate.recovered_from_quarantine THEN 1");
+    expect(normalizedSql(claimSql?.statement ?? "")).toContain(
+      "recovery_policy_version = greatest( work.recovery_policy_version, 2 )",
+    );
   });
 
   test("completes an obsolete parent conflict at its admission stage", async () => {
@@ -1209,6 +1444,12 @@ describe("PostgreSQL semantic work repair and publication", () => {
     );
     expect(normalizedSql(value.queries.at(-1)?.statement ?? "")).toMatch(
       /reflection_records\.disposition = \$[0-9]+/u,
+    );
+    expect(normalizedSql(value.queries.at(-1)?.statement ?? "")).toContain(
+      "count(*) filter (where reflection_record_semantic_work.state <> 'complete')",
+    );
+    expect(normalizedSql(value.queries.at(-1)?.statement ?? "")).toContain(
+      "filter (where reflection_record_semantic_work.state <> 'complete')",
     );
   });
 
@@ -1593,6 +1834,78 @@ describe("PostgreSQL semantic work repair and publication", () => {
     expect(normalizedSql(bootstrapSql?.statement ?? "")).toContain("state =");
     expect(normalizedSql(bootstrapSql?.statement ?? "")).toContain("change_reason <>");
     expect(bootstrapSql?.parameters).toContain(2);
+  });
+
+  test("admits completed missing Room projections and restages outstanding organization work", async () => {
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.includes("left join reflection_record_search_projections")
+        && normalized.includes("for update of reflection_record_semantic_work skip locked")) {
+        return [
+          {
+            record_id: "record:a",
+            processing_generation: 3,
+            structural_height: 1,
+            generation: 7,
+            completed_generation: 7,
+            state: "complete",
+          },
+          {
+            record_id: "record:b",
+            processing_generation: 2,
+            structural_height: 1,
+            generation: 4,
+            completed_generation: 3,
+            state: "quarantined",
+          },
+        ] as unknown as Row[];
+      }
+      if (statement.includes("pg_advisory_xact_lock")) return [];
+      if (normalized.includes("select assigned_generation")) return [];
+      if (normalized.includes("select generation") && normalized.includes("for update")) {
+        return [{ generation: 7, change_reason: "scheduled_review", state: "complete" }] as unknown as Row[];
+      }
+      if (normalized.includes("insert into reflection_record_semantic_work_admissions")) return [];
+      if (normalized.startsWith("update reflection_record_semantic_work")
+        && !normalized.includes("returning")) return [];
+      if (normalized.startsWith("update reflection_record_semantic_work")
+        && normalized.includes("returning record_id")) {
+        return [{ record_id: "record:any" }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(10)),
+      clock: () => new Date("2026-10-06T10:00:00.000Z"),
+    });
+    expect(await store.admitMissingRoomProjectionPage({
+      limit: 2,
+      policyVersion: "room-anchor-v1",
+    })).toEqual({ admitted: 2 });
+    const selection = value.queries.find((query) =>
+      normalizedSql(query.statement).includes("room_anchor_commitment is null")
+    );
+    const selectionSql = normalizedSql(selection?.statement ?? "");
+    expect(selectionSql).toContain("reflection_records.lifecycle =");
+    expect(selectionSql).toContain("reflection_record_semantic_work.state <>");
+    expect(selectionSql).toContain("reflection_record_semantic_work.change_reason <>");
+    expect(selectionSql).toContain(
+      "reflection_record_semantic_work.completed_generation < reflection_record_semantic_work.generation",
+    );
+    expect(selectionSql).toContain(
+      "reflection_record_search_projections.record_processing_generation <> reflection_records.processing_generation",
+    );
+    expect(selectionSql).toContain(
+      "for update of reflection_record_semantic_work skip locked",
+    );
+    const updates = value.queries.filter((query) =>
+      normalizedSql(query.statement).startsWith("update reflection_record_semantic_work")
+    );
+    expect(updates.some((query) => query.parameters?.includes(true))).toBe(true);
+    expect(updates.some((query) => query.parameters?.includes("search_projection"))).toBe(true);
   });
 
   test("re-admits obsolete candidate quarantines once per policy receipt", async () => {

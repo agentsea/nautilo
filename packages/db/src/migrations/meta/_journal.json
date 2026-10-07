@@ -2234,6 +2234,13 @@
       "when": 1791198731475,
       "tag": "0318_wakeful_energizer",
       "breakpoints": true
+    },
+    {
+      "idx": 319,
+      "version": "7",
+      "when": 1791291118564,
+      "tag": "0319_sticky_scarlet_witch",
+      "breakpoints": true
     }
   ]
 }

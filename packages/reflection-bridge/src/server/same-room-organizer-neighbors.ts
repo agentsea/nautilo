@@ -14,6 +14,7 @@ import type {
 } from "@nautilo/reflection/search";
 
 import type { RecordRepositorySelection } from "./contracts";
+import type { RecordSearchCommitmentPort } from "./record-search-composition";
 import type { SameRoomSemanticBinding } from "./durable-semantic-composition";
 import {
   SAME_ROOM_ORGANIZER_QUERY_POLICY_V1,
@@ -90,6 +91,7 @@ implements SameRoomOrganizerNeighborPort {
   constructor(private readonly ports: Readonly<{
     selection: RecordRepositorySelection;
     projections: Pick<PostgresRecordSearchProjectionStore, "readCurrentEmbedding">;
+    commitments: Pick<RecordSearchCommitmentPort, "roomAnchor">;
     store: PostgresSameRoomOrganizerStore;
     repository: DurableRecordReadPort;
   }>) {}
@@ -113,8 +115,15 @@ implements SameRoomOrganizerNeighborPort {
       projection === null
       || projection.recordProcessingGeneration !== input.changed.processingGeneration
     ) return { status: "unavailable", reason: "candidate_projection_stale" };
+    const roomAnchorCommitment = this.ports.commitments.roomAnchor(
+      input.binding.roomAnchorRef,
+    );
+    if (projection.roomAnchorCommitment !== roomAnchorCommitment) {
+      return { status: "unavailable", reason: "candidate_projection_stale" };
+    }
     const ranked = await this.ports.store.rank({
       embedding: projection.embedding,
+      roomAnchorCommitment,
       invocationAudience: input.binding.invocationAudience,
       selection: this.ports.selection,
       publicationBindingRef: input.binding.publicationBindingRef,
@@ -136,6 +145,7 @@ implements SameRoomOrganizerNeighborPort {
       publicationBindingRef: input.binding.publicationBindingRef,
       changedRecordRef: input.changed.recordRef,
       intent: input.intent,
+      roomAnchorCommitment,
       rankedCoordinates: ranked.coordinates,
     });
     if (topology.status === "unavailable") {
@@ -249,11 +259,15 @@ implements SameRoomOrganizerNeighborPort {
     if (coordinates.length !== input.coordinates.length || coordinates.length > 8) {
       return { status: "unavailable", reason: "candidate_selection_invalid" };
     }
+    const roomAnchorCommitment = this.ports.commitments.roomAnchor(
+      input.binding.roomAnchorRef,
+    );
     const fenced = await this.ports.store.fence({
       invocationAudience: input.binding.invocationAudience,
       selection: this.ports.selection,
       publicationBindingRef: input.binding.publicationBindingRef,
       coordinates,
+      roomAnchorCommitment,
     });
     if (fenced.status !== "current") {
       return {

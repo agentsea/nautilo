@@ -77,6 +77,19 @@ test("HMAC commitments always satisfy the portable opaque identifier contract", 
     .toBeTrue();
 });
 
+test("Room anchor commitments are deterministic, opaque, and domain separated", () => {
+  const commitments = createHmacRecordSearchCommitmentPort(
+    new Uint8Array(32).fill(19),
+  );
+
+  const first = commitments.roomAnchor("room:one");
+  expect(first).toMatch(/^h1\.[A-Za-z0-9_-]{43}$/u);
+  expect(commitments.roomAnchor("room:one")).toBe(first);
+  expect(commitments.roomAnchor("room:two")).not.toBe(first);
+  expect(commitments.commit("room-anchor", "room:one")).not.toBe(first);
+  expect(() => commitments.roomAnchor("")).toThrow("Room anchor is empty");
+});
+
 test("streams exact pages so redundant top candidates do not under-fill results", async () => {
   const commitments = createHmacRecordSearchCommitmentPort(new Uint8Array(32).fill(7));
   const audience = { humanRefs: [HUMAN], includesPublicBoundary: false } as const;

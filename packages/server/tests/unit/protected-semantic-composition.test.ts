@@ -319,6 +319,7 @@ describe("protected same-Room Memory bodies", () => {
     const error = await resolver.resolve({claim: {logicalObjectRef: record.recordRef, generation: 1, recordRef: record.recordRef,
       changeReason: "dependency_lost", stage: "organization", leaseToken: "lease:one"},
     record: {...record, semantic: {...record.semantic, sourceDependencies: [dependency]}},
+    maxVisitedRecords: 100,
     binding: {roomAnchorRef: "room:one", invocationAudience: {humanRefs: ["human:one"], includesPublicBoundary: false},
       readBindingRef: "read:one", searchBindingRef: "search:one", publicationBindingRef: "publish:one"}})
       .then(() => null, (value: unknown) => value);

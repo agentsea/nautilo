@@ -41,6 +41,42 @@ class TransientAttachFailureProductStore extends InMemoryRecordProductStore {
   }
 }
 
+class BindingAwareProtectedRecordPublicationPort implements ProtectedRecordPublicationPort {
+  readonly opened: Array<Readonly<{ recordId: string; readBindingRef: string }>> = [];
+  readonly allowedReadBindings = new Map<string, string>();
+  readonly #inner = new InMemoryProtectedRecordPublicationPort();
+
+  publish(
+    input: Parameters<ProtectedRecordPublicationPort["publish"]>[0],
+  ): ReturnType<ProtectedRecordPublicationPort["publish"]> {
+    return this.#inner.publish(input);
+  }
+
+  verify(
+    input: Parameters<ProtectedRecordPublicationPort["verify"]>[0],
+  ): ReturnType<ProtectedRecordPublicationPort["verify"]> {
+    return this.#inner.verify(input);
+  }
+
+  open(
+    input: Parameters<ProtectedRecordPublicationPort["open"]>[0],
+  ): ReturnType<ProtectedRecordPublicationPort["open"]> {
+    this.opened.push({
+      recordId: input.recordId,
+      readBindingRef: input.readBindingRef,
+    });
+    const allowed = this.allowedReadBindings.get(input.recordId);
+    if (allowed !== undefined && allowed !== input.readBindingRef) {
+      return Promise.resolve({ status: "unavailable", reason: "unauthorized" });
+    }
+    return this.#inner.open(input);
+  }
+
+  retire(objectId: string): Promise<void> {
+    return this.#inner.retire(objectId);
+  }
+}
+
 const commitment = createHmacRecordRequestCommitmentPort(
   new Uint8Array(32).fill(0x57),
 );
@@ -120,6 +156,90 @@ test("publication origin extends the legacy commitment and survives authenticate
   expect(recoverVerifiedRecordPublication({...item, replay: {...item.replay,
     originPublicationBindingRef: "binding:substituted"}}, bytes, commitment))
     .toBeNull();
+});
+
+test("predecessor read authorization does not alter durable publication identity", () => {
+  const record = envelope("record:attempt-read-coordinate");
+  const base = {
+    ...publication(record),
+    predecessor: {
+      recordRef: "record:attempt-read-predecessor",
+      relation: "supersedes" as const,
+    },
+    originPublicationBindingRef: "binding:origin",
+  };
+  const bytes = encodeDurableRecordEnvelope(record);
+  expect(commitment.commit(bytes, {
+    ...base,
+    predecessorReadBindingRef: "binding:predecessor-read",
+  })).toEqual(commitment.commit(bytes, base));
+});
+
+test("protected successor reads its predecessor through the explicit attempt binding", async () => {
+  async function publishWithPredecessorBinding(
+    readBindingRef: string | undefined,
+    allowedReadBindingRef = "binding:predecessor-read",
+  ) {
+    const product = new InMemoryRecordProductStore();
+    const crypto = new BindingAwareProtectedRecordPublicationPort();
+    const repository = new DualModeRecordRepository({
+      selection: { selectedRepresentation: "protected", migrationGeneration: 1 },
+      product,
+      commitment,
+      protectedPublication: crypto,
+    });
+    const predecessor = envelope("record:binding-predecessor");
+    expect(await repository.publish({
+      ...publication(predecessor),
+      publicationBindingRef: "binding:predecessor-output",
+    })).toMatchObject({ status: "published" });
+    crypto.allowedReadBindings.set(predecessor.recordRef, allowedReadBindingRef);
+    const successorBase = envelope("record:binding-successor");
+    const successor = {
+      ...successorBase,
+      semantic: {
+        ...successorBase.semantic,
+        statement: "Successor with changed semantic support.",
+      },
+    };
+    const result = await repository.publish({
+      ...publication(successor),
+      predecessor: { recordRef: predecessor.recordRef, relation: "supersedes" },
+      publicationBindingRef: "binding:successor-output",
+      originPublicationBindingRef: "binding:immutable-origin",
+      ...(readBindingRef === undefined
+        ? {}
+        : { predecessorReadBindingRef: readBindingRef }),
+    });
+    return { crypto, predecessor, result };
+  }
+
+  const accepted = await publishWithPredecessorBinding("binding:predecessor-read");
+  expect(accepted.result).toMatchObject({ status: "published" });
+  expect(accepted.crypto.opened).toContainEqual({
+    recordId: accepted.predecessor.recordRef,
+    readBindingRef: "binding:predecessor-read",
+  });
+
+  const rejected = await publishWithPredecessorBinding("binding:wrong-read");
+  expect(rejected.result).toMatchObject({
+    status: "rejected",
+    reason: "publication_binding_invalid",
+  });
+  expect(rejected.crypto.opened).toContainEqual({
+    recordId: rejected.predecessor.recordRef,
+    readBindingRef: "binding:wrong-read",
+  });
+
+  const legacy = await publishWithPredecessorBinding(
+    undefined,
+    "binding:successor-output",
+  );
+  expect(legacy.result).toMatchObject({ status: "published" });
+  expect(legacy.crypto.opened).toContainEqual({
+    recordId: legacy.predecessor.recordRef,
+    readBindingRef: "binding:successor-output",
+  });
 });
 
 for (const mode of ["ordinary", "protected"] as const) {

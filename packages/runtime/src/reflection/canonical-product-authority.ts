@@ -156,7 +156,7 @@ export function createCanonicalSameRoomBindingPorts(input: Readonly<{
   selection: RecordRepositorySelection;
   productHandle?: RecordProductPostgresHandle;
   publications?: CurrentRecordPublicationBindingPort;
-  searchCommitments: RecordSearchCommitmentPort;
+  searchCommitments: Pick<RecordSearchCommitmentPort, "commit">;
   roomQueries?: CanonicalRoomAuthorityQueries;
 }>): Readonly<{
   semantic: SameRoomSemanticBindingPort;

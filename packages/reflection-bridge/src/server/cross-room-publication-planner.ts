@@ -121,7 +121,7 @@ OrganizerCrossRoomPublicationFencePort {
     | Readonly<{
         status: "available";
         coordinate: Extract<CrossRoomInputCoordinate, { kind: "record" }>;
-        audience: EffectiveAudienceAlternative;
+        audience?: EffectiveAudienceAlternative;
       }>
     | Readonly<{
         status: "unavailable";
@@ -157,6 +157,24 @@ OrganizerCrossRoomPublicationFencePort {
       && opened.record.processingGeneration !== input.expected.processingGeneration
     ) return { status: "unavailable", failureDetail: changedDetail };
     const projection = await this.ports.authority.readCurrent(input.recordRef);
+    if (input.role === "changed") {
+      if (opened.record.lifecycle !== "current" && opened.record.lifecycle !== "stale") {
+        return { status: "unavailable", failureDetail: changedDetail };
+      }
+      return {
+        status: "available",
+        coordinate: {
+          kind: "record",
+          role: input.role,
+          recordRef: input.recordRef,
+          processingGeneration: opened.record.processingGeneration,
+          representationGeneration: recordBinding.representationGeneration,
+          // This predecessor is only a publication/lifecycle CAS coordinate.
+          authorityGeneration: recordBinding.authorityProjectionGeneration ?? 1,
+          read: { namespaceRef, bindingRef: readBindingRef },
+        },
+      };
+    }
     if (
       projection === null
       || projection.processingState !== "current"
@@ -166,10 +184,7 @@ OrganizerCrossRoomPublicationFencePort {
       || projection.representationGeneration < 1
     ) return { status: "unavailable", failureDetail: "publication_authority_fence_stale" };
     if (
-      input.role === "candidate" && opened.record.lifecycle !== "current"
-      || input.role === "changed"
-        && opened.record.lifecycle !== "current"
-        && opened.record.lifecycle !== "stale"
+      opened.record.lifecycle !== "current"
     ) return { status: "unavailable", failureDetail: changedDetail };
     const alternative = projection.alternatives[0]!;
     const audiences = await this.ports.accessAudiences.readExactSet([
@@ -209,8 +224,7 @@ OrganizerCrossRoomPublicationFencePort {
     if (
       input.signal?.aborted
       || input.proposal.parentRecordRef !== input.predecessor.recordRef
-      || input.proposal.sourceDependencies.length > 0
-      || input.proposal.childRecordRefs.length < 1
+      || input.modelExposureDependencies.length < 1
     ) return { status: "unavailable", failureDetail: "publication_plan_invalid" };
     const predecessor = await this.dependencyLossRecordCoordinate({
       recordRef: input.predecessor.recordRef,
@@ -223,7 +237,12 @@ OrganizerCrossRoomPublicationFencePort {
         ? { status: "unavailable", failureDetail: predecessor.failureDetail }
         : { status: "stale", failureDetail: predecessor.failureDetail };
     }
-    const children = await Promise.all(input.proposal.childRecordRefs.map((recordRef) =>
+    const children = await Promise.all([...new Set([
+      ...input.proposal.childRecordRefs,
+      ...input.modelExposureDependencies.flatMap((dependency) =>
+        dependency.kind === "record" ? [dependency.recordRef] : []
+      ),
+    ])].map((recordRef) =>
       this.dependencyLossRecordCoordinate({ recordRef, role: "candidate" })
     ));
     const unavailableChild = children.find((child) => child.status === "unavailable");
@@ -234,8 +253,74 @@ OrganizerCrossRoomPublicationFencePort {
         : { status: "stale", failureDetail: unavailableChild.failureDetail };
     }
     const currentChildren = children.filter((child) => child.status === "available");
+    const sourceInputs: CrossRoomInputCoordinate[] = [];
+    const sourceAudiences: EffectiveAudienceAlternative[][] = [];
+    for (const exposure of input.modelExposureDependencies) {
+      if (exposure.kind !== "source") continue;
+      if (
+        (exposure.sourceKind !== "memory" && exposure.sourceKind !== "message")
+        || exposure.observedRevision === undefined
+        || !/^(?:0|[1-9][0-9]*)$/u.test(exposure.observedRevision)
+      ) return { status: "unavailable", failureDetail: "publication_plan_invalid" };
+      const generation = Number(exposure.observedRevision);
+      if (
+        !Number.isSafeInteger(generation)
+        || exposure.sourceKind === "memory" && generation < 1
+      ) {
+        return { status: "unavailable", failureDetail: "publication_plan_invalid" };
+      }
+      const resolved = await this.ports.sourceAuthority.resolve(
+        exposure.terminalAuthorityLeafHandle,
+      );
+      if (resolved.status !== "available") {
+        return {
+          status: "unavailable",
+          failureDetail: "publication_source_authority_unavailable",
+        };
+      }
+      if (resolved.leaf.alternatives.length !== 1) {
+        return { status: "no_change", reason: "unsupported_authority_shape" };
+      }
+      sourceAudiences.push([...resolved.leaf.alternatives]);
+      sourceInputs.push({
+        kind: "source",
+        role: "candidate",
+        sourceKind: exposure.sourceKind,
+        logicalSourceRef: exposure.logicalSourceRef,
+        contentGeneration: generation,
+        representationGeneration: Math.max(1, generation),
+        authorityGeneration: 1,
+        read: {
+          namespaceRef: exposure.terminalAuthorityLeafHandle,
+          bindingRef: bindingRef(
+            exposure.terminalAuthorityLeafHandle,
+            this.ports.selection,
+          ),
+        },
+      });
+    }
+    const survivorCoordinates = [
+      ...currentChildren.map((child) => child.coordinate),
+      ...sourceInputs,
+    ];
+    const exposureIdentities = input.modelExposureDependencies.map((dependency) =>
+      dependency.kind === "record"
+        ? `record\0${dependency.recordRef}`
+        : `source\0${dependency.sourceKind}\0${dependency.logicalSourceRef}`
+    );
+    const survivorIdentities = survivorCoordinates.map(coordinateIdentity);
+    if (
+      exposureIdentities.length !== survivorIdentities.length
+      || new Set(exposureIdentities).size !== exposureIdentities.length
+      || survivorIdentities.some((identity) => !exposureIdentities.includes(identity))
+      || survivorCoordinates.length + 1
+        > CROSS_ROOM_EXECUTION_PLAN_LIMITS.inputItems
+    ) return { status: "unavailable", failureDetail: "publication_plan_invalid" };
     const audience = intersectSingleAuthorityAlternatives(
-      currentChildren.map((child) => [child.audience]),
+      [
+        ...currentChildren.map((child) => [child.audience!]),
+        ...sourceAudiences,
+      ],
     );
     if (audience.status === "unavailable") {
       return { status: "no_change", reason: audience.reason };
@@ -254,6 +339,9 @@ OrganizerCrossRoomPublicationFencePort {
       ...currentChildren.map((child) => child.coordinate).sort((left, right) =>
         left.recordRef.localeCompare(right.recordRef)
       ),
+      ...sourceInputs.sort((left, right) =>
+        coordinateIdentity(left).localeCompare(coordinateIdentity(right))
+      ),
     ];
     const token = crossRoomApplicationPlanToken(`dl1.${commitment(
       "dependency-loss-plan",
@@ -263,6 +351,7 @@ OrganizerCrossRoomPublicationFencePort {
       applicationPlanToken: token,
       policyVersion: "candidate-policy-v1",
       selectedInputs,
+      modelExposureDependencies: input.modelExposureDependencies,
       predecessorOnlyRecordRef: input.predecessor.recordRef,
       output: {
         accessRoomRef: access.accessRoomId,
@@ -557,6 +646,22 @@ OrganizerCrossRoomPublicationFencePort {
         recordRef: coordinate.recordRef,
         readBindingRef: coordinate.read.bindingRef,
       });
+      if (input.plan.predecessorOnlyRecordRef === coordinate.recordRef) {
+        const binding = await this.ports.recordBindings.read(coordinate.recordRef);
+        if (
+          opened.status !== "available"
+          || (opened.record.lifecycle !== "current" && opened.record.lifecycle !== "stale")
+          || opened.record.processingGeneration !== coordinate.processingGeneration
+          || binding === null
+          || binding.representationGeneration !== coordinate.representationGeneration
+          || binding.currentAccessBindingRefs.length !== 1
+          || binding.currentAccessBindingRefs[0] !== coordinate.read.bindingRef
+        ) return {
+          status: "stale",
+          failureDetail: "publication_authority_fence_stale",
+        };
+        continue;
+      }
       const projection = await this.ports.authority.readCurrent(coordinate.recordRef);
       if (
         opened.status !== "available"
@@ -583,6 +688,9 @@ OrganizerCrossRoomPublicationFencePort {
     );
     if (predecessor?.kind !== "record") {
       return { status: "unavailable", failureDetail: "publication_plan_invalid" };
+    }
+    if (input.plan.predecessorOnlyRecordRef === predecessor.recordRef) {
+      return { status: "current", predecessorAudience: "different" };
     }
     const projection = await this.ports.authority.readCurrent(predecessor.recordRef);
     if (projection === null || projection.alternatives.length !== 1) {

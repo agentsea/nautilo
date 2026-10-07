@@ -412,6 +412,7 @@ describe("Organizer proposal publisher", () => {
         recordRef: "record:parent",
         relation,
       });
+      expect(repository.publications[0]?.predecessorReadBindingRef).toBe(ROOM.readBindingRef);
       expect(repository.publications[0]?.record.structuralHeight).toBe(1);
     });
   }
@@ -1002,6 +1003,7 @@ describe("Organizer proposal publisher", () => {
     });
     expect(repository.publications[0]).toMatchObject({
       predecessor: { recordRef: "record:p1", relation: "supersedes" },
+      predecessorReadBindingRef: "read:p1",
       publicationBindingRef: "publish:namespace:access:abc",
       record: {
         structuralHeight: 1,
@@ -1642,7 +1644,7 @@ describe("Organizer proposal publisher", () => {
     expect(repository.transitions).toHaveLength(0);
   });
 
-  test("rejects a predecessor-only model input omitted from complete exposure", async () => {
+  test("fences survivor exposure without re-exposing a predecessor-only coordinate", async () => {
     const repository = new FixtureRepository();
     repository.records.set("record:obsolete", record("record:obsolete", {
       room: "room:obsolete",
@@ -1690,11 +1692,20 @@ describe("Organizer proposal publisher", () => {
       changeReason: "dependency_lost",
       budget,
     })).toEqual({
-      status: "unavailable",
-      failureCode: "publication_unavailable",
-      failureDetail: "publication_plan_invalid",
+      status: "applied",
+      operation: "no_change",
+      replayed: false,
+      usage: {
+        modelCalls: 0,
+        visitedRecords: 0,
+        createdRecords: 0,
+        traversalWork: 0,
+      },
     });
-    expect(repository.reads).toHaveLength(0);
+    expect(repository.reads).toEqual([{
+      recordRef: "record:remaining",
+      readBindingRef: "read:remaining",
+    }]);
     expect(repository.transitions).toHaveLength(0);
   });
 
