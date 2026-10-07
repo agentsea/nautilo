@@ -512,6 +512,8 @@ test("commits the wide primary write target outside the stable request key", asy
   expect(contentPrimary.plan.initialRecord.idempotencyKey)
     .toBe(outputPrimary.plan.initialRecord.idempotencyKey);
   expect(contentPrimary.routingDigest).not.toEqual(outputPrimary.routingDigest);
+  expect(contentPrimary.plan.initialRecord.workIdentityHash)
+    .not.toEqual(outputPrimary.plan.initialRecord.workIdentityHash);
   expect(contentPrimary.routingDigest).toEqual(taskRuntimeStableRoutingDigest({
     ...contentPrimary.plan.stableIdentity,
     widePrimaryWriteNamespaceId: CONTENT,

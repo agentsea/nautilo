@@ -359,13 +359,16 @@ export {
   type ProtectedTaskPredispatchPlan,
 } from "./tasks/protected-task-predispatch";
 export {
+  ParkedProtectedTaskOccurrenceCoordinator,
   ProtectedTaskOccurrenceCoordinator,
+  createParkedProtectedTaskOccurrenceCoordinator,
   createProtectedTaskOccurrenceCoordinator,
   type ClaimedProtectedTaskOccurrence,
   type ClaimProtectedTaskOccurrenceResult,
   type ProtectedTaskOccurrenceClaimPort,
   type ProtectedTaskOccurrenceCoordinatorDeps,
   type ProtectedTaskOccurrenceJobManager,
+  type ParkedProtectedTaskOccurrenceCoordinatorDeps,
 } from "./tasks/protected-task-occurrence-coordinator";
 export {
   runProtectedTaskNativeSegment,

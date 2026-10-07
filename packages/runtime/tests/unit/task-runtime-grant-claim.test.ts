@@ -40,6 +40,7 @@ import {
 } from "../../src/protected-execution/background-authorization/repository";
 import {
   createTaskRuntimeGrantClaim,
+  prepareUnclaimedParkedTaskRuntimeAuthority,
   taskRuntimeStableIdempotencyKey,
   taskRuntimeStableRoutingDigest,
   type TaskRuntimeRecipientDeviceBinding,
@@ -56,6 +57,7 @@ const PRIVATE_TASK_ROOM = "40000000-0000-4000-8000-000000000014";
 const OPEN_ROOM = "40000000-0000-4000-8000-000000000024";
 const TASK = "50000000-0000-4000-8000-000000000005";
 const RUN = "60000000-0000-4000-8000-000000000006";
+const JOB = "61000000-0000-4000-8000-000000000006";
 const NAMESPACE = "70000000-0000-4000-8000-000000000007";
 const SCOPE = "80000000-0000-4000-8000-000000000008";
 const MEMORY_ROOM = "90000000-0000-4000-8000-000000000009";
@@ -209,6 +211,25 @@ function initialRecord(): BackgroundAuthorizationTaskRuntimeRecordV3 {
       })]),
     }),
   });
+}
+
+function parkedPreparation() {
+  const initialOccurrence = occurrence();
+  const parkedOccurrence: ProtectedTaskOccurrence = Object.freeze({
+    task: initialOccurrence.task,
+    run: Object.freeze({ ...initialOccurrence.run, jobId: JOB }),
+  });
+  const stable = Object.freeze({
+    ...stableIdentity(parkedOccurrence),
+    executionSegment: 2,
+    resumeContinuationFingerprint:
+      Buffer.from(bytes(23)).toString("base64url"),
+  });
+  const initial = Object.freeze({
+    ...initialRecord(),
+    idempotencyKey: taskRuntimeStableIdempotencyKey(stable),
+  });
+  return { occurrence: parkedOccurrence, stableIdentity: stable, initialRecord: initial };
 }
 
 function scopeBinding(
@@ -610,6 +631,128 @@ async function prepareAndBind(value: Fixture): Promise<void> {
   expect(value.recipients.size).toBe(0);
   expect(await value.bindRecipient()).not.toBeNull();
 }
+
+describe("parked Task Runtime authority preparation", () => {
+  test("creates once and recognizes an exact unclaimed replay", async () => {
+    const input = parkedPreparation();
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const recipients = new TaskRuntimeRecipientRegistry(new LatticeCrypto());
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "created" });
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "exact_replay" });
+  });
+
+  test("replaces changed preclaim authority and clears only the winning recipient generation", async () => {
+    const input = parkedPreparation();
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const changed = Object.freeze({
+      ...input.initialRecord,
+      workIdentityHash: bytes(99),
+    });
+    await repository.create(changed);
+    const deleted: Array<readonly [string, number]> = [];
+    const recipients = {
+      delete(requestId: string, generation: number) {
+        deleted.push([requestId, generation]);
+        return true;
+      },
+    } as unknown as TaskRuntimeRecipientRegistry;
+
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "replaced" });
+    expect(deleted).toEqual([[changed.snapshot.requestId, 0]]);
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "exact_replay" });
+  });
+
+  test("classifies claimed and terminal records without mutation", async () => {
+    const input = parkedPreparation();
+    const records = [
+      { state: "claimed", status: "active" },
+      { state: "completed", status: "inactive" },
+    ] as const;
+    for (const entry of records) {
+      let replacements = 0;
+      const current = {
+        ...input.initialRecord,
+        snapshot: { ...input.initialRecord.snapshot, state: entry.state },
+      } as BackgroundAuthorizationTaskRuntimeRecordV3;
+      const repository = {
+        get: async () => current,
+        create: async () => ({ status: "existing" as const, record: current }),
+        replaceUnclaimedTaskRuntimeAuthority: async () => {
+          replacements += 1;
+          return { status: "replaced" as const, record: input.initialRecord };
+        },
+      } as unknown as BackgroundAuthorizationTaskRuntimeReplacementRepository;
+      expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+        ...input,
+        repository,
+        recipients: new TaskRuntimeRecipientRegistry(new LatticeCrypto()),
+        now: () => NOW,
+      })).toEqual({ status: entry.status });
+      expect(replacements).toBe(0);
+    }
+  });
+
+  test("reports a lost replacement race without deleting recipient custody", async () => {
+    const input = parkedPreparation();
+    const changed = Object.freeze({
+      ...input.initialRecord,
+      workIdentityHash: bytes(99),
+    });
+    const deleted: Array<readonly [string, number]> = [];
+    const repository = {
+      get: async () => changed,
+      create: async () => ({ status: "existing" as const, record: changed }),
+      replaceUnclaimedTaskRuntimeAuthority: async () => ({
+        status: "stale" as const,
+        current: input.initialRecord,
+      }),
+    } as unknown as BackgroundAuthorizationTaskRuntimeReplacementRepository;
+    const recipients = {
+      delete(requestId: string, generation: number) {
+        deleted.push([requestId, generation]);
+        return true;
+      },
+    } as unknown as TaskRuntimeRecipientRegistry;
+
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "stale" });
+    expect(deleted).toEqual([]);
+  });
+
+  test("rejects initial-segment and legacy-idempotency substitutions", async () => {
+    const input = parkedPreparation();
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const recipients = new TaskRuntimeRecipientRegistry(new LatticeCrypto());
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input,
+      stableIdentity: stableIdentity(input.occurrence),
+      repository,
+      recipients,
+      now: () => NOW,
+    })).rejects.toThrow("preparation is invalid");
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input,
+      initialRecord: {
+        ...input.initialRecord,
+        idempotencyKey: `task-run:${RUN}`,
+      },
+      repository,
+      recipients,
+      now: () => NOW,
+    })).rejects.toThrow("preparation is invalid");
+  });
+});
 
 describe("Task Runtime grant claim", () => {
   test("preserves the durable initial request key and isolates continuation segments", () => {

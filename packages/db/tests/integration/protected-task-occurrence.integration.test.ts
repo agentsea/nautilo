@@ -293,9 +293,14 @@ describe("protected Task occurrence persistence", () => {
     const thirdFire = new Date("2026-09-23T09:02:00.000Z");
     const task = await createProtectedTask({
       tag: "restart-discovery",
+      representation: "dual",
       scheduleKind: "cron",
       scheduledFor: firstFire,
     });
+    await db.update(tasks).set({
+      expectedOutput: "restart discovery output",
+      metadata: { privateRecoveryMarker: "must-not-cross-query-boundary" },
+    }).where(eq(tasks.id, task.id));
     const [firstClaim] = await claimDueProtectedTasks(db, firstFire, 1);
     if (!firstClaim || firstClaim.id !== task.id) throw new Error("Expected first restart claim");
     const firstRunId = randomUUID();
@@ -317,6 +322,33 @@ describe("protected Task occurrence persistence", () => {
     expect(discoveredIds.has(secondRunId)).toBe(true);
     expect(discoverable.find(({ run }) => run.id === firstRunId)?.task.id).toBe(task.id);
     expect(discoverable.find(({ run }) => run.id === secondRunId)?.task.id).toBe(task.id);
+    const projected = discoverable.find(({ run }) => run.id === firstRunId);
+    if (!projected) throw new Error("Expected projected restart occurrence");
+    expect(Object.keys(projected.task).sort()).toEqual([
+      "agentId",
+      "callingRoomId",
+      "contentNamespaceId",
+      "contentRepresentation",
+      "contentRevision",
+      "cryptoAccessRevision",
+      "cryptoObjectId",
+      "cryptoRequiredNamespaceFingerprint",
+      "id",
+      "ownerId",
+      "requestorId",
+      "scheduleKind",
+    ]);
+    expect("prompt" in projected.task).toBe(false);
+    expect("expectedOutput" in projected.task).toBe(false);
+    expect("metadata" in projected.task).toBe(false);
+    expect(Object.keys(projected.run).sort()).toEqual([
+      "graphThreadId",
+      "id",
+      "jobId",
+      "startedAt",
+      "status",
+      "taskId",
+    ]);
     const firstIndex = discoverable.findIndex(({ run }) => run.id === firstRunId);
     const secondIndex = discoverable.findIndex(({ run }) => run.id === secondRunId);
     const earlier = discoverable[Math.min(firstIndex, secondIndex)];

@@ -59,6 +59,7 @@ import {
 } from "./lifecycle";
 import {
   TASK_RUNTIME_STABLE_IDEMPOTENCY_PREFIX,
+  parseBackgroundAuthorizationRecord,
   type BackgroundAuthorizationRecord,
   type BackgroundAuthorizationTaskRuntimeReplacementRepository,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
@@ -280,6 +281,19 @@ export interface TaskRuntimeGrantClaimDependencies {
   claimId?: () => string;
 }
 
+export type PrepareUnclaimedParkedTaskRuntimeAuthorityResult = Readonly<{
+  status: "created" | "exact_replay" | "replaced" | "active" | "inactive" | "stale";
+}>;
+
+export type PrepareUnclaimedParkedTaskRuntimeAuthorityInput = Readonly<{
+  occurrence: ProtectedTaskOccurrence;
+  stableIdentity: TaskRuntimeGrantStableIdentity;
+  initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3;
+  repository: BackgroundAuthorizationTaskRuntimeReplacementRepository;
+  recipients: TaskRuntimeRecipientRegistry;
+  now: () => number;
+}>;
+
 function isTaskRuntimeRecord(
   record: BackgroundAuthorizationRecord,
 ): record is BackgroundAuthorizationTaskRuntimeRecordV3 {
@@ -405,6 +419,66 @@ function exactOccurrenceRecord(
     && content.operations.length === 2
     && content.operations[0] === "decrypt"
     && content.operations[1] === "encrypt";
+}
+
+function parkedStableIdentityMatchesOccurrence(
+  occurrence: ProtectedTaskOccurrence,
+  identity: TaskRuntimeGrantStableIdentity,
+): boolean {
+  const canonicalTargetUserIds = [...identity.targetUserIds].sort();
+  return occurrence.run.jobId !== null
+    && identity.executionSegment > 1
+    && identity.resumeContinuationFingerprint !== null
+    && identity.taskId === occurrence.task.id
+    && identity.taskRunId === occurrence.run.id
+    && identity.ownerId === occurrence.task.ownerId
+    && identity.requestorId === occurrence.task.requestorId
+    && identity.agentId === occurrence.task.agentId
+    && identity.callingRoomId === occurrence.task.callingRoomId
+    && identity.scheduleKind === occurrence.task.scheduleKind
+    && identity.graphThreadId === occurrence.run.graphThreadId
+    && identity.startedAt === occurrence.run.startedAt.getTime()
+    && identity.sourceRoomId.length > 0
+    && identity.targetRoomId.length > 0
+    && identity.targetUserIds.length > 0
+    && identity.targetUserIds.includes(identity.requestorId)
+    && new Set(identity.targetUserIds).size === identity.targetUserIds.length
+    && identity.targetUserIds.every(
+      (value, index) => value === canonicalTargetUserIds[index],
+    )
+    && identity.outputRoomId === occurrence.task.callingRoomId
+    && ((identity.outputRoomId === null) === (identity.outputNamespaceId === null))
+    && (identity.memoryMode === "scope"
+      ? identity.scopeId !== null && identity.scopeId.length > 0
+      : identity.scopeId === null)
+    && identity.contentRepresentation === occurrence.task.contentRepresentation
+    && identity.contentNamespaceId === occurrence.task.contentNamespaceId
+    && identity.contentRevision === occurrence.task.contentRevision
+    && identity.contentObjectId === occurrence.task.cryptoObjectId
+    && identity.contentAccessRevision === occurrence.task.cryptoAccessRevision
+    && identity.requiredNamespaceFingerprint === Buffer.from(
+      occurrence.task.cryptoRequiredNamespaceFingerprint,
+    ).toString("base64url");
+}
+
+function exactUnclaimedParkedInitialRecord(
+  occurrence: ProtectedTaskOccurrence,
+  stableIdentity: TaskRuntimeGrantStableIdentity,
+  initial: BackgroundAuthorizationTaskRuntimeRecordV3,
+): boolean {
+  return exactOccurrenceRecord(occurrence, initial)
+    && parkedStableIdentityMatchesOccurrence(occurrence, stableIdentity)
+    && initial.idempotencyKey === taskRuntimeStableIdempotencyKey(stableIdentity)
+    && initial.snapshot.state === "awaiting_recipient"
+    && initial.snapshot.recipientGeneration === 0
+    && initial.snapshot.recipient === null
+    && initial.snapshot.acceptedResponse === null
+    && initial.snapshot.claimId === null
+    && initial.snapshot.claimExpiresAt === null
+    && initial.snapshot.requestRevision === 0
+    && initial.descriptorBytes === null
+    && initial.acceptedMaterial === null
+    && initial.finishedAt === null;
 }
 
 function sameDurablePlan(
@@ -868,6 +942,97 @@ function staleReplacementResult(
       && sameDurablePlan(current, replacement)
     ? Object.freeze({ status: "awaiting_authorization" as const })
     : Object.freeze({ status: "inactive" as const });
+}
+
+/**
+ * Prepare one continuation Runtime request while its server owner holds the
+ * exact parked Task authority. This never claims work or creates a Job.
+ */
+export async function prepareUnclaimedParkedTaskRuntimeAuthority(
+  input: PrepareUnclaimedParkedTaskRuntimeAuthorityInput,
+): Promise<PrepareUnclaimedParkedTaskRuntimeAuthorityResult> {
+  const repository = input.repository;
+  const recipients = input.recipients;
+  const now = input.now;
+  const occurrence: ProtectedTaskOccurrence = Object.freeze({
+    task: Object.freeze({
+      ...input.occurrence.task,
+      cryptoRequiredNamespaceFingerprint: new Uint8Array(
+        input.occurrence.task.cryptoRequiredNamespaceFingerprint,
+      ),
+    }),
+    run: Object.freeze({
+      ...input.occurrence.run,
+      startedAt: new Date(input.occurrence.run.startedAt.getTime()),
+    }),
+  });
+  const stableIdentity: TaskRuntimeGrantStableIdentity = Object.freeze({
+    ...input.stableIdentity,
+    targetUserIds: Object.freeze([...input.stableIdentity.targetUserIds]),
+  });
+  const parsedInitial = parseBackgroundAuthorizationRecord(input.initialRecord);
+  if (typeof repository?.get !== "function"
+    || typeof repository.create !== "function"
+    || typeof repository.replaceUnclaimedTaskRuntimeAuthority !== "function"
+    || typeof recipients?.delete !== "function"
+    || typeof now !== "function"
+    || !isTaskRuntimeRecord(parsedInitial)
+    || !exactUnclaimedParkedInitialRecord(
+      occurrence,
+      stableIdentity,
+      parsedInitial,
+    )) {
+    throw new TypeError("Parked Task Runtime authority preparation is invalid");
+  }
+  const initial = parsedInitial;
+
+  const classify = async (
+    record: BackgroundAuthorizationRecord,
+  ): Promise<PrepareUnclaimedParkedTaskRuntimeAuthorityResult> => {
+    if (!isTaskRuntimeRecord(record)
+      || !exactOccurrenceRecord(occurrence, record)
+      || !stableReplacementRecordIdentity(record, initial)) {
+      throw new TypeError("Parked Task Runtime durable record was substituted");
+    }
+    if (record.snapshot.state === "claimed"
+      || record.snapshot.state === "running") {
+      return Object.freeze({ status: "active" as const });
+    }
+    if (![
+      "awaiting_recipient",
+      "awaiting_device",
+      "grant_ready",
+    ].includes(record.snapshot.state)) {
+      return Object.freeze({ status: "inactive" as const });
+    }
+    if (sameDurablePlan(record, initial)) {
+      return Object.freeze({ status: "exact_replay" as const });
+    }
+    const timestamp = now();
+    if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
+      throw new TypeError("Parked Task Runtime preparation clock is invalid");
+    }
+    const replaced = await repository.replaceUnclaimedTaskRuntimeAuthority({
+      expected: record,
+      replacement: initial,
+      now: timestamp,
+    });
+    if (replaced.status === "stale") {
+      return Object.freeze({ status: "stale" as const });
+    }
+    recipients.delete(
+      record.snapshot.requestId,
+      record.snapshot.recipientGeneration,
+    );
+    return Object.freeze({ status: "replaced" as const });
+  };
+
+  const existing = await repository.get(initial.snapshot.requestId);
+  if (existing !== null) return classify(existing);
+  const created = await repository.create(initial);
+  return created.status === "created"
+    ? Object.freeze({ status: "created" as const })
+    : classify(created.record);
 }
 
 function createCandidate(input: Readonly<{

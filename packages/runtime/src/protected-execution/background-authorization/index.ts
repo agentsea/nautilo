@@ -132,8 +132,11 @@ export {
 } from "./dark-background-family-adapter";
 
 export {
+  prepareUnclaimedParkedTaskRuntimeAuthority,
   taskRuntimeStableIdempotencyKey,
   taskRuntimeStableRoutingDigest,
+  type PrepareUnclaimedParkedTaskRuntimeAuthorityInput,
+  type PrepareUnclaimedParkedTaskRuntimeAuthorityResult,
   type TaskRuntimeGrantClaimPlan,
   type TaskRuntimeGrantStableIdentity,
 } from "./task-runtime-grant-claim";

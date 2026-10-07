@@ -27,6 +27,7 @@ const AGENT_ACTOR = "10000000-0000-4000-8000-000000000003";
 const AGENT = "10000000-0000-4000-8000-000000000004";
 const TASK = "10000000-0000-4000-8000-000000000005";
 const PEER = "10000000-0000-4000-8000-000000000006";
+const OTHER_HUMAN = "10000000-0000-4000-8000-000000000007";
 const ROOMS = ["20000000-0000-4000-8000-000000000001", "20000000-0000-4000-8000-000000000002"] as const;
 const NAMESPACES = ["30000000-0000-4000-8000-000000000001", "30000000-0000-4000-8000-000000000002"] as const;
 const DOMAINS = ["40000000-0000-4000-8000-000000000001", "40000000-0000-4000-8000-000000000002"] as const;
@@ -673,6 +674,198 @@ describe("parked Task Runtime Namespace authority", () => {
       if (denied === "proof-continuation") {
         expect(events).not.toContain("restricted");
       }
+    }
+  });
+
+  test("reports only an unavailable Namespace bundle as readiness work", async () => {
+    const cases = [
+      {
+        name: "missing bundle",
+        adjust: ((stage, rows) => stage === "namespace" ? [] : rows) as Adjust,
+        expected: [NAMESPACES[0]],
+      },
+      {
+        name: "inconsistent bundle",
+        adjust: substitute("namespace", "bundle_revision", 0),
+        expected: [],
+      },
+      {
+        name: "stale access revision",
+        adjust: substitute("namespace", "namespace_access_revision", 99),
+        expected: [],
+      },
+    ];
+    for (const value of cases) {
+      const current = parkedRows();
+      const { input } = fixture(value.adjust, current);
+      const unavailable: string[] = [];
+      let used = false;
+      expect(await withParkedTaskRuntimeNamespaceAuthority({
+        ...input,
+        expected: parkedDescriptor(current),
+        authorizationRequestId: REQUEST,
+        validateCurrentRouting: () => true,
+        onNamespaceReadinessUnavailable: namespaceId => {
+          unavailable.push(namespaceId);
+        },
+        use: () => { used = true; },
+      }), value.name).toBeNull();
+      expect(unavailable, value.name).toEqual(value.expected);
+      expect(used, value.name).toBe(false);
+    }
+  });
+
+  test("snapshots the Namespace readiness callback before awaiting", async () => {
+    const current = parkedRows();
+    const { input } = fixture((stage, rows) =>
+      stage === "namespace" ? [] : rows, current);
+    const original: string[] = [];
+    const substituted: string[] = [];
+    const request = {
+      ...input,
+      expected: parkedDescriptor(current),
+      authorizationRequestId: REQUEST,
+      validateCurrentRouting: () => true,
+      onNamespaceReadinessUnavailable: (namespaceId: string) => {
+        original.push(namespaceId);
+      },
+      use: () => "unused",
+    };
+    const operation = withParkedTaskRuntimeNamespaceAuthority(request);
+    request.onNamespaceReadinessUnavailable = namespaceId => {
+      substituted.push(namespaceId);
+    };
+
+    expect(await operation).toBeNull();
+    expect(original).toEqual([NAMESPACES[0]]);
+    expect(substituted).toEqual([]);
+  });
+
+  test("requires the selected Namespace participant set to match locked authority", async () => {
+    const adjustedAudience: Adjust = (stage, rows) => {
+      if (stage === "targets") {
+        return rows.map(row => row["namespace_id"] === NAMESPACES[1]
+          ? { ...row, human_actor_ids: [HUMAN, PEER],
+              effective_human_actor_ids: [HUMAN, PEER] }
+          : row);
+      }
+      if (stage === "target-members") {
+        return [...rows, { room_id: ROOMS[1], actor_id: PEER, kind: "user" }];
+      }
+      return rows;
+    };
+    for (const value of [
+      { participantHumanIds: [HUMAN, PEER], expected: "used" },
+      { participantHumanIds: [HUMAN], expected: null },
+    ] as const) {
+      const current = parkedRows();
+      const { input, events } = fixture(adjustedAudience, current);
+      expect(await withParkedTaskRuntimeNamespaceAuthority({
+        ...input,
+        expected: parkedDescriptor(current),
+        authorizationRequestId: REQUEST,
+        expectedNamespaceParticipants: [{
+          namespaceId: NAMESPACES[1],
+          match: "exact",
+          participantHumanIds: value.participantHumanIds,
+        }],
+        validateCurrentRouting: () => true,
+        use: () => "used",
+      })).toBe(value.expected);
+      if (value.expected === null) expect(events).not.toContain("restricted");
+    }
+  });
+
+  test("snapshots selected Namespace participants and rejects noncanonical inputs", async () => {
+    const current = parkedRows();
+    const exact = fixture((_stage, rows) => rows, current);
+    const participantHumanIds = [HUMAN];
+    const expectedNamespaceParticipants: Array<{
+      namespaceId: string;
+      match: "exact" | "includes";
+      participantHumanIds: string[];
+    }> = [{
+      namespaceId: NAMESPACES[1],
+      match: "exact",
+      participantHumanIds,
+    }];
+    const operation = withParkedTaskRuntimeNamespaceAuthority({
+      ...exact.input,
+      expected: parkedDescriptor(current),
+      authorizationRequestId: REQUEST,
+      expectedNamespaceParticipants,
+      validateCurrentRouting: () => true,
+      use: () => "used",
+    });
+    participantHumanIds[0] = PEER;
+    expectedNamespaceParticipants[0]!.namespaceId = NAMESPACES[0];
+    expect(await operation).toBe("used");
+
+    for (const supplied of [
+      [{ namespaceId: SCOPE, match: "exact" as const,
+        participantHumanIds: [HUMAN] }],
+      [{ namespaceId: NAMESPACES[1], match: "exact" as const,
+        participantHumanIds: [HUMAN, HUMAN] }],
+      [{ namespaceId: NAMESPACES[1], match: "subset" as unknown as "exact",
+        participantHumanIds: [HUMAN] }],
+      [
+        { namespaceId: NAMESPACES[1], match: "exact" as const,
+          participantHumanIds: [HUMAN] },
+        { namespaceId: NAMESPACES[1], match: "exact" as const,
+          participantHumanIds: [HUMAN] },
+      ],
+    ]) {
+      const invalid = fixture((_stage, rows) => rows, current);
+      expect(await withParkedTaskRuntimeNamespaceAuthority({
+        ...invalid.input,
+        expected: parkedDescriptor(current),
+        authorizationRequestId: REQUEST,
+        expectedNamespaceParticipants: supplied,
+        validateCurrentRouting: () => true,
+        use: () => "unexpected",
+      })).toBeNull();
+      expect(invalid.events).toEqual([]);
+    }
+  });
+
+  test("requires every pinned target Human in other base Namespace audiences", async () => {
+    const audience = (participantHumanIds: readonly string[]): Adjust =>
+      (stage, rows) => {
+        if (stage === "targets") {
+          return rows.map(row => row["namespace_id"] === NAMESPACES[1]
+            ? { ...row, human_actor_ids: participantHumanIds,
+                effective_human_actor_ids: participantHumanIds }
+            : row);
+        }
+        if (stage === "target-members") {
+          return [
+            ...rows,
+            ...participantHumanIds.filter(id => id !== HUMAN).map(actor_id => ({
+              room_id: ROOMS[1], actor_id, kind: "user",
+            })),
+          ];
+        }
+        return rows;
+      };
+    for (const value of [
+      { actual: [HUMAN, PEER, OTHER_HUMAN], expected: "used" },
+      { actual: [HUMAN, OTHER_HUMAN], expected: null },
+    ] as const) {
+      const current = parkedRows();
+      const { input, events } = fixture(audience(value.actual), current);
+      expect(await withParkedTaskRuntimeNamespaceAuthority({
+        ...input,
+        expected: parkedDescriptor(current),
+        authorizationRequestId: REQUEST,
+        expectedNamespaceParticipants: [{
+          namespaceId: NAMESPACES[1],
+          match: "includes",
+          participantHumanIds: [HUMAN, PEER],
+        }],
+        validateCurrentRouting: () => true,
+        use: () => "used",
+      })).toBe(value.expected);
+      if (value.expected === null) expect(events).not.toContain("restricted");
     }
   });
 

@@ -1690,6 +1690,31 @@ export type ProtectedAwaitingTaskRunCursor = Readonly<{
   taskRunId: string;
 }>;
 
+export type ProtectedAwaitingTaskRunForAuthorization = Readonly<{
+  task: Pick<Task,
+    | "id"
+    | "ownerId"
+    | "requestorId"
+    | "agentId"
+    | "callingRoomId"
+    | "scheduleKind"
+    | "contentRepresentation"
+    | "contentNamespaceId"
+    | "contentRevision"
+    | "cryptoObjectId"
+    | "cryptoAccessRevision"
+    | "cryptoRequiredNamespaceFingerprint"
+  >;
+  run: Pick<TaskRun,
+    | "id"
+    | "taskId"
+    | "jobId"
+    | "graphThreadId"
+    | "status"
+    | "startedAt"
+  >;
+}>;
+
 /**
  * Discover content-free protected occurrences that still need authorization.
  * Each row is keyed by its durable TaskRun identity so separate cron fires do
@@ -1701,10 +1726,34 @@ export async function listProtectedAwaitingTaskRunsForAuthorization(
   db: DirectDatabase,
   batch: number,
   after?: ProtectedAwaitingTaskRunCursor,
-): Promise<Array<{ task: Task; run: TaskRun }>> {
+): Promise<ProtectedAwaitingTaskRunForAuthorization[]> {
   if (batch <= 0) return [];
   return db
-    .select({ task: tasks, run: taskRuns })
+    .select({
+      task: {
+        id: tasks.id,
+        ownerId: tasks.ownerId,
+        requestorId: tasks.requestorId,
+        agentId: tasks.agentId,
+        callingRoomId: tasks.callingRoomId,
+        scheduleKind: tasks.scheduleKind,
+        contentRepresentation: tasks.contentRepresentation,
+        contentNamespaceId: tasks.contentNamespaceId,
+        contentRevision: tasks.contentRevision,
+        cryptoObjectId: tasks.cryptoObjectId,
+        cryptoAccessRevision: tasks.cryptoAccessRevision,
+        cryptoRequiredNamespaceFingerprint:
+          tasks.cryptoRequiredNamespaceFingerprint,
+      },
+      run: {
+        id: taskRuns.id,
+        taskId: taskRuns.taskId,
+        jobId: taskRuns.jobId,
+        graphThreadId: taskRuns.graphThreadId,
+        status: taskRuns.status,
+        startedAt: taskRuns.startedAt,
+      },
+    })
     .from(taskRuns)
     .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
     .where(and(

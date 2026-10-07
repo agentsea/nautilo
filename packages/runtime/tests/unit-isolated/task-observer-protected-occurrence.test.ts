@@ -296,6 +296,53 @@ test("without a protected port the ordinary observer is unchanged", async () => 
   expect(prepareProtected).not.toHaveBeenCalled();
 });
 
+test("a recovery-only protected port never claims or prepares due initial work", async () => {
+  const ordinary = task({
+    contentRepresentation: "ordinary",
+    contentNamespaceId: null,
+    contentRevision: 0,
+    cryptoObjectId: null,
+    cryptoAccessRevision: 0,
+    cryptoRequiredNamespaceFingerprint: null,
+    cryptoMappingState: "unmapped",
+    scheduleKind: "now",
+    cron: null,
+  });
+  const dueProtected = task();
+  const existingTask = task({
+    status: "awaiting",
+    fireLockId: null,
+    nextFireAt: null,
+  });
+  const existingRun = run();
+  claimPlain.mockImplementation(async () => [ordinary]);
+  claimProtected.mockImplementation(async () => [dueProtected]);
+  listAwaiting.mockImplementation(async () => [{
+    task: existingTask,
+    run: existingRun,
+  }]);
+  const recoveryPort = {
+    observeProtectedTaskOccurrence: mock(async (_occurrence: unknown) => {}),
+  };
+  const observer = new TaskObserver({
+    db: {} as never,
+    jobManager: jobManager as never,
+    maintenanceGate: acceptingGate,
+    protectedOccurrenceRecoveryPort: recoveryPort,
+  });
+
+  await observer.tick();
+
+  expect(ordinaryDispatch).toHaveBeenCalledTimes(1);
+  expect(ordinaryDispatch.mock.calls[0]?.[0]).toBe(ordinary);
+  expect(listAwaiting).toHaveBeenCalledTimes(1);
+  expect(recoveryPort.observeProtectedTaskOccurrence).toHaveBeenCalledTimes(1);
+  expect(recoveryPort.observeProtectedTaskOccurrence.mock.calls[0]?.[0])
+    .toMatchObject({ task: { id: TASK_ID }, run: { id: EXISTING_RUN_ID } });
+  expect(claimProtected).not.toHaveBeenCalled();
+  expect(prepareProtected).not.toHaveBeenCalled();
+});
+
 test("protected occurrences preserve fire identity, skip downtime backlog, and retry only through the port", async () => {
   const scheduledFor = new Date("2026-09-01T09:00:00.000Z");
   const claimed = task({ nextFireAt: scheduledFor });

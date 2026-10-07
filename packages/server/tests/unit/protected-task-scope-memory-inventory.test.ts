@@ -162,6 +162,51 @@ describe("protected Task Scope Memory inventory", () => {
     expect(Object.isFrozen(binding.readableNamespaceIds)).toBeTrue();
   });
 
+  test("accepts closed coordinates without materializing a Task or predispatch plan", async () => {
+    let received: Record<string, unknown> | null = null;
+    const binding = await resolver({
+      discover: async input => {
+        received = input as Record<string, unknown>;
+        return {
+          scopeId: SCOPE,
+          originWritableNamespaceId: ORIGIN,
+          readableNamespaceIds: [ORIGIN, SEED].sort(),
+        };
+      },
+    })({
+      coordinates: {
+        taskId: TASK,
+        taskRunId: RUN,
+        requesterUserId: USER,
+        agentId: AGENT,
+        contentNamespaceId: CONTENT,
+        scopeId: SCOPE,
+        memoryRoomId: MEMORY_ROOM,
+        originWritableNamespaceId: ORIGIN,
+        requesterActorId: HUMAN,
+      },
+    });
+
+    expect(received).toMatchObject({
+      sourceRoomId: SOURCE_ROOM,
+      requesterHumanId: HUMAN,
+      coordinates: {
+        taskId: TASK,
+        requesterUserId: USER,
+        agentId: AGENT,
+        scopeId: SCOPE,
+        memoryRoomId: MEMORY_ROOM,
+        originWritableNamespaceId: ORIGIN,
+      },
+    });
+    expect(binding).toEqual({
+      scopeId: SCOPE,
+      memoryRoomId: MEMORY_ROOM,
+      originWritableNamespaceId: ORIGIN,
+      readableNamespaceIds: [ORIGIN, SEED].sort(),
+    });
+  });
+
   test("rejects a Namespace plan and a non-private content source", async () => {
     const current = occurrence();
     const namespacePlan: ProtectedTaskPredispatchPlan = {

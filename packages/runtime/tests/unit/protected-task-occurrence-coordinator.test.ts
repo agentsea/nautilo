@@ -3,6 +3,7 @@ import type { JobExecutor } from "../../src/job";
 import type { CreateProtectedTaskJobInput } from
   "../../src/tasks/protected-task-execution-candidate";
 import {
+  createParkedProtectedTaskOccurrenceCoordinator,
   createProtectedTaskOccurrenceCoordinator,
   type ClaimedProtectedTaskOccurrence,
 } from "../../src/tasks/protected-task-occurrence-coordinator";
@@ -14,11 +15,12 @@ const AGENT_ID = "30000000-0000-4000-8000-000000000003";
 const ROOM_ID = "40000000-0000-4000-8000-000000000004";
 const TASK_ID = "50000000-0000-4000-8000-000000000005";
 const RUN_ID = "60000000-0000-4000-8000-000000000006";
+const JOB_ID = "70000000-0000-4000-8000-000000000007";
 const THREAD_ID = `subagent:${TASK_ID}:${RUN_ID}`;
 const INPUT_OBJECT_ID = `task-definition:v1:${"a".repeat(64)}`;
 const RESULT_OBJECT_ID = `task-run-result:v1:${"b".repeat(64)}`;
 
-function occurrence(): ProtectedTaskOccurrence {
+function occurrence(jobId: string | null = null): ProtectedTaskOccurrence {
   return Object.freeze({
     task: Object.freeze({
       id: TASK_ID,
@@ -37,7 +39,7 @@ function occurrence(): ProtectedTaskOccurrence {
     run: Object.freeze({
       id: RUN_ID,
       taskId: TASK_ID,
-      jobId: null,
+      jobId,
       graphThreadId: THREAD_ID,
       status: "awaiting" as const,
       startedAt: new Date(1_000),
@@ -188,5 +190,60 @@ describe("protected Task occurrence coordinator", () => {
     coordinator.authorizationAccepted();
 
     expect(kick).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("parked protected Task occurrence coordinator", () => {
+  test("ignores initial occurrences and prepares a parked occurrence", async () => {
+    const prepare = mock(async (_occurrence: ProtectedTaskOccurrence) => ({
+      status: "created" as const,
+    }));
+    const coordinator = createParkedProtectedTaskOccurrenceCoordinator({
+      prepare,
+    });
+
+    await coordinator.observeProtectedTaskOccurrence(occurrence());
+    expect(prepare).not.toHaveBeenCalled();
+
+    const parked = occurrence(JOB_ID);
+    await coordinator.observeProtectedTaskOccurrence(parked);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledWith(parked);
+  });
+
+  test("coalesces concurrent parked preparation by TaskRun", async () => {
+    const gate = Promise.withResolvers<void>();
+    const prepare = mock(async () => {
+      await gate.promise;
+      return { status: "exact_replay" as const };
+    });
+    const coordinator = createParkedProtectedTaskOccurrenceCoordinator({
+      prepare,
+    });
+    const parked = occurrence(JOB_ID);
+
+    const first = coordinator.observeProtectedTaskOccurrence(parked);
+    const second = coordinator.observeProtectedTaskOccurrence(parked);
+    gate.resolve();
+    await Promise.all([first, second]);
+
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  test("releases parked deduplication after preparation failure", async () => {
+    let attempts = 0;
+    const coordinator = createParkedProtectedTaskOccurrenceCoordinator({
+      prepare: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("preparation failed");
+      },
+    });
+    const parked = occurrence(JOB_ID);
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(coordinator.observeProtectedTaskOccurrence(parked))
+      .rejects.toThrow("preparation failed");
+    await coordinator.observeProtectedTaskOccurrence(parked);
+    expect(attempts).toBe(2);
   });
 });

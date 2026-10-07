@@ -161,6 +161,12 @@ type TaskRuntimeProductAuthorityInput =
       namespaceIds: readonly [string];
     }>);
 
+type ExpectedNamespaceParticipants = readonly Readonly<{
+  namespaceId: string;
+  match: "exact" | "includes";
+  participantHumanIds: readonly string[];
+}>[];
+
 function sameIds(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length
     && left.every((entry, index) => entry === right[index]);
@@ -169,6 +175,41 @@ function sameIds(left: readonly string[], right: readonly string[]): boolean {
 function uuidArray(value: unknown): value is readonly string[] {
   return Array.isArray(value)
     && value.every(entry => typeof entry === "string" && UUID.test(entry));
+}
+
+function copyExpectedNamespaceParticipants(
+  value: unknown,
+): ExpectedNamespaceParticipants | null {
+  if (!Array.isArray(value) || value.length < 1) return null;
+  const entries: readonly unknown[] = value;
+  const copied: Array<ExpectedNamespaceParticipants[number]> = [];
+  for (const [index, entry] of entries.entries()) {
+    if (entry === null || typeof entry !== "object"
+      || Object.keys(entry).sort().join(",")
+        !== "match,namespaceId,participantHumanIds") return null;
+    const record = entry as Record<string, unknown>;
+    const namespaceId = record["namespaceId"];
+    const match = record["match"];
+    const participantValues = record["participantHumanIds"];
+    if (typeof namespaceId !== "string" || !UUID.test(namespaceId)
+      || match !== "exact" && match !== "includes"
+      || index > 0 && copied[index - 1]!.namespaceId >= namespaceId
+      || !Array.isArray(participantValues)
+      || participantValues.length < 1) return null;
+    const participantHumanIds: string[] = [];
+    for (const participant of participantValues as readonly unknown[]) {
+      const previous = participantHumanIds.at(-1);
+      if (typeof participant !== "string" || !UUID.test(participant)
+        || previous !== undefined && previous >= participant) return null;
+      participantHumanIds.push(participant);
+    }
+    copied.push(Object.freeze({
+      namespaceId,
+      match,
+      participantHumanIds: Object.freeze(participantHumanIds),
+    }));
+  }
+  return Object.freeze(copied);
 }
 
 async function withInitialTaskRuntimeProductAuthority<Value>(
@@ -183,6 +224,7 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
     transaction: CanonicalTranscriptTx,
     task: LockedTaskRuntimeRoutingRow,
   ) => Promise<boolean>,
+  expectedNamespaceParticipants?: ExpectedNamespaceParticipants,
 ): Promise<Value | null> {
   // Snapshot caller-owned coordinates before the first asynchronous boundary.
   const scopeMemory = input.purpose !== "initial_execution"
@@ -325,9 +367,23 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
           for (const [index, entry] of entries.entries()) {
             const snapshot = inspectNamespaceProductAuthoritySnapshot(entry.authority);
             try {
+              const expectedParticipants = expectedNamespaceParticipants?.find(
+                value => value.namespaceId === entry.namespaceId,
+              );
               if (entry.namespaceId !== request.namespaceIds[index]
                 || snapshot.namespaceId !== entry.namespaceId
-                || snapshot.subjectHumanId !== request.requesterHumanId) return null;
+                || snapshot.subjectHumanId !== request.requesterHumanId
+                || expectedParticipants !== undefined
+                  && (expectedParticipants.match === "exact"
+                    ? !sameIds(
+                        snapshot.participantHumanIds,
+                        expectedParticipants.participantHumanIds,
+                      )
+                    : expectedParticipants.participantHumanIds.some(
+                        participantId => !snapshot.participantHumanIds.some(
+                          candidate => candidate === participantId,
+                        ),
+                      ))) return null;
               accessRevisions.push(snapshot.accessRevision);
             } finally {
               snapshot.audienceFingerprint.fill(0);
@@ -401,6 +457,8 @@ async function withTaskRuntimeNamespaceAuthority<Value>(
     authority: InitialTaskRuntimeNamespaceAuthority,
     restricted: PostgresJsBridgeConnection,
   ) => Value | Promise<Value>,
+  onNamespaceReadinessUnavailable?: (namespaceId: string) => void,
+  expectedNamespaceParticipants?: ExpectedNamespaceParticipants,
 ): Promise<Value | null> {
   const request: TaskRuntimeProductAuthorityInput = input.purpose
     === "initial_execution"
@@ -430,7 +488,12 @@ async function withTaskRuntimeNamespaceAuthority<Value>(
           const authority = await repository.inspectForegroundNamespaceAuthority({
             namespaceId, keyClass: "ai",
           });
-          if (authority.status !== "ready") return null;
+          if (authority.status !== "ready") {
+            if (authority.reason === "namespace_bundle_unavailable") {
+              onNamespaceReadinessUnavailable?.(namespaceId);
+            }
+            return null;
+          }
           authorities.push(authority);
           if (authority.namespaceId !== namespaceId
             || authority.namespaceAccessRevision !== accessRevisions[index]) return null;
@@ -489,6 +552,7 @@ async function withTaskRuntimeNamespaceAuthority<Value>(
       }
     },
     validateCurrentTaskRun,
+    expectedNamespaceParticipants,
   );
 }
 
@@ -598,6 +662,8 @@ export async function withParkedTaskRuntimeNamespaceAuthority<Value>(
     validateCurrentRouting(
       facts: ParkedTaskRuntimeCurrentRoutingFacts,
     ): boolean | Promise<boolean>;
+    onNamespaceReadinessUnavailable?(namespaceId: string): void;
+    expectedNamespaceParticipants?: ExpectedNamespaceParticipants;
     use(
       authority: InitialTaskRuntimeNamespaceAuthority,
       restricted: PostgresJsBridgeConnection,
@@ -606,10 +672,26 @@ export async function withParkedTaskRuntimeNamespaceAuthority<Value>(
 ): Promise<Value | null> {
   const use = input.use;
   const validateCurrentRouting = input.validateCurrentRouting;
+  const onNamespaceReadinessUnavailable =
+    input.onNamespaceReadinessUnavailable;
+  const suppliedNamespaceParticipants = input.expectedNamespaceParticipants;
+  let expectedNamespaceParticipants: ExpectedNamespaceParticipants | undefined;
+  if (suppliedNamespaceParticipants !== undefined) {
+    const copied = copyExpectedNamespaceParticipants(
+      suppliedNamespaceParticipants,
+    );
+    if (copied === null) return null;
+    expectedNamespaceParticipants = copied;
+  }
+  const namespaceIds = Object.freeze([...input.namespaceIds]);
   const expected = copyParkedTaskRuntimeAuthority(input.expected);
   const authorizationRequestId = input.authorizationRequestId;
   if (typeof use !== "function"
     || typeof validateCurrentRouting !== "function"
+    || (onNamespaceReadinessUnavailable !== undefined
+      && typeof onNamespaceReadinessUnavailable !== "function")
+    || expectedNamespaceParticipants?.some(value =>
+      !namespaceIds.includes(value.namespaceId)) === true
     || authorizationRequestId !== expected.authorizationRequestId
     || input.taskId !== expected.occurrence.task.id
     || input.requesterUserId !== expected.occurrence.task.requestorId
@@ -620,12 +702,15 @@ export async function withParkedTaskRuntimeNamespaceAuthority<Value>(
     expected: _expected,
     authorizationRequestId: _authorizationRequestId,
     validateCurrentRouting: _validateCurrentRouting,
+    onNamespaceReadinessUnavailable: _onNamespaceReadinessUnavailable,
+    expectedNamespaceParticipants: _expectedNamespaceParticipants,
     use: _use,
     ...coordinates
   } = input;
   return withTaskRuntimeNamespaceAuthority(
     Object.freeze({
       ...coordinates,
+      namespaceIds,
       purpose: "initial_execution" as const,
     }),
     async (_product, transaction, task) => {
@@ -645,6 +730,8 @@ export async function withParkedTaskRuntimeNamespaceAuthority<Value>(
       restricted,
       scoped => Promise.resolve(use(authority, scoped)),
     ),
+    onNamespaceReadinessUnavailable,
+    expectedNamespaceParticipants ?? undefined,
   );
 }
 

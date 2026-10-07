@@ -24,10 +24,27 @@ type ProductContext = Awaited<ReturnType<
   typeof createHumanProductTransactionContext
 >>;
 
-export type ProtectedTaskScopeMemoryInventoryResolverInput = Readonly<{
-  occurrence: ProtectedTaskOccurrence;
-  predispatch: ProtectedTaskPredispatchPlan;
+export type ProtectedTaskScopeMemoryInventoryCoordinates = Readonly<{
+  taskId: string;
+  taskRunId: string;
+  requesterUserId: string;
+  agentId: string;
+  contentNamespaceId: string;
+  scopeId: string;
+  memoryRoomId: string;
+  originWritableNamespaceId: string;
+  requesterActorId: string;
 }>;
+
+export type ProtectedTaskScopeMemoryInventoryResolverInput =
+  | Readonly<{
+      occurrence: ProtectedTaskOccurrence;
+      predispatch: ProtectedTaskPredispatchPlan;
+    }>
+  | Readonly<{
+      /** Closed coordinates for recovery paths that never materialize a Task. */
+      coordinates: ProtectedTaskScopeMemoryInventoryCoordinates;
+    }>;
 
 export type ProtectedTaskScopeMemoryInventoryResolverDependencies = Readonly<{
   db: DirectDatabase;
@@ -48,21 +65,20 @@ export type ProtectedTaskScopeMemoryInventoryResolverDependencies = Readonly<{
   discoverInventory: typeof discoverTaskScopeMemoryNamespaceInventory;
 }>;
 
-type PinnedScopeCoordinates = Readonly<{
-  taskId: string;
-  taskRunId: string;
-  requesterUserId: string;
-  agentId: string;
-  contentNamespaceId: string;
-  scopeId: string;
-  memoryRoomId: string;
-  originWritableNamespaceId: string;
-  requesterActorId: string;
-}>;
+type PinnedScopeCoordinates = ProtectedTaskScopeMemoryInventoryCoordinates;
 
 function pinScopeCoordinates(
   input: ProtectedTaskScopeMemoryInventoryResolverInput,
 ): PinnedScopeCoordinates {
+  if ("coordinates" in input) {
+    const coordinates = input.coordinates;
+    if (Object.keys(coordinates).sort().join(",")
+        !== "agentId,contentNamespaceId,memoryRoomId,originWritableNamespaceId,requesterActorId,requesterUserId,scopeId,taskId,taskRunId"
+      || !Object.values(coordinates).every(value => UUID.test(value))) {
+      throw new TypeError("Protected Task Scope Memory coordinates are invalid");
+    }
+    return Object.freeze({ ...coordinates });
+  }
   const { occurrence, predispatch } = input;
   const envelope = predispatch.memory.envelope;
   const originWritableNamespaceId = "originWritableNamespaceId" in envelope

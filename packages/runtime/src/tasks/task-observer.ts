@@ -24,8 +24,6 @@ import {
   updateTask,
   type DirectDatabase,
   type CallerFundedRunningTaskRunCursor,
-  type Task,
-  type TaskRun,
 } from "@nautilo/db";
 import type { PolicyResolver } from "@nautilo/trust";
 import { assertCanInvokeAgent } from "@nautilo/trust";
@@ -93,9 +91,13 @@ export interface ProtectedTaskOccurrencePort {
   observeProtectedTaskOccurrence(occurrence: ProtectedTaskOccurrence): Promise<void>;
 }
 
+type ProtectedAwaitingTaskRunForAuthorization = Awaited<
+  ReturnType<typeof listProtectedAwaitingTaskRunsForAuthorization>
+>[number];
+
 function projectProtectedTaskOccurrence(
-  task: Task,
-  run: TaskRun,
+  task: ProtectedAwaitingTaskRunForAuthorization["task"],
+  run: ProtectedAwaitingTaskRunForAuthorization["run"],
 ): ProtectedTaskOccurrence {
   if (
     (task.contentRepresentation !== "dual" && task.contentRepresentation !== "protected")
@@ -179,8 +181,16 @@ export interface TaskObserverDeps {
   /**
    * Optional protected occurrence boundary. Absent by default, leaving the
    * current ordinary Task observer and protected dispatch gate unchanged.
+   * Receives both recovered awaiting runs and newly prepared due occurrences.
    */
   protectedOccurrencePort?: ProtectedTaskOccurrencePort;
+  /**
+   * Optional recovery-only protected occurrence boundary. This observes
+   * already-awaiting runs without enabling the due protected-Task claim path.
+   * When both ports are supplied, recovered runs use this port and newly
+   * prepared runs use `protectedOccurrencePort`.
+   */
+  protectedOccurrenceRecoveryPort?: ProtectedTaskOccurrencePort;
 }
 
 type PreparationWrite = Parameters<typeof recordTaskPreparation>[1];
@@ -256,6 +266,8 @@ export class TaskObserver implements Observer {
   private readonly convergeCreatedRoomCatalog: DispatchTaskRunDeps["convergeCreatedRoomCatalog"];
   private readonly onMaintenance: (() => void | Promise<void>) | undefined;
   private readonly protectedOccurrencePort: ProtectedTaskOccurrencePort | undefined;
+  private readonly protectedOccurrenceRecoveryPort:
+    ProtectedTaskOccurrencePort | undefined;
   private protectedRecoveryAfter: { taskRunId: string } | undefined;
   /**
    * Frozen process-start boundary for caller-funded runs which lost their
@@ -288,6 +300,8 @@ export class TaskObserver implements Observer {
     this.convergeCreatedRoomCatalog = deps.convergeCreatedRoomCatalog;
     this.onMaintenance = deps.onMaintenance;
     this.protectedOccurrencePort = deps.protectedOccurrencePort;
+    this.protectedOccurrenceRecoveryPort =
+      deps.protectedOccurrenceRecoveryPort ?? deps.protectedOccurrencePort;
   }
 
   private resolveGate(): MaintenanceGate {
@@ -638,9 +652,16 @@ export class TaskObserver implements Observer {
       }
     }
 
+    if (this.protectedOccurrenceRecoveryPort) {
+      await this.recoverProtectedOccurrences(
+        this.protectedOccurrenceRecoveryPort,
+      );
+    }
     if (this.protectedOccurrencePort) {
-      await this.recoverProtectedOccurrences();
-      await this.prepareDueProtectedOccurrences(now);
+      await this.prepareDueProtectedOccurrences(
+        now,
+        this.protectedOccurrencePort,
+      );
     }
 
     // M147 (R5) — time-limit watchdog. After the claim/dispatch/recurrence
@@ -652,7 +673,9 @@ export class TaskObserver implements Observer {
   }
 
   /** One keyset page per tick keeps recovery bounded without starving later runs. */
-  private async recoverProtectedOccurrences(): Promise<void> {
+  private async recoverProtectedOccurrences(
+    port: ProtectedTaskOccurrencePort,
+  ): Promise<void> {
     let awaiting: Awaited<ReturnType<typeof listProtectedAwaitingTaskRunsForAuthorization>>;
     try {
       awaiting = await listProtectedAwaitingTaskRunsForAuthorization(
@@ -666,14 +689,21 @@ export class TaskObserver implements Observer {
     }
 
     for (const { task, run } of awaiting) {
-      await this.offerProtectedOccurrence(task, run);
+      await this.offerProtectedOccurrence(
+        port,
+        task,
+        run,
+      );
     }
     this.protectedRecoveryAfter = awaiting.length === this.batch
       ? { taskRunId: awaiting.at(-1)!.run.id }
       : undefined;
   }
 
-  private async prepareDueProtectedOccurrences(now: Date): Promise<void> {
+  private async prepareDueProtectedOccurrences(
+    now: Date,
+    port: ProtectedTaskOccurrencePort,
+  ): Promise<void> {
     let due: Awaited<ReturnType<typeof claimDueProtectedTasks>>;
     try {
       due = await claimDueProtectedTasks(this.db, now, this.batch);
@@ -715,7 +745,11 @@ export class TaskObserver implements Observer {
             : {}),
         });
         if (prepared.status === "prepared") {
-          await this.offerProtectedOccurrence(prepared.task, prepared.run);
+          await this.offerProtectedOccurrence(
+            port,
+            prepared.task,
+            prepared.run,
+          );
         }
       } catch {
         // Preparation is atomic. A successfully prepared occurrence remains
@@ -725,9 +759,13 @@ export class TaskObserver implements Observer {
     }
   }
 
-  private async offerProtectedOccurrence(task: Task, run: TaskRun): Promise<void> {
+  private async offerProtectedOccurrence(
+    port: ProtectedTaskOccurrencePort,
+    task: ProtectedAwaitingTaskRunForAuthorization["task"],
+    run: ProtectedAwaitingTaskRunForAuthorization["run"],
+  ): Promise<void> {
     try {
-      await this.protectedOccurrencePort!.observeProtectedTaskOccurrence(
+      await port.observeProtectedTaskOccurrence(
         projectProtectedTaskOccurrence(task, run),
       );
     } catch {

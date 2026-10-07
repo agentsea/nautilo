@@ -164,7 +164,7 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
     && left.every((value, index) => value === right[index]);
 }
 
-function sameOccurrence(
+export function sameProtectedTaskRuntimeOccurrence(
   left: ProtectedTaskOccurrence,
   right: ProtectedTaskOccurrence,
 ): boolean {
@@ -191,8 +191,8 @@ function sameOccurrence(
     && left.run.startedAt.getTime() === right.run.startedAt.getTime();
 }
 
-function namespaceInventory(
-  plan: ProtectedTaskPredispatchPlan,
+export function protectedTaskRuntimeNamespaceInventory(
+  plan: Pick<ProtectedTaskPredispatchPlan, "memory" | "occurrence">,
   outputDestination: ProtectedTaskRunOutputDestination | null,
   scopeMemory?: TaskScopeMemoryBinding,
 ): Readonly<{
@@ -248,9 +248,9 @@ function namespaceInventory(
   });
 }
 
-function canonicalAuthority(input: Readonly<{
+export function canonicalProtectedTaskRuntimeAuthority(input: Readonly<{
   occurrence: ProtectedTaskOccurrence;
-  inventory: ReturnType<typeof namespaceInventory>;
+  inventory: ReturnType<typeof protectedTaskRuntimeNamespaceInventory>;
   facts: readonly ProtectedTaskRuntimeNamespaceAuthorityFact[];
 }>): Readonly<{
   policyRevision: number;
@@ -375,7 +375,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       throw new TypeError("Protected Task definition coordinates are invalid");
     }
     const prepared = await dependencies.predispatch(occurrence);
-    if (!sameOccurrence(occurrence, prepared.occurrence)) {
+    if (!sameProtectedTaskRuntimeOccurrence(occurrence, prepared.occurrence)) {
       throw new TypeError("Protected Task predispatch substituted its occurrence");
     }
     if (prepared.scheduling.ownerId !== occurrence.task.ownerId
@@ -442,7 +442,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
         throw new TypeError("Protected Task Scope Memory inventory is not exact");
       }
     }
-    const inventory = namespaceInventory(
+    const inventory = protectedTaskRuntimeNamespaceInventory(
       prepared,
       outputDestination,
       scopeMemory,
@@ -467,7 +467,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
           : true)) {
       throw new TypeError("Protected Task source Room authority is unavailable");
     }
-    const authority = canonicalAuthority({
+    const authority = canonicalProtectedTaskRuntimeAuthority({
       occurrence,
       inventory,
       facts: resolvedAuthority.facts,
@@ -578,6 +578,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
         ).toString("base64url"),
         policyRevision: authority.policyRevision,
         ...(scopeMemory === undefined ? {} : { scopeMemory }),
+        ...(widePrimaryWriteNamespaceId === null ? {} : { widePrimaryWriteNamespaceId }),
         namespaces: authority.namespaces,
         domains: authority.domains,
       });
@@ -639,7 +640,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
     }
     // A preparation dependency may perform async route admission, but it may
     // not replace the already-authorized occurrence or its resolved target.
-    if (!sameOccurrence(occurrence, prepared.occurrence)
+    if (!sameProtectedTaskRuntimeOccurrence(occurrence, prepared.occurrence)
       || prepared.scheduling.roomId !== prepared.target.roomId) {
       throw new TypeError("Protected Task execution preparation changed predispatch");
     }
