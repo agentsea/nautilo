@@ -9,17 +9,21 @@ import {
   MEMORY_OBJECT_TYPE,
   commitMemoryMutationV1,
   deriveMemoryCryptoObjectIdV1,
+  encodeMemoryPayloadV1,
   readPreparedTaskRuntimeAgentObjectSnapshot,
   type VerifiedAgentObject,
 } from "@nautilo/lattice-bridge";
+import type { ForegroundMemoryRepairSource } from "@nautilo/lattice-bridge/server";
 import {
   withTaskRuntimeExecutionEvidenceV1,
 } from "../../../lattice-crypto/src/background/task-runtime-execution-evidence-v1.ts";
 import { taskRuntimeAgentObjectSetFixture } from
   "../../../lattice-crypto/tests/helpers/task-runtime-agent-object-set-fixture.ts";
 
-import { createTaskRuntimeDomainMemoryCryptoSession } from
-  "../../src/memory/task-runtime-domain-memory-crypto-session.ts";
+import {
+  createTaskRuntimeDomainMemoryCryptoSession,
+  type TaskRuntimeDomainMemoryCryptoSessionInput,
+} from "../../src/memory/task-runtime-domain-memory-crypto-session.ts";
 
 const NOW = 2_200_000_000_000;
 const SUBJECT_ID = "22000000-0000-4000-8000-000000000001";
@@ -344,6 +348,247 @@ describe("Task Runtime Domain Memory crypto session", () => {
         })).toThrow("does not match execution evidence");
       },
     );
+  });
+
+  test("protects one exact Scope Shadow source through the session object owner", async () => {
+    const base = await taskRuntimeAgentObjectSetFixture(92_604);
+    const controller = new AbortController();
+    const sourceNamespace = base.nativeNamespaces[0]!;
+    const origin = Object.freeze({
+      ...sourceNamespace,
+      namespaceId: NAMESPACE_ID,
+    });
+    const evidenceInput = Object.freeze({
+      ...base.evidence,
+      result: Object.freeze({
+        ...base.evidence.result,
+        namespace: Object.freeze({
+          ...base.evidence.result.namespace,
+          namespaceId: NAMESPACE_ID,
+        }),
+      }),
+      namespaceRequirements: Object.freeze(
+        base.evidence.namespaceRequirements.map((entry, index) =>
+          index === 0
+            ? Object.freeze({ ...entry, namespaceId: NAMESPACE_ID })
+            : entry
+        ),
+      ),
+    });
+    await withTaskRuntimeExecutionEvidenceV1({
+      evidence: evidenceInput,
+      signal: controller.signal,
+      now: () => NOW,
+      execute: async evidence => {
+      const namespaceKey = new Uint8Array(32).fill(0x7a);
+      const namespaceAuthority = Object.freeze({
+        namespaceId: origin.namespaceId,
+        namespaceAccessRevision: origin.accessRevision,
+        namespaceKeyGeneration: origin.keyGeneration,
+        domainId: origin.domainId,
+        domainKeyGeneration: origin.domainKeyGeneration,
+        domainAuthorizationRevision: origin.domainAuthorizationRevision,
+        domainHeadDigest: origin.domainHeadDigest,
+        namespaceHeadDigest: origin.headDigest,
+        namespacePublicationDigest: origin.publicationDigest,
+        namespacePublicationSetDigest: origin.publicationSetDigest,
+        namespaceAudienceFingerprint: origin.audienceFingerprint,
+      });
+      let durable: VerifiedAgentObject | null = null;
+      let readCount = 0;
+      let persistCount = 0;
+      let abortOnRead: AbortController | null = null;
+      const sessionInput: TaskRuntimeDomainMemoryCryptoSessionInput = {
+        subjectUserId: SUBJECT_ID,
+        agentId: evidence.result.signerAgentId,
+        evidence,
+        crypto: base.crypto,
+        entities: {
+          signal: controller.signal,
+          use: async request => ({
+              status: "executed" as const,
+              value: await request.execute({
+                namespaceKey,
+                authority: namespaceAuthority,
+              }),
+            }),
+          useCurrentSet: async request => ({
+            status: "executed" as const,
+            value: await request.execute([{
+              namespaceKey,
+              authority: namespaceAuthority,
+            }]),
+          }),
+        },
+        runtime: base.initialized.runtime,
+        signerPublication: base.initialized.signerPublication,
+        resolveHistoricalSignerPublicationManager: () => base.manager.publicKey,
+        agentAuthorizationRevision: authorizationRevision(7),
+        persist: async request => {
+          persistCount += 1;
+          expect(request.memoryId).toBe(MEMORY_ID);
+          expect(request.contentRevision).toBe(2);
+          expect(request.operationId).toBe("task-scope-memory-repair");
+          const snapshot = readPreparedTaskRuntimeAgentObjectSnapshot(
+            request.prepared,
+            request.evidence,
+          );
+          durable = Object.freeze({
+            objectId: request.prepared.objectId,
+            accessRevision: 0,
+            payloadBytes: snapshot.object.payloadBytes.ciphertext.slice(),
+            namespaceEnvelopes: Object.freeze(
+              snapshot.access.envelopeBytes.map(bytes => {
+                const envelope = decodeNamespaceObjectEnvelopeV2(bytes);
+                return Object.freeze({
+                  namespaceId: envelope.context.namespaceId,
+                  keyGeneration: envelope.context.keyGeneration,
+                  bindingRevisionAtWrap:
+                    envelope.context.bindingRevisionAtWrap,
+                  envelopeBytes: bytes.slice(),
+                });
+              }),
+            ),
+          });
+          return "created" as const;
+        },
+        read: async request => {
+          readCount += 1;
+          expect(request.objectId).toBe(deriveMemoryCryptoObjectIdV1({
+            memoryId: MEMORY_ID,
+            contentRevision: 2,
+          }));
+          expect(request.expectedObjectType).toBe(MEMORY_OBJECT_TYPE);
+          expect(request.expectedNamespaceIds).toEqual([origin.namespaceId]);
+          abortOnRead?.abort();
+          const current = durable;
+          return current === null ? null : Object.freeze({
+            ...current,
+            payloadBytes: current.payloadBytes.slice(),
+            namespaceEnvelopes: Object.freeze(
+              current.namespaceEnvelopes.map(entry => Object.freeze({
+                ...entry,
+                envelopeBytes: entry.envelopeBytes.slice(),
+              })),
+            ),
+          });
+        },
+      };
+      const factory = createTaskRuntimeDomainMemoryCryptoSession({
+        ...sessionInput,
+        scopeBinding: {
+          scopeId: SCOPE_ID,
+          originWritableNamespaceId: origin.namespaceId,
+          readableNamespaceIds: [origin.namespaceId],
+        },
+      });
+      const payload = Object.freeze({
+        formatVersion: 1 as const,
+        type: "preference",
+        content: "Repair only this current Scope origin.",
+      });
+      const plaintextBytes = encodeMemoryPayloadV1(payload);
+      const requestCommitment = new Uint8Array(32).fill(0x68);
+      const originalPlaintext = plaintextBytes.slice();
+      const originalCommitment = requestCommitment.slice();
+      const source = Object.freeze({
+        memory: Object.freeze({
+          id: MEMORY_ID,
+          type: payload.type,
+          content: payload.content,
+          importance: 0.7,
+          tier: 1,
+          createdAt: new Date(NOW),
+        }),
+        representationMode: "ordinary-and-protected" as const,
+        expectedContentRevision: 0,
+        targetContentRevision: 2,
+        existingObjectId: null,
+        expectedAccessRevision: 0,
+        accessNamespaceIds: Object.freeze([origin.namespaceId]),
+        createdAt: NOW,
+        plaintextBytes,
+        requestCommitment,
+      }) satisfies ForegroundMemoryRepairSource;
+
+      const repaired = await factory.protectExactRepair({
+        operationId: "task-scope-memory-repair",
+        source,
+      });
+      expect(repaired).toMatchObject({
+        status: "verified",
+        objectId: deriveMemoryCryptoObjectIdV1({
+          memoryId: MEMORY_ID,
+          contentRevision: 2,
+        }),
+        provenance: "repaired",
+        verification: "authenticated",
+        value: payload,
+      });
+      expect(persistCount).toBe(1);
+      expect(plaintextBytes).toEqual(originalPlaintext);
+      expect(requestCommitment).toEqual(originalCommitment);
+
+      const existingSource = Object.freeze({
+        ...source,
+        existingObjectId: deriveMemoryCryptoObjectIdV1({
+          memoryId: MEMORY_ID,
+          contentRevision: 2,
+        }),
+      });
+      expect(await factory.protectExactRepair({
+        operationId: "task-scope-memory-existing",
+        source: existingSource,
+      })).toMatchObject({
+        status: "verified",
+        provenance: "existing",
+        verification: "independent_parity",
+        value: payload,
+      });
+      expect(persistCount).toBe(1);
+
+      const beforeRejectedReads = readCount;
+      expect((await factory.protectExactRepair({
+        operationId: "task-scope-memory-foreign",
+        source: { ...source, accessNamespaceIds: [OTHER_SCOPE_ID] },
+      })).status).toBe("failed");
+      expect((await factory.protectExactRepair({
+        operationId: "task-scope-memory-forged-object",
+        source: { ...source, existingObjectId: OTHER_SCOPE_ID },
+      })).status).toBe("failed");
+      expect(readCount).toBe(beforeRejectedReads);
+
+      const namespaceFactory = createTaskRuntimeDomainMemoryCryptoSession(
+        sessionInput,
+      );
+      expect((await namespaceFactory.protectExactRepair({
+        operationId: "task-namespace-memory-repair",
+        source,
+      })).status).toBe("failed");
+      expect(readCount).toBe(beforeRejectedReads);
+
+      const preCancelled = new AbortController();
+      preCancelled.abort();
+      expect(await factory.protectExactRepair({
+        operationId: "task-scope-memory-cancelled-before",
+        source: existingSource,
+        signal: preCancelled.signal,
+      })).toMatchObject({ status: "waiting_for_authority" });
+      expect(readCount).toBe(beforeRejectedReads);
+
+      const afterRead = new AbortController();
+      abortOnRead = afterRead;
+      expect(await factory.protectExactRepair({
+        operationId: "task-scope-memory-cancelled-after",
+        source: existingSource,
+        signal: afterRead.signal,
+      })).toMatchObject({ status: "waiting_for_authority" });
+      abortOnRead = null;
+      expect(readCount).toBe(beforeRejectedReads + 1);
+      expect(plaintextBytes).toEqual(originalPlaintext);
+      expect(requestCommitment).toEqual(originalCommitment);
+      },
+    });
   });
 
   test("forwards one frozen Scope binding and keeps Namespace authority separate", async () => {

@@ -3,6 +3,7 @@ import type {
   ResolveHistoricalAgentRuntimeSignerPublicationManager,
 } from "@nautilo/lattice-crypto";
 import {
+  deriveMemoryCryptoObjectIdV1,
   selectLiveEncryptionRepresentationPolicy,
   type EncryptionDataOperationOwner,
   type ProtectedAgentMemoryEmbeddingPort,
@@ -26,6 +27,8 @@ import {
 
 import {
   adoptProtectedTaskScopeMemoryOrigin,
+  reserveProtectedTaskScopeMemoryRepair,
+  attachProtectedTaskScopeMemoryRepair,
   requireHeldProtectedTaskMemoryWriterAuthority,
   withCurrentProtectedTaskMemoryAuthority,
   type CurrentProtectedTaskMemoryPolicy,
@@ -73,6 +76,8 @@ export type ProtectedTaskNativeMemoryRepositoryInput<Value> = Readonly<{
 type Dependencies = Readonly<{
   withCurrentAuthority: typeof withCurrentProtectedTaskMemoryAuthority;
   adoptScopeOrigin: typeof adoptProtectedTaskScopeMemoryOrigin;
+  reserveScopeRepair: typeof reserveProtectedTaskScopeMemoryRepair;
+  attachScopeRepair: typeof attachProtectedTaskScopeMemoryRepair;
   withEntityCrypto: typeof withNativeTaskMemoryEntityCrypto;
   createSession: typeof createTaskRuntimeDomainMemoryCryptoSession;
   createBoundaries: typeof createProtectedTaskMemoryBoundaries;
@@ -96,6 +101,8 @@ type Dependencies = Readonly<{
 const productionDependencies: Dependencies = Object.freeze({
   withCurrentAuthority: withCurrentProtectedTaskMemoryAuthority,
   adoptScopeOrigin: adoptProtectedTaskScopeMemoryOrigin,
+  reserveScopeRepair: reserveProtectedTaskScopeMemoryRepair,
+  attachScopeRepair: attachProtectedTaskScopeMemoryRepair,
   withEntityCrypto: withNativeTaskMemoryEntityCrypto,
   createSession: createTaskRuntimeDomainMemoryCryptoSession,
   createBoundaries: createProtectedTaskMemoryBoundaries,
@@ -345,7 +352,44 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
                 return Object.freeze({ status: "unavailable" as const,
                   reason: "authorization_required" as const });
               }
-              return repairExactCandidate(request);
+              const source = await dependencies.reserveScopeRepair(
+                scopedCurrent, request.selection,
+              );
+              if (source === null) {
+                return Object.freeze({ status: "unavailable" as const,
+                  reason: "authorization_required" as const });
+              }
+              try {
+                const protectedResult = await session.protectExactRepair({
+                  operationId: request.operationId,
+                  source: source.source,
+                  ...(request.signal === undefined ? {} : { signal: request.signal }),
+                });
+                if (protectedResult.status !== "verified") {
+                  return Object.freeze({ status: "unavailable" as const,
+                    reason: protectedResult.status === "waiting_for_authority"
+                      ? "authorization_required" as const
+                      : "integrity_failure" as const });
+                }
+                const attached = await dependencies.attachScopeRepair(
+                  scopedCurrent, source, deriveMemoryCryptoObjectIdV1({
+                    memoryId: source.source.memory.id,
+                    contentRevision: source.source.targetContentRevision,
+                  }),
+                );
+                if (attached === null || attached === "conflict") {
+                  return Object.freeze({ status: "unavailable" as const,
+                    reason: attached === null ? "authorization_required" as const
+                      : "stale_revision" as const });
+                }
+                return Object.freeze({ status: "success" as const, value: {
+                  memoryId: source.source.memory.id,
+                  contentRevision: source.source.targetContentRevision,
+                } });
+              } finally {
+                source.source.plaintextBytes?.fill(0);
+                source.source.requestCommitment.fill(0);
+              }
             },
         fallbackOrdinary,
         signal: entities.signal,

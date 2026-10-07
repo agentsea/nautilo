@@ -42,6 +42,7 @@ import {
   inArray,
   jobs,
   memories,
+  memoryCryptoRevisions,
   memoryNamespaces,
   memoryScopes,
   namespaceDomainKeyBindings,
@@ -156,7 +157,9 @@ import {
 } from "../../src/routes/protected-task-native-memory-repository.ts";
 import {
   adoptProtectedTaskScopeMemoryOrigin,
+  attachProtectedTaskScopeMemoryRepair,
   requireHeldProtectedTaskMemoryWriterAuthority,
+  reserveProtectedTaskScopeMemoryRepair,
   withCurrentProtectedTaskMemoryAuthority,
   type HeldProtectedTaskMemoryAuthority,
 } from "../../src/routes/current-protected-task-memory-authority.ts";
@@ -399,6 +402,7 @@ type BaseFixture = Awaited<ReturnType<typeof createBaseFixture>>;
 async function waitForBlockedContender(
   base: BaseFixture,
   blockerPid: number,
+  failure = "Task cancellation did not reach the writer's product lock",
 ): Promise<void> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
@@ -414,7 +418,7 @@ async function waitForBlockedContender(
     if (activity?.blocked === true) return;
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error("Task cancellation did not reach the writer's product lock");
+  throw new Error(failure);
 }
 
 async function createBaseFixture() {
@@ -1200,6 +1204,7 @@ async function createBaseFixture() {
 }
 
 type ScenarioOptions = Readonly<{
+  contentRepresentation?: "protected" | "dual";
   scopeMemory?: Readonly<{
     binding: TaskScopeMemoryBinding;
     targetRoomId: string;
@@ -1212,6 +1217,7 @@ async function createScenario(
   options: ScenarioOptions = {},
 ) {
   const scopeMemory = options.scopeMemory;
+  const contentRepresentation = options.contentRepresentation ?? "protected";
   const targetRoomId = scopeMemory?.targetRoomId ?? base.roomId;
   const targetNamespace = scopeMemory?.targetNamespace ?? base.namespace;
   const taskId = randomUUID();
@@ -1281,14 +1287,14 @@ async function createScenario(
       requesterHumanId: base.humanActorId,
       anchorNamespaceId: base.namespaceValue,
       cryptoObjectId: inputObjectId,
-      representation: "protected",
+      representation: contentRepresentation,
       requiredNamespaceFingerprint: requiredFingerprint,
       completion: "complete",
       disposition: "mapped",
       cryptoCompletedAt: new Date(NOW),
     });
     await tx.update(tasks).set({
-      contentRepresentation: "protected",
+      contentRepresentation,
       contentNamespaceId: base.namespaceValue,
       contentRevision: 1,
       cryptoObjectId: inputObjectId,
@@ -1330,7 +1336,7 @@ async function createScenario(
       agentId: base.productAgentId,
       callingRoomId: base.roomId,
       scheduleKind: "now",
-      contentRepresentation: "protected",
+      contentRepresentation,
       contentNamespaceId: base.namespaceValue,
       contentRevision: 1,
       cryptoObjectId: inputObjectId,
@@ -1392,6 +1398,14 @@ async function createScenario(
     throw new Error("Task Memory scenario Domain authority is unavailable");
   }
   const scenarioDomain = scenarioDomainAuthority.domains[0]!;
+  const scenarioDomainSecret = Object.freeze({
+    ...scenarioDomain,
+    participantDigest: scenarioDomain.participantDigest.slice(),
+    headDigest: scenarioDomain.headDigest.slice(),
+    activeNamespaceBindingSetDigest:
+      scenarioDomain.activeNamespaceBindingSetDigest.slice(),
+    domainKey: base.domainSecret.domainKey,
+  }) satisfies DomainForegroundSecretEntry;
   const domainRequirements = Object.freeze([Object.freeze({
     ordinal: 0,
     domainId: scenarioDomain.domainId,
@@ -1415,7 +1429,7 @@ async function createScenario(
     outputNamespaceId: base.namespaceValue,
     memoryMode: scopeMemory === undefined ? "namespace" as const : "scope" as const,
     scopeId: scopeMemory?.binding.scopeId ?? null,
-    contentRepresentation: "protected" as const,
+    contentRepresentation,
     contentNamespaceId: base.namespaceValue,
     contentRevision: 1,
     contentObjectId: inputObjectId,
@@ -1764,6 +1778,7 @@ async function createScenario(
       taskRunId,
       memoryObjectId,
       requestId,
+      domainSecret: scenarioDomainSecret,
       execute,
       withAuthority,
       withPreparedWrite,
@@ -2870,6 +2885,501 @@ describePostgres("sealed protected Task Memory object writer", () => {
       throw cleanupError instanceof Error
         ? cleanupError
         : new Error("Task Memory origin adoption cleanup threw a non-Error value", {
+          cause: cleanupError,
+        });
+    }
+  });
+
+  test("repairs and updates one legacy Scope Memory through a genuine Shadow Task", async () => {
+    const base = await createBaseFixture();
+    let testError: unknown;
+    try {
+      await base.admin.update(encryptionTransitionPolicy).set({
+        mode: "shadow_encryption",
+        shadowBehavior: "strict",
+        revision: base.policyRevision,
+        shadowEncryptionStartedAt: new Date(NOW),
+        updatedAt: new Date(NOW + 1),
+      }).where(eq(encryptionTransitionPolicy.id, "server"));
+
+      const scopeId = randomUUID();
+      const legacyMemoryId = randomUUID();
+      const audienceRaceMemoryId = randomUUID();
+      const seedMemoryId = randomUUID();
+      const foreignOriginMemoryId = randomUUID();
+      const legacyContent = `legacy Scope Memory ${legacyMemoryId}`;
+      const audienceRaceContent =
+        `legacy Scope Memory audience race ${audienceRaceMemoryId}`;
+      const savedContent = `${legacyContent} updated`;
+      const selectedVector = new Array<number>(1536).fill(0.25);
+      const seedVector = Array.from(
+        { length: 1536 },
+        (_, index) => index % 2 === 0 ? 0.25 : -0.25,
+      );
+      const foreignVector = new Array<number>(1536).fill(-0.25);
+      const repairObjectId = deriveMemoryCryptoObjectIdV1({
+        memoryId: legacyMemoryId,
+        contentRevision: 1,
+      });
+      const savedObjectId = deriveMemoryCryptoObjectIdV1({
+        memoryId: legacyMemoryId,
+        contentRevision: 2,
+      });
+      const audienceRaceObjectId = deriveMemoryCryptoObjectIdV1({
+        memoryId: audienceRaceMemoryId,
+        contentRevision: 1,
+      });
+      base.scopeIds.add(scopeId);
+      base.memoryIds.add(legacyMemoryId);
+      base.memoryIds.add(audienceRaceMemoryId);
+      base.memoryIds.add(seedMemoryId);
+      base.memoryIds.add(foreignOriginMemoryId);
+      base.objectIds.add(repairObjectId);
+      base.objectIds.add(savedObjectId);
+      base.objectIds.add(audienceRaceObjectId);
+
+      const ordinaryMemory = (
+        id: string,
+        content: string,
+        vector: number[],
+        scopeOriginNamespaceId: string | null = null,
+      ) => ({
+        id,
+        type: "fact",
+        content,
+        importance: 0.7,
+        tier: 1,
+        embedding: vector,
+        embeddingRevision: 0,
+        embeddingProvider: "openai" as const,
+        embeddingModel: "text-embedding-3-small",
+        embeddingDimensions: 1536,
+        embeddingContractVersion: 1,
+        scopeOriginNamespaceId,
+        createdAt: new Date(NOW),
+      });
+      await base.admin.transaction(async tx => {
+        await tx.insert(agentScopes).values({
+          id: scopeId,
+          parentAgentId: base.productAgentId,
+          speakerUserId: base.userId,
+          name: `task-memory-shadow-repair-${scopeId}`,
+        });
+        await tx.insert(memories).values([
+          ordinaryMemory(legacyMemoryId, legacyContent, selectedVector),
+          ordinaryMemory(
+            audienceRaceMemoryId,
+            audienceRaceContent,
+            foreignVector,
+            base.namespaceValue,
+          ),
+          ordinaryMemory(
+            seedMemoryId,
+            `unmodified Scope seed ${seedMemoryId}`,
+            seedVector,
+          ),
+          ordinaryMemory(
+            foreignOriginMemoryId,
+            `unmodified foreign origin ${foreignOriginMemoryId}`,
+            foreignVector,
+            base.seedNamespaceValue,
+          ),
+        ]);
+        await tx.insert(memoryScopes).values([
+          { memoryId: legacyMemoryId, scopeId, origin: "scope" },
+          { memoryId: audienceRaceMemoryId, scopeId, origin: "scope" },
+          { memoryId: seedMemoryId, scopeId, origin: "seed" },
+          { memoryId: foreignOriginMemoryId, scopeId, origin: "scope" },
+        ]);
+        await tx.insert(memoryNamespaces).values({
+          memoryId: seedMemoryId,
+          namespaceId: base.seedNamespaceValue,
+        });
+      });
+
+      const untouchedBefore = await base.admin.select({
+        id: memories.id,
+        type: memories.type,
+        content: memories.content,
+        contentRevision: memories.contentRevision,
+        embeddingRevision: memories.embeddingRevision,
+        cryptoObjectId: memories.cryptoObjectId,
+        cryptoMappingState: memories.cryptoMappingState,
+        cryptoRequiredNamespaceFingerprint:
+          memories.cryptoRequiredNamespaceFingerprint,
+        scopeOriginNamespaceId: memories.scopeOriginNamespaceId,
+      }).from(memories).where(inArray(memories.id, [
+        seedMemoryId,
+        foreignOriginMemoryId,
+      ]));
+      const readableNamespaceIds = Object.freeze([
+        base.namespaceValue,
+        base.seedNamespaceValue,
+      ].sort());
+      const authority = Object.freeze({
+        mode: "scope" as const,
+        subjectUserId: base.userId,
+        agentId: base.productAgentId,
+        scopeId,
+        originWritableNamespaceId: base.namespaceValue,
+      });
+      const scenario = await createScenario(base, {
+        contentRepresentation: "dual",
+        scopeMemory: {
+          binding: Object.freeze({
+            scopeId,
+            memoryRoomId: base.roomId,
+            originWritableNamespaceId: base.namespaceValue,
+            readableNamespaceIds,
+          }),
+          targetRoomId: base.roomId,
+          targetNamespace: base.namespace,
+        },
+      });
+      let fallbackCalls = 0;
+      const result = await scenario.withAuthority(
+        () => NOW + 5,
+        ({ writer }) => withProtectedTaskNativeMemoryRepository({
+          authority,
+          policy: Object.freeze({
+            mode: "shadow_encryption" as const,
+            shadowBehavior: "strict" as const,
+            revision: base.policyRevision,
+          }),
+          current: writer,
+          domains: Object.freeze([scenario.domainSecret]),
+          signer: Object.freeze({
+            agentAuthorizationRevision: 7,
+            runtime: base.runtime.runtime,
+            signerPublication: base.runtime.signerPublication,
+          }),
+          resolveHistoricalSignerPublicationManager: () =>
+            base.currentDevice.signingPublicKey,
+          product: base.product,
+          agentProduct: base.agentProduct,
+          owner: bindEncryptionDataOperationOwner({
+            policy: {
+              resolve: async () => Object.freeze({
+                policy: Object.freeze({
+                  mode: "shadow_encryption" as const,
+                  shadowBehavior: "strict" as const,
+                }),
+                revalidationToken: base.policyRevision,
+              }),
+              revalidate: async token => {
+                if (token !== base.policyRevision) {
+                  throw new TypeError("Task Memory policy token changed");
+                }
+              },
+            },
+          }),
+          embedding: Object.freeze({
+            embed: async () => Object.freeze({
+              status: "success" as const,
+              value: Object.freeze({
+                vector: Object.freeze([...selectedVector]),
+                provider: "openai" as const,
+                canonicalModel: "text-embedding-3-small",
+                dimensions: 1536 as const,
+                contractVersion: 1,
+              }),
+            }),
+          }),
+          repairExactCandidate: async () => {
+            throw new Error("Scope repair must use the native Task owner");
+          },
+          fallbackOrdinary: async () => {
+            fallbackCalls += 1;
+            throw new Error("Strict Shadow must not publish ordinary-only");
+          },
+          execute: repository => repository.save({
+            operationId: `native-task-memory-shadow-save:${randomUUID()}`,
+            authority,
+            type: "fact",
+            content: savedContent,
+            importance: 0.8,
+          }),
+        }),
+      );
+      if (result.status !== "success") {
+        throw new Error(`Shadow Task Memory save failed: ${result.reason}`);
+      }
+      expect(result.value).toMatchObject({
+        id: legacyMemoryId,
+        action: "updated",
+      });
+      expect(fallbackCalls).toBe(0);
+
+      const [saved] = await base.admin.select({
+        type: memories.type,
+        content: memories.content,
+        importance: memories.importance,
+        contentRevision: memories.contentRevision,
+        embeddingRevision: memories.embeddingRevision,
+        cryptoAccessRevision: memories.cryptoAccessRevision,
+        cryptoObjectId: memories.cryptoObjectId,
+        cryptoMappingState: memories.cryptoMappingState,
+        cryptoRequiredNamespaceFingerprint:
+          memories.cryptoRequiredNamespaceFingerprint,
+        scopeOriginNamespaceId: memories.scopeOriginNamespaceId,
+      }).from(memories).where(eq(memories.id, legacyMemoryId));
+      expect(saved).toEqual({
+        type: "fact",
+        content: savedContent,
+        importance: 0.8,
+        contentRevision: 2,
+        embeddingRevision: 2,
+        cryptoAccessRevision: 0,
+        cryptoObjectId: savedObjectId,
+        cryptoMappingState: "verified",
+        cryptoRequiredNamespaceFingerprint:
+          fingerprintRequiredMemoryNamespaces([base.namespaceValue]),
+        scopeOriginNamespaceId: base.namespaceValue,
+      });
+      expect(await base.admin.select({
+        namespaceId: memoryNamespaces.namespaceId,
+      }).from(memoryNamespaces).where(eq(
+        memoryNamespaces.memoryId,
+        legacyMemoryId,
+      ))).toEqual([]);
+      expect(await base.admin.select({
+        namespaceId: objectCryptoNamespaceEnvelopes.namespaceId,
+      }).from(objectCryptoNamespaceEnvelopes).where(inArray(
+        objectCryptoNamespaceEnvelopes.objectId,
+        [repairObjectId, savedObjectId],
+      ))).toEqual([
+        { namespaceId: base.namespaceValue },
+        { namespaceId: base.namespaceValue },
+      ]);
+
+      const revisions = await base.admin.select({
+        contentRevision: memoryCryptoRevisions.contentRevision,
+        cryptoObjectId: memoryCryptoRevisions.cryptoObjectId,
+        completion: memoryCryptoRevisions.completion,
+        disposition: memoryCryptoRevisions.disposition,
+        requiredNamespaceFingerprint:
+          memoryCryptoRevisions.requiredNamespaceFingerprint,
+      }).from(memoryCryptoRevisions).where(eq(
+        memoryCryptoRevisions.memoryId,
+        legacyMemoryId,
+      ));
+      expect(revisions).toHaveLength(2);
+      expect(revisions.find(row => row.contentRevision === 1)).toMatchObject({
+        cryptoObjectId: repairObjectId,
+        completion: "complete",
+        disposition: "superseded",
+        requiredNamespaceFingerprint:
+          fingerprintRequiredMemoryNamespaces([base.namespaceValue]),
+      });
+      expect(revisions.find(row => row.contentRevision === 2)).toMatchObject({
+        cryptoObjectId: savedObjectId,
+        completion: "complete",
+        disposition: "mapped",
+        requiredNamespaceFingerprint:
+          fingerprintRequiredMemoryNamespaces([base.namespaceValue]),
+      });
+      expect(await objectRowCounts(base, repairObjectId)).toEqual({
+        payload: 1,
+        head: 1,
+        manifest: 1,
+        envelope: 1,
+      });
+      expect(await objectRowCounts(base, savedObjectId)).toEqual({
+        payload: 1,
+        head: 1,
+        manifest: 1,
+        envelope: 1,
+      });
+
+      const audienceRace = await scenario.withAuthority(
+        () => NOW + 5,
+        async ({ evidence, writer }) => {
+          const source = await reserveProtectedTaskScopeMemoryRepair(writer, {
+            memoryId: audienceRaceMemoryId,
+            contentRevision: 0,
+            score: 1,
+            repairRequired: true,
+            repair: Object.freeze({
+              id: audienceRaceMemoryId,
+              type: null,
+              importance: 0.7,
+              tier: 1,
+              createdAt: new Date(NOW),
+              score: 1,
+              representation: "structural" as const,
+            }),
+          });
+          if (source === null || source.source.plaintextBytes === null) {
+            throw new Error("Task Scope Memory repair source was unavailable");
+          }
+          let edgeInsert: Promise<"inserted"> | null = null;
+          let attachment: Promise<
+            "attached" | "replayed" | "conflict" | null
+          > | null = null;
+          const edgeInserted = deferred();
+          const releaseEdge = deferred();
+          const observedEdge = observeCanonicalRunner(
+            base.agentProduct.canonicalRunner,
+          );
+          try {
+            const operationId =
+              `task-memory-audience-race:${audienceRaceMemoryId}`;
+            const prepared = prepareTaskRuntimeAgentObject({
+              crypto: base.crypto,
+              evidence,
+              objectId: audienceRaceObjectId,
+              objectType: MEMORY_OBJECT_TYPE,
+              plaintextBytes: source.source.plaintextBytes,
+              createdAt: NOW + 5,
+              namespaceSet: [base.namespace],
+              operationId,
+              runtime: base.runtime.runtime,
+              signerPublication: base.runtime.signerPublication,
+              resolveHistoricalSignerPublicationManager: () =>
+                base.currentDevice.signingPublicKey,
+              agentAuthorizationRevision: 7,
+            });
+            expect(await persistProtectedTaskMemoryObject(writer, {
+              memoryId: audienceRaceMemoryId,
+              contentRevision: 1,
+              operationId,
+              prepared,
+            })).toBe("created");
+
+            edgeInsert = observedEdge.runner.transaction(
+              async (tx) => {
+                await tx.insert(memoryNamespaces).values({
+                  memoryId: audienceRaceMemoryId,
+                  namespaceId: base.seedNamespaceValue,
+                });
+                edgeInserted.resolve();
+                await releaseEdge.promise;
+                return "inserted" as const;
+              },
+              { isolationLevel: "read committed" },
+            );
+            const edgeAdmission = await Promise.race([
+              edgeInserted.promise.then(() => "entered" as const),
+              edgeInsert.then(() => "completed" as const),
+            ]);
+            if (edgeAdmission !== "entered") {
+              throw new Error("Scope audience edge transaction ended before its gate");
+            }
+            attachment = attachProtectedTaskScopeMemoryRepair(
+              writer,
+              source,
+              audienceRaceObjectId,
+            );
+            await waitForBlockedContender(
+              base,
+              await observedEdge.pid,
+              "Task Scope repair attachment did not block behind its audience insert",
+            );
+            releaseEdge.resolve();
+            const [edgeResult, attachmentResult] = await Promise.all([
+              edgeInsert,
+              attachment,
+            ]);
+            return Object.freeze({ edgeResult, attachmentResult });
+          } catch (error) {
+            releaseEdge.resolve();
+            await Promise.allSettled([
+              ...(edgeInsert === null ? [] : [edgeInsert]),
+              ...(attachment === null ? [] : [attachment]),
+            ]);
+            throw error;
+          } finally {
+            source.source.plaintextBytes.fill(0);
+            source.source.requestCommitment.fill(0);
+          }
+        },
+      );
+      expect(audienceRace).toEqual({
+        edgeResult: "inserted",
+        attachmentResult: "conflict",
+      });
+      expect(await base.admin.select({
+        namespaceId: memoryNamespaces.namespaceId,
+      }).from(memoryNamespaces).where(eq(
+        memoryNamespaces.memoryId,
+        audienceRaceMemoryId,
+      ))).toEqual([{ namespaceId: base.seedNamespaceValue }]);
+      expect(await base.admin.select({
+        contentRevision: memories.contentRevision,
+        embeddingRevision: memories.embeddingRevision,
+        cryptoObjectId: memories.cryptoObjectId,
+        cryptoMappingState: memories.cryptoMappingState,
+        cryptoRequiredNamespaceFingerprint:
+          memories.cryptoRequiredNamespaceFingerprint,
+      }).from(memories).where(eq(
+        memories.id,
+        audienceRaceMemoryId,
+      ))).toEqual([{
+        contentRevision: 0,
+        embeddingRevision: 0,
+        cryptoObjectId: null,
+        cryptoMappingState: "unmapped",
+        cryptoRequiredNamespaceFingerprint: null,
+      }]);
+      expect(await base.admin.select({
+        completion: memoryCryptoRevisions.completion,
+        disposition: memoryCryptoRevisions.disposition,
+      }).from(memoryCryptoRevisions).where(eq(
+        memoryCryptoRevisions.memoryId,
+        audienceRaceMemoryId,
+      ))).toEqual([{
+        completion: "pending",
+        disposition: "active",
+      }]);
+      expect(await objectRowCounts(base, audienceRaceObjectId)).toEqual({
+        payload: 1,
+        head: 1,
+        manifest: 1,
+        envelope: 1,
+      });
+
+      const untouchedAfter = await base.admin.select({
+        id: memories.id,
+        type: memories.type,
+        content: memories.content,
+        contentRevision: memories.contentRevision,
+        embeddingRevision: memories.embeddingRevision,
+        cryptoObjectId: memories.cryptoObjectId,
+        cryptoMappingState: memories.cryptoMappingState,
+        cryptoRequiredNamespaceFingerprint:
+          memories.cryptoRequiredNamespaceFingerprint,
+        scopeOriginNamespaceId: memories.scopeOriginNamespaceId,
+      }).from(memories).where(inArray(memories.id, [
+        seedMemoryId,
+        foreignOriginMemoryId,
+      ]));
+      expect(untouchedAfter).toEqual(untouchedBefore);
+    } catch (error) {
+      testError = error;
+    }
+    let cleanupError: unknown;
+    try {
+      await base.cleanup();
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (testError !== undefined && cleanupError !== undefined) {
+      throw new AggregateError(
+        [testError, cleanupError],
+        "Shadow Task Memory repair test and cleanup both failed",
+      );
+    }
+    if (testError !== undefined) {
+      throw testError instanceof Error
+        ? testError
+        : new Error("Shadow Task Memory repair threw a non-Error value", {
+          cause: testError,
+        });
+    }
+    if (cleanupError !== undefined) {
+      throw cleanupError instanceof Error
+        ? cleanupError
+        : new Error("Shadow Task Memory repair cleanup threw a non-Error value", {
           cause: cleanupError,
         });
     }

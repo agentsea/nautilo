@@ -3,6 +3,11 @@ import type {
   ProtectedAgentMemoryRepository,
   ProtectedMemoryAuthority,
 } from "@nautilo/lattice-bridge";
+import { deriveMemoryCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+import type {
+  ForegroundMemoryRepairSource,
+  TaskScopeMemoryRepairSource,
+} from "@nautilo/lattice-bridge/server";
 
 import {
   withProtectedTaskNativeMemoryRepository,
@@ -20,6 +25,9 @@ const USER = "11111111-1111-4111-8111-111111111111";
 const AGENT = "22222222-2222-4222-8222-222222222222";
 const NAMESPACE = "33333333-3333-4333-8333-333333333333";
 const OTHER_NAMESPACE = "44444444-4444-4444-8444-444444444444";
+const SCOPE = "55555555-5555-4555-8555-555555555555";
+const MEMORY_ROOM = "66666666-6666-4666-8666-666666666666";
+const MEMORY = "77777777-7777-4777-8777-777777777777";
 
 const authority = Object.freeze({
   mode: "namespace" as const,
@@ -128,6 +136,10 @@ function assemblyOverrides(
         session,
         completion,
         readPreparedPayload,
+        protectExactRepair: async () => Object.freeze({
+          status: "failed" as const,
+          reason: "test repair is unavailable",
+        }),
       }) as Session;
     },
     createBoundaries: boundaryInput => {
@@ -161,6 +173,151 @@ function assemblyOverrides(
   } as Overrides;
 }
 
+type RepairExactCandidate = Parameters<
+  Dependency<"createRepository">
+>[0]["repairExactCandidate"];
+type RepairRequest = Parameters<RepairExactCandidate>[0];
+type RepairResult = Awaited<ReturnType<RepairExactCandidate>>;
+type ProtectExactRepair = ReturnType<
+  Dependency<"createSession">
+>["protectExactRepair"];
+
+const scopeAuthority = Object.freeze({
+  mode: "scope" as const,
+  subjectUserId: USER,
+  agentId: AGENT,
+  scopeId: SCOPE,
+  originWritableNamespaceId: NAMESPACE,
+});
+
+function scopeFixture(
+  mode: "shadow_encryption" | "encrypted_only",
+): ProtectedTaskNativeMemoryRepositoryInput<string> {
+  const base = fixture(mode);
+  return {
+    ...base,
+    authority: scopeAuthority,
+    current: {
+      ...base.current,
+      scopeMemory: {
+        targetRoomId: MEMORY_ROOM,
+        workIdentity: "bound work",
+        binding: {
+          scopeId: SCOPE,
+          memoryRoomId: MEMORY_ROOM,
+          originWritableNamespaceId: NAMESPACE,
+          readableNamespaceIds: [NAMESPACE, OTHER_NAMESPACE],
+        },
+      },
+    },
+  };
+}
+
+function repairRequest(): RepairRequest {
+  return {
+    operationId: "task-scope-memory-repair",
+    authority: scopeAuthority,
+    selection: {
+      memoryId: MEMORY,
+      contentRevision: 0,
+      score: 0.95,
+      repairRequired: true,
+      repair: {
+        id: MEMORY,
+        type: null,
+        importance: 0.8,
+        tier: 1,
+        createdAt: new Date(1_700_000_000_000),
+        score: 0.95,
+        representation: "structural",
+      },
+    },
+  };
+}
+
+function reservedRepairSource(): Readonly<{
+  reservation: TaskScopeMemoryRepairSource;
+  plaintextBytes: Uint8Array;
+  requestCommitment: Uint8Array;
+}> {
+  const plaintextBytes = new Uint8Array([11, 22, 33, 44]);
+  const requestCommitment = new Uint8Array(32).fill(55);
+  const source = Object.freeze({
+    memory: Object.freeze({
+      id: MEMORY,
+      type: "fact",
+      content: "a retained ordinary body",
+      importance: 0.8,
+      tier: 1,
+      createdAt: new Date(1_700_000_000_000),
+    }),
+    representationMode: "ordinary-and-protected" as const,
+    expectedContentRevision: 0,
+    targetContentRevision: 2,
+    existingObjectId: null,
+    expectedAccessRevision: 0,
+    accessNamespaceIds: Object.freeze([NAMESPACE]),
+    createdAt: 1_700_000_000_000,
+    plaintextBytes,
+    requestCommitment,
+  }) satisfies ForegroundMemoryRepairSource;
+  return Object.freeze({
+    reservation: Object.freeze({
+      source,
+      scopeId: SCOPE,
+      expectedScopeOriginNamespaceId: NAMESPACE,
+      expectedEmbeddingRevision: 0,
+    }),
+    plaintextBytes,
+    requestCommitment,
+  });
+}
+
+async function invokeScopeRepair(input: Readonly<{
+  adopt: Dependency<"adoptScopeOrigin">;
+  reserve: Dependency<"reserveScopeRepair">;
+  protect: ProtectExactRepair;
+  attach: Dependency<"attachScopeRepair">;
+}>): Promise<Readonly<{ result: RepairResult; delegated: number }>> {
+  const base = scopeFixture("shadow_encryption");
+  let captured: RepairExactCandidate | undefined;
+  let result: RepairResult | undefined;
+  let delegated = 0;
+  const repositoryInput = {
+    ...base,
+    repairExactCandidate: async () => {
+      delegated += 1;
+      return Object.freeze({
+        status: "unavailable" as const,
+        reason: "integrity_failure" as const,
+      });
+    },
+    execute: async () => {
+      result = await captured!(repairRequest());
+      return "assembled";
+    },
+  };
+  const overrides = assemblyOverrides(repositoryInput, []);
+  const createSession = overrides.createSession!;
+  const createRepository = overrides.createRepository!;
+  await withProtectedTaskNativeMemoryRepository(repositoryInput, {
+    ...overrides,
+    adoptScopeOrigin: input.adopt,
+    reserveScopeRepair: input.reserve,
+    attachScopeRepair: input.attach,
+    createSession: request => ({
+      ...createSession(request),
+      protectExactRepair: input.protect,
+    }),
+    createRepository: request => {
+      captured = request.repairExactCandidate;
+      return createRepository(request);
+    },
+  });
+  if (result === undefined) throw new Error("Scope repair was not invoked");
+  return Object.freeze({ result, delegated });
+}
+
 describe("protected native Task Memory repository", () => {
   for (const mode of ["encrypted_only", "shadow_encryption"] as const) {
     test(`assembles one callback-scoped ${mode} repository`, async () => {
@@ -192,80 +349,430 @@ describe("protected native Task Memory repository", () => {
   }
 
   for (const mode of ["shadow_encryption", "encrypted_only"] as const) {
-  test(`assembles Scope ${mode} reads and crypto from the same copied inventory`, async () => {
-    const base = fixture(mode);
-    const scopeId = "55555555-5555-4555-8555-555555555555";
-    const memoryRoomId = "66666666-6666-4666-8666-666666666666";
-    const readable = [NAMESPACE, OTHER_NAMESPACE];
-    const scopeAuthority = { mode: "scope" as const, subjectUserId: USER,
-      agentId: AGENT, scopeId, originWritableNamespaceId: NAMESPACE };
-    let repairRequest: Parameters<Dependency<"createRepository">>[0]["repairExactCandidate"] | undefined;
-    let adopted: "adopted" | "stale" = "stale";
-    let repaired = 0;
-    let adoptions = 0;
-    const input = { ...base, authority: scopeAuthority,
-      repairExactCandidate: async () => { repaired++; return { status: "success" as const, value: { memoryId: "77777777-7777-4777-8777-777777777777", contentRevision: 1 } }; },
+    test(`assembles Scope ${mode} reads and crypto from the same copied inventory`, async () => {
+      const base = scopeFixture(mode);
+      const readable = [NAMESPACE, OTHER_NAMESPACE];
+      const input = {
+        ...base,
+        current: {
+          ...base.current,
+          scopeMemory: {
+            ...base.current.scopeMemory!,
+            binding: {
+              ...base.current.scopeMemory!.binding,
+              readableNamespaceIds: readable,
+            },
+          },
+        },
+      };
+      const events: string[] = [];
+      const overrides = assemblyOverrides(input, events);
+      const session = overrides.createSession!;
+      const repository = overrides.createRepository!;
+      const product = overrides.createProduct!;
+      const result = await withProtectedTaskNativeMemoryRepository(input, {
+        ...overrides,
+        withCurrentAuthority: (async (_, use) => {
+          readable.pop();
+          return use(held(input));
+        }) as Dependency<"withCurrentAuthority">,
+        createSession: request => {
+          expect(request.scopeBinding).toEqual({
+            scopeId: SCOPE,
+            originWritableNamespaceId: NAMESPACE,
+            readableNamespaceIds: [NAMESPACE, OTHER_NAMESPACE],
+          });
+          return session(request);
+        },
+        createBoundaries: request => ({
+          authority: request.authority,
+          policy: input.policy,
+          publication: {},
+          read: {},
+        }) as ReturnType<Dependency<"createBoundaries">>,
+        createProduct: request => {
+          expect(request.readableNamespaceIds).toEqual([
+            NAMESPACE,
+            OTHER_NAMESPACE,
+          ]);
+          return product(request);
+        },
+        createRepository: request => {
+          expect(request.read.binding).toEqual({
+            mode: "scope",
+            authority: scopeAuthority,
+            readableNamespaceIds: [NAMESPACE, OTHER_NAMESPACE],
+            coordinates: {
+              taskId: input.current.occurrence.task.id,
+              requesterUserId: USER,
+              agentId: AGENT,
+              scopeId: SCOPE,
+              memoryRoomId: MEMORY_ROOM,
+              originWritableNamespaceId: NAMESPACE,
+            },
+          });
+          return repository(request);
+        },
+      });
+      expect(result).toBe("assembled");
+      await Promise.resolve(expect(
+        withProtectedTaskNativeMemoryRepository({
+          ...input,
+          current: fixture(mode).current,
+        }, overrides),
+      ).rejects.toThrow("Scope binding is unavailable"));
+    });
+  }
+
+  test("keeps Namespace repair delegated to the supplied callback", async () => {
+    const base = fixture("shadow_encryption");
+    let delegated = 0;
+    let captured: RepairExactCandidate | undefined;
+    const input = {
+      ...base,
+      repairExactCandidate: async () => {
+        delegated += 1;
+        return Object.freeze({
+          status: "success" as const,
+          value: Object.freeze({ memoryId: MEMORY, contentRevision: 2 }),
+        });
+      },
       execute: async () => {
-        const request = { operationId: "repair", authority: scopeAuthority,
-          selection: { memoryId: "77777777-7777-4777-8777-777777777777" },
-        } as Parameters<NonNullable<typeof repairRequest>>[0];
-        expect((await repairRequest!(request)).status).toBe("unavailable");
-        expect(repaired).toBe(0);
-        if (mode === "encrypted_only") {
-          expect(adoptions).toBe(0);
-          return "assembled";
-        }
-        adopted = "adopted";
-        expect((await repairRequest!(request)).status).toBe("success");
-        expect(repaired).toBe(1);
+        const result = await captured!(repairRequest());
+        expect(result).toMatchObject({ status: "success" });
         return "assembled";
       },
-      current: { ...base.current, scopeMemory: { targetRoomId: memoryRoomId, workIdentity: "bound work",
-        binding: { scopeId, memoryRoomId, originWritableNamespaceId: NAMESPACE,
-          readableNamespaceIds: readable } } } };
-    const events: string[] = [];
-    const overrides = assemblyOverrides(input, events);
-    const session = overrides.createSession!;
+    };
+    const overrides = assemblyOverrides(input, []);
     const repository = overrides.createRepository!;
-    const product = overrides.createProduct!;
-    const result = await withProtectedTaskNativeMemoryRepository(input, {
+    await withProtectedTaskNativeMemoryRepository(input, {
       ...overrides,
-      withCurrentAuthority: (async (_, use) => {
-        readable.pop();
-        return use(held(input));
-      }) as Dependency<"withCurrentAuthority">,
-      adoptScopeOrigin: async () => { adoptions++; return adopted; },
-      createSession: request => {
-        expect(request.scopeBinding).toEqual({ scopeId,
-          originWritableNamespaceId: NAMESPACE,
-          readableNamespaceIds: [NAMESPACE, OTHER_NAMESPACE] });
-        return session(request);
-      },
-      createBoundaries: request => ({ authority: request.authority,
-        policy: input.policy, publication: {}, read: {},
-      }) as ReturnType<Dependency<"createBoundaries">>,
-      createProduct: request => {
-        expect(request.readableNamespaceIds).toEqual([NAMESPACE, OTHER_NAMESPACE]);
-        return product(request);
-      },
       createRepository: request => {
-        repairRequest = request.repairExactCandidate;
-        expect(request.read.binding).toEqual({ mode: "scope", authority: scopeAuthority,
-          readableNamespaceIds: [NAMESPACE, OTHER_NAMESPACE], coordinates: {
-            taskId: input.current.occurrence.task.id, requesterUserId: USER,
-            agentId: AGENT, scopeId, memoryRoomId,
-            originWritableNamespaceId: NAMESPACE,
-          } });
+        captured = request.repairExactCandidate;
         return repository(request);
       },
+      adoptScopeOrigin: async () => {
+        throw new Error("Namespace repair must not adopt a Scope origin");
+      },
+      reserveScopeRepair: async () => {
+        throw new Error("Namespace repair must not reserve a Scope repair");
+      },
+      attachScopeRepair: async () => {
+        throw new Error("Namespace repair must not attach a Scope repair");
+      },
     });
-    expect(result).toBe("assembled");
-    let rejected = false;
-    try { await withProtectedTaskNativeMemoryRepository({ ...input,
-      current: base.current }, overrides); } catch { rejected = true; }
-    expect(rejected).toBeTrue();
+    expect(delegated).toBe(1);
   });
+
+  test("blocks Full Scope repair before adoption, reservation, protection, or attachment", async () => {
+    const base = scopeFixture("encrypted_only");
+    const calls = { delegated: 0, adopt: 0, reserve: 0, protect: 0, attach: 0 };
+    let captured: RepairExactCandidate | undefined;
+    const input = {
+      ...base,
+      repairExactCandidate: async () => {
+        calls.delegated += 1;
+        return Object.freeze({
+          status: "success" as const,
+          value: Object.freeze({ memoryId: MEMORY, contentRevision: 2 }),
+        });
+      },
+      execute: async () => {
+        expect(await captured!(repairRequest())).toEqual({
+          status: "unavailable",
+          reason: "encryption_pending",
+        });
+        return "assembled";
+      },
+    };
+    const overrides = assemblyOverrides(input, []);
+    const createSession = overrides.createSession!;
+    const createRepository = overrides.createRepository!;
+    await withProtectedTaskNativeMemoryRepository(input, {
+      ...overrides,
+      adoptScopeOrigin: async () => {
+        calls.adopt += 1;
+        return "adopted";
+      },
+      reserveScopeRepair: async () => {
+        calls.reserve += 1;
+        return reservedRepairSource().reservation;
+      },
+      attachScopeRepair: async () => {
+        calls.attach += 1;
+        return "attached";
+      },
+      createSession: request => ({
+        ...createSession(request),
+        protectExactRepair: async () => {
+          calls.protect += 1;
+          return Object.freeze({
+            status: "failed" as const,
+            reason: "must not protect",
+          });
+        },
+      }),
+      createRepository: request => {
+        captured = request.repairExactCandidate;
+        return createRepository(request);
+      },
+    });
+    expect(calls).toEqual({
+      delegated: 0,
+      adopt: 0,
+      reserve: 0,
+      protect: 0,
+      attach: 0,
+    });
+  });
+
+  test("repairs one Shadow Scope source in order and wipes it only after attachment", async () => {
+    const base = scopeFixture("shadow_encryption");
+    const reserved = reservedRepairSource();
+    const originalPlaintext = reserved.plaintextBytes.slice();
+    const originalCommitment = reserved.requestCommitment.slice();
+    const order: string[] = [];
+    let delegated = 0;
+    let captured: RepairExactCandidate | undefined;
+    const input = {
+      ...base,
+      repairExactCandidate: async () => {
+        delegated += 1;
+        return Object.freeze({ status: "unavailable" as const,
+          reason: "integrity_failure" as const });
+      },
+      execute: async () => {
+        const result = await captured!(repairRequest());
+        expect(result).toEqual({
+          status: "success",
+          value: { memoryId: MEMORY, contentRevision: 2 },
+        });
+        return "assembled";
+      },
+    };
+    const overrides = assemblyOverrides(input, []);
+    const createSession = overrides.createSession!;
+    const createRepository = overrides.createRepository!;
+    await withProtectedTaskNativeMemoryRepository(input, {
+      ...overrides,
+      adoptScopeOrigin: async (_, memoryId) => {
+        order.push("adopt");
+        expect(memoryId).toBe(MEMORY);
+        return "adopted";
+      },
+      reserveScopeRepair: async (_, selection) => {
+        order.push("reserve");
+        expect(selection).toEqual(repairRequest().selection);
+        return reserved.reservation;
+      },
+      createSession: request => ({
+        ...createSession(request),
+        protectExactRepair: async repair => {
+          order.push("protect");
+          expect(repair.operationId).toBe("task-scope-memory-repair");
+          expect(repair.source).toBe(reserved.reservation.source);
+          expect(reserved.plaintextBytes).toEqual(originalPlaintext);
+          expect(reserved.requestCommitment).toEqual(originalCommitment);
+          return Object.freeze({
+            status: "verified" as const,
+            objectId: deriveMemoryCryptoObjectIdV1({
+              memoryId: MEMORY,
+              contentRevision: 2,
+            }),
+            provenance: "repaired" as const,
+            verification: "authenticated" as const,
+            value: Object.freeze({
+              formatVersion: 1 as const,
+              type: "fact",
+              content: "a retained ordinary body",
+            }),
+          });
+        },
+      }),
+      attachScopeRepair: async (_, source, objectId) => {
+        order.push("attach");
+        expect(source).toBe(reserved.reservation);
+        expect(objectId).toBe(deriveMemoryCryptoObjectIdV1({
+          memoryId: MEMORY,
+          contentRevision: 2,
+        }));
+        expect(reserved.plaintextBytes).toEqual(originalPlaintext);
+        expect(reserved.requestCommitment).toEqual(originalCommitment);
+        return "attached";
+      },
+      createRepository: request => {
+        captured = request.repairExactCandidate;
+        return createRepository(request);
+      },
+    });
+    expect(order).toEqual(["adopt", "reserve", "protect", "attach"]);
+    expect(delegated).toBe(0);
+    expect(reserved.plaintextBytes).toEqual(new Uint8Array(4));
+    expect(reserved.requestCommitment).toEqual(new Uint8Array(32));
+  });
+
+  test("stops a stale Scope origin before reservation or crypto", async () => {
+    const calls = { adopt: 0, reserve: 0, protect: 0, attach: 0 };
+    const observed = await invokeScopeRepair({
+      adopt: async () => {
+        calls.adopt += 1;
+        return "stale";
+      },
+      reserve: async () => {
+        calls.reserve += 1;
+        return reservedRepairSource().reservation;
+      },
+      protect: async () => {
+        calls.protect += 1;
+        return Object.freeze({
+          status: "failed" as const,
+          reason: "must not protect",
+        });
+      },
+      attach: async () => {
+        calls.attach += 1;
+        return "attached";
+      },
+    });
+    expect(observed.result).toEqual({
+      status: "unavailable",
+      reason: "authorization_required",
+    });
+    expect(observed.delegated).toBe(0);
+    expect(calls).toEqual({ adopt: 1, reserve: 0, protect: 0, attach: 0 });
+  });
+
+  test("stops a failed Scope reservation before crypto or attachment", async () => {
+    const calls = { adopt: 0, reserve: 0, protect: 0, attach: 0 };
+    const observed = await invokeScopeRepair({
+      adopt: async () => {
+        calls.adopt += 1;
+        return "replayed";
+      },
+      reserve: async () => {
+        calls.reserve += 1;
+        return null;
+      },
+      protect: async () => {
+        calls.protect += 1;
+        return Object.freeze({
+          status: "failed" as const,
+          reason: "must not protect",
+        });
+      },
+      attach: async () => {
+        calls.attach += 1;
+        return "attached";
+      },
+    });
+    expect(observed.result).toEqual({
+      status: "unavailable",
+      reason: "authorization_required",
+    });
+    expect(observed.delegated).toBe(0);
+    expect(calls).toEqual({ adopt: 1, reserve: 1, protect: 0, attach: 0 });
+  });
+
+  for (const protection of [
+    Object.freeze({
+      status: "waiting_for_authority" as const,
+      reason: "authorization_cancelled",
+      expectedReason: "authorization_required" as const,
+    }),
+    Object.freeze({
+      status: "failed" as const,
+      reason: "invalid repair proof",
+      expectedReason: "integrity_failure" as const,
+    }),
+  ]) {
+    test(`wipes a Scope source after ${protection.status} without attachment`, async () => {
+      const reserved = reservedRepairSource();
+      const originalPlaintext = reserved.plaintextBytes.slice();
+      const originalCommitment = reserved.requestCommitment.slice();
+      const calls = { adopt: 0, reserve: 0, protect: 0, attach: 0 };
+      const observed = await invokeScopeRepair({
+        adopt: async () => {
+          calls.adopt += 1;
+          return "adopted";
+        },
+        reserve: async () => {
+          calls.reserve += 1;
+          return reserved.reservation;
+        },
+        protect: async () => {
+          calls.protect += 1;
+          expect(reserved.plaintextBytes).toEqual(originalPlaintext);
+          expect(reserved.requestCommitment).toEqual(originalCommitment);
+          return Object.freeze({
+            status: protection.status,
+            reason: protection.reason,
+          });
+        },
+        attach: async () => {
+          calls.attach += 1;
+          return "attached";
+        },
+      });
+      expect(observed.result).toEqual({
+        status: "unavailable",
+        reason: protection.expectedReason,
+      });
+      expect(observed.delegated).toBe(0);
+      expect(calls).toEqual({ adopt: 1, reserve: 1, protect: 1, attach: 0 });
+      expect(reserved.plaintextBytes).toEqual(new Uint8Array(4));
+      expect(reserved.requestCommitment).toEqual(new Uint8Array(32));
+    });
   }
+
+  test("reports a conflicting Scope attachment without retrying and then wipes the source", async () => {
+    const reserved = reservedRepairSource();
+    const originalPlaintext = reserved.plaintextBytes.slice();
+    const originalCommitment = reserved.requestCommitment.slice();
+    const calls = { adopt: 0, reserve: 0, protect: 0, attach: 0 };
+    const observed = await invokeScopeRepair({
+      adopt: async () => {
+        calls.adopt += 1;
+        return "adopted";
+      },
+      reserve: async () => {
+        calls.reserve += 1;
+        return reserved.reservation;
+      },
+      protect: async () => {
+        calls.protect += 1;
+        expect(reserved.plaintextBytes).toEqual(originalPlaintext);
+        expect(reserved.requestCommitment).toEqual(originalCommitment);
+        return Object.freeze({
+          status: "verified" as const,
+          objectId: deriveMemoryCryptoObjectIdV1({
+            memoryId: MEMORY,
+            contentRevision: 2,
+          }),
+          provenance: "repaired" as const,
+          verification: "authenticated" as const,
+          value: Object.freeze({
+            formatVersion: 1 as const,
+            type: "fact",
+            content: "a retained ordinary body",
+          }),
+        });
+      },
+      attach: async () => {
+        calls.attach += 1;
+        expect(reserved.plaintextBytes).toEqual(originalPlaintext);
+        expect(reserved.requestCommitment).toEqual(originalCommitment);
+        return "conflict";
+      },
+    });
+    expect(observed.result).toEqual({
+      status: "unavailable",
+      reason: "stale_revision",
+    });
+    expect(observed.delegated).toBe(0);
+    expect(calls).toEqual({ adopt: 1, reserve: 1, protect: 1, attach: 1 });
+    expect(reserved.plaintextBytes).toEqual(new Uint8Array(4));
+    expect(reserved.requestCommitment).toEqual(new Uint8Array(32));
+  });
 
   test("rejects identity substitution before native custody", async () => {
     const input = fixture();

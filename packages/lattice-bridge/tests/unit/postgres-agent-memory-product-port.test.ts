@@ -171,6 +171,22 @@ function candidateRow(
   };
 }
 
+function legacyScopeCandidateRow(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return candidateRow([NAMESPACE_A], {
+    content_revision: 0,
+    crypto_object_id: null,
+    crypto_mapping_state: "unmapped",
+    crypto_required_namespace_fingerprint: null,
+    scope_origin_namespace_id: null,
+    ordinary_type_present: true,
+    ordinary_content_present: true,
+    has_known_ordinary_namespace: false,
+    ...overrides,
+  });
+}
+
 function selectedCandidate() {
   return Object.freeze({
     memoryId: MEMORY_ID,
@@ -369,7 +385,164 @@ describe("Postgres foreground Agent Memory product port", () => {
     expect(candidateQuery.statement).not.toContain('from "memory_scopes"');
     expect(candidateQuery.parameters).toContain(NAMESPACE_A);
     expect(candidateQuery.parameters).not.toContain(null);
+    expect(normalizedSql(candidateQuery.statement)).toContain(
+      "memories.content_revision >",
+    );
+    expect(normalizedSql(candidateQuery.statement)).not.toContain(
+      "ordinary_type_present",
+    );
     connection.assertExhausted();
+  });
+
+  test("selects only a strict current-Scope legacy ordinary candidate for adoption", async () => {
+    for (const contentRevision of [0, 1]) {
+      const connection = new ScriptedConnection([
+        [{ current_user: "nautilo_agent", session_user: "nautilo_agent" }],
+        [identity],
+        [legacyScopeCandidateRow({ content_revision: contentRevision })],
+      ]);
+      const { port } = await createPort(connection);
+
+      expect(await port.selectSaveCandidate({
+        authority: scopeAuthority,
+        embedding,
+      })).toEqual({
+        status: "success",
+        value: {
+          memoryId: MEMORY_ID,
+          contentRevision,
+          score: 0.94,
+          repairRequired: true,
+          repair: {
+            representation: "structural",
+            id: MEMORY_ID,
+            type: null,
+            importance: 0.6,
+            tier: 1,
+            createdAt: CREATED_AT,
+            score: 0.94,
+          },
+        },
+      });
+
+      const candidateSql = normalizedSql(connection.queries[2]!.statement);
+      expect(candidateSql).toContain("from memory_scopes");
+      expect(candidateSql).toContain("scope_id =");
+      expect(candidateSql).toContain("origin =");
+      expect(candidateSql).toContain("content_revision >=");
+      expect(candidateSql).toContain("crypto_object_id is null");
+      expect(candidateSql).toContain("crypto_mapping_state =");
+      expect(candidateSql).toContain("crypto_required_namespace_fingerprint is null");
+      expect(candidateSql).toContain("scope_origin_namespace_id is null");
+      expect(candidateSql).toContain("type is not null");
+      expect(candidateSql).toContain("content is not null");
+      expect(candidateSql).toContain("not exists");
+      expect(candidateSql).toContain("from memory_namespaces");
+      expect(candidateSql).toContain(
+        "memories.embedding_revision = memories.content_revision",
+      );
+      expect(candidateSql).toContain("embedding is not null");
+      expect(connection.queries[2]!.parameters).toContain(scopeAuthority.scopeId);
+      expect(connection.queries[2]!.parameters).toContain(embedding.provider);
+      expect(connection.queries[2]!.parameters).toContain(embedding.canonicalModel);
+      expect(connection.queries[2]!.parameters).toContain(embedding.dimensions);
+      expect(connection.queries[2]!.parameters).toContain(embedding.contractVersion);
+      connection.assertExhausted();
+    }
+  });
+
+  test("reselects a strict revision-zero Scope repair after origin adoption", async () => {
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo_agent", session_user: "nautilo_agent" }],
+      [identity],
+      [legacyScopeCandidateRow({
+        scope_origin_namespace_id: NAMESPACE_A,
+      })],
+      [],
+      [{ origin: "scope" }],
+    ]);
+    const { port } = await createPort(connection);
+
+    expect(await port.selectSaveCandidate({
+      authority: scopeAuthority,
+      embedding,
+    })).toMatchObject({
+      status: "success",
+      value: {
+        memoryId: MEMORY_ID,
+        contentRevision: 0,
+        repairRequired: true,
+      },
+    });
+    const candidateQuery = connection.queries[2]!;
+    expect(candidateQuery.parameters).toContain(NAMESPACE_A);
+    expect(normalizedSql(candidateQuery.statement)).toContain(
+      "scope_origin_namespace_id =",
+    );
+    connection.assertExhausted();
+  });
+
+  test("does not select a revision-zero Scope repair adopted by another origin", async () => {
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo_agent", session_user: "nautilo_agent" }],
+      [identity],
+      [legacyScopeCandidateRow({
+        scope_origin_namespace_id: NAMESPACE_B,
+      })],
+    ]);
+    const { port } = await createPort(connection);
+
+    expect(await port.selectSaveCandidate({
+      authority: scopeAuthority,
+      embedding,
+    })).toEqual({ status: "success", value: null });
+    connection.assertExhausted();
+  });
+
+  test("does not select Scope seeds, absent embeddings, known ordinary audiences, or malformed legacy rows", async () => {
+    const excludedRows = [
+      legacyScopeCandidateRow({ crypto_mapping_state: "verified" }),
+      legacyScopeCandidateRow({ has_known_ordinary_namespace: true }),
+      legacyScopeCandidateRow({ ordinary_content_present: false }),
+    ];
+    for (const row of excludedRows) {
+      const connection = new ScriptedConnection([
+        [{ current_user: "nautilo_agent", session_user: "nautilo_agent" }],
+        [identity],
+        [row],
+      ]);
+      const { port } = await createPort(connection);
+      expect(await port.selectSaveCandidate({
+        authority: scopeAuthority,
+        embedding,
+      })).toEqual({ status: "success", value: null });
+      connection.assertExhausted();
+    }
+
+    const filtered = new ScriptedConnection([
+      [{ current_user: "nautilo_agent", session_user: "nautilo_agent" }],
+      [identity],
+      [],
+    ]);
+    const { port } = await createPort(filtered);
+    expect(await port.selectSaveCandidate({
+      authority: scopeAuthority,
+      embedding,
+    })).toEqual({ status: "success", value: null });
+    const candidateSql = normalizedSql(filtered.queries[2]!.statement);
+    expect(candidateSql).toContain("origin =");
+    expect(candidateSql).toContain(
+      "memories.embedding_revision = memories.content_revision",
+    );
+    expect(candidateSql).toContain("embedding_provider =");
+    expect(candidateSql).toContain("embedding_model =");
+    expect(candidateSql).toContain("embedding_dimensions =");
+    expect(candidateSql).toContain("embedding_contract_version =");
+    expect(candidateSql).toContain("embedding is not null");
+    expect(candidateSql).toContain("not exists");
+    expect(filtered.queries[2]!.parameters).toContain("scope");
+    expect(filtered.queries[2]!.parameters).not.toContain("seed");
+    filtered.assertExhausted();
   });
   test("replays a completed durable outcome without reading the current Memory head", async () => {
     const stable = stableForegroundDigest({

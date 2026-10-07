@@ -7,6 +7,7 @@ import {
   eq,
   exists,
   gt,
+  gte,
   inArray,
   isNotNull,
   isNull,
@@ -16,6 +17,8 @@ import {
   memoryCryptoRevisions,
   memoryNamespaces,
   memoryScopes,
+  notExists,
+  or,
   sql,
 } from "@nautilo/db";
 
@@ -135,6 +138,12 @@ function rowNumber(row: ConversationProductDatabaseRow, name: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new TypeError(`${name} is not numeric`);
   }
+  return value;
+}
+
+function rowBoolean(row: ConversationProductDatabaseRow, name: string): boolean {
+  const value = row[name];
+  if (typeof value !== "boolean") throw new TypeError(`${name} is not boolean`);
   return value;
 }
 
@@ -786,6 +795,33 @@ export class PostgresAgentMemoryProductPort
     const distance = sql<number>`${memories.embedding} <=> ${
       vectorLiteral(input.embedding.vector)
     }::vector`;
+    const legacyScopeMutation = input.includeOrdinaryOnly === true
+      && input.mutationOnly
+      && input.authority.mode === "scope";
+    const ordinaryNamespaceRows = conversationProductTypedDb.select({
+      id: memoryNamespaces.memoryId,
+    }).from(memoryNamespaces).where(eq(memoryNamespaces.memoryId, memories.id));
+    const repairableScopeOrdinaryCandidate = legacyScopeMutation
+      ? and(
+          gte(memories.contentRevision, 0),
+          isNull(memories.cryptoObjectId),
+          eq(memories.cryptoMappingState, "unmapped"),
+          isNull(memories.cryptoRequiredNamespaceFingerprint),
+          or(
+            isNull(memories.scopeOriginNamespaceId),
+            eq(
+              memories.scopeOriginNamespaceId,
+              input.authority.originWritableNamespaceId,
+            ),
+          ),
+          isNotNull(memories.type),
+          isNotNull(memories.content),
+          // The Agent role may not see every ordinary audience edge. This is
+          // only an early rejection hint; the product adoption owner proves
+          // the complete empty ordinary audience before changing authority.
+          notExists(ordinaryNamespaceRows),
+        )
+      : undefined;
     const visible = input.authority.mode === "scope"
       ? exists(conversationProductTypedDb.select({ id: memoryScopes.memoryId })
         .from(memoryScopes).where(and(
@@ -812,9 +848,25 @@ export class PostgresAgentMemoryProductPort
         tier: memories.tier,
         created_at: memories.createdAt,
         similarity: sql<number>`1 - (${distance})`.as("similarity"),
+        ...(legacyScopeMutation ? {
+          ordinary_type_present: isNotNull(memories.type)
+            .as("ordinary_type_present"),
+          ordinary_content_present: isNotNull(memories.content)
+            .as("ordinary_content_present"),
+          has_known_ordinary_namespace: exists(ordinaryNamespaceRows)
+            .as("has_known_ordinary_namespace"),
+        } : {}),
       }).from(memories).where(and(
         input.includeOrdinaryOnly ? undefined : isNotNull(memories.cryptoObjectId),
-        gt(memories.contentRevision, 0),
+        repairableScopeOrdinaryCandidate === undefined
+          ? gt(memories.contentRevision, 0)
+          : or(
+              and(
+                gt(memories.contentRevision, 0),
+                isNotNull(memories.scopeOriginNamespaceId),
+              ),
+              repairableScopeOrdinaryCandidate,
+            ),
         eq(memories.embeddingRevision, memories.contentRevision),
         eq(memories.embeddingProvider, provider),
         eq(memories.embeddingModel, input.embedding.canonicalModel),
@@ -963,11 +1015,40 @@ export class PostgresAgentMemoryProductPort
         return Object.freeze({ status: "success" as const, value: null });
       }
       const memoryId = rowString(row, "memory_id");
-      const required = await this.#requiredNamespaceIds(
-        transaction, memoryId, rowNullableString(row, "scope_origin_namespace_id"),
+      const scopeOriginNamespaceId = rowNullableString(
+        row,
+        "scope_origin_namespace_id",
       );
-      if (!authorityAllowsMutationSet(input.authority, required)) {
-        return Object.freeze({ status: "success" as const, value: null });
+      const legacyScopeCandidate = input.authority.mode === "scope"
+        && rowInteger(row, "content_revision") >= 0
+        && rowNullableString(row, "crypto_object_id") === null
+        && rowString(row, "crypto_mapping_state") === "unmapped"
+        && row["crypto_required_namespace_fingerprint"] === null
+        && scopeOriginNamespaceId === null
+        && rowBoolean(row, "ordinary_type_present")
+        && rowBoolean(row, "ordinary_content_present")
+        && !rowBoolean(row, "has_known_ordinary_namespace");
+      if (!legacyScopeCandidate) {
+        // A null stored Scope origin is eligible only through the strict
+        // legacy ordinary shape above. Do not ask the generic audience
+        // resolver to infer authority for any other null-origin row.
+        if (input.authority.mode === "scope" && scopeOriginNamespaceId === null) {
+          return Object.freeze({ status: "success" as const, value: null });
+        }
+        if (input.authority.mode === "scope"
+          && rowInteger(row, "content_revision") === 0
+          && scopeOriginNamespaceId
+            !== input.authority.originWritableNamespaceId) {
+          return Object.freeze({ status: "success" as const, value: null });
+        }
+        const required = await this.#requiredNamespaceIds(
+          transaction,
+          memoryId,
+          scopeOriginNamespaceId,
+        );
+        if (!authorityAllowsMutationSet(input.authority, required)) {
+          return Object.freeze({ status: "success" as const, value: null });
+        }
       }
       const importance = rowNumber(row, "importance");
       const score = rowNumber(row, "similarity");

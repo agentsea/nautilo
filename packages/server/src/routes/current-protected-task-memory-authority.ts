@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   acquireEncryptionConsumptionFence,
+  agentScopes,
+  and,
   eq,
   jobs,
   rooms,
@@ -12,6 +14,7 @@ import {
   type PostgresJsBridgeExecutor,
   type PostgresJsBridgeRow,
 } from "@nautilo/db";
+import type { ProtectedMemorySaveCandidateSelection } from "@nautilo/lattice-bridge";
 import {
   assertAuthenticTaskRuntimeExecutionEvidence,
   type LatticeCrypto,
@@ -23,6 +26,12 @@ import {
 } from "@nautilo/lattice-crypto/background";
 import {
   adoptLegacyTaskScopeMemoryOrigin,
+  reservePostgresTaskScopeMemoryRepairSource,
+  attachPostgresTaskScopeMemoryRepair,
+  conversationProductTypedDb,
+  executeTypedConversationProductQuery,
+  isForegroundProductChangedError,
+  type TaskScopeMemoryRepairSource,
   type TaskScopeMemoryOriginAdoptionResult,
   bindConversationProductCanonicalTransactionRunner,
   copyTaskScopeMemoryBinding,
@@ -674,4 +683,95 @@ export async function adoptProtectedTaskScopeMemoryOrigin(
     },
   );
   return result ?? "stale";
+}
+
+/** The repair owns Scope SHARE on the same product transaction; it never nests
+ * the Agent publisher. Provider/crypto work must run after this callback exits. */
+async function withCurrentTaskScopeRepair<Value>(
+  input: ProtectedTaskMemoryAuthorityInput,
+  use: (state: HeldState, scope: TaskScopeMemoryBinding) => Promise<Value>,
+): Promise<Value | null> {
+  if (input.scopeMemory === undefined) return null;
+  return withCurrentProtectedTaskMemoryAuthority(input, async held => {
+    const state = stateFor(held);
+    const scope = state.input.scopeMemory?.binding;
+    if (held.policy.mode !== "shadow_encryption" || scope === undefined) return null;
+    const rows = await executeTypedConversationProductQuery(state.product,
+      conversationProductTypedDb.select({ id: agentScopes.id })
+        .from(agentScopes).where(and(
+          eq(agentScopes.id, scope.scopeId),
+          eq(agentScopes.parentAgentId, state.input.occurrence.task.agentId),
+          eq(agentScopes.speakerUserId, state.input.subject.userId),
+          eq(agentScopes.lifecycleState, "open"),
+        )).limit(1).for("share"));
+    if (rows.length !== 1 || rows[0]?.id !== scope.scopeId) return null;
+    await held.assertCurrent();
+    const value = await use(state, scope);
+    await held.assertCurrent();
+    return value;
+  });
+}
+
+export async function reserveProtectedTaskScopeMemoryRepair(
+  input: ProtectedTaskMemoryAuthorityInput,
+  selection: ProtectedMemorySaveCandidateSelection,
+): Promise<TaskScopeMemoryRepairSource | null> {
+  if (selection.memoryId !== selection.repair.id) return null;
+  const selected = Object.freeze({ ...selection, repair: Object.freeze({
+    ...selection.repair, createdAt: new Date(selection.repair.createdAt),
+  }) });
+  let reserved: TaskScopeMemoryRepairSource | null = null;
+  let delivered = false;
+  try {
+    const result = await withCurrentTaskScopeRepair(input, async (state, scope) => {
+      reserved = await reservePostgresTaskScopeMemoryRepairSource({
+        transaction: state.product,
+        crypto: state.input.crypto,
+        selection: selected.repair,
+        expectedContentRevision: selected.contentRevision,
+        scopeId: scope.scopeId,
+        expectedScopeOriginNamespaceId: scope.originWritableNamespaceId,
+      });
+      return reserved;
+    });
+    delivered = result !== null;
+    return result;
+  } catch (error) {
+    if (isForegroundProductChangedError(error)
+      || error instanceof TaskMemoryAuthorityUnavailable) return null;
+    throw error;
+  } finally {
+    if (!delivered) {
+      const retained = reserved as TaskScopeMemoryRepairSource | null;
+      retained?.source.plaintextBytes?.fill(0);
+      retained?.source.requestCommitment.fill(0);
+    }
+  }
+}
+
+export async function attachProtectedTaskScopeMemoryRepair(
+  input: ProtectedTaskMemoryAuthorityInput,
+  source: TaskScopeMemoryRepairSource,
+  objectId: string,
+): Promise<"attached" | "replayed" | "conflict" | null> {
+  try {
+    return await withCurrentTaskScopeRepair(input, (state, scope) => {
+      if (source.scopeId !== scope.scopeId
+        || source.expectedScopeOriginNamespaceId !== scope.originWritableNamespaceId) {
+        return Promise.resolve("conflict" as const);
+      }
+      return attachPostgresTaskScopeMemoryRepair({
+        transaction: state.product,
+        source,
+        objectId,
+        requestCommitment: source.source.requestCommitment,
+      });
+    });
+  } catch (error) {
+    // Mutation failures are normalized only after the outer transaction has
+    // unwound. A caught inner CAS failure must never commit a partial mapping.
+    if (isForegroundProductChangedError(error)) return "conflict";
+    if (error instanceof TaskMemoryAuthorityUnavailable) return null;
+    throw error;
+  }
 }

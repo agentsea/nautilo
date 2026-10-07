@@ -1053,3 +1053,9 @@ export {
   adoptLegacyTaskScopeMemoryOrigin,
   type TaskScopeMemoryOriginAdoptionResult,
 } from "./task/task-scope-memory-origin-adoption.ts";
+
+export {
+  reservePostgresTaskScopeMemoryRepairSource,
+  attachPostgresTaskScopeMemoryRepair,
+  type TaskScopeMemoryRepairSource,
+} from "./memory/postgres-foreground-memory-repair.ts";

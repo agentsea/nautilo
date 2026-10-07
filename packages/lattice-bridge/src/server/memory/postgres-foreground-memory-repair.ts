@@ -24,7 +24,10 @@ import {
   deriveMemoryCryptoObjectIdV1,
   fingerprintRequiredMemoryNamespaces,
 } from "../../memory/memory-repository.ts";
-import { resolveRequiredMemoryNamespaceIds } from
+import {
+  MemoryAuthorityResolutionError,
+  resolveRequiredMemoryNamespaceIds,
+} from
   "../../memory/required-namespace-set.ts";
 import {
   ForegroundProductChangedError,
@@ -35,8 +38,8 @@ import {
   conversationProductTypedDb,
   executeTypedConversationProductQuery,
   type ConversationProductCanonicalTransactionRunner,
-  type ConversationProductPostgresExecutor,
   type ConversationProductPostgresHandle,
+  type ConversationProductPostgresTransaction,
 } from "../message/postgres-conversation-product-store.ts";
 
 export type ForegroundMemoryRepairSource = Readonly<{
@@ -56,6 +59,22 @@ export type ForegroundMemoryRepairSource = Readonly<{
   completedRepairReceipt?: true;
 }>;
 
+export type TaskScopeMemoryRepairSource = Readonly<{
+  source: ForegroundMemoryRepairSource;
+  scopeId: string;
+  expectedScopeOriginNamespaceId: string;
+  expectedEmbeddingRevision: number;
+}>;
+
+type TaskScopeMemoryRepairExpectation = Readonly<{
+  scopeId: string;
+  expectedScopeOriginNamespaceId: string;
+  expectedContentRevision: number;
+}>;
+
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
 function exactDate(value: unknown): Date {
   // Raw postgres-js returns Date; the owned Drizzle pool returns wire text.
   const parsed = typeof value === "string" ? new Date(value) : value;
@@ -63,6 +82,21 @@ function exactDate(value: unknown): Date {
     throw new TypeError("Memory timestamp is invalid");
   }
   return parsed;
+}
+
+function resolveRepairRequiredNamespaceIds(
+  input: Parameters<typeof resolveRequiredMemoryNamespaceIds>[0],
+  taskScopeConflict?: string,
+): readonly string[] {
+  try {
+    return resolveRequiredMemoryNamespaceIds(input);
+  } catch (error) {
+    if (taskScopeConflict !== undefined
+      && error instanceof MemoryAuthorityResolutionError) {
+      throw new ForegroundProductChangedError(taskScopeConflict);
+    }
+    throw error;
+  }
 }
 
 export function foregroundMemoryRepairCommitment(input: Readonly<{
@@ -96,22 +130,21 @@ export function foregroundMemoryRepairCommitment(input: Readonly<{
   }
 }
 
-/** Resolve exact current payload and audience for already-selected Memories. */
-export async function loadPostgresForegroundMemoryRepairSources(input: Readonly<{
-  product: ConversationProductPostgresHandle;
+async function loadPostgresMemoryRepairSourcesInTransaction(input: Readonly<{
+  transaction: ConversationProductPostgresTransaction;
   crypto: LatticeCrypto;
   memories: readonly ForegroundMemoryRepairSelection[];
-  representationMode?: "ordinary-and-protected" | "protected-only";
+  representationMode: "ordinary-and-protected" | "protected-only";
+  taskScope?: TaskScopeMemoryRepairExpectation;
 }>): Promise<readonly ForegroundMemoryRepairSource[]> {
-  const representationMode = input.representationMode
-    ?? "ordinary-and-protected";
-  return input.product.transaction(async (tx) => {
-    const sources: ForegroundMemoryRepairSource[] = [];
+  const sources: ForegroundMemoryRepairSource[] = [];
+  const destroyOnFailure: Uint8Array[] = [];
+  try {
     for (const expected of input.memories) {
-      const rows = await executeTypedConversationProductQuery(tx,
+      const rows = await executeTypedConversationProductQuery(input.transaction,
         conversationProductTypedDb.select({
           id: memories.id,
-          ...(representationMode === "ordinary-and-protected"
+          ...(input.representationMode === "ordinary-and-protected"
             ? { type: memories.type, content: memories.content }
             : {}),
           importance: memories.importance,
@@ -123,17 +156,17 @@ export async function loadPostgresForegroundMemoryRepairSources(input: Readonly<
           cryptoAccessRevision: memories.cryptoAccessRevision,
           cryptoRequiredNamespaceFingerprint:
             memories.cryptoRequiredNamespaceFingerprint,
+          embeddingRevision: memories.embeddingRevision,
           scopeOriginNamespaceId: memories.scopeOriginNamespaceId,
         }).from(memories).where(eq(memories.id, expected.id)).limit(2)
           .for("update"));
       const row = rows[0];
-      if (
-        rows.length !== 1
-        || row === undefined
-      ) throw new ForegroundProductChangedError("Selected Memory changed");
+      if (rows.length !== 1 || row === undefined) {
+        throw new ForegroundProductChangedError("Selected Memory changed");
+      }
       const createdAt = exactDate(row.created_at);
       if (
-        (representationMode === "ordinary-and-protected"
+        (input.representationMode === "ordinary-and-protected"
           && (
             (expected.type !== null && row.type !== expected.type)
             || ("content" in expected && row.content !== expected.content)
@@ -147,28 +180,57 @@ export async function loadPostgresForegroundMemoryRepairSources(input: Readonly<
         )
       ) throw new ForegroundProductChangedError("Selected Memory changed");
       const [namespaceRows, scopeRows] = await Promise.all([
-        executeTypedConversationProductQuery(tx,
+        executeTypedConversationProductQuery(input.transaction,
           conversationProductTypedDb.select({
             namespaceId: memoryNamespaces.namespaceId,
           }).from(memoryNamespaces).where(
             eq(memoryNamespaces.memoryId, expected.id),
           ).orderBy(asc(memoryNamespaces.namespaceId))),
-        executeTypedConversationProductQuery(tx,
-          conversationProductTypedDb.select({ origin: memoryScopes.origin })
-            .from(memoryScopes).where(eq(memoryScopes.memoryId, expected.id))
+        executeTypedConversationProductQuery(input.transaction,
+          conversationProductTypedDb.select({
+            scopeId: memoryScopes.scopeId,
+            origin: memoryScopes.origin,
+          }).from(memoryScopes).where(eq(memoryScopes.memoryId, expected.id))
             .orderBy(asc(memoryScopes.scopeId))),
       ]);
-      const accessNamespaceIds = resolveRequiredMemoryNamespaceIds({
+      const accessNamespaceIds = resolveRepairRequiredNamespaceIds({
         namespaceIds: namespaceRows.map((entry) => entry.namespace_id),
         scopeOrigins: scopeRows.map((entry) => {
           if (entry.origin !== "seed" && entry.origin !== "scope") {
+            if (input.taskScope !== undefined) {
+              throw new ForegroundProductChangedError(
+                "Selected Task Scope Memory audience changed",
+              );
+            }
             throw new TypeError("Memory scope origin is invalid");
           }
           return entry.origin;
         }),
         originWritableNamespaceId: row.scope_origin_namespace_id,
-      });
+      }, input.taskScope === undefined
+        ? undefined
+        : "Selected Task Scope Memory audience changed");
       const expectedContentRevision = row.content_revision;
+      if (input.taskScope !== undefined && (
+        input.memories.length !== 1
+        || input.representationMode !== "ordinary-and-protected"
+        || expectedContentRevision !== input.taskScope.expectedContentRevision
+        || row.embedding_revision !== input.taskScope.expectedContentRevision
+        || row.crypto_object_id !== null
+        || row.crypto_mapping_state !== "unmapped"
+        || row.crypto_required_namespace_fingerprint !== null
+        || row.scope_origin_namespace_id
+          !== input.taskScope.expectedScopeOriginNamespaceId
+        || namespaceRows.length !== 0
+        || scopeRows.filter((entry) =>
+          entry.scope_id === input.taskScope?.scopeId
+          && entry.origin === "scope").length !== 1
+        || !equalStrings(accessNamespaceIds, [
+          input.taskScope.expectedScopeOriginNamespaceId,
+        ])
+      )) throw new ForegroundProductChangedError(
+        "Selected Task Scope Memory changed",
+      );
       const fingerprint = fingerprintRequiredMemoryNamespaces(
         accessNamespaceIds,
       );
@@ -187,7 +249,7 @@ export async function loadPostgresForegroundMemoryRepairSources(input: Readonly<
       );
       const ordinaryType = typeof row.type === "string" ? row.type : null;
       const ordinaryContent = typeof row.content === "string" ? row.content : null;
-      const plaintextBytes = representationMode === "protected-only"
+      const plaintextBytes = input.representationMode === "protected-only"
           || ordinaryType === null
           || ordinaryContent === null
         ? null
@@ -196,12 +258,22 @@ export async function loadPostgresForegroundMemoryRepairSources(input: Readonly<
           type: ordinaryType,
           content: ordinaryContent,
         });
+      if (plaintextBytes !== null) destroyOnFailure.push(plaintextBytes);
+      if (input.taskScope !== undefined && plaintextBytes === null) {
+        throw new ForegroundProductChangedError(
+          "Selected Task Scope Memory ordinary body changed",
+        );
+      }
       let targetContentRevision = expectedContentRevision;
       let requestCommitment: Uint8Array = new Uint8Array(32);
       let completedRepairReceipt: true | undefined;
       if (row.crypto_object_id === null && plaintextBytes !== null) {
         const baseRevision = Math.max(1, expectedContentRevision);
-        const lifecycleRows = await executeTypedConversationProductQuery(tx,
+        // This read must remain unlocked. Reserve already holds Memory UPDATE and
+        // may insert a fresh coordinate, while attachment owns lifecycle before
+        // Memory. Locking an existing lifecycle row here would invert that order.
+        const lifecycleRows = await executeTypedConversationProductQuery(
+          input.transaction,
           conversationProductTypedDb.select({
             contentRevision: memoryCryptoRevisions.contentRevision,
             cryptoObjectId: memoryCryptoRevisions.cryptoObjectId,
@@ -214,7 +286,8 @@ export async function loadPostgresForegroundMemoryRepairSources(input: Readonly<
           }).from(memoryCryptoRevisions).where(and(
             eq(memoryCryptoRevisions.memoryId, expected.id),
             gte(memoryCryptoRevisions.contentRevision, baseRevision),
-          )).orderBy(desc(memoryCryptoRevisions.contentRevision)).limit(1));
+          )).orderBy(desc(memoryCryptoRevisions.contentRevision)).limit(1),
+        );
         const latest = lifecycleRows[0];
         const latestRevision = latest?.content_revision ?? baseRevision;
         const latestObjectId = deriveMemoryCryptoObjectIdV1({
@@ -230,6 +303,7 @@ export async function loadPostgresForegroundMemoryRepairSources(input: Readonly<
           requiredNamespaceFingerprint: fingerprint,
           plaintextBytes,
         });
+        destroyOnFailure.push(latestCommitment);
         const mayResumeLatest = latest !== undefined
           && latest.crypto_object_id === latestObjectId
           && equalBytes(latest.allocation_request_digest, latestCommitment)
@@ -260,7 +334,8 @@ export async function loadPostgresForegroundMemoryRepairSources(input: Readonly<
             requiredNamespaceFingerprint: fingerprint,
             plaintextBytes,
           });
-          await executeTypedConversationProductQuery(tx,
+          destroyOnFailure.push(requestCommitment);
+          await executeTypedConversationProductQuery(input.transaction,
             conversationProductTypedDb.insert(memoryCryptoRevisions).values({
               memoryId: expected.id,
               contentRevision: targetContentRevision,
@@ -275,7 +350,8 @@ export async function loadPostgresForegroundMemoryRepairSources(input: Readonly<
             }));
         }
       } else if (row.crypto_object_id !== null) {
-        const lifecycleRows = await executeTypedConversationProductQuery(tx,
+        const lifecycleRows = await executeTypedConversationProductQuery(
+          input.transaction,
           conversationProductTypedDb.select({
             allocationRequestDigest:
               memoryCryptoRevisions.allocationRequestDigest,
@@ -285,12 +361,14 @@ export async function loadPostgresForegroundMemoryRepairSources(input: Readonly<
             eq(memoryCryptoRevisions.memoryId, expected.id),
             eq(memoryCryptoRevisions.contentRevision, expectedContentRevision),
             eq(memoryCryptoRevisions.cryptoObjectId, row.crypto_object_id),
-          )).limit(2));
+          )).limit(2),
+        );
         const lifecycle = lifecycleRows[0];
         if (lifecycleRows.length === 1 && lifecycle !== undefined
           && lifecycle.completion === "complete"
           && lifecycle.disposition === "mapped") {
           requestCommitment = lifecycle.allocation_request_digest.slice();
+          destroyOnFailure.push(requestCommitment);
           completedRepairReceipt = true;
         }
       }
@@ -300,7 +378,7 @@ export async function loadPostgresForegroundMemoryRepairSources(input: Readonly<
           type: ordinaryType,
           content: ordinaryContent,
         }),
-        representationMode,
+        representationMode: input.representationMode,
         expectedContentRevision,
         targetContentRevision,
         existingObjectId: row.crypto_object_id,
@@ -313,7 +391,69 @@ export async function loadPostgresForegroundMemoryRepairSources(input: Readonly<
       }));
     }
     return Object.freeze(sources);
-  }, { isolationLevel: "serializable" });
+  } catch (error) {
+    for (const bytes of destroyOnFailure) bytes.fill(0);
+    throw error;
+  }
+}
+
+/** Resolve exact current payload and audience for already-selected Memories. */
+export async function loadPostgresForegroundMemoryRepairSources(input: Readonly<{
+  product: ConversationProductPostgresHandle;
+  crypto: LatticeCrypto;
+  memories: readonly ForegroundMemoryRepairSelection[];
+  representationMode?: "ordinary-and-protected" | "protected-only";
+}>): Promise<readonly ForegroundMemoryRepairSource[]> {
+  const representationMode = input.representationMode
+    ?? "ordinary-and-protected";
+  return input.product.transaction(transaction =>
+    loadPostgresMemoryRepairSourcesInTransaction({
+      transaction,
+      crypto: input.crypto,
+      memories: input.memories,
+      representationMode,
+    }), { isolationLevel: "serializable" });
+}
+
+/** Reserve one exact ordinary Task Scope source on its caller-owned tx. */
+export async function reservePostgresTaskScopeMemoryRepairSource(
+  input: Readonly<{
+    transaction: ConversationProductPostgresTransaction;
+    crypto: LatticeCrypto;
+    selection: ForegroundMemoryRepairSelection;
+    expectedContentRevision: number;
+    scopeId: string;
+    expectedScopeOriginNamespaceId: string;
+  }>,
+): Promise<TaskScopeMemoryRepairSource> {
+  if (!Number.isSafeInteger(input.expectedContentRevision)
+    || input.expectedContentRevision < 0
+    || !UUID.test(input.scopeId)
+    || !UUID.test(input.expectedScopeOriginNamespaceId)) {
+    throw new TypeError("Task Scope Memory repair coordinates are invalid");
+  }
+  const [source] = await loadPostgresMemoryRepairSourcesInTransaction({
+    transaction: input.transaction,
+    crypto: input.crypto,
+    memories: [input.selection],
+    representationMode: "ordinary-and-protected",
+    taskScope: Object.freeze({
+      scopeId: input.scopeId,
+      expectedScopeOriginNamespaceId: input.expectedScopeOriginNamespaceId,
+      expectedContentRevision: input.expectedContentRevision,
+    }),
+  });
+  if (source === undefined) {
+    throw new ForegroundProductChangedError(
+      "Selected Task Scope Memory changed",
+    );
+  }
+  return Object.freeze({
+    source,
+    scopeId: input.scopeId,
+    expectedScopeOriginNamespaceId: input.expectedScopeOriginNamespaceId,
+    expectedEmbeddingRevision: input.expectedContentRevision,
+  });
 }
 
 function equalBytes(left: unknown, right: Uint8Array): boolean {
@@ -551,6 +691,353 @@ type ForegroundMemoryRepairAttachment = Readonly<{
   requestCommitment: Uint8Array;
 }>;
 
+type TaskScopeMemoryRepairAttachment = Readonly<{
+  scopeId: string;
+  expectedScopeOriginNamespaceId: string;
+  expectedEmbeddingRevision: number;
+}>;
+
+function taskScopeAttachmentCurrent(input: Readonly<{
+  taskScope: TaskScopeMemoryRepairAttachment;
+  scopeOriginNamespaceId: string | null;
+  embeddingRevision: number | null;
+  expectedEmbeddingRevision: number;
+  namespaceIds: readonly string[];
+  scopeRows: readonly Readonly<{ scope_id: string; origin: string }>[];
+  accessNamespaceIds: readonly string[];
+}>): boolean {
+  return input.scopeOriginNamespaceId
+      === input.taskScope.expectedScopeOriginNamespaceId
+    && input.embeddingRevision === input.expectedEmbeddingRevision
+    && input.namespaceIds.length === 0
+    && input.scopeRows.filter(row =>
+      row.scope_id === input.taskScope.scopeId
+      && row.origin === "scope").length === 1
+    && equalStrings(input.accessNamespaceIds, [
+      input.taskScope.expectedScopeOriginNamespaceId,
+    ]);
+}
+
+async function attachPostgresMemoryRepairInTransaction(input: Readonly<{
+  transaction: ConversationProductPostgresTransaction;
+  attachment: ForegroundMemoryRepairAttachment;
+  taskScope?: TaskScopeMemoryRepairAttachment;
+}>): Promise<"attached" | "replayed" | "conflict"> {
+  const { source, objectId, requestCommitment } = input.attachment;
+  if (
+    source.plaintextBytes === null
+    || source.memory.type === null
+    || source.memory.content === null
+  ) return "conflict";
+  const ordinaryType = source.memory.type;
+  const ordinaryContent = source.memory.content;
+  const expectedObjectId = deriveMemoryCryptoObjectIdV1({
+    memoryId: source.memory.id,
+    contentRevision: source.targetContentRevision,
+  });
+  if (
+    objectId !== expectedObjectId
+    || !equalBytes(requestCommitment, source.requestCommitment)
+  ) return "conflict";
+  const fingerprint = fingerprintRequiredMemoryNamespaces(
+    source.accessNamespaceIds,
+  );
+  const lifecycleQuery = conversationProductTypedDb.select({
+    objectId: memoryCryptoRevisions.cryptoObjectId,
+    allocationRequestDigest:
+      memoryCryptoRevisions.allocationRequestDigest,
+    requiredNamespaceFingerprint:
+      memoryCryptoRevisions.requiredNamespaceFingerprint,
+    completion: memoryCryptoRevisions.completion,
+    disposition: memoryCryptoRevisions.disposition,
+  }).from(memoryCryptoRevisions).where(and(
+    eq(memoryCryptoRevisions.memoryId, source.memory.id),
+    eq(
+      memoryCryptoRevisions.contentRevision,
+      source.targetContentRevision,
+    ),
+  )).limit(2);
+  // The caller-owned Task transaction is READ COMMITTED. Lock lifecycle before
+  // Memory to match crypto reconciliation/publication, then hold Memory UPDATE
+  // while reading its audience. Besides fencing metadata changes, the strong
+  // parent lock blocks child-FK inserts whose stale-mapping trigger could have
+  // observed the still-unmapped row before this attachment.
+  const lockedTaskLifecycleRows = input.taskScope === undefined
+    ? null
+    : await executeTypedConversationProductQuery(
+      input.transaction,
+      lifecycleQuery.for("update"),
+    );
+  const memoryQuery = conversationProductTypedDb.select({
+    type: memories.type,
+    content: memories.content,
+    importance: memories.importance,
+    tier: memories.tier,
+    createdAt: memories.createdAt,
+    contentRevision: memories.contentRevision,
+    cryptoObjectId: memories.cryptoObjectId,
+    cryptoAccessRevision: memories.cryptoAccessRevision,
+    fingerprint: memories.cryptoRequiredNamespaceFingerprint,
+    state: memories.cryptoMappingState,
+    embeddingRevision: memories.embeddingRevision,
+    scopeOriginNamespaceId: memories.scopeOriginNamespaceId,
+  }).from(memories).where(eq(
+    memories.id,
+    source.memory.id,
+  )).limit(2);
+  const rows = await executeTypedConversationProductQuery(input.transaction,
+    input.taskScope === undefined
+      ? memoryQuery
+      : memoryQuery.for("update"));
+  const row = rows[0];
+  if (
+    rows.length !== 1
+    || row === undefined
+    || row.type !== source.memory.type
+    || row.content !== source.memory.content
+    || row.importance !== source.memory.importance
+    || row.tier !== source.memory.tier
+    || exactDate(row.created_at).getTime()
+      !== source.memory.createdAt.getTime()
+  ) return "conflict";
+  const namespaceQuery = conversationProductTypedDb.select({
+    namespaceId: memoryNamespaces.namespaceId,
+  }).from(memoryNamespaces).where(eq(
+    memoryNamespaces.memoryId,
+    source.memory.id,
+  )).orderBy(asc(memoryNamespaces.namespaceId));
+  const scopeQuery = conversationProductTypedDb.select({
+    scopeId: memoryScopes.scopeId,
+    origin: memoryScopes.origin,
+  }).from(memoryScopes).where(eq(
+    memoryScopes.memoryId,
+    source.memory.id,
+  )).orderBy(asc(memoryScopes.scopeId));
+  const taskScopeQuery = input.taskScope === undefined
+    ? null
+    : conversationProductTypedDb.select({
+      scopeId: memoryScopes.scopeId,
+      origin: memoryScopes.origin,
+    }).from(memoryScopes).where(and(
+      eq(memoryScopes.memoryId, source.memory.id),
+      eq(memoryScopes.scopeId, input.taskScope.scopeId),
+    )).limit(2).for("update");
+  const [namespaceRows, scopeRows] = input.taskScope === undefined
+    ? await Promise.all([
+      executeTypedConversationProductQuery(input.transaction, namespaceQuery),
+      executeTypedConversationProductQuery(input.transaction, scopeQuery),
+    ])
+    : [
+      // Task Scope repair accepts only an empty ordinary Namespace set. The
+      // held Memory UPDATE blocks FK inserts. Do not lock existing Namespace
+      // edges here: DELETE locks the child then its trigger updates Memory, so
+      // Memory-then-child locking would invert that database-owned order.
+      await executeTypedConversationProductQuery(
+        input.transaction,
+        namespaceQuery,
+      ),
+      // Only this authored edge proves the selected Task Scope authority.
+      // Foreign seed/origin edges resolve through the same singular stored
+      // origin and do not widen its audience; leaving them unlocked avoids a
+      // Memory→foreign-edge inversion with another Scope's close owner.
+      await executeTypedConversationProductQuery(
+        input.transaction,
+        taskScopeQuery!,
+      ),
+    ];
+  const currentNamespaceIds = resolveRepairRequiredNamespaceIds({
+    namespaceIds: namespaceRows.map((entry) => entry.namespace_id),
+    scopeOrigins: scopeRows.map((entry) => {
+      if (entry.origin !== "seed" && entry.origin !== "scope") {
+        if (input.taskScope !== undefined) {
+          throw new ForegroundProductChangedError(
+            "Task Scope Memory audience changed before repair attachment",
+          );
+        }
+        throw new TypeError("Memory scope origin is invalid");
+      }
+      return entry.origin;
+    }),
+    originWritableNamespaceId: row.scope_origin_namespace_id,
+  }, input.taskScope === undefined
+    ? undefined
+    : "Task Scope Memory audience changed before repair attachment");
+  if (!equalStrings(currentNamespaceIds, source.accessNamespaceIds)) {
+    return "conflict";
+  }
+  const replay = (
+    row.content_revision === source.targetContentRevision
+    && row.crypto_object_id === objectId
+    && row.crypto_access_revision === 0
+    && row.crypto_mapping_state === "verified"
+    && equalBytes(row.crypto_required_namespace_fingerprint, fingerprint)
+  );
+  if (!replay && (
+    row.content_revision !== source.expectedContentRevision
+    || row.crypto_object_id !== null
+  )) return "conflict";
+  if (input.taskScope !== undefined && !taskScopeAttachmentCurrent({
+    taskScope: input.taskScope,
+    scopeOriginNamespaceId: row.scope_origin_namespace_id,
+    embeddingRevision: row.embedding_revision,
+    expectedEmbeddingRevision: replay
+      ? source.targetContentRevision
+      : input.taskScope.expectedEmbeddingRevision,
+    namespaceIds: namespaceRows.map(entry => entry.namespace_id),
+    scopeRows,
+    accessNamespaceIds: currentNamespaceIds,
+  })) return "conflict";
+
+  const lifecycleRows = lockedTaskLifecycleRows
+    ?? await executeTypedConversationProductQuery(
+      input.transaction,
+      lifecycleQuery,
+    );
+  const lifecycle = lifecycleRows[0];
+  if (
+    lifecycleRows.length !== 1
+    || lifecycle === undefined
+    || lifecycle.crypto_object_id !== objectId
+    || !equalBytes(
+      lifecycle.allocation_request_digest,
+      requestCommitment,
+    )
+    || !equalBytes(
+      lifecycle.required_namespace_fingerprint,
+      fingerprint,
+    )
+  ) throw new ForegroundProductChangedError(
+    "Memory repair lifecycle conflicted",
+  );
+  if (
+    replay
+      ? lifecycle.completion !== "complete"
+        || lifecycle.disposition !== "mapped"
+      : (lifecycle.completion !== "pending"
+          && lifecycle.completion !== "complete")
+        || lifecycle.disposition !== "active"
+  ) throw new ForegroundProductChangedError(
+      "Memory repair lifecycle conflicted",
+    );
+  if (replay) return "replayed";
+
+  // Attachment owns lifecycle before Memory. Once this first mutation occurs,
+  // every later conflict must escape so the caller-owned transaction rolls the
+  // lifecycle update back with the Memory CAS.
+  const completedAt = new Date();
+  const completed = await executeTypedConversationProductQuery(
+    input.transaction,
+    conversationProductTypedDb.update(memoryCryptoRevisions).set({
+      completion: "complete",
+      disposition: "mapped",
+      nextAttemptAt: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      failureCode: null,
+      cryptoCompletedAt: completedAt,
+      updatedAt: completedAt,
+    }).where(and(
+      eq(memoryCryptoRevisions.memoryId, source.memory.id),
+      eq(
+        memoryCryptoRevisions.contentRevision,
+        source.targetContentRevision,
+      ),
+      eq(memoryCryptoRevisions.cryptoObjectId, objectId),
+      eq(memoryCryptoRevisions.disposition, "active"),
+    )).returning({ sequence: memoryCryptoRevisions.sequence }),
+  );
+  if (completed.length !== 1) throw new ForegroundProductChangedError(
+    "Memory repair lifecycle changed before attachment",
+  );
+  const updated = await executeTypedConversationProductQuery(input.transaction,
+    conversationProductTypedDb.update(memories).set({
+      contentRevision: source.targetContentRevision,
+      ...(input.taskScope === undefined ? {} : {
+        embeddingRevision: source.targetContentRevision,
+      }),
+      cryptoObjectId: objectId,
+      cryptoAccessRevision: 0,
+      cryptoRequiredNamespaceFingerprint: fingerprint,
+      cryptoMappingState: "verified",
+      updatedAt: completedAt,
+    }).where(and(
+      eq(memories.id, source.memory.id),
+      eq(memories.type, ordinaryType),
+      eq(memories.content, ordinaryContent),
+      eq(memories.contentRevision, source.expectedContentRevision),
+      isNull(memories.cryptoObjectId),
+      input.taskScope === undefined
+        ? undefined
+        : eq(memories.cryptoAccessRevision, source.expectedAccessRevision),
+      input.taskScope === undefined
+        ? undefined
+        : eq(
+          memories.embeddingRevision,
+          input.taskScope.expectedEmbeddingRevision,
+        ),
+      input.taskScope === undefined
+        ? undefined
+        : eq(
+          memories.scopeOriginNamespaceId,
+          input.taskScope.expectedScopeOriginNamespaceId,
+        ),
+      input.taskScope === undefined
+        ? undefined
+        : eq(memories.cryptoMappingState, "unmapped"),
+      input.taskScope === undefined
+        ? undefined
+        : isNull(memories.cryptoRequiredNamespaceFingerprint),
+    )).returning({ id: memories.id }));
+  if (updated.length !== 1) throw new ForegroundProductChangedError(
+    "Memory changed before repair attachment",
+  );
+  if (input.taskScope !== undefined) {
+    const [currentNamespaceRows, currentScopeRows] = await Promise.all([
+      executeTypedConversationProductQuery(input.transaction,
+        conversationProductTypedDb.select({
+          namespaceId: memoryNamespaces.namespaceId,
+        }).from(memoryNamespaces).where(eq(
+          memoryNamespaces.memoryId,
+          source.memory.id,
+        )).orderBy(asc(memoryNamespaces.namespaceId))),
+      executeTypedConversationProductQuery(input.transaction,
+        conversationProductTypedDb.select({
+          scopeId: memoryScopes.scopeId,
+          origin: memoryScopes.origin,
+        }).from(memoryScopes).where(eq(
+          memoryScopes.memoryId,
+          source.memory.id,
+        )).orderBy(asc(memoryScopes.scopeId))),
+    ]);
+    const currentAccessNamespaceIds = resolveRepairRequiredNamespaceIds({
+      namespaceIds: currentNamespaceRows.map(entry => entry.namespace_id),
+      scopeOrigins: currentScopeRows.map(entry => {
+        if (entry.origin !== "seed" && entry.origin !== "scope") {
+          throw new ForegroundProductChangedError(
+            "Task Scope Memory audience changed during repair attachment",
+          );
+        }
+        return entry.origin;
+      }),
+      originWritableNamespaceId:
+        input.taskScope.expectedScopeOriginNamespaceId,
+    }, "Task Scope Memory audience changed during repair attachment");
+    if (!taskScopeAttachmentCurrent({
+      taskScope: input.taskScope,
+      scopeOriginNamespaceId:
+        input.taskScope.expectedScopeOriginNamespaceId,
+      embeddingRevision: source.targetContentRevision,
+      expectedEmbeddingRevision: source.targetContentRevision,
+      namespaceIds: currentNamespaceRows.map(entry => entry.namespace_id),
+      scopeRows: currentScopeRows,
+      accessNamespaceIds: currentAccessNamespaceIds,
+    })) throw new ForegroundProductChangedError(
+      "Task Scope Memory audience changed during repair attachment",
+    );
+  }
+  return "attached";
+}
+
 export async function attachPostgresForegroundMemoryRepair(input:
   ForegroundMemoryRepairAttachment & (
     | Readonly<{ product: ConversationProductPostgresHandle }>
@@ -560,178 +1047,6 @@ export async function attachPostgresForegroundMemoryRepair(input:
       authorizeSource(transaction: CanonicalTranscriptTx): Promise<boolean>;
     }>
   )): Promise<"attached" | "replayed" | "conflict"> {
-  if (
-    input.source.plaintextBytes === null
-    || input.source.memory.type === null
-    || input.source.memory.content === null
-  ) return "conflict";
-  const ordinaryType = input.source.memory.type;
-  const ordinaryContent = input.source.memory.content;
-  const expectedObjectId = deriveMemoryCryptoObjectIdV1({
-    memoryId: input.source.memory.id,
-    contentRevision: input.source.targetContentRevision,
-  });
-  if (
-    input.objectId !== expectedObjectId
-    || !equalBytes(input.requestCommitment, input.source.requestCommitment)
-  ) return "conflict";
-  const fingerprint = fingerprintRequiredMemoryNamespaces(
-    input.source.accessNamespaceIds,
-  );
-  const attach = async (tx: ConversationProductPostgresExecutor) => {
-      const rows = await executeTypedConversationProductQuery(tx,
-        conversationProductTypedDb.select({
-          type: memories.type,
-          content: memories.content,
-          importance: memories.importance,
-          tier: memories.tier,
-          createdAt: memories.createdAt,
-          contentRevision: memories.contentRevision,
-          cryptoObjectId: memories.cryptoObjectId,
-          cryptoAccessRevision: memories.cryptoAccessRevision,
-          fingerprint: memories.cryptoRequiredNamespaceFingerprint,
-          state: memories.cryptoMappingState,
-          scopeOriginNamespaceId: memories.scopeOriginNamespaceId,
-        }).from(memories).where(eq(
-          memories.id,
-          input.source.memory.id,
-        )).limit(2));
-      const row = rows[0];
-      if (
-        rows.length !== 1
-        || row === undefined
-        || row.type !== input.source.memory.type
-        || row.content !== input.source.memory.content
-        || row.importance !== input.source.memory.importance
-        || row.tier !== input.source.memory.tier
-        || exactDate(row.created_at).getTime()
-          !== input.source.memory.createdAt.getTime()
-      ) return "conflict";
-      const [namespaceRows, scopeRows] = await Promise.all([
-        executeTypedConversationProductQuery(tx,
-          conversationProductTypedDb.select({
-            namespaceId: memoryNamespaces.namespaceId,
-          }).from(memoryNamespaces).where(eq(
-            memoryNamespaces.memoryId,
-            input.source.memory.id,
-          )).orderBy(asc(memoryNamespaces.namespaceId))),
-        executeTypedConversationProductQuery(tx,
-          conversationProductTypedDb.select({ origin: memoryScopes.origin })
-            .from(memoryScopes).where(eq(
-              memoryScopes.memoryId,
-              input.source.memory.id,
-            )).orderBy(asc(memoryScopes.scopeId))),
-      ]);
-      const currentNamespaceIds = resolveRequiredMemoryNamespaceIds({
-        namespaceIds: namespaceRows.map((entry) => entry.namespace_id),
-        scopeOrigins: scopeRows.map((entry) => {
-          if (entry.origin !== "seed" && entry.origin !== "scope") {
-            throw new TypeError("Memory scope origin is invalid");
-          }
-          return entry.origin;
-        }),
-        originWritableNamespaceId: row.scope_origin_namespace_id,
-      });
-      if (!equalStrings(currentNamespaceIds, input.source.accessNamespaceIds)) {
-        return "conflict";
-      }
-      const replay = (
-        row.content_revision === input.source.targetContentRevision
-        && row.crypto_object_id === input.objectId
-        && row.crypto_access_revision === 0
-        && row.crypto_mapping_state === "verified"
-        && equalBytes(row.crypto_required_namespace_fingerprint, fingerprint)
-      );
-      if (!replay && (
-        row.content_revision !== input.source.expectedContentRevision
-        || row.crypto_object_id !== null
-      )) return "conflict";
-      const lifecycleRows = await executeTypedConversationProductQuery(tx,
-        conversationProductTypedDb.select({
-          objectId: memoryCryptoRevisions.cryptoObjectId,
-          allocationRequestDigest:
-            memoryCryptoRevisions.allocationRequestDigest,
-          requiredNamespaceFingerprint:
-            memoryCryptoRevisions.requiredNamespaceFingerprint,
-          completion: memoryCryptoRevisions.completion,
-          disposition: memoryCryptoRevisions.disposition,
-        }).from(memoryCryptoRevisions).where(and(
-          eq(memoryCryptoRevisions.memoryId, input.source.memory.id),
-          eq(
-            memoryCryptoRevisions.contentRevision,
-            input.source.targetContentRevision,
-          ),
-        )).limit(2));
-      const lifecycle = lifecycleRows[0];
-      if (
-        lifecycleRows.length !== 1
-        || lifecycle === undefined
-        || lifecycle.crypto_object_id !== input.objectId
-        || !equalBytes(
-          lifecycle.allocation_request_digest,
-          input.requestCommitment,
-        )
-        || !equalBytes(
-          lifecycle.required_namespace_fingerprint,
-          fingerprint,
-        )
-      ) throw new ForegroundProductChangedError(
-        "Memory repair lifecycle conflicted",
-      );
-      if (
-        replay
-          ? lifecycle.completion !== "complete"
-            || lifecycle.disposition !== "mapped"
-          : (lifecycle.completion !== "pending"
-              && lifecycle.completion !== "complete")
-            || lifecycle.disposition !== "active"
-      ) throw new ForegroundProductChangedError(
-          "Memory repair lifecycle conflicted",
-        );
-      if (replay) return "replayed";
-      const completedAt = new Date();
-      const completed = await executeTypedConversationProductQuery(tx,
-        conversationProductTypedDb.update(memoryCryptoRevisions).set({
-          completion: "complete",
-          disposition: "mapped",
-          nextAttemptAt: null,
-          leaseToken: null,
-          leaseExpiresAt: null,
-          failureCode: null,
-          cryptoCompletedAt: completedAt,
-          updatedAt: completedAt,
-        }).where(and(
-          eq(memoryCryptoRevisions.memoryId, input.source.memory.id),
-          eq(
-            memoryCryptoRevisions.contentRevision,
-            input.source.targetContentRevision,
-          ),
-          eq(memoryCryptoRevisions.cryptoObjectId, input.objectId),
-          eq(memoryCryptoRevisions.disposition, "active"),
-        )).returning({ sequence: memoryCryptoRevisions.sequence }));
-      if (completed.length !== 1) throw new ForegroundProductChangedError(
-        "Memory repair lifecycle changed before attachment",
-      );
-      const updated = await executeTypedConversationProductQuery(tx,
-        conversationProductTypedDb.update(memories).set({
-          contentRevision: input.source.targetContentRevision,
-          cryptoObjectId: input.objectId,
-          cryptoAccessRevision: 0,
-          cryptoRequiredNamespaceFingerprint: fingerprint,
-          cryptoMappingState: "verified",
-          updatedAt: completedAt,
-        }).where(and(
-          eq(memories.id, input.source.memory.id),
-          eq(memories.type, ordinaryType),
-          eq(memories.content, ordinaryContent),
-          eq(memories.contentRevision, input.source.expectedContentRevision),
-          isNull(memories.cryptoObjectId),
-        )).returning({ id: memories.id }));
-      if (updated.length !== 1) throw new ForegroundProductChangedError(
-        "Memory changed before repair attachment",
-      );
-      return "attached" as const;
-  };
   try {
     if ("canonical" in input) {
       return await input.canonical.transaction(async (transaction, executor) => {
@@ -740,12 +1055,17 @@ export async function attachPostgresForegroundMemoryRepair(input:
           representation: "ordinary_and_protected",
         });
         if (!await input.authorizeSource(transaction)) return "conflict";
-        return attach(executor);
+        return attachPostgresMemoryRepairInTransaction({
+          transaction: executor,
+          attachment: input,
+        });
       }, { isolationLevel: "serializable" });
     }
-    return await input.product.transaction(attach, {
-      isolationLevel: "serializable",
-    });
+    return await input.product.transaction(transaction =>
+      attachPostgresMemoryRepairInTransaction({
+        transaction,
+        attachment: input,
+      }), { isolationLevel: "serializable" });
   } catch (error) {
     if (isForegroundProductChangedError(error)
       || error instanceof EncryptionPublicationPolicyError
@@ -754,4 +1074,38 @@ export async function attachPostgresForegroundMemoryRepair(input:
     }
     throw error;
   }
+}
+
+/** Attach one exact Task Scope repair on its caller-owned transaction. */
+export function attachPostgresTaskScopeMemoryRepair(input: Readonly<{
+  transaction: ConversationProductPostgresTransaction;
+  source: TaskScopeMemoryRepairSource;
+  objectId: string;
+  requestCommitment: Uint8Array;
+}>): Promise<"attached" | "replayed" | "conflict"> {
+  if (!UUID.test(input.source.scopeId)
+    || !UUID.test(input.source.expectedScopeOriginNamespaceId)
+    || !Number.isSafeInteger(input.source.expectedEmbeddingRevision)
+    || input.source.expectedEmbeddingRevision < 0
+    || input.source.expectedEmbeddingRevision
+      !== input.source.source.expectedContentRevision
+    || input.source.source.representationMode !== "ordinary-and-protected"
+    || input.source.source.existingObjectId !== null
+    || !equalStrings(input.source.source.accessNamespaceIds, [
+      input.source.expectedScopeOriginNamespaceId,
+    ])) return Promise.resolve("conflict");
+  return attachPostgresMemoryRepairInTransaction({
+    transaction: input.transaction,
+    attachment: {
+      source: input.source.source,
+      objectId: input.objectId,
+      requestCommitment: input.requestCommitment,
+    },
+    taskScope: {
+      scopeId: input.source.scopeId,
+      expectedScopeOriginNamespaceId:
+        input.source.expectedScopeOriginNamespaceId,
+      expectedEmbeddingRevision: input.source.expectedEmbeddingRevision,
+    },
+  });
 }
