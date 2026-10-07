@@ -283,6 +283,7 @@ test("protected Task execution receipts are exact, resumable and append-only for
           operationId: null,
           requestDigest: null,
           requiredAuthorityDigest: null,
+          semanticAuthorityRequirements: null,
           sealedAt: new Date("2026-10-06T12:00:01.000Z"),
         }));
       })
@@ -347,6 +348,19 @@ test("protected Task execution receipts are exact, resumable and append-only for
       )));
     }));
     expect(updateCode).toBe("23514");
+    const semanticManifestUpdateCode = await product.transaction(tx =>
+      rejectedCode(async () => {
+        await tx.transaction(savepoint => savepoint.update(
+          protectedTaskContinuationReceipts,
+        ).set({ semanticAuthorityRequirements: null }).where(eq(
+          protectedTaskContinuationReceipts.taskRunId,
+          fixture.taskRunId,
+        )));
+      })
+    );
+    // Product has no UPDATE privilege on continuation content; PostgreSQL
+    // rejects this before the immutable-row trigger can run.
+    expect(semanticManifestUpdateCode).toBe("42501");
     const continuationDeleteCode = await product.transaction(tx =>
       rejectedCode(async () => {
         await tx.transaction(savepoint => savepoint.delete(

@@ -72,7 +72,7 @@ describe("Task execution evidence inventory classifications", () => {
     const expectedLocators = groups.flatMap((group) =>
       groupLocators(group.locator, group.fields)
     ).sort();
-    expect(expectedLocators).toHaveLength(36);
+    expect(expectedLocators).toHaveLength(37);
     expect(REVIEWED_TASK_EXECUTION_EVIDENCE_COVERAGE_ENTRIES
       .map((entry) => entry.locator).sort()).toEqual(expectedLocators);
 

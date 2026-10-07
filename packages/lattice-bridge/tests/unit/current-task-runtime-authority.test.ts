@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, test } from "bun:test";
 import {
+  canonicalProtectedTaskSemanticAuthorityRequirements,
   parseParkedProtectedTaskAdditionalAuthority,
+  protectedTaskSemanticAuthorityRequirementsDigest,
   PostgresJsBridgeConnection,
   PostgresJsBridgeExecutor,
   PostgresJsBridgeRow,
@@ -97,6 +99,11 @@ function parkedAuthorityRows() {
     startedAt,
     pristine: true,
   };
+  const semanticAuthorityRequirements =
+    canonicalProtectedTaskSemanticAuthorityRequirements([{
+      namespaceId: NAMESPACE,
+      operations: ["decrypt"],
+    }]);
   const proof: ProtectedTaskExecutionContinuationProof = {
     segment: {
       taskRunId: RUN,
@@ -125,7 +132,11 @@ function parkedAuthorityRows() {
       interruptId: "interrupt:authority:1",
       operationId: "tool-call:1",
       requestDigest: new Uint8Array(32).fill(6),
-      requiredAuthorityDigest: new Uint8Array(32).fill(7),
+      requiredAuthorityDigest:
+        protectedTaskSemanticAuthorityRequirementsDigest(
+          semanticAuthorityRequirements,
+        ),
+      semanticAuthorityRequirements,
       sealedAt: parkedAt,
     },
   };

@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
+  protectedTaskSemanticAuthorityRequirementsDigest,
   protectedTaskAdditionalAuthorityContinuationFingerprint,
   type ProtectedTaskExecutionContinuationProof,
 } from "../../src/queries/protected-task-execution-receipts";
 import {
+  discoverParkedProtectedTaskAdditionalAuthority,
   parseParkedProtectedTaskAdditionalAuthority,
   readParkedProtectedTaskAdditionalAuthority,
   sameParkedProtectedTaskAdditionalAuthority,
@@ -36,6 +38,10 @@ const graphThreadId = `subagent:${ids.task}:${ids.run}`;
 const parkedAt = new Date("2026-10-07T12:34:56.000Z");
 const startedAt = new Date("2026-10-07T12:00:00.000Z");
 const digest = (seed: number): Uint8Array => new Uint8Array(32).fill(seed);
+const semanticAuthorityRequirements = Object.freeze([Object.freeze({
+  namespaceId: ids.namespace,
+  operations: Object.freeze(["decrypt", "encrypt"] as const),
+})]);
 
 function reference(
   overrides: Partial<ProtectedTaskDurableJobReference> = {},
@@ -164,7 +170,10 @@ function proof(
       interruptId: "interrupt:authority:1",
       operationId: "tool-call:1",
       requestDigest: digest(6),
-      requiredAuthorityDigest: digest(7),
+      requiredAuthorityDigest: protectedTaskSemanticAuthorityRequirementsDigest(
+        semanticAuthorityRequirements,
+      ),
+      semanticAuthorityRequirements,
       sealedAt: new Date(parkedAt),
       ...overrides.continuation,
     },
@@ -226,7 +235,15 @@ describe("parked protected Task additional-authority discovery", () => {
     const taskRow = task();
     const runRow = run();
     const jobRow = job();
-    const proofRow = proof();
+    const mutableManifest = [{
+      namespaceId: ids.namespace,
+      operations: ["decrypt", "encrypt"],
+    }];
+    const proofRow = proof({ continuation: {
+      semanticAuthorityRequirements: mutableManifest,
+      requiredAuthorityDigest:
+        protectedTaskSemanticAuthorityRequirementsDigest(mutableManifest),
+    } });
     const candidate = parse({
       task: taskRow,
       run: runRow,
@@ -256,11 +273,14 @@ describe("parked protected Task additional-authority discovery", () => {
     runRow.startedAt.setTime(0);
     (proofRow.segment.checkpointDigest as Uint8Array).fill(0);
     proofRow.segment.sealedAt.setTime(0);
+    mutableManifest[0]!.operations[0] = "encrypt";
     expect(candidate?.occurrence.task.cryptoRequiredNamespaceFingerprint)
       .toEqual(digest(1));
     expect(candidate?.occurrence.run.startedAt).toEqual(startedAt);
     expect(candidate?.proof.segment.checkpointDigest).toEqual(digest(3));
     expect(candidate?.proof.segment.sealedAt).toEqual(parkedAt);
+    expect(candidate?.proof.continuation.semanticAuthorityRequirements)
+      .toEqual(semanticAuthorityRequirements);
     expect(sameParkedProtectedTaskAdditionalAuthority(candidate!, candidate!))
       .toBe(true);
   });
@@ -305,6 +325,9 @@ describe("parked protected Task additional-authority discovery", () => {
       parse({ proof: proof({ continuation: { effectDisposition: "none_v1" } }) }),
       parse({ proof: proof({ continuation: { interruptId: "interrupt:other" } }) }),
       parse({ proof: proof({ continuation: { sealedAt: startedAt } }) }),
+      parse({ proof: proof({ continuation: {
+        semanticAuthorityRequirements: null,
+      } }) }),
     ];
     for (const candidate of invalid) expect(candidate).toBeNull();
   });
@@ -329,5 +352,10 @@ describe("parked protected Task additional-authority discovery", () => {
       taskRunId: ids.run,
       authorizationRequestId,
     })).toBeNull();
+
+    expect(await discoverParkedProtectedTaskAdditionalAuthority(
+      loaderDb([row]),
+      { taskRunId: ids.run },
+    )).toMatchObject({ authorizationRequestId });
   });
 });

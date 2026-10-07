@@ -12,6 +12,7 @@ import {
   namespaces,
   protectedTaskContinuationReceipts,
   protectedTaskAdditionalAuthorityContinuationFingerprint,
+  protectedTaskSemanticAuthorityRequirementsDigest,
   protectedTaskExecutionSegmentReceipts,
   readParkedProtectedTaskAdditionalAuthority,
   resolveAppDatabaseConnectionString,
@@ -48,6 +49,13 @@ type Fixture = Readonly<{
   graphThreadId: string;
   jobReference: ProtectedTaskDurableJobReference;
 }>;
+
+function semanticAuthorityRequirements(fixture: Fixture) {
+  return Object.freeze([Object.freeze({
+    namespaceId: fixture.namespaceId,
+    operations: Object.freeze(["decrypt", "encrypt"] as const),
+  })]);
+}
 
 let admin: AdminDb;
 let productA: ProductDb;
@@ -206,6 +214,7 @@ async function createFixture(options: Readonly<{
 }
 
 function input(fixture: Fixture): SealAndParkProtectedTaskRunInput {
+  const requirements = semanticAuthorityRequirements(fixture);
   return {
     park: {
       taskId: fixture.taskId,
@@ -241,7 +250,9 @@ function input(fixture: Fixture): SealAndParkProtectedTaskRunInput {
       interruptId: "interrupt:authority:1",
       operationId: "task-effect:1",
       requestDigest: new Uint8Array(32).fill(0x53),
-      requiredAuthorityDigest: new Uint8Array(32).fill(0x54),
+      requiredAuthorityDigest:
+        protectedTaskSemanticAuthorityRequirementsDigest(requirements),
+      semanticAuthorityRequirements: requirements,
     },
   };
 }
@@ -314,6 +325,8 @@ function additionalAuthorityStartInput(
       operationId: parked.continuation.operationId,
       requestDigest: parked.continuation.requestDigest,
       requiredAuthorityDigest: parked.continuation.requiredAuthorityDigest,
+      semanticAuthorityRequirements:
+        parked.continuation.semanticAuthorityRequirements!,
     },
   };
 }

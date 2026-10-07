@@ -45,14 +45,18 @@ import {
 import { protectedTaskRunResultObjectId } from
   "./protected-task-output-binding-identities";
 import {
+  canonicalProtectedTaskSemanticAuthorityRequirements,
   protectedTaskAdditionalAuthorityContinuationFingerprint,
+  protectedTaskSemanticAuthorityRequirementsDigest,
   readProtectedTaskExecutionContinuationProof,
+  sameProtectedTaskSemanticAuthorityRequirements,
   sealProtectedTaskContinuationReceiptInTx,
   sealProtectedTaskExecutionSegmentReceiptInTx,
   type SealProtectedTaskContinuationReceiptInput,
   type SealProtectedTaskContinuationReceiptResult,
   type ProtectedTaskCheckpointManifestReceipt,
   type ProtectedTaskExecutionContinuationProof,
+  type ProtectedTaskSemanticAuthorityRequirements,
   type SealProtectedTaskExecutionSegmentReceiptInput,
   type SealProtectedTaskExecutionSegmentReceiptResult,
 } from "./protected-task-execution-receipts";
@@ -2439,6 +2443,16 @@ export type ParkedProtectedTaskAdditionalAuthorityJobRow = Readonly<{
   pristine: boolean;
 }>;
 
+export type ParkedProtectedTaskAdditionalAuthorityProof = Readonly<{
+  segment: ProtectedTaskExecutionContinuationProof["segment"];
+  continuation: Omit<
+    ProtectedTaskExecutionContinuationProof["continuation"],
+    "semanticAuthorityRequirements"
+  > & Readonly<{
+    semanticAuthorityRequirements: ProtectedTaskSemanticAuthorityRequirements;
+  }>;
+}>;
+
 export type ParkedProtectedTaskAdditionalAuthority = Readonly<{
   occurrence: Readonly<{
     task: Readonly<{
@@ -2472,7 +2486,7 @@ export type ParkedProtectedTaskAdditionalAuthority = Readonly<{
     interrupts: readonly ProtectedTaskRunInterruptCoordinate[];
     reference: ProtectedTaskDurableJobReference;
   }>;
-  proof: ProtectedTaskExecutionContinuationProof;
+  proof: ParkedProtectedTaskAdditionalAuthorityProof;
   authorizationRequestId: string;
   continuationFingerprint: string;
   nextExecutionSegment: number;
@@ -2511,6 +2525,8 @@ export type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput =
         operationId: string;
         requestDigest: Uint8Array;
         requiredAuthorityDigest: Uint8Array;
+        semanticAuthorityRequirements:
+          ProtectedTaskSemanticAuthorityRequirements;
       }>;
     }
   >;
@@ -3057,6 +3073,35 @@ export async function sealAndParkProtectedTaskRun(
     || !(continuation.requiredAuthorityDigest instanceof Uint8Array)) {
     throw new TypeError("Protected Task seal-and-park continuation is malformed");
   }
+  let semanticAuthorityRequirements: ProtectedTaskSemanticAuthorityRequirements;
+  try {
+    semanticAuthorityRequirements =
+      canonicalProtectedTaskSemanticAuthorityRequirements(
+        continuation.semanticAuthorityRequirements,
+      );
+    const semanticDigest = protectedTaskSemanticAuthorityRequirementsDigest(
+      semanticAuthorityRequirements,
+    );
+    const digestMatches = sameBytes(
+      semanticDigest,
+      continuation.requiredAuthorityDigest,
+    );
+    semanticDigest.fill(0);
+    if (!digestMatches) {
+      throw new TypeError(
+        "Protected Task seal-and-park continuation is malformed",
+      );
+    }
+  } catch (error) {
+    if (error instanceof TypeError
+      && error.message === "Protected Task seal-and-park continuation is malformed") {
+      throw error;
+    }
+    throw new TypeError(
+      "Protected Task seal-and-park continuation is malformed",
+      { cause: error },
+    );
+  }
   const continuationSnapshot = Object.freeze({
     kind: continuation.kind,
     reason: continuation.reason,
@@ -3065,6 +3110,7 @@ export async function sealAndParkProtectedTaskRun(
     operationId: continuation.operationId,
     requestDigest: continuation.requestDigest.slice(),
     requiredAuthorityDigest: continuation.requiredAuthorityDigest.slice(),
+    semanticAuthorityRequirements,
   });
   const interrupt = parkReceiptValue.interrupts.find(candidate =>
     candidate.id === continuationSnapshot.interruptId
@@ -3176,6 +3222,12 @@ function cloneProtectedTaskExecutionContinuationProof(
       requestDigest: proof.continuation.requestDigest?.slice() ?? null,
       requiredAuthorityDigest:
         proof.continuation.requiredAuthorityDigest?.slice() ?? null,
+      semanticAuthorityRequirements:
+        proof.continuation.semanticAuthorityRequirements === null
+          ? null
+          : canonicalProtectedTaskSemanticAuthorityRequirements(
+              proof.continuation.semanticAuthorityRequirements,
+            ),
       sealedAt: new Date(proof.continuation.sealedAt.getTime()),
     }),
   });
@@ -3349,13 +3401,41 @@ export function parseParkedProtectedTaskAdditionalAuthority(input: Readonly<{
     || continuation.requestDigest.length !== 32
     || !(continuation.requiredAuthorityDigest instanceof Uint8Array)
     || continuation.requiredAuthorityDigest.length !== 32
+    || continuation.semanticAuthorityRequirements === null
     || !(continuation.sealedAt instanceof Date)
     || continuation.sealedAt.getTime() !== parkedAt.getTime()) return null;
+
+  let semanticAuthorityRequirements: ProtectedTaskSemanticAuthorityRequirements;
+  try {
+    semanticAuthorityRequirements =
+      canonicalProtectedTaskSemanticAuthorityRequirements(
+        continuation.semanticAuthorityRequirements,
+      );
+    const semanticDigest = protectedTaskSemanticAuthorityRequirementsDigest(
+      semanticAuthorityRequirements,
+    );
+    const digestMatches = sameBytes(
+      semanticDigest,
+      continuation.requiredAuthorityDigest,
+    );
+    semanticDigest.fill(0);
+    if (!digestMatches) return null;
+  } catch {
+    return null;
+  }
 
   const continuationFingerprint =
     protectedTaskAdditionalAuthorityContinuationFingerprint(continuation);
   const copiedReference = Object.freeze({ ...reference });
-  const copiedProof = cloneProtectedTaskExecutionContinuationProof(proof);
+  const genericProof = cloneProtectedTaskExecutionContinuationProof(proof);
+  const copiedProof: ParkedProtectedTaskAdditionalAuthorityProof =
+    Object.freeze({
+      segment: genericProof.segment,
+      continuation: Object.freeze({
+        ...genericProof.continuation,
+        semanticAuthorityRequirements,
+      }),
+    });
   return Object.freeze({
     occurrence: Object.freeze({
       task: Object.freeze({
@@ -3477,6 +3557,12 @@ export function sameParkedProtectedTaskAdditionalAuthority(
       leftContinuation.requiredAuthorityDigest,
       rightContinuation.requiredAuthorityDigest,
     )
+    && leftContinuation.semanticAuthorityRequirements !== null
+    && rightContinuation.semanticAuthorityRequirements !== null
+    && sameProtectedTaskSemanticAuthorityRequirements(
+      leftContinuation.semanticAuthorityRequirements,
+      rightContinuation.semanticAuthorityRequirements,
+    )
     && leftContinuation.sealedAt.getTime()
       === rightContinuation.sealedAt.getTime()
     && left.authorizationRequestId === right.authorizationRequestId
@@ -3553,14 +3639,18 @@ export const parkedTaskAdditionalAuthorityJobProjection = Object.freeze({
  * locks. The descriptor is content-free and must be revalidated by its later
  * authority owner before any protected execution is admitted.
  */
-export async function readParkedProtectedTaskAdditionalAuthority(
+async function readParkedProtectedTaskAdditionalAuthorityCandidate(
   db: Pick<DirectDatabase, "select">,
-  input: Readonly<{ taskRunId: string; authorizationRequestId: string }>,
-): Promise<ParkedProtectedTaskAdditionalAuthority | null> {
-  const taskRunId = input.taskRunId;
-  const authorizationRequestId = input.authorizationRequestId;
-  if (!CANONICAL_UUID.test(taskRunId)
-    || !opaqueCheckpointCoordinate(authorizationRequestId)) {
+  taskRunId: string,
+): Promise<Readonly<{
+  row: Readonly<{
+    task: ParkedProtectedTaskAdditionalAuthorityTaskRow;
+    run: ParkedProtectedTaskAdditionalAuthorityRunRow;
+    job: ParkedProtectedTaskAdditionalAuthorityJobRow;
+  }>;
+  proof: ProtectedTaskExecutionContinuationProof;
+}> | null> {
+  if (!CANONICAL_UUID.test(taskRunId)) {
     throw new TypeError(
       "Protected Task additional-authority discovery identity is malformed",
     );
@@ -3590,10 +3680,73 @@ export async function readParkedProtectedTaskAdditionalAuthority(
     jobId: row.job.id,
     executionSegment: row.job.reference["executionSegment"] as number,
   });
+  return proof === null ? null : Object.freeze({ row, proof });
+}
+
+/**
+ * Discover one parked candidate for an already known authorization request.
+ * The request filter is retained for callers correlating an external row.
+ */
+export async function readParkedProtectedTaskAdditionalAuthority(
+  db: Pick<DirectDatabase, "select">,
+  input: Readonly<{ taskRunId: string; authorizationRequestId: string }>,
+): Promise<ParkedProtectedTaskAdditionalAuthority | null> {
+  const authorizationRequestId = input.authorizationRequestId;
+  if (!opaqueCheckpointCoordinate(authorizationRequestId)) {
+    throw new TypeError(
+      "Protected Task additional-authority discovery identity is malformed",
+    );
+  }
+  const candidate = await readParkedProtectedTaskAdditionalAuthorityCandidate(
+    db,
+    input.taskRunId,
+  );
+  if (candidate === null) return null;
   return parseParkedProtectedTaskAdditionalAuthority({
-    ...row,
-    proof,
+    ...candidate.row,
+    proof: candidate.proof,
     authorizationRequestId,
+  });
+}
+
+/**
+ * Restart discovery derives the exact request from the immutable park/proof.
+ * It never guesses from a mutable authorization row or caller coordinate.
+ */
+export async function discoverParkedProtectedTaskAdditionalAuthority(
+  db: Pick<DirectDatabase, "select">,
+  input: Readonly<{ taskRunId: string }>,
+): Promise<ParkedProtectedTaskAdditionalAuthority | null> {
+  const candidate = await readParkedProtectedTaskAdditionalAuthorityCandidate(
+    db,
+    input.taskRunId,
+  );
+  if (candidate === null) return null;
+  const continuation = candidate.proof.continuation;
+  if (continuation.kind !== "pre_effect_interrupt_v1"
+    || continuation.reason !== "additional_authority"
+    || typeof continuation.interruptId !== "string"
+    || !isRecord(candidate.row.job.parkReceipt)) return null;
+  let interrupts: readonly ProtectedTaskRunInterruptCoordinate[];
+  try {
+    interrupts = canonicalInterruptCoordinates(
+      candidate.row.job.parkReceipt["interrupts"] as
+        readonly ProtectedTaskRunInterruptCoordinate[],
+    );
+  } catch {
+    return null;
+  }
+  const matching = interrupts.filter(interrupt =>
+    interrupt.id === continuation.interruptId
+      && interrupt.kind === "additional_authority"
+      && typeof interrupt.requestId === "string"
+      && opaqueCheckpointCoordinate(interrupt.requestId)
+  );
+  if (matching.length !== 1 || matching[0]?.requestId === undefined) return null;
+  return parseParkedProtectedTaskAdditionalAuthority({
+    ...candidate.row,
+    proof: candidate.proof,
+    authorizationRequestId: matching[0].requestId,
   });
 }
 
@@ -4476,6 +4629,26 @@ export async function startParkedProtectedTaskRunAdditionalAuthoritySegment(
   const nextReference = Object.freeze({ ...input.jobReference });
   const continuationInput = input.continuation;
   const checkpointInput = input.checkpointManifest;
+  let semanticAuthorityRequirements:
+    | ProtectedTaskSemanticAuthorityRequirements
+    | null = null;
+  let semanticDigestMatches = false;
+  try {
+    semanticAuthorityRequirements =
+      canonicalProtectedTaskSemanticAuthorityRequirements(
+        continuationInput.semanticAuthorityRequirements,
+      );
+    const semanticDigest = protectedTaskSemanticAuthorityRequirementsDigest(
+      semanticAuthorityRequirements,
+    );
+    semanticDigestMatches = sameBytes(
+      semanticDigest,
+      continuationInput.requiredAuthorityDigest,
+    );
+    semanticDigest.fill(0);
+  } catch {
+    semanticAuthorityRequirements = null;
+  }
   if (
     !taskId
     || !taskRunId
@@ -4502,6 +4675,8 @@ export async function startParkedProtectedTaskRunAdditionalAuthoritySegment(
     || continuationInput.requestDigest.length !== 32
     || !(continuationInput.requiredAuthorityDigest instanceof Uint8Array)
     || continuationInput.requiredAuthorityDigest.length !== 32
+    || semanticAuthorityRequirements === null
+    || !semanticDigestMatches
     || !isRecord(checkpointInput)
     || checkpointInput.contract !== "encrypted_langgraph_v1"
     || !Number.isSafeInteger(checkpointInput.expectedCheckpointCount)
@@ -4552,6 +4727,7 @@ export async function startParkedProtectedTaskRunAdditionalAuthoritySegment(
     operationId: continuationInput.operationId,
     requestDigest: continuationInput.requestDigest.slice(),
     requiredAuthorityDigest: continuationInput.requiredAuthorityDigest.slice(),
+    semanticAuthorityRequirements,
   });
   const parkedAt = new Date(input.parkedAt.getTime());
   const cryptoRequiredNamespaceFingerprint =
@@ -4650,6 +4826,11 @@ export async function startParkedProtectedTaskRunAdditionalAuthoritySegment(
       || !sameBytes(
         proof.continuation.requiredAuthorityDigest,
         continuation.requiredAuthorityDigest,
+      )
+      || proof.continuation.semanticAuthorityRequirements === null
+      || !sameProtectedTaskSemanticAuthorityRequirements(
+        proof.continuation.semanticAuthorityRequirements,
+        continuation.semanticAuthorityRequirements,
       )
       || freshLifecycleCandidate && (
         !exactAdditionalAuthorityCheckpointManifest(

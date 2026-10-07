@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, test } from "bun:test";
 import {
+  canonicalProtectedTaskSemanticAuthorityRequirements,
   parseParkedProtectedTaskAdditionalAuthority,
+  protectedTaskSemanticAuthorityRequirementsDigest,
   type ParkedProtectedTaskAdditionalAuthority,
   type ParkedProtectedTaskAdditionalAuthorityJobRow,
   type ParkedProtectedTaskAdditionalAuthorityRunRow,
@@ -36,6 +38,11 @@ const PARKED = new Date("2026-10-07T12:34:56.000Z");
 const OBJECT = `task-definition:v1:${"a".repeat(64)}`;
 
 const digest = (seed: number): Uint8Array => new Uint8Array(32).fill(seed);
+const semanticAuthorityRequirements = () =>
+  canonicalProtectedTaskSemanticAuthorityRequirements([{
+    namespaceId: NAMESPACE,
+    operations: ["decrypt"],
+  }]);
 
 function resultObjectId(): string {
   const value = createHash("sha256").update(
@@ -59,6 +66,7 @@ function reference(): ProtectedTaskDurableJobReference {
 }
 
 function proof(): ProtectedTaskExecutionContinuationProof {
+  const requirements = semanticAuthorityRequirements();
   return {
     segment: {
       taskRunId: RUN,
@@ -87,7 +95,9 @@ function proof(): ProtectedTaskExecutionContinuationProof {
       interruptId: "interrupt:authority:1",
       operationId: "tool-call:1",
       requestDigest: digest(6),
-      requiredAuthorityDigest: digest(7),
+      requiredAuthorityDigest:
+        protectedTaskSemanticAuthorityRequirementsDigest(requirements),
+      semanticAuthorityRequirements: requirements,
       sealedAt: new Date(PARKED),
     },
   };
@@ -208,13 +218,30 @@ function transactionRows(
 
 describe("parked Task Runtime authority", () => {
   test("copies the descriptor and rejects substituted derived coordinates", () => {
-    const original = descriptor();
+    const stored = descriptor();
+    const mutableRequirements = [{
+      namespaceId: NAMESPACE,
+      operations: ["decrypt"] as ("decrypt" | "encrypt")[],
+    }];
+    const original = {
+      ...stored,
+      proof: {
+        ...stored.proof,
+        continuation: {
+          ...stored.proof.continuation,
+          semanticAuthorityRequirements: mutableRequirements,
+        },
+      },
+    };
     const copy = copyParkedTaskRuntimeAuthority(original);
+    mutableRequirements[0]!.operations[0] = "encrypt";
     original.proof.segment.checkpointDigest?.fill(0);
     original.occurrence.task.cryptoRequiredNamespaceFingerprint.fill(0);
     expect(copy.proof.segment.checkpointDigest).toEqual(digest(3));
     expect(copy.occurrence.task.cryptoRequiredNamespaceFingerprint)
       .toEqual(digest(1));
+    expect(copy.proof.continuation.semanticAuthorityRequirements)
+      .toEqual(semanticAuthorityRequirements());
 
     expect(() => copyParkedTaskRuntimeAuthority({
       ...copy,
@@ -253,6 +280,30 @@ describe("parked Task Runtime authority", () => {
     expected.proof.continuation.requestDigest?.fill(0);
     expected.occurrence.task.cryptoRequiredNamespaceFingerprint.fill(0);
     expect(await operation).not.toBeNull();
+  });
+
+  test("rejects a current semantic authority manifest substituted after discovery", async () => {
+    const substituted = canonicalProtectedTaskSemanticAuthorityRequirements([{
+      namespaceId: NAMESPACE,
+      operations: ["decrypt", "encrypt"],
+    }]);
+    const original = rows();
+    const value = {
+      ...original,
+      proof: {
+        ...original.proof,
+        continuation: {
+          ...original.proof.continuation,
+          requiredAuthorityDigest:
+            protectedTaskSemanticAuthorityRequirementsDigest(substituted),
+          semanticAuthorityRequirements: substituted,
+        },
+      },
+    };
+    expect(await lockCurrentParkedTaskAdditionalAuthority({
+      transaction: transactionRows(value, []) as never,
+      expected: descriptor(),
+    })).toBeNull();
   });
 
   test("rejects stale lifecycle rows after the content-free locked proof", async () => {

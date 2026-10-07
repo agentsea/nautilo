@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
   protectedTaskAdditionalAuthorityContinuationFingerprint,
+  protectedTaskSemanticAuthorityRequirementsDigest,
 } from "../../src/queries/protected-task-execution-receipts";
 import {
   startParkedProtectedTaskRunAdditionalAuthoritySegment,
@@ -38,6 +39,10 @@ const parkReceiptKey = "nautilo.protectedTaskRunPark.v1";
 const digest = (seed: number): Uint8Array =>
   new Uint8Array(Array.from({ length: 32 }, (_, index) => seed + index));
 const definitionFingerprint = digest(1);
+const semanticAuthorityRequirements = Object.freeze([Object.freeze({
+  namespaceId: ids.namespace,
+  operations: Object.freeze(["decrypt", "encrypt"] as const),
+})]);
 const checkpointManifest = Object.freeze({
   contract: "encrypted_langgraph_v1" as const,
   expectedCheckpointCount: 2,
@@ -51,7 +56,10 @@ const continuation = Object.freeze({
   interruptId: "interrupt:additional-authority:1",
   operationId: "tool-call:1",
   requestDigest: digest(5),
-  requiredAuthorityDigest: digest(6),
+  requiredAuthorityDigest: protectedTaskSemanticAuthorityRequirementsDigest(
+    semanticAuthorityRequirements,
+  ),
+  semanticAuthorityRequirements,
 });
 const transcriptDigest = new Uint8Array(createHash("sha256").update(
   JSON.stringify([
@@ -160,6 +168,7 @@ function input(
       ...continuation,
       requestDigest: continuation.requestDigest.slice(),
       requiredAuthorityDigest: continuation.requiredAuthorityDigest.slice(),
+      semanticAuthorityRequirements,
     },
     ...overrides,
   };

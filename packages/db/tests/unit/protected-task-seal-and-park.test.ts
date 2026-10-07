@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
+import { protectedTaskSemanticAuthorityRequirementsDigest } from
+  "../../src/queries/protected-task-execution-receipts";
 import {
   parkProtectedTaskRun,
   sealAndParkProtectedTaskRun,
@@ -39,6 +41,10 @@ const parkedAt = new Date("2026-10-07T12:34:56.000Z");
 const fingerprint = new Uint8Array(Array.from({ length: 32 }, (_, index) => index));
 const digest = (seed: number): Uint8Array =>
   new Uint8Array(Array.from({ length: 32 }, (_, index) => seed + index));
+const semanticAuthorityRequirements = Object.freeze([Object.freeze({
+  namespaceId: ids.namespace,
+  operations: Object.freeze(["decrypt", "encrypt"] as const),
+})]);
 
 function reference(
   overrides: Partial<ProtectedTaskDurableJobReference> = {},
@@ -101,7 +107,10 @@ function input(
       interruptId: "interrupt:authority:1",
       operationId: "task-effect:1",
       requestDigest: digest(4),
-      requiredAuthorityDigest: digest(5),
+      requiredAuthorityDigest: protectedTaskSemanticAuthorityRequirementsDigest(
+        semanticAuthorityRequirements,
+      ),
+      semanticAuthorityRequirements,
     },
     ...overrides,
   };
@@ -467,5 +476,7 @@ describe("protected Task execution seal-and-park owner", () => {
       .toEqual(expectedRequestDigest);
     expect(fixture.state().continuations[0]?.requiredAuthorityDigest)
       .toEqual(expectedAuthorityDigest);
+    expect(fixture.state().continuations[0]?.semanticAuthorityRequirements)
+      .toEqual(semanticAuthorityRequirements);
   });
 });

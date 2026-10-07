@@ -2,9 +2,12 @@ import { describe, expect, test } from "bun:test";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
+  canonicalProtectedTaskSemanticAuthorityRequirements,
   PROTECTED_TASK_EXECUTION_ROUTES,
   protectedTaskAdditionalAuthorityContinuationFingerprint,
+  protectedTaskSemanticAuthorityRequirementsDigest,
   readProtectedTaskExecutionContinuationProof,
+  sealProtectedTaskContinuationReceipt,
   sealProtectedTaskContinuationReceiptInTx,
   sealProtectedTaskExecutionSegmentReceiptInTx,
   type SealProtectedTaskContinuationReceiptInput,
@@ -33,6 +36,10 @@ const ids = {
 const sealedAt = new Date("2026-10-06T10:00:00.000Z");
 const digest = (seed: number): Uint8Array =>
   new Uint8Array(Array.from({ length: 32 }, (_, index) => seed + index));
+const semanticAuthorityRequirements = Object.freeze([Object.freeze({
+  namespaceId: "60000000-0000-4000-8000-000000000007",
+  operations: Object.freeze(["decrypt", "encrypt"] as const),
+})]);
 
 const authorityFingerprintInput = () => ({
   taskRunId: ids.run,
@@ -44,7 +51,9 @@ const authorityFingerprintInput = () => ({
   interruptId: "interrupt:task-effect:1",
   operationId: "task-effect:1",
   requestDigest: digest(5),
-  requiredAuthorityDigest: digest(6),
+  requiredAuthorityDigest: protectedTaskSemanticAuthorityRequirementsDigest(
+    semanticAuthorityRequirements,
+  ),
 });
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -143,7 +152,7 @@ type CheckpointContinuationInput = Extract<
 >;
 type PreEffectContinuationInput = Extract<
   SealProtectedTaskContinuationReceiptInput,
-  { kind: "pre_effect_interrupt_v1" }
+  { reason: "additional_authority" }
 >;
 
 function checkpointContinuation(
@@ -176,7 +185,10 @@ function preEffectContinuation(
     interruptId: "interrupt:task-effect:1",
     operationId: "task-effect:1",
     requestDigest: digest(5),
-    requiredAuthorityDigest: digest(6),
+    requiredAuthorityDigest: protectedTaskSemanticAuthorityRequirementsDigest(
+      semanticAuthorityRequirements,
+    ),
+    semanticAuthorityRequirements,
     sealedAt,
     ...overrides,
   };
@@ -190,6 +202,7 @@ type HarnessOptions = Readonly<{
   continuations?: readonly ProtectedTaskContinuationReceipt[];
   loseSegmentInsert?: boolean;
   loseContinuationInsert?: boolean;
+  readGate?: Promise<void>;
 }>;
 
 function harness(options: HarnessOptions = {}) {
@@ -223,7 +236,10 @@ function harness(options: HarnessOptions = {}) {
       then: (
         resolve: (value: unknown[]) => unknown,
         reject: (reason: unknown) => unknown,
-      ) => Promise.resolve(rows(table)).then(resolve, reject),
+      ) => Promise.resolve().then(async () => {
+        if (table === taskRuns) await options.readGate;
+        return rows(table);
+      }).then(resolve, reject),
     };
     return query;
   };
@@ -269,19 +285,42 @@ async function sealSegment(target = harness()) {
 }
 
 describe("protected Task execution receipts", () => {
+  test("canonicalizes strict dense semantic authority manifests", () => {
+    const sparseOperations = new Array<"decrypt" | "encrypt">(3);
+    sparseOperations[0] = "decrypt";
+    sparseOperations[2] = "encrypt";
+    expect(canonicalProtectedTaskSemanticAuthorityRequirements(
+      semanticAuthorityRequirements,
+    )).toEqual(semanticAuthorityRequirements);
+    for (const malformed of [
+      Array(1),
+      [{
+        namespaceId: semanticAuthorityRequirements[0]!.namespaceId,
+        operations: Array(1),
+      }],
+      [{
+        namespaceId: semanticAuthorityRequirements[0]!.namespaceId,
+        operations: sparseOperations,
+      }],
+    ]) {
+      expect(() => canonicalProtectedTaskSemanticAuthorityRequirements(
+        malformed,
+      )).toThrow("semantic authority requirements are malformed");
+    }
+  });
   test("derives one canonical additional-authority continuation identity", () => {
     const value = authorityFingerprintInput();
     expect(protectedTaskAdditionalAuthorityContinuationFingerprint(value))
-      .toBe("dvRpDbrJHb9WYEFC3pCl67VQq9tygVTUf2gPFqrBpss");
+      .toBe("0KHnilfoCQCZQbnY8urlE6TJIMi7KawbJSkIlWrsR1w");
     expect(protectedTaskAdditionalAuthorityContinuationFingerprint({
       ...value,
       requestDigest: value.requestDigest.slice(),
       requiredAuthorityDigest: value.requiredAuthorityDigest.slice(),
-    })).toBe("dvRpDbrJHb9WYEFC3pCl67VQq9tygVTUf2gPFqrBpss");
+    })).toBe("0KHnilfoCQCZQbnY8urlE6TJIMi7KawbJSkIlWrsR1w");
     expect(protectedTaskAdditionalAuthorityContinuationFingerprint({
       ...value,
       requiredAuthorityDigest: digest(7),
-    })).not.toBe("dvRpDbrJHb9WYEFC3pCl67VQq9tygVTUf2gPFqrBpss");
+    })).not.toBe("0KHnilfoCQCZQbnY8urlE6TJIMi7KawbJSkIlWrsR1w");
   });
 
   test("rejects malformed authority continuation identity fields", () => {
@@ -451,6 +490,40 @@ describe("protected Task execution receipts", () => {
     });
   });
 
+  test("proof reads pin coordinates before the first await", async () => {
+    const sealed = await sealSegment();
+    expect(await sealProtectedTaskContinuationReceiptInTx(
+      sealed.tx,
+      checkpointContinuation(),
+    )).toMatchObject({ status: "sealed" });
+    let release!: () => void;
+    const readGate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const target = harness({
+      segments: sealed.segments,
+      continuations: sealed.continuations,
+      readGate,
+    });
+    const coordinates = {
+      taskId: ids.task,
+      taskRunId: ids.run,
+      jobId: ids.job,
+      executionSegment: 1,
+    };
+    const pending = readProtectedTaskExecutionContinuationProof(
+      target.tx,
+      coordinates,
+    );
+    coordinates.taskRunId = "20000000-0000-4000-8000-000000000009";
+    coordinates.jobId = ids.otherJob;
+    coordinates.executionSegment = 2;
+    release();
+    expect(await pending).toMatchObject({
+      segment: { taskRunId: ids.run, jobId: ids.job, executionSegment: 1 },
+    });
+  });
+
   test("seals an exact pre-effect interrupt without effect authority", async () => {
     const target = await sealSegment();
     const result = await sealProtectedTaskContinuationReceiptInTx(
@@ -471,6 +544,74 @@ describe("protected Task execution receipts", () => {
       .toBe(false);
   });
 
+  test("rejects a semantic manifest digest mismatch before locking", async () => {
+    const target = await sealSegment();
+    target.locks.length = 0;
+    expect(sealProtectedTaskContinuationReceiptInTx(
+      target.tx,
+      preEffectContinuation({ requiredAuthorityDigest: digest(17) }),
+    )).rejects.toThrow("continuation receipt is malformed");
+    expect(target.locks).toEqual([]);
+    expect(target.continuations).toEqual([]);
+  });
+
+  test("snapshots the semantic manifest before the first await", async () => {
+    const target = await sealSegment();
+    const mutable = [{
+      namespaceId: "60000000-0000-4000-8000-000000000008",
+      operations: ["decrypt"],
+    }];
+    const request = preEffectContinuation({
+      semanticAuthorityRequirements: mutable as
+        PreEffectContinuationInput["semanticAuthorityRequirements"],
+      requiredAuthorityDigest:
+        protectedTaskSemanticAuthorityRequirementsDigest(mutable),
+    });
+    const pending = sealProtectedTaskContinuationReceiptInTx(
+      target.tx,
+      request,
+    );
+    mutable[0]!.namespaceId = semanticAuthorityRequirements[0]!.namespaceId;
+    mutable[0]!.operations[0] = "encrypt";
+    expect(await pending).toMatchObject({ status: "sealed" });
+    expect(target.continuations[0]?.semanticAuthorityRequirements).toEqual([{
+      namespaceId: "60000000-0000-4000-8000-000000000008",
+      operations: ["decrypt"],
+    }]);
+  });
+
+  test("public sealing snapshots the manifest before transaction acquisition", async () => {
+    const target = await sealSegment();
+    const mutable = [{
+      namespaceId: "60000000-0000-4000-8000-000000000008",
+      operations: ["decrypt"],
+    }];
+    const request = preEffectContinuation({
+      semanticAuthorityRequirements: mutable as
+        PreEffectContinuationInput["semanticAuthorityRequirements"],
+      requiredAuthorityDigest:
+        protectedTaskSemanticAuthorityRequirementsDigest(mutable),
+    });
+    let enter!: () => void;
+    const gate = new Promise<void>(resolve => {
+      enter = resolve;
+    });
+    const db = {
+      transaction: async <T>(operation: (tx: never) => Promise<T>) => {
+        await gate;
+        return operation(target.tx as never);
+      },
+    } as unknown as DirectDatabase;
+    const pending = sealProtectedTaskContinuationReceipt(db, request);
+    mutable[0]!.operations[0] = "encrypt";
+    enter();
+    expect(await pending).toMatchObject({ status: "sealed" });
+    expect(target.continuations[0]?.semanticAuthorityRequirements).toEqual([{
+      namespaceId: "60000000-0000-4000-8000-000000000008",
+      operations: ["decrypt"],
+    }]);
+  });
+
   test("requires the exact native segment proof and rejects conflicting replay", async () => {
     const missing = harness();
     expect(await sealProtectedTaskContinuationReceiptInTx(
@@ -488,6 +629,26 @@ describe("protected Task execution receipts", () => {
       checkpointContinuation({ reason: "time_limit" }),
     )).toEqual({ status: "rejected", reason: "conflict" });
     expect(target.continuations).toHaveLength(1);
+  });
+
+  test("treats an altered semantic manifest as conflicting replay", async () => {
+    const target = await sealSegment();
+    expect(await sealProtectedTaskContinuationReceiptInTx(
+      target.tx,
+      preEffectContinuation(),
+    )).toMatchObject({ status: "sealed" });
+    const changed = Object.freeze([Object.freeze({
+      namespaceId: semanticAuthorityRequirements[0]!.namespaceId,
+      operations: Object.freeze(["decrypt"] as const),
+    })]);
+    expect(await sealProtectedTaskContinuationReceiptInTx(
+      target.tx,
+      preEffectContinuation({
+        semanticAuthorityRequirements: changed,
+        requiredAuthorityDigest:
+          protectedTaskSemanticAuthorityRequirementsDigest(changed),
+      }),
+    )).toEqual({ status: "rejected", reason: "conflict" });
   });
 
   test("has no resumable representation for an uncertain effect", async () => {

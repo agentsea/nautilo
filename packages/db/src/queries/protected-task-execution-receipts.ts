@@ -6,6 +6,9 @@ import { jobs, type Job } from "../schema/jobs";
 import {
   protectedTaskContinuationReceipts,
   type ProtectedTaskContinuationReceipt,
+  type ProtectedTaskSemanticAuthorityOperation,
+  type ProtectedTaskSemanticAuthorityRequirement,
+  type ProtectedTaskSemanticAuthorityRequirements,
 } from "../schema/protected-task-continuation-receipts";
 import {
   protectedTaskExecutionSegmentReceipts,
@@ -16,6 +19,12 @@ import {
 } from "../schema/protected-task-execution-segment-receipts";
 import { taskRuns, type TaskRun } from "../schema/task-runs";
 import { tasks, type Task } from "../schema/tasks";
+
+export type {
+  ProtectedTaskSemanticAuthorityOperation,
+  ProtectedTaskSemanticAuthorityRequirement,
+  ProtectedTaskSemanticAuthorityRequirements,
+} from "../schema/protected-task-continuation-receipts";
 
 const CANONICAL_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -89,13 +98,22 @@ export type SealProtectedTaskContinuationReceiptInput =
     }>)
   | (ContinuationIdentity & Readonly<{
       kind: "pre_effect_interrupt_v1";
-      reason: "grant_refresh" | "additional_authority";
       effectDisposition: "not_started_v1";
       interruptId: string;
       operationId: string;
       requestDigest: Uint8Array;
       requiredAuthorityDigest: Uint8Array;
-    }>);
+    }> & (
+      | Readonly<{
+          reason: "grant_refresh";
+          semanticAuthorityRequirements?: never;
+        }>
+      | Readonly<{
+          reason: "additional_authority";
+          semanticAuthorityRequirements:
+            ProtectedTaskSemanticAuthorityRequirements;
+        }>
+    ));
 
 export type SealProtectedTaskContinuationReceiptResult =
   | Readonly<{
@@ -136,6 +154,100 @@ function validSegment(value: number): boolean {
 
 function validDigest(value: Uint8Array | null): value is Uint8Array {
   return value instanceof Uint8Array && value.length === DIGEST_BYTES;
+}
+
+function canonicalSemanticOperation(
+  value: unknown,
+): value is ProtectedTaskSemanticAuthorityOperation {
+  return value === "decrypt" || value === "encrypt";
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+/** Copy and validate the exact semantic Namespace operations committed at park. */
+export function canonicalProtectedTaskSemanticAuthorityRequirements(
+  value: unknown,
+): ProtectedTaskSemanticAuthorityRequirements {
+  if (!isUnknownArray(value) || value.length === 0) {
+    throw new TypeError(
+      "Protected Task semantic authority requirements are malformed",
+    );
+  }
+  const copied: ProtectedTaskSemanticAuthorityRequirement[] = [];
+  for (const [index, candidate] of value.entries()) {
+    if (candidate === null
+      || typeof candidate !== "object"
+      || Array.isArray(candidate)
+      || Object.keys(candidate).sort().join(",") !== "namespaceId,operations") {
+      throw new TypeError(
+        "Protected Task semantic authority requirements are malformed",
+      );
+    }
+    const requirement = candidate as Record<string, unknown>;
+    const namespaceId = requirement["namespaceId"];
+    const operations = requirement["operations"];
+    if (typeof namespaceId !== "string"
+      || !CANONICAL_UUID.test(namespaceId)
+      || (index > 0 && copied[index - 1]!.namespaceId >= namespaceId)
+      || !isUnknownArray(operations)
+      || operations.length < 1
+      || operations.length > 2
+      || Object.keys(operations).length !== operations.length) {
+      throw new TypeError(
+        "Protected Task semantic authority requirements are malformed",
+      );
+    }
+    const copiedOperations: ProtectedTaskSemanticAuthorityOperation[] = [];
+    for (const operation of operations) {
+      if (!canonicalSemanticOperation(operation)
+        || copiedOperations.length > 0
+          && copiedOperations[copiedOperations.length - 1]! >= operation) {
+        throw new TypeError(
+          "Protected Task semantic authority requirements are malformed",
+        );
+      }
+      copiedOperations.push(operation);
+    }
+    copied.push(Object.freeze({
+      namespaceId,
+      operations: Object.freeze(copiedOperations),
+    }));
+  }
+  return Object.freeze(copied);
+}
+
+export function sameProtectedTaskSemanticAuthorityRequirements(
+  left: ProtectedTaskSemanticAuthorityRequirements,
+  right: ProtectedTaskSemanticAuthorityRequirements,
+): boolean {
+  return left.length === right.length
+    && left.every((requirement, index) => {
+      const expected = right[index];
+      return expected !== undefined
+        && requirement.namespaceId === expected.namespaceId
+        && requirement.operations.length === expected.operations.length
+        && requirement.operations.every(
+          (operation, operationIndex) =>
+            operation === expected.operations[operationIndex],
+        );
+    });
+}
+
+/** Domain-separated digest of the canonical semantic Namespace manifest. */
+export function protectedTaskSemanticAuthorityRequirementsDigest(
+  value: unknown,
+): Uint8Array {
+  const requirements =
+    canonicalProtectedTaskSemanticAuthorityRequirements(value);
+  return new Uint8Array(createHash("sha256").update(JSON.stringify([
+    "protected-task-semantic-authority:v1",
+    requirements.map(requirement => [
+      requirement.namespaceId,
+      requirement.operations,
+    ]),
+  ])).digest());
 }
 
 /** Canonical immutable identity for one pre-effect authority continuation. */
@@ -251,9 +363,9 @@ function assertSegmentInput(
   }
 }
 
-function assertContinuationInput(
+function snapshotContinuationInput(
   input: SealProtectedTaskContinuationReceiptInput,
-): void {
+): SealProtectedTaskContinuationReceiptInput {
   const baseValid = CANONICAL_UUID.test(input.taskId)
     && CANONICAL_UUID.test(input.taskRunId)
     && CANONICAL_UUID.test(input.jobId)
@@ -261,11 +373,35 @@ function assertContinuationInput(
     && input.executionSegment < POSTGRES_INTEGER_MAX
     && input.sealedAt instanceof Date
     && Number.isFinite(input.sealedAt.getTime());
+  let semanticAuthorityRequirements:
+    | ProtectedTaskSemanticAuthorityRequirements
+    | undefined;
+  let semanticDigestMatches = true;
+  if (input.kind === "pre_effect_interrupt_v1"
+    && input.reason === "additional_authority") {
+    try {
+      semanticAuthorityRequirements =
+        canonicalProtectedTaskSemanticAuthorityRequirements(
+          input.semanticAuthorityRequirements,
+        );
+      const digest = protectedTaskSemanticAuthorityRequirementsDigest(
+        semanticAuthorityRequirements,
+      );
+      semanticDigestMatches = sameBytes(
+        digest,
+        input.requiredAuthorityDigest,
+      );
+      digest.fill(0);
+    } catch {
+      semanticDigestMatches = false;
+    }
+  }
   const shapeValid = input.kind === "checkpoint_safe_v1"
     ? input.effectDisposition === "none_v1"
       && (input.reason === "manual_pause"
         || input.reason === "time_limit"
         || input.reason === "grant_refresh")
+      && !Object.hasOwn(input, "semanticAuthorityRequirements")
     : input.kind === "pre_effect_interrupt_v1"
       && input.effectDisposition === "not_started_v1"
       && (input.reason === "grant_refresh"
@@ -273,10 +409,45 @@ function assertContinuationInput(
       && OPAQUE_COORDINATE.test(input.interruptId)
       && OPAQUE_COORDINATE.test(input.operationId)
       && validDigest(input.requestDigest)
-      && validDigest(input.requiredAuthorityDigest);
+      && validDigest(input.requiredAuthorityDigest)
+      && (input.reason === "additional_authority"
+        ? semanticAuthorityRequirements !== undefined
+          && semanticDigestMatches
+        : !Object.hasOwn(input, "semanticAuthorityRequirements"));
   if (!baseValid || !shapeValid) {
     throw new TypeError("Protected Task continuation receipt is malformed");
   }
+  const identity = {
+    taskId: input.taskId,
+    taskRunId: input.taskRunId,
+    jobId: input.jobId,
+    executionSegment: input.executionSegment,
+    sealedAt: new Date(input.sealedAt.getTime()),
+  };
+  if (input.kind === "checkpoint_safe_v1") {
+    return Object.freeze({
+      ...identity,
+      kind: input.kind,
+      reason: input.reason,
+      effectDisposition: input.effectDisposition,
+    });
+  }
+  const interrupt = {
+    ...identity,
+    kind: input.kind,
+    effectDisposition: input.effectDisposition,
+    interruptId: input.interruptId,
+    operationId: input.operationId,
+    requestDigest: input.requestDigest.slice(),
+    requiredAuthorityDigest: input.requiredAuthorityDigest.slice(),
+  };
+  return input.reason === "additional_authority"
+    ? Object.freeze({
+        ...interrupt,
+        reason: input.reason,
+        semanticAuthorityRequirements: semanticAuthorityRequirements!,
+      })
+    : Object.freeze({ ...interrupt, reason: input.reason });
 }
 
 function exactProtectedJob(
@@ -498,8 +669,29 @@ function continuationValues(
       ? input.requestDigest.slice() : null,
     requiredAuthorityDigest: input.kind === "pre_effect_interrupt_v1"
       ? input.requiredAuthorityDigest.slice() : null,
+    semanticAuthorityRequirements: input.kind === "pre_effect_interrupt_v1"
+        && input.reason === "additional_authority"
+      ? canonicalProtectedTaskSemanticAuthorityRequirements(
+          input.semanticAuthorityRequirements,
+        )
+      : null,
     sealedAt: new Date(input.sealedAt),
   };
+}
+
+function exactSemanticAuthorityRequirements(
+  left: unknown,
+  right: unknown,
+): boolean {
+  if (left === null || right === null) return left === right;
+  try {
+    return sameProtectedTaskSemanticAuthorityRequirements(
+      canonicalProtectedTaskSemanticAuthorityRequirements(left),
+      canonicalProtectedTaskSemanticAuthorityRequirements(right),
+    );
+  } catch {
+    return false;
+  }
 }
 
 function exactContinuation(
@@ -519,6 +711,10 @@ function exactContinuation(
     && sameBytes(
       receipt.requiredAuthorityDigest,
       expected.requiredAuthorityDigest,
+    )
+    && exactSemanticAuthorityRequirements(
+      receipt.semanticAuthorityRequirements,
+      expected.semanticAuthorityRequirements,
     );
 }
 
@@ -535,8 +731,8 @@ export async function sealProtectedTaskContinuationReceiptInTx(
   tx: ReceiptTx,
   input: SealProtectedTaskContinuationReceiptInput,
 ): Promise<SealProtectedTaskContinuationReceiptResult> {
-  assertContinuationInput(input);
-  const identityFailure = await validateCurrentIdentity(tx, input);
+  const request = snapshotContinuationInput(input);
+  const identityFailure = await validateCurrentIdentity(tx, request);
   if (identityFailure !== null) {
     return continuationRejected(identityFailure === "segment_gap"
       ? "conflict" : identityFailure);
@@ -544,17 +740,17 @@ export async function sealProtectedTaskContinuationReceiptInTx(
   const segments = await tx.select()
     .from(protectedTaskExecutionSegmentReceipts)
     .where(and(
-      eq(protectedTaskExecutionSegmentReceipts.taskRunId, input.taskRunId),
+      eq(protectedTaskExecutionSegmentReceipts.taskRunId, request.taskRunId),
       eq(
         protectedTaskExecutionSegmentReceipts.executionSegment,
-        input.executionSegment,
+        request.executionSegment,
       ),
-      eq(protectedTaskExecutionSegmentReceipts.jobId, input.jobId),
+      eq(protectedTaskExecutionSegmentReceipts.jobId, request.jobId),
     )).limit(2);
   const segment = segments.find(receipt =>
-    receipt.taskRunId === input.taskRunId
-      && receipt.executionSegment === input.executionSegment
-      && receipt.jobId === input.jobId
+    receipt.taskRunId === request.taskRunId
+      && receipt.executionSegment === request.executionSegment
+      && receipt.jobId === request.jobId
   );
   if (!segment
     || segment.route !== "native_langgraph_v1"
@@ -565,32 +761,32 @@ export async function sealProtectedTaskContinuationReceiptInTx(
   const existing = await tx.select().from(protectedTaskContinuationReceipts)
     .where(or(
       and(
-        eq(protectedTaskContinuationReceipts.taskRunId, input.taskRunId),
+        eq(protectedTaskContinuationReceipts.taskRunId, request.taskRunId),
         eq(
           protectedTaskContinuationReceipts.executionSegment,
-          input.executionSegment,
+          request.executionSegment,
         ),
       ),
-      eq(protectedTaskContinuationReceipts.jobId, input.jobId),
+      eq(protectedTaskContinuationReceipts.jobId, request.jobId),
     )).limit(2);
   const candidate = existing.find(receipt =>
-    receipt.taskRunId === input.taskRunId
-      && receipt.executionSegment === input.executionSegment
+    receipt.taskRunId === request.taskRunId
+      && receipt.executionSegment === request.executionSegment
   );
   if (candidate) {
-    return existing.length === 1 && exactContinuation(candidate, input)
+    return existing.length === 1 && exactContinuation(candidate, request)
       ? Object.freeze({
           status: "exact_replay" as const,
           receipt: candidate,
         })
       : continuationRejected("conflict");
   }
-  if (existing.some(receipt => receipt.jobId === input.jobId)) {
+  if (existing.some(receipt => receipt.jobId === request.jobId)) {
     return continuationRejected("conflict");
   }
 
   const [inserted] = await tx.insert(protectedTaskContinuationReceipts)
-    .values(continuationValues(input))
+    .values(continuationValues(request))
     .onConflictDoNothing()
     .returning();
   if (inserted) {
@@ -599,15 +795,15 @@ export async function sealProtectedTaskContinuationReceiptInTx(
   const raced = await tx.select().from(protectedTaskContinuationReceipts)
     .where(or(
       and(
-        eq(protectedTaskContinuationReceipts.taskRunId, input.taskRunId),
+        eq(protectedTaskContinuationReceipts.taskRunId, request.taskRunId),
         eq(
           protectedTaskContinuationReceipts.executionSegment,
-          input.executionSegment,
+          request.executionSegment,
         ),
       ),
-      eq(protectedTaskContinuationReceipts.jobId, input.jobId),
+      eq(protectedTaskContinuationReceipts.jobId, request.jobId),
     )).limit(2);
-  const exact = raced.find(receipt => exactContinuation(receipt, input));
+  const exact = raced.find(receipt => exactContinuation(receipt, request));
   return raced.length === 1 && exact
     ? Object.freeze({ status: "exact_replay" as const, receipt: exact })
     : continuationRejected("conflict");
@@ -617,8 +813,9 @@ export function sealProtectedTaskContinuationReceipt(
   db: DirectDatabase,
   input: SealProtectedTaskContinuationReceiptInput,
 ): Promise<SealProtectedTaskContinuationReceiptResult> {
+  const request = snapshotContinuationInput(input);
   return db.transaction(tx =>
-    sealProtectedTaskContinuationReceiptInTx(tx, input)
+    sealProtectedTaskContinuationReceiptInTx(tx, request)
   );
 }
 
@@ -643,8 +840,35 @@ function cloneContinuation(
     ...receipt,
     requestDigest: receipt.requestDigest?.slice() ?? null,
     requiredAuthorityDigest: receipt.requiredAuthorityDigest?.slice() ?? null,
+    semanticAuthorityRequirements:
+      receipt.semanticAuthorityRequirements === null
+        ? null
+        : canonicalProtectedTaskSemanticAuthorityRequirements(
+            receipt.semanticAuthorityRequirements,
+          ),
     sealedAt: new Date(receipt.sealedAt),
   });
+}
+
+function storedContinuationManifestIsValid(
+  receipt: ProtectedTaskContinuationReceipt,
+): boolean {
+  if (receipt.kind !== "pre_effect_interrupt_v1"
+    || receipt.reason !== "additional_authority") {
+    return receipt.semanticAuthorityRequirements === null;
+  }
+  if (receipt.semanticAuthorityRequirements === null) return true;
+  if (!validDigest(receipt.requiredAuthorityDigest)) return false;
+  try {
+    const digest = protectedTaskSemanticAuthorityRequirementsDigest(
+      receipt.semanticAuthorityRequirements,
+    );
+    const matches = sameBytes(digest, receipt.requiredAuthorityDigest);
+    digest.fill(0);
+    return matches;
+  } catch {
+    return false;
+  }
 }
 
 /** Read one exact immutable resume proof; absence is not replay authority. */
@@ -657,53 +881,55 @@ export async function readProtectedTaskExecutionContinuationProof(
     executionSegment: number;
   }>,
 ): Promise<ProtectedTaskExecutionContinuationProof | null> {
-  if (!CANONICAL_UUID.test(input.taskId)
-    || !CANONICAL_UUID.test(input.taskRunId)
-    || !CANONICAL_UUID.test(input.jobId)
-    || !validSegment(input.executionSegment)) {
+  const { taskId, taskRunId, jobId, executionSegment } = input;
+  if (!CANONICAL_UUID.test(taskId)
+    || !CANONICAL_UUID.test(taskRunId)
+    || !CANONICAL_UUID.test(jobId)
+    || !validSegment(executionSegment)) {
     throw new TypeError("Protected Task continuation identity is malformed");
   }
   const [run] = await db.select({
     id: taskRuns.id,
     taskId: taskRuns.taskId,
   }).from(taskRuns).where(and(
-    eq(taskRuns.id, input.taskRunId),
-    eq(taskRuns.taskId, input.taskId),
+    eq(taskRuns.id, taskRunId),
+    eq(taskRuns.taskId, taskId),
   )).limit(1);
-  if (!run || run.id !== input.taskRunId || run.taskId !== input.taskId) {
+  if (!run || run.id !== taskRunId || run.taskId !== taskId) {
     return null;
   }
   const segments = await db.select()
     .from(protectedTaskExecutionSegmentReceipts)
     .where(and(
-      eq(protectedTaskExecutionSegmentReceipts.taskRunId, input.taskRunId),
+      eq(protectedTaskExecutionSegmentReceipts.taskRunId, taskRunId),
       eq(
         protectedTaskExecutionSegmentReceipts.executionSegment,
-        input.executionSegment,
+        executionSegment,
       ),
-      eq(protectedTaskExecutionSegmentReceipts.jobId, input.jobId),
+      eq(protectedTaskExecutionSegmentReceipts.jobId, jobId),
     )).limit(2);
   const continuations = await db.select()
     .from(protectedTaskContinuationReceipts)
     .where(and(
-      eq(protectedTaskContinuationReceipts.taskRunId, input.taskRunId),
+      eq(protectedTaskContinuationReceipts.taskRunId, taskRunId),
       eq(
         protectedTaskContinuationReceipts.executionSegment,
-        input.executionSegment,
+        executionSegment,
       ),
-      eq(protectedTaskContinuationReceipts.jobId, input.jobId),
+      eq(protectedTaskContinuationReceipts.jobId, jobId),
     )).limit(2);
   if (segments.length !== 1 || continuations.length !== 1) return null;
   const segment = segments[0]!;
   const continuation = continuations[0]!;
-  if (segment.taskRunId !== input.taskRunId
-    || segment.executionSegment !== input.executionSegment
-    || segment.jobId !== input.jobId
+  if (segment.taskRunId !== taskRunId
+    || segment.executionSegment !== executionSegment
+    || segment.jobId !== jobId
     || segment.route !== "native_langgraph_v1"
     || segment.checkpointContract !== "encrypted_langgraph_v1"
-    || continuation.taskRunId !== input.taskRunId
-    || continuation.executionSegment !== input.executionSegment
-    || continuation.jobId !== input.jobId) return null;
+    || continuation.taskRunId !== taskRunId
+    || continuation.executionSegment !== executionSegment
+    || continuation.jobId !== jobId
+    || !storedContinuationManifestIsValid(continuation)) return null;
   return Object.freeze({
     segment: cloneSegment(segment),
     continuation: cloneContinuation(continuation),

@@ -4,6 +4,7 @@ import {
   customType,
   foreignKey,
   integer,
+  jsonb,
   pgPolicy,
   pgRole,
   pgTable,
@@ -54,6 +55,8 @@ export const protectedTaskContinuationReceipts = pgTable(
     operationId: text("operation_id"),
     requestDigest: bytea("request_digest"),
     requiredAuthorityDigest: bytea("required_authority_digest"),
+    semanticAuthorityRequirements: jsonb("semantic_authority_requirements")
+      .$type<ProtectedTaskSemanticAuthorityRequirements>(),
     sealedAt: timestamp("sealed_at", { withTimezone: true }).notNull(),
   },
   (table) => [
@@ -85,6 +88,7 @@ export const protectedTaskContinuationReceipts = pgTable(
         and ${table.operationId} is null
         and ${table.requestDigest} is null
         and ${table.requiredAuthorityDigest} is null
+        and ${table.semanticAuthorityRequirements} is null
       ) or (
         ${table.kind} = 'pre_effect_interrupt_v1'
         and ${table.reason} in ('grant_refresh', 'additional_authority')
@@ -97,6 +101,15 @@ export const protectedTaskContinuationReceipts = pgTable(
         and octet_length(${table.requestDigest}) = 32
         and ${table.requiredAuthorityDigest} is not null
         and octet_length(${table.requiredAuthorityDigest}) = 32
+        and (
+          ${table.reason} = 'grant_refresh'
+          and ${table.semanticAuthorityRequirements} is null
+          or ${table.reason} = 'additional_authority'
+          and (
+            ${table.semanticAuthorityRequirements} is null
+            or jsonb_typeof(${table.semanticAuthorityRequirements}) = 'array'
+          )
+        )
       )`,
     ),
     pgPolicy("protected_task_continuation_receipts_product_select", {
@@ -122,3 +135,13 @@ export type ProtectedTaskContinuationKind =
   ProtectedTaskContinuationReceipt["kind"];
 export type ProtectedTaskContinuationReason =
   ProtectedTaskContinuationReceipt["reason"];
+
+export type ProtectedTaskSemanticAuthorityOperation = "decrypt" | "encrypt";
+
+export type ProtectedTaskSemanticAuthorityRequirement = Readonly<{
+  namespaceId: string;
+  operations: readonly ProtectedTaskSemanticAuthorityOperation[];
+}>;
+
+export type ProtectedTaskSemanticAuthorityRequirements =
+  readonly ProtectedTaskSemanticAuthorityRequirement[];
