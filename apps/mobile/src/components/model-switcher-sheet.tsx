@@ -1,4 +1,4 @@
-// D382 Batch 1a — bottom-sheet model picker. The composer's model chip opens
+// Bottom-sheet model picker. The composer's model chip opens
 // this. Fetches eligible models from the active server on open, lists them
 // (label + provider/subtitle), marks the selected one, and calls back with
 // the model id on tap. Uses the shared BottomSheet primitive (mirrors
@@ -91,6 +91,8 @@ export function ModelSwitcherSheet({
       visible={visible}
       onClose={onClose}
       snapPoints={['75%']}
+      keyboardBehavior="fillParent"
+      androidKeyboardInputMode="adjustPan"
       scrollable
       backdrop>
       <View style={styles.header}>

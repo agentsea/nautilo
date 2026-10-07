@@ -28,7 +28,8 @@ describe("physical-phone chat controls", () => {
     expect(composer).toContain('accessibilityLabel="Stop generation"');
     expect(composer).toContain("disabled={!busy}");
     expect(composer).toContain("styles.stopButtonIdle");
-    expect(composer).toMatch(/controlRow:\s*\{[\s\S]*?minHeight: 44,/);
+    expect(composer).toContain("const COMPOSER_CONTROL_MIN_HEIGHT = 44;");
+    expect(composer).toMatch(/controlRow:\s*\{[\s\S]*?minHeight: COMPOSER_CONTROL_MIN_HEIGHT,/);
   });
 
   test("background catch-up never replaces a mounted transcript with blocking state", () => {

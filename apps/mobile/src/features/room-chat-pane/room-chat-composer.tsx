@@ -79,110 +79,112 @@ export function RoomChatComposer({
 
   return (
     <>
-      <AutoApproveBar
-        showAutoApprove={c.canInvokeAgents && !c.directHumanRoom}
-        leading={statusLeading}
-        trailing={
-          capabilities.voicePlayback ? (
-            <Pressable
-              style={[
-                styles.voiceSessionPill,
-                c.voiceEnabled && styles.voiceSessionPillActive,
-              ]}
-              onPress={c.speaking ? c.stopVoice : c.toggleVoice}
-              accessibilityRole="button"
-              accessibilityLabel={
-                c.speaking
-                  ? "Stop voice playback"
-                  : c.voiceEnabled
-                    ? "Disable voice playback"
-                    : "Enable voice playback"
-              }
-              accessibilityState={{ selected: c.voiceEnabled }}>
-              {c.speaking ? (
-                <Ionicons name="stop" size={13} color={t.color.brand.accent} />
-              ) : (
-                <AudioLinesIcon
-                  size={15}
-                  color={c.voiceEnabled ? t.color.brand.accent : t.color.text.muted}
-                />
-              )}
-              <Text
-                numberOfLines={1}
-                style={[
-                  styles.voiceSessionText,
-                  c.voiceEnabled && styles.voiceSessionTextActive,
-                ]}>
-                {c.speaking ? "Stop talking" : c.voiceEnabled ? "Talk: on" : "Talk: off"}
-              </Text>
-            </Pressable>
-          ) : null
-        }
-      />
-      {c.roomHostChoice ? <HostChoiceCard choice={c.roomHostChoice} /> : null}
-      {c.roomApproval ? <ApprovalCard approval={c.roomApproval} /> : null}
-      {c.replyTarget ? (
-        <View style={styles.replyPreviewStrip}>
-          <View style={styles.replyPreviewBody}>
-            <Text style={styles.replyPreviewLabel} numberOfLines={1}>
-              Replying to {c.replyTarget.senderName}
-            </Text>
-            <Text style={styles.replyPreviewSnippet} numberOfLines={1}>
-              {c.replyTarget.snippet}
-            </Text>
-          </View>
-          <Pressable
-            style={styles.replyPreviewDismiss}
-            onPress={c.cancelReply}
-            accessibilityRole="button"
-            accessibilityLabel="Cancel reply">
-            <Ionicons name="close" size={18} color={t.color.text.muted} />
-          </Pressable>
-        </View>
-      ) : null}
-      {c.capabilityError ? (
-        <View style={styles.capabilityError} accessibilityRole="alert">
-          <Text style={styles.capabilityErrorText}>{c.capabilityError}</Text>
-        </View>
-      ) : null}
-      {c.imageAttachmentError ? (
-        <View style={styles.capabilityError} accessibilityRole="alert">
-          <Text style={styles.capabilityErrorText}>{c.imageAttachmentError}</Text>
-          <Pressable onPress={() => { for (const attachment of c.attachments) {
-            if (isComposerImageAttachment(attachment.name, attachment.mimeType)) c.handleRemoveAttachment(attachment.localId);
-          } }}
-            accessibilityRole="button" accessibilityLabel="Remove images"><Text style={styles.capabilityErrorText}>Remove images</Text></Pressable>
-          <Pressable onPress={onOpenModelSheet} accessibilityRole="button"
-            accessibilityLabel="Choose a model that supports images"><Text style={styles.capabilityErrorText}>Choose a model that supports images</Text></Pressable>
-        </View>
-      ) : null}
-      {c.imageInputUnsupported && !c.imageAttachmentConflict && imageSelectionRejected ? (
-        <View style={styles.contextNotice} accessibilityRole="alert">
-          <Text style={styles.imageWarningText}>{IMAGE_ATTACHMENT_SELECTION_HINT}</Text>
-          <Pressable onPress={c.dismissImageSelectionNotice} accessibilityRole="button"
-            accessibilityLabel="Dismiss image attachment warning"><Text style={styles.imageWarningText}>Dismiss</Text></Pressable>
-        </View>
-      ) : null}
-      {c.imageHistoryNotice && !c.imageAttachmentConflict && !imageSelectionRejected ? (
-        <View style={styles.contextNotice} accessibilityRole="text">
-          <Text style={styles.attachPermissionNote}>{c.imageHistoryNotice}</Text>
-          <Pressable onPress={c.dismissImageHistoryNotice} accessibilityRole="button"
-            accessibilityLabel="Dismiss image history notice"><Text style={styles.attachPermissionNote}>Dismiss</Text></Pressable>
-        </View>
-      ) : null}
-      {c.contentFilterNotice ? (
-        <View style={styles.capabilityError} accessibilityRole="alert">
-          <Text style={styles.capabilityErrorText}>{c.contentFilterNotice}</Text>
-        </View>
-      ) : null}
-      {c.directHumanInteractionBlocked ? (
-        <View style={styles.blockedNotice} accessibilityRole="alert">
-          <Text style={styles.blockedNoticeText}>
-            Direct messaging is unavailable. Existing messages remain visible.
-          </Text>
-        </View>
-      ) : null}
       <Composer
+        contextSlot={<>
+          <AutoApproveBar
+            showAutoApprove={c.canInvokeAgents && !c.directHumanRoom}
+            leading={statusLeading}
+            trailing={
+              capabilities.voicePlayback ? (
+                <Pressable
+                  style={[
+                    styles.voiceSessionPill,
+                    c.voiceEnabled && styles.voiceSessionPillActive,
+                  ]}
+                  onPress={c.speaking ? c.stopVoice : c.toggleVoice}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    c.speaking
+                      ? "Stop voice playback"
+                      : c.voiceEnabled
+                        ? "Disable voice playback"
+                        : "Enable voice playback"
+                  }
+                  accessibilityState={{ selected: c.voiceEnabled }}>
+                  {c.speaking ? (
+                    <Ionicons name="stop" size={13} color={t.color.brand.accent} />
+                  ) : (
+                    <AudioLinesIcon
+                      size={15}
+                      color={c.voiceEnabled ? t.color.brand.accent : t.color.text.muted}
+                    />
+                  )}
+                  <Text
+                    numberOfLines={1}
+                    style={[
+                      styles.voiceSessionText,
+                      c.voiceEnabled && styles.voiceSessionTextActive,
+                    ]}>
+                    {c.speaking ? "Stop talking" : c.voiceEnabled ? "Talk: on" : "Talk: off"}
+                  </Text>
+                </Pressable>
+              ) : null
+            }
+          />
+          {c.roomHostChoice ? <HostChoiceCard choice={c.roomHostChoice} /> : null}
+          {c.roomApproval ? <ApprovalCard approval={c.roomApproval} /> : null}
+          {c.replyTarget ? (
+            <View style={styles.replyPreviewStrip}>
+              <View style={styles.replyPreviewBody}>
+                <Text style={styles.replyPreviewLabel} numberOfLines={1}>
+                  Replying to {c.replyTarget.senderName}
+                </Text>
+                <Text style={styles.replyPreviewSnippet} numberOfLines={1}>
+                  {c.replyTarget.snippet}
+                </Text>
+              </View>
+              <Pressable
+                style={styles.replyPreviewDismiss}
+                onPress={c.cancelReply}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel reply">
+                <Ionicons name="close" size={18} color={t.color.text.muted} />
+              </Pressable>
+            </View>
+          ) : null}
+          {c.capabilityError ? (
+            <View style={styles.capabilityError} accessibilityRole="alert">
+              <Text style={styles.capabilityErrorText}>{c.capabilityError}</Text>
+            </View>
+          ) : null}
+          {c.imageAttachmentError ? (
+            <View style={styles.capabilityError} accessibilityRole="alert">
+              <Text style={styles.capabilityErrorText}>{c.imageAttachmentError}</Text>
+              <Pressable onPress={() => { for (const attachment of c.attachments) {
+                if (isComposerImageAttachment(attachment.name, attachment.mimeType)) c.handleRemoveAttachment(attachment.localId);
+              } }}
+                accessibilityRole="button" accessibilityLabel="Remove images"><Text style={styles.capabilityErrorText}>Remove images</Text></Pressable>
+              <Pressable onPress={onOpenModelSheet} accessibilityRole="button"
+                accessibilityLabel="Choose a model that supports images"><Text style={styles.capabilityErrorText}>Choose a model that supports images</Text></Pressable>
+            </View>
+          ) : null}
+          {c.imageInputUnsupported && !c.imageAttachmentConflict && imageSelectionRejected ? (
+            <View style={styles.contextNotice} accessibilityRole="alert">
+              <Text style={styles.imageWarningText}>{IMAGE_ATTACHMENT_SELECTION_HINT}</Text>
+              <Pressable onPress={c.dismissImageSelectionNotice} accessibilityRole="button"
+                accessibilityLabel="Dismiss image attachment warning"><Text style={styles.imageWarningText}>Dismiss</Text></Pressable>
+            </View>
+          ) : null}
+          {c.imageHistoryNotice && !c.imageAttachmentConflict && !imageSelectionRejected ? (
+            <View style={styles.contextNotice} accessibilityRole="text">
+              <Text style={styles.attachPermissionNote}>{c.imageHistoryNotice}</Text>
+              <Pressable onPress={c.dismissImageHistoryNotice} accessibilityRole="button"
+                accessibilityLabel="Dismiss image history notice"><Text style={styles.attachPermissionNote}>Dismiss</Text></Pressable>
+            </View>
+          ) : null}
+          {c.contentFilterNotice ? (
+            <View style={styles.capabilityError} accessibilityRole="alert">
+              <Text style={styles.capabilityErrorText}>{c.contentFilterNotice}</Text>
+            </View>
+          ) : null}
+          {c.directHumanInteractionBlocked ? (
+            <View style={styles.blockedNotice} accessibilityRole="alert">
+              <Text style={styles.blockedNoticeText}>
+                Direct messaging is unavailable. Existing messages remain visible.
+              </Text>
+            </View>
+          ) : null}
+        </>}
         onSend={c.handleSend}
         value={c.draftText}
         onChangeText={(text) => {

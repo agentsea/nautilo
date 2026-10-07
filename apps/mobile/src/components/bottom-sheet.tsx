@@ -32,6 +32,8 @@ type BottomSheetProps = {
   onDismiss?: () => void;
   /** Give long sheet content its own gesture-aware scrolling surface. */
   scrollable?: boolean;
+  keyboardBehavior?: ComponentProps<typeof GorhomBottomSheet>["keyboardBehavior"];
+  androidKeyboardInputMode?: ComponentProps<typeof GorhomBottomSheet>["android_keyboardInputMode"];
   /** Dim the underlying surface and allow an outside tap to dismiss. */
   backdrop?: boolean;
   /** Keep an in-flight form visible until its mutation settles. */
@@ -50,6 +52,8 @@ export function BottomSheet({
   onClose,
   onDismiss,
   scrollable = false,
+  keyboardBehavior = "interactive",
+  androidKeyboardInputMode = "adjustResize",
   backdrop = false,
   dismissible = true,
 }: BottomSheetProps) {
@@ -106,15 +110,15 @@ export function BottomSheet({
           enableDynamicSizing={false}
           topInset={insets.top}
           enablePanDownToClose={dismissible}
-          keyboardBehavior="interactive"
+          keyboardBehavior={keyboardBehavior}
           keyboardBlurBehavior="restore"
-          android_keyboardInputMode="adjustResize"
+          android_keyboardInputMode={androidKeyboardInputMode}
           backdropComponent={renderBackdrop}
           onChange={handleChange}
           backgroundStyle={styles.background}
           handleIndicatorStyle={styles.handle}>
           {scrollable ? (
-            <BottomSheetScrollView contentContainerStyle={styles.content}>
+            <BottomSheetScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
               {children}
             </BottomSheetScrollView>
           ) : (
