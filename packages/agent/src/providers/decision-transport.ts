@@ -29,7 +29,7 @@ import {
   resolveSurplusDecisionServingAvailability,
   type QualifiedSurplusDecisionRoute,
 } from "./surplus-decision-route";
-import { readSurplusWireReceipt } from "./surplus-transport";
+import { readSurplusWireReceipt, SurplusOutcomeUnknownError } from "./surplus-transport";
 import {
   isAdmittedDecisionFundingAttempt,
   type AdmittedDecisionFundingAttempt,
@@ -61,6 +61,12 @@ const TRANSPORTS = {
 export type DecisionProvider = keyof typeof TRANSPORTS;
 export function decisionProvider(value: string): DecisionProvider | null {
   return isSupportedChoiceProvider(value) ? value.toLowerCase() as DecisionProvider : null;
+}
+interface DecisionTransportResponse {
+  readonly receipt: DecisionReceipt;
+  readonly answers: unknown;
+  readonly questions: Readonly<Record<string, DecisionQuestion>>;
+  readonly hasResponseModel: boolean;
 }
 const usageSchema = z.object({
   input_tokens: z.number().int().nonnegative(),
@@ -109,10 +115,12 @@ function contextCapacityExceeded(payload: unknown): boolean {
 }
 
 /** One provider evaluation. Retry, deadline, and supervision belong to the caller. */
-export async function requestDecisions(
+export async function requestDecisions<T>(
   input: DecisionInput,
-  deps: DecisionDependencies = {},
-): Promise<{ receipt: DecisionReceipt; answers: unknown; questions: Readonly<Record<string, DecisionQuestion>>; hasResponseModel: boolean }> {
+  deps: DecisionDependencies,
+  finalize: (response: DecisionTransportResponse) => T,
+): Promise<T> {
+  const complete = finalize;
   assertNotCancelled(input.signal);
   let request: z.infer<typeof requestSchema>;
   try {
@@ -185,11 +193,12 @@ export async function requestDecisions(
       || question.criteria.length > row.decision.maxScoreLevels)) throw new ChoiceRequestError("invalid_request");
   }
   let body: string;
+  const requestedProviderModelId = surplusRoute?.surplusModelId ?? row.id.slice(providerName.length + 1);
   try {
     // Keep all state/candidates. The provider enforces its token bound with its
     // own tokenizer; local estimates must not silently truncate the request.
     body = JSON.stringify({
-      model: surplusRoute?.surplusModelId ?? row.id.slice(providerName.length + 1),
+      model: requestedProviderModelId,
       state: request.state,
       questions: request.questions,
       ...(surplusRoute ? { provider: surplusRoute.providerPin } : {}),
@@ -254,9 +263,14 @@ export async function requestDecisions(
           surplusRoute.surplusModelId.slice(surplusRoute.surplusModelId.lastIndexOf("/") + 1),
         ].map((value) => value.toLowerCase()))
       : null;
+    const isDocumentedOpenRouterModelIdentity = responseModel.success
+      && (providerName !== "openrouter"
+        || responseModel.data === requestedProviderModelId
+        || responseModel.data.match(new RegExp(`^${requestedProviderModelId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d{8}$`)) !== null);
     const hasExactResponseRoute = responseModel.success
       && (acceptedSurplusModelIds === null
-        || (acceptedSurplusModelIds.has(responseModel.data.toLowerCase())
+        ? isDocumentedOpenRouterModelIdentity
+        : (acceptedSurplusModelIds.has(responseModel.data.toLowerCase())
           && (provider === undefined || provider.toLowerCase() === surplusRoute?.providerPin)));
     const surplusCostMicro = providerRoute === "surplus"
       ? readSurplusWireReceipt(response.headers).buyerCostMicro
@@ -302,11 +316,27 @@ export async function requestDecisions(
         signal: input.signal,
         funding,
         ...(deps.fetch === undefined ? {} : { fetchImpl: deps.fetch }),
-        parse: parseResponse,
+        parse: async (response) => {
+          const parsed = await parseResponse(response);
+          return {
+            inputTokens: parsed.inputTokens,
+            outputTokens: parsed.outputTokens,
+            finalize: () => complete(parsed.value),
+          };
+        },
       });
     } catch (error) {
-      if (deps.providerRoute !== undefined || !(error instanceof SurplusDecisionDirectFallbackError)) throw error;
-      return requestDecisions(input, { ...deps, providerRoute: "direct" });
+      if (input.signal.aborted) throw error;
+      const fallback = error instanceof SurplusDecisionDirectFallbackError
+        || error instanceof SurplusOutcomeUnknownError
+        || (error instanceof SurplusDecisionHttpError && error.status >= 500)
+        || (error instanceof ChoiceRequestError
+          && ["invalid_response", "network_error", "provider_error"].includes(error.code));
+      if (!fallback) throw error;
+      // Explicit routes are owned by the funding session. Signal that session
+      // so it can re-admit the same payer/model on its direct rail.
+      if (deps.providerRoute !== undefined) throw new SurplusDecisionDirectFallbackError();
+      return requestDecisions(input, { ...deps, providerRoute: "direct" }, finalize);
     }
   }
 
@@ -373,7 +403,7 @@ export async function requestDecisions(
       });
     }
     assertNotCancelled(input.signal);
-    return parsed.value;
+    return complete(parsed.value);
   };
 
   try {

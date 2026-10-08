@@ -972,7 +972,10 @@ export async function invokeChatModelWithFallback(
     }
 
     let surplusAttemptedForModel = false;
-    const recoveryVisibility = invokeOptions?.recoverContext ? contextRecoveryVisibilityFence() : null;
+    // Provider-local and attempt-local: unlike the turn-wide runtime flag this
+    // cannot be pre-seeded by an earlier model/tool phase, and it also works
+    // for research/background calls that do not publish Room token events.
+    const attemptVisibility = contextRecoveryVisibilityFence();
     let hasSelectedReasoningEffort = false;
     try {
       const controls = invokeOptions?.resolveForegroundControls?.(currentModelId);
@@ -1006,7 +1009,7 @@ export async function invokeChatModelWithFallback(
       );
       const llmCallConfig = {
         ...invocationConfig,
-        ...(recoveryVisibility ? { callbacks: CallbackManager.configure(invocationConfig?.callbacks, [recoveryVisibility.handler])! } : {}),
+        callbacks: CallbackManager.configure(invocationConfig?.callbacks, [attemptVisibility.handler])!,
         metadata: {
           ...((invocationConfig as Record<string, unknown> | undefined)?.["metadata"] as Record<string, unknown> | undefined),
           node_name: "agent-reasoning",
@@ -1066,6 +1069,7 @@ export async function invokeChatModelWithFallback(
                 reasoningOutput,
                 ...(openRouterSessionId === undefined ? {} : { openrouterSessionId: openRouterSessionId }),
                 funding: surplusFunding,
+                hasDeliveredOutput: attemptVisibility.hasVisibleOutput,
                 invokeModel: (model, selectedMessages, selectedConfig) => invokeForegroundAttemptWithUsageContext(
                   model,
                   selectedMessages,
@@ -1266,7 +1270,7 @@ export async function invokeChatModelWithFallback(
       if (classified.category === "TOKEN_LIMIT" && invokeOptions?.recoverContext) {
         // Never retry after visible partial output, or echo a provider error
         // that could include the rejected source payload.
-        if (recoveryVisibility?.hasVisibleOutput() || hasAssistantVisibleOutputForCurrentTurn(agentId)) throw terminalProviderError;
+        if (attemptVisibility.hasVisibleOutput() || hasAssistantVisibleOutputForCurrentTurn(agentId)) throw terminalProviderError;
         if (await recoverContext("provider")) continue;
         throw terminalProviderError;
       }

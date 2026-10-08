@@ -8,7 +8,9 @@
  * factory, model-health, provider, and database boundaries mocked.
  */
 
-import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { AIMessage, AIMessageChunk, HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { ChatGenerationChunk } from "@langchain/core/outputs";
+import { CallbackManager } from "@langchain/core/callbacks/manager";
 import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
@@ -77,6 +79,7 @@ const invokeSurplusChatAttemptMock = mock(async (_input?: {
   tools: StructuredTool[];
   toolBindingOptions?: Record<string, unknown>;
   funding: UsageFundingProvenance;
+  hasDeliveredOutput: () => boolean;
   invokeModel: (
     model: { invoke(messages: BaseMessage[], options?: RunnableConfig): Promise<unknown> },
     messages: BaseMessage[],
@@ -1571,10 +1574,42 @@ describe("invokeChatModelWithFallback — Surplus serving order", () => {
     expect(createUniversalModelMock).not.toHaveBeenCalled();
   });
 
-  test("does not replay an uncertain Surplus outcome through direct or chain providers", async () => {
+  test("uses direct same-model after an undelivered Surplus outcome despite earlier turn output", async () => {
+    policyState = { enabled: true, chain: [B] };
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      expect(input?.hasDeliveredOutput()).toBe(false);
+      return { kind: "direct_fallback" };
+    });
+    createUniversalModelMock.mockImplementation(async (modelId): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => new AIMessage(`direct answer from ${modelId}`) }),
+    }) as unknown as AuraModel);
+
+    const turnId = "surplus-earlier-output";
+    const result = await runWithTurn(turnId, async () => {
+      getOrCreateAgentTurnContextByKey(turnContextKey(turnId, "agent-1")).assistantVisibleOutput = true;
+      return await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null);
+    });
+
+    expect(result.modelUsed).toBe(A);
+    expect(result.response.content).toBe(`direct answer from ${A}`);
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+    expect(modelIdsFromCalls()).toEqual([A]);
+  });
+
+  test("keeps an uncertain Surplus failure terminal after its own streamed output was delivered", async () => {
     policyState = { enabled: true, chain: [B] };
     const uncertain = new SurplusOutcomeUnknownError();
-    invokeSurplusChatAttemptMock.mockRejectedValue(uncertain);
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      const [manager] = await CallbackManager.configure(input?.config.callbacks)!.handleChatModelStart(
+        { lc: 1, type: "not_implemented", id: ["synthetic-surplus"] },
+        [messages],
+      );
+      await manager!.handleLLMNewToken("visible answer", undefined, undefined, undefined, undefined, {
+        chunk: new ChatGenerationChunk({ text: "visible answer", message: new AIMessageChunk("visible answer") }),
+      });
+      expect(input?.hasDeliveredOutput()).toBe(true);
+      throw uncertain;
+    });
 
     const thrown = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null)
       .catch((error: unknown) => error);
@@ -2822,28 +2857,66 @@ describe("personal marketplace invocation", () => {
     expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
     expect(createUniversalModelMock).not.toHaveBeenCalled();
   });
-  test("does not fall back after an uncertain personal research Surplus attempt", async () => {
+  test("falls back directly after an undelivered uncertain personal research Surplus attempt", async () => {
     cachedServerModelConfig = { preferSurplus: true };
-    invokeSurplusChatAttemptMock.mockImplementation(async () => { throw new SurplusOutcomeUnknownError(); });
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      const [manager] = await CallbackManager.configure(input?.config.callbacks)!.handleChatModelStart(
+        { lc: 1, type: "not_implemented", id: ["synthetic-research-surplus"] },
+        [[new HumanMessage("research")]],
+      );
+      await manager!.handleLLMNewToken("", undefined, undefined, undefined, undefined, {
+        chunk: new ChatGenerationChunk({
+          text: "",
+          message: new AIMessageChunk({
+            content: "",
+            tool_call_chunks: [{ id: "call-search", name: "search", args: '{"query":"topic"}', index: 0, type: "tool_call_chunk" }],
+          }),
+        }),
+      });
+      expect(input?.hasDeliveredOutput()).toBe(false);
+      return { kind: "direct_fallback" };
+    });
+    createUniversalModelMock.mockImplementation(async (_model, options): Promise<AuraModel> => ({
+      bindTools: (boundTools: StructuredTool[]) => ({
+        invoke: async () => {
+          expect(boundTools.map((tool: StructuredTool) => tool.name)).toEqual(["search"]);
+          expect(options?.["personalCredential"]).toEqual({ apiKey: "caller-secret-anthropic" });
+          return new AIMessage("direct research answer");
+        },
+      }),
+    }) as unknown as AuraModel);
     const researchTool = { name: "search", description: "closed research search", schema: {} } as StructuredTool;
     const fundingSession: ForegroundChatFundingSession = { ...session(true), workload: "research" };
 
-    const failure = await invokeChatModelWithFallback(
+    const result = await invokeChatModelWithFallback(
       [new HumanMessage("research")], [researchTool], A,
       "payer", "agent-1", null, undefined,
       { fundingSession, modelFallbackMode: "none", sameModelRetryMode: "none" },
-    ).then(() => null, (error: unknown) => error);
+    );
 
-    expect(failure).toBeInstanceOf(SurplusOutcomeUnknownError);
+    expect(result.response.content).toBe("direct research answer");
     expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
-    expect(createUniversalModelMock).not.toHaveBeenCalled();
+    expect(modelIdsFromCalls()).toEqual([A]);
   });
-  test("uncertain marketplace service never calls direct and an exact native selection stays terminal when caller direct is missing", async () => {
+  test("delivered uncertain marketplace output stays terminal and missing direct credentials stop exact fallback", async () => {
     cachedServerModelConfig = { preferSurplus: true };
-    invokeSurplusChatAttemptMock.mockImplementation(async () => { throw new SurplusOutcomeUnknownError(); });
-    const uncertain = await invokeChatModelWithFallback([new HumanMessage("text")], [], A, "payer", "agent-1", null,
-      undefined, { fundingSession: session(), modelFallbackMode: "none", sameModelRetryMode: "none" })
-      .then(() => null, (error: unknown) => error);
+    const turnId = "personal-marketplace-delivered";
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      const [manager] = await CallbackManager.configure(input?.config.callbacks)!.handleChatModelStart(
+        { lc: 1, type: "not_implemented", id: ["synthetic-personal-surplus"] },
+        [[new HumanMessage("text")]],
+      );
+      await manager!.handleLLMNewToken("visible personal answer", undefined, undefined, undefined, undefined, {
+        chunk: new ChatGenerationChunk({ text: "visible personal answer", message: new AIMessageChunk("visible personal answer") }),
+      });
+      expect(input?.hasDeliveredOutput()).toBe(true);
+      throw new SurplusOutcomeUnknownError();
+    });
+    const uncertain = await runWithTurn(turnId, async () => {
+      return await invokeChatModelWithFallback([new HumanMessage("text")], [], A, "payer", "agent-1", null,
+        undefined, { fundingSession: session(), modelFallbackMode: "none", sameModelRetryMode: "none" })
+        .then(() => null, (error: unknown) => error);
+    });
     expect(uncertain).toBeInstanceOf(SurplusOutcomeUnknownError);
     expect(createUniversalModelMock).not.toHaveBeenCalled();
     invokeSurplusChatAttemptMock.mockImplementation(async () => ({ kind: "direct_fallback" }));

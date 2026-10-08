@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 const createModelInputs: Record<string, unknown>[] = [];
 const bindTools = mock((_tools: unknown[], _options?: Record<string, unknown>) => ({ invoke: async () => new AIMessage("unused") }));
-let observedResponse: ((receipt: { requestId: string; providerFamily: string; truncated: boolean; adaptedParameters?: string }, status: number) => Promise<void>) | undefined;
+let observedResponse: ((receipt: { requestId: string; providerFamily: string; truncated: boolean; adaptedParameters?: string; buyerCostMicro?: number }, status: number) => Promise<void>) | undefined;
 const beginAttempt = mock(async (_input: Record<string, unknown>) => {});
 const settleAttempt = mock(async (_input: Record<string, unknown>) => {});
 
@@ -164,7 +164,7 @@ describe("Surplus reasoning parity", () => {
     await invokeSurplusChatAttempt({
       route: ROUTE, apiKey: "synthetic-surplus-key", messages: [new HumanMessage("test")], tools: [search],
       toolBindingOptions: { tool_choice: "required" },
-      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" }, hasDeliveredOutput: () => false,
       invokeModel: async () => {
         await observedResponse!({ requestId: "tool-choice-request", providerFamily: "openrouter", truncated: false }, 200);
         return new AIMessage({ content: "ok", response_metadata: { finish_reason: "stop" } });
@@ -178,7 +178,7 @@ describe("Surplus reasoning parity", () => {
     const response = new AIMessage({ content: "ok", response_metadata: { finish_reason: "stop" } });
     await invokeSurplusChatAttempt({
       route: ROUTE, apiKey: "synthetic-surplus-key", messages: [new HumanMessage("test")], tools: [],
-      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" }, hasDeliveredOutput: () => false,
       invokeModel: async () => {
         await observedResponse!({ requestId: "recoverable-request", providerFamily: "openrouter", truncated: false }, 200);
         return response;
@@ -211,7 +211,7 @@ describe("Surplus reasoning parity", () => {
     });
     const result = await invokeSurplusChatAttempt({
       route: ROUTE, apiKey: "synthetic-surplus-key", messages: [new HumanMessage("test")], tools: [],
-      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" }, hasDeliveredOutput: () => false,
       invokeModel: async () => {
         inferenceCalls++;
         await observedResponse!({ requestId: "retry-request", providerFamily: "openrouter", truncated: false }, 200);
@@ -246,7 +246,7 @@ describe("Surplus reasoning parity", () => {
     });
     const result = await invokeSurplusChatAttempt({
       route: ROUTE, apiKey: "synthetic-surplus-key", messages: [new HumanMessage("Extract the journal")], tools: [],
-      config: {}, maxOutputTokens: 256, funding: { kind: "service", providerRoute: "surplus", humanUserId: "user-1" },
+      config: {}, maxOutputTokens: 256, funding: { kind: "service", providerRoute: "surplus", humanUserId: "user-1" }, hasDeliveredOutput: () => false,
       invokeModel: async () => {
         inferenceCalls++;
         await observedResponse!({ requestId: "cache-adapted-journal", providerFamily: "openrouter", truncated: false, adaptedParameters: "prompt_cache_key" }, 200);
@@ -280,7 +280,7 @@ describe("Surplus reasoning parity", () => {
     });
     await invokeSurplusChatAttempt({
       route: ROUTE, apiKey: "synthetic-surplus-key", messages: [new HumanMessage("test")], tools: [],
-      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" }, hasDeliveredOutput: () => false,
       invokeModel: async () => {
         inferenceCalls++;
         await observedResponse!({ requestId: "uncertain-request", providerFamily: "openrouter", truncated: false }, 200);
@@ -295,7 +295,7 @@ describe("Surplus reasoning parity", () => {
     expect(settledAttemptIds.size).toBe(1);
   });
 
-  test("permanent failed-response settlement failure never replays inference", async () => {
+  test("permanent failed-response settlement failure permits direct fallback without replaying Surplus", async () => {
     settleAttempt.mockImplementation(async () => {
       throw new Error("database unavailable");
     });
@@ -308,7 +308,7 @@ describe("Surplus reasoning parity", () => {
     });
     const attempt = invokeSurplusChatAttempt({
       route: ROUTE, apiKey: "synthetic-surplus-key", messages: [new HumanMessage("test")], tools: [],
-      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" }, hasDeliveredOutput: () => false,
       invokeModel: async () => {
         inferenceCalls++;
         await observedResponse!({ requestId: "permanent-failure-request", providerFamily: "openrouter", truncated: false }, 200);
@@ -316,13 +316,7 @@ describe("Surplus reasoning parity", () => {
       },
     });
 
-    let failure: unknown;
-    try {
-      await attempt;
-    } catch (error) {
-      failure = error;
-    }
-    expect(failure).toBeInstanceOf(MockSurplusOutcomeUnknownError);
+    expect(await attempt).toEqual({ kind: "direct_fallback" });
     expect(inferenceCalls).toBe(1);
     expect(beginAttempt).toHaveBeenCalledTimes(1);
     expect(settleAttempt).toHaveBeenCalledTimes(2);
@@ -336,6 +330,31 @@ describe("Surplus reasoning parity", () => {
       outputTokens: 5,
       totalTokens: 12,
       failureCode: "incomplete_response",
+    });
+  });
+
+  test("preserves a charged unknown marketplace attempt while permitting one undelivered direct fallback", async () => {
+    const result = await invokeSurplusChatAttempt({
+      route: ROUTE, apiKey: "synthetic-surplus-key", messages: [new HumanMessage("test")], tools: [],
+      config: {}, maxOutputTokens: 256, funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+      hasDeliveredOutput: () => false,
+      invokeModel: async () => {
+        await observedResponse!({
+          requestId: "charged-unknown-request",
+          providerFamily: "openrouter",
+          buyerCostMicro: 283,
+          truncated: false,
+        }, 200);
+        throw new Error("connection lost after marketplace service");
+      },
+    });
+
+    expect(result).toEqual({ kind: "direct_fallback" });
+    expect(settleAttempt.mock.calls[0]?.[0]).toMatchObject({
+      outcome: "unknown",
+      costState: "actual",
+      actualCostUsd: 0.000283,
+      failureCode: "outcome_unknown",
     });
   });
 
@@ -355,6 +374,7 @@ describe("Surplus reasoning parity", () => {
       reasoningOutput: true,
       openrouterSessionId: "22222222-2222-4222-8222-222222222222",
       funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+      hasDeliveredOutput: () => false,
       invokeModel: async () => response,
     });
 
@@ -382,7 +402,7 @@ test("personal marketplace attempts retain exact credential provenance and actua
     providerRoute: "surplus", credentialId: "personal-surplus-row", credentialRevision: 9 };
   const result = await invokeSurplusChatAttempt({ route: ROUTE, apiKey: "personal-surplus-only",
     messages: [new HumanMessage("Synthetic personal prompt")], tools: [], config: {}, maxOutputTokens: 256,
-    funding, invokeModel: async () => {
+    funding, hasDeliveredOutput: () => false, invokeModel: async () => {
       await observedResponse!({ requestId: "personal-receipt", providerFamily: "openrouter", truncated: false }, 200);
       return response;
     },

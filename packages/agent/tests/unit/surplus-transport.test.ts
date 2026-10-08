@@ -348,7 +348,7 @@ describe("Surplus wire boundary", () => {
     expect(() => assertCompleteSurplusResponse({ truncated: false }, response)).not.toThrow();
   });
 
-  test("OpenRouter conflicting terminal signals retain actual cost without permitting replay", async () => {
+  test("OpenRouter conflicting terminal signals retain actual cost and can replay before publication", async () => {
     let requests = 0;
     const route = QUALIFIED_OPENROUTER_ROUTE;
     const fetchImpl = (async () => {
@@ -366,8 +366,9 @@ describe("Surplus wire boundary", () => {
       cancelled: false,
       responseStatus: 200,
       receipt,
+      deliveredOutput: false,
       terminalUsage: readSurplusResponseUsage(response),
-    })).toMatchObject({ outcome: "interrupted", costState: "actual", actualCostUsd: 0.000162, directFallback: false });
+    })).toMatchObject({ outcome: "interrupted", costState: "actual", actualCostUsd: 0.000162, directFallback: true });
     expect(requests).toBe(1);
   });
 
@@ -451,8 +452,8 @@ describe("Surplus wire boundary", () => {
     expect(receipt?.adaptedParameters).toBe("prompt_cache_key");
     expect(requests).toBe(1);
     expect(classifySurplusFailedAttempt({
-      error: new Error("connection lost"), cancelled: false, responseStatus: 200, receipt,
-    })).toMatchObject({ outcome: "unknown", costState: "pending", failureCode: "outcome_unknown", directFallback: false });
+      error: new Error("connection lost"), cancelled: false, responseStatus: 200, receipt, deliveredOutput: false,
+    })).toMatchObject({ outcome: "unknown", costState: "pending", failureCode: "outcome_unknown", directFallback: true });
     expect(isSafeSurplusDirectFallback({ code: "no_sellers_for_model" }, 404,
       { ...receipt!, marketplaceAttempts: 0 }, false)).toBe(false);
   });
@@ -517,9 +518,25 @@ describe("Surplus wire boundary", () => {
         new AIMessage({ content: "done", response_metadata: { finish_reason: finishReason } }),
       )).not.toThrow();
     }
+    expect(() => assertCompleteSurplusResponse(
+      { requestId: "request-empty", providerFamily: "venice", truncated: false },
+      new AIMessage({ content: "   ", response_metadata: { finish_reason: "stop" } }),
+    )).toThrow(SurplusIncompleteResponseError);
+    expect(() => assertCompleteSurplusResponse(
+      { requestId: "request-filtered", providerFamily: "venice", truncated: false },
+      new AIMessage({ content: "", response_metadata: { finish_reason: "content_filter" } }),
+    )).not.toThrow();
+    expect(() => assertCompleteSurplusResponse(
+      { requestId: "request-tool", providerFamily: "venice", truncated: false },
+      new AIMessage({
+        content: "",
+        tool_calls: [{ id: "call-1", name: "record_probe", args: {}, type: "tool_call" }],
+        response_metadata: { finish_reason: "tool_calls" },
+      }),
+    )).not.toThrow();
   });
 
-  test("SDK stream without terminal completion metadata is interrupted and cannot replay", async () => {
+  test("SDK stream without terminal completion metadata is interrupted and can replay before publication", async () => {
     const chunks = [
       {
         id: "chatcmpl-surplus-incomplete",
@@ -577,13 +594,14 @@ describe("Surplus wire boundary", () => {
       cancelled: false,
       responseStatus: 200,
       receipt,
+      deliveredOutput: false,
       terminalUsage: readSurplusResponseUsage(response),
     })).toEqual({
       outcome: "interrupted",
       costState: "actual",
       actualCostUsd: 0.000283,
       failureCode: "incomplete_response",
-      directFallback: false,
+      directFallback: true,
     });
   });
 
@@ -592,6 +610,7 @@ describe("Surplus wire boundary", () => {
       error: new Error("deadline"),
       cancelled: false,
       responseStatus: 200,
+      deliveredOutput: false,
       receipt: {
         requestId: "request-truncated",
         providerFamily: "venice",
@@ -603,23 +622,25 @@ describe("Surplus wire boundary", () => {
       costState: "actual",
       actualCostUsd: 0.000268,
       failureCode: "truncated_response",
-      directFallback: false,
+      directFallback: true,
     });
     expect(classifySurplusFailedAttempt({
       error: new Error("deadline"),
       cancelled: false,
       responseStatus: 200,
+      deliveredOutput: false,
       receipt: { requestId: "request-truncated", providerFamily: "venice", truncated: true },
     })).toEqual({
       outcome: "interrupted",
       costState: "pending",
       failureCode: "truncated_response",
-      directFallback: false,
+      directFallback: true,
     });
     expect(classifySurplusFailedAttempt({
       error: new Error("deadline"),
       cancelled: false,
       responseStatus: 200,
+      deliveredOutput: false,
       receipt: { requestId: "request-truncated", providerFamily: "venice", truncated: true },
       terminalUsage: {
         inputTokens: 11,
@@ -633,12 +654,13 @@ describe("Surplus wire boundary", () => {
       costState: "actual",
       actualCostUsd: 0.000283,
       failureCode: "truncated_response",
-      directFallback: false,
+      directFallback: true,
     });
     expect(classifySurplusFailedAttempt({
       error: new Error("deadline"),
       cancelled: false,
       responseStatus: 200,
+      deliveredOutput: false,
       receipt: { requestId: "request-truncated-zero", providerFamily: "venice", truncated: true },
       terminalUsage: { buyerCostMicro: 0 },
     })).toEqual({
@@ -646,24 +668,26 @@ describe("Surplus wire boundary", () => {
       costState: "actual",
       actualCostUsd: 0,
       failureCode: "truncated_response",
-      directFallback: false,
+      directFallback: true,
     });
     expect(classifySurplusFailedAttempt({
       error: new SurplusProviderRouteMismatchError(),
       cancelled: false,
       responseStatus: 200,
+      deliveredOutput: false,
       receipt: { buyerCostMicro: 0, providerFamily: "openai", truncated: false },
     })).toEqual({
       outcome: "unknown",
       costState: "actual",
       actualCostUsd: 0,
       failureCode: "provider_route_mismatch",
-      directFallback: false,
+      directFallback: true,
     });
     expect(classifySurplusFailedAttempt({
       error: { code: "no_sellers_for_model" },
       cancelled: false,
       responseStatus: 404,
+      deliveredOutput: false,
       receipt: { marketplaceAttempts: 0, buyerCostMicro: 0, truncated: false },
     })).toEqual({
       outcome: "failed",
@@ -674,11 +698,12 @@ describe("Surplus wire boundary", () => {
     });
   });
 
-  test("adapted responses preserve charge state and can never replay", () => {
+  test("adapted responses preserve charge state while undelivered attempts can replay", () => {
     expect(classifySurplusFailedAttempt({
       error: new SurplusAdaptedParametersError(),
       cancelled: false,
       responseStatus: 200,
+      deliveredOutput: false,
       receipt: {
         requestId: "request-adapted-cost",
         providerFamily: "venice",
@@ -691,12 +716,13 @@ describe("Surplus wire boundary", () => {
       costState: "actual",
       actualCostUsd: 0.000268,
       failureCode: "adapted_parameters",
-      directFallback: false,
+      directFallback: true,
     });
     expect(classifySurplusFailedAttempt({
       error: new SurplusAdaptedParametersError(),
       cancelled: false,
       responseStatus: 200,
+      deliveredOutput: false,
       receipt: {
         requestId: "request-adapted-pending",
         providerFamily: "venice",
@@ -707,12 +733,13 @@ describe("Surplus wire boundary", () => {
       outcome: "unknown",
       costState: "pending",
       failureCode: "adapted_parameters",
-      directFallback: false,
+      directFallback: true,
     });
     expect(classifySurplusFailedAttempt({
       error: { code: "no_sellers_for_model" },
       cancelled: false,
       responseStatus: 404,
+      deliveredOutput: false,
       receipt: {
         requestId: "request-adapted-contradictory",
         marketplaceAttempts: 0,
@@ -725,7 +752,7 @@ describe("Surplus wire boundary", () => {
       costState: "actual",
       actualCostUsd: 0,
       failureCode: "adapted_parameters",
-      directFallback: false,
+      directFallback: true,
     });
   });
 });

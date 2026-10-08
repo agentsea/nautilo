@@ -13,6 +13,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Queued work and approval resumes retain their admitted payer and recheck live
   authority before spending. Research service charges retain their personal
   funding attribution, including unsettled costs and later receipts.
+  Unanswered Surplus chat, research and decision calls fall back within the same
+  payer even when marketplace charges are unresolved. Each attempt keeps its
+  own costs; cancellation and delivered text or tool calls stop fallback.
 - Reflection allows up to ten minutes per poll, preserves completed batch results
   when repair runs out of time, and gives other eligible records a turn after
   timed-out work yields.
@@ -33,7 +36,7 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   When personal keys are disabled, members see only the warning if no keys are
   saved, or their saved keys with Delete controls. Cleanup remains available
   without permission to spend or access to the credential encryption key.
-  Uncertain personal requests stop automatic retries; transient accounting
+  Uncertain tool and job submissions stop automatic retries; transient accounting
   writes retry without repeating inference. Repaired personal Surplus keys can
   recover authenticated original receipts while retaining their original payer.
   Server key repair also resumes blocked receipts; interrupted Surplus

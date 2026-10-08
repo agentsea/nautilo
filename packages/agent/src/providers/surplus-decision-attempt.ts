@@ -33,15 +33,16 @@ export class SurplusDecisionDirectFallbackError extends Error {
   readonly code = "surplus_decision_direct_fallback" as const;
 
   constructor() {
-    super("Surplus refused the decision request before provider service.");
+    super("Surplus did not return a usable decision; try the admitted direct route.");
     this.name = "SurplusDecisionDirectFallbackError";
   }
 }
 
 interface ParsedSurplusDecision<T> {
-  readonly value: T;
   readonly inputTokens: number;
   readonly outputTokens: number;
+  /** Validate and project the parsed provider envelope after usage is retained. */
+  readonly finalize: () => T;
 }
 
 function errorCode(payload: unknown): string | undefined {
@@ -172,6 +173,7 @@ export async function invokeSurplusDecisionAttempt<T>(input: {
       }
     }
     parsed = await input.parse(response);
+    const value = parsed.finalize();
     const costMicro = receipt.buyerCostMicro;
     try {
       const settlement = {
@@ -195,7 +197,7 @@ export async function invokeSurplusDecisionAttempt<T>(input: {
         failureCode: "attempt_settlement_failed",
       });
     }
-    return parsed.value;
+    return value;
   } catch (error) {
     const cancelled = input.signal.aborted;
     const safeFallback = !cancelled && safeDecisionFallback(error, receipt);

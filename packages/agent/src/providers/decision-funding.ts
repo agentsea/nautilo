@@ -96,8 +96,8 @@ async function runTransport<T>(
 }
 
 /**
- * Execute within the admitted payer. A proven pre-service marketplace refusal
- * may try the same model directly; the funding owner rejects cross-payer use.
+ * Execute within the admitted payer. An unanswered marketplace attempt may
+ * try the same model directly; the funding owner rejects cross-payer use.
  */
 export async function runPreparedDecision<T>(
   prepared: PreparedDecisionFunding,

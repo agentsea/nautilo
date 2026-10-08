@@ -30,7 +30,7 @@ const routes = [
   ["openrouter", "openrouter:typesafe/jev-1.13", "https://openrouter.ai/api/alpha/decisions", "OPENROUTER_API_KEY"],
 ] as const;
 const input = (modelId: string = routes[0][1]) => ({ modelId, state: "Refund the duplicate payment. No rush.", questions: structuredClone(questions), signal: new AbortController().signal });
-const payload = (result: unknown = answers) => ({ model: "jev-1.13.0", answers: result, usage: { input_tokens: 395, output_tokens: 69 } });
+const payload = (result: unknown = answers, model = "jev-1.13.0") => ({ model, answers: result, usage: { input_tokens: 395, output_tokens: 69 } });
 const mockFetch = (value: unknown) => (async () => Response.json(value)) as unknown as typeof fetch;
 const funded = {
   fundingHumanUserId: "synthetic-human",
@@ -44,10 +44,11 @@ describe("typed decision adapters", () => {
   for (const [provider, modelId, endpoint, envKey] of routes) {
     test(`${provider}: one batch, exact route, caller signal, one attributed usage record`, async () => {
       const request = input(modelId); const records: RecordUsageInput[] = []; let calls = 0;
+      const responseModel = provider === "openrouter" ? "typesafe/jev-1.13-20260917" : "jev-1.13.0";
       const result = await invokeDecision(request, { ...funded, apiKey: "synthetic-key", recordUsage: (record) => records.push(record), fetch: (async (url: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]) => {
         calls++; expect(url).toBe(endpoint); expect(init?.signal).toBe(request.signal); expect(init?.redirect).toBe("error");
         expect(JSON.parse(init!.body as string)).toEqual({ model: modelId.slice(provider.length + 1), state: request.state, questions });
-        return Response.json(payload());
+        return Response.json(payload(answers, responseModel));
       }) as unknown as typeof fetch });
       expect(calls).toBe(1); expect(result.answers).toEqual(answers); expect(result.usage.actualCostUsd).toBeNull();
       expect(records).toHaveLength(1); expect(records[0]).toMatchObject({ model: modelId, inputTokens: 395, outputTokens: 69, metadata: { operation: "decision" } });
@@ -56,7 +57,8 @@ describe("typed decision adapters", () => {
       expect(resolveCatalogModel(modelId, { env: { [envKey]: "synthetic-key" } }).availability).toBe("selectable");
     });
     test(`${provider}: compatibility Choice remains usable`, async () => {
-      const result = await invokeProviderChoice(provider, { modelId, state: "Refund", instructions: "Select", choices: [{ id: "billing", description: "Payments" }], signal: new AbortController().signal }, { ...funded, apiKey: "synthetic-key", recordUsage: () => {}, fetch: mockFetch(payload({ candidate: { type: "choice", choice: "billing" } })) });
+      const responseModel = provider === "openrouter" ? "typesafe/jev-1.13-20260917" : "jev-1.13.0";
+      const result = await invokeProviderChoice(provider, { modelId, state: "Refund", instructions: "Select", choices: [{ id: "billing", description: "Payments" }], signal: new AbortController().signal }, { ...funded, apiKey: "synthetic-key", recordUsage: () => {}, fetch: mockFetch(payload({ candidate: { type: "choice", choice: "billing" } }, responseModel)) });
       expect(result.selectedId).toBe("billing");
     });
   }
