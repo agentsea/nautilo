@@ -150,6 +150,7 @@ describe("protected conversation job runner", () => {
         scope,
       ) {
         coreSawHistory = Array.isArray(scope.history);
+        expect(typeof scope.readFreshHistory).toBe("function");
         expect(live.value).toBe(true);
         yield {
           type: "message.tokens",

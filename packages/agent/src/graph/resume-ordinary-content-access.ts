@@ -11,6 +11,7 @@ import {
 } from "../runtime/ordinary-content-access";
 import { emitChainedInterrupts, type StreamEventProcessor } from "./resume-approval";
 import { resolveGraphExecutionPolicy } from "./execution-policy";
+import { streamForegroundGraph } from "./foreground-context-refresh";
 
 /** Server-resolved coordinates, never a client-selected checkpoint address. */
 export interface OrdinaryContentAccessRecoveryScope {
@@ -127,8 +128,14 @@ export async function resumeOrdinaryContentAccessRecovery(
     try {
       await processor.beginResume?.(expected.graphThreadId, expected.turnId);
       signal?.throwIfAborted();
-      for await (const event of graph.streamEvents(null, {
+      const resumeConfig = {
         ...config, version: "v2", recursionLimit: resolveGraphExecutionPolicy().recursionLimit,
+        ...(signal === undefined ? {} : { signal }),
+      };
+      for await (const event of streamForegroundGraph(graph, null, resumeConfig, {
+        ...(processor.rebuildForegroundContext === undefined
+          ? {}
+          : { rebuildForegroundContext: processor.rebuildForegroundContext }),
         ...(signal === undefined ? {} : { signal }),
       })) {
         signal?.throwIfAborted();

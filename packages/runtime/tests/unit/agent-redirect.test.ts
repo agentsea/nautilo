@@ -173,7 +173,7 @@ describe("redirect target depth ingress ordering", () => {
       'if (input["redirectDepth"] === 1 && turnContextId)',
     );
     const graphInput = source.indexOf("const graphInput", seed);
-    const graphStream = source.indexOf("graph.streamEvents", seed);
+    const graphStream = source.indexOf("streamForegroundGraph(graph", seed);
     expect(seed).toBeGreaterThan(0);
     expect(seed).toBeLessThan(graphInput);
     expect(seed).toBeLessThan(graphStream);

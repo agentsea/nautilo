@@ -33,7 +33,7 @@
           "bounded": true,
           "requiredRetained": true,
           "forbiddenAbsent": true,
-          "characters": 600
+          "characters": 329
         },
         {
           "scenarioId": "recent-correction",
@@ -60,12 +60,12 @@
           "characters": 79
         },
         {
-          "scenarioId": "oversized-mandatory-suffix",
+          "scenarioId": "oversized-narrative-entry",
           "passed": true,
           "bounded": true,
           "requiredRetained": true,
           "forbiddenAbsent": true,
-          "characters": 120
+          "characters": 220
         }
       ]
     },
@@ -115,12 +115,12 @@
           "characters": 79
         },
         {
-          "scenarioId": "oversized-mandatory-suffix",
+          "scenarioId": "oversized-narrative-entry",
           "passed": false,
           "bounded": true,
           "requiredRetained": false,
-          "forbiddenAbsent": false,
-          "characters": 120
+          "forbiddenAbsent": true,
+          "characters": 220
         }
       ]
     },
@@ -170,12 +170,12 @@
           "characters": 29
         },
         {
-          "scenarioId": "oversized-mandatory-suffix",
+          "scenarioId": "oversized-narrative-entry",
           "passed": false,
           "bounded": true,
           "requiredRetained": false,
           "forbiddenAbsent": true,
-          "characters": 120
+          "characters": 220
         }
       ]
     }

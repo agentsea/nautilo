@@ -38,6 +38,24 @@ describe("pre-model modality sanitization", () => {
     );
   });
 
+  test("still treats an accepted image as current when refreshed Room context follows it", () => {
+    const current = new HumanMessage({
+      content: [
+        { type: "text", text: "Continue working from this image." },
+        { type: "image_url", image_url: { url: "data:image/png;base64,abc" } },
+      ],
+    });
+    const refreshedContext = new HumanMessage({
+      content: "[Room context]\nThe active turn already made progress.",
+      additional_kwargs: { nautilo_transient_context: true },
+    });
+
+    expect(() => sanitizeImagesForModel(
+      [current, refreshedContext],
+      "fireworks:accounts/fireworks/models/glm-5p3",
+    )).toThrow(/does not support image/);
+  });
+
   test("leaves images intact for vision-capable models", () => {
     const current = new HumanMessage({
       content: [

@@ -37,6 +37,11 @@ import { EmptyTerminalResponseError } from "../graph/empty-terminal-response";
 import { researchNoteDraftNodes } from "../tools/security/research-note-draft-nodes";
 import type { ResearchNoteDraft } from "../tools/security/research-note-draft";
 import type { ForegroundChatFundingSession } from "../runtime/foreground-chat-funding";
+import { resolvePreparedMessageBudget } from "../utils/chat-model-invocation";
+import {
+  foregroundContextProjectionFingerprint,
+  type ForegroundGraph,
+} from "../graph/foreground-context-refresh";
 
 function hasVisibleTerminalContent(content: unknown): boolean {
   if (typeof content === "string") return content.trim().length > 0;
@@ -138,7 +143,7 @@ export function shouldContinue(
  */
 export function shouldContinueAfterTools(
   state: NautiloState,
-): "tools" | "pre_model" | "browser_decision" | typeof END {
+): "tools" | "pre_model" | "browser_decision" | "foreground_context_refresh" | typeof END {
   if (state.approvedToolCalls?.length) return "tools";
   if (state.noProgressPendingCorrection || state.noProgressPendingStop || state.approvalDenied
     || state.modelRejectedToolCallIds?.length || state.projectionRejectedToolCallIds?.length
@@ -153,20 +158,94 @@ export function shouldContinueAfterTools(
     if (message.name === "skip" && successfulIntentionalSilenceResult(message)) return END;
   }
   const decision = currentBrowserDecision(state);
-  return decision?.phase === "decide" || decision?.phase === "observe" ? "browser_decision" : "pre_model";
+  if (decision?.phase === "decide" || decision?.phase === "observe") return "browser_decision";
+  if (
+    state.foregroundContextRefreshEligible === true
+    && state.foregroundContextRefresh?.status === "pending"
+  ) return "foreground_context_refresh";
+  return "pre_model";
 }
 
-interface CompiledGraph {
+interface CompiledGraph extends ForegroundGraph {
   // Input accepts Record for normal invocations and Command for resume
   invoke(input: unknown, config?: Record<string, unknown>): Promise<unknown>;
   stream(input: unknown, config?: Record<string, unknown>): Promise<AsyncIterable<unknown>>;
-  streamEvents(input: unknown, config?: Record<string, unknown>): AsyncIterable<unknown>;
-  getState(config: Record<string, unknown>): Promise<{ values: Record<string, unknown> } | undefined>;
-  updateState(
-    inputConfig: Record<string, unknown>,
-    values: Record<string, unknown>,
-    asNode?: string,
-  ): Promise<unknown>;
+}
+
+/** @internal Exported for focused routing tests. */
+export function shouldContinueAfterPreModel(
+  state: NautiloState,
+): "agent" | "foreground_context_refresh" {
+  return state.foregroundContextRefreshEligible === true
+    && state.foregroundContextRefresh?.reason === "context_pressure"
+    && state.foregroundContextRefresh.status === "pending"
+    ? "foreground_context_refresh"
+    : "agent";
+}
+
+/** @internal Exported for focused routing tests. */
+export function shouldContinueAfterBrowserDecision(
+  state: NautiloState,
+): "model_output_preflight" | "browser_decision" | "foreground_context_refresh" | "pre_model" {
+  const phase = currentBrowserDecision(state)?.phase;
+  if (phase === "waiting") return "model_output_preflight";
+  if (phase === "observe" || phase === "decide") return "browser_decision";
+  if (
+    state.foregroundContextRefreshEligible === true
+    && state.foregroundContextRefresh?.status === "pending"
+  ) return "foreground_context_refresh";
+  return "pre_model";
+}
+
+/** A parked question resumes and persists its Human reply before refreshing. */
+export function shouldContinueAfterAwaitReply(
+  state: NautiloState,
+): "foreground_context_refresh" | "pre_model" {
+  return state.foregroundContextRefreshEligible === true
+    && state.awaitResponse !== true
+    && state.foregroundContextRefresh?.reason === "visible_assistant_text"
+    && state.foregroundContextRefresh.status === "pending"
+    ? "foreground_context_refresh"
+    : "pre_model";
+}
+
+export async function visibleTextRefreshAfterAgent(
+  state: NautiloState,
+  update: Partial<NautiloState>,
+): Promise<Partial<NautiloState>> {
+  if (state.foregroundContextRefreshEligible !== true) return update;
+  const messages = update.messages ?? state.messages;
+  const response = messages[messages.length - 1];
+  if (
+    !response
+    || !AIMessage.isInstance(response)
+    || (!response.tool_calls?.length && state.awaitResponse !== true)
+    || !hasVisibleTerminalContent(response.content)
+  ) return update;
+  const modelId = update.model ?? state.foregroundContextPreparedModelId ?? state.model ?? "";
+  const maximumContextCharacters = modelId === state.foregroundContextPreparedModelId
+    ? state.foregroundContextMaximumCharacters ?? 0
+    : Math.max(
+      0,
+      await resolvePreparedMessageBudget(modelId)
+        - (state.foregroundContextBoundToolTokens ?? 0)
+        - (state.foregroundContextReservedMessageTokens ?? 0),
+    ) * 4;
+  return {
+    ...update,
+    foregroundContextRefresh: {
+      kind: "foreground_context_refresh",
+      reason: "visible_assistant_text",
+      status: "pending",
+      modelId,
+      maximumContextCharacters,
+      projectionFingerprint: foregroundContextProjectionFingerprint(
+        messages,
+        modelId,
+        maximumContextCharacters,
+      ),
+    },
+  };
 }
 
 export interface NautiloGraphDeps extends PostModelDeps {
@@ -282,31 +361,36 @@ export function createNautiloGraph(
       browserDecision: state.browserDecision ? { ...state.browserDecision, phase: "handoff" as const, pending: null } : null,
     }))
     .addNode("browser_decision", createBrowserDecisionNode(deps))
-    .addNode("agent", draftNodes.agent)
+    .addNode("agent", async (state, config) => await visibleTextRefreshAfterAgent(
+      state,
+      await draftNodes.agent(state, config),
+    ))
     .addNode("model_output_preflight", modelOutputPreflightNode)
     .addNode("projection_preflight", graphProjectionPreflightNode)
     .addNode("ordinary_content_access_preflight", createOrdinaryContentAccessPreflightNode(deps?.ordinaryContentAccessForState, deps?.isPinEnrolled))
     .addNode("post_model", postModelNode)
     .addNode("tools", graphToolsNode)
     .addNode("await_reply", awaitReplyNode)
+    .addNode("foreground_context_refresh", (state) => ({
+      foregroundContextRefresh: state.foregroundContextRefresh == null
+        ? null
+        : { ...state.foregroundContextRefresh, status: "ready" as const },
+    }))
     .setEntryPoint("pre_model")
-    .addEdge("pre_model", "agent")
+    .addConditionalEdges("pre_model", shouldContinueAfterPreModel)
     .addEdge("agent", "model_output_preflight")
     .addEdge("model_output_preflight", "projection_preflight")
     .addEdge("projection_preflight", "ordinary_content_access_preflight")
     .addEdge("ordinary_content_access_preflight", "post_model")
     .addConditionalEdges("post_model", shouldContinue)
     .addConditionalEdges("tools", shouldContinueAfterTools)
-    .addConditionalEdges("browser_decision", (state) => {
-      const phase = currentBrowserDecision(state)?.phase;
-      return phase === "waiting" ? "model_output_preflight"
-        : phase === "observe" || phase === "decide" ? "browser_decision" : "pre_model";
-    })
+    .addEdge("foreground_context_refresh", END)
+    .addConditionalEdges("browser_decision", shouldContinueAfterBrowserDecision)
     // on resume the await_reply node injects the human reply + clears
     // `awaitResponse`, then drives one more turn that reaches real END. (The
     // first-entry interrupt throws to suspend, so this edge is only traversed
     // post-resume.)
-    .addEdge("await_reply", "pre_model");
+    .addConditionalEdges("await_reply", shouldContinueAfterAwaitReply);
 
   if (checkpointSaver) {
     return workflow.compile({ checkpointer: checkpointSaver }) as CompiledGraph;

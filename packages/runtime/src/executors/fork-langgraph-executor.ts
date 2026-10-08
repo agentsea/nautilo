@@ -1,9 +1,11 @@
+import { createForegroundContextRebuilder, ForegroundContextReceipts } from "./foreground-context-refresh";
 import { retainedImageAssistance, imageAssistanceHistory, imageAssistanceObservationMessages, attributeImageAssistance, failImageAssistance } from "./image-assistance";
-import { finishMemoryReviewTurn, memoryReviewAdmission, memoryReviewCompletionState } from "../memory-review/admission";
+import { finishMemoryReviewTurn, memoryReviewAdmission, memoryReviewSourceIds, memoryReviewCompletionState } from "../memory-review/admission";
 import type { ServerEvent } from "@nautilo/types";
 import { StrictShadowEnforcementError } from "@nautilo/lattice-bridge";
 import {
   createNautiloGraph,
+  streamForegroundGraph,
   defaultPostModelDeps,
   deleteEphemeralCheckpointThread,
   selectPromptBriefMemories,
@@ -50,6 +52,7 @@ import {
   resolveForegroundHistoryMessages,
   freshForegroundRecordContextEligible,
   freshForegroundActivationState,
+  foregroundContextRefreshEligibleForActivation,
   freshForegroundTurnScopedGraphContext,
   parseVerifiedOrdinaryOrigin,
 } from "./langgraph-executor";
@@ -219,6 +222,12 @@ export async function* forkLanggraphExecutor(
   // Seed exactly the same fresh lifecycle/activation projection as main turns;
   // do not borrow a parent turn's one-shot approval or activation state.
   const foregroundActivationState = freshForkActivationState(input);
+  const foregroundContextRefreshEligible = foregroundContextRefreshEligibleForActivation({
+    roomId,
+    agentId,
+    trustedExecutionEntrypoint: foregroundActivationState.trustedExecutionEntrypoint,
+  });
+  const foregroundExecutionId = turnId || jobId;
   const liveShadowContext = getCurrentLiveShadowTurnContext();
   await prepareForegroundEncryptedContext(() =>
     enforceLiveShadowForegroundHistoryBoundary({
@@ -236,6 +245,7 @@ export async function* forkLanggraphExecutor(
       liveShadowContext.enforcementPolicy,
       liveShadowContext.observeBoundary,
       liveShadowContext.dataOperationPolicy,
+      foregroundContextRefreshEligible ? foregroundExecutionId : undefined,
     );
   if (liveShadowRuntime !== undefined) {
     foregroundActivationState.suppressToolLifecycleEvents = true;
@@ -441,11 +451,12 @@ export async function* forkLanggraphExecutor(
         ...(subthreadParentRoomId ? { subthreadParentRoomId } : {}),
         ...(subthreadAnchorMessageId != null ? { subthreadAnchorMessageId } : {}),
         ...(currentMessageId != null ? { currentMessageId } : {}),
+        excludeMessageIds: memoryReviewSourceIds(input),
       }),
       liveShadowContext?.session?.authorizationDeadlineAt,
     )
     : buildProtectedRoomTranscriptContext(
-      imageAssistanceHistory(protectedTurn.history),
+      imageAssistanceHistory(protectedTurn.history.filter((hit) => !memoryReviewSourceIds(input).includes(hit.messageId))),
       modelId,
     );
 
@@ -468,7 +479,10 @@ export async function* forkLanggraphExecutor(
   });
   const savedFingerprints = new Set<string>();
 
+  const foregroundContextReceipts = new ForegroundContextReceipts(currentMessageId);
+
   const persistOptsBase = {
+    ...(foregroundContextRefreshEligible ? { requireDurable: "foreground-context" as const, onCommittedRows: foregroundContextReceipts.recordRows, foregroundExecutionId } : {}),
     ...await memoryReviewAdmission(memoryAccessEnvelope, checkpointThreadId, { threadId: transcriptThreadId, transcriptOwnerId: ownerId, turnId, input }),
     agentId,
     roomId,
@@ -502,7 +516,7 @@ export async function* forkLanggraphExecutor(
       savedFingerprints,
       {
         ...persistOptsBase,
-        requireDurable: multimodalImages.length > 0,
+        requireDurable: foregroundContextRefreshEligible ? "foreground-context" as const : multimodalImages.length > 0,
         ...(Array.isArray(input["retainedAttachmentIds"]) ? { retainedAttachmentIds: input["retainedAttachmentIds"] as string[] } : {}),
         notificationContext: {
           mentionedHumanUserIds,
@@ -568,6 +582,19 @@ export async function* forkLanggraphExecutor(
   const forkMessages = [...historyMessages, ...inFlightMarker, forkUser];
 
   const graphInput = {
+    foregroundContextRefreshEligible,
+    foregroundContextRefresh: null,
+    foregroundContextRefreshLastProjection: "",
+    foregroundContextRefreshSource: foregroundContextRefreshEligible ? {
+      executionId: foregroundExecutionId,
+      acceptedMessageIds: memoryReviewSourceIds(input),
+      acceptedMessages: [...inFlightMarker, forkUser],
+      ...(foregroundContextReceipts.triggerMessageId === undefined ? {} : { triggerMessageId: foregroundContextReceipts.triggerMessageId }),
+      ...(foregroundContextReceipts.throughMessageIdInclusive === undefined ? {} : { throughMessageIdInclusive: foregroundContextReceipts.throughMessageIdInclusive }),
+      ...(subthreadParentRoomId ? { subthreadParentRoomId } : {}),
+      ...(subthreadAnchorMessageId === undefined ? {} : { subthreadAnchorMessageId }),
+    } : null,
+
     noProgressStreaks: new Map(),
     browserDecision: null,
     noProgressPendingCorrection: null,
@@ -640,9 +667,11 @@ export async function* forkLanggraphExecutor(
   try {
   if (imageAssistanceResult && !retainedImageResults.some((result) => result.inputDigest === imageAssistanceResult.inputDigest)) {
     const observations = imageAssistanceObservationMessages(imageAssistanceResult);
-    if (protectedTurn) await protectedTurn.persist(observations);
+    if (protectedTurn) foregroundContextReceipts.recordIds((await protectedTurn.persist(observations, foregroundContextRefreshEligible ? foregroundExecutionId : undefined)).map((message) => Number(message.projection.messageId)));
     else if (liveShadowRuntime) {
       const protectedEvents = await publishLiveShadowRuntimeMessages({
+            ...(foregroundContextRefreshEligible ? { foregroundExecutionId } : {}),
+            onCommittedMessageIds: foregroundContextReceipts.recordIds,
         runtime: liveShadowRuntime, operationId: jobId, laneKey: effectiveLaneKey,
         messages: observations, agentId, warn,
         persistOrdinary: (messages) => persistMessages(transcriptThreadId, ownerId, [...messages], savedFingerprints, { ...persistOptsBase, requireDurable: true }),
@@ -754,7 +783,16 @@ export async function* forkLanggraphExecutor(
 
   let memoryReviewRecorded = false;
   try {
-    const eventStream = graph.streamEvents(graphInput, streamConfig);
+    const eventStream = streamForegroundGraph(graph, graphInput, streamConfig, {
+      signal,
+      ...(foregroundContextRefreshEligible ? {
+        rebuildForegroundContext: createForegroundContextRebuilder({
+          roomId, ownerId: ownerId, agentId, receipts: foregroundContextReceipts,
+          ...(protectedTurn === undefined ? {} : { protectedTurn }),
+          ...(initialRecordContext === undefined ? {} : { recordContext: initialRecordContext }),
+        }),
+      } : {}),
+    });
 
     for await (const ev of eventStream) {
       if (signal.aborted) {
@@ -771,6 +809,7 @@ export async function* forkLanggraphExecutor(
       for (const event of events) {
         if (liveShadowRuntime !== undefined) {
           const protectedStream = await protectLiveShadowAssistantToken({
+            ...(foregroundContextRefreshEligible ? { foregroundExecutionId } : {}),
             runtime: liveShadowRuntime,
             operationId: liveShadowContext!.operationId,
             laneKey: effectiveLaneKey,
@@ -799,6 +838,8 @@ export async function* forkLanggraphExecutor(
       if (messagesToPersist.length > 0) {
         if (liveShadowRuntime !== undefined) {
           const protectedEvents = await publishLiveShadowRuntimeMessages({
+            ...(foregroundContextRefreshEligible ? { foregroundExecutionId } : {}),
+            onCommittedMessageIds: foregroundContextReceipts.recordIds,
             runtime: liveShadowRuntime,
             operationId: liveShadowContext!.operationId,
             laneKey: effectiveLaneKey,
@@ -829,7 +870,7 @@ export async function* forkLanggraphExecutor(
             },
           );
         } else {
-          await protectedTurn.persist(messagesToPersist);
+          foregroundContextReceipts.recordIds((await protectedTurn.persist(messagesToPersist, foregroundContextRefreshEligible ? foregroundExecutionId : undefined)).map((message) => Number(message.projection.messageId)));
         }
       }
     }

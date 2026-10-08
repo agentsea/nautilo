@@ -12,10 +12,12 @@
  * No server / DB / API keys.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { Command } from "@langchain/langgraph";
 
 let capturedResumeInput: unknown;
+let capturedStreamInputs: unknown[] = [];
+let refreshPending = false;
 
 let resumeGraphWithHumanReply: typeof import(
   "../../src/graph/resume-human-reply"
@@ -36,12 +38,28 @@ beforeAll(async () => {
     createNautiloGraph: () => ({
       streamEvents: async function* (input: unknown) {
         capturedResumeInput = input;
+        capturedStreamInputs.push(input);
+        if (!(input instanceof Command)) refreshPending = false;
         // A single inert event so the resume drains immediately; the post-run
         // getState (no pending interrupt) drives a non-reparked completion.
         yield { event: "noop" };
       },
       getState: async () => ({
-        values: { messages: [new AIMessage("here is your answer")] },
+        values: {
+          messages: [new AIMessage("here is your answer")],
+          ...(refreshPending
+            ? {
+                foregroundContextRefresh: {
+                  kind: "foreground_context_refresh",
+                  reason: "context_pressure",
+                  status: "ready",
+                  modelId: "test:model",
+                  maximumContextCharacters: 1_000,
+                  projectionFingerprint: "before-refresh",
+                },
+              }
+            : {}),
+        },
         tasks: [],
       }),
     }),
@@ -56,6 +74,8 @@ afterAll(() => {
 
 beforeEach(() => {
   capturedResumeInput = undefined;
+  capturedStreamInputs = [];
+  refreshPending = false;
 });
 
 describe("resumeGraphWithHumanReply stream-entry invariant (M169 R4)", () => {
@@ -74,5 +94,39 @@ describe("resumeGraphWithHumanReply stream-entry invariant (M169 R4)", () => {
     // The resume completed (no chained interrupt) and surfaced final text.
     expect(result.reparked).toBe(false);
     expect(result.finalText).toContain("here is your answer");
+  });
+
+  test("continues the same resumed graph after a bounded foreground rebuild", async () => {
+    refreshPending = true;
+    const rebuilt = [new HumanMessage("bounded rebuilt narrative")];
+    const transitions: unknown[] = [];
+    const processed: unknown[] = [];
+    const processor = {
+      process(event: unknown) { processed.push(event); },
+      flush() {},
+      async rebuildForegroundContext(transition: unknown) {
+        transitions.push(transition);
+        return rebuilt;
+      },
+    };
+
+    await resumeGraphWithHumanReply(
+      "room:room-1:bot:agent-1",
+      "continue",
+      "user-2",
+      processor,
+    );
+
+    expect(capturedStreamInputs).toHaveLength(2);
+    expect(capturedStreamInputs[0] instanceof Command).toBe(true);
+    expect(capturedStreamInputs[1]).toMatchObject({
+      messages: rebuilt,
+      foregroundContextRefresh: null,
+    });
+    expect((capturedStreamInputs[1] as Record<string, unknown>)[
+      "foregroundContextRefreshLastProjection"
+    ]).toEqual(expect.any(String));
+    expect(transitions).toHaveLength(1);
+    expect(processed).toHaveLength(2);
   });
 });

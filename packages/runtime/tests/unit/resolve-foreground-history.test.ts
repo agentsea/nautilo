@@ -3,8 +3,11 @@ import { describe, expect, test } from "bun:test";
 import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import { ROOM_CONTEXT_MESSAGE_HEADER } from "@nautilo/agent";
 import { FOREGROUND_RECORD_CONTEXT_HEADER } from "@nautilo/reflection/foreground";
+import type { LiveShadowAgentTurnSession } from "@nautilo/lattice-bridge/server";
 import {
+  createLiveShadowDataOperationPolicyBinding,
   resolveForegroundHistoryMessages,
+  runWithLiveShadowTurnSession,
   type BuildTranscriptContextDeps,
   type RoomHistoryHit,
   type TranscriptContextScope,
@@ -101,6 +104,343 @@ describe("resolveForegroundHistoryMessages", () => {
 
     expect(scopes[0]!.excludeMessageId).toBe(4242);
     expect(scopes[0]!.subthread).toBeUndefined();
+  });
+
+  test("refresh keeps prior history and only this execution's post-trigger rows", async () => {
+    const { deps, scopes } = capturingDeps([
+      { ...makeHit("alice", "Alice", "older request", "2026-06-01T10:00:00Z"), messageId: 8, role: "user" },
+      { ...makeHit("alice", "Alice", "active request", "2026-06-01T10:00:01Z"), messageId: 10, role: "user" },
+      { ...makeHit("nova", "Nova", "own completed result", "2026-06-01T10:00:02Z"), messageId: 12, role: "tool", foregroundExecutionId: "turn-active" },
+      { ...makeHit("nova", "Nova", "other concurrent result", "2026-06-01T10:00:03Z"), messageId: 13, role: "tool", foregroundExecutionId: "turn-other" },
+    ]);
+
+    const out = await resolveForegroundHistoryMessages({
+      turnKind: "fresh",
+      roomId: "room-2",
+      transcriptOwnerId: "owner-1",
+      agentId: "agent-2",
+      currentMessageId: 10,
+      throughMessageIdInclusive: 13,
+      foregroundExecutionId: "turn-active",
+    }, deps);
+
+    expect(scopes[0]).toMatchObject({
+      excludeMessageId: 10,
+      throughMessageIdInclusive: 13,
+      foregroundExecutionId: "turn-active",
+    });
+    const rendered = typeof out[0]?.content === "string"
+      ? out[0].content
+      : JSON.stringify(out[0]?.content ?? "");
+    expect(rendered).toContain("older request");
+    expect(rendered).toContain("own completed result");
+    expect(rendered).not.toContain("active request");
+    expect(rendered).not.toContain("other concurrent result");
+  });
+
+  test("Full refresh pages before windowing so concurrent output cannot evict ten owned anchors", async () => {
+    const trigger = 100;
+    const protectedPayloads = new Map<number, Readonly<{
+      role: "assistant" | "tool";
+      content: string;
+      toolName?: string;
+      sensitiveMetadata: Readonly<{ foregroundExecutionId: string }>;
+    }>>();
+    const hit = (
+      id: number,
+      role: "assistant" | "tool",
+      content: string,
+      executionId: string,
+    ): RoomHistoryHit => {
+      const ts = new Date(id * 1_000);
+      const sourceOrderTimestamp = ts.toISOString().replace(
+        /\.(\d{3})Z$/,
+        ".$1000Z",
+      );
+      protectedPayloads.set(id, {
+        role,
+        content,
+        ...(role === "tool" ? { toolName: "lookup" } : {}),
+        sensitiveMetadata: { foregroundExecutionId: executionId },
+      });
+      return {
+        messageId: id,
+        ts,
+        role,
+        authorDisplayName: "Nova",
+        handle: "nova",
+        authorActorId: "actor-nova",
+        // Full structural rows do not expose protected content or metadata.
+        snippet: null as unknown as string,
+        sourceOrderTimestamp,
+      };
+    };
+    const own = Array.from({ length: 10 }, (_, index) =>
+      hit(trigger + index + 1, "assistant", `own-${index + 1}`, "turn-active"));
+    const concurrent = hit(111, "assistant", "concurrent-visible", "turn-other");
+    const laterTool = hit(112, "tool", "later-own-tool", "turn-active");
+    const pages = [
+      {
+        fixedPrefix: [],
+        page: [...own.slice(1), concurrent, laterTool],
+        nextBefore: {
+          orderTimestamp: own[1]!.sourceOrderTimestamp!,
+          messageId: own[1]!.messageId,
+        },
+      },
+      { fixedPrefix: [], page: [own[0]!] },
+    ];
+    let pageCalls = 0;
+    const deps: BuildTranscriptContextDeps = {
+      readRoomTranscript: async () => {
+        throw new Error("protected refresh must use the authorized pager");
+      },
+      readRoomTranscriptSourcePage: async () => pages[pageCalls++] ?? {
+        fixedPrefix: [],
+        page: [],
+      },
+      readSubagentTranscript: async () => [],
+      readRoomContextPolicy: async () => ({
+        recentConversationLimit: 10,
+        minimumFullTurns: 1,
+        maxRoomContextPercent: 50,
+        stenographerPriorConversationLimit: 10,
+        passiveRecallEnabled: true,
+        reflectionSleepEnabled: false,
+        memoryReviewEnabled: null,
+      }),
+    };
+    const policy = {
+      mode: "encrypted_only" as const,
+      shadowBehavior: "strict" as const,
+      revision: 7,
+    };
+    const session = {
+      protectForegroundHistory: async ({ messageIds }: { messageIds: readonly number[] }) => ({
+        status: "verified" as const,
+        messages: messageIds.map((messageId) => ({
+          messageId,
+          payload: protectedPayloads.get(messageId)!,
+          provenance: "existing" as const,
+        })),
+      }),
+    } as unknown as LiveShadowAgentTurnSession;
+
+    const out = await runWithLiveShadowTurnSession({
+      operationId: "full-window-isolation",
+      capability: {} as never,
+      session,
+      enforcementPolicy: policy,
+      dataOperationPolicy: createLiveShadowDataOperationPolicyBinding(
+        () => Promise.resolve(policy),
+      ),
+      work: () => resolveForegroundHistoryMessages({
+        turnKind: "fresh",
+        roomId: "room-full",
+        transcriptOwnerId: "owner-1",
+        agentId: "agent-1",
+        currentMessageId: trigger,
+        throughMessageIdInclusive: laterTool.messageId,
+        foregroundExecutionId: "turn-active",
+      }, deps),
+    });
+
+    const rendered = out.map((message) =>
+      typeof message.content === "string"
+        ? message.content
+        : JSON.stringify(message.content)).join("\n");
+    expect(pageCalls).toBe(2);
+    for (let index = 1; index <= 10; index += 1) {
+      expect(rendered).toContain(`own-${index}`);
+    }
+    expect(rendered).toContain("later-own-tool");
+    expect(rendered).not.toContain("concurrent-visible");
+  });
+
+  test("Full refresh cancellation stops before an older authorized page", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("stop protected history paging");
+    let pageCalls = 0;
+    const deps: BuildTranscriptContextDeps = {
+      readRoomTranscript: async () => {
+        throw new Error("protected refresh must use the authorized pager");
+      },
+      readRoomTranscriptSourcePage: async () => {
+        pageCalls += 1;
+        return {
+          fixedPrefix: [],
+          page: [{
+            messageId: 102,
+            ts: new Date(102_000),
+            role: "assistant" as const,
+            authorDisplayName: "Nova",
+            handle: "nova",
+            authorActorId: "actor-nova",
+            snippet: null as unknown as string,
+            sourceOrderTimestamp: "1970-01-01T00:01:42.000000Z",
+          }],
+          nextBefore: {
+            orderTimestamp: "1970-01-01T00:01:42.000000Z",
+            messageId: 102,
+          },
+        };
+      },
+      readSubagentTranscript: async () => [],
+      readRoomContextPolicy: async () => ({
+        recentConversationLimit: 10,
+        minimumFullTurns: 1,
+        maxRoomContextPercent: 50,
+        stenographerPriorConversationLimit: 10,
+        passiveRecallEnabled: true,
+        reflectionSleepEnabled: false,
+        memoryReviewEnabled: null,
+      }),
+    };
+    const policy = {
+      mode: "encrypted_only" as const,
+      shadowBehavior: "strict" as const,
+      revision: 8,
+    };
+    const session = {
+      protectForegroundHistory: async ({ messageIds }: { messageIds: readonly number[] }) => {
+        controller.abort(cancellation);
+        return {
+          status: "verified" as const,
+          messages: messageIds.map((messageId) => ({
+            messageId,
+            payload: {
+              role: "assistant" as const,
+              content: "owned progress",
+              sensitiveMetadata: { foregroundExecutionId: "turn-active" },
+            },
+            provenance: "existing" as const,
+          })),
+        };
+      },
+    } as unknown as LiveShadowAgentTurnSession;
+
+    try {
+      await runWithLiveShadowTurnSession({
+        operationId: "full-window-cancel",
+        capability: {} as never,
+        session,
+        enforcementPolicy: policy,
+        dataOperationPolicy: createLiveShadowDataOperationPolicyBinding(
+          () => Promise.resolve(policy),
+        ),
+        work: () => resolveForegroundHistoryMessages({
+          turnKind: "fresh",
+          roomId: "room-full",
+          transcriptOwnerId: "owner-1",
+          agentId: "agent-1",
+          currentMessageId: 100,
+          throughMessageIdInclusive: 102,
+          foregroundExecutionId: "turn-active",
+          signal: controller.signal,
+        }, deps),
+      });
+      throw new Error("expected protected history paging cancellation");
+    } catch (error) {
+      expect(error).toBe(cancellation);
+    }
+    expect(pageCalls).toBe(1);
+  });
+
+  test("Full refresh rejects an injected source page that moves forward", async () => {
+    const rows = [
+      {
+        messageId: 102,
+        ts: new Date("2026-06-01T10:00:00.000Z"),
+        role: "assistant" as const,
+        authorDisplayName: "Nova",
+        handle: "nova",
+        authorActorId: "actor-nova",
+        snippet: null as unknown as string,
+        sourceOrderTimestamp: "2026-06-01T10:00:00.000500Z",
+      },
+      {
+        messageId: 103,
+        ts: new Date("2026-06-01T10:00:00.000Z"),
+        role: "assistant" as const,
+        authorDisplayName: "Nova",
+        handle: "nova",
+        authorActorId: "actor-nova",
+        snippet: null as unknown as string,
+        sourceOrderTimestamp: "2026-06-01T10:00:00.000600Z",
+      },
+    ];
+    let pageCalls = 0;
+    const deps: BuildTranscriptContextDeps = {
+      readRoomTranscript: async () => {
+        throw new Error("protected refresh must use the authorized pager");
+      },
+      readRoomTranscriptSourcePage: async () => {
+        const row = rows[pageCalls++]!;
+        return {
+          fixedPrefix: [],
+          page: [row],
+          nextBefore: {
+            orderTimestamp: row.sourceOrderTimestamp,
+            messageId: row.messageId,
+          },
+        };
+      },
+      readSubagentTranscript: async () => [],
+      readRoomContextPolicy: async () => ({
+        recentConversationLimit: 10,
+        minimumFullTurns: 1,
+        maxRoomContextPercent: 50,
+        stenographerPriorConversationLimit: 10,
+        passiveRecallEnabled: true,
+        reflectionSleepEnabled: false,
+        memoryReviewEnabled: null,
+      }),
+    };
+    const policy = {
+      mode: "encrypted_only" as const,
+      shadowBehavior: "strict" as const,
+      revision: 9,
+    };
+    const session = {
+      protectForegroundHistory: async ({ messageIds }: { messageIds: readonly number[] }) => ({
+        status: "verified" as const,
+        messages: messageIds.map((messageId) => ({
+          messageId,
+          payload: {
+            role: "assistant" as const,
+            content: "owned progress",
+            sensitiveMetadata: { foregroundExecutionId: "turn-active" },
+          },
+          provenance: "existing" as const,
+        })),
+      }),
+    } as unknown as LiveShadowAgentTurnSession;
+
+    try {
+      await runWithLiveShadowTurnSession({
+        operationId: "full-window-forward-page",
+        capability: {} as never,
+        session,
+        enforcementPolicy: policy,
+        dataOperationPolicy: createLiveShadowDataOperationPolicyBinding(
+          () => Promise.resolve(policy),
+        ),
+        work: () => resolveForegroundHistoryMessages({
+          turnKind: "fresh",
+          roomId: "room-full",
+          transcriptOwnerId: "owner-1",
+          agentId: "agent-1",
+          currentMessageId: 100,
+          throughMessageIdInclusive: 103,
+          foregroundExecutionId: "turn-active",
+        }, deps),
+      });
+      throw new Error("expected protected history pager rejection");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("did not move backward");
+    }
+    expect(pageCalls).toBe(2);
   });
 
   test("subthread fresh turn passes parent-anchor windowing (R3)", async () => {
