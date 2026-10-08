@@ -142,7 +142,7 @@ describe("OFFICIAL_SKILLS registry", () => {
   test("mcp-setup metadata + body", () => {
     const skill = getBundledSkill("mcp-setup")!;
     expect(skill.source).toBe("official");
-    expect(skill.version).toBe(2);
+    expect(skill.version).toBe(3);
     expect(skill.id).toBe("official:mcp-setup");
     expect(skill.requiresTools).toEqual(["manage_local_mcp"]);
 
@@ -170,8 +170,8 @@ describe("OFFICIAL_SKILLS registry", () => {
     expect(skill.body).toContain("manage_local_mcp");
     expect(skill.body).toContain("multiple connected machines");
     expect(skill.body).toContain("exact `relayId` in the install request");
-    expect(skill.body).toContain("Never install an MCP with `run_shell`");
-    expect(skill.body).toContain("`terminal`, `curl`, `npm`, or `pip`");
+    expect(skill.body).toContain("Never install an MCP with a shell, terminal");
+    expect(skill.body).toContain("`curl`, `npm`, or `pip`");
     expect(skill.body).toContain("sent immediately by Genie in the tool call");
     expect(skill.body).toContain("approve this exact request once or deny it");
     expect(skill.body).toContain("human/account, machine, relay");
@@ -269,116 +269,83 @@ describe("OFFICIAL_SKILLS registry", () => {
   test("developer-workstation metadata + body", () => {
     const skill = getBundledSkill("developer-workstation")!;
     expect(skill.source).toBe("official");
-    expect(skill.version).toBe(9);
+    expect(skill.version).toBe(10);
     expect(skill.id).toBe("official:developer-workstation");
-    // Keep this skill available when file must still be discovered/activated.
-    expect(skill.requiresTools).toEqual(["run_shell", "apply_patch"]);
+    expect(skill.requiresTools).toEqual(["exec_command", "write_stdin", "apply_patch"]);
 
     expect(skill.body.startsWith("# Developer Workstation")).toBe(true);
-    // Mental model: Current Folder is the project/mount boundary.
     expect(skill.body).toContain("Current Folder");
-    // Baseline is a one-shot run_shell, not terminal.
-    expect(skill.body).toContain("run_shell");
+    expect(skill.body).toContain("`foreground.main`");
+    expect(skill.body).toContain("exact initiating Nautilo Desktop");
+    expect(skill.body).toContain("background tasks, subagents");
+    expect(skill.body).toContain("Basic runs contained");
+    expect(skill.body).toContain("isolated network");
+    expect(skill.body).toContain("private temporary `HOME`");
+    expect(skill.body).toContain("Development is contained and profile-bound");
+    expect(skill.body).toContain("Full Mac accepts a one-shot pipe only");
+    expect(skill.body).toContain("no `tty` and no later");
+    expect(skill.body).toContain("It changes containment only");
     expect(skill.body).toContain("git rev-parse --show-toplevel");
     expect(skill.body).toContain("git status --short");
-    expect(skill.body).toContain("file.glob");
-    expect(skill.body).toContain("file.grep");
-    expect(skill.body).toContain("file.read");
     expect(skill.body).toContain("apply_patch");
     expect(skill.body).toContain("Core tools");
     expect(skill.body).toContain("discover_tools");
-    expect(skill.body).toContain("do not use `terminal`");
     expect(skill.body).toContain("glob → grep → read → `apply_patch`");
     expect(skill.body).toContain("file.undo_turn");
     expect(skill.body).toContain("Never promise atomicity");
-    // Setup is agent-owned: install safely, use the clickable auth flow, verify, continue.
-    expect(skill.body).toContain("Own setup instead of bouncing the user to a terminal");
-    expect(skill.body).toContain("Connections → GitHub → Sign in to GitHub");
+    expect(skill.body).toContain("Own setup instead of bouncing the Human to a terminal");
     expect(skill.body).toContain("Settings → Workstation");
-    expect(skill.body).toContain("brew install gh");
-    expect(skill.body).toContain("gh auth setup-git");
-    expect(skill.body).toContain("Continue the original task");
-    expect(skill.body).toContain("Do not use `curl | sh`");
-    expect(skill.body).toContain("Full Git and worktrees use contained Developer Workstation identity");
-    expect(skill.body).toContain("git worktree remove <exact-path>");
-    expect(skill.body).toContain("RUN_SHELL_GIT_REQUIRES_BINDING");
-    expect(skill.body).toContain("only for a broker-created worktree");
-    expect(skill.body).toContain("Direct Mac currently uses the host login shell");
-    expect(skill.body).toContain("commands must not depend on");
+    expect(skill.body).toContain("When `local_github` is offered");
+    expect(skill.body).toContain("Publishing retains its separate Human review");
+    expect(skill.body).toContain("Never copy credentials");
+    expect(skill.body).not.toContain("gh auth setup-git");
+    expect(skill.body).toContain("`curl | sh`");
+    expect(skill.body).toContain("Use ordinary Development execution");
+    expect(skill.body).toContain("When `local_git` is actually available");
+    expect(skill.body).toContain("safe broker-created `worktree-remove`");
     expect(skill.body).toContain("<<'EOF'");
     expect(skill.body).toContain("/bin/bash <<'BASH'");
     expect(skill.body).toContain("Do not wrap a multiline payload in `/bin/bash -lc '…'`");
-    expect(skill.body).toContain("Never construct a shell program by interpolating");
-    expect(skill.body).toContain("locally identity-checks transient authority");
-    expect(skill.body).toContain("most-specific explicit grant constrains the posture");
-    expect(skill.body).toContain("Server plans carry no filesystem roots");
-    expect(skill.body).toContain("duplicate guarded location");
-    expect(skill.body).toContain("destruction or elevation");
-    expect(skill.body).toContain("must never unlock a tool or credential");
-    expect(skill.body).toContain("same relay, profile id+revision");
-    expect(skill.body).toContain("narrow Desktop identity broker");
-    // Terminal is a separate path, not evidence for run_shell.
-    expect(skill.body).toContain("terminal");
-    expect(skill.body).toContain("not evidence");
-    // Denial remediation map with grounded codes/messages.
-    expect(skill.body).toContain("WORKSTATION_SHELL_BINDING_REQUIRED");
-    expect(skill.body).toContain("use_workstation");
-    expect(skill.body).toContain("canRunShell");
-    expect(skill.body).not.toContain("use_high_impact_tools");
-    expect(skill.body).not.toContain("use_destructive_tools");
-    expect(skill.body).not.toContain("use_terminal");
-    expect(skill.body).not.toContain("use_workstation_profiles");
-    expect(skill.body).toContain("getcwd");
-    // Never weaken protected boundaries as a workaround.
-    expect(skill.body).toContain("No boundary weakening as a workaround");
-    expect(skill.body).not.toContain("no sandbox around");
-    expect(skill.body).not.toContain("every call prove_it");
+    expect(skill.body).toContain("An `exec_command` call may complete or return a live `session_id`");
+    expect(skill.body).toContain("A quiet read is not completion");
+    expect(skill.body).toContain("history recovery never reruns it");
+    expect(skill.body).toContain("The legacy `terminal` tool may remain");
+    expect(skill.body).toContain("If the optional `read_shell_output` tool is offered");
+    expect(skill.body).toContain("hands over their existing terminal");
+    expect(skill.body).toContain("local execution is unavailable here");
+    expect(skill.body).toContain("Never weaken containment");
   });
 
   test("shell-execution metadata + body", () => {
     const skill = getBundledSkill("shell-execution")!;
     expect(skill.source).toBe("official");
-    expect(skill.version).toBe(6);
+    expect(skill.version).toBe(7);
     expect(skill.id).toBe("official:shell-execution");
-    expect(skill.requiresTools).toEqual(["run_shell"]);
+    expect(skill.requiresTools).toEqual(["exec_command", "write_stdin"]);
 
     expect(skill.body.startsWith("# Shell Execution")).toBe(true);
-    expect(skill.body).toContain("relay tool");
-    expect(skill.body).toContain("prove_it");
-    expect(skill.body).toContain("timeout_seconds");
-    expect(skill.body).toContain("timeout_reason");
-    expect(skill.body).toContain("use_workstation");
-    expect(skill.body).toContain("canRunShell");
-    expect(skill.body).not.toContain("use_high_impact_tools");
-    expect(skill.body).not.toContain("use_destructive_tools");
-    expect(skill.body).not.toContain("use_terminal");
-    expect(skill.body).not.toContain("use_workstation_profiles");
-    expect(skill.body).toContain("terminal");
-    expect(skill.body).toContain("approval dock");
-    expect(skill.body).toContain("transient, locally identity-checked project authority");
-    expect(skill.body).toContain("Server plans carry no filesystem roots");
-    expect(skill.body).toContain("Direct Mac changes containment only");
-    expect(skill.body).toContain("narrow Desktop broker");
-    expect(skill.body).toContain("observable and one-shot");
-    expect(skill.body).toContain("outputArtifact.reference");
-    expect(skill.body).toContain("nextOffsetBytes");
-    expect(skill.body).toContain("delete_after_read");
-    expect(skill.body).toContain("stream-local byte offsets");
-    expect(skill.body).toContain("artifactOffsetBytes");
-    expect(skill.body).toContain("case-sensitive literal matching, not regex");
-    expect(skill.body).toContain("status=$?; tail -n 200 .nautilo-test.log; exit \"$status\"");
-    expect(skill.body).toContain("never rerun an expensive or side-effecting command merely to recover its output");
-    expect(skill.body).toContain("warrants falling back **exactly once** to the existing offset-page form");
-    expect(skill.body).toContain("rather than paging, retrying search, or rerunning the original command for version skew");
-    expect(skill.body).toContain("RUN_SHELL_OUTPUT_ARTIFACT_REQUEST_INVALID");
-    expect(skill.body).toContain("RUN_SHELL_OUTPUT_ARTIFACT_SEARCH_UNSUPPORTED");
-    expect(skill.body).not.toContain("buffered and one-shot");
+    expect(skill.body).toContain("main foreground conversation (`foreground.main`)");
+    expect(skill.body).toContain("standalone relays");
+    expect(skill.body).toContain("unavailable in this context");
+    expect(skill.body).toContain("isolated network");
+    expect(skill.body).toContain("private temporary `HOME`");
+    expect(skill.body).toContain("active Development profile");
+    expect(skill.body).toContain("It accepts a one-shot pipe only");
+    expect(skill.body).toContain("Full Mac refuses PTYs");
+    expect(skill.body).toContain("live `session_id`");
+    expect(skill.body).toContain("A quiet read does not mean the command completed");
+    expect(skill.body).toContain("nextSearchCursor");
+    expect(skill.body).toContain("saved final");
+    expect(skill.body).toContain("optional `read_shell_output`");
+    expect(skill.body).toContain("Use `local_git`");
+    expect(skill.body).toContain("Use `human_terminal` only after");
+    expect(skill.body).toContain("legacy `terminal` tool may still be offered");
   });
 
   test("terminal-sessions metadata + body", () => {
     const skill = getBundledSkill("terminal-sessions")!;
     expect(skill.source).toBe("official");
-    expect(skill.version).toBe(2);
+    expect(skill.version).toBe(3);
     expect(skill.id).toBe("official:terminal-sessions");
     expect(skill.requiresTools).toEqual(["terminal"]);
 
@@ -395,10 +362,17 @@ describe("OFFICIAL_SKILLS registry", () => {
     expect(skill.body).not.toContain("use_destructive_tools");
     expect(skill.body).not.toContain("use_terminal");
     expect(skill.body).not.toContain("use_workstation_profiles");
-    expect(skill.body).toContain("run_shell");
     expect(skill.body).toContain("capability-gated");
-    expect(skill.body).toContain("observable and one-shot");
-    expect(skill.body).not.toContain("buffered and one-shot");
+    expect(skill.body).toContain("managed `exec_command` and `write_stdin`");
+    expect(skill.body).toContain("`human_terminal`, when offered");
+    expect(skill.body).toContain("does not prove");
+  });
+
+  test("bundled skills neither require nor recommend the retired shell tool", () => {
+    for (const skill of OFFICIAL_SKILLS) {
+      expect(skill.requiresTools).not.toContain("run_shell");
+      expect(skill.body).not.toContain("run_shell");
+    }
   });
 
   test("getBundledSkill lookup", () => {
@@ -525,26 +499,28 @@ const PER_SKILL_CROSS_REFERENCES: Record<string, Set<string>> = {
   // must retain their read/supervision skill when that capability is absent.
   "public-browser-research": new Set(["terminal", "run_web_search", "read_webpage", "run_website_task"]),
   "connected-websites": new Set(["terminal", "act_connected_web_account", "run_website_task"]),
-  // mcp-setup names these tools only to prohibit using them for MCP
-  // installation; the dedicated manage_local_mcp tool is its sole dependency.
-  "mcp-setup": new Set(["run_shell", "terminal"]),
+  // mcp-setup names terminal only to prohibit shell-based installation; the
+  // dedicated manage_local_mcp tool is its sole dependency.
+  "mcp-setup": new Set(["terminal"]),
   // developer-workstation requires the normal file + shell workflow. It also
   // names optional core/discovery routes so Genie can recover when a schema is
   // masked and use the multi-file primitive when present.
   "developer-workstation": new Set([
+    "local_github",
     "terminal",
+    "local_git",
+    "read_shell_output",
+    "human_terminal",
     "apply_patch",
     "discover_tools",
     "activate_tools",
   ]),
-  // shell-execution (requiresTools: [run_shell]) intentionally contrasts
-  // itself against the persistent PTY `terminal` tool to teach the agent
-  // when to pick one vs the other. The reference is pedagogical, not a
-  // workflow dependency on `terminal`.
-  "shell-execution": new Set(["terminal"]),
-  // terminal-sessions (requiresTools: [terminal]) mirrors the above — it
-  // contrasts itself against the one-shot `run_shell` tool.
-  "terminal-sessions": new Set(["run_shell"]),
+  // Managed execution names optional typed/history/handoff routes and the
+  // legacy terminal only when those capabilities are actually offered.
+  "shell-execution": new Set(["terminal", "local_git", "read_shell_output", "human_terminal"]),
+  // Legacy terminal guidance explains the preferred managed and explicit
+  // Human-handoff surfaces without requiring them.
+  "terminal-sessions": new Set(["exec_command", "write_stdin", "human_terminal"]),
   // office-control (requiresTools: [edit_doc, office]) — the interactive
   // editing skill — teaches the interactive-vs-headless routing split by
   // pointing at `officecli` (see the office-generate skill) for

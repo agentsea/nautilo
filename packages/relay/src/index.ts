@@ -206,6 +206,8 @@ export {
 } from "./codex-protocol";
 export {
   RELAY_PROTOCOL_VERSION,
+  RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION,
+  isRelayLocalGitCapability,
   RELAY_COMPUTER_USE_SEMANTIC_PROTOCOL_VERSION,
   RELAY_RUN_SHELL_PROGRESS_PROTOCOL_VERSION,
   RELAY_RUN_SHELL_PROGRESS_MAX_TEXT_BYTES,
@@ -647,3 +649,25 @@ export { handleFsDispatch } from "./fs-dispatch";
 export { readTextWindow, type TextWindow, type TextWindowSource } from "./text-window";
 
 export { isSecurityScanProgress, securityScanProgressText, type SecurityScanProgress, type RelaySecurityScanProgressMessage } from "./security-scan-progress";
+
+export { parseRelayLocalExecutionCapability, type RelayLocalExecutionCapability } from "./types";
+export { parseRelayLocalExecutionBinding, RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION, LOCAL_EXECUTION_MAX_IDENTITIES,
+  type RelayLocalExecutionBindingV1, type RelayLocalExecutionOwnerV1 } from "./protocol";
+
+export { parseRelayLocalExecutionUncertainty, type RelayLocalExecutionUncertaintyV1 } from "./protocol";
+export { parseRelayLocalExecutionHistoryBinding, isRelayLocalExecutionHistoryRead, RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION,
+  type RelayLocalExecutionHistoryBindingV1 } from "./protocol";
+
+export { RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "./protocol";
+export type { RelayBasicExecutionAuthority, RelayLocalExecutionBinding, RelayLocalExecutionBindingV2 } from "./protocol";
+export { parseRelayBasicExecutionCapability } from "./types";
+export type { RelayBasicExecutionCapability } from "./types";
+
+export { RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION, parseRelayHumanTerminalBinding, type RelayHumanTerminalBinding } from "./protocol";
+export { parseRelayHumanTerminalCapability, type RelayHumanTerminalCapability } from "./types";
+
+export { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION, type RelayLocalExecutionBindingV3 } from "./protocol";
+
+export { RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION, isRelayLocalExecutionSearchAllowed } from "./protocol";
+
+export { RELAY_GITHUB_PROTOCOL_VERSION, isRelayGitHubDispatch } from "./protocol";

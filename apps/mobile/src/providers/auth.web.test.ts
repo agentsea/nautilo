@@ -13,7 +13,7 @@ test("Mobile Web AuthProvider installs only the browser SDK session authority", 
 });
 
 test("Mobile Web AuthProvider binds bearer use only after canonical whoami verification", () => {
-  const verification = source.indexOf("browserViewerFromWhoami(await verificationClient.whoami())");
+  const verification = source.indexOf("viewerFromWhoami(await verificationClient.whoami())");
   const sharedBearer = source.indexOf("getApiClient(owner.serverUrl).setToken(token)");
   expect(verification).toBeGreaterThan(-1);
   expect(sharedBearer).toBeGreaterThan(verification);

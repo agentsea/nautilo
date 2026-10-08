@@ -1,12 +1,12 @@
 /**
- * Tests for /api/security/posture — D060 Sprint 1 G5.3.b + G5.3.c.
+ * Tests for /api/security/posture.
  *
  * GET coverage:
  *   - 401 without Bearer token
  *   - 401 with invalid Bearer token
  *   - 200 for authenticated owner — returns deployment_mode +
  *     security_level + capabilities array containing the single
- *     `manage_server_security` Capability slug (stub until G5.5)
+ *     `manage_server_security` capability
  *   - 200 for authenticated non-owner — returns posture but EMPTY
  *     capabilities array (UI must gate mutations on this)
  *   - posture reflects `setConfigOverrides` changes (proving the
@@ -69,11 +69,7 @@ function installBearerSessionPreHandler(
   });
 }
 
-// M043 + G5.5 rebase: caps + PIN are now keyed on user_id (not
-// actor_id). SessionStore today stores both; createSession(actorId,
-// ownerId) puts the user id in the "ownerId" slot. Session-user-id
-// threading is future work; for now these tests exercise the user-
-// keyed path via session.ownerId.
+// Capabilities and PINs are keyed on the authenticated user identity.
 const OWNER_ACTOR_ID = "owner-actor";
 const OWNER_USER_ID = "owner-user"; // = session.ownerId today
 const HOUSEHOLD_ACTOR_ID = "household-actor";
@@ -83,8 +79,7 @@ const HOUSEHOLD_PIN = "135791";
 
 // Minimal in-memory ChallengeProvider so we don't need a DB at
 // test time. Keyed as a Map so individual tests can enroll PINs
-// for non-owner actors — lets us exercise the G5.5 non-owner
-// cap-holder path (SEC-2 regression lock).
+// for non-owner capability holders.
 class FakeChallengeProvider implements ChallengeProvider {
   private readonly pins = new Map<string, string>();
   enrollActor(actorId: string, pin: string): void {
@@ -112,8 +107,8 @@ let mutatorCalls: PostureMutationMeta[] = [];
 let auditCalls: SecurityAuditEvent[] = [];
 let deletionReceiptQueries: MessageDeletionReceiptQuery[] = [];
 
-// D060 Sprint 1 G5.5 + M043 — in-memory Capability store, keyed on
-// user_id (post-M043 caps are user-scoped, not actor-scoped).
+// In-memory Capability store, keyed on
+// user_id rather than actor_id.
 // Mirrors the shape @nautilo/trust::getUserCapabilities returns.
 const userCaps = new Map<string, readonly string[]>();
 
@@ -125,11 +120,11 @@ beforeAll(async () => {
   auditLogPath = join(tmp, "security-audit.log");
   sessionStore = new SessionStore(undefined, { persistPath: null });
   pinProvider = new FakeChallengeProvider();
-  // PIN enrolled against the user id (post-M043 credentials.user_id).
+  // PIN enrolled against the user id (credentials.user_id).
   pinProvider.enrollActor(OWNER_USER_ID, OWNER_PIN);
 
   app = Fastify({ logger: false });
-  // M052/M055 — `securityRoutes` GETs now require `request.sessionUserId`
+  // `securityRoutes` GETs require `request.sessionUserId`
   // + `request.policyContext` (set by the trust preHandler in the real
   // server). Install a tiny test-only preHandler that decodes the
   // test Bearer token through `sessionStore` and sets the same
@@ -185,9 +180,9 @@ beforeEach(() => {
   auditCalls = [];
   deletionReceiptQueries = [];
   // Reset cap seed before each test so a test that mutates can\u0027t
-  // leak state. Keyed on user_id (post-M043).
+  // leak state. Keyed on user_id.
   userCaps.clear();
-  // M128 P0.2 (TP6, 2026-05-28): owner gets `view_audit_log` in addition
+  // Owner gets `view_audit_log` in addition
   // to `manage_server_security` so the audit-log read gate (now cap-
   // based per B2 fix, was role-based) admits owner-bearer requests.
   // Per permission-model.md §6 grid both caps belong to the owner rung.
@@ -258,7 +253,7 @@ describe("GET /api/security/posture", () => {
     expect(body.securityLevel).toBe("cautious");
     expect(body.allowUncontainedHostCommands).toBe(false);
     expect(body.networkPolicy).toEqual({ mode: "host" });
-    // M128 P0.2 (TP6): owner now also holds `view_audit_log` per §6 grid
+    // Owner also holds `view_audit_log` per §6 grid
     // (added in the beforeEach default seed so the audit-log route's
     // cap-gate admits owner). Order matches the userCaps.set call.
     expect(body.capabilities).toEqual(["manage_server_security", "view_audit_log"]);
@@ -305,7 +300,7 @@ describe("GET /api/security/posture", () => {
 
   test("GET returns the caller's full governance capability slice for the UI", async () => {
     // If an actor holds several governance caps (owner typically
-    // holds all 9), the GET response returns them so the Sprint 3
+    // holds all 9), the GET response returns them so the posture
     // posture modal can display the user's governance slice. The PUT
     // route still gates specifically on manage_server_security.
     userCaps.set(OWNER_USER_ID, [
@@ -348,7 +343,7 @@ describe("GET /api/security/posture", () => {
   });
 });
 
-describe("D538 uncontained-host-command session controller", () => {
+describe("uncontained-host-command session controller", () => {
   const binding = {
     userId: OWNER_USER_ID,
     serverBindingId: "server-1",
@@ -385,6 +380,7 @@ describe("D538 uncontained-host-command session controller", () => {
     projectionFailure?: Error;
     liveBinding?: typeof binding | null;
     onVerify?: VerifyMutation;
+    onAudit?: (event: SecurityAuditEvent) => Promise<void>;
   } = {}) {
     let policy = input.policy ?? true;
     let projection = input.projection ?? eligibleProjection;
@@ -420,7 +416,7 @@ describe("D538 uncontained-host-command session controller", () => {
         if (projectionFailure !== null) throw projectionFailure;
         return projection;
       },
-      auditEvent: async (event) => { events.push(event); },
+      auditEvent: async (event) => { events.push(event); await input.onAudit?.(event); },
       now: () => new Date("2026-08-17T12:00:00.000Z"),
     });
     return {
@@ -441,6 +437,46 @@ describe("D538 uncontained-host-command session controller", () => {
     ip: "127.0.0.1",
     userAgent: "test-client",
   };
+
+  test("overlapping activations abort every replaced signal despite delayed revocation audit", async () => {
+    let release!: () => void; let entered!: () => void; let paused = false;
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    const began = new Promise<void>(resolve => { entered = resolve; });
+    const fixture = controllerFixture({ onAudit: async event => {
+      if (event.kind === "uncontained_host_commands_invalidated" && !paused) { paused = true; entered(); await wait; }
+    } });
+    await fixture.controller.activate({ ...request, pin: OWNER_PIN });
+    const dispatch = { ...request, pairingGeneration: binding.pairingGeneration, toolCallId: "managed-call" };
+    const original = await fixture.controller.resolveDispatch(dispatch);
+    if (!original.admitted) throw new Error("expected activation");
+    const activating = fixture.controller.activate({ ...request, pin: OWNER_PIN }); await began;
+    const intermediate = await fixture.controller.resolveDispatch(dispatch);
+    if (!intermediate.admitted) throw new Error("expected intermediate activation");
+    expect(original.activationSignal.aborted).toBeTrue();
+    await fixture.controller.activate({ ...request, pin: OWNER_PIN });
+    expect(intermediate.activationSignal.aborted).toBeTrue();
+    release(); expect((await activating).ok).toBeFalse();
+    const latest = await fixture.controller.resolveDispatch(dispatch);
+    if (!latest.admitted) throw new Error("expected latest activation");
+    expect(latest.activationId).not.toBe(intermediate.activationId); expect(latest.activationSignal.aborted).toBeFalse();
+  });
+
+  test("replacement activation rotates identity and aborts the previous retained execution fence", async () => {
+    const fixture = controllerFixture();
+    await fixture.controller.activate({ ...request, pin: OWNER_PIN });
+    const dispatch = { ...request, pairingGeneration: binding.pairingGeneration, toolCallId: "managed-call" };
+    const original = await fixture.controller.resolveDispatch(dispatch);
+    if (!original.admitted) throw new Error("expected activation");
+    expect((await fixture.controller.status(request)).activationId).toBe(original.activationId);
+    await fixture.controller.activate({ ...request, pin: OWNER_PIN });
+    expect(original.activationSignal.aborted).toBeTrue();
+    const replacement = await fixture.controller.resolveDispatch(dispatch);
+    if (!replacement.admitted) throw new Error("expected replacement activation");
+    expect(replacement.activationId).not.toBe(original.activationId);
+    await fixture.controller.disable(request);
+    expect(replacement.activationSignal.aborted).toBeTrue();
+    expect((await fixture.controller.status(request)).activationId).toBeUndefined();
+  });
 
   test("fails closed for default-off policy, missing exact grant, and role floor", async () => {
     const fixture = controllerFixture({ policy: false });
@@ -529,7 +565,7 @@ describe("D538 uncontained-host-command session controller", () => {
     }
   });
 
-  test("D538 dispatch re-reads every live fact and admits only the exact activated Desktop", async () => {
+  test("dispatch re-reads every live fact and admits only the exact activated Desktop", async () => {
     const dispatch = { ...request, pairingGeneration: binding.pairingGeneration, toolCallId: "tool-call-opaque" };
     const positive = controllerFixture();
     await positive.controller.activate({ ...request, pin: OWNER_PIN });
@@ -538,7 +574,7 @@ describe("D538 uncontained-host-command session controller", () => {
       admitted: true,
       executionClass: "real_workstation",
     });
-    if (!admitted.admitted) throw new Error("expected admitted D538 dispatch");
+    if (!admitted.admitted) throw new Error("expected admitted dispatch");
     expect(admitted.activationSignal.aborted).toBe(false);
 
     const cases: ReadonlyArray<{
@@ -578,7 +614,7 @@ describe("D538 uncontained-host-command session controller", () => {
     expect(fixture.events.some((event) => event.kind === "uncontained_host_commands_invalidated")).toBe(true);
   });
 
-  test("D538 revocation aborts only the active session and a fresh activation cannot revive its signal", async () => {
+  test("revocation aborts only the active session and a fresh activation cannot revive its signal", async () => {
     const fixture = controllerFixture();
     const dispatch = { ...request, pairingGeneration: binding.pairingGeneration, toolCallId: "call-1" };
     await fixture.controller.activate({ ...request, pin: OWNER_PIN });
@@ -597,7 +633,7 @@ describe("D538 uncontained-host-command session controller", () => {
     expect(first.activationSignal.aborted).toBe(true);
   });
 
-  test("D538 classifies each exact grant or role-floor group independently and ignores unrelated membership", async () => {
+  test("classifies each exact grant or role-floor group independently and ignores unrelated membership", async () => {
     const fixture = controllerFixture();
     expect(await fixture.controller.prepareMembershipRemoval({
       userId: OWNER_USER_ID,
@@ -635,7 +671,7 @@ describe("D538 uncontained-host-command session controller", () => {
     expect(revokeAdmin).not.toBeNull();
   });
 
-  test("D538 prepared revoker ends an activation created while the DB mutation is in flight", async () => {
+  test("prepared revoker ends an activation created while the DB mutation is in flight", async () => {
     const fixture = controllerFixture();
     const dispatch = { ...request, pairingGeneration: binding.pairingGeneration, toolCallId: "call-1" };
     const prepared = await fixture.controller.prepareMembershipRemoval({
@@ -652,7 +688,7 @@ describe("D538 uncontained-host-command session controller", () => {
     expect(admission.activationSignal.aborted).toBe(true);
   });
 
-  test("D538 prepared revoker ends replacement B rather than only activation A", async () => {
+  test("prepared revoker ends replacement B rather than only activation A", async () => {
     const fixture = controllerFixture();
     const dispatch = { ...request, pairingGeneration: binding.pairingGeneration, toolCallId: "call-1" };
     await fixture.controller.activate({ ...request, pin: OWNER_PIN });
@@ -675,7 +711,7 @@ describe("D538 uncontained-host-command session controller", () => {
     expect(admissionB.activationSignal.aborted).toBe(true);
   });
 
-  test("D538 projection preparation failure revokes the activation current after successful mutation", async () => {
+  test("projection preparation failure revokes the activation current after successful mutation", async () => {
     const fixture = controllerFixture({ projectionFailure: new Error("projection unavailable") });
     const dispatch = { ...request, pairingGeneration: binding.pairingGeneration, toolCallId: "call-1" };
     const prepared = await fixture.controller.prepareMembershipRemoval({
@@ -693,7 +729,7 @@ describe("D538 uncontained-host-command session controller", () => {
     expect(admitted.activationSignal.aborted).toBe(true);
   });
 
-  test("D538 policy disable aborts every current activation after the policy mutation seam", async () => {
+  test("policy disable aborts every current activation after the policy mutation seam", async () => {
     const fixture = controllerFixture();
     const dispatch = { ...request, pairingGeneration: binding.pairingGeneration, toolCallId: "call-1" };
     await fixture.controller.activate({ ...request, pin: OWNER_PIN });
@@ -706,7 +742,7 @@ describe("D538 uncontained-host-command session controller", () => {
     expect((await fixture.controller.resolveDispatch(dispatch)).admitted).toBe(false);
   });
 
-  test("D538 policy mutation failure retains activation while successful policy-off revokes before response", async () => {
+  test("policy mutation failure retains activation while successful policy-off revokes before response", async () => {
     const fixture = controllerFixture();
     const dispatch = { ...request, pairingGeneration: binding.pairingGeneration, toolCallId: "call-1" };
     await fixture.controller.activate({ ...request, pin: OWNER_PIN });
@@ -947,7 +983,7 @@ describe("GET /api/security/audit-log", () => {
     expect(res.statusCode).toBe(403);
   });
 
-  // M128 P0.2 (TP6.b, 2026-05-28): rung-by-rung audit-log gate. Per
+  // Audit-log permissions for each role. Per
   // permission-model.md §6 grid, `view_audit_log` is held by owner +
   // admin only; superuser / member / contributor / guest lack it and
   // are 403'd by the cap check at the route head.
@@ -1166,13 +1202,9 @@ describe("PUT /api/security/posture", () => {
     expect(mutatorCalls.length).toBe(0);
   });
 
-  test("G5.5 regression: non-owner actor with cap + own PIN succeeds (SEC-2: PIN verify keyed on session.actorId)", async () => {
-    // Pre-G5.5 the route passed anyone matching ownerActorId. G5.5
-    // swapped to real cap lookup AND SEC-2 swapped PIN verify to
-    // key on session.actorId (not ownerActorId). Grant the
-    // household actor the cap + enroll THEIR pin + verify they get
-    // through. If the old owner-keyed PIN verify leaked back in,
-    // the household\u0027s PIN would not match the owner\u0027s → 401.
+  test("non-owner capability holder succeeds with their own user PIN", async () => {
+    // Grant the household user permission and enroll their own PIN.
+    // Verification must use that user identity rather than the owner.
     userCaps.set(HOUSEHOLD_USER_ID, ["manage_server_security"]);
     pinProvider.enrollActor(HOUSEHOLD_USER_ID, HOUSEHOLD_PIN);
     const res = await app.inject({
@@ -1185,10 +1217,10 @@ describe("PUT /api/security/posture", () => {
     expect(mutatorCalls.length).toBe(1);
   });
 
-  test("G5.5 regression: non-owner cap holder WITHOUT own PIN → 401 (SEC-2: can\u0027t borrow owner\u0027s PIN)", async () => {
+  test("non-owner capability holder cannot substitute the owner PIN", async () => {
     // Symmetric check. Household has the cap but NOT their own PIN.
     // Even if they submit the OWNER\u0027S valid PIN, verify is keyed
-    // on session.actorId which has no enrolled PIN → 401. Owner\u0027s
+    // on the authenticated user, who has no enrolled PIN → 401. Owner\u0027s
     // PIN is NOT a master key.
     userCaps.set(HOUSEHOLD_USER_ID, ["manage_server_security"]);
     // Intentionally no enrollActor for HOUSEHOLD_USER_ID.
@@ -1205,11 +1237,11 @@ describe("PUT /api/security/posture", () => {
     expect(auditCalls[0]?.kind).toBe("pin_check_failed");
   });
 
-  test("G5.5 regression: owner-actor WITHOUT the cap gets 403 (not a pre-G5.5 owner-heuristic pass)", async () => {
+  test("owner without the required capability gets 403", async () => {
     // The symmetric check: if someone forgets to seed
     // manage_server_security into the owner Role, the route must
     // 403 rather than fall back to "but they\u0027re the owner
-    // actor". Pre-G5.5 code would have let this through.
+    // actor".
     userCaps.set(OWNER_USER_ID, []);
     const res = await app.inject({
       method: "PUT",
@@ -1360,7 +1392,7 @@ describe("PUT /api/security/posture", () => {
     });
   });
 
-  test("D538: policy-only PUT requires manage_uncontained_host_commands", async () => {
+  test("policy-only PUT requires manage_uncontained_host_commands", async () => {
     userCaps.set(OWNER_USER_ID, ["manage_uncontained_host_commands"]);
     const res = await app.inject({
       method: "PUT",
@@ -1377,7 +1409,7 @@ describe("PUT /api/security/posture", () => {
     expect(mutatorCalls[0]?.next.allowUncontainedHostCommands).toBe(true);
   });
 
-  test("D538: policy-only PUT rejects manage_server_security without the dedicated capability", async () => {
+  test("policy-only PUT rejects manage_server_security without the dedicated capability", async () => {
     const res = await app.inject({
       method: "PUT",
       url: "/api/security/posture",
@@ -1392,7 +1424,7 @@ describe("PUT /api/security/posture", () => {
     expect(mutatorCalls).toHaveLength(0);
   });
 
-  test("D538: existing posture fields still require manage_server_security", async () => {
+  test("existing posture fields still require manage_server_security", async () => {
     userCaps.set(OWNER_USER_ID, ["manage_uncontained_host_commands"]);
     const res = await app.inject({
       method: "PUT",
@@ -1408,7 +1440,7 @@ describe("PUT /api/security/posture", () => {
     expect(mutatorCalls).toHaveLength(0);
   });
 
-  test("D538: mixed PUT requires both capabilities with one PIN", async () => {
+  test("mixed PUT requires both capabilities with one PIN", async () => {
     const payload = {
       deploymentMode: "server",
       allowUncontainedHostCommands: true,
@@ -1457,7 +1489,7 @@ describe("PUT /api/security/posture", () => {
     expect(mutatorCalls).toHaveLength(1);
   });
 
-  test("D538: rejects non-boolean policy values before PIN verification", async () => {
+  test("rejects non-boolean policy values before PIN verification", async () => {
     userCaps.set(OWNER_USER_ID, ["manage_uncontained_host_commands"]);
     const res = await app.inject({
       method: "PUT",
@@ -1471,7 +1503,7 @@ describe("PUT /api/security/posture", () => {
     expect(mutatorCalls).toHaveLength(0);
   });
 
-  test("D103: explicit networkPolicy is preserved when deploymentMode changes", async () => {
+  test("explicit networkPolicy is preserved when deploymentMode changes", async () => {
     const res = await app.inject({
       method: "PUT",
       url: "/api/security/posture",
@@ -1489,7 +1521,7 @@ describe("PUT /api/security/posture", () => {
     expect(mutatorCalls[0]!.next.networkPolicy).toEqual({ mode: "host" });
   });
 
-  test("D103: networkPolicy mutation is PIN/capability gated and reaches mutator", async () => {
+  test("networkPolicy mutation is PIN/capability gated and reaches mutator", async () => {
     const res = await app.inject({
       method: "PUT",
       url: "/api/security/posture",
@@ -1518,7 +1550,7 @@ describe("PUT /api/security/posture", () => {
     });
   });
 
-  test("D103: invalid networkPolicy is rejected before PIN verify", async () => {
+  test("invalid networkPolicy is rejected before PIN verify", async () => {
     const res = await app.inject({
       method: "PUT",
       url: "/api/security/posture",
@@ -1545,7 +1577,7 @@ describe("PUT /api/security/posture", () => {
     [{ type: "cidr", cidr: "0xc0a80100/24" }],
     [{ type: "cidr", cidr: "not-a-cidr" }],
     [{ type: "domain", host: "api.openai.com", extra: "ignored?" }],
-  ])("D103: malformed network allow rule is rejected: %o", async (rule) => {
+  ])("malformed network allow rule is rejected: %o", async (rule) => {
     const res = await app.inject({
       method: "PUT",
       url: "/api/security/posture",
@@ -1598,15 +1630,8 @@ describe("PUT /api/security/posture", () => {
   });
 });
 
-// PR-017 MINOR #6 — enforce the SecurityAuditor "must not prevent
-// 4xx from reaching the caller" contract AT THE CALL SITE, not
-// just in the docstring. Previously every `await auditEvent(...)`
-// in `security.ts` was unwrapped; a thrown auditor would surface
-// as a 500 to the caller, breaking the ship-plan §5.8 invariant.
-// Hardened via the module-local `safeAudit()` helper that wraps
-// every call — regardless of what the injected implementation
-// does, the 4xx reaches the caller.
-describe("PUT /api/security/posture — safeAudit contract (PR-017 MINOR #6)", () => {
+// Audit failures must not replace the caller’s authorization response.
+describe("PUT /api/security/posture — safeAudit contract", () => {
   test("thrown auditor does NOT convert capability_missing 403 into a 500", async () => {
     // Standalone app with a THROWING auditor. Household token (no
     // cap) → route should 403 with error=capability_missing even

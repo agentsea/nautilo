@@ -640,7 +640,7 @@ describe(" uncontained host-command dispatch", () => {
       return {
         admitted: true,
         executionClass: "real_workstation",
-        activationSignal: new AbortController().signal,
+        activationId: "activation-fixture", activationSignal: new AbortController().signal,
       };
     };
 
@@ -686,7 +686,7 @@ describe(" uncontained host-command dispatch", () => {
     defaultPostModelDeps.resolveUncontainedHostCommandsDispatch = async () => ({
       admitted: true,
       executionClass: "real_workstation",
-      activationSignal: activation.signal,
+      activationId: "activation-fixture", activationSignal: activation.signal,
     });
 
     const output = await toolsNode(runShellState({ command: "echo harmless" }));
@@ -716,7 +716,7 @@ describe(" uncontained host-command dispatch", () => {
     defaultPostModelDeps.resolveUncontainedHostCommandsDispatch = async () => ({
       admitted: true,
       executionClass: "real_workstation",
-      activationSignal: activation.signal,
+      activationId: "activation-fixture", activationSignal: activation.signal,
     });
 
     const output = await toolsNode(runShellState({ command: "echo harmless" }));
@@ -1874,7 +1874,7 @@ describe("Nautilo tool invocation service", () => {
       invocationState.requiredHostRelays = { "call-browser_snapshot": "relay-1" };
       const malformed = await invoke(call("browser_snapshot", {
         decisionPlan: {
-          allowedOrigins: ["https://user:test1@example.com/?canary=1"],
+          allowedOrigins: ["https://fixture@example.invalid/?canary=1"],
           ignoredPlanField: "private-planner-value",
         },
         _requiredSession: "forged",

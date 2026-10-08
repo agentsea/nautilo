@@ -32,7 +32,7 @@ function binding(overrides: Partial<FullWorkstationBinding> = {}): FullWorkstati
   };
 }
 
-function plan(overrides: Partial<WorkstationDispatchPlan> = {}): WorkstationDispatchPlan {
+function plan(overrides: Partial<Extract<WorkstationDispatchPlan, { executionClass: "profile_bound_sandbox" | "typed_broker" | "real_workstation" }>> = {}): WorkstationDispatchPlan {
   const b = binding();
   return {
     toolCallId: "tool-call-a",
@@ -52,7 +52,7 @@ function plan(overrides: Partial<WorkstationDispatchPlan> = {}): WorkstationDisp
   };
 }
 
-describe("relay pairing-generation lifecycle reconciliation (D480)", () => {
+describe("relay pairing-generation lifecycle reconciliation", () => {
   test("invalidates only exact caller-owned live authority then disconnects it", async () => {
     const relayRegistry = new InMemoryRelayRegistry();
     const sessions = new InMemoryWorkstationSessionRegistry();

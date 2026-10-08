@@ -1,5 +1,5 @@
 /**
- * D440 Phase 2 — typed Git broker public types.
+ * typed Git broker public types.
  *
  * The broker is the locked seam between the agent's `run_shell` /
  * `file` callers and raw Git. A command-string allowlist cannot
@@ -12,9 +12,7 @@
  * operation, then compiles a per-operation sandbox profile as
  * defense in depth.
  *
- * Load-bearing invariants enforced by this module (see
- * `packages/sandbox/tests/unit/d440-git-operation-contract.test.ts`
- * for the Phase 0 contract):
+ * Load-bearing invariants enforced by this module and its contract tests:
  *   - canonicalize repository / common-dir / worktree git-dir /
  *     exact target identity before any mutation;
  *   - ignore system/global config and aliases; the broker selects a
@@ -175,6 +173,9 @@ export interface GitBrokerOptions {
    * fixed executable the contract requires.
    */
   readonly gitExecutable: string;
+  /** Required explicitly for authenticated network operations; never inherits
+   * local status/diff execution budgets. Git must be the admitted runtime. */
+  readonly networkExecution?: { readonly timeoutMs: number; readonly captureBytes: number };
   /**
    * Optional override for the macOS sandbox-exec binary path.
    * Defaults to `/usr/bin/sandbox-exec`. Tests supply a controlled

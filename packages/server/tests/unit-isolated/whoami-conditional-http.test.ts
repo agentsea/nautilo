@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { WhoamiResponse } from "@nautilo/types";
 import {
   canonicalWhoamiProjectionForHash,
+  WHOAMI_ROOM_DISCOVERABILITY_SUPPORTED,
   whoamiIfNoneMatchEquals,
   whoamiWeakETagFromProjection,
 } from "../../src/auth/whoami-conditional-http";
@@ -28,6 +29,10 @@ function sampleWhoami(overrides: Partial<WhoamiResponse> = {}): WhoamiResponse {
 }
 
 describe("whoamiWeakETagFromProjection (M213 Phase 8)", () => {
+  test("declares room discoverability support", () => {
+    expect(WHOAMI_ROOM_DISCOVERABILITY_SUPPORTED).toBe(true);
+  });
+
   test("ETag is opaque weak W/\"base64url\" with no plain user/role/cap tokens", () => {
     const etag = whoamiWeakETagFromProjection(sampleWhoami());
     expect(etag).toMatch(/^W\/"[A-Za-z0-9_-]+"$/);
@@ -69,6 +74,39 @@ describe("whoamiWeakETagFromProjection (M213 Phase 8)", () => {
         features: { office: { enabled: false } },
       }),
     ).not.toBe(baseEtag);
+    expect(
+      whoamiWeakETagFromProjection({
+        ...base,
+        features: {
+          office: base.features?.office ?? { enabled: false },
+          roomDiscoverability: true,
+        },
+      }),
+    ).not.toBe(baseEtag);
+  });
+
+  test("canonical feature projection defaults absent support to false", () => {
+    expect(canonicalWhoamiProjectionForHash(sampleWhoami())).toMatchObject({
+      features: {
+        office: { enabled: true },
+        roomDiscoverability: false,
+      },
+    });
+    expect(
+      canonicalWhoamiProjectionForHash(
+        sampleWhoami({
+          features: {
+            office: { enabled: true },
+            roomDiscoverability: true,
+          },
+        }),
+      ),
+    ).toMatchObject({
+      features: {
+        office: { enabled: true },
+        roomDiscoverability: true,
+      },
+    });
   });
 
   test("canonicalWhoamiProjectionForHash does not mutate the live body", () => {

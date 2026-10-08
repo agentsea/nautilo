@@ -268,7 +268,7 @@ describe("D453 — connected harness delegation prompt affordance", () => {
     expect(prompt).toContain('task({ command: "create", harness: "codex"');
     expect(prompt).toContain('in_background({ brief: ..., harness: "codex" })');
     expect(prompt).toContain("For substantial coding work, prefer");
-    expect(prompt).toContain("Never discover or invoke Codex through `run_shell`, a raw Codex CLI");
+    expect(prompt).toContain("Never discover or invoke Codex through shell commands, a raw Codex CLI");
     expect(prompt).toContain("readable tool result and let the Human use its saved recovery action");
     expect(prompt).toContain("never falls back to Native");
     expect(prompt).toContain("Runtime installation, account login, account/profile selection, posture escalation, and approval decisions are Human-owned");

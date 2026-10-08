@@ -1,3 +1,4 @@
+import type { HumanTerminalAdmissionPort } from "../tools/terminal/admission";
 import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
 import { browserDecisionHandoffMessage, browserDecisionPlanError, browserObservationFromResult, interpretBrowserDecisionCall, settleBrowserDecision } from "../graph/browser-decision";
 import { randomUUID } from "node:crypto";
@@ -162,7 +163,11 @@ export function normalizeAdmittedToolCalls(
   }));
 }
 
+type LocalExecutionHistoryPort = import("../tools/local-execution/history").LocalExecutionHistoryPort;
+
 type ProtectedToolComposition = Readonly<{
+  localExecutionHistoryPort?: LocalExecutionHistoryPort | undefined;
+  humanTerminalAdmissionPort?: HumanTerminalAdmissionPort | undefined;
   personalFunding?: boolean;
   personalTaskControls?: boolean;
   personalTaskRunnableModelIds?: readonly string[];
@@ -404,6 +409,8 @@ async function invokeToolCall(
         };
     },
     {
+      ...(protectedComposition.localExecutionHistoryPort === undefined ? {} : { localExecutionHistoryPort: protectedComposition.localExecutionHistoryPort }),
+      ...(protectedComposition.humanTerminalAdmissionPort === undefined ? {} : { humanTerminalAdmissionPort: protectedComposition.humanTerminalAdmissionPort }),
       ...(protectedComposition.ordinaryContentAccess === undefined ? {} : { ordinaryContentAccess: protectedComposition.ordinaryContentAccess }),
       ...(protectedComposition.recallRecordsPort === undefined
         ? {}
@@ -593,6 +600,9 @@ function settleToolsNode(
     browserDecision,
     requiredHostRelays: remainingHostRelays,
     computerUseInvocationBindings: remainingComputerUseBindings,
+    fullMacInvocationBindings: Object.fromEntries(Object.entries(state.fullMacInvocationBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
+    githubInvocationBindings: Object.fromEntries(Object.entries(state.githubInvocationBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
+    humanTerminalInvocationBindings: Object.fromEntries(Object.entries(state.humanTerminalInvocationBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
     ordinaryContentAccessBindings: Object.fromEntries(
       Object.entries(state.ordinaryContentAccessBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id)),
     ),
@@ -629,6 +639,8 @@ export function createToolsNode(input: Readonly<{
   personalTaskRunnableModelIds?: readonly string[];
   personalOnlyTaskModelIds?: readonly string[];
   ordinaryContentAccessForState?: OrdinaryContentAccessForState;
+  localExecutionHistoryPortForState?: (state: NautiloState) => LocalExecutionHistoryPort | undefined;
+  humanTerminalAdmissionPortForState?: (state: NautiloState) => HumanTerminalAdmissionPort | undefined;
   recallRecordsPortForState?: RecallRecordsPortForState;
   liveShadowToolBoundaryForState?: LiveShadowToolBoundaryForState;
   protectedMemorySearchForState?: (
@@ -670,6 +682,8 @@ export function createToolsNode(input: Readonly<{
     const projection = input.protectedMemoryProjectionPortForState?.(state);
     const fullEncryptionOnly = input.fullEncryptionOnlyForState?.(state) === true;
     return executeToolsNode(state, config, {
+      ...(input.localExecutionHistoryPortForState === undefined ? {} : { localExecutionHistoryPort: input.localExecutionHistoryPortForState(state) }),
+      ...(input.humanTerminalAdmissionPortForState === undefined ? {} : { humanTerminalAdmissionPort: input.humanTerminalAdmissionPortForState(state) }),
       ...(ordinaryContentAccess === undefined ? {} : { ordinaryContentAccess }),
       ...(recallRecordsPort === undefined ? {} : { recallRecordsPort }),
       ...(liveShadowToolBoundary === undefined

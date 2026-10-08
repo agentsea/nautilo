@@ -42,7 +42,15 @@ export function conversationCatalogueLabel(
   if (kind === "person") return "Person";
   if (kind === "genie") return "Genie";
   if (kind === "group") return "Group chat";
-  return room.kind === "open" ? "Public room" : "Private room";
+  if (room.kind !== "open") return "Private room";
+  return isRoomDiscoverable(room) ? "Public room" : "External room";
+}
+
+/** Older servers omit this field because every open room was discoverable. */
+export function isRoomDiscoverable(
+  room: Pick<RoomSummaryDto, "kind" | "discoverable">,
+): boolean {
+  return room.kind === "open" && room.discoverable !== false;
 }
 
 /**

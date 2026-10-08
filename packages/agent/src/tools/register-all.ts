@@ -1,3 +1,8 @@
+import { createGitHubTool } from "./github/github";
+import { createHumanTerminalTool } from "./terminal/human-terminal";
+import { createLocalGitTool } from "./local-git/local-git";
+import { createReadShellOutputTool } from "./shell/read-shell-output";
+import { createExecCommandTool, createWriteStdinTool } from "./local-execution/local-execution";
 /**
  * Register all built-in tools in the catalog. One register call per tool.
  * This is the ONLY place tools are defined.
@@ -161,6 +166,14 @@ export function reconcileComputerUseHostTools(catalog: ToolCatalog): void {
 function isOfficeToolingEnabled(): boolean {
   return fromRuntimeConfig().nautilo_office_enabled;
 }
+
+const legacyShellUnavailable: NonNullable<ToolRegistration["unavailableInContext"]> = context => {
+  const capabilities = context?.["relayCapabilities"] as Readonly<Record<string, boolean>> | undefined;
+  return capabilities?.["canReplaceLegacyShellTools"] === true
+    && capabilities["canExecuteLocal"] === true && capabilities["canObserveLocalExecution"] === true
+    ? "Use the managed execution, typed Git, retained output, or Human terminal tools on this Desktop."
+    : null;
+};
 
 /** options for tool registration (test seams). */
 export interface RegisterAllToolsOptions {
@@ -469,7 +482,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // (Stack-128) — `generate_repo_docs` entry tool. Thin
+  // `generate_repo_docs` entry tool. Thin
   // `repo_docs` task creator; a separate executor consumes the task.
   // Mints an async subagent that writes to a repo (potentially pushing or
   // opening a PR), so project execution retains its explicit approval gate.
@@ -565,11 +578,29 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
+  for (const [name, factory] of [["exec_command", createExecCommandTool], ["write_stdin", createWriteStdinTool]] as const) {
+    catalog.register({ name, factory, category: "development", executor: "relay", trustTier: "admin",
+      impact: "destructive", exposure: "discoverable", tags: ["shell", "command", "execution"],
+      requiresApproval: true, approvalLevel: "prove_it", requiredCapabilities: ["use_workstation"],
+      relayCapabilities: [name === "exec_command" ? "canExecuteLocal" : "canObserveLocalExecution"], resultScanPolicy: "on-suspicious" });
+  }
+
+  catalog.register({ name: "local_git", factory: () => createLocalGitTool(), category: "development",
+    executor: "relay", trustTier: "admin", impact: "destructive", exposure: "discoverable",
+    tags: ["git", "repository", "commit", "worktree"], requiresApproval: true, approvalLevel: "prove_it",
+    requiredCapabilities: ["use_workstation"], relayCapabilities: ["canUseLocalGit"], resultScanPolicy: "on-suspicious" });
+  catalog.register({ name: "read_shell_output", factory: () => createReadShellOutputTool(), category: "development",
+    executor: "relay", trustTier: "admin", impact: "read-only", exposure: "discoverable",
+    tags: ["output", "logs", "search", "shell"], requiresApproval: false,
+    requiredCapabilities: ["use_workstation"], relayCapabilities: ["canReadShellOutput"], resultScanPolicy: "on-suspicious" });
+
   // --- Shell ---
   // Runs locally via child_process. Relay dispatch comes from dj-electron-v1.
   catalog.register({
     name: "run_shell",
     factory: () => createRunShellTool(),
+    // Retain the executor and historical contracts without offering this tool to agents.
+    unavailableInContext: () => "This legacy command tool is unavailable. Discover the tools supported in this conversation.",
     category: "development",
     executor: "relay",
     trustTier: "admin",
@@ -677,7 +708,7 @@ export function registerAllTools(
     resultScanPolicy: "on-suspicious",
   });
 
-  // --- Terminal ( / ) ---
+  // --- Terminal ---
   // Interactive shared PTY. Distinct from run_shell (one-shot, prove_it):
   // per operator decision the terminal uses "basic normal gating,
   // NOT a PIN". The trust resolver is binary for relay tools (destructive |
@@ -685,9 +716,19 @@ export function registerAllTools(
   // allow: impact "high" (not "destructive") + requiresApproval:false →
   // `allow` for actors holding `use_workstation`. Runtime relay availability
   // remains a separate `canUseTerminal` requirement.
+  catalog.register({ name: "local_github", factory: () => createGitHubTool(), category: "development",
+    executor: "relay", trustTier: "admin", impact: "destructive", exposure: "discoverable",
+    tags: ["github", "issues", "pull-requests"], requiresApproval: true,
+    fullEncryptionSupport: "supported", requiredCapabilities: ["use_workstation"], relayCapabilities: ["canUseGitHub"], resultScanPolicy: "on-suspicious" });
+  catalog.register({ name: "human_terminal", factory: () => createHumanTerminalTool(), category: "development",
+    executor: "relay", trustTier: "admin", impact: "high", exposure: "discoverable",
+    tags: ["terminal", "human", "handoff", "interactive"], requiresApproval: false,
+    fullEncryptionSupport: "supported", requiredCapabilities: ["use_workstation"], relayCapabilities: ["canUseHumanTerminal"], resultScanPolicy: "on-suspicious" });
+
   catalog.register({
     name: "terminal",
     factory: () => createTerminalTool(),
+    unavailableInContext: legacyShellUnavailable,
     category: "development",
     executor: "relay",
     trustTier: "admin",

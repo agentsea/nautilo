@@ -1,5 +1,5 @@
 /**
- * D083 Phase 2 — per-tool renderer contract.
+ * Per-tool renderer contract.
  *
  * Each tool registered with the renderer registry can override:
  *   - `collapsedSummary` — the one-liner shown in the collapsed
@@ -19,7 +19,7 @@ import type { ToolActivityEvent } from "../../../adapters/runtime-contexts";
 import type { ToolCardState } from "../tool-card-helpers";
 
 /**
- * D502 Stack 1 — the deliberately narrow, bounded observation payload for a
+ * The deliberately narrow, bounded observation payload for a
  * Desktop `run_shell` invocation. This is provisional evidence only; the
  * completed DesktopShellResult in `resultText` remains canonical.
  */
@@ -38,7 +38,7 @@ export type RunShellContinuity =
   | "disconnected"
   | "outcome_unknown";
 
-/** D500 v15 bounded, secret-free live observation for an exact SSH call. */
+/** Bounded, secret-free live observation for an exact SSH call. */
 export type StructuredSshProgress =
   | {
       operation: "exec";
@@ -66,7 +66,7 @@ export interface ToolRendererProps {
   state: ToolCardState;
   /** The matching ToolActivityEvent from useToolActivity(), if any. */
   event: ToolActivityEvent | undefined;
-  /** D083 Phase 2 — actual tool output from the WS; cap-truncated. */
+  /** Actual tool output from the WS; cap-truncated. */
   resultText: string | undefined;
   resultTruncated: boolean;
   /** Elapsed time supplied by the shared card timer. */
@@ -77,6 +77,8 @@ export interface ToolRendererProps {
   runShellContinuity?: RunShellContinuity | undefined;
   /** Latest bounded provisional observation for Structured SSH. */
   structuredSshProgress?: StructuredSshProgress | undefined;
+  /** Report a live semantic outcome for this exact ToolCard receipt. */
+  onSemanticStateChange?: (state: ToolCardState | null) => void;
 }
 
 export interface ToolRenderer {
@@ -119,6 +121,12 @@ export interface ToolRenderer {
     resultTruncated?: boolean;
     state: ToolCardState;
   }) => ToolCardState | null;
+  /** Opt in to semantic state updates from the expanded renderer body. */
+  reportsLiveState?: boolean;
+  /** Retain only this renderer's observation lifetime when its body is hidden. */
+  observeWhileCollapsed?: boolean;
+  /** A valid tool receipt owns terminal truth over generic transport cancellation. */
+  receiptOverridesTransportCancellation?: true;
   /**
    * The renderer parses an opaque-capability envelope and guarantees that it
    * never renders the source bytes. ToolCard may pass it the original result

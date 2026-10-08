@@ -97,6 +97,7 @@ export const NAUTILO_DESKTOP_SURFACE = [
   "toolRuntimes",
   "googleWorkspace",
   "terminal",
+  "localExecution",
   "desktopFilesystemGrants",
   "workstationProfiles",
   "uncontainedHostCommands",

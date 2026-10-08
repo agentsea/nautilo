@@ -179,6 +179,13 @@ export function protectedTranscriptMessagesToHistoryHits(
       handle: message.author.handle,
       authorActorId: message.author.actorId,
       snippet,
+      ...(typeof message.payload.sensitiveMetadata?.["foregroundExecutionId"] === "string"
+        && message.payload.sensitiveMetadata["foregroundExecutionId"].length > 0
+        ? {
+            foregroundExecutionId:
+              message.payload.sensitiveMetadata["foregroundExecutionId"],
+          }
+        : {}),
       ...(message.reactions === undefined
         ? {}
         : {

@@ -3,7 +3,7 @@ export type ToolExecutor = "cloud" | "relay";
 
 import { CAP_USE_GOOGLE_WORKSPACE } from "./capabilities";
 
-/** M079 — mirrors `ToolCatalogEntry.approvalMode`; omitted = static. */
+/** mirrors `ToolCatalogEntry.approvalMode`; omitted = static. */
 export type ToolApprovalMode = "static" | "hybrid";
 
 export type ToolPolicyEntry = {
@@ -36,14 +36,14 @@ const TOOL_POLICIES: Record<string, ToolPolicyEntry> = {
   add_memory_to_scope: { requiredCapability: null,                     impact: "low",         executor: "cloud" },
   close_scope:        { requiredCapability: null,                      impact: "low",         executor: "cloud" },
   task:               { requiredCapability: null,                      impact: "low",         executor: "cloud" },
-  // M144 — Phase 3 intent shortcuts. The two cross-context shortcuts require
+  // Phase 3 intent shortcuts. The two cross-context shortcuts require
   // ordinary agent-invocation authority; the other shortcuts are low.
   in_scope:           { requiredCapability: null,                      impact: "low",         executor: "cloud" },
   in_background:      { requiredCapability: null,                      impact: "low",         executor: "cloud" },
   schedule:           { requiredCapability: null,                      impact: "low",         executor: "cloud" },
   in_private_namespace: { requiredCapability: "invoke_agents",        impact: "destructive", executor: "cloud" },
   ask_peer:           { requiredCapability: "invoke_agents",          impact: "destructive", executor: "cloud", approvalMode: "hybrid" },
-  // D363 (Stack-128) — `generate_repo_docs` entry tool. Thin
+  // `generate_repo_docs` entry tool. Thin
   // `repo_docs` task creator; a separate executor consumes the task.
   // The spawned subagent writes to a repo (potentially pushing or opening a
   // PR), so project execution retains an explicit approval gate.
@@ -52,12 +52,12 @@ const TOOL_POLICIES: Record<string, ToolPolicyEntry> = {
   browse_web: { requiredCapability: null, impact: "low", executor: "cloud" },
   run_web_search:     { requiredCapability: null,                      impact: "read-only",   executor: "cloud" },
   read_webpage:       { requiredCapability: null,                      impact: "read-only",   executor: "cloud" },
-  // D079 Phase 4 — unified `file` tool dispatches on a `command` arg.
+  // Phase 4 — unified `file` tool dispatches on a `command` arg.
   // Per-command severity (read-only vs destructive_low/high) continues to
   // flow through `file-tool-policies.ts`; project-content authority is the
   // coherent coarse gate for calling the tool at all.
   file:               { requiredCapability: "use_project_content",    impact: "destructive", executor: "cloud" },
-  // D448 Phase 2.1 — top-level, multi-file edit entry point. Execution is
+  // Phase 2.1 — top-level, multi-file edit entry point. Execution is
   // supplied by a trusted port; policy does not imply a target or transport.
   apply_patch:        { requiredCapability: "use_project_content",    impact: "destructive", executor: "cloud", requiresApproval: true },
   convert:            { requiredCapability: "use_project_content",    impact: "high",        executor: "cloud", requiresApproval: true },
@@ -65,21 +65,27 @@ const TOOL_POLICIES: Record<string, ToolPolicyEntry> = {
   edit_doc:           { requiredCapability: "use_project_content",    impact: "low",         executor: "cloud" },
   officecli:          { requiredCapability: "use_project_content",    impact: "low",         executor: "cloud" },
   execute_artifact:   { requiredCapability: "use_project_execution",  impact: "destructive", executor: "cloud", requiresApproval: true },
-  // D497 — exact Current Folder adoption is an Electron-owned app-state
+  // exact Current Folder adoption is an Electron-owned app-state
   // transition, not Computer Use automation. Keep the actor's control_desktop
   // permission, but require only the local relay/session capability so the
   // selector remains available when Accessibility is unavailable.
   select_current_folder: { requiredCapability: "control_desktop",      impact: "high",        executor: "relay", relayCapability: "canRunShell", requiresApproval: true },
+  exec_command: { requiredCapability: "use_workstation", impact: "destructive", executor: "relay", relayCapability: "canExecuteLocal", requiresApproval: true },
+  write_stdin: { requiredCapability: "use_workstation", impact: "destructive", executor: "relay", relayCapability: "canExecuteLocal", requiresApproval: true },
+  local_github: { requiredCapability: "use_workstation", impact: "destructive", executor: "relay", relayCapability: "canUseGitHub", requiresApproval: true },
+  local_git: { requiredCapability: "use_workstation", impact: "destructive", executor: "relay", relayCapability: "canUseLocalGit", requiresApproval: true },
+  read_shell_output: { requiredCapability: "use_workstation", impact: "read-only", executor: "relay", relayCapability: "canReadShellOutput", requiresApproval: false },
   run_shell:          { requiredCapability: "use_workstation",        impact: "destructive", executor: "relay", relayCapability: "canRunShell", requiresApproval: true },
-  // D373 — interactive shared PTY. impact "high" + no requiresApproval →
+  // interactive shared PTY. impact "high" + no requiresApproval →
   // capability-gated `allow`, with no per-command PIN.
+  human_terminal: { requiredCapability: "use_workstation", impact: "high", executor: "relay", relayCapability: "canUseHumanTerminal" },
   terminal:           { requiredCapability: "use_workstation",        impact: "high",        executor: "relay", relayCapability: "canUseTerminal" },
   structured_ssh_auth: { requiredCapability: "use_remote_hosts",      impact: "high",        executor: "relay", relayCapability: "canUseStructuredSsh" },
   structured_ssh_exec: { requiredCapability: "use_remote_hosts",      impact: "high",        executor: "relay", relayCapability: "canUseStructuredSsh" },
   structured_ssh_output: { requiredCapability: "use_remote_hosts",    impact: "read-only",   executor: "relay", relayCapability: "canReadStructuredSshOutput" },
   structured_ssh_copy_upload: { requiredCapability: "use_remote_hosts", impact: "high",      executor: "relay", relayCapability: "canUseStructuredSshCopy" },
   structured_ssh_copy_download: { requiredCapability: "use_remote_hosts", impact: "high",    executor: "relay", relayCapability: "canUseStructuredSshCopy" },
-  // D516 Wave 1A — semantic Computer use is admitted by its dedicated
+  // Wave 1A — semantic Computer use is admitted by its dedicated
   // desktop-automation provenance path, not by generic ask/prove_it policy.
   // Observe and verify are read-only. `computer_do` performs only the
   // route-bounded mutations admitted by the live Cua capability contract.
@@ -123,13 +129,13 @@ const TOOL_POLICIES: Record<string, ToolPolicyEntry> = {
   use_connection:     { requiredCapability: "use_connections",        impact: "high",        executor: "cloud", requiresApproval: true },
   use_credential:     { requiredCapability: "use_connections",        impact: "high",        executor: "cloud", requiresApproval: true },
   delete_connection:  { requiredCapability: "use_connections",        impact: "destructive", executor: "cloud", requiresApproval: true },
-  // Config / onboarding tools — cloud (server-side state). M128
+  // Config / onboarding tools — cloud (server-side state).
   // splits these gates: `update_config` is owner-only via
   // `manage_server_settings`; `check_config` is gated to ≥contributor
   // via `read_server_settings`.
   update_config:      { requiredCapability: "manage_server_settings",  impact: "destructive", executor: "cloud" },
   check_config:       { requiredCapability: "read_server_settings",    impact: "read-only",   executor: "cloud" },
-  // M128 D4-A (2026-05-28): self-edit by construction. The tool body
+  // (2026-05-28): self-edit by construction. The tool body
   // operates on `context.ownerId` (= the calling user's id) — there is
   // no target parameter. Per permission-model.md §5 + §7 item 9 the
   // static cap drops to `null`; if a future revision adds a `targetUserId`
@@ -148,13 +154,13 @@ const TOOL_POLICIES: Record<string, ToolPolicyEntry> = {
   generate_image:     { requiredCapability: "use_image_generation",    impact: "low",         executor: "cloud" },
   generate_video:     { requiredCapability: "use_media_generation",    impact: "destructive", executor: "cloud", requiresApproval: true },
   generate_music:     { requiredCapability: "use_media_generation",    impact: "destructive", executor: "cloud", requiresApproval: true },
-  // M128 D4-A: see `manage_profile` comment above — self-edit by construction.
+  // see `manage_profile` comment above — self-edit by construction.
   regenerate_soul:    { requiredCapability: null,                      impact: "destructive", executor: "cloud" },
   // Trust tools — cloud
   verify_identity:    { requiredCapability: null,                      impact: "low",         executor: "cloud" },
   // Research tools — cloud (web access + LLM calls)
   run_deep_research:  { requiredCapability: "use_research_tools",      impact: "high",        executor: "cloud" },
-  // D560 — Desktop owns source access and managed scanner execution. The
+  // Desktop owns source access and managed scanner execution. The
   // project-content capability is the actor gate; this structurally read-only
   // route requires only the existing local workspace-read capability.
   security_scan:      { requiredCapability: "use_project_content",    impact: "read-only",   executor: "relay", relayCapability: "canReadWorkspace" },
@@ -162,23 +168,23 @@ const TOOL_POLICIES: Record<string, ToolPolicyEntry> = {
   discover_tools:     { requiredCapability: null,                      impact: "read-only",   executor: "cloud" },
   activate_tools:     { requiredCapability: null,                      impact: "read-only",   executor: "cloud" },
   deactivate_tools:   { requiredCapability: null,                      impact: "read-only",   executor: "cloud" },
-  // M189 + D563 — installed mini-app source authoring is an Admin operation.
+  // Installed mini-app source authoring is an Admin operation.
   // It mutates the apps root and may register app tools, but it does not grant
   // access to owner-only runtime configuration or secrets.
   mini_app:           { requiredCapability: "manage_server_operations", impact: "destructive", executor: "cloud" },
-  // D263 P2 — see `manage_profile` comment above; body enforces ownsAgent || manage_agents.
+  // P2 — see `manage_profile` comment above; body enforces ownsAgent || manage_agents.
   skill_manage:       { requiredCapability: null,                      impact: "low",         executor: "cloud" },
-  // D263 P3 — read-only mid-turn skill body fallback (R5); guest-tier.
+  // P3 — read-only mid-turn skill body fallback (R5); guest-tier.
   view_skill:         { requiredCapability: null,                      impact: "read-only",   executor: "cloud" },
-  // D379 (Stack 145) — `command_*` family mirrors `skill_*` one-to-one.
+  // `command_*` family mirrors `skill_*` one-to-one.
   // `command_manage` body enforces the same ownsAgent || manage_agents
   // two-gate as `skill_manage`; low-impact cloud.
   command_manage:     { requiredCapability: null,                      impact: "low",         executor: "cloud" },
-  // D379 (Stack 145) — read-only mid-turn command body fallback; guest-tier.
+  // read-only mid-turn command body fallback; guest-tier.
   view_command:       { requiredCapability: null,                      impact: "read-only",   executor: "cloud" },
-  // D379 (Stack 145) — speaker-scoped command catalog search; read-only.
+  // speaker-scoped command catalog search; read-only.
   discover_commands:  { requiredCapability: null,                      impact: "read-only",   executor: "cloud" },
-  // D379 (Stack 145) — structural mirror of `eject` (skills); read-only no-op.
+  // structural mirror of `eject` (skills); read-only no-op.
   eject_command:      { requiredCapability: null,                      impact: "read-only",   executor: "cloud" },
 };
 

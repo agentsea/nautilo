@@ -72,7 +72,7 @@ describe("enrichSessionMessagesForDisplay", () => {
     });
   });
 
-  test("pairs FIFO tool_calls with tool rows and sets displayContent", () => {
+  test("pairs exact tool_calls with tool rows and sets displayContent", () => {
     const messages = enrichSessionMessagesForDisplay([
       {
         id: "u1",
@@ -89,8 +89,8 @@ describe("enrichSessionMessagesForDisplay", () => {
           { id: "c2", name: "beta", args: {} },
         ]),
       },
-      { id: "t1", role: "tool", content: "out-a", toolCalls: null },
-      { id: "t2", role: "tool", content: "Error: failed", toolCalls: null },
+      { id: "t1", role: "tool", toolCallId: "c1", content: "out-a", toolCalls: null },
+      { id: "t2", role: "tool", toolCallId: "c2", content: "Error: failed", toolCalls: null },
     ]);
 
     expect(messages[2]!.displayContent).toBe("⚙ alpha [success]");
@@ -99,7 +99,7 @@ describe("enrichSessionMessagesForDisplay", () => {
     expect(messages[1]!.displayContent).toBeUndefined();
   });
 
-  test("persisted tool_name wins over FIFO assistant name", () => {
+  test("persisted tool_name wins over assistant name", () => {
     const out = enrichSessionMessagesForDisplay([
       {
         id: "a1",
@@ -134,7 +134,7 @@ describe("enrichSessionMessagesForDisplay", () => {
         content: "thinking",
         toolCalls: JSON.stringify([{ id: "c1", name: "file", args: {} }]),
       },
-      { id: "t1", role: "tool", content: "ok", toolCalls: null },
+      { id: "t1", role: "tool", toolCallId: "c1", content: "ok", toolCalls: null },
     ]);
     expect(out[1]!.displayContent).toBe("⚙ file [success]");
   });
@@ -155,7 +155,7 @@ describe("enrichSessionMessagesForDisplay", () => {
         content: "",
         toolCalls: JSON.stringify([{ id: "fresh", name: "new_tool", args: {} }]),
       },
-      { id: "t2", role: "tool", content: "ok", toolCalls: null },
+      { id: "t2", role: "tool", toolCallId: "fresh", content: "ok", toolCalls: null },
     ]);
 
     expect(out[4]!.displayContent).toBe("⚙ new_tool [success]");
@@ -242,4 +242,32 @@ describe("toolDisplayNameFromDisplayContent", () => {
     expect(toolDisplayNameFromDisplayContent(undefined)).toBeUndefined();
     expect(toolDisplayNameFromDisplayContent("raw blob")).toBeUndefined();
   });
+});
+
+
+test("out-of-order results use exact identity and persisted status; legacy rows never guess", () => {
+  const rows = enrichSessionMessagesForDisplay([
+    { id: "a", role: "assistant", content: "", toolCalls: JSON.stringify([
+      { id: "first", name: "chmod" }, { id: "second", name: "file" },
+    ]) },
+    { id: "legacy", role: "tool", content: "old", toolCalls: null },
+    { id: "b", role: "tool", toolCallId: "second", toolStatus: "success" as const, content: "Error: literal file text", toolCalls: null },
+    { id: "c", role: "tool", toolCallId: "first", toolStatus: "error" as const, content: "Approval declined", toolCalls: null },
+  ]);
+  expect(rows.slice(1).map((row) => row.displayContent)).toEqual([
+    "⚙ tool [success]", "⚙ file [success]", "⚙ chmod [error]",
+  ]);
+});
+
+test("cross-Agent duplicate IDs need an exact author for name lookup", () => {
+  const rows = enrichSessionMessagesForDisplay([
+    { id: "a", role: "assistant", authorAgentId: "agent-a", content: "", toolCalls: JSON.stringify([{ id: "same", name: "alpha" }]) },
+    { id: "b", role: "assistant", authorAgentId: "agent-b", content: "", toolCalls: JSON.stringify([{ id: "same", name: "beta" }]) },
+    { id: "unknown", role: "tool", toolCallId: "same", content: "unknown", toolCalls: null },
+    { id: "result-b", role: "tool", toolCallId: "same", authorAgentId: "agent-b", content: "B", toolCalls: null },
+    { id: "result-a", role: "tool", toolCallId: "same", authorAgentId: "agent-a", content: "A", toolCalls: null },
+  ]);
+  expect(rows.slice(2).map((row) => row.displayContent)).toEqual([
+    "⚙ tool [success]", "⚙ beta [success]", "⚙ alpha [success]",
+  ]);
 });

@@ -1168,6 +1168,7 @@ export const whoamiResponseSchema = z.object({
   capabilities: z.array(z.string()).default([]),
   features: z
     .object({
+      roomDiscoverability: z.boolean().optional(),
       office: z
         .object({
           enabled: z.boolean().default(false),
@@ -5810,6 +5811,7 @@ export class NautiloApiClient {
       readonly revision: number;
     },
     cryptoBinding?: ForegroundResumeCryptoBinding,
+    githubDigest?: string,
   ): Promise<{ ok: boolean }> {
     return this.request<{ ok: boolean }>({
       method: "POST",
@@ -5828,6 +5830,7 @@ export class NautiloApiClient {
             }
           : {}),
         ...cryptoBinding,
+        ...(githubDigest === undefined ? {} : { githubDigest }),
       },
       defaultErrorPrefix: "POST /api/auth/approval-reply",
     });
@@ -10835,9 +10838,12 @@ export class NautiloApiClient {
     });
   }
 
-  /** flip room visibility public ↔ private (`POST /api/rooms/:id/visibility`). */
-  async setRoomVisibility(roomId: string, isPublic: boolean): Promise<{ ok: true }> {
-    const body: SetRoomVisibilityRequest = { public: isPublic };
+  /** Set public access and optionally directory listing (`POST /api/rooms/:id/visibility`). */
+  async setRoomVisibility(roomId: string, isPublic: boolean, discoverable?: boolean): Promise<{ ok: true }> {
+    const body: SetRoomVisibilityRequest = {
+      public: isPublic,
+      ...(discoverable === undefined ? {} : { discoverable }),
+    };
     return this.request<{ ok: true }>({
       method: "POST",
       path: `/api/rooms/${encodeURIComponent(roomId)}/visibility`,

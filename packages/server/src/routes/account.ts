@@ -40,6 +40,8 @@ const RECOVER_RATE_MAX = 24;
 const recoverAttemptByIp = new Map<string, { n: number; resetAt: number }>();
 
 export interface AccountRouteDeps {
+  /** Exact authenticated Human fence after committed local account deletion. */
+  readonly onAuthorityRevoked?: (userId: string) => void;
   pinProvider?: PinChallengeProvider | undefined;
   markRecoveryCodeUsed?: (args: {
     userId: string;
@@ -47,7 +49,7 @@ export interface AccountRouteDeps {
   }) => Promise<boolean>;
   markPasswordRecoveryCompleted?: (userId: string) => Promise<boolean>;
   /**
-   * M120 — JSONL security-audit sink. When omitted (tests / non-audited
+   * JSONL security-audit sink. When omitted (tests / non-audited
    * contexts) recovery events are simply not written; the route still works.
    * Matches the app-level writer, which returns a resolved Promise.
    */
@@ -109,7 +111,7 @@ function requestAllowsLocalPasswordRecovery(request: FastifyRequest): boolean {
   );
 }
 
-/** M120 — kind-specific fields for the recovery audit rows (common envelope added by the emitter). */
+/** Kind-specific fields for the recovery audit rows (common envelope added by the emitter). */
 type RecoveryAuditCore =
   | { kind: "recovery_session_opened"; handleHash: string }
   | {
@@ -177,7 +179,7 @@ async function loadUserLogtoLinkState(userId: string): Promise<{
 }
 
 /**
- * D104 — authenticated account metadata for Logto-linked users.
+ * Authenticated account metadata for Logto-linked users.
  */
 export function accountRoutes(app: FastifyInstance, deps: AccountRouteDeps = {}) {
   const markRecoveryCodeUsed =
@@ -243,7 +245,8 @@ export function accountRoutes(app: FastifyInstance, deps: AccountRouteDeps = {})
     }
 
     try {
-      const deletion = await deleteLocalUserAccount(userId);
+      const deletion = await deleteLocalUserAccount(userId, deps.onAuthorityRevoked
+        ? { onCommitted: deps.onAuthorityRevoked } : {});
       if (deps.auditEvent) {
         void deps.auditEvent({
           ts: new Date().toISOString(),
@@ -421,7 +424,7 @@ export function accountRoutes(app: FastifyInstance, deps: AccountRouteDeps = {})
     const body = request.body as Record<string, unknown> | undefined;
     const handleRaw = body?.["handle"];
     const recoveryCode = body?.["recoveryCode"];
-    // M120: `newPassword` is intentionally NOT read. Nautilo no longer sets
+    // `newPassword` is intentionally NOT read. Nautilo no longer sets
     // the password; the new password is collected by Logto's hosted page. A
     // stale client that still sends `newPassword` is tolerated (ignored), not
     // rejected, to avoid bricking mid-rollout clients.
@@ -507,7 +510,7 @@ export function accountRoutes(app: FastifyInstance, deps: AccountRouteDeps = {})
   });
 
   /**
-   * M120 — relay-read endpoint. After `recover-with-code` returns a session,
+   * Relay-read endpoint. After `recover-with-code` returns a session,
    * the client polls here with `Authorization: Bearer <sessionToken>` to
    * receive the Logto ForgotPassword verification code once Logto has
    * delivered it through the HTTP Email connector. The code is released ONLY
@@ -620,7 +623,7 @@ export function accountRoutes(app: FastifyInstance, deps: AccountRouteDeps = {})
   });
 
   /**
-   * D104 Phase 2 — signed-in Logto password change (current + new).
+   * Signed-in Logto password change (current + new).
    * Requires a valid session and a Logto-linked user.
    */
   app.post("/api/account/password/change", async (request, reply) => {

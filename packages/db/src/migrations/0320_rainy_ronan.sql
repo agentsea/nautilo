@@ -1,0 +1,1 @@
+ALTER TABLE "rooms" ADD COLUMN "discoverable" boolean DEFAULT true NOT NULL;

@@ -14,6 +14,14 @@ import {
   protectLiveShadowAssistantToken,
   publishLiveShadowRuntimeMessages,
 } from "../conversation/live-shadow-agent-runtime-events";
+import {
+  createForegroundContextRebuilder,
+  ForegroundContextReceipts,
+} from "./foreground-context-refresh";
+import { foregroundRecordContextPortForRoom } from
+  "../reflection/foreground-record-context";
+import { protectLiveShadowForegroundRecordContext } from
+  "../conversation/live-shadow-turn-context";
 
 export interface PersistingProcessorDeps {
   threadId: string;
@@ -32,7 +40,48 @@ export interface PersistingProcessorDeps {
  * M070 — same stream adapter as auth resume sites used inline, plus
  * `messagesToPersist` → `persistMessages` (matches `langgraphExecutor`).
  */
-export function createPersistingProcessor(deps: PersistingProcessorDeps) {
+export function createPersistingProcessor(
+  deps: PersistingProcessorDeps,
+  internal: Readonly<{
+    createForegroundContextRebuilder: typeof createForegroundContextRebuilder;
+  }> = { createForegroundContextRebuilder },
+) {
+  const foregroundRefreshEnabled =
+    deps.roomId !== undefined
+    && deps.agentId !== undefined
+    && deps.laneKey.startsWith("room:");
+  const foregroundContextReceipts = foregroundRefreshEnabled
+    ? new ForegroundContextReceipts(undefined, false)
+    : undefined;
+  let foregroundExecutionId = foregroundRefreshEnabled
+    ? deps.humanTurnId?.trim() || undefined
+    : undefined;
+  const rebuildForegroundContext = foregroundContextReceipts === undefined
+    ? undefined
+    : (transition: Parameters<ReturnType<typeof createForegroundContextRebuilder>>[0]) => {
+      const recordContextEligible =
+        transition.state.trustedExecutionEntrypoint === "foreground.main"
+        || transition.state.trustedExecutionEntrypoint === "foreground.fork";
+      const ordinaryRecordContext = recordContextEligible
+        ? foregroundRecordContextPortForRoom(deps.roomId!)
+        : undefined;
+      return internal.createForegroundContextRebuilder({
+        roomId: deps.roomId!,
+        ownerId: deps.ownerId,
+        agentId: deps.agentId!,
+        receipts: foregroundContextReceipts,
+        // A resume processor is created before the protected session enters
+        // its AsyncLocalStorage scope. Bind protection at rebuild time so the
+        // reader sees the current resume grant and policy instead of retaining
+        // the ordinary port selected outside that scope.
+        ...(ordinaryRecordContext === undefined
+          ? {}
+          : {
+              recordContext:
+                protectLiveShadowForegroundRecordContext(ordinaryRecordContext),
+            }),
+      })(transition);
+    };
   const tokenBatcher = new TokenBatcher({
     laneKey: deps.laneKey,
     ...(deps.agentId ? { authorAgentId: deps.agentId } : {}),
@@ -60,6 +109,7 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
       context.enforcementPolicy,
       context.observeBoundary,
       context.dataOperationPolicy,
+      foregroundExecutionId,
     );
     return liveShadowRuntime;
   };
@@ -89,12 +139,30 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
         : null,
     },
     laneKey: deps.laneKey,
+    ...(foregroundContextReceipts === undefined
+      ? {}
+      : {
+          ...(foregroundExecutionId === undefined
+            ? {}
+            : { foregroundExecutionId }),
+          onCommittedRows: (rows: readonly { id: string }[]) =>
+            foregroundContextReceipts.recordIds(
+              rows.map((row) => Number(row.id)),
+            ),
+          requireDurable: "foreground-context" as const,
+        }),
   });
 
   return {
+    ...(rebuildForegroundContext === undefined
+      ? {}
+      : { rebuildForegroundContext }),
     async beginResume(checkpointThreadId: string, turnId: string) {
       persistenceFailed = false;
       resumedMemory = undefined;
+      if (foregroundRefreshEnabled && foregroundExecutionId === undefined) {
+        foregroundExecutionId = turnId.trim() || undefined;
+      }
       if (!deps.agentId) return;
       try {
         resumedMemory = await findResumedMemoryReviewAdmission({ checkpointThreadId, turnId,
@@ -124,6 +192,9 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
             state: liveShadowStreamState,
             event,
             messagesToPersist,
+            ...(foregroundExecutionId === undefined
+              ? {}
+              : { foregroundExecutionId }),
           });
           for (const protectedEvent of protectedStream.events) {
             deps.eventBus.emit(protectedEvent);
@@ -140,6 +211,15 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
             laneKey: deps.laneKey,
             agentId: deps.agentId ?? "",
             messages: messagesToPersist,
+            ...(foregroundExecutionId === undefined
+              ? {}
+              : { foregroundExecutionId }),
+            ...(foregroundContextReceipts === undefined
+              ? {}
+              : {
+                  onCommittedMessageIds:
+                    foregroundContextReceipts.recordIds,
+                }),
             persistOrdinary: (messages) =>
               persistOrdinary([...messages], assistantMessageKey),
             warn: () => undefined,

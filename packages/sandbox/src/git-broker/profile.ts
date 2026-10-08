@@ -1,5 +1,5 @@
 /**
- * D440 Phase 2 — operation-aware SBPL profile compiler for the Git
+ * operation-aware SBPL profile compiler for the Git
  * broker.
  *
  * This is the defense-in-depth layer. Even though the broker preflights
@@ -11,7 +11,7 @@
  *
  * Design choice: the broker reuses the PROVEN `buildSbplProfile` from
  * `seatbelt-profile.ts` as its base. That profile is already exercised
- * end-to-end by the Phase 0 baseline denial test (`git status` under
+ * end-to-end by the baseline denial test (`git status` under
  * it completes in <200ms), and it already enforces the contract's
  * two load-bearing denies:
  *   - governance `.git` / `.gitignore` / `.claudeignore` WRITE deny
@@ -47,6 +47,9 @@ import type { GitOperation, GitRepositoryIdentity } from "./types";
 import {
   buildSbplProfile,
   escapeSchemeString,
+  escapeRegexForSchemeLiteral,
+  SECRET_FILES,
+  PUBLIC_TEMPLATE_TERMINAL_SUFFIXES,
 } from "../seatbelt-profile";
 import type { SandboxConfig } from "../types";
 
@@ -63,6 +66,9 @@ export interface GitProfileInputs {
   readonly refName?: string;
   /** Git executable (read-only bind for execution). */
   readonly gitExecutable: string;
+  /** Credential-free validated transport quarantine, read only for ancestry. */
+  readonly objectReadPath?: string;
+  readonly networkRef?: boolean;
   /** Canonical deny-override roots inherited from the local binding. */
   readonly protectedPaths?: readonly string[];
 }
@@ -194,5 +200,92 @@ export function compileGitBrokerProfile(inputs: GitProfileInputs): string {
     }
   }
 
+  if (inputs.objectReadPath !== undefined) {
+    profile = appendAncestorMetadataAllows(profile, inputs.objectReadPath);
+    profile += `(allow file-read* (subpath "${escapeSchemeString(inputs.objectReadPath)}"))\n`;
+    profile += `(deny file-write* (subpath "${escapeSchemeString(inputs.objectReadPath)}"))\n`;
+  }
+
+  if (inputs.networkRef && inputs.refName) {
+    // Network fetch may update only this tracking ref. A replaced/symlinked
+    // parent cannot use the base profile's broader workspace/tmp write access.
+    profile += "(deny file-write*)\n(deny network*)\n";
+    const ref = resolve(identity.commonDir, inputs.refName);
+    const paths = [ref, `${ref}.lock`];
+    let parent = dirname(ref);
+    while (parent !== identity.commonDir && parent !== dirname(parent)) { paths.push(parent); parent = dirname(parent); }
+    for (const path of paths) profile += `(allow file-write* (literal "${escapeSchemeString(path)}"))\n`;
+    for (const path of inputs.protectedPaths ?? []) profile += `(deny file-read* file-write* (subpath "${escapeSchemeString(path)}"))\n`;
+  }
+
+  return profile;
+}
+
+/** Credential-free pack transfer: final write deny removes broad workspace/tmp
+ * authority before opening only the exact object store for the receiver. */
+export function compileGitNetworkObjectProfile(input: {
+  readonly identity: GitRepositoryIdentity; readonly gitExecutable: string;
+  readonly objectsPath: string; readonly write: boolean; readonly protectedPaths?: readonly string[];
+  readonly metadataReadPath?: string;
+}): string {
+  let profile = compileGitBrokerProfile({ operation: "diff", identity: input.identity, gitExecutable: input.gitExecutable,
+    objectReadPath: input.objectsPath, ...(input.protectedPaths === undefined ? {} : { protectedPaths: input.protectedPaths }) });
+  profile += "(deny file-write*)\n(deny network*)\n";
+  if (input.metadataReadPath !== undefined) {
+    profile = appendAncestorMetadataAllows(profile, input.metadataReadPath);
+    profile += `(allow file-read* (subpath "${escapeSchemeString(input.metadataReadPath)}"))\n(deny file-write* (subpath "${escapeSchemeString(input.metadataReadPath)}"))\n`;
+  }
+  if (input.write) profile += `(allow file-write* (subpath "${escapeSchemeString(resolve(input.identity.commonDir, "objects"))}"))\n`;
+  for (const path of input.protectedPaths ?? []) profile += `(deny file-write* (subpath "${escapeSchemeString(path)}"))\n`;
+  return profile;
+}
+
+/** Credential-free worktree application. Final write denial removes the
+ * generic workspace/temp authority; only validated leaves, their directories,
+ * and this operation's candidate/index/ref paths are reopened. */
+export function compileGitNetworkWorktreeProfile(input: {
+  readonly identity: GitRepositoryIdentity; readonly gitExecutable: string;
+  readonly metadataPath?: string; readonly objectsPath?: string;
+  readonly target: string; readonly phase: "create" | "initialize" | "read" | "apply" | "index" | "ref";
+  readonly paths?: readonly string[]; readonly candidateRoot?: string; readonly refName?: string;
+  readonly protectedPaths?: readonly string[];
+}): string {
+  let profile = compileGitBrokerProfile({ operation: "diff", identity: input.identity, gitExecutable: input.gitExecutable,
+    ...(input.protectedPaths === undefined ? {} : { protectedPaths: input.protectedPaths }) });
+  profile += "(deny file-write*)\n(deny network*)\n";
+  for (const path of [input.metadataPath, input.objectsPath]) if (path !== undefined) {
+    profile = appendAncestorMetadataAllows(profile, path);
+    profile += `(allow file-read* (subpath "${escapeSchemeString(path)}"))\n(deny file-write* (subpath "${escapeSchemeString(path)}"))\n`;
+  }
+  const allow = (path: string): void => { profile += `(allow file-read* file-write* (literal "${escapeSchemeString(path)}"))\n`; };
+  if (input.phase === "create") allow(input.target);
+  if (input.phase === "initialize") {
+    // Only a broker-exclusively-created empty child may receive new metadata.
+    profile += `(allow file-read* file-write* (subpath "${escapeSchemeString(resolve(input.target, ".git"))}"))\n`;
+    allow(input.target);
+  }
+  if (input.candidateRoot !== undefined) profile += `(allow file-read* file-write* (subpath "${escapeSchemeString(input.candidateRoot)}"))\n`;
+  if (input.phase === "apply") for (const path of input.paths ?? []) {
+    let leaf = resolve(input.target, path); allow(leaf);
+    while (dirname(leaf) !== input.target && dirname(leaf) !== leaf) { leaf = dirname(leaf); allow(leaf); }
+    allow(input.target);
+  }
+  if (input.phase === "index") for (const path of ["index", "index.lock"]) allow(resolve(input.identity.gitDir, path));
+  if (input.phase === "ref" && input.refName !== undefined) {
+    let ref = resolve(input.identity.commonDir, input.refName); allow(ref); allow(`${ref}.lock`);
+    while (dirname(ref) !== input.identity.commonDir && dirname(ref) !== ref) { ref = dirname(ref); allow(ref); }
+    allow(resolve(input.identity.gitDir, "HEAD")); allow(resolve(input.identity.gitDir, "HEAD.lock"));
+  }
+  // A protected ancestor cannot become writable through a narrow exception.
+  // Reapply named-secret denies after the explicit leaf/ancestor allows.
+  const base = escapeRegexForSchemeLiteral(input.target);
+  for (const { pattern } of SECRET_FILES) {
+    const stem = escapeRegexForSchemeLiteral(pattern.endsWith("*") ? pattern.slice(0, -1) : pattern);
+    profile += `(deny file-read* file-write* (regex #"^${base}/(.*/)?${stem}${pattern.endsWith("*") ? "[^/]*" : ""}$"))\n`;
+  }
+  if (input.phase === "apply") for (const path of input.paths ?? []) {
+    if (PUBLIC_TEMPLATE_TERMINAL_SUFFIXES.some(suffix => path.endsWith(`.${suffix}`))) allow(resolve(input.target, path));
+  }
+  for (const path of input.protectedPaths ?? []) profile += `(deny file-write* (subpath "${escapeSchemeString(path)}"))\n`;
   return profile;
 }

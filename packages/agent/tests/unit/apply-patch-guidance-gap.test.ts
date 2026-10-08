@@ -129,7 +129,7 @@ describe("D448 apply_patch guidance", () => {
     expect(templateSource).toContain("Eligible development requests receive it on the first call");
     expect(templateSource).toContain("Markdown, plain, and extensionless text; JSON/JSONL/YAML/TOML/INI/dotenv where policy permits");
     expect(templateSource).toContain("HTML/CSS/XML/text SVG; and CSV/TSV/SQL/GraphQL/shell");
-    expect(templateSource).toContain("glob → grep → read → \\`apply_patch\\` → focused \\`run_shell\\` verification");
+    expect(templateSource).toContain("glob → grep → read → \\`apply_patch\\` → focused \\`exec_command\\` verification");
     expect(templateSource).toContain("historical internal \\`file.apply_patch(patchId)\\` pipeline");
     expect(templateSource).toContain("\\`file.glob\\`, \\`file.grep\\`, and top-level \\`apply_patch\\` are Desktop-local");
     expect(templateSource).toContain("For Workspace, use \\`file.list\\` with a logical path prefix");

@@ -47,6 +47,19 @@ describe("mobile new-conversation layout contract", () => {
     expect(routeSource).toContain('catalogueKind: mode === "room" ? "room" : "chat"');
   });
 
+  test("offers all three room visibility choices under the existing management gate", () => {
+    expect(routeSource).toContain('label="Private"');
+    expect(routeSource).toContain('label="External"');
+    expect(routeSource).toContain('label="Public"');
+    expect(routeSource).toContain('roomVisibilityFields(visibility, externalRoomVisibilitySupported)');
+    expect(routeSource).toContain('icon="eye-off-outline"');
+    expect(routeSource).toContain("Public access, hidden from discovery");
+    expect(routeSource).toContain("if (!visibilityFields)");
+    expect(routeSource).toContain('visibility !== "external" || externalRoomVisibilitySupported');
+    expect(routeSource).toContain('visibility !== "private" && !canManageRooms');
+    expect(routeSource).toContain('visibility === "private" || canManageRooms');
+  });
+
   test("reuses Human DMs but starts a fresh chat with any available Server Genie", () => {
     expect(routeSource).toContain("directHumanUserId: entry.id");
     expect(routeSource).toContain('{ kind: "agent", id: entry.id }');

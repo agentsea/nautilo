@@ -15,10 +15,11 @@ import {
   GraphExecutionMetrics,
   toGraphBudgetOutcome,
 } from "./execution-policy";
-import { requirePendingApprovalAskInterrupt } from "./interrupt-mapping";
+import { requireGitHubApprovalEcho, requirePendingApprovalAskInterrupt } from "./interrupt-mapping";
+import { streamForegroundGraph } from "./foreground-context-refresh";
 
 /**
- * Resume an interrupted graph after an `approval.ask` reply (D061 Phase 2).
+ * Resume an interrupted graph after an `approval.ask` reply.
  *
  * Sibling of `resumeGraphWithApproval` (M036 prove_it resume). Differs
  * only in the shape of the resume payload — ask-verb carries a
@@ -31,7 +32,7 @@ import { requirePendingApprovalAskInterrupt } from "./interrupt-mapping";
  * = `"app:default"` for the seeded default room). Lane-key routing is
  * handled by the caller via the event bus processor.
  *
- * D084 — after the resume stream drains, scans for a chained interrupt
+ * After the resume stream drains, scans for a chained interrupt
  * (approval_ask raised on the VERY next step). Without this, a
  * multi-step continuous run with per-step graduated approval stalls
  * silently after step 1 — the dock never re-appears and the graph
@@ -56,6 +57,7 @@ export async function resumeGraphWithAskReply(
   liveShadowToolBoundaryForState?: () => LiveShadowToolBoundary | undefined,
   invocationMemoryDeps?: NautiloGraphDeps,
   expectedApprovalId?: string,
+  githubEcho?: { approvalId: string; digest: string; laneKey: string },
 ): Promise<void> {
   const checkpointSaver =
     invocationCheckpointSaver ?? createCheckpointSaver();
@@ -76,7 +78,7 @@ export async function resumeGraphWithAskReply(
       ? defaultPostModelDeps
       : { ...defaultPostModelDeps, liveShadowToolBoundaryForState }),
   );
-  // D082 PR B — re-bind the original chat-entry turnId so the
+  // Re-bind the original chat-entry turnId so the
   // approval-reply leg of the flow grep-correlates with the
   // preceding post_model interrupt.
   const turnId = await readTurnIdFromCheckpoint(graph, threadId);
@@ -93,10 +95,13 @@ export async function resumeGraphWithAskReply(
     ? undefined
     : await graph.getState({ configurable: { thread_id: threadId } });
   if (expectedApprovalId !== undefined) {
-    requirePendingApprovalAskInterrupt(
+    const pending = requirePendingApprovalAskInterrupt(
       preResumeCheckpoint as { tasks?: Array<Record<string, unknown>> } | undefined,
       expectedApprovalId,
     );
+    if (expectedApprovalId.startsWith("github-publish:") || githubEcho) {
+      requireGitHubApprovalEcho(pending, githubEcho, laneKey, verb);
+    }
   }
 
   await runWithTurn(turnId, async () => {
@@ -115,6 +120,7 @@ export async function resumeGraphWithAskReply(
       const resumePayload = {
         approved,
         verb,
+        ...(githubEcho ? { githubApprovalId: githubEcho.approvalId, githubDigest: githubEcho.digest, githubLaneKey: githubEcho.laneKey } : {}),
         ...(localMcpInstallApprovalId !== undefined
           ? { localMcpInstallApprovalId }
           : {}),
@@ -146,11 +152,19 @@ export async function resumeGraphWithAskReply(
           currentCheckpoint as { tasks?: Array<Record<string, unknown>> } | undefined,
           expectedApprovalId,
         );
+        if (expectedApprovalId.startsWith("github-publish:") || githubEcho) requireGitHubApprovalEcho(pending, githubEcho, laneKey, verb);
         if (pending.id !== undefined) resume = { [pending.id]: resumePayload };
       }
-      for await (const ev of graph.streamEvents(
+      for await (const ev of streamForegroundGraph(
+        graph,
         new Command({ resume }),
         resumeConfig,
+        {
+          ...(processEvent.rebuildForegroundContext === undefined
+            ? {}
+            : { rebuildForegroundContext: processEvent.rebuildForegroundContext }),
+          ...(signal === undefined ? {} : { signal }),
+        },
       )) {
         metrics.noteStreamEvent(ev);
         await Promise.resolve(processEvent.process(ev));

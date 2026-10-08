@@ -31,6 +31,82 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - First-party app seeding rebuilds isolated dependencies when seed metadata is
   invalid, while still reporting filesystem errors.
 
+- Genies no longer discover or activate the legacy `run_shell` tool, including
+  in background Tasks and on older clients. Managed command tools remain
+  available where supported; existing command history remains readable.
+
+- Long foreground agent turns refresh their context from Room history at settled
+  tool boundaries while keeping the same running job. Oversized turns retain a
+  recent excerpt alongside available Journal context; Stop and approvals keep
+  their existing lifecycle.
+
+- Rooms can be marked External to keep public-room behavior while hiding them
+  from discovery and automatic onboarding. Existing members and explicit
+  invitations continue to work normally.
+
+- Reloaded chat history associates parallel tool results with their exact
+  command, including when an approval delays an earlier command. Older results
+  without a saved call identity remain visible without guessed command details.
+
+- Developer Workstation PIN activation shows its pending state and prevents
+  duplicate submissions while checking and enabling access.
+
+- Compatible Desktop clients support managed local commands through
+  `exec_command` and `write_stdin` under existing contained Workstation access.
+  Commands keep running after yielding, retain output and actual exit status,
+  and provide explicit Stop and local preview actions. Compatible Desktops hide
+  the legacy Genie command tools once the replacement capabilities are available;
+  older clients retain their existing tools. Human Terminal remains available.
+  Command cards update automatically as processes produce output or finish,
+  including while collapsed, and preview links work in colored tool output.
+  Stopping npm-launched commands confirms process-group cleanup on macOS
+  without mistaking an already departed group for a cleanup failure.
+  Desktop saves final command receipts and their retained output with OS
+  encryption, so authorized chat history can recover them after a restart.
+  Recovered records are read-only; uncertain cleanup stays uncertain.
+  Shutdown cancels each execution once and preserves a confirmed final result
+  when an earlier termination attempt was temporarily uncertain.
+  Genies can recover saved final command results after a Desktop or server
+  restart through read-only `write_stdin`, when the original result remains in
+  the currently authorized conversation history. Recovery checks current
+  membership and encryption access and never restores input or replay authority.
+  Expired live receipts also recover their authorized saved final output without
+  restarting the command.
+  Compatible Desktop versions retain supported execution capabilities when
+  reconnecting to an older server. Pure output reads retain actor permission
+  checks without asking to reactivate Development access.
+  Typed local Git operations are available through `local_git`, and retained
+  shell output can be paged or searched through `read_shell_output`, without
+  launching another shell command.
+  Basic commands can use installed utilities inside the selected project without
+  activating Development access. They use a private temporary home, isolated
+  networking, and the existing chat, encryption, and approval checks. Continuing
+  a command keeps its original project even when the selected folder changes.
+  Remembered Development access is stored separately for each Human and server.
+  Turning it off removes that saved proof; changed legacy state requires fresh
+  confirmation, and interrupted saves remain visible as needing attention.
+  Human Terminal handoff selects a Genie in the current chat and scopes consent
+  to that Human, chat, Desktop, and existing terminal. Taking control revokes
+  the handoff without killing the Human's job. Compatible Genies use a separate
+  read/run/write tool; queued input cannot migrate to a new handoff, and input
+  receipts acknowledge submission without claiming command completion.
+  Routine capability refreshes preserve valid handoffs; interrupted handoffs
+  return control with a visible explanation.
+  Compatible Desktop clients show Basic and Development in one Agent access
+  control, with saved choice separate from current readiness. Startup actions
+  preserve that choice while managing other components. Temporary Full Mac
+  activation remains explicit and is never remembered as a sandboxed choice.
+  Eligible foreground Full Mac commands use the same managed pipe lifecycle,
+  pinned to the activation selected before command approval. Revocation or
+  connection loss stops those commands; later activation cannot resume an old
+  approval. Full Mac does not enable agent-created PTYs or interactive input.
+  Genies on compatible clients can search retained command output through
+  read-only `write_stdin`, including saved results after restart. Search reports
+  byte positions, continuation, missing retained output, and whether a quiet
+  command may still produce a match. Searching does not consume ordinary output.
+  Contained commands and filesystem grants protect the GitHub CLI account
+  directory on macOS and Linux.
+
 - Server native image checks recognize the patched Sharp and libvips packages.
 
 - Update the MCP transport and image-processing libraries to their supported

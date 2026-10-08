@@ -1,5 +1,4 @@
 import { NautiloApiClient } from "@nautilo/api-client/browser";
-import type { WhoamiResponse } from "@nautilo/types";
 import {
   createContext,
   useCallback,
@@ -30,6 +29,7 @@ import { serverIdFromUrl } from "@/lib/server-store.web";
 import type { SettingsReauthIdentity } from "@/lib/settings-reauth";
 import { failedMobileWebSignInPath } from "@/lib/auth-gate-navigation";
 import { settingsVerificationIncompletePath } from "@/lib/settings-reauth-navigation";
+import { viewerFromWhoami } from "@/lib/viewer-identity";
 import {
   clearViewerCache,
   writeViewerCache,
@@ -75,18 +75,6 @@ interface ActiveBrowserSession {
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
-
-export function browserViewerFromWhoami(whoami: WhoamiResponse): ViewerIdentity | null {
-  if (!whoami.sessionUserId || !whoami.sessionActorId) return null;
-  const displayName = whoami.displayName?.trim() || whoami.handle?.trim();
-  return {
-    userId: whoami.sessionUserId,
-    actorId: whoami.sessionActorId,
-    ...(whoami.handle?.trim() ? { handle: whoami.handle.trim() } : {}),
-    ...(displayName ? { displayName } : {}),
-    capabilities: whoami.capabilities,
-  };
-}
 
 function currentReturnPath(): string {
   if (typeof window === "undefined") return "/mobile";
@@ -150,7 +138,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     try {
       const verificationClient = new NautiloApiClient(owner.serverUrl);
       verificationClient.setToken(token);
-      const next = browserViewerFromWhoami(await verificationClient.whoami());
+      const next = viewerFromWhoami(await verificationClient.whoami());
       if (!isCurrent()) return "stale";
       if (!next) {
         await clearBrowserAuthSession(owner.serverId);

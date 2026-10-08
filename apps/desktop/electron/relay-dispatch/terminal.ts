@@ -22,6 +22,7 @@ export interface TerminalDispatchDeps {
   readonly consumeAgentHandoffSession: typeof import("../terminal-host.ts").consumeAgentHandoffSession;
   readonly acknowledgeAgentHandoffSession: typeof import("../terminal-host.ts").acknowledgeAgentHandoffSession;
   readonly resolveTerminalSpawnCwd: typeof resolveTerminalSpawnCwd;
+  readonly isHumanTerminalScoped?: (id: string) => boolean;
   readonly now?: () => number;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly randomBytes?: (size: number) => { toString(encoding: "hex"): string };
@@ -42,7 +43,7 @@ export function createTerminalDispatchHandler(dependencies: TerminalDispatchDeps
   };
   return async function dispatchTerminal(input): Promise<DesktopDispatchDecision> {
     if (input.request.toolName !== "terminal") return FIXED_DESKTOP_DISPATCH_NOT_HANDLED;
-    // D373 P2.1b — agent drives the shared PTY pool (terminal-host, same
+    // agent drives the shared PTY pool (terminal-host, same
     // main process). Agent-spawned sessions are sandbox-wrapped via the
     // relay's per-turn Sandbox (the 0.6-verified Gap-1 path); user
     // sessions (from the renderer) stay the real shell.
@@ -57,6 +58,9 @@ export function createTerminalDispatchHandler(dependencies: TerminalDispatchDeps
       ? deps.peekBoundAgentTerminalSession()
       : null;
     const sessionId = requestedSessionId || directHandoff?.id || "";
+    if (sessionId && deps.isHumanTerminalScoped?.(sessionId)) return { handled: true, result: {
+      status: "error", errorCode: "HUMAN_TERMINAL_SCOPED", error: "Use the exact scoped Human terminal handoff; this legacy operation cannot access it.",
+    } };
     const directHandoffResult = directHandoff === null
       ? {}
       : { session_id: directHandoff.id, reused_handoff: true };
@@ -74,7 +78,7 @@ export function createTerminalDispatchHandler(dependencies: TerminalDispatchDeps
       }
       if (first.reason === "no-session")
         return { ok: false, error: `terminal: no live session ${sessionId}` };
-      // D438 — `locked` is the only remaining refusal. The host has
+      // `locked` is the only remaining refusal. The host has
       // already raised at most one standing `terminal:request` for this
       // PTY; enter the single shared bounded wait. Approval arrives via
       // the user's explicit `grantAgentControl` (or a consented
@@ -183,7 +187,7 @@ export function createTerminalDispatchHandler(dependencies: TerminalDispatchDeps
         // the next spawn attempt to that exact existing real PTY instead
         // of opening a confusing second sandboxed terminal.
         const handedOver = deps.consumeAgentHandoffSession();
-        if (handedOver !== null) {
+        if (handedOver !== null && !deps.isHumanTerminalScoped?.(handedOver.id)) {
           return {
             status: "ok",
             result: {
@@ -292,7 +296,7 @@ export function createTerminalDispatchHandler(dependencies: TerminalDispatchDeps
         return {
           status: "ok",
           result: {
-            sessions: deps.listSessions().map((session) => ({
+            sessions: deps.listSessions().filter(session => !deps.isHumanTerminalScoped?.(session.id)).map((session) => ({
               ...session,
               preferred_for_agent: session.id === pendingHandoff?.id,
             })),

@@ -1,6 +1,6 @@
 /**
  * Helper: build a `Sandbox` from the server\u0027s per-turn envelope.
- * D060 Sprint 1 G5.4.c (ship plan v3 §5.4).
+ * Sprint 1 G5.4.c (ship plan v3 §5.4).
  *
  * Consumed by both the headless relay (`bin/nautilo-relay`) and the
  * Electron dispatch policy (`apps/desktop/electron/relay-dispatch/
@@ -283,6 +283,7 @@ export function createSandboxFromEnvelope(
   localAuthority?: Readonly<{
     /** Runtime-only; never accepted from the serialized envelope. */
     allowWorkspaceGovernanceWrites?: boolean;
+    managedHome?: string;
   }>,
 ): Promise<Sandbox> {
   // Validate even though the TS type says the shape is correct —
@@ -293,6 +294,7 @@ export function createSandboxFromEnvelope(
 
   return Sandbox.create({
     workspace: validated.workspace,
+    ...(localAuthority?.managedHome !== undefined ? { managedHome: localAuthority.managedHome } : {}),
     dataDir: validated.dataDir,
     toolsBin: validated.toolsBin,
     config: validated.config,

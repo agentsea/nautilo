@@ -233,6 +233,8 @@ export interface AppendTranscriptOptions {
    * (the synthetic human input row), never on a mixed assistant/tool batch.
    */
   metadata?: Record<string, unknown>;
+  /** Server-owned active foreground execution identity; never model-authored. */
+  foregroundExecutionId?: string;
   /** Hidden supervision audit for tool-call/result rows, never a tool-free answer. */
   internalToolMetadata?: Record<string, unknown>;
   /**
@@ -301,6 +303,12 @@ export function transcriptMetadataForMessage(message: BaseMessage, options: Appe
   const imageAssistance = AIMessage.isInstance(message)
     ? parseImageAssistanceSummary(message.additional_kwargs["nautilo_image_assistance"]) : undefined;
   if (imageAssistance) metadata = { ...metadata, nautilo_image_assistance: imageAssistance };
+  if (options.foregroundExecutionId) {
+    metadata = {
+      ...(metadata ?? {}),
+      nautilo_foreground_execution_id: options.foregroundExecutionId,
+    };
+  }
   return withTranscriptToolPresentation(message, metadata);
 }
 
@@ -379,7 +387,7 @@ export async function appendTranscriptMessages(
   );
 }
 
-export interface SessionMessage {
+export interface SessionMessage extends TranscriptToolPresentation {
   imageAssistance?: ImageAssistanceSummary | undefined;
   id: string;
   logicalMessageKey?: string;
@@ -849,6 +857,7 @@ export async function getSessionMessages(
     content: r.content,
     toolCalls: sanitizeSerializedTranscriptToolCalls(r.toolCalls),
     toolName: r.toolName ?? null,
+    ...(r.role === "tool" ? readTranscriptToolPresentation(r.metadata) : {}),
     createdAt: r.createdAt,
     editedAt: r.editedAt,
     editRevision: r.editRevision,
@@ -888,6 +897,7 @@ export async function getLatestSessionMessages(
     content: r.content,
     toolCalls: sanitizeSerializedTranscriptToolCalls(r.toolCalls),
     toolName: r.toolName ?? null,
+    ...(r.role === "tool" ? readTranscriptToolPresentation(r.metadata) : {}),
     createdAt: r.createdAt,
     editedAt: r.editedAt,
     editRevision: r.editRevision,
@@ -947,6 +957,7 @@ export async function getRoomMessagesBeforeCursor(args: {
         content: r.content,
         toolCalls: sanitizeSerializedTranscriptToolCalls(r.toolCalls),
         toolName: r.toolName ?? null,
+        ...(r.role === "tool" ? readTranscriptToolPresentation(r.metadata) : {}),
         createdAt: r.createdAt,
         editedAt: r.editedAt,
         editRevision: r.editRevision,
@@ -1143,6 +1154,8 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
         ? null
         : sanitizeSerializedTranscriptToolCalls(r.toolCalls ?? null),
       toolName: args.contentRepresentation === "structural" ? null : (r.toolName ?? null),
+      ...(args.contentRepresentation !== "structural" && r.role === "tool"
+        ? readTranscriptToolPresentation(r.metadata) : {}),
       createdAt: r.createdAt,
       editedAt: r.editedAt,
       editRevision: r.editRevision,

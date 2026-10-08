@@ -31,18 +31,21 @@ function projection(overrides: Partial<Parameters<
   typeof buildForegroundContextProjectionV1
 >[0]> = {}) {
   return buildForegroundContextProjectionV1({
-    baselineBody: "JOURNAL\n\nRECENT",
     maximumCharacters: 2_000,
     journalBlock: "JOURNAL",
     journalRollupPresent: true,
     journalStatements: ["Ship on Tuesday."],
     journalEventCount: 1,
     selection: available(),
-    mandatoryTranscriptBlock: "RECENT",
-    olderTranscriptCandidates: [],
-    fallbackTranscriptBlock: null,
     recentMessageCount: 2,
     completeTurnCount: 1,
+    narrative: {
+      baselineBlock: "[Recent]\nRECENT",
+      header: "[Recent]",
+      turns: [{ completeness: "complete", entries: ["RECENT"] }],
+      minimumCompleteTurns: 1,
+      earlierEntriesOmitted: false,
+    },
     ...overrides,
   });
 }
@@ -111,8 +114,8 @@ describe("Wave 9 foreground hybrid projection", () => {
       },
     });
     const empty = projection({ selection: available([]) });
-    expect(unavailable.body).toBe("JOURNAL\n\nRECENT");
-    expect(empty.body).toBe("JOURNAL\n\nRECENT");
+    expect(unavailable.body).toBe("JOURNAL\n\n[Recent]\nRECENT");
+    expect(empty.body).toBe("JOURNAL\n\n[Recent]\nRECENT");
     expect(unavailable.facts.selectionStatus).toBe("unavailable");
     expect(empty.facts.selectionStatus).toBe("empty");
   });
@@ -125,7 +128,13 @@ describe("Wave 9 foreground hybrid projection", () => {
         "Ship on Tuesday.",
         "Postgres was selected for transactional consistency.",
       ]),
-      mandatoryTranscriptBlock: "[Recent]\nWhy did we choose that?",
+      narrative: {
+        baselineBlock: "[Recent]\nWhy did we choose that?",
+        header: "[Recent]",
+        turns: [{ completeness: "complete", entries: ["Why did we choose that?"] }],
+        minimumCompleteTurns: 1,
+        earlierEntriesOmitted: false,
+      },
     });
     expect(result.body).toContain("[Journal]");
     expect(result.body).toContain(FOREGROUND_RECORD_CONTEXT_HEADER.trim());
@@ -146,37 +155,84 @@ describe("Wave 9 foreground hybrid projection", () => {
     expect(result.facts.selectionStatus).toBe("available");
   });
 
-  test("preserves an indivisible mandatory suffix while it fits", () => {
+  test("preserves a complete recent turn while it fits", () => {
     const mandatory = `RECENT ${"r".repeat(350)}`;
     const result = projection({
       maximumCharacters: 500,
-      journalBlock: `JOURNAL ${"j".repeat(400)}`,
-      mandatoryTranscriptBlock: mandatory,
-      olderTranscriptCandidates: [`OLDER\n${mandatory}`],
+      journalBlock: "JOURNAL",
+      selection: available([]),
+      narrative: {
+        baselineBlock: `[Recent]\n${mandatory}`,
+        header: "[Recent]",
+        turns: [{ completeness: "complete", entries: [mandatory] }],
+        minimumCompleteTurns: 1,
+        earlierEntriesOmitted: true,
+      },
     });
     expect(result.body!.length).toBeLessThanOrEqual(500);
     expect(result.body).toContain(mandatory);
     expect(result.body).not.toContain("OLDER");
   });
 
-  test("retains the characterized clamp when the mandatory suffix alone is oversized", () => {
+  test("labels and bounds an excerpt when one narrative entry is oversized", () => {
     const result = projection({
-      maximumCharacters: 100,
-      mandatoryTranscriptBlock: `RECENT ${"r".repeat(500)}`,
+      maximumCharacters: 220,
+      journalBlock: null,
+      journalRollupPresent: false,
+      selection: available([]),
+      narrative: {
+        baselineBlock: `[Recent]\nRECENT ${"r".repeat(500)}`,
+        header: "[Recent]",
+        turns: [{ completeness: "complete", entries: [`RECENT ${"r".repeat(500)}`] }],
+        minimumCompleteTurns: 1,
+        earlierEntriesOmitted: false,
+      },
     });
-    expect(result.body).toHaveLength(100);
+    expect(result.body!.length).toBeLessThanOrEqual(220);
     expect(result.body).toContain("context omitted");
+    expect(result.body).toContain("Excerpt from one oversized narrative entry");
     expect(result.body).not.toContain(FOREGROUND_RECORD_CONTEXT_HEADER.trim());
-    expect(result.facts.mandatorySuffixExhaustedBudget).toBe(true);
     expect(result.facts.recordPackedCount).toBe(0);
   });
 
-  test("admits older transcript only after bounded Journal and Records", () => {
+  test("retains current-turn provenance when active progress is excerpted", () => {
+    const result = projection({
+      maximumCharacters: 300,
+      journalBlock: null,
+      journalRollupPresent: false,
+      selection: available([]),
+      narrative: {
+        baselineBlock: `[Recent]\nCOMPLETED ${"r".repeat(500)}`,
+        header: "[Recent]",
+        turns: [{
+          completeness: "partial",
+          provenance: "active_turn",
+          entries: [`COMPLETED ${"r".repeat(500)}`],
+        }],
+        minimumCompleteTurns: 0,
+        earlierEntriesOmitted: false,
+      },
+    });
+    expect(result.body!.length).toBeLessThanOrEqual(300);
+    expect(result.body).toContain("Completed progress in the current logical turn");
+    expect(result.body).toContain("after the accepted Human request");
+    expect(result.body).toContain("Excerpt from one oversized narrative entry");
+  });
+
+  test("admits older complete turns when the whole bounded body fits", () => {
     const result = projection({
       maximumCharacters: 1_000,
       journalBlock: "JOURNAL",
-      mandatoryTranscriptBlock: "RECENT",
-      olderTranscriptCandidates: ["OLDER TURN\nRECENT"],
+      narrative: {
+        baselineBlock: "[Recent]\nOLDER TURN\nRECENT",
+        header: "[Recent]",
+        turns: [
+          { completeness: "complete", entries: ["OLDER TURN"] },
+          { completeness: "complete", entries: ["RECENT"] },
+        ],
+        minimumCompleteTurns: 1,
+        earlierEntriesOmitted: false,
+      },
     });
     expect(result.body).toContain("JOURNAL");
     expect(result.body).toContain(FOREGROUND_RECORD_CONTEXT_HEADER.trim());
@@ -186,12 +242,17 @@ describe("Wave 9 foreground hybrid projection", () => {
 
   test("packs coherent Record lines instead of splicing two bounded items", () => {
     const result = projection({
-      baselineBody: null,
       maximumCharacters: 260,
       journalBlock: null,
       journalRollupPresent: false,
-      mandatoryTranscriptBlock: null,
       completeTurnCount: 0,
+      narrative: {
+        baselineBlock: null,
+        header: "[Recent]",
+        turns: [],
+        minimumCompleteTurns: 0,
+        earlierEntriesOmitted: false,
+      },
       selection: available([
         `FIRST_RECORD ${"a".repeat(300)}`,
         "SECOND_RECORD must not be joined to the first",

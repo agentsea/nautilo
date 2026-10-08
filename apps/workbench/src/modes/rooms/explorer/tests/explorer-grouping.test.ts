@@ -74,6 +74,35 @@ const AGENT_G = "actor-genie";
 const AGENT_G_ID = "agent-genie-id";
 
 describe("groupRoomsForExplorer", () => {
+  test("keeps External rooms in Groups while legacy open rooms remain Public", () => {
+    const rooms = [
+      mkRoom({
+        id: "external-room",
+        label: "External room",
+        kind: "open",
+        discoverable: false,
+      }),
+      mkRoom({
+        id: "legacy-public-room",
+        label: "Legacy public room",
+        kind: "open",
+      }),
+    ];
+
+    const sections = groupRoomsForExplorer({
+      rooms,
+      rosters: new Map(),
+      viewerActorId: VIEWER,
+    });
+
+    const external = sections.find((section) => section.kind === "groups")?.rows[0];
+    expect(external?.roomId).toBe("external-room");
+    expect(external?.roomDiscoverable).toBe(false);
+    const legacyPublic = sections.find((section) => section.kind === "public")?.rows[0];
+    expect(legacyPublic?.roomId).toBe("legacy-public-room");
+    expect(legacyPublic?.roomDiscoverable).toBeUndefined();
+  });
+
   test("1:1 people DM with federated counterparty and nested direct room", () => {
     const rooms = [
       mkRoom({

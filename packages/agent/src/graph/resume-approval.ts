@@ -18,6 +18,10 @@ import {
   GraphExecutionMetrics,
   toGraphBudgetOutcome,
 } from "./execution-policy";
+import {
+  streamForegroundGraph,
+  type RebuildForegroundContext,
+} from "./foreground-context-refresh";
 
 export interface StreamEventProcessor {
   process(ev: unknown): void | Promise<void>;
@@ -26,6 +30,8 @@ export interface StreamEventProcessor {
   beginResume?(checkpointThreadId: string, turnId: string): Promise<void>;
   finishResume?(checkpoint: unknown): Promise<void>;
   failResume?(): Promise<void>;
+  /** Present only for foreground invocations authorized to refresh context. */
+  rebuildForegroundContext?: RebuildForegroundContext;
   /**
    * D084 — emit a ServerEvent directly onto the bus without routing
    * through the graph-stream adapter. Used by resume paths to surface
@@ -136,9 +142,16 @@ export async function resumeGraphWithApproval(
         );
         resume = { [pending.id!]: resumePayload };
       }
-      for await (const ev of graph.streamEvents(
+      for await (const ev of streamForegroundGraph(
+        graph,
         new Command({ resume }),
         resumeConfig,
+        {
+          ...(processEvent.rebuildForegroundContext === undefined
+            ? {}
+            : { rebuildForegroundContext: processEvent.rebuildForegroundContext }),
+          ...(signal === undefined ? {} : { signal }),
+        },
       )) {
         metrics.noteStreamEvent(ev);
         await Promise.resolve(processEvent.process(ev));

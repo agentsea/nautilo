@@ -1,4 +1,4 @@
-// M206 Phase 3 / D392 P2 — desktop bundled-runtime path resolver (not wired into relay yet).
+// Desktop bundled-runtime path resolver.
 //
 // Resolves development vendor and packaged extraResources paths using os-arch keys.
 // OfficeCLI is fail-closed: no PATH, Homebrew, or server-vendor fallback.
@@ -12,7 +12,8 @@ export type DesktopBundledRuntimeName =
   | "gog"
   | "officecli"
   | "ffmpeg"
-  | "ripgrep";
+  | "ripgrep"
+  | "github-cli";
 
 export interface ResolveDesktopRuntimePathInput {
   readonly runtime: DesktopBundledRuntimeName;
@@ -55,6 +56,7 @@ type RuntimeLayout = {
 };
 
 const RUNTIME_LAYOUTS: Readonly<Record<DesktopBundledRuntimeName, RuntimeLayout>> = {
+  "github-cli": { bundledRoot: "tools-github-cli", vendorDir: "github-cli", binaryName: "gh", layout: "platform-key" },
   "agent-browser": {
     bundledRoot: "tools-agent-browser",
     vendorDir: "agent-browser",

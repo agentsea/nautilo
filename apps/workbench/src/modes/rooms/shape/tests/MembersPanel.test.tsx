@@ -13,7 +13,9 @@ import { ProtectedRoomAccessContext } from "../../../../adapters/runtime-context
 
 let manageDetailMembers: RoomMemberDto[] = [];
 let manageDetailKind: RoomKind = "group";
+let manageDetailDiscoverable: boolean | undefined;
 let manageDetailConductorMode: RoomConductorMode = "advanced";
+const setRoomVisibility = mock(async () => ({ ok: true }));
 const archiveRoom = mock(async () => ({ ok: true }));
 let addableUsers: Array<{ userId: string; handle: string; displayName: string }> = [];
 let addableAgents: Array<{
@@ -62,6 +64,9 @@ mock.module("../../../../lib/api", () => ({
       id: "r1",
       label: "Test room",
       kind: manageDetailKind,
+      ...(manageDetailDiscoverable === undefined
+        ? {}
+        : { discoverable: manageDetailDiscoverable }),
       conductorMode: manageDetailConductorMode,
       members: manageDetailMembers,
     }),
@@ -71,7 +76,7 @@ mock.module("../../../../lib/api", () => ({
     addRoomMember,
     removeRoomMember: async () => ({ ok: true, kind: "user" }),
     updateRoomMemberMode: async () => ({ ok: true }),
-    setRoomVisibility: async () => ({ ok: true }),
+    setRoomVisibility,
     setRoomConductorMode: async (_roomId: string, conductorMode: RoomConductorMode) => ({
       conductorMode,
     }),
@@ -118,10 +123,12 @@ beforeAll(() => {
 beforeEach(() => {
   addableUsers = [];
   addableAgents = [];
+  manageDetailDiscoverable = undefined;
   failingMemberKeys.clear();
   protectHumanAdds = false;
   markMembershipPending.mockClear();
   addRoomMember.mockClear();
+  setRoomVisibility.mockClear();
 });
 
 afterAll(async () => {
@@ -647,12 +654,86 @@ describe("MembersPanel — room management", () => {
         open={true}
         onClose={() => undefined}
         viewerCanManageRooms={true}
+        viewerSupportsRoomDiscoverability={true}
       />,
     );
     await waitFor(() => {
       expect(view.getByTestId("visibility-radio-private")).toBeTruthy();
+      expect(view.getByTestId("visibility-radio-external")).toBeTruthy();
       expect(view.getByTestId("visibility-radio-public")).toBeTruthy();
     });
+    view.unmount();
+  });
+
+  test("sets an existing group Room to External and keeps it selected after refresh", async () => {
+    manageDetailMembers = [human("u1", "Room Admin", "admin")];
+    manageDetailKind = "group";
+    const view = render(
+      <MembersPanel
+        roomId="r1"
+        viewerActorId="u1"
+        initialMembers={[human("u1", "Room Admin", "admin")]}
+        open={true}
+        onClose={() => undefined}
+        viewerCanManageRooms={true}
+        viewerSupportsRoomDiscoverability={true}
+      />,
+    );
+    const external = await view.findByTestId("visibility-radio-external");
+    manageDetailKind = "open";
+    manageDetailDiscoverable = false;
+    fireEvent.click(external);
+
+    await waitFor(() => {
+      expect(setRoomVisibility).toHaveBeenCalledWith("r1", true, false);
+      expect((view.getByTestId("visibility-radio-external") as HTMLInputElement).checked).toBe(true);
+    });
+    view.unmount();
+  });
+
+  test("an older server hides External and preserves legacy Public mutation", async () => {
+    manageDetailMembers = [human("u1", "Room Admin", "admin")];
+    manageDetailKind = "group";
+    const view = render(
+      <MembersPanel
+        roomId="r1"
+        viewerActorId="u1"
+        initialMembers={[human("u1", "Room Admin", "admin")]}
+        open={true}
+        onClose={() => undefined}
+        viewerCanManageRooms={true}
+      />,
+    );
+
+    await view.findByTestId("visibility-radio-public");
+    expect(view.queryByTestId("visibility-radio-external")).toBeNull();
+    manageDetailKind = "open";
+    fireEvent.click(view.getByTestId("visibility-radio-public"));
+    await waitFor(() => {
+      expect(setRoomVisibility).toHaveBeenCalledWith("r1", true, undefined);
+    });
+    view.unmount();
+  });
+
+  test("treats legacy open Room detail without discoverable as Public", async () => {
+    manageDetailMembers = [human("u1", "Room Admin", "admin")];
+    manageDetailKind = "open";
+    manageDetailDiscoverable = undefined;
+    const view = render(
+      <MembersPanel
+        roomId="r1"
+        viewerActorId="u1"
+        initialMembers={[human("u1", "Room Admin", "admin")]}
+        open={true}
+        onClose={() => undefined}
+        viewerCanManageRooms={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(view.getByTestId("members-panel-visibility").textContent).toContain("Public");
+    });
+    expect(view.getByTestId("members-panel-visibility").textContent).not.toContain("External");
     view.unmount();
   });
 

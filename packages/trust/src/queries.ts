@@ -1479,6 +1479,8 @@ export type RoomSummaryRow = {
   /** D111 + M124 ('open') + M141 ('task') + M173 ('access'). Conversational
    *  surfaces exclude 'task'/'access', but the column type admits them. */
   kind: "private" | "group" | "multi_agent" | "subthread" | "open" | "task" | "access";
+  /** Whether an open room appears in server-wide discovery and automatic landing. */
+  discoverable?: boolean;
   parentRoomId: string | null;
   threadRootMessageId: number | null;
   /**
@@ -1597,6 +1599,7 @@ export async function listRoomsForActor(
       graphThreadId: rooms.graphThreadId,
       createdAt: rooms.createdAt,
       kind: rooms.kind,
+      discoverable: rooms.discoverable,
       parentRoomId: rooms.parentRoomId,
       threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
     })
@@ -1689,6 +1692,7 @@ export async function listRoomsForActor(
     lastMessageAt: messageActivityMap.get(r.id)?.lastMessageAt ?? null,
     unreadCount: unreadMap.get(r.id) ?? 0,
     kind: r.kind,
+    discoverable: r.discoverable !== false,
     parentRoomId: r.parentRoomId ?? null,
     threadRootMessageId: r.threadRootMessageId ?? null,
     ...(includeRoster ? { roster: rosterMap?.get(r.id) ?? [] } : {}),
@@ -1779,6 +1783,7 @@ export async function listManageableRoomsForUser(
     graphThreadId: rooms.graphThreadId,
     createdAt: rooms.createdAt,
     kind: rooms.kind,
+    discoverable: rooms.discoverable,
     parentRoomId: rooms.parentRoomId,
     threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
   };
@@ -1839,6 +1844,7 @@ export async function listManageableRoomsForUser(
     lastMessageAt: null,
     unreadCount: 0,
     kind: r.kind,
+    discoverable: r.discoverable !== false,
     parentRoomId: r.parentRoomId ?? null,
     threadRootMessageId: r.threadRootMessageId ?? null,
     roster: rosterMap.get(r.id) ?? [],
@@ -1906,6 +1912,8 @@ export type RoomDetailPayload = {
   createdAt: string;
   /** D111 + M124 ('open') + M141 ('task') + M173 ('access') */
   kind: "private" | "group" | "multi_agent" | "subthread" | "open" | "task" | "access";
+  /** Whether an open room appears in server-wide discovery and automatic landing. */
+  discoverable?: boolean;
   parentRoomId: string | null;
   threadRootMessageId: number | null;
   /** D302 — `advanced` (FM default-arbiter inference) | `standard` (today's conductor). */
@@ -1957,6 +1965,7 @@ export async function getRoomDetailForMember(
       graphThreadId: rooms.graphThreadId,
       createdAt: rooms.createdAt,
       kind: rooms.kind,
+      discoverable: rooms.discoverable,
       parentRoomId: rooms.parentRoomId,
       threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
       conductorMode: rooms.conductorMode,
@@ -1975,6 +1984,7 @@ export async function getRoomDetailForMember(
     graphThreadId: room.graphThreadId,
     createdAt: (room.createdAt ?? new Date()).toISOString(),
     kind: room.kind,
+    discoverable: room.discoverable !== false,
     parentRoomId: room.parentRoomId ?? null,
     threadRootMessageId: room.threadRootMessageId ?? null,
     conductorMode: room.conductorMode === "standard" ? "standard" : "advanced",
@@ -2002,6 +2012,7 @@ export async function getRoomDetailForManager(
       graphThreadId: rooms.graphThreadId,
       createdAt: rooms.createdAt,
       kind: rooms.kind,
+      discoverable: rooms.discoverable,
       parentRoomId: rooms.parentRoomId,
       threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
       conductorMode: rooms.conductorMode,
@@ -2035,6 +2046,7 @@ export async function getRoomDetailForManager(
     graphThreadId: room.graphThreadId,
     createdAt: (room.createdAt ?? new Date()).toISOString(),
     kind: room.kind,
+    discoverable: room.discoverable !== false,
     parentRoomId: room.parentRoomId ?? null,
     threadRootMessageId: room.threadRootMessageId ?? null,
     conductorMode: room.conductorMode === "standard" ? "standard" : "advanced",
@@ -2159,6 +2171,8 @@ export async function insertPrivateRoomBundleTx(
      * be retired in a later sweep.)
      */
     roomType?: "private" | "shared" | "room";
+    /** Defaults to the schema default when omitted. */
+    discoverable?: boolean;
   },
 ): Promise<{ namespaceId: string }> {
   const [nsRow] = await tx
@@ -2182,6 +2196,9 @@ export async function insertPrivateRoomBundleTx(
     humanActorIds: params.humanActorIds,
     createdBy: params.createdByActorId,
     kind: params.roomKind ?? "private",
+    ...(params.discoverable === undefined
+      ? {}
+      : { discoverable: params.discoverable }),
   });
   await createRoomJournalStateInTx(tx, params.roomId);
 
@@ -2493,13 +2510,13 @@ export async function createRoomForOwner(
 }
 
 // ---------------------------------------------------------------------------
-// M124 — public rooms (`kind='open'`): discovery, self-join, self-leave.
+// Public rooms (`kind='open'`): optional discovery, self-join, self-leave.
 // ---------------------------------------------------------------------------
 
 /**
  * M124 (MR2) — public rooms the caller can discover and join.
  *
- * Returns every `kind='open'` room that
+ * Returns every `kind='open'`, `discoverable=true` room that
  *   - belongs to this Server (the creator is a local user — `users.server IS
  *     NULL`, REL-HUM-SRV; future federation will widen this), AND
  *   - the caller is NOT already a member of.
@@ -2509,6 +2526,7 @@ export async function createRoomForOwner(
  * caller signed in" — there is NO Agent-relationship-role (`actorRole`)
  * filter here; that axis is the wrong one for Server discovery.
  *
+ * Explicit joins by Room ID depend on `kind='open'`, not this catalogue flag.
  * `kind='subthread'` is mutually exclusive with `kind='open'`, so the
  * `kind = 'open'` filter already excludes subthreads — no extra clause.
  */
@@ -2528,6 +2546,7 @@ export async function listDiscoverableRoomsForUser(
       graphThreadId: rooms.graphThreadId,
       createdAt: rooms.createdAt,
       kind: rooms.kind,
+      discoverable: rooms.discoverable,
       parentRoomId: rooms.parentRoomId,
       threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
     })
@@ -2536,8 +2555,13 @@ export async function listDiscoverableRoomsForUser(
     // M157 — `kind='open'` already excludes internal `task` rooms and nested
     // `subthread` rooms; no extra guard needed here.
     .where(
-      and(eq(rooms.kind, "open"), isNull(users.server), isNull(rooms.archivedAt),
-        moderationBanAbsentSql(sql`${userId}`, sql`${rooms.id}`)),
+      and(
+        eq(rooms.kind, "open"),
+        eq(rooms.discoverable, true),
+        isNull(users.server),
+        isNull(rooms.archivedAt),
+        moderationBanAbsentSql(sql`${userId}`, sql`${rooms.id}`),
+      ),
     )
     .orderBy(desc(rooms.createdAt));
 
@@ -2607,6 +2631,7 @@ export async function listDiscoverableRoomsForUser(
     lastMessageAt: messageActivityMap.get(r.id)?.lastMessageAt ?? null,
     unreadCount: 0,
     kind: r.kind,
+    discoverable: r.discoverable !== false,
     parentRoomId: r.parentRoomId ?? null,
     threadRootMessageId: r.threadRootMessageId ?? null,
   }));
@@ -2852,6 +2877,7 @@ export type CreateOpenRoomParams = {
   creatorUserId: string;
   creatorActorId: string;
   label: string;
+  discoverable?: boolean;
   /** D473 — optional exact initial roster; omit for creator-only open rooms. */
   members?: Array<{ kind: "user" | "agent"; id: string }>;
 };
@@ -2903,7 +2929,7 @@ async function resolveCreateRoomMembers(
 }
 
 /**
- * M124 (MR4) — mint a `kind='open'`, `type='shared'` public room with the
+ * Mint a `kind='open'`, `type='shared'` public room with the
  * creator as the sole initial member (`room_role='admin'`,
  * `agent_response_mode=NULL`) when no roster is supplied. A supplied exact
  * roster must contain that creator exactly once and is inserted in the same
@@ -2914,11 +2940,13 @@ async function resolveCreateRoomMembers(
  * members panel). Route callers validate supplied rosters and reachability;
  * this query defensively verifies the resolved roster before minting. The
  * namespace is minted transactionally exactly like the private path.
+ * `discoverable=false` excludes it from listing and automatic invite landing
+ * while retaining explicit join and invite-target behavior.
  */
 export async function createOpenRoom(
   params: CreateOpenRoomParams,
 ): Promise<RoomDetailPayload> {
-  const { creatorUserId, creatorActorId, label, members } = params;
+  const { creatorUserId, creatorActorId, label, members, discoverable } = params;
   const resolved = members
     ? await resolveCreateRoomMembers(members, "createOpenRoom")
     : [{ actorId: creatorActorId, actorKind: "user" as const }];
@@ -2953,6 +2981,7 @@ export async function createOpenRoom(
       createdByActorId: creatorActorId,
       roomKind: "open",
       roomType: "shared",
+      ...(discoverable === undefined ? {} : { discoverable }),
     });
   });
 
@@ -3145,7 +3174,7 @@ export async function findCanonicalActiveServerOwner(): Promise<{
  * caller-owned completion transaction.
  *
  * An explicit target is exact and never falls back. Without one, the largest
- * eligible open Room wins (Agent-bearing Rooms are intentionally eligible now
+ * eligible discoverable open Room wins (Agent-bearing Rooms are intentionally eligible now
  * that `invoke_agents` is authoritative), followed by the canonical Human-only
  * owner DM. Returning `null` lets the completion transaction fail without
  * publishing Group membership or consuming an Invite use.
@@ -3209,6 +3238,7 @@ export async function resolveInviteLandingRoomInTx(
     .where(
       and(
         eq(rooms.kind, "open"),
+        eq(rooms.discoverable, true),
         moderationBanAbsentSql(sql`${params.inviteeUserId}`, sql`${rooms.id}`),
         isNull(rooms.archivedAt),
         isNull(users.server),
@@ -4310,25 +4340,26 @@ export async function updateRoomMemberRole(
 }
 
 /**
- * D194 — flip `rooms.kind` between `open` (public) and `group` (private).
+ * Update public/private kind and, when supplied, server-wide discoverability.
  *
  * Throws `MembershipOpError("not_found")` when the room row is missing,
  * and `MembershipOpError("invalid_kind_for_visibility")` when the current
- * kind is not `open` or `group`. Returns `true` when the kind was updated,
- * `false` when already at the target (idempotent no-op).
+ * kind is not `open` or `group`. Returns `true` when either stored value was
+ * updated, `false` when already at the supplied target (idempotent no-op).
  *
  * Caller must validate `manage_rooms` authorization BEFORE invoking.
  */
 export async function updateRoomVisibility(
   roomId: string,
   kind: "open" | "group",
+  discoverable?: boolean,
 ): Promise<boolean> {
   if (!roomId) {
     throw new MembershipOpError("not_found");
   }
   const db = getSharedDirectDb();
   const [row] = await db
-    .select({ kind: rooms.kind })
+    .select({ kind: rooms.kind, discoverable: rooms.discoverable })
     .from(rooms)
     .where(eq(rooms.id, roomId))
     .limit(1);
@@ -4338,12 +4369,19 @@ export async function updateRoomVisibility(
   if (row.kind !== "open" && row.kind !== "group") {
     throw new MembershipOpError("invalid_kind_for_visibility");
   }
-  if (row.kind === kind) {
+  const kindChanged = row.kind !== kind;
+  const discoverableChanged =
+    discoverable !== undefined && row.discoverable !== discoverable;
+  if (!kindChanged && !discoverableChanged) {
     return false;
   }
   await db
     .update(rooms)
-    .set({ kind, updatedAt: new Date() })
+    .set({
+      ...(kindChanged ? { kind } : {}),
+      ...(discoverableChanged ? { discoverable } : {}),
+      updatedAt: new Date(),
+    })
     .where(eq(rooms.id, roomId));
   return true;
 }

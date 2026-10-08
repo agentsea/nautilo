@@ -1,5 +1,5 @@
 /**
- * Stack 195 / W3.2 — preview/apply mutation endpoints for general RBAC
+ * Preview/apply mutation endpoints for general RBAC
  * administration.
  *
  *   POST /api/admin/access-control/changes/preview
@@ -23,8 +23,6 @@
  * nondelegable Owner-only ceiling, protected-definition, and reserved
  * slug/type rules identically for preview and apply.
  *
- * See `wave-3-stack-195-tasks.md` W3.2.1–W3.2.5 + W3.0.1 and
- * `general-rbac-administration-followup.md` §2.1 + ASCII review flow.
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { homedir } from "node:os";
@@ -228,8 +226,11 @@ function mapApplyResult(result: ApplyResult, reply: FastifyReply) {
 }
 
 export interface AccessControlMutationRoutesDeps {
+  /** Runs after a committed operation, with freshly resolved effective RBAC. */
+  readonly onAuthorityChanged?: (operation: AccessControlOperation) => Promise<void>;
+
   /**
-   * D538's event-stable seam for one named Human. Before the mutation, the
+   * An event-stable seam for one named Human. Before the mutation, the
    * controller classifies the exact target membership; after an applied
    * result, the prepared closure revokes whichever activation is then current.
    * The generic mutation engine remains unaware of session authority.
@@ -305,7 +306,14 @@ export function accessControlMutationRoutes(
       } catch (err) {
         // The DB mutation already committed. Preserve its successful result;
         // the next dispatch still rechecks RBAC fail-closed.
-        warn(`[access-control-mutations] post-commit D538 revoke failed: ${String(err)}`);
+        warn(`[access-control-mutations] post-commit membership revoke failed: ${String(err)}`);
+      }
+    }
+    if (result.applied) {
+      try { await deps.onAuthorityChanged?.(operation); }
+      catch (err) {
+        // The mutation already committed; its receipt must remain successful.
+        warn(`[access-control-mutations] post-commit authority reconciliation failed: ${String(err)}`);
       }
     }
     return mapApplyResult(result, reply);

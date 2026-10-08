@@ -622,7 +622,7 @@ export interface NotificationStateErrorDto {
 /**
  * room list/detail API shapes shared by clients.
  *
- * `'open'` denotes a discoverable, self-joinable public room. Existing
+ * `'open'` denotes a self-joinable public room; `discoverable` controls listing. Existing
  * clients render an `open`-kind room in the rooms list like any other room
  * they're a member of.
  */
@@ -686,6 +686,8 @@ export interface RoomSummaryDto {
   lastMessageAt?: string | null;
   /** dispatch kind (distinct from legacy `type`). */
   kind: RoomKind;
+  /** Open-room directory eligibility. Omitted by older servers; defaults to true. */
+  discoverable?: boolean;
   parentRoomId?: string | null;
   threadRootMessageId?: number | null;
   /**
@@ -796,6 +798,8 @@ export interface RoomDetailResponse {
   graphThreadId: string;
   createdAt: string;
   kind: RoomKind;
+  /** Open-room directory eligibility. Omitted by older servers; defaults to true. */
+  discoverable?: boolean;
   parentRoomId?: string | null;
   threadRootMessageId?: number | null;
   /** smart routing policy for group-room conductor inference. */
@@ -838,12 +842,14 @@ export interface CreateRoomRequest {
   members?: CreateRoomMemberInput[];
   /**
    * room kind to create. Omit (or `'private'` / `'group'`) for the
-   * existing private/group path; `'open'` mints a public, discoverable room
+   * existing private/group path; `'open'` mints a public room
    * and is gated on the `manage_rooms` capability. An omitted `members[]`
    * creates a creator-only open room; a supplied roster is validated and
    * persisted atomically with the room.
    */
   kind?: "private" | "group" | "open";
+  /** Open-room listing preference. Defaults to true; false creates an External room. */
+  discoverable?: boolean;
 }
 
 /** Subthread list/detail. */
@@ -887,6 +893,8 @@ export interface RenameRoomRequest {
 /** flip room visibility (`POST /api/rooms/:id/visibility`). */
 export interface SetRoomVisibilityRequest {
   public: boolean;
+  /** Open-room listing preference. Omit to preserve the room's saved preference. */
+  discoverable?: boolean;
 }
 
 /** Flip group-room conductor inference policy. */

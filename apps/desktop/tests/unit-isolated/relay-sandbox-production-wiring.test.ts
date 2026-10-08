@@ -14,6 +14,8 @@ test("relay startup derives sandbox production enforcement from Electron packagi
   const startRelay = relaySource.slice(relaySource.indexOf("export async function startRelay"));
 
   expect(startRelay).toContain("const isProduction = await resolveElectronIsPackaged();");
-  expect(startRelay).toMatch(/onDispatch: makeDispatchHandler\(guard, \{[\s\S]*?isProduction,/);
+  expect(startRelay).toMatch(/const dispatchOptions[\s\S]*?isProduction,/);
+  expect(startRelay).toContain("let currentDispatch = makeDispatchHandler(guard, dispatchOptions)");
+  expect(startRelay).toContain("onDispatch: (request, signal) => currentDispatch(request, signal)");
   expect(relaySource).toContain("options.isProduction ?? process.env[\"NODE_ENV\"] === \"production\"");
 });

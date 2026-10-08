@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { PinDialog } from "../pin-dialog";
 import { desktopAPI, isDesktop } from "../../lib/desktop";
 import { useAuth } from "../../hooks/use-auth";
 import { useCan } from "../../hooks/use-can";
+import { supportsAgentAccess } from "../../hooks/use-agent-access";
+import { AgentAccessControl } from "../agent-access-control";
 import {
   publishWorkstationProfileChanged,
   subscribeToWorkstationProfileChanges,
@@ -34,11 +36,16 @@ function hasAcknowledgedReview(userId: string | null, profileId: string, revisio
 }
 
 /**
- * D418 C4 — persistent, desktop-only Workstation affordance. It is a session
+ * Persistent, desktop-only Workstation affordance. It is a session
  * control, not an Auto-Approve indicator: "On" requires matching local and
  * server-confirmed profile selectors.
  */
 export function WorkstationSegment() {
+  if (isDesktop && supportsAgentAccess(desktopAPI?.readyToWork)) return <AgentAccessControl compact />;
+  return <LegacyWorkstationSegment />;
+}
+
+function LegacyWorkstationSegment() {
   const navigate = useNavigate();
   const auth = useAuth();
   const can = useCan();
@@ -49,6 +56,7 @@ export function WorkstationSegment() {
   const [error, setError] = useState<string | null>(null);
   const [pinOpen, setPinOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const activationPending = useRef(false);
 
   const refresh = useCallback(async () => {
     if (!profilesApi || !isDesktop) {
@@ -158,7 +166,8 @@ export function WorkstationSegment() {
   }
 
   async function enable(pin: string): Promise<void> {
-    if (!profilesApi || !profile) return;
+    if (!profilesApi || !profile || activationPending.current) return;
+    activationPending.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -177,6 +186,7 @@ export function WorkstationSegment() {
     } catch {
       setError("Developer Workstation could not be enabled.");
     } finally {
+      activationPending.current = false;
       setBusy(false);
     }
   }
@@ -227,6 +237,8 @@ export function WorkstationSegment() {
           title="Enable Developer Workstation"
           prompt="Enter your own PIN to re-enable this reviewed profile for this app session."
           error={error ?? undefined}
+          submitting={busy}
+          submittingLabel="Checking and enabling…"
           onSubmit={(pin) => void enable(pin)}
           onCancel={() => {
             if (!busy) {

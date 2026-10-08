@@ -17,6 +17,7 @@ mock.module("../../src/lib/api", () => ({
 }));
 
 mock.module("../../src/lib/desktop", () => ({
+  getLocalExecutionAPI: () => null,
   desktopAPI: {
     workbench: {
       reload: async () => {

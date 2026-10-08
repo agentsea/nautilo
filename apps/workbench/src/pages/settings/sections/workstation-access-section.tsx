@@ -10,6 +10,8 @@ import {
   type DesktopListedDesktopFilesystemGrant,
 } from "../../../lib/desktop";
 import { PinDialog } from "../../../components/pin-dialog";
+import { AgentAccessControl } from "../../../components/agent-access-control";
+import { supportsAgentAccess } from "../../../hooks/use-agent-access";
 import type { DesktopFilesystemGrantFilesystemIdentity } from "@nautilo/desktop-filesystem-grants";
 import { Button, StatusPill } from "../ui";
 import { useAuth } from "../../../hooks/use-auth";
@@ -61,7 +63,7 @@ function acknowledgeReviewRevision(userId: string | null, profileId: string, rev
 }
 
 /**
- * D418 — human-only local grant administration. This intentionally does not
+ * Human-only local grant administration. This intentionally does not
  * browse the filesystem or make a picker result authority by itself.
  */
 export function DesktopFilesystemAccessSection({
@@ -91,6 +93,7 @@ export function DesktopFilesystemAccessSection({
   const [profileError, setProfileError] = useState<string | null>(null);
   const [materializing, setMaterializing] = useState(false);
   const [activating, setActivating] = useState(false);
+  const profileActivationPending = useRef(false);
   const [deactivating, setDeactivating] = useState(false);
   const [pinPromptOpen, setPinPromptOpen] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
@@ -115,6 +118,7 @@ export function DesktopFilesystemAccessSection({
   const auth = useAuth();
   const can = useCan();
   const canUseWorkstation = can("use_workstation");
+  const managedAccess = supportsAgentAccess(desktopAPI?.readyToWork);
 
   const load = useCallback(async () => {
     if (!grantsApi) return;
@@ -268,8 +272,9 @@ export function DesktopFilesystemAccessSection({
   }, [isDesktopShell, uncontainedApi]);
 
   useEffect(() => {
+    if (managedAccess) return;
     void loadUncontainedStatus();
-  }, [loadUncontainedStatus]);
+  }, [loadUncontainedStatus, managedAccess]);
 
   const clearUncontainedConfirmation = useCallback(() => {
     ++uncontainedRequestGeneration.current;
@@ -279,6 +284,7 @@ export function DesktopFilesystemAccessSection({
   }, []);
 
   useEffect(() => {
+    if (managedAccess) return;
     const refreshAfterLifecycle = () => {
       clearUncontainedConfirmation();
       void loadUncontainedStatus();
@@ -293,16 +299,16 @@ export function DesktopFilesystemAccessSection({
       window.removeEventListener("nautilo:auth-changed", refreshAfterLifecycle);
       document.removeEventListener("visibilitychange", refreshAfterLifecycle);
     };
-  }, [clearUncontainedConfirmation, loadUncontainedStatus]);
+  }, [clearUncontainedConfirmation, loadUncontainedStatus, managedAccess]);
 
   useEffect(() => {
-    if (uncontainedStatus?.confirmed !== true || !uncontainedStatus.active) return;
+    if (managedAccess || uncontainedStatus?.confirmed !== true || !uncontainedStatus.active) return;
     const interval = window.setInterval(() => {
       clearUncontainedConfirmation();
       void loadUncontainedStatus();
     }, 12_000);
     return () => window.clearInterval(interval);
-  }, [clearUncontainedConfirmation, loadUncontainedStatus, uncontainedStatus?.active, uncontainedStatus?.confirmed]);
+  }, [clearUncontainedConfirmation, loadUncontainedStatus, managedAccess, uncontainedStatus?.active, uncontainedStatus?.confirmed]);
 
   async function pickLocation(): Promise<void> {
     if (!grantsApi) return;
@@ -406,7 +412,8 @@ export function DesktopFilesystemAccessSection({
   }
 
   async function activateProfile(pin: string): Promise<void> {
-    if (!profilesApi || !storedSeedProfile || !canUseWorkstation) return;
+    if (!profilesApi || !storedSeedProfile || !canUseWorkstation || profileActivationPending.current) return;
+    profileActivationPending.current = true;
     setActivating(true);
     setProfileError(null);
     try {
@@ -425,6 +432,7 @@ export function DesktopFilesystemAccessSection({
     } catch (cause) {
       setProfileError(resultError(cause, "Developer Workstation could not be enabled."));
     } finally {
+      profileActivationPending.current = false;
       setActivating(false);
     }
   }
@@ -509,6 +517,7 @@ export function DesktopFilesystemAccessSection({
         </div>
       </header>
       <div className="space-y-4 px-5 py-4">
+        {managedAccess && <AgentAccessControl />}
         <details className="group rounded-md border border-border bg-background-secondary">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 marker:hidden">
             <div>
@@ -695,7 +704,7 @@ export function DesktopFilesystemAccessSection({
                       ? "Ready"
                       : "Review required"}
               </StatusPill>
-              <button
+              {!managedAccess && <button
                 type="button"
                 role="switch"
                 aria-checked={activeProfile ? "true" : "false"}
@@ -734,7 +743,7 @@ export function DesktopFilesystemAccessSection({
                     activeProfile ? "translate-x-4" : "translate-x-0.5",
                   ].join(" ")}
                 />
-              </button>
+              </button>}
               <span
                 aria-hidden="true"
                 className="text-xs text-foreground-muted transition-transform group-open:rotate-90"
@@ -756,7 +765,7 @@ export function DesktopFilesystemAccessSection({
             <div className="mt-3 space-y-4">
               {profileError ? <p role="alert" className="text-sm text-[var(--error)]">{profileError}</p> : null}
 
-              {activeProfile ? (
+              {activeProfile && !managedAccess ? (
                 <div className="flex justify-end">
                   <Button
                     onClick={() => void deactivateProfile()}
@@ -850,7 +859,9 @@ export function DesktopFilesystemAccessSection({
                     {activeProfile.networkMode} network mode
                   </p>
                 </div>
-              ) : storedSeedProfile && reviewAcknowledged ? (
+              ) : storedSeedProfile && reviewAcknowledged ? managedAccess ? (
+                <p className="text-sm text-foreground-muted">Profile reviewed. Use Agent access to choose or repair Development.</p>
+              ) : (
                 <div className="flex flex-wrap items-center gap-3">
                   <p className="text-sm text-foreground-muted">
                     Enable for this app session with your own PIN.
@@ -877,7 +888,7 @@ export function DesktopFilesystemAccessSection({
           )}
           </div>
         </details>
-        <details className="group rounded-md border border-[var(--warning)]/50 bg-background-secondary">
+        {!managedAccess && <details className="group rounded-md border border-[var(--warning)]/50 bg-background-secondary">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 marker:hidden">
             <div>
               <h3 className="text-sm font-semibold text-foreground">Uncontained host commands</h3>
@@ -947,7 +958,7 @@ export function DesktopFilesystemAccessSection({
               </>
             )}
           </div>
-        </details>
+        </details>}
         <WorkstationShellAccess />
         </>
         ) : null}
@@ -957,6 +968,8 @@ export function DesktopFilesystemAccessSection({
           title="Enable Developer Workstation"
           prompt="Enter your own PIN. The server verifies your permissions and this desktop's relay binding before activation."
           error={profileError ?? undefined}
+          submitting={activating}
+          submittingLabel="Checking and enabling…"
           onSubmit={(pin) => void activateProfile(pin)}
           onCancel={() => {
             if (!activating) {

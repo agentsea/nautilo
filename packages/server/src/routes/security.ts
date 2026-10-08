@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 /**
- * Server security posture API. D060 Sprint 1 G5.3 (ship plan v3 §5.3).
+ * Server security posture API.
  *
  *   GET  /api/security/posture   — read current deployment_mode +
  *                                   security_level + caller's
@@ -114,15 +115,8 @@ export type PostureMutator = (meta: PostureMutationMeta) => Promise<void>;
  * enforces this contract at every call site via `safeAudit()` below
  * — regardless of what the injected implementation does.
  *
- * PR-017 MINOR #6 — previously the contract lived in the docstring
- * only; `await auditEvent(...)` at 4 call sites with no try/catch
- * meant any future test injection that threw (or any unhappy-path
- * contract violation in production) would surface as a 500 to the
- * caller. Hardened below: every audit call is wrapped in the
- * module-local `safeAudit` helper that catches + warns and always
- * returns, so the route's invariant "4xx visibility is never
- * denied by audit failure" is enforced at the SITE, not the
- * contract.
+ * Every audit call uses the module-local safeAudit helper so auditor
+ * failure cannot hide the caller’s authorization or validation response.
  */
 export type SecurityAuditor = (event: SecurityAuditEvent) => Promise<void>;
 
@@ -157,7 +151,7 @@ function resolveActorRole(
   session: { readonly ownerId: string; readonly userId: string } | null,
 ): string {
   if (policyRole !== undefined) return policyRole;
-  // Pre-M052 fallback path — only fires when policyContext is unset
+  // Fallback path — only fires when policyContext is unset
   // (test harnesses, early boot). With a null session under Logto
   // mode we have no other heuristic, so default to "guest" — the
   // caller will gate on the explicit role.
@@ -271,7 +265,7 @@ export interface SecurityRouteDeps {
   readonly mutatePosture: PostureMutator;
   readonly auditEvent: SecurityAuditor;
   /**
-   * Caller Capability lookup — D060 Sprint 1 G5.5. Production wires
+   * Caller Capability lookup. Production wires
    * `@nautilo/trust::getUserCapabilities`. Keyed on `userId` from the
    * trust preHandler (`request.sessionUserId`).
    */
@@ -291,12 +285,12 @@ export interface SecurityRouteDeps {
    */
   readonly backendSummary?: () => Promise<PostureBackendSummary>;
   /**
-   * D538 default-off policy source. Production reads the posture sidecar on
+   * Default-off policy source. Production reads the posture sidecar on
    * each request; older test compositions omit it and therefore fail closed.
    */
   readonly getAllowUncontainedHostCommands?: () => boolean;
   /**
-   * D538's bounded, process-local controller. It is supplied only by the
+   * The bounded, process-local controller. It is supplied only by the
    * normal server composition after its authenticated relay registry exists.
    * Tests that do not exercise this feature may omit it; the endpoints then
    * fail closed instead of manufacturing desktop authority.
@@ -326,6 +320,7 @@ export interface UncontainedHostCommandSession extends UncontainedHostCommandsRe
  * an admitted dispatch a stable fence even if the same Human activates again.
  */
 interface ActiveUncontainedHostCommandSession extends UncontainedHostCommandSession {
+  readonly activationId: string;
   readonly abortController: AbortController;
 }
 
@@ -358,7 +353,7 @@ export interface UncontainedHostCommandsControllerDeps {
 }
 
 /**
- * D538's whole activation store. One Human may hold one short-lived entry,
+ * The whole activation store. One Human may hold one short-lived entry,
  * solely in process memory. It deliberately has no persistence, renewal,
  * readmission, folder, profile, ticket, or RBAC-generation state.
  */
@@ -502,6 +497,7 @@ export class UncontainedHostCommandsController {
     readonly eligible: boolean;
     readonly reason: UncontainedHostCommandsReason | null;
     readonly activatedAt: string | null;
+    readonly activationId?: string;
   }> {
     const session = this.#sessions.get(input.userId) ?? null;
     const eligibility = await this.eligibility(input);
@@ -553,7 +549,10 @@ export class UncontainedHostCommandsController {
       }
       return { active: false, eligible: true, reason: "session_binding_mismatch", activatedAt: null };
     }
-    return { active: true, eligible: true, reason: null, activatedAt: session.activatedAt };
+    if (this.#sessions.get(input.userId) !== session || session.abortController.signal.aborted) {
+      return { active: false, eligible: true, reason: "session_inactive", activatedAt: null };
+    }
+    return { active: true, eligible: true, reason: null, activatedAt: session.activatedAt, activationId: session.activationId };
   }
 
   async activate(input: {
@@ -599,8 +598,7 @@ export class UncontainedHostCommandsController {
       return { ok: false, status: 403, reason };
     }
     const previous = this.#sessions.get(input.userId);
-    if (previous !== undefined) {
-      await this.revokeSession({
+    const previousRevoked = previous !== undefined ? this.revokeSession({
         userId: input.userId,
         session: previous,
         kind: "uncontained_host_commands_invalidated",
@@ -609,15 +607,21 @@ export class UncontainedHostCommandsController {
         ip: input.ip,
         userAgent: input.userAgent,
         route: "POST /api/security/uncontained-host-commands/activate",
-      });
-    }
+      }) : undefined;
     const session: ActiveUncontainedHostCommandSession = {
       ...rechecked.binding,
       activatedAt: this.#now().toISOString(),
+      activationId: randomUUID(),
       abortController: new AbortController(),
     };
+    // Replacement is synchronous through the old signal abort and new entry.
+    // Audit latency cannot let another activation be overwritten without revoke.
     this.#sessions.set(input.userId, session);
+    await previousRevoked;
     await this.audit({ kind: "uncontained_host_commands_activated", ...input, binding: session });
+    if (this.#sessions.get(input.userId) !== session || session.abortController.signal.aborted) {
+      return { ok: false, status: 403, reason: "session_inactive" };
+    }
     return { ok: true, session };
   }
 
@@ -647,7 +651,7 @@ export class UncontainedHostCommandsController {
   }
 
   /**
-   * D538's only live lane decision. It deliberately re-runs the same policy,
+   * The only live lane decision. It deliberately re-runs the same policy,
    * protected grant, canonical role floor, live relay binding, and exact
    * in-memory activation check immediately before relay dispatch. The caller's
    * foreground tuple is useful only to name the exact session to compare; it
@@ -668,6 +672,7 @@ export class UncontainedHostCommandsController {
       readonly executionClass: "real_workstation";
       /** Exact process-local activation fence; never sent to a client. */
       readonly activationSignal: AbortSignal;
+      readonly activationId: string;
     }
     | { readonly admitted: false; readonly reason: UncontainedHostCommandsReason }
   > {
@@ -707,17 +712,21 @@ export class UncontainedHostCommandsController {
       route: "relay:dispatch/run_shell",
       binding: session,
     });
+    if (this.#sessions.get(input.userId) !== session || session.abortController.signal.aborted) {
+      return { admitted: false, reason: "session_inactive" };
+    }
     return {
       admitted: true,
       executionClass: "real_workstation",
       activationSignal: session.abortController.signal,
+      activationId: session.activationId,
     };
   }
 
   /**
    * Prepare one event-stable post-commit revoker for a membership removal.
    * Classification is about the exact target membership, not the session or
-   * the rest of the Human's groups: every D538 grant group and every canonical
+   * the rest of the Human's groups: every uncontained grant group and every canonical
    * Superuser-or-above group independently prepares revocation. The closure
    * revokes whichever activation is current after the successful mutation,
    * including one created or replaced while the DB write was in flight. A
@@ -816,7 +825,7 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
   // -------------------------------------------------------------------------
 
   app.get("/api/security/posture", async (request, reply) => {
-    // M052/M055 — `request.sessionUserId` is set by the trust preHandler
+    // `request.sessionUserId` is set by the trust preHandler
     // for Logto-issued JWTs (after JIT user provisioning). Routes used
     // to gate on a local-only `sessionStore.validateSession(token)`
     // lookup, which 401-d every Logto-authenticated request — the
@@ -834,14 +843,8 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
 
     const posture = resolveServerPosture();
 
-    // Capability array for the caller. D060 Sprint 1 G5.5: real
-    // Capability store lookup (was owner-actor heuristic pre-G5.5).
-    // Ship plan §5.3: GET is unrestricted (every authenticated actor
-    // sees their slice), but the UI uses `capabilities` to gate the
-    // mutation affordance. Sprint 3 returns the full cap slug list so
-    // the posture modal can show the caller's governance slice. The
-    // PUT route below performs the manage_server_security gate for
-    // mutation. Keyed on users.id post-M043.
+    // User-scoped capabilities drive mutation affordances. The PUT route
+    // independently requires manage_server_security and PIN verification.
     const capabilities = await getCapabilities(userId);
     const access = resolvePostureAccessSummary(posture);
     const networkPolicy =
@@ -881,11 +884,8 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
       cursor?: string;
     };
   }>("/api/security/audit-log", async (request, reply) => {
-    // M052/M055 — same auth-mode-agnostic gate as GET /posture above.
-    // The `actorRole === "guest"` rejection happens further down with
-    // a 403 (audit_log_forbidden) — preserving the pre-M055 contract
-    // where the unauth path returns 401 and the authed-but-unprivileged
-    // path returns 403.
+    // Unauthenticated callers receive 401; authenticated callers without
+    // audit-log permission receive 403 below.
     if (!request.sessionUserId) {
       return reply.status(401).send({ error: "Authentication required" });
     }
@@ -893,7 +893,7 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
       return reply.status(503).send({ error: "audit_log_unavailable" });
     }
 
-    // M128 P0.2 (B2 fix, 2026-05-28): gate audit-log read on the
+    // Gate audit-log read on the
     // `view_audit_log` capability rather than a role guard. Per
     // permission-model.md §6 grid this cap is held by owner + admin
     // only; superuser / member / contributor / guest are all denied.
@@ -964,7 +964,7 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
   );
 
   // -------------------------------------------------------------------------
-  // M037 — standing command approvals (per-user). The caller manages their
+  // Standing command approvals (per-user). The caller manages their
   // OWN rules; no Capability gate (you can only see/revoke your own grants).
   // Auth: signed-in non-guest, mirroring POST /api/auth/approval-reply.
   // -------------------------------------------------------------------------
@@ -1021,7 +1021,7 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
   );
 
   // -------------------------------------------------------------------------
-  // D538 — bounded, own-PIN uncontained-host-command activation. These routes
+  // Bounded, own-PIN uncontained-host-command activation. These routes
   // own only a process-local session permission; they do not select an
   // execution lane, start a process, or make Current Folder an authority
   // boundary. Electron main supplies the exact relay/session tuple.
@@ -1144,7 +1144,7 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
       deploymentMode !== undefined ||
       securityLevel !== undefined ||
       networkPolicy !== undefined;
-    // Preserve the existing empty-body gate, while a D538-only request is
+    // Preserve the existing empty-body gate, while an uncontained-policy-only request is
     // governed solely by its dedicated management capability.
     const requiredCapabilities = [
       ...(mutatesExistingPosture || allowUncontainedHostCommands === undefined
@@ -1155,7 +1155,7 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
         : []),
     ];
 
-    // 2. Capability check (D060 Sprint 1 G5.5 — real Capability
+    // 2. Capability check (real Capability
     // store lookup, swapped from the owner-actor heuristic). We
     // reject BEFORE touching the body so a non-authorized caller
     // probing the endpoint learns nothing about validation
@@ -1255,12 +1255,8 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
     // brute-force attempts fall into the existing throttle. Every
     // failure path gets a `pin_check_failed` audit row per §5.8.
     //
-    // Keyed on request.sessionUserId (D060 Sprint 1 G5.5 self-review SEC-2
-    // fix + M043 rebase + session-userId threading): PIN must prove
-    // the IDENTITY of the authenticated caller, not the server
-    // owner. M043 moved credentials from actor-keyed to user-keyed.
-    // Non-owner cap holder without their own enrolled PIN
-    // fails-closed on 401 — the owner\u0027s PIN is NOT a master key.
+    // PIN verification is keyed on the authenticated user. A capability
+    // holder must prove their own identity; the owner’s PIN cannot substitute.
     try {
       const valid = await pinProvider.verifyProof(userId, pin);
       if (!valid) {

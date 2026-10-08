@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type {
   BrowserPageReadResult,
   RelayClient,
@@ -93,6 +93,23 @@ function mediaRecord(source: Buffer, audio?: Buffer): MediaSessionRecord {
 }
 
 describe("DesktopRelaySession", () => {
+  test("detaches local execution observation before retiring its host", () => {
+    const session = createSession();
+    let notified = 0;
+    let detached = 0;
+    const subscribe = spyOn(session.localExecution.host, "subscribe").mockImplementation((listener) => {
+      listener();
+      return () => { detached += 1; };
+    });
+    session.attachLocalExecutionObserver(() => { notified += 1; });
+    expect(notified).toBe(1);
+    expect(() => session.attachLocalExecutionObserver(() => {})).toThrow();
+    session.retire(); session.retire();
+    expect(detached).toBe(1);
+    expect(() => session.attachLocalExecutionObserver(() => {})).toThrow("retired");
+    subscribe.mockRestore();
+  });
+
   test("freezes its exact Google OAuth tuple and exposes owned resources read-only", () => {
     const session = createSession();
     const oauth = session.googleOAuthContext;

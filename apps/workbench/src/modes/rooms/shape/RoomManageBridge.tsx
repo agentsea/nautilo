@@ -39,6 +39,9 @@ export function RoomManageBridge(): ReactElement | null {
       open
       onClose={() => setManageRoom(null)}
       viewerCanManageRooms={can("manage_rooms")}
+      viewerSupportsRoomDiscoverability={
+        auth.viewer.features.roomDiscoverability === true
+      }
       onMembershipChanged={() => void refreshRooms()}
     />
   );
