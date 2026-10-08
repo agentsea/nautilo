@@ -191,6 +191,7 @@ export const LATEST_SENTINEL_BEFORE_ID = 2147483647;
 export const LATEST_SENTINEL_BEFORE_AT = "2099-12-31T00:00:00.000Z";
 
 interface StoredToolCall {
+  authorAgentId?: string;
   id?: string;
   name?: string;
   args?: Record<string, unknown>;
@@ -264,6 +265,9 @@ export interface StoredSessionMessageDto {
   content: string;
   toolCalls?: string | null;
   toolName?: string | null;
+  /** Ordinary persisted display correlation, never protected-source authority. */
+  toolCallId?: string;
+  toolStatus?: "success" | "error";
   displayContent?: string;
   createdAt?: string;
   editedAt?: string | null;
@@ -329,6 +333,8 @@ export function projectAuthenticatedRoomHistoryPayload(
     historyUnavailableReason: _historyUnavailableReason,
     authenticatedToolStatus: _authenticatedToolStatus,
     authenticatedToolCallId: _authenticatedToolCallId,
+    toolCallId: _ordinaryToolCallId,
+    toolStatus: _ordinaryToolStatus,
     // Ordinary blob references are not authenticated by the protected text payload.
     attachments: _attachments,
     ...availableRow
@@ -377,21 +383,34 @@ function parseToolCalls(raw: string | null | undefined): StoredToolCall[] {
   }
 }
 
+function displayToolCallId(row: Pick<StoredSessionMessageDto,
+  "authenticatedToolCallId" | "authenticatedToolStatus" | "toolCallId" | "historyUnavailable"
+>): string | undefined {
+  if (row.historyUnavailable === true) return undefined;
+  const id = row.authenticatedToolCallId
+    ?? (row.authenticatedToolStatus === undefined ? row.toolCallId : undefined);
+  return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
 function consumePendingToolCall(
   pending: StoredToolCall[],
-  authenticatedToolCallId?: string,
+  toolCallId?: string,
+  authorAgentId?: string,
+  toolName?: string,
 ): StoredToolCall | undefined {
-  if (authenticatedToolCallId === undefined) return pending.shift();
-  const firstMatch = pending.findIndex((call) => call.id === authenticatedToolCallId);
-  if (firstMatch < 0) return undefined;
-  const matched = pending[firstMatch];
-  // A resumed graph can persist the same logical call more than once before
-  // its one result. Retire every copy so later reuse of that id cannot consume
-  // a stale redacted checkpoint projection.
+  if (toolCallId === undefined) return undefined;
+  const candidates = pending.filter((call) => call.id === toolCallId
+    && (authorAgentId === undefined || call.authorAgentId === authorAgentId));
+  // Same-id resumed rows belong to one author. Cross-Agent duplicates without
+  // a result author cannot establish which call supplied the displayed args.
+  if (new Set(candidates.map((call) => call.authorAgentId)).size > 1) return undefined;
+  const matched = candidates[0];
+  if (matched === undefined) return undefined;
   for (let index = pending.length - 1; index >= 0; index -= 1) {
-    if (pending[index]?.id === authenticatedToolCallId) pending.splice(index, 1);
+    if (pending[index]?.id === toolCallId
+      && pending[index]?.authorAgentId === matched.authorAgentId) pending.splice(index, 1);
   }
-  return matched;
+  return toolName === undefined || matched.name === toolName ? matched : undefined;
 }
 
 function parseCanonicalArgs(raw: unknown): Readonly<
@@ -628,7 +647,7 @@ export function restoreSessionMessages(
       // primitive contract. Preserve page-local tool-call pairing boundaries.
       if (m.role === "user") pendingToolCalls.length = 0;
       else if (m.role === "tool") {
-        consumePendingToolCall(pendingToolCalls, m.authenticatedToolCallId);
+        consumePendingToolCall(pendingToolCalls, displayToolCallId(m), m.authorAgentId, m.toolName ?? undefined);
       }
       continue;
     } else if (m.role === "user") {
@@ -692,7 +711,8 @@ export function restoreSessionMessages(
       const calls = parseToolCalls(m.toolCalls);
       const availablePendingSlots = MAX_PENDING_TOOL_CALLS_PER_PAGE - pendingToolCalls.length;
       if (availablePendingSlots > 0) {
-        pendingToolCalls.push(...calls.filter((call) => call.name !== "skip" && call.name !== "image_assistance").slice(0, availablePendingSlots));
+        pendingToolCalls.push(...calls.filter((call) => call.name !== "skip" && call.name !== "image_assistance").slice(0, availablePendingSlots)
+          .map((call) => ({ ...call, ...(m.authorAgentId === undefined ? {} : { authorAgentId: m.authorAgentId }) })));
       }
       if (m.content.trim() && !calls.some((call) => call.name === "skip")) {
         const custom: Record<string, unknown> = { ...(m.createdAt ? { sentAt: m.createdAt } : {}) };
@@ -754,12 +774,14 @@ export function restoreSessionMessages(
       // Skip calls are never queued for presentation, including when Room
       // history already omitted their result. Do not consume a sibling slot.
       if (storedToolName === "skip") continue;
-      // Consume before every skip so empty/react results cannot leave a stale
-      // call behind. Protected rows use their locally authenticated exact id;
-      // legacy ordinary rows retain the prior FIFO behavior.
+      // Consume only the exact persisted id. Completion order can differ from
+      // declaration order; legacy rows without an id cannot borrow call args.
+      // Protected projection strips ordinary IDs before installing verified ones.
       const call = consumePendingToolCall(
         pendingToolCalls,
-        m.authenticatedToolCallId,
+        displayToolCallId(m),
+        m.authorAgentId,
+        storedToolName,
       );
       if (!m.content.trim()) continue;
       const toolName = storedToolName ?? call?.name ?? "tool result";
@@ -777,11 +799,12 @@ export function restoreSessionMessages(
           custom.historyUnavailableReason = m.historyUnavailableReason;
         }
       }
-      const isError = m.authenticatedToolStatus === "error"
-        || (m.authenticatedToolStatus === "unspecified"
+      const toolStatus = m.authenticatedToolStatus ?? m.toolStatus;
+      const isError = toolStatus === "error"
+        || (toolStatus === "unspecified"
           && toolName === "share_memory"
           && isShareRejection(m.content))
-        || (m.authenticatedToolStatus === undefined
+        || (toolStatus === undefined
           && m.displayContent?.includes("[error]") === true);
       restored.push({
         id: m.id,
@@ -789,7 +812,7 @@ export function restoreSessionMessages(
         content: [
           {
             type: "tool-call" as const,
-            toolCallId: m.authenticatedToolCallId ?? call?.id ?? `restored-${m.id}`,
+            toolCallId: displayToolCallId(m) ?? call?.id ?? `restored-${m.id}`,
             toolName,
             args: (call?.args ?? {}) as Record<string, never>,
             result: restoreToolResultContent(m.content, toolName),

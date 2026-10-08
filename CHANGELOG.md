@@ -11,6 +11,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   from discovery and automatic onboarding. Existing members and explicit
   invitations continue to work normally.
 
+- Reloaded chat history associates parallel tool results with their exact
+  command, including when an approval delays an earlier command. Older results
+  without a saved call identity remain visible without guessed command details.
+
 - Developer Workstation PIN activation shows its pending state and prevents
   duplicate submissions while checking and enabling access.
 

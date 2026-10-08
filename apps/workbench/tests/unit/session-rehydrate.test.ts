@@ -79,7 +79,7 @@ describe("restoreSessionMessages — intentional silence", () => {
       { id: "lookup", name: "lookup", args: { query: "weather" } },
     ]), content: "Staying silent." };
     for (const skipRows of [[], [toolResult("s", "skip", '{"skipped":true}')]]) {
-      expect(restoredToolParts([assistant, ...skipRows, toolResult("result", "lookup", "Sunny")])).toMatchObject([
+      expect(restoredToolParts([assistant, ...skipRows, { ...toolResult("result", "lookup", "Sunny"), toolCallId: "lookup" }])).toMatchObject([
         { type: "tool-call", toolCallId: "lookup", toolName: "lookup", args: { query: "weather" }, result: "Sunny" },
       ]);
     }
@@ -103,7 +103,7 @@ describe("restoreSessionMessages — sealed Computer Use receipt", () => {
     });
     const [message] = restoreSessionMessages([
       { id: "a1", role: "assistant", content: "", toolCalls: JSON.stringify([{ id: "call-1", name: "computer_observe", args: {} }]) },
-      { id: "t1", role: "tool", toolName: "computer_observe", content: receipt, displayContent: "⚙ computer_observe [success]" },
+      { id: "t1", role: "tool", toolCallId: "call-1", toolName: "computer_observe", content: receipt, displayContent: "⚙ computer_observe [success]" },
     ]);
     const part: unknown = Array.isArray(message?.content) ? message.content[0] : undefined;
     expect(part).toMatchObject({
@@ -112,7 +112,7 @@ describe("restoreSessionMessages — sealed Computer Use receipt", () => {
   });
 });
 
-describe("restoreSessionMessages — D426 root summaries", () => {
+describe("restoreSessionMessages — root summaries", () => {
   test("preserves authoritative summary metadata for parent reply affordances", () => {
     const [message] = restoreSessionMessages([
       {
@@ -220,7 +220,7 @@ describe("restoreSessionMessages — durable terminal execution notices", () => 
   });
 });
 
-describe("restoreSessionMessages — D497 historical shell-card fidelity", () => {
+describe("restoreSessionMessages — historical shell-card fidelity", () => {
   function restoredToolCall(messages: Parameters<typeof restoreSessionMessages>[0]) {
     const [message] = restoreSessionMessages(messages);
     const content = firstContentPart(message);
@@ -249,7 +249,7 @@ describe("restoreSessionMessages — D497 historical shell-card fidelity", () =>
           },
         }]),
       },
-      { id: "tool-1", role: "tool", toolName: "run_shell", content: "{\"stdout\":\"\"}" },
+      { id: "tool-1", role: "tool", toolCallId: "shell-current", toolName: "run_shell", content: "{\"stdout\":\"\"}" },
     ]);
 
     expect(call).toMatchObject({
@@ -285,7 +285,7 @@ describe("restoreSessionMessages — D497 historical shell-card fidelity", () =>
           },
         }]),
       },
-      { id: "tool-legacy", role: "tool", toolName: "run_shell", content: "Error: gh exited 1" },
+      { id: "tool-legacy", role: "tool", toolCallId: "shell-legacy", toolName: "run_shell", content: "Error: gh exited 1" },
     ]);
 
     expect(call).toMatchObject({
@@ -319,7 +319,7 @@ describe("restoreSessionMessages — D497 historical shell-card fidelity", () =>
           args: { command: "git log -1" },
         }]),
       },
-      { id: "matched-tool", role: "tool", toolName: "run_shell", content: "ok" },
+      { id: "matched-tool", role: "tool", toolCallId: "later-call", toolName: "run_shell", content: "ok" },
     ]);
 
     const first = firstContentPart(restored[0]);
@@ -358,6 +358,7 @@ describe("restoreSessionMessages — D497 historical shell-card fidelity", () =>
       {
         id: "tool-new",
         role: "tool",
+        toolCallId: "new-call",
         toolName: "run_shell",
         content: "Error: outcome unknown after relay dispatch (disconnect)",
         displayContent: "⚙ run_shell [error]",
@@ -388,7 +389,7 @@ describe("restoreSessionMessages — D497 historical shell-card fidelity", () =>
           args: "not valid JSON",
         }]),
       },
-      { id: "tool-malformed", role: "tool", toolName: "run_shell", content: "Command failed\nsecret output" },
+      { id: "tool-malformed", role: "tool", toolCallId: "shell-malformed", toolName: "run_shell", content: "Command failed\nsecret output" },
     ]);
 
     expect(call).toMatchObject({
@@ -538,6 +539,72 @@ describe("ordinary screenshot history", () => {
     expect(protectedRow.attachments).toBeUndefined();
     for (const candidate of [protectedRow, { ...row, historyUnavailable: true as const }]) {
       expect(restoreSessionMessages([candidate])[0]?.metadata?.custom?.[MESSAGE_ATTACHMENTS_METADATA_KEY]).toBeUndefined();
+    }
+  });
+});
+
+
+describe("ordinary persisted tool-call identity", () => {
+  test("parallel same-name results preserve args when approval pauses the first call", () => {
+    const parts = restoredToolParts([
+      assistantToolCalls("assistant", [
+        { id: "chmod-call", name: "exec_command", args: { cmd: "chmod +x ./fixture" } },
+        { id: "file-call", name: "exec_command", args: { cmd: "file ./fixture" } },
+      ]),
+      { ...toolResult("file-result", "exec_command", "text executable"), toolCallId: "file-call", toolStatus: "success", displayContent: "⚙ exec_command [error]" },
+      { ...toolResult("chmod-result", "exec_command", "permission denied"), toolCallId: "chmod-call", toolStatus: "error" },
+    ]);
+    expect(parts).toMatchObject([
+      { toolCallId: "file-call", args: { cmd: "file ./fixture" }, result: "text executable" },
+      { toolCallId: "chmod-call", args: { cmd: "chmod +x ./fixture" }, result: "permission denied", isError: true },
+    ]);
+    expect(parts[0]).not.toHaveProperty("isError");
+  });
+
+  test("missing and unmatched legacy IDs never consume a pending sibling", () => {
+    const parts = restoredToolParts([
+      assistantToolCalls("assistant", [{ id: "exact", name: "exec_command", args: { cmd: "file ./fixture" } }]),
+      toolResult("legacy", "exec_command", "legacy result"),
+      { ...toolResult("unmatched", "exec_command", "other result"), toolCallId: "unknown" },
+      { ...toolResult("exact-result", "exec_command", "current result"), toolCallId: "exact" },
+    ]);
+    expect(parts).toMatchObject([
+      { toolCallId: "restored-legacy", args: {}, result: "legacy result" },
+      { toolCallId: "unknown", args: {}, result: "other result" },
+      { toolCallId: "exact", args: { cmd: "file ./fixture" } },
+    ]);
+  });
+
+  test("duplicate IDs across Agents require the exact result author", () => {
+    const parts = restoredToolParts([
+      { ...assistantToolCalls("a", [{ id: "same", name: "exec_command", args: { cmd: "first" } }]), authorAgentId: "agent-a" },
+      { ...assistantToolCalls("b", [{ id: "same", name: "exec_command", args: { cmd: "second" } }]), authorAgentId: "agent-b" },
+      { ...toolResult("ambiguous", "exec_command", "unattributed"), toolCallId: "same" },
+      { ...toolResult("result-b", "exec_command", "second result"), toolCallId: "same", authorAgentId: "agent-b" },
+      { ...toolResult("result-a", "exec_command", "first result"), toolCallId: "same", authorAgentId: "agent-a" },
+    ]);
+    expect(parts).toMatchObject([{ args: {} }, { args: { cmd: "second" } }, { args: { cmd: "first" } }]);
+  });
+
+  test("verified protected content cannot borrow ordinary identity or status", () => {
+    const ordinary = { id: "result", role: "tool", content: "ordinary", toolName: "exec_command",
+      toolCallId: "forged", toolStatus: "error" as const };
+    for (const sensitiveMetadata of [undefined, { toolCallId: "verified", toolStatus: "success" }]) {
+      const projected = projectAuthenticatedRoomHistoryPayload(ordinary, {
+        role: "tool", toolName: "exec_command", content: "protected",
+        ...(sensitiveMetadata === undefined ? {} : { sensitiveMetadata }),
+      });
+      expect(projected).not.toHaveProperty("toolCallId");
+      expect(projected).not.toHaveProperty("toolStatus");
+      const parts = restoredToolParts([
+        assistantToolCalls("assistant", [
+          { id: "forged", name: "exec_command", args: { cmd: "wrong" } },
+          { id: "verified", name: "exec_command", args: { cmd: "right" } },
+        ]), projected,
+      ]);
+      expect(parts[0]).toMatchObject({ args: sensitiveMetadata ? { cmd: "right" } : {}, result: "protected" });
+      expect(parts[0]).not.toHaveProperty("isError");
+      expect(JSON.stringify(parts)).not.toContain("wrong");
     }
   });
 });

@@ -20,6 +20,8 @@ type TestMessage = {
   content: string | null;
   toolCalls: string | null;
   toolName: string | null;
+  toolCallId?: string;
+  toolStatus?: "success" | "error";
   createdAt: Date;
   editedAt?: Date | null;
   editRevision?: number;
@@ -1172,4 +1174,37 @@ describe("Chats search route", () => {
 afterAll(() => {
   setBootstrapOwnerId(PREV_OWNER_ENV);
   setBootstrapDefaultAgentId(PREV_AGENT_ENV);
+});
+
+
+test("Session, Room and around HTTP retain exact closed tool presentation", async () => {
+  const rows: TestMessage[] = [
+    { ...makeMessage("1", "assistant"), toolCallId: "not-a-tool", toolStatus: "error" },
+    { ...makeMessage("2", "file output"), role: "tool", toolName: "exec_command", toolCallId: "file-call", toolStatus: "success" },
+    { ...makeMessage("3", "chmod refused"), role: "tool", toolName: "exec_command", toolCallId: "chmod-call", toolStatus: "error" },
+  ];
+  getLatestSession.mockResolvedValue(makeSession());
+  getLatestSessionMessages.mockResolvedValue(rows);
+  getSessionMessages.mockResolvedValue(rows);
+  getRoomMessagesAcrossMemberSessions.mockResolvedValue({ messages: rows, hasMoreBefore: false });
+  getRoomMessagesAround.mockResolvedValue({ messages: rows,
+    target: { createdAt: rows[1]!.createdAt, messageId: 2 }, includedToolCallCompanion: true,
+    hasOlder: false, hasNewer: false });
+  const app = makeApp("owner", "owner-user");
+  try {
+    for (const url of [
+      "/api/sessions/latest?limit=3", "/api/sessions/latest?limit=3&offset=0",
+      `/api/rooms/${ROOM_ID}/messages?beforeId=9&beforeCreatedAt=2026-01-01T00:00:09.000Z&limit=3`,
+      `/api/rooms/${ROOM_ID}/messages/2/around?limit=3`,
+    ]) {
+      const result = await app.inject({ method: "GET", url });
+      expect(result.statusCode).toBe(200);
+      const messages = result.json<{ messages: Record<string, unknown>[] }>().messages;
+      expect(messages[0]).not.toHaveProperty("toolCallId");
+      expect(messages[0]).not.toHaveProperty("toolStatus");
+      expect(messages[1]).toMatchObject({ toolCallId: "file-call", toolStatus: "success" });
+      expect(messages[2]).toMatchObject({ toolCallId: "chmod-call", toolStatus: "error" });
+      expect(messages.every((row) => !("metadata" in row))).toBe(true);
+    }
+  } finally { await app.close(); }
 });
