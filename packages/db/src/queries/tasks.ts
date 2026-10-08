@@ -1,20 +1,17 @@
+import { createHash } from "node:crypto";
 import {
   parseTaskFundingBinding,
+  parseLocalExecutionDelegation,
   readTaskPreparation,
   type TaskFundingBinding,
   type TaskFundingFailureCode,
 } from "@nautilo/types";
 /**
- * M141 — Task primitive data-access layer (foundation).
+ * Task data access, observer claims, and lifecycle status transitions.
+ * Observer and dispatch orchestration belong to Runtime.
  *
- * CRUD + observer-claim helpers + lifecycle status setters for the
- * `tasks` / `task_runs` tables. This module is BEHAVIOR-FREE substrate:
- * nothing calls it yet. Phase 2 (the `TaskObserver` engine) wires these
- * helpers to dispatch; do NOT add observer/dispatch logic here.
- *
- * Every helper takes an explicit `db` handle as its first argument (so
- * Phase 2 can pass either a pooled `DirectDatabase` or a transaction-
- * scoped handle) rather than reaching for a module-level singleton.
+ * Every helper takes an explicit database handle, allowing either a pooled
+ * DirectDatabase or a transaction-scoped handle. No singleton is required.
  */
 import { and, arrayContains, asc, desc, eq, exists, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, notExists, notInArray, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -66,13 +63,13 @@ export type WriterReviewAwaitingMarker = Readonly<{
   proposalId: string;
   /** Non-authorizing canonical write receipt retained for exact retry fencing. */
   acceptedResultRevision?: unknown;
-  /** Exact non-authorizing D448 operation reserved before canonical Writer save. */
+  /** Exact non-authorizing operation reserved before canonical Writer save. */
   pendingWorkspaceOperationId?: string;
-  /** Stable D448 correlation; retained only while its canonical result is unknown. */
+  /** Stable operation correlation; retained only while its canonical result is unknown. */
   pendingWorkspaceClientMutationId?: string;
   /** Internal Artifact row identity, retained only while outcome is unknown. */
   pendingWorkspaceArtifactId?: string;
-  /** D448 lineage retained with an accepted result after the reservation settles. */
+  /** Operation lineage retained with an accepted result after the reservation settles. */
   acceptedWorkspaceOperationId?: string;
   acceptedWorkspaceClientMutationId?: string;
   acceptedWorkspaceArtifactId?: string;
@@ -317,6 +314,210 @@ export async function listStoppableTasksForOwnerRoom(
     .orderBy(asc(tasks.createdAt), asc(tasks.id));
 }
 
+const TASK_DEFINITION_KEYS: readonly (keyof Task)[] = ["ownerId", "requestorId", "agentId", "prompt", "expectedOutput",
+    "preset", "scheduleKind", "runAt", "cron", "timezone", "catchup", "callingRoomId", "targetChat", "targetChatHandle",
+    "targetRoomId", "targetUserIds", "resultDelivery", "useScope", "scopeId", "toolsMode", "toolsWhitelist", "awaitResponse",
+    "selectionProfile", "selectionSpec", "requestedModelId", "fundingMode", "timeLimitSeconds", "parentTaskId", "depth",
+    "metadata", "contentRepresentation", "contentNamespaceId", "contentRevision", "cryptoObjectId"];
+
+// Crypto access can change without a definition edit. Cache writes must still
+// match the exact protected source observed before execution setup.
+const TASK_EXECUTION_SOURCE_KEYS: readonly (keyof Task)[] = [
+  ...TASK_DEFINITION_KEYS, "cryptoAccessRevision", "cryptoRequiredNamespaceFingerprint", "cryptoMappingState",
+];
+
+/** Durable pre-model wait; the recorded phase preserves saved graph identity. */
+export const TASK_LOCAL_EXECUTION_OFFLINE_WAIT = "TASK_LOCAL_EXECUTION_OFFLINE_WAIT";
+export const TASK_LOCAL_EXECUTION_OFFLINE_TEXT = "Waiting for the original Mac. Reconnect it with the same pairing and project access to continue.";
+const TASK_LOCAL_EXECUTION_MANUAL_PAUSE_TEXT = "Paused by you. Resume waits for the original Mac.";
+
+function canonicalOfflineFact(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Uint8Array) return Array.from(value);
+  if (Array.isArray(value)) return value.map(canonicalOfflineFact);
+  if (value !== null && typeof value === "object") return Object.fromEntries(
+    Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, item]) => [key, canonicalOfflineFact(item)]),
+  );
+  return value;
+}
+
+/** The digest records the original definition, not authority or plaintext. */
+export function taskLocalExecutionOfflineMarker(task: Task, phase: "cold" | "checkpoint" = "cold"): string {
+  const facts = Object.fromEntries([...TASK_EXECUTION_SOURCE_KEYS, "localExecutionDelegation" as const]
+    .map(key => [key, task[key]]));
+  return `${TASK_LOCAL_EXECUTION_OFFLINE_WAIT}:${phase}:${createHash("sha256").update(JSON.stringify(canonicalOfflineFact(facts))).digest("hex")}`;
+}
+
+function untouchedOfflineRun(run: TaskRun): boolean {
+  return run.resultText === null && run.completedAt === null && run.resultRepresentation === "ordinary"
+    && run.resultRevision === 0 && run.resultCryptoObjectId === null;
+}
+export function taskLocalExecutionOfflinePhase(task: Task, run: TaskRun): "cold" | "checkpoint" | null {
+  if (!parseLocalExecutionDelegation(task.localExecutionDelegation) || run.taskId !== task.id || run.status !== "paused" || !untouchedOfflineRun(run)) return null;
+  for (const phase of ["cold", "checkpoint"] as const) {
+    if (run.lastError === taskLocalExecutionOfflineMarker(task, phase)) return phase;
+  }
+  return null;
+}
+export function isTaskLocalExecutionOfflineWait(task: Task, run: TaskRun): boolean {
+  return taskLocalExecutionOfflinePhase(task, run) !== null;
+}
+
+function exactOfflineTaskPredicate(task: Task) {
+  const columns = getTableColumns(tasks);
+  return and(eq(tasks.id, task.id), eq(tasks.status, task.status),
+    task.lastError === null ? isNull(tasks.lastError) : eq(tasks.lastError, task.lastError),
+    task.fireLockId === null ? isNull(tasks.fireLockId) : eq(tasks.fireLockId, task.fireLockId),
+    task.localExecutionDelegation === null ? isNull(tasks.localExecutionDelegation) : eq(tasks.localExecutionDelegation, task.localExecutionDelegation),
+    ...TASK_EXECUTION_SOURCE_KEYS.map(key => task[key] === null ? isNull(columns[key]) : eq(columns[key], task[key])));
+}
+function exactOfflineRunPredicate(run: TaskRun) {
+  return and(eq(taskRuns.id, run.id), eq(taskRuns.taskId, run.taskId), eq(taskRuns.status, run.status),
+    eq(taskRuns.graphThreadId, run.graphThreadId),
+    run.modelId === null ? isNull(taskRuns.modelId) : eq(taskRuns.modelId, run.modelId),
+    run.jobId === null ? isNull(taskRuns.jobId) : eq(taskRuns.jobId, run.jobId),
+    run.lastError === null ? isNull(taskRuns.lastError) : eq(taskRuns.lastError, run.lastError),
+    run.fundingBinding === null ? isNull(taskRuns.fundingBinding) : eq(taskRuns.fundingBinding, run.fundingBinding),
+    run.fundingPredecessorRunId === null ? isNull(taskRuns.fundingPredecessorRunId) : eq(taskRuns.fundingPredecessorRunId, run.fundingPredecessorRunId),
+    isNull(taskRuns.resultText), isNull(taskRuns.completedAt), eq(taskRuns.resultRepresentation, "ordinary"),
+    eq(taskRuns.resultRevision, 0), isNull(taskRuns.resultCryptoObjectId));
+}
+async function lockOfflinePair(db: Pick<DirectDatabase, "select">, task: Task, run: TaskRun) {
+  const [current] = await db.select().from(tasks).where(exactOfflineTaskPredicate(task)).limit(1).for("update");
+  if (!current) return false;
+  const [latest] = await db.select().from(taskRuns).where(eq(taskRuns.taskId, task.id))
+    .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id)).limit(1).for("update");
+  if (latest?.id !== run.id) return false;
+  const [exact] = await db.select().from(taskRuns).where(exactOfflineRunPredicate(run)).limit(1).for("update");
+  return Boolean(exact);
+}
+
+export async function parkTaskLocalExecutionOffline(db: DirectDatabase, input: { task: Task; run: TaskRun; jobId: string; phase: "cold" | "checkpoint" }): Promise<boolean> {
+  const { task, run } = input;
+  if (!["cold", "checkpoint"].includes(input.phase) || !parseLocalExecutionDelegation(task.localExecutionDelegation) || run.taskId !== task.id || run.status !== "running" || run.jobId !== input.jobId
+    || run.lastError !== null || !untouchedOfflineRun(run)
+    || !(task.status === "running" || task.status === "pending" && task.scheduleKind === "cron")) return false;
+  return db.transaction(async tx => {
+    if (!await lockOfflinePair(tx, task, run)) return false;
+    await tx.update(taskRuns).set({ status: "paused", lastError: taskLocalExecutionOfflineMarker(task, input.phase) }).where(eq(taskRuns.id, run.id));
+    await tx.update(tasks).set({ status: "paused", lastError: TASK_LOCAL_EXECUTION_OFFLINE_TEXT,
+      fireLockId: null, fireLockedAt: null, updatedAt: new Date() }).where(eq(tasks.id, task.id));
+    return true;
+  });
+}
+
+/** Existing observer pagination; the caller supplies its existing batch size. */
+export async function listTaskLocalExecutionOfflineWaits(db: DirectDatabase, input: { limit: number; afterTaskId?: string }) {
+  return db.select({ task: tasks, run: taskRuns }).from(tasks).innerJoin(taskRuns, eq(taskRuns.taskId, tasks.id))
+    .where(and(eq(tasks.status, "paused"), eq(tasks.lastError, TASK_LOCAL_EXECUTION_OFFLINE_TEXT),
+      eq(taskRuns.status, "paused"), sql`${taskRuns.lastError} LIKE ${`${TASK_LOCAL_EXECUTION_OFFLINE_WAIT}:%`}`,
+      // Filter before pagination: a historical paused occurrence cannot fill
+      // this Task's page or masquerade as the current offline wait.
+      notExists(db.select({ id: taskRunOrderReference.id }).from(taskRunOrderReference).where(and(
+        eq(taskRunOrderReference.taskId, taskRuns.taskId),
+        or(gt(taskRunOrderReference.startedAt, taskRuns.startedAt), and(
+          eq(taskRunOrderReference.startedAt, taskRuns.startedAt), gt(taskRunOrderReference.id, taskRuns.id))),
+      ))),
+      input.afterTaskId ? gt(tasks.id, input.afterTaskId) : undefined))
+    .orderBy(asc(tasks.id)).limit(input.limit);
+}
+
+/** Fresh source and exact target readiness precede this non-authorizing CAS. */
+export async function rearmTaskLocalExecutionOffline(db: DirectDatabase, input: { task: Task; run: TaskRun }): Promise<boolean> {
+  const { task, run } = input;
+  if (task.status !== "paused" || task.lastError !== TASK_LOCAL_EXECUTION_OFFLINE_TEXT || !isTaskLocalExecutionOfflineWait(task, run)) return false;
+  return db.transaction(async tx => {
+    if (!await lockOfflinePair(tx, task, run)) return false;
+    await tx.update(tasks).set({ status: "pending", nextFireAt: new Date(), fireLockId: null, fireLockedAt: null,
+      updatedAt: new Date() }).where(eq(tasks.id, task.id));
+    return true;
+  });
+}
+
+/** Reclaim the original Run; its recorded phase determines saved-graph resumption. */
+export async function claimTaskLocalExecutionOfflineRun(db: DirectDatabase, input: { task: Task; run: TaskRun; fireLockId: string | null }): Promise<TaskRun | undefined> {
+  const { task, run } = input;
+  if (task.status !== "pending" || task.fireLockId !== input.fireLockId || !input.fireLockId
+    || !isTaskLocalExecutionOfflineWait(task, run)) return undefined;
+  return db.transaction(async tx => {
+    if (!await lockOfflinePair(tx, task, run)) return undefined;
+    const [resumed] = await tx.update(taskRuns).set({ status: "running", lastError: null, jobId: null }).where(eq(taskRuns.id, run.id)).returning();
+    await tx.update(tasks).set({ status: "running", lastError: null, updatedAt: new Date() }).where(eq(tasks.id, task.id));
+    return resumed;
+  });
+}
+
+/** Definition edits invalidate saved local execution consent in the same write.
+ * Scheduler/lifecycle bookkeeping alone does not alter the definition. */
+export const TASK_LOCAL_EXECUTION_RECREATE_TEXT = "Project access was removed by a Task edit. Recreate this Task from its original chat on the intended Mac.";
+
+export function taskRequiresLocalExecutionRecapture(task: Pick<Task, "localExecutionDelegation" | "lastError">): boolean {
+  return task.localExecutionDelegation === null && task.lastError === TASK_LOCAL_EXECUTION_RECREATE_TEXT;
+}
+
+function excludesLocalExecutionRecapture() {
+  return sql`NOT (${tasks.localExecutionDelegation} IS NULL AND ${tasks.lastError} IS NOT DISTINCT FROM ${TASK_LOCAL_EXECUTION_RECREATE_TEXT})`;
+}
+
+/** SQL evaluates the old row, so consent removal and its repair state cannot race. */
+export function taskLocalExecutionDefinitionInvalidationPatch(fallback: Partial<NewTask> = {}) {
+  const repair = sql`(${tasks.localExecutionDelegation} IS NOT NULL OR ${tasks.lastError} IS NOT DISTINCT FROM ${TASK_LOCAL_EXECUTION_RECREATE_TEXT}) AND ${tasks.status} NOT IN ('completed', 'cancelled', 'errored')`;
+  const prior = <Key extends keyof NewTask>(key: Key) => Object.prototype.hasOwnProperty.call(fallback, key)
+    ? sql.param(fallback[key], getTableColumns(tasks)[key]) : getTableColumns(tasks)[key];
+  return {
+    localExecutionDelegation: null,
+    status: sql<TaskStatus>`CASE WHEN ${repair} THEN 'paused' ELSE ${prior("status")} END`,
+    lastError: sql<string | null>`CASE WHEN ${repair} THEN ${TASK_LOCAL_EXECUTION_RECREATE_TEXT} ELSE ${prior("lastError")} END`,
+    fireLockId: sql<string | null>`CASE WHEN ${repair} THEN NULL ELSE ${prior("fireLockId")} END`,
+    fireLockedAt: sql<Date | null>`CASE WHEN ${repair} THEN NULL ELSE ${prior("fireLockedAt")} END`,
+  };
+}
+
+function isDefinitionMutation(patch: Partial<NewTask>): boolean {
+  return Object.prototype.hasOwnProperty.call(patch, "localExecutionDelegation")
+    || TASK_DEFINITION_KEYS.some(key => Object.prototype.hasOwnProperty.call(patch, key));
+}
+function taskMutationPatch(patch: Partial<NewTask>) {
+  if (Object.prototype.hasOwnProperty.call(patch, "localExecutionDelegation")
+    && patch.localExecutionDelegation !== null) {
+    throw new TypeError("Task updates cannot author local execution delegation");
+  }
+  return { ...patch, ...(isDefinitionMutation(patch) ? taskLocalExecutionDefinitionInvalidationPatch(patch) : {}) };
+}
+
+/** The exact old worker can settle, but cannot publish against removed consent. */
+async function cancelTaskRunForLocalExecutionRecapture(db: Pick<DirectDatabase, "update">, run: TaskRun): Promise<TaskRun> {
+  if (TERMINAL_TASK_RUN_STATUSES.includes(run.status as (typeof TERMINAL_TASK_RUN_STATUSES)[number])) return run;
+  const [cancelled] = await db.update(taskRuns).set({ status: "cancelled", lastError: TASK_LOCAL_EXECUTION_RECREATE_TEXT,
+    completedAt: new Date() }).where(eq(taskRuns.id, run.id)).returning();
+  if (!cancelled) throw new Error("Task recapture cancellation lost locked Run");
+  return cancelled;
+}
+
+/** Publish an interrupt only when the same current Run still owns the Task. */
+export async function markTaskAwaitingIfCurrentRun(db: DirectDatabase, input: { taskId: string; taskRunId: string }) {
+  return db.transaction(async tx => {
+    const [task] = await tx.select().from(tasks).where(eq(tasks.id, input.taskId)).limit(1).for("update");
+    const [run] = await tx.select().from(taskRuns).where(and(eq(taskRuns.id, input.taskRunId),
+      eq(taskRuns.taskId, input.taskId))).limit(1).for("update");
+    if (!task || !run) return { task, run, transitioned: false };
+    if (taskRequiresLocalExecutionRecapture(task)) {
+      return { task, run: await cancelTaskRunForLocalExecutionRecapture(tx, run), transitioned: false };
+    }
+    if (run.status !== "running" || !(task.status === "running" || task.status === "pending" && task.scheduleKind === "cron")) {
+      return { task, run, transitioned: false };
+    }
+    const [latest] = await tx.select({ id: taskRuns.id }).from(taskRuns).where(eq(taskRuns.taskId, task.id))
+      .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id)).limit(1).for("update");
+    if (latest?.id !== run.id) return { task, run, transitioned: false };
+    const [awaitingRun] = await tx.update(taskRuns).set({ status: "awaiting" }).where(eq(taskRuns.id, run.id)).returning();
+    const [awaitingTask] = await tx.update(tasks).set({ status: "awaiting", updatedAt: new Date() }).where(eq(tasks.id, task.id)).returning();
+    if (!awaitingTask || !awaitingRun) throw new Error("Task interrupt lost locked pair");
+    return { task: awaitingTask, run: awaitingRun, transitioned: true };
+  });
+}
+
 export async function updateTask(
   db: DirectDatabase,
   id: string,
@@ -324,9 +525,40 @@ export async function updateTask(
 ): Promise<Task | undefined> {
   const [row] = await db
     .update(tasks)
-    .set({ ...patch, updatedAt: new Date() })
-    .where(eq(tasks.id, id))
+    .set({ ...taskMutationPatch(patch), updatedAt: new Date() })
+    .where(and(eq(tasks.id, id), isDefinitionMutation(patch) || patch.status === "cancelled" ? undefined : excludesLocalExecutionRecapture()))
     .returning();
+  return row;
+}
+
+/** Internal execution caches may advance only against the unchanged admitted
+ * definition. External definition updates invalidate saved consent. */
+export async function memoizeTaskExecutionCoordinates(
+  db: DirectDatabase,
+  observed: Task,
+  patch: Partial<Pick<Task, "targetRoomId" | "targetUserIds" | "scopeId">>,
+): Promise<Task> {
+  const keys = Object.keys(patch);
+  if (keys.length === 0 || keys.some(key => !["targetRoomId", "targetUserIds", "scopeId"].includes(key))) {
+    throw new TypeError("Invalid Task execution cache update");
+  }
+  const columns = getTableColumns(tasks);
+  const matches = TASK_EXECUTION_SOURCE_KEYS.map(key => {
+    const value = observed[key];
+    const original = value === null ? isNull(columns[key]) : eq(columns[key], value);
+    if (key === "targetRoomId" || key === "targetUserIds" || key === "scopeId") {
+      const next = patch[key];
+      return next === undefined ? original : or(original, next === null ? isNull(columns[key]) : eq(columns[key], next));
+    }
+    return original;
+  });
+  const [row] = await db.update(tasks).set({ ...patch, updatedAt: new Date() }).where(and(
+    eq(tasks.id, observed.id),
+    observed.localExecutionDelegation === null ? isNull(tasks.localExecutionDelegation)
+      : eq(tasks.localExecutionDelegation, observed.localExecutionDelegation),
+    ...matches,
+  )).returning();
+  if (!row) throw new Error("Task definition changed during execution setup");
   return row;
 }
 
@@ -350,13 +582,14 @@ export async function updateTaskIfCurrent(
 ): Promise<Task | undefined> {
   const [row] = await db
     .update(tasks)
-    .set({ ...patch, updatedAt: new Date() })
+    .set({ ...taskMutationPatch(patch), updatedAt: new Date() })
     .where(and(
       eq(tasks.id, input.id),
       eq(tasks.ownerId, input.ownerId),
       eq(tasks.status, input.expectedStatus),
       sql`${tasks}.xmin::text = ${input.expectedMutationVersion}`,
       eq(tasks.contentRevision, input.expectedContentRevision),
+      isDefinitionMutation(patch) || patch.status === "cancelled" ? undefined : excludesLocalExecutionRecapture(),
     ))
     .returning();
   return row;
@@ -396,7 +629,7 @@ export async function getTaskRunForTask(
 }
 
 /**
- * M152 — the `model_id` of each task's MOST RECENT run, for a set of task ids.
+ * The `model_id` of each task's MOST RECENT run, for a set of task ids.
  * Used by list surfaces (`task list`, `GET /api/tasks`) to show which model a
  * task actually ran on without an N+1 per-task fetch. Returns a Map keyed by
  * `taskId`; a task with no runs (or a run with a null model) is simply absent.
@@ -421,7 +654,7 @@ export async function getLatestRunModelByTask(
 }
 
 /**
- * D307 — batched `profiles.name` lookup for a set of agent ids (one query).
+ * Batched `profiles.name` lookup for a set of agent ids (one query).
  * Used by `GET /api/tasks` to populate `TaskSummary.agentName` without N+1.
  */
 export async function getAgentDisplayNamesByAgentId(
@@ -458,7 +691,7 @@ export async function getOwnerAgentDisplayNamesByAgentId(
 }
 
 /**
- * M147 (R2) — the newest still-`running` run for a task that has a linked
+ * The newest still-`running` run for a task that has a linked
  * `jobId` (the live abort target for pause). Stop uses the transactional
  * terminal transition below because it must also cancel a durable null-job
  * serialized run.
@@ -495,7 +728,16 @@ export async function transitionTaskLifecyclePaused(
   return db.transaction(async (tx) => {
     const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).limit(1).for("update");
     if (!task) return { task, run: undefined, transitioned: false, outcome: "not_found" };
-    if (task.status === "paused") return { task, run: undefined, transitioned: false, outcome: "already_paused" };
+    if (task.status === "paused") {
+      // Explicit Pause disables automatic reconnect, while preserving the
+      // original Run for a later explicit Resume.
+      if (task.lastError === TASK_LOCAL_EXECUTION_OFFLINE_TEXT) {
+        const [held] = await tx.update(tasks).set({ lastError: TASK_LOCAL_EXECUTION_MANUAL_PAUSE_TEXT,
+          updatedAt: new Date() }).where(eq(tasks.id, task.id)).returning();
+        return { task: held ?? task, run: undefined, transitioned: false, outcome: "already_paused" };
+      }
+      return { task, run: undefined, transitioned: false, outcome: "already_paused" };
+    }
     if (TERMINAL_TASK_STATUSES.includes(task.status as (typeof TERMINAL_TASK_STATUSES)[number])) {
       return { task, run: undefined, transitioned: false, outcome: "task_terminal" };
     }
@@ -647,6 +889,13 @@ export async function transitionTaskLifecycleTerminal(
       };
     }
 
+    // Old workers cannot terminalize a definition whose project consent was removed.
+    // Human Stop has no runId and remains available.
+    if (input.runId && taskRequiresLocalExecutionRecapture(task)) {
+      return { task, run: run ? await cancelTaskRunForLocalExecutionRecapture(tx, run) : run,
+        transitioned: false, outcome: "authority_changed" };
+    }
+
     if (input.requireRunningPair && (task.status !== "running" || run?.status !== "running")) {
       return { task, run, transitioned: false, outcome: "not_running" };
     }
@@ -696,7 +945,7 @@ export async function transitionTaskLifecycleTerminal(
 }
 
 /**
- * D420 (Wave 2 task 2.2.2) — payload-free executable Task aggregate used by
+ * Payload-free executable Task aggregate used by
  * the maintenance operator drain.
  *
  * `runningTaskRuns` counts every durable `task_runs.status = 'running'`
@@ -740,7 +989,7 @@ export async function countActiveTaskWorkWith(
 }
 
 /**
- * M147 (R4) — the run to RESUME on an unpause re-dispatch. Returns the task's
+ * The run to RESUME on an unpause re-dispatch. Returns the task's
  * newest run, but ONLY if it is `paused`; supplies the `graphThreadId` the
  * resume must REUSE so the preserved LangGraph checkpoint matches (rather than
  * minting a fresh orphan thread). Returns `undefined` when the newest run is
@@ -761,7 +1010,7 @@ export async function getLatestResumableTaskRun(
 }
 
 /**
- * M153 (R5) — an in-flight artifact-originated wake for coalescing. Returns a
+ * An in-flight artifact-originated wake for coalescing. Returns a
  * `preset='ping'` task owned by `(ownerId, agentId)` whose `metadata.artifactId`
  * matches and whose status is still `pending` or `running`.
  */
@@ -786,7 +1035,7 @@ export async function findOpenPingTask(
 }
 
 /**
- * M151 (Phase 7a) — the newest `awaiting` task whose run is parked on this
+ * The newest `awaiting` task whose run is parked on this
  * room, when `fromUserId` is in its await set. Returns the task + the parked
  * run's `graphThreadId` (the checkpoint to resume). Owner-only enforcement is
  * the caller's job (the reply hook only resumes a task the replying human can
@@ -880,7 +1129,7 @@ export type ReserveTaskWriterReviewWorkspaceOperationResult =
   | { status: "not_found" | "stale" | "conflict" };
 
 /**
- * Persist an exact D448 operation identity before Writer invokes its one
+ * Persist an exact operation identity before Writer invokes its one
  * canonical Artifact writer. This is recovery correlation only: it contains
  * no live capability, path, document bytes, or authority.
  */
@@ -939,7 +1188,7 @@ export async function reserveTaskWriterReviewWorkspaceOperation(
   });
 }
 
-/** Clear an uncommitted D448 reservation after a definite canonical-save failure. */
+/** Clear an uncommitted reservation after a definite canonical-save failure. */
 export async function releaseTaskWriterReviewWorkspaceOperation(
   db: DirectDatabase,
   input: {
@@ -1404,7 +1653,7 @@ export async function terminalizeTaskWriterReviewVerificationLost(
 }
 
 /**
- * M164 — the awaiting task + run for an approval/PIN/identity resume, matched by
+ * The awaiting task + run for an approval/PIN/identity resume, matched by
  * `taskId` AND the parked run's `graphThreadId`. Returns the pair ONLY when BOTH
  * the task and its run are still `awaiting` (fail-closed: a run that already
  * completed / cancelled / errored is not resumable). Owner-only authorization is
@@ -1510,6 +1759,7 @@ export async function repairTaskContentAccessRecovery(db: DirectDatabase, input:
 export async function listAwaitingTaskRunsForOwner(
   db: DirectDatabase,
   ownerId: string,
+  options?: { approvalRecipient: true },
 ): Promise<Array<{ task: Task; run: TaskRun }>> {
   return db
     .selectDistinctOn([taskRuns.taskId], { task: tasks, run: taskRuns })
@@ -1517,7 +1767,10 @@ export async function listAwaitingTaskRunsForOwner(
     .innerJoin(taskRuns, eq(taskRuns.taskId, tasks.id))
     .where(
       and(
-        eq(tasks.ownerId, ownerId),
+        options?.approvalRecipient
+          ? or(and(isNull(tasks.localExecutionDelegation), eq(tasks.ownerId, ownerId)),
+            and(isNotNull(tasks.localExecutionDelegation), eq(tasks.requestorId, ownerId)))
+          : eq(tasks.ownerId, ownerId),
         eq(tasks.status, "awaiting"),
         eq(taskRuns.status, "awaiting"),
         excludesWriterReviewAwaitingPredicate(),
@@ -1527,7 +1780,7 @@ export async function listAwaitingTaskRunsForOwner(
 }
 
 /**
- * M147 (R5) — the time-limit watchdog scan. Returns every `running` task with
+ * The time-limit watchdog scan. Returns every `running` task with
  * a non-null `time_limit_seconds` whose active (running, job-linked) run has
  * been executing longer than its budget (`started_at + time_limit_seconds <
  * now`). The observer pauses each one via `pauseTask`.
@@ -4155,7 +4408,7 @@ export interface AuthorizationPauseTransition {
 }
 
 /**
- * M254 R6 — pause only the exact pending Task claim whose requestor no longer
+ * Pause only the exact pending Task claim whose requestor no longer
  * has Agent-invocation authority. The fire-lock predicate prevents a stale
  * observer from pausing a row that was unpaused, stopped, or reclaimed after
  * the observer read it.
@@ -4860,7 +5113,7 @@ export async function recordTaskWakeFundingFailure(
 }
 
 /**
- * M254 R7/R8 — authorization-pause an exact parked Task checkpoint. Both the
+ * Authorization-pause an exact parked Task checkpoint. Both the
  * Task and TaskRun are locked and matched to their awaiting state and durable
  * graph identity before either row changes, so a stale response cannot strand
  * or overwrite a newer run.
@@ -4949,7 +5202,7 @@ export async function rescheduleCron(
       status: "pending",
       updatedAt: now,
     })
-    .where(eq(tasks.id, id));
+    .where(and(eq(tasks.id, id), excludesLocalExecutionRecapture()));
 }
 
 // --- Lifecycle status setters ------------------------------------------
@@ -4963,7 +5216,7 @@ async function setTaskStatus(
   await db
     .update(tasks)
     .set({ status, ...extra, updatedAt: new Date() })
-    .where(eq(tasks.id, id));
+    .where(and(eq(tasks.id, id), status === "cancelled" ? undefined : excludesLocalExecutionRecapture()));
 }
 
 export function markTaskRunning(db: DirectDatabase, id: string): Promise<void> {

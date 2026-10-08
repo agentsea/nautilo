@@ -1,3 +1,4 @@
+import { getCurrentLocalExecutionDelegation } from "../runtime/local-execution-delegation";
 import { causalHumanForExecution } from "../runtime/causal-human-context";
 import { deepResearchReturnContextForState } from "../runtime/deep-research-return-context";
 import { assertResearchDesktopAvailable } from "../tools/invocation-service";
@@ -616,19 +617,30 @@ export async function preModelNode(
         buildRuntimeCapabilityTokens(relayRegistry, state.userId, state.agentId),
       );
   const executionHuman = causalHumanForExecution(state.causalHumanUserId) || state.verifiedOrdinaryOrigin?.userId || "";
+  const delegatedPort = getCurrentLocalExecutionDelegation();
+  let delegatedRelayId: string | undefined;
+  if (state.trustedExecutionEntrypoint === "background.task" && delegatedPort
+    && delegatedPort.taskId === state.currentTaskId && delegatedPort.taskRunId === state.currentTaskRunId) {
+    try { delegatedRelayId = await delegatedPort.withAdmission("read", ({ delegation }) => Promise.resolve(
+      delegation.humanUserId === executionHuman && delegation.agentId === state.agentId
+        && relayRegistry?.getPairingGeneration?.(delegation.target.relayId) === delegation.target.pairingGeneration
+        ? delegation.target.relayId : undefined)); } catch { /* Current source denial keeps local tools unavailable. */ }
+  }
   const exactExecutionCapabilities = buildRuntimeCapabilityTokens(relayRegistry, executionHuman, state.agentId,
-    state.verifiedOrdinaryOrigin?.kind === "local_electron" && state.verifiedOrdinaryOrigin.userId === executionHuman
-      ? state.verifiedOrdinaryOrigin.relayId : undefined);
-  const relayCapabilities: Readonly<Record<string, boolean>> = { ...capabilitiesAtModelStep, canExecuteLocal: exactExecutionCapabilities?.["canExecuteLocal"] === true,
+    delegatedRelayId ?? (state.verifiedOrdinaryOrigin?.kind === "local_electron" && state.verifiedOrdinaryOrigin.userId === executionHuman
+      ? state.verifiedOrdinaryOrigin.relayId : undefined));
+  const delegatedReady = delegatedRelayId !== undefined && exactExecutionCapabilities?.["canDelegateLocalExecution"] === true;
+  const relayCapabilities: Readonly<Record<string, boolean>> = { ...capabilitiesAtModelStep, canExecuteLocal: exactExecutionCapabilities?.["canExecuteLocal"] === true
+      && (state.trustedExecutionEntrypoint !== "background.task" || delegatedReady),
     canReplaceLegacyShellTools: exactExecutionCapabilities?.["canReplaceLegacyShellTools"] === true
-      && state.verifiedOrdinaryOrigin?.kind === "local_electron"
-      && relayRegistry?.getDesktopSessionId?.(state.verifiedOrdinaryOrigin.relayId) === state.verifiedOrdinaryOrigin.desktopSessionId
-      && relayRegistry?.getPairingGeneration?.(state.verifiedOrdinaryOrigin.relayId) === state.verifiedOrdinaryOrigin.pairingGeneration,
-    canUseGitHub: exactExecutionCapabilities?.["canUseGitHub"] === true,
-    canUseLocalGit: exactExecutionCapabilities?.["canUseLocalGit"] === true,
+      && (delegatedReady || (state.verifiedOrdinaryOrigin?.kind === "local_electron"
+        && relayRegistry?.getDesktopSessionId?.(state.verifiedOrdinaryOrigin.relayId) === state.verifiedOrdinaryOrigin.desktopSessionId
+        && relayRegistry?.getPairingGeneration?.(state.verifiedOrdinaryOrigin.relayId) === state.verifiedOrdinaryOrigin.pairingGeneration)),
+    canUseGitHub: !delegatedRelayId && exactExecutionCapabilities?.["canUseGitHub"] === true,
+    canUseLocalGit: !delegatedRelayId && exactExecutionCapabilities?.["canUseLocalGit"] === true,
     canUseHumanTerminal: exactExecutionCapabilities?.["canUseHumanTerminal"] === true
       && relayRegistry?.getCapabilities(state.verifiedOrdinaryOrigin?.kind === "local_electron" ? state.verifiedOrdinaryOrigin.relayId : "")?.humanTerminal?.owner.roomId === state.roomId,
-    canReadShellOutput: exactExecutionCapabilities?.["canReadShellOutput"] === true,
+    canReadShellOutput: !delegatedRelayId && exactExecutionCapabilities?.["canReadShellOutput"] === true,
     canSearchLocalExecutionOutput: exactExecutionCapabilities?.["canSearchLocalExecutionOutput"] === true,
     canReadLocalExecutionHistory: exactExecutionCapabilities?.["canReadLocalExecutionHistory"] === true,
     canObserveLocalExecution: exactExecutionCapabilities?.["canObserveLocalExecution"] === true };
@@ -889,10 +901,17 @@ export async function preModelNode(
   // Everything appended after this point is per-turn-volatile to varying
   // degrees (time, memory, notifications) and stays OUT of the cached span.
   const localExecutionGuidance = relayCapabilities["canExecuteLocal"] === true
-    ? "\n\nFor contained build, diagnostics, and dev-server commands on the initiating Desktop, use exec_command and write_stdin; discover them when needed. A yielded running receipt refers to the same process: retrieve output with its session_id and cursor, and stop it with write_stdin cancel:true. Never relaunch after an unknown delivery outcome or report stopped without confirmed cleanup. "
-      + (relayCapabilities["canReplaceLegacyShellTools"] === true
-        ? "Use local_git for supported typed local Git, read_shell_output for earlier retained shell output, and human_terminal for an exact Human terminal handoff when available. Authenticated GitHub operations remain unavailable until their admitted account capability is enabled; do not bypass this with shell credentials."
-        : "Discover local_git and read_shell_output for supported Git and retained output operations. Use terminal for an existing terminal handoff only when offered. Unavailable tools have no shell fallback.")
+    ? "\n\nFor contained build, diagnostics, and dev-server commands, use exec_command and write_stdin; discover them when needed. "
+      + (delegatedReady
+        ? "This delegated work uses the original Human's saved Mac and project under its Basic or Development ceiling. It never inherits Full Mac or a Human terminal handoff. If that Mac or its source/project authority is unavailable, report the exact blocker; never substitute another computer. "
+        : "Commands use the exact initiating Desktop and its currently admitted access. ")
+      + "A yielded running receipt refers to the same process: retrieve output with its session_id and cursor, and stop it with write_stdin cancel:true. Never relaunch after an unknown delivery outcome or report stopped without confirmed cleanup. "
+      + (relayCapabilities["canUseLocalGit"] === true ? "Use local_git for supported typed local Git. " : "")
+      + (relayCapabilities["canReadShellOutput"] === true ? "Use read_shell_output for earlier retained shell output. " : "")
+      + (relayCapabilities["canUseHumanTerminal"] === true ? "Use human_terminal for the exact Human terminal handoff. " : "")
+      + (tools.some(tool => tool.name === "terminal") ? "Use terminal for an existing terminal handoff only when offered. " : "")
+      + (relayCapabilities["canUseGitHub"] === true ? "" : "Authenticated GitHub operations remain unavailable until their admitted account capability is enabled; do not bypass this with shell credentials. ")
+      + "Unavailable tools have no shell fallback."
     : "";
   const stableSystemPrefix = buildSystemPrompt({
     assistantName: state.assistantName || "Genie",

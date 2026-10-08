@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { DirectDatabase, Task, TaskRun } from "@nautilo/db";
+import { memoizeTaskExecutionCoordinates, type DirectDatabase, type Task, type TaskRun } from "@nautilo/db";
+import { rejects } from "node:assert/strict";
 import type {
   MemoryAccessEnvelope,
   PolicyResolver,
@@ -64,6 +65,7 @@ function task(overrides: Partial<Task> = {}): Task {
     fireLockedAt: null,
     lastError: null,
     metadata: {},
+    localExecutionDelegation: null,
     fundingMode: "legacy_server",
     contentRepresentation: "protected",
     contentNamespaceId: ids.namespace,
@@ -263,8 +265,9 @@ describe("production protected Task predispatch composition", () => {
         convergeCreatedRoomCatalog: async () => {},
         getTaskById: async () => ++taskReads < 3 ? before : after,
         getTaskRunForTask: async () => run(),
-        updateTask: async (_db, taskId, patch) => {
-          writes.push(`${taskId}:${patch.targetRoomId}`);
+        memoizeTaskExecutionCoordinates: async (_db, observed, patch) => {
+          expect(observed).toBe(before);
+          writes.push(`${observed.id}:${patch.targetRoomId}`);
           return after;
         },
         assertCanInvokeAgent: async () => {},
@@ -313,7 +316,7 @@ describe("production protected Task predispatch composition", () => {
         convergeCreatedRoomCatalog: async () => {},
         getTaskById: async () => recurring,
         getTaskRunForTask: async () => run(),
-        updateTask: async () => {
+        memoizeTaskExecutionCoordinates: async () => {
           targetWrites += 1;
           return recurring;
         },
@@ -341,6 +344,87 @@ describe("production protected Task predispatch composition", () => {
       expect(targetResolutions).toBe(0);
       expect(targetWrites).toBe(0);
     }
+  });
+
+  test("protected target memoization preserves delegation and passes the canonical row to Scope setup", async () => {
+    const delegation = {
+      version: 1 as const, humanUserId: ids.requestor, agentId: ids.agent,
+      sourceRoomId: ids.room, sourceConversationId: "source-conversation", rootTaskId: ids.task,
+      projectGrantId: "project-grant", ceiling: "basic" as const, profile: null,
+      target: { instanceId: "", relayId: "selected-relay", pairingGeneration: "pairing-generation",
+        serverOrigin: "https://server.example", serverFingerprint: "server-fingerprint" },
+    };
+    const before = task({ preset: "task", targetChat: "new_in_namespace", targetChatHandle: null,
+      localExecutionDelegation: delegation });
+    let current = before;
+    let written: Record<string, unknown> | undefined;
+    let canonical: Task | undefined;
+    const chain = {
+      set(patch: Record<string, unknown>) { written = patch; return chain; },
+      where() { return chain; },
+      async returning() {
+        current = { ...current, ...written };
+        canonical = current;
+        return [current];
+      },
+    };
+    const queryDb = { update: () => chain } as unknown as DirectDatabase;
+    await createProductionProtectedTaskPredispatch({
+      db: queryDb, resolver, convergeCreatedRoomCatalog: async () => {},
+      getTaskById: async () => current, getTaskRunForTask: async () => run(),
+      memoizeTaskExecutionCoordinates,
+      assertCanInvokeAgent: async () => {}, assertCanUseServerProviderCredentials: async () => {},
+      resolveTargetRoom: async () => ({ roomId: ids.room, graphThreadId: "unused" }),
+      resolveTaskMemoryEnvelope: async input => {
+        expect(input.task).toBe(canonical);
+        expect(input.task.targetRoomId).toBe(ids.room);
+        expect(input.task.localExecutionDelegation).toEqual(delegation);
+        expect(written).not.toHaveProperty("localExecutionDelegation");
+        return { envelope: envelope(), mode: "namespace", authorityStatus: "exact", provenance: "target_users_namespace" };
+      },
+    })(occurrence({ preset: "task", targetChat: "new_in_namespace", targetChatHandle: null }));
+  });
+
+  test("a lost protected target definition CAS prevents Scope setup", async () => {
+    const current = task({ preset: "task", targetChat: "new_in_namespace", targetChatHandle: null });
+    let memoryCalls = 0;
+    const predispatch = createProductionProtectedTaskPredispatch({
+      db, resolver, convergeCreatedRoomCatalog: async () => {},
+      getTaskById: async () => current, getTaskRunForTask: async () => run(),
+      memoizeTaskExecutionCoordinates: async () => { throw new Error("Task definition changed during execution setup"); },
+      assertCanInvokeAgent: async () => {}, assertCanUseServerProviderCredentials: async () => {},
+      resolveTargetRoom: async () => ({ roomId: ids.room, graphThreadId: "unused" }),
+      resolveTaskMemoryEnvelope: async () => { memoryCalls++; throw new Error("unreachable"); },
+    });
+    await rejects(predispatch(occurrence({ preset: "task", targetChat: "new_in_namespace", targetChatHandle: null })), /definition changed/);
+    expect(memoryCalls).toBe(0);
+  });
+
+  test("definition consent invalidated after the cache write is not lent to Memory setup", async () => {
+    const delegation = {
+      version: 1 as const, humanUserId: ids.requestor, agentId: ids.agent,
+      sourceRoomId: ids.room, sourceConversationId: "source-conversation", rootTaskId: ids.task,
+      projectGrantId: "project-grant", ceiling: "basic" as const, profile: null,
+      target: { instanceId: "", relayId: "selected-relay", pairingGeneration: "pairing-generation",
+        serverOrigin: "https://server.example", serverFingerprint: "server-fingerprint" },
+    };
+    let current = task({ preset: "task", targetChat: "new_in_namespace", targetChatHandle: null,
+      localExecutionDelegation: delegation });
+    let memoryCalls = 0;
+    const predispatch = createProductionProtectedTaskPredispatch({
+      db, resolver, convergeCreatedRoomCatalog: async () => {},
+      getTaskById: async () => current, getTaskRunForTask: async () => run(),
+      memoizeTaskExecutionCoordinates: async (_db, observed, patch) => {
+        const canonical = { ...observed, ...patch };
+        current = { ...canonical, localExecutionDelegation: null };
+        return canonical;
+      },
+      assertCanInvokeAgent: async () => {}, assertCanUseServerProviderCredentials: async () => {},
+      resolveTargetRoom: async () => ({ roomId: ids.room, graphThreadId: "unused" }),
+      resolveTaskMemoryEnvelope: async () => { memoryCalls++; throw new Error("unreachable"); },
+    });
+    await rejects(predispatch(occurrence({ preset: "task", targetChat: "new_in_namespace", targetChatHandle: null })), /memoization drifted/);
+    expect(memoryCalls).toBe(0);
   });
 
   test("rejects a memoized namespace target that is no longer admissible", async () => {

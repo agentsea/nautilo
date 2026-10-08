@@ -4,15 +4,16 @@ import {
   buildTaskInterruptEvent,
   emitTaskInterruptEvent,
   patchTaskApprovalEvent,
+  taskApprovalRecipient,
   replayTaskInterruptEvents,
   type TaskInterruptContext,
 } from "../../src/tasks/emit-task-interrupt";
 
 /**
- * M164 — Task/subagent approval interrupt surfacing. These assert the pure
+ * Task/subagent approval interrupt surfacing. These assert the pure
  * mapping + patching contract (no DB, no graph): the executor's parked
  * interrupt becomes an owner-scoped, Task-tagged WS event the workbench can
- * route past active-room filtering, and the orphan `room`-verb strip (R13).
+ * route past active-room filtering, and the orphan `room`-verb strip (orphan Task).
  */
 
 const baseCtx = (over: Partial<TaskInterruptContext> = {}): TaskInterruptContext => ({
@@ -26,7 +27,7 @@ const baseCtx = (over: Partial<TaskInterruptContext> = {}): TaskInterruptContext
   ...over,
 });
 
-describe("M164 emit-task-interrupt — buildTaskInterruptEvent", () => {
+describe("emit-task-interrupt — buildTaskInterruptEvent", () => {
   test("approval_ask → owner-scoped, task-tagged approval.ask (room kept when hasRoom)", () => {
     const event = buildTaskInterruptEvent(
       baseCtx({
@@ -60,7 +61,7 @@ describe("M164 emit-task-interrupt — buildTaskInterruptEvent", () => {
     ]);
   });
 
-  test("orphan approval_ask (no room) drops the unpersistable `room` verb (R13)", () => {
+  test("orphan approval_ask (no room) drops the unpersistable `room` verb (orphan Task)", () => {
     const event = buildTaskInterruptEvent(
       baseCtx({
         hasRoom: false,
@@ -118,7 +119,7 @@ describe("M164 emit-task-interrupt — buildTaskInterruptEvent", () => {
     });
   });
 
-  test("await_human_reply interrupt is NOT surfaced here (out of M164 scope)", () => {
+  test("await_human_reply interrupt is NOT surfaced here (not an approval event)", () => {
     const event = buildTaskInterruptEvent(
       baseCtx({
         interrupt: {
@@ -156,7 +157,7 @@ describe("M164 emit-task-interrupt — buildTaskInterruptEvent", () => {
   });
 });
 
-describe("M164 emit-task-interrupt — emitTaskInterruptEvent", () => {
+describe("emit-task-interrupt — emitTaskInterruptEvent", () => {
   test("emits the patched event through the injected sink and returns it", () => {
     const emitted: ServerEvent[] = [];
     const event = emitTaskInterruptEvent(
@@ -188,7 +189,7 @@ describe("M164 emit-task-interrupt — emitTaskInterruptEvent", () => {
   });
 });
 
-describe("M164 emit-task-interrupt — patchTaskApprovalEvent (passthrough)", () => {
+describe("emit-task-interrupt — patchTaskApprovalEvent (passthrough)", () => {
   test("non-approval-trio events are returned unchanged", () => {
     const ev: ServerEvent = {
       type: "task.completed",
@@ -208,7 +209,7 @@ describe("M164 emit-task-interrupt — patchTaskApprovalEvent (passthrough)", ()
   });
 });
 
-describe("D547 pending Task attention replay", () => {
+describe("pending Task attention replay", () => {
   test("rebuilds only approval-trio events with exact owner/task/run identity", async () => {
     const read = mock(async (): Promise<ServerEvent[]> => [
       {
@@ -300,4 +301,36 @@ describe("D547 pending Task attention replay", () => {
       tools: [{ shareMemoryPreview: { projection: { expiresAt: 1234 } } }],
     });
   });
+});
+
+
+test("canonical delegated recipient routes approval, PIN and replay without changing management owner", async () => {
+  const task = { ownerId: "owner", requestorId: "requestor", agentId: "agent", localExecutionDelegation: {
+    version: 1, humanUserId: "requestor", agentId: "agent", sourceRoomId: "room", sourceConversationId: "thread",
+    rootTaskId: "task", target: { instanceId: "", relayId: "relay", pairingGeneration: "pair", serverOrigin: "https://server.invalid", serverFingerprint: "fingerprint" },
+    projectGrantId: "project", ceiling: "basic", profile: null } };
+  expect(taskApprovalRecipient(task)).toBe("requestor");
+  expect(taskApprovalRecipient({ ...task, localExecutionDelegation: null })).toBe("owner");
+  for (const localExecutionDelegation of [{}, { ...task.localExecutionDelegation, humanUserId: "owner" }, { ...task.localExecutionDelegation, agentId: "other" }]) {
+    expect(taskApprovalRecipient({ ...task, localExecutionDelegation })).toBeNull();
+  }
+  const ctx = baseCtx({ ownerId: task.ownerId, approvalRecipientId: taskApprovalRecipient(task)! });
+  for (const interrupt of [{ type: "approval_ask", approvalId: "ask", tools: [], allowedVerbs: ["once", "deny"], reason: "Review" },
+    { type: "prove_it_challenge", tools: [], challengeId: "proof" }, { type: "identity_challenge", mode: "enrollPin" }]) {
+    expect(buildTaskInterruptEvent({ ...ctx, interrupt })).toMatchObject({ userId: task.requestorId, origin: "task" });
+  }
+  const events = await replayTaskInterruptEvents(ctx, async () => [buildTaskInterruptEvent({ ...ctx, approvalRecipientId: undefined,
+    interrupt: { type: "identity_challenge", mode: "enrollPin" } })!]);
+  expect(events).toMatchObject([{ userId: task.requestorId }]);
+  expect(ctx.ownerId).toBe("owner");
+});
+
+
+test("invalid canonical delegated recipients cannot fall back to management-owner events", async () => {
+  const ctx = baseCtx({ approvalRecipientId: null, interrupt: { type: "identity_challenge", mode: "enrollPin" } });
+  expect(buildTaskInterruptEvent(ctx)).toBeNull();
+  const emit = mock(() => {}); expect(emitTaskInterruptEvent(ctx, emit)).toBeNull(); expect(emit).not.toHaveBeenCalled();
+  const read = mock(async () => [] as ServerEvent[]);
+  expect(await replayTaskInterruptEvents(ctx, read)).toEqual([]); expect(read).not.toHaveBeenCalled();
+  expect(() => patchTaskApprovalEvent({ type: "identity.challenge", mode: "enrollPin", threadId: "thread", laneKey: "task:task-1", userId: "owner" }, ctx)).toThrow("recipient unavailable");
 });

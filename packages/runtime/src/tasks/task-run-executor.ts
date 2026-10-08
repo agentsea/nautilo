@@ -1,3 +1,4 @@
+import { resolveTaskLocalExecutionPort, isTaskLocalExecutionTargetAvailable } from "./local-execution-delegation";
 import type { ServerEvent } from "@nautilo/types";
 import { parkTaskContentAccessRecovery } from "./ordinary-content-access-recovery";
 import { recordSecurityResearchFailure, parkSecurityResearchInterruption, attachSecurityResearchJob, parkSecurityReportDelivery, readSecurityReportDeliveryResult, SecurityReportDeliveryPendingError } from "./security-report-recovery";
@@ -6,8 +7,9 @@ import {
   parseTaskReportBackContinuation,
   type NautiloState,
   type RunScopeSubagentOpts,
+  type DelegatedLocalExecutionPort,
 } from "@nautilo/agent";
-import { markTaskAwaiting, markTaskRunStatus, getTaskById, getTaskRunForTask, pauseTaskRunForFundingDenial, claimCallerTaskRunJob } from "@nautilo/db";
+import { parkTaskLocalExecutionOffline, taskLocalExecutionOfflineMarker, TASK_LOCAL_EXECUTION_OFFLINE_TEXT, type DirectDatabase, type Task, type TaskRun, markTaskAwaitingIfCurrentRun, markTaskRunStatus, getTaskById, getTaskRunForTask, pauseTaskRunForFundingDenial, claimCallerTaskRunJob } from "@nautilo/db";
 import {
   buildRuntimeCapabilityTokens,
   createCheckpointSaver,
@@ -38,7 +40,7 @@ import {
   resolveTaskLiveMiniAppBinding,
   taskWriterReviewVerificationCoverageState,
 } from "./task-return-binding";
-import { replayTaskInterruptEvents } from "./emit-task-interrupt";
+import { replayTaskInterruptEvents, taskApprovalRecipient } from "./emit-task-interrupt";
 import { prepareRepoDocsWorkspace, type RepoDocsWorkspace } from "./repo-docs-task";
 import { settleTaskWriterReviewAfterModel } from "./writer-review-task-lifecycle";
 import { streamDeepResearchReport } from "../executors/deep-research-executor";
@@ -49,7 +51,7 @@ import {
 } from "./security-report-artifact";
 
 /**
- * D429 Phase 4 — test seam for the strict-mode threading contract. Allows
+ * Test seam for the strict-mode threading contract. Allows
  * integration tests to capture the `RunScopeSubagentOpts` passed to
  * `runScopeSubagentUntilPause` (and short-circuit the run) WITHOUT running
  * the full subagent graph, so the `exactModelSelection → modelFallbackMode:
@@ -57,7 +59,7 @@ import {
  * task_run rows. Production always uses the real runner; the override is
  * `null` unless a test explicitly installs one and MUST be cleared afterwards
  * (it is module-level state shared by every runtime integration test in the
- * same bun process — e.g. m164-task-approval-resume drives the real executor).
+ * same Bun process; approval-resume tests drive the real executor).
  */
 type TaskRunExecutorRunner = typeof runScopeSubagentUntilPause;
 let _runnerOverrideForTests: TaskRunExecutorRunner | null = null;
@@ -66,7 +68,7 @@ export function _setTaskRunExecutorRunnerForTests(fn: TaskRunExecutorRunner | nu
 }
 
 /**
- * Stack 208 P1 — test seam for terminal thread cleanup. The default invokes
+ * Test seam for terminal thread cleanup. The default invokes
  * the real best-effort `deleteEphemeralCheckpointThread` over the cached
  * `PostgresSaver`; tests
  * override it to capture the cleanup call without touching Postgres (mirrors
@@ -100,7 +102,7 @@ function num(input: Record<string, unknown>, key: string, fallback: number): num
 }
 
 /**
- * M150 — presence-gated relay capabilities for a Task run.
+ * presence-gated relay capabilities for a Task run.
  *
  * Computes the same flat capability-token dict the foreground executors build
  * (`langgraph-executor.ts` / `fork-langgraph-executor.ts`), keyed on the task
@@ -120,19 +122,81 @@ export function computeTaskRelayCapabilities(
   return buildRuntimeCapabilityTokens(getRelayRegistry(), ownerId);
 }
 
+export class TaskLocalExecutionAuthorityUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super("Saved Mac, project, or source access could not be confirmed. Review access, then recreate this Task from its original chat on the intended Mac.", { cause });
+    this.name = "TaskLocalExecutionAuthorityUnavailableError";
+  }
+}
+
+/** Pre-model readiness uses the same run-local source owner as dispatch. It
+ * never sends a command or interprets a transport failure as a retry. */
+export async function prepareTaskLocalExecutionTarget(input: {
+  db: DirectDatabase; task: Task; run: TaskRun; jobId: string; signal: AbortSignal; phase: "cold" | "checkpoint";
+}, deps: {
+  resolvePort?: typeof resolveTaskLocalExecutionPort;
+  targetAvailable?: typeof isTaskLocalExecutionTargetAvailable;
+  park?: typeof parkTaskLocalExecutionOffline;
+  readTask?: typeof getTaskById;
+} = {}): Promise<{ kind: "ready"; port?: DelegatedLocalExecutionPort } | { kind: "parked" | "superseded" }> {
+  // The observed definition must survive all awaited source checks unchanged.
+  const task = structuredClone(input.task);
+  const run = structuredClone(input.run);
+  input.signal.throwIfAborted();
+  let port: DelegatedLocalExecutionPort | undefined;
+  let available: boolean;
+  try {
+    port = await (deps.resolvePort ?? resolveTaskLocalExecutionPort)({ db: input.db,
+      taskId: task.id, taskRunId: run.id, signal: input.signal });
+    if (!port) {
+      if (task.localExecutionDelegation) throw new Error("Saved Task delegation was removed");
+      return { kind: "ready" };
+    }
+    available = await port.withAdmission("start", source => {
+      if (JSON.stringify(source.delegation) !== JSON.stringify(task.localExecutionDelegation)) {
+        throw new Error("Saved Task delegation changed");
+      }
+      return Promise.resolve((deps.targetAvailable ?? isTaskLocalExecutionTargetAvailable)(source.delegation));
+    });
+    const current = await (deps.readTask ?? getTaskById)(input.db, task.id);
+    if (!current || taskLocalExecutionOfflineMarker(current) !== taskLocalExecutionOfflineMarker(task)) {
+      throw new Error("Saved Task definition changed");
+    }
+  } catch (error) {
+    input.signal.throwIfAborted();
+    throw new TaskLocalExecutionAuthorityUnavailableError(error);
+  }
+  input.signal.throwIfAborted();
+  if (available) return { kind: "ready", port };
+  const parked = await (deps.park ?? parkTaskLocalExecutionOffline)(input.db, { task, run, jobId: input.jobId, phase: input.phase });
+  if (parked) {
+    eventBus.emit({ type: "task.status", taskId: task.id, ownerId: task.ownerId, status: "paused" });
+    eventBus.emit({ type: "task.progress", taskId: task.id, taskRunId: run.id, ownerId: task.ownerId,
+      detail: TASK_LOCAL_EXECUTION_OFFLINE_TEXT });
+  }
+  // A simultaneous Stop/edit owns the outcome; generic failure handling must
+  // not overwrite it or report that any local command ran.
+  return { kind: parked ? "parked" : "superseded" };
+}
+
+/** The persisted pair wins before any approval/PIN presentation is replayed. */
+export async function parkTaskRunInterrupt(db: DirectDatabase, input: { taskId: string; taskRunId: string }): Promise<boolean> {
+  const parked = await markTaskAwaitingIfCurrentRun(db, input);
+  if (!parked.transitioned || !parked.task) return false;
+  eventBus.emit({ type: "task.status", taskId: input.taskId, ownerId: parked.task.ownerId, status: "awaiting" });
+  return true;
+}
+
 /**
- * M142 (spec §5.1) — the executor that runs a dispatched task as its own job.
+ * the executor that runs a dispatched task as its own job.
  *
  * Invoked by `JobManager` for a task-only lane (`task:<taskId>`) on the run's
  * own graph thread, so it never holds a human room's lane. It reuses the
  * existing `runScopeSubagentUntilPause` runner — there is no second subagent
  * runner. On terminal state it sets the 2a interim task / task_run status.
  *
- * SEAM(phase2b): `M143`'s `reportBackTaskResult` finalizer takes over this
- * completion site — it owns BOTH the terminal-status transition AND delivery
- * (the wake/raw ping back to the user). The interim status writes here are
- * REPLACED (not duplicated) when M143 lands; keep this handler small so M143
- * can swap it cleanly.
+ * The report-back finalizer owns terminal-status transitions and delivery
+ * back to the requesting Human.
  */
 export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
   input: Record<string, unknown>,
@@ -150,28 +214,27 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
     throw new Error("taskRunExecutor: missing taskId / taskRunId / envelope in job input");
   }
 
-  // M147 (R4) — an unpause dispatch reuses the prior run's `graphThreadId`
+  // an unpause dispatch reuses the prior run's `graphThreadId`
   // (set by `dispatchTaskRun`) and continues the preserved checkpoint via a
   // `null`-input stream rather than cold-starting a fresh brief.
   const continueFromCheckpoint = input["resumeFromCheckpoint"] === true;
 
-  // M166 Phase B — explicit turn-kind: an unpause continues the parked
+  // explicit turn-kind: an unpause continues the parked
   // checkpoint (resume); a scheduled/now dispatch is a fresh cold-start. Branches
-  // on NOTHING in M166 — observability only.
+  // This classification is for observability.
   const turnKind: TurnKind = classifyTurnKind({ continueFromCheckpoint });
   log(`[task-run] task=${taskId} run=${taskRunId} turnKind=${turnKind}`);
 
-  // M150 — thread presence-gated relay capabilities so a background/async Task
+  // thread presence-gated relay capabilities so a background/async Task
   // run may use relay-executor tools (`run_shell`, fs writes, desktop tools)
   // when the owner has a live relay at run start. `undefined` ⇒ cloud-only
   // (R2). `taskRun: true` (below) routes a mid-run relay drop to a clean
   // `relay_unavailable` error instead of a swallowed tool message (R6). The
-  // resulting `ask`/`prove_it`/`identity` interrupts ride the M164 surface +
-  // resume path unchanged — M150 only makes the tool reachable (R5).
+  // resulting approval/identity interrupts use the ordinary resume path.
   const ownerId = str(input, "ownerId");
   const relayCapabilities = computeTaskRelayCapabilities(ownerId);
 
-  // D429 Phase 4 — convert the Phase-3 `exactModelSelection` job flag into the
+  // convert the Phase-3 `exactModelSelection` job flag into the
   // explicit fallback mode threaded into the subagent graph. An exact Task
   // `model_id` pin is strict: `"none"` suppresses every cross-model hop inside
   // `invokeChatModelWithFallback` (provider error, context preflight, vision
@@ -183,14 +246,14 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
   // here by the matching union `"agent_chain" | "none"`).
   const exactModelSelection = input["exactModelSelection"] === true;
   const modelFallbackMode: "agent_chain" | "none" = exactModelSelection ? "none" : "agent_chain";
-  // D560 — only dispatch may supply an already-revalidated live Task return
+  // only dispatch may supply an already-revalidated live Task return
   // binding. The parser is deliberately strict: a malformed or stale job
   // value becomes unavailable and cannot create host authority.
   const taskReportBackContinuation = parseTaskReportBackContinuation(
     input["taskReportBackContinuation"],
   );
 
-  // D363 — the `repo_docs` preset runs the OpenWiki doc agent in an ISOLATED
+  // the `repo_docs` preset runs the OpenWiki doc agent in an ISOLATED
   // git worktree. The orchestrator wrapper (repo-docs-task.ts) prepares the
   // worktree + composed brief and, on success, commits/publishes; the agent
   // itself only writes via the `file` tool (toolsWhitelist ["file"]). Declared
@@ -231,6 +294,16 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
         await markTaskRunStatus(db, taskRunId, "running", { jobId });
       }
     }
+    // Claim and funding admission precede this source check; the model and
+    // workspace effects follow it. Reconnect always targets the saved pairing.
+    const claimedRun = await getTaskRunForTask(db, taskId, taskRunId);
+    if (!claimedRun) return;
+    const localPreparation = await prepareTaskLocalExecutionTarget({ db, task, run: claimedRun, jobId, signal, phase: continueFromCheckpoint ? "checkpoint" : "cold" });
+    if (localPreparation.kind !== "ready") {
+      yield { type: "worker.complete", jobId, result: "success" };
+      return;
+    }
+    const delegatedLocalExecutionPort = localPreparation.port;
     eventBus.emit({ type: "task.progress", taskId, taskRunId, ownerId,
       ...(input["securityReportDeliveryOnly"] === true
         ? { detail: "Delivering saved research report" }
@@ -332,7 +405,7 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
       yield { type: "worker.complete", jobId, result: "success" };
       return;
     }
-    // D429 Phase 4 — production uses the real runner; a test may install a
+    // production uses the real runner; a test may install a
     // capturing override via `_setTaskRunExecutorRunnerForTests` to assert the
     // strict-mode opts without running the full subagent graph.
     const runner = _runnerOverrideForTests ?? runScopeSubagentUntilPause;
@@ -406,22 +479,23 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
         : {}),
       subagentThreadId: str(input, "graphThreadId"),
       causalHumanUserId: str(input, "requestorId"),
-      // M150 — presence-gated relay tools + Task-run relay-drop semantics.
+      // presence-gated relay tools + Task-run relay-drop semantics.
       relayCapabilities,
       taskRun: true,
+      ...(delegatedLocalExecutionPort ? { delegatedLocalExecutionPort } : {}),
       // The scheduled wake is the visible delivery. Keep the execution
       // transcript internal even when it shares the calling Room.
       deferAssistantOutputToReportBack:
         str(input, "preset") === "schedule" && str(input, "resultDelivery") === "wake",
-      // D500 — task runs carry an explicit non-foreground provenance stamp.
+      // task runs carry an explicit non-foreground provenance stamp.
       trustedExecutionEntrypoint: "background.task",
-      // D429 Phase 4 — strict / no-chain mode for an exact Task `model_id` pin.
+      // strict / no-chain mode for an exact Task `model_id` pin.
       modelFallbackMode,
       progressTaskId: taskId,
       approvalLaneKey: `task:${taskId}`,
       progressTaskRunId: taskRunId,
       progressOwnerId: str(input, "ownerId"),
-      // M151 (Task Phase 7a) — await-response context forwarded from dispatch.
+      // await-response context forwarded from dispatch.
       ...(input["awaitResponse"] === true
         ? {
             awaitResponse: true,
@@ -437,7 +511,7 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
       signal,
     });
 
-    // M147 (R3) — a pause/stop abort is NOT a failure. `runScopeSubagentUntilPause`
+    // a pause/stop abort is NOT a failure. `runScopeSubagentUntilPause`
     // breaks its stream loop on `signal.aborted` and returns normally; the
     // lifecycle fn (`pauseTask`/`stopTask`) has already written the
     // `paused`/`cancelled` status on both the task and the run. Do not run a
@@ -450,19 +524,12 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
     }
 
     if (result.status === "interrupted") {
-      // SEAM(phase7): await-response / resume. 2a parks the run as awaiting.
-      await markTaskRunStatus(db, taskRunId, "awaiting");
-      await markTaskAwaiting(db, taskId);
-      // The persisted Task transition is canonical UI state. Publish it before
-      // the interrupt-specific approval/PIN event so every work surface moves
-      // into its Needs-you lifecycle band without waiting for a later fetch.
-      eventBus.emit({
-        type: "task.status",
-        taskId,
-        ownerId: str(input, "ownerId"),
-        status: "awaiting",
-      });
-      // M164 — surface an approval / PIN / identity challenge raised inside the
+      const parked = await parkTaskRunInterrupt(db, { taskId, taskRunId });
+      if (!parked) {
+        yield { type: "worker.complete", jobId, result: "success" };
+        return;
+      }
+      // surface an approval / PIN / identity challenge raised inside the
       // run to the Task owner. Owner-scoped + Task-tagged so the workbench dock
       // /modal opens regardless of the active room and the resume route can
       // find the parked run. Non-approval interrupts (e.g. await_human_reply)
@@ -470,12 +537,14 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
       const taskInterruptContext = {
         taskId,
         taskRunId,
-        ownerId: str(input, "ownerId"),
+        ownerId: task.ownerId,
+        approvalRecipientId: taskApprovalRecipient(task),
         graphThreadId: result.threadId,
         laneKey: `task:${taskId}`,
         hasRoom: str(input, "roomId").length > 0,
       };
       try {
+        if (!taskApprovalRecipient(task)) throw new Error("Task approval recipient unavailable");
         const canonicalEvents = await replayTaskInterruptEvents(taskInterruptContext);
         for (const event of canonicalEvents) eventBus.emit(event);
       } catch {
@@ -520,7 +589,7 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
         yield { type: "worker.complete", jobId, result: "success" };
         return;
       }
-      // D363 — for repo_docs, commit + publish the generated wiki on its
+      // for repo_docs, commit + publish the generated wiki on its
       // isolated branch and report the branch/worktree summary rather than the
       // agent's closing chatter.
       // The scope-subagent runner keeps a rich transcript for synchronous
@@ -546,15 +615,15 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
           assertActive: () => assertSecurityReportTaskActive(db, taskId, taskRunId, ownerId),
         });
       }
-      // M143 — the report-back finalizer owns BOTH the terminal status
+      // the report-back finalizer owns BOTH the terminal status
       // transition AND delivery (wake / raw / silent) of the result back to
-      // the user. It replaces the M142 interim status writes that lived here.
+      // the requesting Human.
       const completed = await reportBackTaskCompletion(
         { db },
         { taskId, runId: taskRunId, scheduleKind, resultText,
           ...(isSecurityResearchTask(input) ? { requireRunningPair: true } : {}) },
       );
-      // Stack 208 P1 — the run's `subagent:` checkpoint thread is terminal and
+      // the run's `subagent:` checkpoint thread is terminal and
       // ephemeral AFTER the report-back finalizer has durably committed the
       // terminal status + delivery. We delete it best-effort only on the
       // completed branch (this `else`), never on the `interrupted` branch
@@ -576,9 +645,9 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
 
     yield { type: "worker.complete", jobId, result: "success" };
   } catch (err) {
-    // D363 — tear down the incomplete repo_docs worktree on any failure/abort.
+    // tear down the incomplete repo_docs worktree on any failure/abort.
     await repoDocs?.cleanup();
-    // M147 (R3) — if the failure is the pause/stop abort surfacing as a thrown
+    // if the failure is the pause/stop abort surfacing as a thrown
     // AbortError, it is NOT a real runtime error: the lifecycle function owns
     // the paused/cancelled status and any cancellation delivery. Only a
     // non-abort error reports back from this catch path.
@@ -615,7 +684,7 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
     await recordSecurityResearchFailure(db, { taskId, taskRunId, ownerId, error: err });
     const message = err instanceof Error ? err.message : String(err);
     log(`[task-run] task=${taskId} run=${taskRunId} failed: ${message}`);
-    // M143 — finalizer owns the error transition + `task.errored` emit.
+    // finalizer owns the error transition + `task.errored` emit.
     await reportBackTaskError(
       { db },
       {

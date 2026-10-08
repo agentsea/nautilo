@@ -253,9 +253,10 @@ function ExecCommandExpanded({ toolName, args, event, resultText, resultTruncate
     setBusy(null);
   }, [initial, initialUncertainty]);
 
-  const accept = useCallback((next: LocalExecutionSnapshot, key: string, requestedCursor: number, requestSequence: number) => {
+  const accept = useCallback((next: LocalExecutionSnapshot, key: string, requestedCursor: number, requestSequence: number, allowArchive = false) => {
     const validated = snapshotFromResult(JSON.stringify(next));
-    if (requestSequenceRef.current !== requestSequence || activeKeyRef.current !== key || !validated || validated.archived === true || validated.historical === true || keyFor(validated) !== key) {
+    if (requestSequenceRef.current !== requestSequence || activeKeyRef.current !== key || !validated ||
+      (validated.archived === true && !allowArchive) || validated.historical === true || keyFor(validated) !== key) {
       return;
     }
     const overlapsRequestedCursor = validated.output.cursor <= requestedCursor && validated.output.nextCursor >= requestedCursor;
@@ -264,6 +265,7 @@ function ExecCommandExpanded({ toolName, args, event, resultText, resultTruncate
       return;
     }
     observationRef.current?.publish(validated, true);
+    if (validated.archived === true) return;
     setView((current) => mergeView(current?.key === key ? current : null, validated));
     setUncertainty(null);
     setOutcomeUnconfirmed(false);
@@ -327,11 +329,14 @@ function ExecCommandExpanded({ toolName, args, event, resultText, resultTruncate
         cursor,
         maxBytes: Number.MAX_SAFE_INTEGER,
       });
-      accept(next, key, cursor, requestSequence);
+      accept(next, key, cursor, requestSequence, true);
     } catch {
       if (requestSequenceRef.current === requestSequence && activeKeyRef.current === key) {
         if (receiptUncertainty) {
           setMessage("The outcome remains unknown. Retry status or Stop this exact execution.");
+        } else if (active && isSettledLocalExecution(active)) {
+          setOutcomeUnconfirmed(false);
+          setMessage("Status refresh is unavailable. The last confirmed final receipt is shown.");
         } else {
           setOutcomeUnconfirmed(true);
           setMessage("Outcome unconfirmed. Retry status; the last confirmed process state is shown.");

@@ -955,3 +955,34 @@ describe("unified local execution ToolCard renderer", () => {
     expect(view.queryByRole("button", { name: /Refresh|Load more/ })).toBeNull();
   });
 });
+
+for (const state of ["completed", "failed", "cancelled"] as const) {
+  test(`expired ${state} Human refresh adopts saved receipt with no live controls`, async () => {
+    const settled = snapshot({ state, resources: "released", exitCode: state === "completed" ? 0 : null });
+    const archived = { ...settled, archived: true as const };
+    const read = mock(async () => archived);
+    const cancel = mock(async () => settled);
+    const localExecution = installBridge({ read, cancel, openPreview: mock(async () => undefined) });
+    const view = render(card("exec_command", settled));
+    fireEvent.click(view.getByRole("button", { name: "Refresh status and output" }));
+    await waitFor(() => expect(view.getByText(/Saved history/)).toBeTruthy());
+    expect(view.getByTestId("exec-process-state").textContent).toBe(state);
+    expect(view.getByTestId("exec-output").textContent).toBe(settled.output.data);
+    expect(view.getByRole("group").getAttribute("data-tool-card-state")).toBe(state === "completed" ? "success" : state === "cancelled" ? "cancelled" : "error");
+    expect(view.queryByText("Outcome unconfirmed")).toBeNull();
+    expect(view.queryByRole("button", { name: /Stop|Refresh|Load more|Read execution|Open preview/ })).toBeNull();
+    expect(cancel).not.toHaveBeenCalled();
+    act(() => clearLocalExecutionHistoryOverlays(localExecution));
+  });
+  test(`failed refresh preserves confirmed ${state} outcome`, async () => {
+    const settled = snapshot({ state, resources: "released", exitCode: state === "completed" ? 0 : null });
+    installBridge({ read: mock(async () => { throw new Error("history unavailable"); }),
+      cancel: mock(async () => settled), openPreview: mock(async () => undefined) });
+    const view = render(card("exec_command", settled));
+    fireEvent.click(view.getByRole("button", { name: "Refresh status and output" }));
+    await waitFor(() => expect(view.getByText(/Status refresh is unavailable/)).toBeTruthy());
+    expect(view.getByRole("group").getAttribute("data-tool-card-state")).toBe(state === "completed" ? "success" : state === "cancelled" ? "cancelled" : "error");
+    expect(view.queryByText("Outcome unconfirmed")).toBeNull();
+    expect(view.getByTestId("exec-output").textContent).toBe(settled.output.data);
+  });
+}

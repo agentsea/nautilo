@@ -1,38 +1,43 @@
 /**
- * M144 — dispatch-seam envelope selection against real Postgres + a stub graph.
+ * dispatch-seam envelope selection against real Postgres + a stub graph.
  *
- * Phase 3 fills the `SEAM(phase3)` envelope branch in `dispatch-task-run.ts`.
+ * exercises the envelope-selection branch in `dispatch-task-run.ts`.
  * The pure discriminator (`selectTaskEnvelopeMode`) and whitelist validation
  * (`resolveToolWhitelist`) are unit-tested DB-free in
  * `tests/unit/task-dispatch-whitelist.test.ts`. This suite proves the two
  * cleanly-observable end-to-end signals the unit tests cannot:
  *
- *  - **S1 (scope branch)**: an `in_scope` / `use_scope=true` task with no
+ *  - **Scope branch**: an `in_scope` / `use_scope=true` task with no
  *    pre-set `scope_id` mints an ephemeral scope and PERSISTS it back onto
  *    `tasks.scope_id` (so a re-dispatch reuses it). A non-null `scope_id`
  *    after dispatch is direct proof the scope branch executed.
- *  - **S3 (namespace branch)**: a requester-only `in_background` task does NOT
+ *  - **Namespace branch**: a requester-only `in_background` task does NOT
  *    take the scope (or wide) branch — `scope_id` stays null — proving the
  *    discriminator keys on `use_scope`/`preset`, not `target_user_ids`.
  *
  * The `in_private_namespace` wide-envelope topology (bring_back return
- * namespace) is asserted in the ported M137 suite; here we only need the
+ * namespace) is covered by focused tests; this suite verifies the
  * scope-vs-namespace split, which is the dominant seam risk.
  *
  * No API keys required: NAUTILO_TEST_MODE=stub + __setStubModelForTests.
  */
 
+import { randomUUID } from "node:crypto";
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from "bun:test";
 import {
   tasks,
+  serverAdmission,
   taskRuns,
   createTask as dbCreateTask,
   getTaskById,
   getTaskRuns,
+  rooms,
+  eq,
   type DirectDatabase,
   type NewTask,
 } from "@nautilo/db";
-import { __setStubModelForTests, setAgentEventSink } from "@nautilo/agent";
+import { __setStubModelForTests, setAgentEventSink, setRelayRegistry, type ToolRelayRegistry } from "@nautilo/agent";
+import { setTaskLocalExecutionSourceComposition } from "../../src/tasks/local-execution-delegation";
 import { eventBus } from "../../src/event-bus";
 import { jobManager } from "../../src/job-manager";
 import { TaskObserver } from "../../src/tasks/task-observer";
@@ -42,6 +47,7 @@ import {
   closeDirectDb,
   getDirectDb,
   setupTestDb,
+  createTestRoom,
 } from "./helpers";
 import { setupAgentTestEnv, closeAgentDb } from "./agent-helpers";
 import { createStubProvider } from "./helpers/stub-provider";
@@ -59,6 +65,7 @@ beforeAll(async () => {
   userId = env.userId;
   agentId = env.agentId;
   db = getDirectDb();
+  await db.insert(serverAdmission).values({ userId: userId, admitted: true });
   setTaskRunDb(db);
   await db.delete(taskRuns);
   await db.delete(tasks);
@@ -129,9 +136,9 @@ async function pollAllRunsTerminal(taskId: string, timeoutMs = 20_000) {
   }
 }
 
-describe("M144 — dispatch seam envelope selection (stub graph, real PG)", () => {
-  test("S1: in_scope (use_scope, no scope_id) mints + persists tasks.scope_id", async () => {
-    stub("M144_SCOPE_STUB");
+describe("dispatch seam envelope selection (stub graph, real PG)", () => {
+  test("in_scope (use_scope, no scope_id) mints + persists tasks.scope_id", async () => {
+    stub("TASK_SCOPE_STUB");
     const taskId = await insertTask({
       preset: "in_scope",
       useScope: true,
@@ -152,8 +159,8 @@ describe("M144 — dispatch seam envelope selection (stub graph, real PG)", () =
     await obs.stop();
   });
 
-  test("S3: in_background (requester-only) takes the namespace branch — scope_id stays null", async () => {
-    stub("M144_NS_STUB");
+  test("in_background (requester-only) takes the namespace branch — scope_id stays null", async () => {
+    stub("TASK_NAMESPACE_STUB");
     const taskId = await insertTask({
       preset: "in_background",
       useScope: false,
@@ -174,4 +181,72 @@ describe("M144 — dispatch seam envelope selection (stub graph, real PG)", () =
 
     await obs.stop();
   });
+});
+
+test("delegation survives offline recovery on the same Run and subsequent Room and scope memoization", async () => {
+  stub("DELEGATED_SCOPE_STUB");
+  const id = randomUUID();
+  const { roomId } = await createTestRoom(userId);
+  const delegation = { version: 1 as const, humanUserId: userId, agentId, sourceRoomId: roomId,
+    sourceConversationId: "source-conversation", rootTaskId: id, projectGrantId: "fixture-grant",
+    target: { instanceId: "", relayId: "fixture-relay", pairingGeneration: "fixture-pairing",
+      serverOrigin: "https://server.example", serverFingerprint: "fixture-fingerprint" },
+    ceiling: "basic" as const, profile: null };
+  await insertTask({ id, callingRoomId: roomId, resultDelivery: "raw", preset: "in_scope", useScope: true, localExecutionDelegation: delegation });
+  let online = false;
+  let sourceChecks = 0;
+  // Inject only external authorization/transport discovery. Task lineage,
+  // parking, rearming, graph execution, and bookkeeping use the real DB.
+  setTaskLocalExecutionSourceComposition({
+    assertSource: async task => {
+      const [source] = await db.select({ ownerId: rooms.ownerId }).from(rooms).where(eq(rooms.id, roomId));
+      expect(source?.ownerId).toBe(userId);
+      expect(task.callingRoomId).toBe(roomId);
+      expect(task.requestorId).toBe(userId);
+      sourceChecks++;
+    },
+    subscribeChanges: () => () => {},
+  });
+  setRelayRegistry({
+    findByCapabilityForUser: () => [],
+    getCapabilities: () => online ? { profile: "desktop-agent", canExecuteLocal: true, canDelegateLocalExecution: true,
+      localExecution: { version: 1, generation: "generation", pipe: true, pty: true, capacity: 1 } } : null,
+    getProtocolVersion: () => 28, getUserId: () => userId, getPairingGeneration: () => "fixture-pairing",
+    getDesktopSessionId: () => "fixture-desktop", getLocalExecutionPairingGeneration: () => "opaque-pairing",
+    isRelayHeartbeatFresh: () => online,
+  } as unknown as ToolRelayRegistry);
+  const observer = new TaskObserver({ db, jobManager, batch: 20 });
+  try {
+    await observer.tick();
+    const deadline = Date.now() + 20_000;
+    while ((await getTaskById(db, id))?.status !== "paused") {
+      if (Date.now() > deadline) throw new Error("Task did not park for the unavailable Desktop");
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    const parked = await getTaskRuns(db, id);
+    expect(parked).toHaveLength(1);
+    expect(parked[0]?.status).toBe("paused");
+    const parkedTask = await getTaskById(db, id);
+    expect(parkedTask?.localExecutionDelegation).toEqual(delegation);
+    online = true;
+    await observer.tick();
+    // Rearming stamps nextFireAt after this tick's claim cutoff. The next
+    // normal observer tick claims that due occurrence.
+    await observer.tick();
+    const runs = await pollAllRunsTerminal(id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(parked[0]?.id);
+    expect(runs[0]?.status).toBe("completed");
+    const saved = await getTaskById(db, id);
+    expect(saved?.targetRoomId).toBeTruthy();
+    expect(saved?.scopeId).toBeTruthy();
+    expect(saved?.targetRoomId).toBe(parkedTask?.targetRoomId);
+    expect(saved?.scopeId).toBe(parkedTask?.scopeId);
+    expect(saved?.localExecutionDelegation).toEqual(delegation);
+    expect(sourceChecks).toBeGreaterThan(0);
+  } finally {
+    await observer.stop();
+    setTaskLocalExecutionSourceComposition(undefined);
+    setRelayRegistry(null);
+  }
 });

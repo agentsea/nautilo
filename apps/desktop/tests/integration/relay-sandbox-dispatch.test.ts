@@ -1,32 +1,7 @@
 /**
- * Unit tests for the relay dispatch handler's sandbox wiring.
- *
- * Validates:
- *   1. sandbox=null → legacy execAsync path (command actually runs,
- *      output returned) — current default until G5.4 envelope wiring
- *      restores sandbox coverage via server policy.
- *   2. sandbox=passthrough → spawnSandboxed path (command runs,
- *      DANGEROUS env dropped even in passthrough, hardened env
- *      defaults reach child).
- *   3. destructive + !approvalObtained → rejected before any
- *      subprocess is spawned (unchanged from pre-sandbox behavior).
- *   4. Timeout surfaced as a clean error.
- *
- * Tests use REAL subprocess execution via `/bin/sh` — no bwrap
- * required, so they run on any host regardless of containment
- * backend availability. The bwrap-specific path (sandbox active +
- * cautious+ level on Linux host) is covered by the D063 SANDBOX-*
- * smoke matrix in a Lima VM — that's where real containment gets
- * proven, not here.
- *
- * D060 Sprint 1 (security ship plan v3, G5.6): env-var-driven
- * sandbox construction helpers (`sandboxEnabled`,
- * `sandboxRequiredByLevel`, `resolveSecurityLevel`) have been
- * DELETED from relay.ts. Envelope-based dispatch lands in G5.4.
- * The PR-014 MAJORs #1/#2 regression-lock describe block that
- * tested those helpers has been removed — the semantics they pinned
- * (paranoid always-activates, typo-falls-back-to-standard) move to
- * the server's Policy Resolver + Capability check when G5.3 lands.
+ * Relay dispatch sandbox wiring, progress, and filesystem-grant regressions.
+ * These tests use real local subprocesses with a passthrough sandbox where
+ * requested. They prove dispatch contracts, not OS containment.
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
@@ -61,6 +36,7 @@ mock.module("electron", () => ({
   app: { getPath: () => "/tmp/nautilo-test-userdata" },
 }));
 
+let createLocalShellWorkspaceAuthorityResolver: typeof import("../../electron/relay").createLocalShellWorkspaceAuthorityResolver;
 let makeDispatchHandler: typeof import("../../electron/relay").makeDispatchHandler;
 let createDesktopFilesystemGrantAuthorityResolver: typeof import("../../electron/relay").createDesktopFilesystemGrantAuthorityResolver;
 let createStartRelayDesktopFilesystemGrantAuthority: typeof import("../../electron/relay").createStartRelayDesktopFilesystemGrantAuthority;
@@ -69,6 +45,7 @@ let buildDesktopFilesystemGrantSnapshot: typeof import("../../electron/relay").b
 beforeAll(async () => {
   ({
     makeDispatchHandler,
+    createLocalShellWorkspaceAuthorityResolver,
     createDesktopFilesystemGrantAuthorityResolver,
     createStartRelayDesktopFilesystemGrantAuthority,
     buildDesktopFilesystemGrantSnapshot,
@@ -127,7 +104,7 @@ function mkRequest(overrides: Partial<RelayDispatchRequest> = {}): RelayDispatch
     args: { command: "/bin/echo hello-world" },
     impact: "low",
     approvalObtained: false,
-    // D060 Sprint 1 G5.4.c — default a minimal envelope so tests that
+    // Default a minimal envelope so tests that
     // don\u0027t care about envelope-absence still exercise the normal
     // path (production will always have one). Tests that want to
     // cover the no-envelope branch omit sandboxProfile explicitly.
@@ -536,8 +513,8 @@ describe("makeDispatchHandler — run_shell sandbox wiring", () => {
     }
   });
 
-  test("D538-marked real workstation rejects requests without the local binding", async () => {
-    const workspace = mkTmp("relay-workstation-d538-binding-");
+  test("Real workstation rejects requests without the local binding", async () => {
+    const workspace = mkTmp("relay-workstation-binding-");
     let calls = 0;
     try {
       const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: workspace }), {
@@ -787,11 +764,8 @@ describe("makeDispatchHandler — run_shell sandbox wiring", () => {
     // without flagging any real bug — the timeout contract IS verified
     // by the status/error checks above.
     //
-    // A proper fix lives in spawn.ts: set `detached: true` on spawn
-    // options and use `process.kill(-child.pid, "SIGKILL")` to kill
-    // the whole group. That's a behavior change to the sandbox's
-    // subprocess-reaping semantics and belongs in a separate PR with
-    // its own cross-platform test matrix. Tracked as a D060 follow-up.
+    // This checks the timeout receipt only. Descendant process cleanup needs
+    // separate cross-platform coverage of the spawn owner.
   });
 
   test("empty command rejected with 'No command provided'", async () => {
@@ -898,7 +872,7 @@ describe("makeDispatchHandler — run_shell sandbox wiring", () => {
     expect(closeCalls).toBe(2);
   });
 
-  test("closes per-request sandbox even when toolName is unknown (M088B: list_directory removed; relay rejects unknown tools but still closes sandbox)", async () => {
+  test("closes per-request sandbox even when toolName is unknown (removed tools still close the sandbox)", async () => {
     const ws = mkTmp("relay-sb-close-unknown-");
     const guard = createWorkspaceGuard({ workspaceRoot: ws });
     let createCalls = 0;
@@ -912,7 +886,7 @@ describe("makeDispatchHandler — run_shell sandbox wiring", () => {
 
     const r = await handler(
       mkRequest({
-        // M088B removed list_directory from the relay surface; the
+        // list_directory is removed from the relay surface; the
         // unified `file` tool dispatches its `list` command server-side
         // (cloud executor), so the relay treats the legacy name as an
         // unknown tool. The sandbox-close invariant still holds.
@@ -928,7 +902,7 @@ describe("makeDispatchHandler — run_shell sandbox wiring", () => {
   });
 });
 
-describe("D502 run_shell progress reporter", () => {
+describe("run_shell progress reporter", () => {
   test("does not split a UTF-8 code point across observations and stops after finish", () => {
     const observed: Array<{ text: string; offsetBytes: number; endOffsetBytes: number }> = [];
     const reporter = createRunShellProgressReporter((progress) => {
@@ -945,10 +919,10 @@ describe("D502 run_shell progress reporter", () => {
   });
 
   test("one sanitized stream feeds progress, final output, and paged owner-bound continuation", async () => {
-    const ws = mkTmp("relay-d502-continuity-");
-    const secretName = "NAUTILO_D502_TEST_SECRET_TOKEN";
+    const ws = mkTmp("relay-execution-continuity-");
+    const secretName = "NAUTILO_EXECUTION_TEST_SECRET_TOKEN";
     const prior = process.env[secretName];
-    const secret = "split-secret-value-502";
+    const secret = `synthetic-${crypto.randomUUID()}`;
     process.env[secretName] = secret;
     try {
       const artifacts = new RunShellOutputArtifactStore();
@@ -1070,7 +1044,7 @@ describe("D502 run_shell progress reporter", () => {
   });
 
   test("search finds an omitted-middle marker from one shell invocation without rerunning it", async () => {
-    const ws = mkTmp("relay-d505-omitted-middle-");
+    const ws = mkTmp("relay-output-omitted-middle-");
     const owner = {
       instanceId: "instance-a",
       userId: "user-a",
@@ -1082,10 +1056,10 @@ describe("D502 run_shell progress reporter", () => {
       createSandbox: mockCreateSandbox(passthroughSandbox(ws)),
       runShellOutputArtifactStore: artifacts,
     });
-    const marker = "D505-OMITTED-MIDDLE-MARKER";
+    const marker = "OMITTED-MIDDLE-MARKER";
     const invocationFile = join(ws, "run-count");
     const executed = await handler(mkRequest({
-      correlationId: "d505-omitted-middle-execute",
+      correlationId: "output-omitted-middle-execute",
       runShellOwnerBinding: owner,
       args: {
         command:
@@ -1107,7 +1081,7 @@ describe("D502 run_shell progress reporter", () => {
       truncated: false,
     });
     const search = await handler(mkRequest({
-      correlationId: "d505-omitted-middle-search",
+      correlationId: "output-omitted-middle-search",
       runShellOwnerBinding: owner,
       args: { output_artifact: { reference: result.outputArtifact!.reference, operation: "search", query: marker } },
     }));
@@ -1119,7 +1093,7 @@ describe("D502 run_shell progress reporter", () => {
   });
 
   test("does not commit continuation artifacts for post-process cwd or network errors", async () => {
-    const ws = mkTmp("relay-d502-no-error-artifact-");
+    const ws = mkTmp("relay-execution-no-error-artifact-");
     const owner = {
       instanceId: "instance-a",
       userId: "user-a",
@@ -1169,10 +1143,10 @@ describe("D502 run_shell progress reporter", () => {
 });
 
 // ---------------------------------------------------------------------------
-// D418 — local desktop-filesystem-grant authority resolution + dispatch enforcement
+// local desktop-filesystem-grant authority resolution + dispatch enforcement
 // ---------------------------------------------------------------------------
 
-const D418_SUBJECT = {
+const GRANT_SUBJECT = {
   userId: "user-1",
   instanceId: "inst-1",
   relayId: "relay-1",
@@ -1190,8 +1164,8 @@ function makeGrant(
     access: ["read", "create_modify", "delete"],
     origin: "user_picker",
     lifetime: "durable",
-    subject: { ...D418_SUBJECT },
-    createdBy: D418_SUBJECT.userId,
+    subject: { ...GRANT_SUBJECT },
+    createdBy: GRANT_SUBJECT.userId,
     createdAt: "2020-01-01T00:00:00.000Z",
     policyVersion: 1,
     ...overrides,
@@ -1224,22 +1198,22 @@ function grantRequest(
     grantIds: ["grant-1"],
     requestedRoot,
     operation: "read",
-    subject: { ...D418_SUBJECT },
+    subject: { ...GRANT_SUBJECT },
     policy: { policyVersion: 1, lifetime: "durable" },
     ...overrides,
   } as NonNullable<RelayDispatchRequest["desktopFilesystemGrantRequest"]>;
 }
 
-const d418Policy = buildProtectedPathPolicy({ homeDir: homedir(), platform: process.platform });
+const grantPolicy = buildProtectedPathPolicy({ homeDir: homedir(), platform: process.platform });
 
-describe("D418 desktop-filesystem-grant authority resolver", () => {
+describe("Desktop-filesystem-grant authority resolver", () => {
   test("startup wiring binds the documented durable scope and rejects server-only grant data", async () => {
-    const baseRoot = mkTmp("d418-startup-store-");
+    const baseRoot = mkTmp("grant-startup-store-");
     const startSubject = {
       userId: "user-1",
       instanceId: "inst-1",
       relayId: "relay-1",
-      // D418's durable desktop convention: any Genie agent for this exact
+      // The durable Desktop convention: any Genie agent for this exact
       // user/instance/relay, never an unbound cross-subject wildcard.
       agentScope: "all_owned_agents",
     };
@@ -1260,7 +1234,7 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
       );
 
       const res = await handler({
-        correlationId: "d418-startup-server-only",
+        correlationId: "grant-startup-server-only",
         toolName: "fs",
         executionClass: "fs",
         impact: "read-only",
@@ -1280,8 +1254,8 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
   test("missing request preserves legacy compatibility without manufacturing authority", async () => {
     const resolve = createDesktopFilesystemGrantAuthorityResolver({
       store: stubStore([makeGrant("/tmp/granted")]),
-      expectedSubject: D418_SUBJECT,
-      protectedPathPolicy: d418Policy,
+      expectedSubject: GRANT_SUBJECT,
+      protectedPathPolicy: grantPolicy,
     });
     const res = await resolve({
       concreteOperation: "read",
@@ -1292,8 +1266,8 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
   test("undeterminable operation is rejected, never defaulted to read", async () => {
     const resolve = createDesktopFilesystemGrantAuthorityResolver({
       store: stubStore([makeGrant("/tmp/granted")]),
-      expectedSubject: D418_SUBJECT,
-      protectedPathPolicy: d418Policy,
+      expectedSubject: GRANT_SUBJECT,
+      protectedPathPolicy: grantPolicy,
     });
     const res = await resolve({
       request: grantRequest("/tmp/granted"),
@@ -1306,8 +1280,8 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
   test("subject that does not bind to the configured relay id is rejected", async () => {
     const resolve = createDesktopFilesystemGrantAuthorityResolver({
       store: stubStore([makeGrant("/tmp/granted")]),
-      expectedSubject: { ...D418_SUBJECT, relayId: "relay-OTHER" },
-      protectedPathPolicy: d418Policy,
+      expectedSubject: { ...GRANT_SUBJECT, relayId: "relay-OTHER" },
+      protectedPathPolicy: grantPolicy,
     });
     const res = await resolve({
       request: grantRequest("/tmp/granted"),
@@ -1322,8 +1296,8 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
       store: stubStore([
         makeGrant("/tmp/granted", { revokedAt: "2021-01-01T00:00:00.000Z" }),
       ]),
-      expectedSubject: D418_SUBJECT,
-      protectedPathPolicy: d418Policy,
+      expectedSubject: GRANT_SUBJECT,
+      protectedPathPolicy: grantPolicy,
     });
     const res = await resolve({
       request: grantRequest("/tmp/granted"),
@@ -1338,8 +1312,8 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
       store: stubStore([
         makeGrant("/tmp/granted", { expiresAt: "2020-06-01T00:00:00.000Z" }),
       ]),
-      expectedSubject: D418_SUBJECT,
-      protectedPathPolicy: d418Policy,
+      expectedSubject: GRANT_SUBJECT,
+      protectedPathPolicy: grantPolicy,
     });
     const res = await resolve({
       request: grantRequest("/tmp/granted"),
@@ -1352,8 +1326,8 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
   test("requested root outside the grant root is a root expansion", async () => {
     const resolve = createDesktopFilesystemGrantAuthorityResolver({
       store: stubStore([makeGrant("/tmp/granted")]),
-      expectedSubject: D418_SUBJECT,
-      protectedPathPolicy: d418Policy,
+      expectedSubject: GRANT_SUBJECT,
+      protectedPathPolicy: grantPolicy,
     });
     const res = await resolve({
       request: grantRequest("/tmp/elsewhere"),
@@ -1366,8 +1340,8 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
   test("operation beyond the grant's access set is an operation upgrade", async () => {
     const resolve = createDesktopFilesystemGrantAuthorityResolver({
       store: stubStore([makeGrant("/tmp/granted", { access: ["read"] })]),
-      expectedSubject: D418_SUBJECT,
-      protectedPathPolicy: d418Policy,
+      expectedSubject: GRANT_SUBJECT,
+      protectedPathPolicy: grantPolicy,
     });
     const res = await resolve({
       request: grantRequest("/tmp/granted", { operation: "create_modify" }),
@@ -1378,13 +1352,13 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
   });
 
   test("protected path is denied even when a grant authorizes it", async () => {
-    const testHome = mkTmp("d418-protected-home-");
+    const testHome = mkTmp("grant-protected-home-");
     const protectedRoot = join(testHome, ".ssh");
     try {
       await fsp.mkdir(protectedRoot);
       const resolve = createDesktopFilesystemGrantAuthorityResolver({
         store: stubStore([makeGrant(protectedRoot)]),
-        expectedSubject: D418_SUBJECT,
+        expectedSubject: GRANT_SUBJECT,
         protectedPathPolicy: buildProtectedPathPolicy({
           homeDir: testHome,
           platform: process.platform,
@@ -1402,12 +1376,12 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
   });
 
   test("a broad grant admits a safe requested root while protected descendants remain denied", async () => {
-    const safeRoot = mkTmp("d418-broad-safe-");
+    const safeRoot = mkTmp("grant-broad-safe-");
     try {
       const resolve = createDesktopFilesystemGrantAuthorityResolver({
         store: stubStore([makeGrant("/")]),
-        expectedSubject: D418_SUBJECT,
-        protectedPathPolicy: d418Policy,
+        expectedSubject: GRANT_SUBJECT,
+        protectedPathPolicy: grantPolicy,
       });
       const res = await resolve({
         request: grantRequest(safeRoot),
@@ -1424,8 +1398,8 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
   });
 
   test("a broad grant cannot admit a safe-looking symlink to a protected root", async () => {
-    const parent = mkTmp("d418-broad-symlink-");
-    const protectedTarget = mkTmp("d418-protected-target-");
+    const parent = mkTmp("grant-broad-symlink-");
+    const protectedTarget = mkTmp("grant-protected-target-");
     const alias = join(parent, "safe-looking-current-folder");
     symlinkSync(protectedTarget, alias, "dir");
     try {
@@ -1440,7 +1414,7 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
       });
       const resolve = createDesktopFilesystemGrantAuthorityResolver({
         store: stubStore([makeGrant("/")]),
-        expectedSubject: D418_SUBJECT,
+        expectedSubject: GRANT_SUBJECT,
         protectedPathPolicy: policy,
       });
       const res = await resolve({
@@ -1460,8 +1434,8 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
       store: stubStore([
         makeGrant("/tmp/granted", { filesystemIdentity: { realRoot: "/tmp/granted" } }),
       ]),
-      expectedSubject: D418_SUBJECT,
-      protectedPathPolicy: d418Policy,
+      expectedSubject: GRANT_SUBJECT,
+      protectedPathPolicy: grantPolicy,
       revalidateIdentity: () =>
         Promise.resolve({
           ok: false,
@@ -1479,8 +1453,8 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
   test("a referenced grant id that no longer exists locally is stale", async () => {
     const resolve = createDesktopFilesystemGrantAuthorityResolver({
       store: stubStore([]),
-      expectedSubject: D418_SUBJECT,
-      protectedPathPolicy: d418Policy,
+      expectedSubject: GRANT_SUBJECT,
+      protectedPathPolicy: grantPolicy,
     });
     const res = await resolve({
       request: grantRequest("/tmp/granted", { grantIds: ["ghost"] }),
@@ -1493,8 +1467,8 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
   test("a policy reference that drifts from the live grant is stale", async () => {
     const resolve = createDesktopFilesystemGrantAuthorityResolver({
       store: stubStore([makeGrant("/tmp/granted", { policyVersion: 1 })]),
-      expectedSubject: D418_SUBJECT,
-      protectedPathPolicy: d418Policy,
+      expectedSubject: GRANT_SUBJECT,
+      protectedPathPolicy: grantPolicy,
     });
     const res = await resolve({
       request: grantRequest("/tmp/granted", { policy: { policyVersion: 2, lifetime: "durable" } }),
@@ -1505,12 +1479,12 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
   });
 
   test("a valid local grant is admitted with the validated root as authority", async () => {
-    const grantRoot = mkTmp("d418-admit-");
+    const grantRoot = mkTmp("grant-admit-");
     try {
       const resolve = createDesktopFilesystemGrantAuthorityResolver({
         store: stubStore([makeGrant(grantRoot)]),
-        expectedSubject: D418_SUBJECT,
-        protectedPathPolicy: d418Policy,
+        expectedSubject: GRANT_SUBJECT,
+        protectedPathPolicy: grantPolicy,
       });
       const res = await resolve({
         request: grantRequest(grantRoot),
@@ -1529,7 +1503,7 @@ describe("D418 desktop-filesystem-grant authority resolver", () => {
   });
 });
 
-describe("D418 operation derivation", () => {
+describe("Grant operation derivation", () => {
   test("maps fs, local-file, and shell operations; rejects the undeterminable", () => {
     expect(
       deriveDesktopFilesystemAccessOperation({
@@ -1619,19 +1593,19 @@ describe("D418 operation derivation", () => {
   });
 });
 
-describe("makeDispatchHandler — D418 fs dispatch enforcement", () => {
+describe("makeDispatchHandler — filesystem dispatch enforcement", () => {
   test("desktop-filesystem-grant fs dispatch is admitted only within the validated root", async () => {
-    const baseRoot = mkTmp("d418-base-");
-    const grantRoot = mkTmp("d418-grant-");
-    const serverRoot = mkTmp("d418-server-");
+    const baseRoot = mkTmp("grant-base-");
+    const grantRoot = mkTmp("grant-grant-");
+    const serverRoot = mkTmp("grant-server-");
     try {
       await fsp.writeFile(join(grantRoot, "inside.txt"), "inside");
       await fsp.writeFile(join(serverRoot, "secret.txt"), "server-secret");
 
       const resolve = createDesktopFilesystemGrantAuthorityResolver({
         store: stubStore([makeGrant(grantRoot)]),
-        expectedSubject: D418_SUBJECT,
-        protectedPathPolicy: d418Policy,
+        expectedSubject: GRANT_SUBJECT,
+        protectedPathPolicy: grantPolicy,
       });
       const handler = makeDispatchHandler(
         createWorkspaceGuard({ workspaceRoot: baseRoot }),
@@ -1641,7 +1615,7 @@ describe("makeDispatchHandler — D418 fs dispatch enforcement", () => {
       // Server tries to widen with allowedRoots=[serverRoot]; only grantRoot
       // (the validated authority) may be reached.
       const okRes = await handler({
-        correlationId: "d418-fs-ok",
+        correlationId: "grant-fs-ok",
         toolName: "fs",
         executionClass: "fs",
         impact: "read-only",
@@ -1654,7 +1628,7 @@ describe("makeDispatchHandler — D418 fs dispatch enforcement", () => {
       expect((okRes.result as { ok: boolean }).ok).toBe(true);
 
       const deniedRes = await handler({
-        correlationId: "d418-fs-widen",
+        correlationId: "grant-fs-widen",
         toolName: "fs",
         executionClass: "fs",
         impact: "read-only",
@@ -1675,14 +1649,14 @@ describe("makeDispatchHandler — D418 fs dispatch enforcement", () => {
   });
 
   test("desktop-filesystem-grant fs dispatch is refused when no resolver is configured", async () => {
-    const baseRoot = mkTmp("d418-noresolver-");
+    const baseRoot = mkTmp("grant-noresolver-");
     try {
       const handler = makeDispatchHandler(
         createWorkspaceGuard({ workspaceRoot: baseRoot }),
         { relayId: "relay-1" },
       );
       const res = await handler({
-        correlationId: "d418-fs-noresolver",
+        correlationId: "grant-fs-noresolver",
         toolName: "fs",
         executionClass: "fs",
         impact: "read-only",
@@ -1700,7 +1674,7 @@ describe("makeDispatchHandler — D418 fs dispatch enforcement", () => {
 });
 
 // ---------------------------------------------------------------------------
-// D060 Sprint 1 G5.4.c — release-build envelope enforcement
+// Release-build envelope enforcement
 // ---------------------------------------------------------------------------
 
 describe("makeDispatchHandler — envelope enforcement", () => {
@@ -1718,7 +1692,7 @@ describe("makeDispatchHandler — envelope enforcement", () => {
     if (r.status === "error") {
       expect(r.error).toContain("server did not supply its security configuration");
       expect(r.error).toContain("No operation was started");
-      expect(r.error).not.toMatch(/D060|G5.4|ship plan|sandboxProfile/);
+      expect(r.error).not.toMatch(/\b[A-Z]\d{3}\b|G\d\.\d|ship plan|sandboxProfile/);
     }
   });
 
@@ -1769,7 +1743,7 @@ describe("makeDispatchHandler — envelope enforcement", () => {
 });
 
 // ---------------------------------------------------------------------------
-// D418 — advisory active-grant snapshot construction + non-authority guarantee
+// advisory active-grant snapshot construction + non-authority guarantee
 // ---------------------------------------------------------------------------
 
 const SNAPSHOT_SUBJECT = {
@@ -1816,7 +1790,7 @@ function snapshotStore(
   };
 }
 
-describe("D418 advisory grant snapshot builder", () => {
+describe("Advisory grant snapshot builder", () => {
   test("advertises active grants only, redacted to discovery fields", async () => {
     const snapshot = await buildDesktopFilesystemGrantSnapshot({
       store: snapshotStore(
@@ -1898,7 +1872,7 @@ describe("D418 advisory grant snapshot builder", () => {
   });
 
   test("advertising a grant in the snapshot cannot override the local resolver", async () => {
-    const grantRoot = mkTmp("d418-snapshot-nonauthority-");
+    const grantRoot = mkTmp("grant-snapshot-nonauthority-");
     try {
       // The snapshot advertises grant-active as an active local grant.
       const snapshot = await buildDesktopFilesystemGrantSnapshot({
@@ -1915,14 +1889,14 @@ describe("D418 advisory grant snapshot builder", () => {
       const resolve = createDesktopFilesystemGrantAuthorityResolver({
         store: stubStore([]),
         expectedSubject: SNAPSHOT_SUBJECT,
-        protectedPathPolicy: d418Policy,
+        protectedPathPolicy: grantPolicy,
       });
       const handler = makeDispatchHandler(
         createWorkspaceGuard({ workspaceRoot: grantRoot }),
         { relayId: SNAPSHOT_SUBJECT.relayId, desktopFilesystemGrantAuthority: resolve },
       );
       const res = await handler({
-        correlationId: "d418-snapshot-nonauthority",
+        correlationId: "grant-snapshot-nonauthority",
         toolName: "fs",
         executionClass: "fs",
         impact: "read-only",
@@ -1946,15 +1920,23 @@ describe("D418 advisory grant snapshot builder", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// DELETED in D060 Sprint 1 (security ship plan v3, G5.6): the PR-014
-// MAJORs #1/#2 describe block tested `sandboxEnabled()` +
-// `sandboxRequiredByLevel()` + `resolveSecurityLevel()` — three
-// functions that read policy-affecting env vars (NAUTILO_SANDBOX_RELAY,
-// NAUTILO_SECURITY_LEVEL) and were themselves a bypass surface in
-// open source. All three functions deleted from relay.ts; the
-// semantics they pinned (paranoid-always-activates, typo-falls-back)
-// move to the server's Policy Resolver + Capability check once G5.3
-// lands Sprint 1 Day 4. Equivalent regression locks land then as
-// server-side tests.
-// ---------------------------------------------------------------------------
+describe("Task grants do not change ordinary workspace selection", () => {
+  test("active and revoked Task grants preserve baseline; ordinary revocation still denies", async () => {
+    const workspace = mkTmp("relay-task-scope-");
+    let grants: DesktopFilesystemGrant[] = [];
+    try {
+      const resolver = createLocalShellWorkspaceAuthorityResolver({
+        expectedSubject: GRANT_SUBJECT,
+        protectedPathPolicy: buildProtectedPathPolicy({ homeDir: "/fixture/home", platform: process.platform }),
+        store: { list: async () => ({ ok: true, data: { revision: 1, grants: grants.map(grant => ({ grant, status: grantStatus(grant) })) } }) },
+      });
+      expect((await resolver(workspace)).ok).toBe(true);
+      grants = [makeGrant(workspace, { subject: { ...GRANT_SUBJECT, agentScope: "task:root" } })];
+      expect((await resolver(workspace)).ok).toBe(true);
+      grants = [{ ...grants[0]!, revokedAt: "2020-01-02T00:00:00.000Z" }];
+      expect((await resolver(workspace)).ok).toBe(true);
+      grants.push(makeGrant(workspace, { id: "ordinary", revokedAt: "2020-01-02T00:00:00.000Z" }));
+      expect(await resolver(workspace)).toMatchObject({ ok: false, code: "WORKSTATION_SHELL_WORKSPACE_UNAUTHORIZED" });
+    } finally { rmSync(workspace, { recursive: true, force: true }); }
+  });
+});

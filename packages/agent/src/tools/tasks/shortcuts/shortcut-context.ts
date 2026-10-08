@@ -1,5 +1,5 @@
 /**
- * M144 — shared context extraction for the Phase 3 intent shortcuts
+ * Shared context extraction for the intent shortcuts
  * (`in_scope` / `in_private_namespace` / `in_background`). Mirrors the
  * `task` tool's `contextFromUnknown` (task-tool.ts): the tool factory receives
  * an opaque `context`; we pull the owner / agent / room ids the shortcut needs
@@ -29,7 +29,7 @@ export interface ShortcutContext {
 }
 
 /**
- * M152 — the shared `model_selection` param every intent shortcut accepts.
+ * The shared `model_selection` param every intent shortcut accepts.
  * Defaults to `balanced` (the saved Agent model, then the server chat default
  * when that Agent follows the default). Room overrides stay foreground-only.
  * When the user asks to prioritize privacy / cost / smartness, the agent sets
@@ -43,7 +43,7 @@ export const modelSelectionParam = z
   );
 
 /**
- * D429 Phase 3 — shared exact-model pin param every intent shortcut accepts.
+ * Shared exact-model pin param every intent shortcut accepts.
  * Mutually exclusive with {@link modelSelectionParam}: pass model_id OR a
  * model_selection bias, never both. Genie must first call `discover_models`
  * and copy the exact stable curated id; only curated ids are accepted in v1.
@@ -66,13 +66,17 @@ export function shortcutContextFromUnknown(ctx: unknown): ShortcutContext {
       : typeof c["userId"] === "string"
         ? c["userId"]
         : "";
+  const currentTaskId = typeof c["currentTaskId"] === "string" ? c["currentTaskId"] : "";
+  const roomId = typeof c["roomId"] === "string" ? c["roomId"] : "";
   return {
     ownerId,
     causalHumanUserId: causalHumanForExecution(
       typeof c["causalHumanUserId"] === "string" ? c["causalHumanUserId"] : "",
     ),
     agentId: typeof c["agentId"] === "string" ? c["agentId"] : "",
-    roomId: typeof c["roomId"] === "string" ? c["roomId"] : "",
+    // Orphan Task graphs have no current Room. Keep their server-authored
+    // calling Room for nested creation; the Task owner verifies the lineage.
+    roomId: roomId || (currentTaskId && typeof c["callingRoomId"] === "string" ? c["callingRoomId"] : ""),
     currentFolder:
       typeof c["currentFolder"] === "string" ? c["currentFolder"] : "",
     timezone: typeof c["userTimezone"] === "string" ? c["userTimezone"] : "",
@@ -84,7 +88,7 @@ export function shortcutContextFromUnknown(ctx: unknown): ShortcutContext {
     focusedResources: Array.isArray(c["focusedResources"])
       ? c["focusedResources"] as ResolvedFocusedResource[]
       : [],
-    currentTaskId: typeof c["currentTaskId"] === "string" ? c["currentTaskId"] : "",
+    currentTaskId,
     ordinaryContentAccessRequired: c["ordinaryContentAccessRequired"] === true,
     ...(c["ordinaryContentAccess"] && typeof c["ordinaryContentAccess"] === "object"
       && typeof (c["ordinaryContentAccess"] as { commit?: unknown }).commit === "function"

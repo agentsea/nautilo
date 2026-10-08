@@ -671,3 +671,7 @@ export { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION, type RelayLocalExecutionBind
 export { RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION, isRelayLocalExecutionSearchAllowed } from "./protocol";
 
 export { RELAY_GITHUB_PROTOCOL_VERSION, isRelayGitHubDispatch } from "./protocol";
+
+export { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, type RelayLocalExecutionBindingV4 } from "./protocol";
+
+export { parseRelayLocalExecutionDelegationCapture, type RelayLocalExecutionDelegationCapture } from "./protocol";

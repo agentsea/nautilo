@@ -32,6 +32,7 @@ import {
   computeNextFireAt,
   getPlaintextTaskCreationAdmission,
   jobManager,
+  eventBus,
   pauseTask,
   unpauseTask,
   canResumeSecurityResearchContextFailure,
@@ -39,6 +40,8 @@ import {
   TaskFundingError,
   stopTask,
   replayTaskInterruptEvents,
+  authorizeTaskApprovalResume,
+  taskApprovalRecipient,
   type TaskCreateInput,
   type TaskLifecycleResult,
 } from "@nautilo/runtime";
@@ -554,9 +557,9 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       return reply.status(400).send({ error: reject });
     }
 
-    // D429 Phase 3 / M152 — create-time model-selection guard. The combined
+    // Create-time model-selection guard. The combined
     // validator owns the exact `requestedModelId` pin (curated IDs, capability
-    // truth, mutual-exclusion conflict) and the M152 profile/spec bias.
+    // truth, mutual-exclusion conflict) and profile/spec bias.
     // Unsatisfiable → 422 with the actionable message + structured detail.
     const toolsFieldsForValidation = toolsFields(body.tools);
     const validationContext = await taskSelectionValidationContext(
@@ -848,17 +851,29 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     const ownerId = request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
     if (!ownerId) return reply.status(401).send({ error: "Authentication required" });
 
-    const parked = await listAwaitingTaskRunsForOwner(getServerDirectDb(), ownerId);
+    const parked = await listAwaitingTaskRunsForOwner(getServerDirectDb(), ownerId, { approvalRecipient: true });
     const projected = await Promise.all(parked.map(async ({ task, run }) => {
       try {
-        return await replayTaskInterruptEvents({
+        if (taskApprovalRecipient(task) !== ownerId) return [] as ServerEvent[];
+        const authorized = task.localExecutionDelegation
+          ? await authorizeTaskApprovalResume({ taskId: task.id, threadId: run.graphThreadId, sessionUserId: ownerId })
+          : { ok: true as const, task, run };
+        if (!authorized.ok || authorized.run.id !== run.id || taskApprovalRecipient(authorized.task) !== ownerId) return [] as ServerEvent[];
+        const events = await replayTaskInterruptEvents({
           taskId: task.id,
           taskRunId: run.id,
-          ownerId: task.ownerId,
-          graphThreadId: run.graphThreadId,
+          ownerId: authorized.task.ownerId,
+          approvalRecipientId: ownerId,
+          graphThreadId: authorized.run.graphThreadId,
           laneKey: `task:${task.id}`,
-          hasRoom: task.targetRoomId !== null,
+          hasRoom: authorized.task.targetRoomId !== null,
         });
+        if (authorized.task.localExecutionDelegation) {
+          const current = await authorizeTaskApprovalResume({ taskId: task.id, threadId: run.graphThreadId, sessionUserId: ownerId });
+          if (!current.ok || current.run.id !== authorized.run.id || taskApprovalRecipient(current.task) !== ownerId
+            || JSON.stringify(current.task.localExecutionDelegation) !== JSON.stringify(authorized.task.localExecutionDelegation)) return [] as ServerEvent[];
+        }
+        return events;
       } catch {
         return [] as ServerEvent[];
       }
@@ -867,7 +882,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
   });
 
   /**
-   * D547 — serve the exact Genie's avatar for an owner-visible Task. This
+   * Serve the exact Genie's avatar for an owner-visible Task. This
    * intentionally resolves through both the Task's owner and agent ID: a
    * Task can be orphaned from a Room, but it must never borrow another owned
    * Genie's profile just because that profile happens to be available.
@@ -946,9 +961,9 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
           startedAt: toIso(run.startedAt),
           completedAt: toIso(run.completedAt),
         };
-        // M163 — agent-authored transcript for EVERY task (assistant/tool only),
+        // Agent-authored transcript for every Task (assistant/tool only),
         // including the agent's per-turn tool inputs. Empty for peer-owned DM
-        // sessions read under the requester's RLS context (R4).
+        // sessions read under the requester's RLS context.
         const transcript = await getRunAgentTranscript({
           includeToolPresentation: true,
           ownerId,
@@ -991,7 +1006,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         toolsWhitelist: task.toolsWhitelist,
         selectionProfile: task.selectionProfile,
         selectionSpec: task.selectionSpec,
-        // D429 Phase 3 — requested exact pin, distinct from the per-run actual
+        // Requested exact pin, distinct from the per-run actual
         // model in `runs[].modelId`.
         requestedModelId: task.requestedModelId,
         createdAt: toIso(task.createdAt) ?? new Date(0).toISOString(),
@@ -1036,7 +1051,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         });
       }
 
-      // D429 Phase 3 / M152 — validate a changed selection (422 on
+      // Validate a changed selection (422 on
       // unsatisfiable). The combined validator owns the exact pin, the
       // profile/spec bias, and their mutual-exclusion conflict. We validate
       // the EFFECTIVE selection (patch overlaid on the existing row) so
@@ -1113,7 +1128,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       if (body.selectionSpec !== undefined) {
         patch.selectionSpec = body.selectionSpec;
       }
-      // D429 Phase 3 — explicit clearing semantics: `requestedModelId: null`
+      // Explicit clearing semantics: `requestedModelId: null`
       // clears the pin; a string sets it; omission preserves the existing
       // value (omission is NOT treated as clear).
       if (body.requestedModelId !== undefined) {
@@ -1187,6 +1202,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
           error: "Task changed while this update was being prepared. Reload and try again.",
         });
       }
+      eventBus.emit({ type: "task.status", taskId: updated.id, ownerId: updated.ownerId, status: updated.status });
       return reply.send({ ...toTaskSummary(updated),
         ...(await canResumeSecurityResearchContextFailure(db, updated) ? { canResumeResearch: true } : {}),
       });
@@ -1194,9 +1210,9 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     },
   );
 
-  // M147 (R8) — lifecycle routes. Owner-only, fail-closed: 401 when no subject
+  // Lifecycle routes. Owner-only, fail-closed: 401 when no subject
   // resolves, 404 (not 403) when the task belongs to another owner (mirror the
-  // M146 don't-leak-existence rule). Each funnels through the SAME runtime
+  // don't-leak-existence rule. Each funnels through the same runtime
   // lifecycle fn the `task` tool uses (no second path). `unpauseTask` reaches
   // the live observer via `getTaskObserver()`, but we also pass `deps.observer`
   // explicitly so the route does not depend on module-singleton timing.

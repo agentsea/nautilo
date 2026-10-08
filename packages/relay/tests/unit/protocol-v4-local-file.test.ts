@@ -21,7 +21,7 @@ import type { RelayCapabilities } from "../../src/types";
 
 describe("Relay local-file, media extraction, and filesystem-grant protocols", () => {
   test("keeps v4 local-file, media v5, v9 Desktop Filesystem Grants, and capability updates v7", () => {
-    expect(RELAY_PROTOCOL_VERSION).toBe(27);
+    expect(RELAY_PROTOCOL_VERSION).toBe(28);
     expect(LOCAL_FILE_PROTOCOL_VERSION).toBe(4);
     expect(MEDIA_EXTRACTION_PROTOCOL_VERSION).toBe(5);
     expect(DESKTOP_FILESYSTEM_GRANT_REQUEST_PROTOCOL_VERSION).toBe(9);

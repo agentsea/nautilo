@@ -178,11 +178,19 @@ export class DesktopFilesystemGrantAuthority {
   async create(input: {
     userId: string;
     grant: DesktopFilesystemGrant;
+    /** Optional compare-and-create fence for derived durable grants. */
+    expectedRevision?: number;
   }): Promise<DesktopFilesystemGrantStoreResult<{ grant: DesktopFilesystemGrant; revision: number }>> {
+    if (input.expectedRevision !== undefined && isEphemeralDesktopFilesystemGrant(input.grant)) {
+      return resultError("invalid_grant", "revision-fenced creation requires a durable grant");
+    }
     if (isEphemeralDesktopFilesystemGrant(input.grant)) {
       return this.addEphemeral({ grant: input.grant, userId: input.userId });
     }
     return this.serialized(async () => {
+      if (input.expectedRevision !== undefined && input.expectedRevision !== this.revision) {
+        return resultError("invalid_grant", "grant authority changed before creation");
+      }
       const created = await this.store.create(input);
       if (!created.ok) return created;
       this.revision += 1;

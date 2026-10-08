@@ -1,3 +1,5 @@
+import { bindDelegatedLocalExecution } from "../tools/local-execution/admission";
+import { getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort } from "../runtime/local-execution-delegation";
 import { bindGitHubInvocation, prepareGitHubInvocation } from "../tools/invocation-service";
 import { githubApprovalId, githubPublishing, parseGitHubOperation, type GitHubInvocationBinding } from "@nautilo/types";
 import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
@@ -163,6 +165,7 @@ interface IdentityChallengeEnrollPinPayload {
  * before. Production wires this from `createNautiloGraph`'s deps.
  */
 export interface PostModelDeps {
+  delegatedLocalExecutionPortForState?: (state: NautiloState) => DelegatedLocalExecutionPort | undefined;
   humanTerminalAdmissionPortForState?: (state: NautiloState) => import("../tools/terminal/admission").HumanTerminalAdmissionPort | undefined;
   /** Request-local funding class. It is never copied into graph state. */
   foregroundChatFundingSession?: ForegroundChatFundingSession;
@@ -775,6 +778,9 @@ export function createPostModelNode(
     // stable denial; one is pinned automatically; several pause for an
     // opaque, one-use human choice. The tools node resolves again immediately
     // before dispatch, so a host that changes after this point fails closed.
+    const delegatedLocalExecutionBindings: Record<string, import("@nautilo/relay").RelayLocalExecutionBindingV4> = {};
+    const delegatedPort = deps?.delegatedLocalExecutionPortForState
+      ? deps.delegatedLocalExecutionPortForState(state) : getCurrentLocalExecutionDelegation();
     const requiredHostByToolCall = new Map<string, string>();
     const verifiedOrdinaryOrigin = state.verifiedOrdinaryOrigin;
     if (verifiedOrdinaryOrigin && !catalog) {
@@ -789,6 +795,30 @@ export function createPostModelNode(
       const resolveCandidates = async (candidates: ToolCall[]): Promise<ToolCall[]> => {
         const retained: ToolCall[] = [];
         for (const tc of candidates) {
+          if (isLocalExecutionTool(tc.name) && state.trustedExecutionEntrypoint === "background.task") {
+            const registry = getRelayRegistry();
+            const operation = localExecutionOperation(tc.name, tc.args);
+            if (!delegatedPort || !registry || !tc.id) {
+              forbidden.push({ tc, reason: "This Task has no current delegated computer authority. Recreate it from the intended Mac and project." });
+              continue;
+            }
+            try {
+              const pin = state.delegatedLocalExecutionBindings?.[tc.id] ?? await task("pin_delegated_local_execution", async () =>
+                await delegatedPort.withAdmission(operation, source => Promise.resolve(bindDelegatedLocalExecution({ registry, source, state,
+                  invocationId: tc.id!, operation,
+                  ...(typeof tc.args["session_id"] === "string" ? { executionId: tc.args["session_id"] } : {}) }))))();
+              const current = pin && await delegatedPort.withAdmission(operation, source => Promise.resolve(bindDelegatedLocalExecution({ registry, source, state,
+                invocationId: tc.id!, operation, previous: pin,
+                ...(typeof tc.args["session_id"] === "string" ? { executionId: tc.args["session_id"] } : {}) })));
+              if (!current) throw new Error("Task target is unavailable or changed");
+              delegatedLocalExecutionBindings[tc.id] = current;
+              requiredHostByToolCall.set(tc.id, current.owner.relayId);
+              retained.push(tc);
+            } catch {
+              forbidden.push({ tc, reason: "The Task's original computer, project grant or definition is unavailable. No alternate host or replacement command was selected." });
+            }
+            continue;
+          }
           const policy = resolveExecutionPolicy(tc.name, catalog);
           // The projected token chooses a read-only route; the host resolver
           // still verifies the exact current Desktop's advertised capability.
@@ -920,8 +950,9 @@ export function createPostModelNode(
     approved = await selectExecutionModes(approved); pending = await selectExecutionModes(pending);
 
     // Actor permission does not mint contained execution authority. Even an
-    // already-allowed start must pass the exact Basic/Development plan seam;
-    // otherwise it would reach dispatch with no server-owned plan.
+    // already-allowed start must pass ordinary command approval. Foreground
+    // starts also acquire their plan there; delegated starts retain the exact
+    // Task binding without borrowing the foreground Workstation override.
     const allowedManagedStarts = approved.filter(tc => tc.name === "exec_command");
     approved = approved.filter(tc => tc.name !== "exec_command");
     pending.push(...allowedManagedStarts);
@@ -1206,6 +1237,7 @@ export function createPostModelNode(
         capabilitylessExplicitApprovalLevel(tc.name) === "prove_it";
       if (
         overrideResolver &&
+        !delegatedLocalExecutionBindings[tc.id ?? ""] &&
         !(tc.name === "exec_command" && tc.id && fullMacInvocationBindings[tc.id]?.activationId) &&
         approval.verb !== "block" &&
         !preservesCapabilitylessPinFloor &&
@@ -1268,13 +1300,31 @@ export function createPostModelNode(
     // Run DB matches concurrently. Skip entirely for anonymous /
     // unauthenticated turns (no userId) — fail-closed to ask, no cross-user
     // leak.
-    const userIdForMatch = state.userId || "";
+    // Only a live, exact delegated Task source selects the requesting Human
+    // for the entire batch. Ordinary Tasks retain their legacy owner contract.
+    const causalHuman = causalHumanForExecution(state.causalHumanUserId);
+    let taskApprovalHuman: string | null = null;
+    if (state.trustedExecutionEntrypoint === "background.task" && deps?.delegatedLocalExecutionPortForState
+      && !delegatedPort && getCurrentLocalExecutionDelegation()) {
+      throw new Error("Delegated Task approval source unavailable");
+    }
+    if (state.trustedExecutionEntrypoint === "background.task" && delegatedPort) {
+      if (!causalHuman || delegatedPort.taskId !== state.currentTaskId || delegatedPort.taskRunId !== state.currentTaskRunId) {
+        throw new Error("Delegated Task approval source changed");
+      }
+      taskApprovalHuman = await delegatedPort.withAdmission("read", source => {
+        if (source.taskId !== state.currentTaskId || source.taskRunId !== state.currentTaskRunId
+          || source.delegation.humanUserId !== causalHuman) throw new Error("Delegated Task approval source changed");
+        return Promise.resolve(causalHuman);
+      });
+    }
+    const approvalHuman = taskApprovalHuman ?? state.userId ?? "";
     const roomIdForMatch = state.roomId ? state.roomId : null;
     const matchResults = await Promise.all(
       matchCandidates.map((cand) =>
-        userIdForMatch
+        approvalHuman
           ? matchStandingApprovalForTool({
-              userId: userIdForMatch,
+              userId: approvalHuman,
               roomId: roomIdForMatch,
               tc: cand.tc,
               matchCapabilityFn,
@@ -1292,7 +1342,7 @@ export function createPostModelNode(
           `[post_model] approval_auto_approved ${cand.tc.name} scope=${matched.scope} standingApprovalId=${matched.id}` +
             (matched.viaCapability ? ` capability=${matched.capabilitySlug}` : ""),
         );
-        if (deps?.recordAutoApproval && userIdForMatch) {
+        if (deps?.recordAutoApproval && approvalHuman) {
           const signatureKey = matched.viaCapability && matched.capabilitySlug
             ? capabilitySignatureKey(matched.capabilitySlug)
             : classifyCall(
@@ -1300,7 +1350,7 @@ export function createPostModelNode(
                 (cand.tc.args ?? {}) as Record<string, unknown>,
               ).signatureKey;
           deps.recordAutoApproval({
-            userId: userIdForMatch,
+            userId: approvalHuman,
             scope: matched.scope,
             toolName: cand.tc.name,
             signatureKey,
@@ -1635,9 +1685,9 @@ export function createPostModelNode(
       // verbatim.
       if (
         deps?.isPinEnrolled &&
-        state.userId
+        approvalHuman
       ) {
-        const enrolled = await deps.isPinEnrolled(state.userId);
+        const enrolled = await deps.isPinEnrolled(approvalHuman);
         if (!enrolled || replayingEnrollment) {
           const protectedMemoryTools: NonNullable<
             IdentityChallengeEnrollPinPayload["protectedMemoryTools"]
@@ -1663,13 +1713,13 @@ export function createPostModelNode(
             type: "identity_challenge",
             mode: "enrollPin",
             enrollmentToolCallIds,
-            ...(state.userId ? { userId: state.userId } : {}),
+            ...(approvalHuman ? { userId: approvalHuman } : {}),
             ...(protectedMemoryTools.length === 0
               ? {}
               : { protectedMemoryTools }),
           };
           log(
-            `[post_model] Logto user ${state.userId} has no PIN; interrupting for enrollPin before prove_it (${proveItBatch.length} tool(s) pending)`,
+            `[post_model] Logto user ${approvalHuman} has no PIN; interrupting for enrollPin before prove_it (${proveItBatch.length} tool(s) pending)`,
           );
           // Resume value is unused here — the route's resumeGraphWith-
           // Identity passes `{ verified: true, ... }` and we just
@@ -1685,7 +1735,7 @@ export function createPostModelNode(
         type: "prove_it_challenge",
         tools: await Promise.all(proveItBatch.map(async (tc) => ordinaryPreviewByCall.get(tc) ?? protectedMemoryEntries.get(tc)
           ?? interruptToolEntry(tc, state, protectedMemoryAccessPort))),
-        ...(state.userId ? { userId: state.userId } : {}),
+        ...(approvalHuman ? { userId: approvalHuman } : {}),
       };
       log(`[post_model] Interrupting for prove_it: ${proveItBatch.map((tc) => tc.name).join(", ")}`);
       const decision: ResumeDecision | undefined = interrupt(payload);
@@ -1703,6 +1753,7 @@ export function createPostModelNode(
         return {
           messages: mergeMessagesPreservingInvariants(state.messages, denialMessages),
           approvedToolCalls: approved,
+          delegatedLocalExecutionBindings,
           fullMacInvocationBindings,
           humanTerminalInvocationBindings, githubInvocationBindings,
           computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
@@ -1724,7 +1775,7 @@ export function createPostModelNode(
     if (askBatch.length > 0) {
       const payload = buildAskPayload(
         askBatch,
-        state.userId || undefined,
+        approvalHuman || undefined,
         localMcpInstallApproval,
         localMcpInstallApprovalKey,
         mediaGenerationApproval,
@@ -1752,6 +1803,7 @@ export function createPostModelNode(
         return {
           messages: mergeMessagesPreservingInvariants(state.messages, denialMessages),
           approvedToolCalls: approved,
+          delegatedLocalExecutionBindings,
           fullMacInvocationBindings,
           humanTerminalInvocationBindings, githubInvocationBindings,
           computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
@@ -1785,6 +1837,7 @@ export function createPostModelNode(
         return {
           messages: mergeMessagesPreservingInvariants(state.messages, denialMessages),
           approvedToolCalls: approved,
+          delegatedLocalExecutionBindings,
           fullMacInvocationBindings,
           humanTerminalInvocationBindings, githubInvocationBindings,
           computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
@@ -1821,6 +1874,7 @@ export function createPostModelNode(
         return {
           messages: mergeMessagesPreservingInvariants(state.messages, denialMessages),
           approvedToolCalls: approved,
+          delegatedLocalExecutionBindings,
           fullMacInvocationBindings,
           humanTerminalInvocationBindings, githubInvocationBindings, requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
           pendingApproval: [],
@@ -1834,7 +1888,7 @@ export function createPostModelNode(
       askBatch = askBatch.filter(({ tc }) => approveFresh([tc]).length > 0);
       for (const { tc } of askBatch) {
         if (verb === "room" || verb === "always") {
-          if (state.userId) {
+          if (approvalHuman) {
             const capabilitySlug = standingApprovalCapabilityForTool(tc.name);
             const scope = standingApprovalScopeForVerb(verb, state.roomId);
             if (scope === null) {
@@ -1843,7 +1897,7 @@ export function createPostModelNode(
               );
             } else if (capabilitySlug) {
               await createCapabilityFn({
-                userId: state.userId,
+                userId: approvalHuman,
                 scope,
                 roomId: scope === "room" ? state.roomId : null,
                 capabilitySlug,
@@ -1855,7 +1909,7 @@ export function createPostModelNode(
                 (tc.args ?? {}) as Record<string, unknown>,
               );
               await createFn({
-                userId: state.userId,
+                userId: approvalHuman,
                 scope,
                 roomId: scope === "room" ? state.roomId : null,
                 toolName: tc.name,
@@ -1899,6 +1953,7 @@ export function createPostModelNode(
       return {
         messages: mergeMessagesPreservingInvariants(state.messages, denialMessages),
         approvedToolCalls: approved,
+        delegatedLocalExecutionBindings,
         fullMacInvocationBindings,
         humanTerminalInvocationBindings, githubInvocationBindings,
         computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
@@ -1911,6 +1966,7 @@ export function createPostModelNode(
 
     return {
       approvedToolCalls: approved,
+      delegatedLocalExecutionBindings,
       fullMacInvocationBindings,
       humanTerminalInvocationBindings, githubInvocationBindings,
       computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),

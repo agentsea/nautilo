@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { beforeEach, afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as db from "@nautilo/db";
 import {
   isBoundedPersonalNativeShortcutCreate,
@@ -45,6 +45,14 @@ const SERVER_PARENT_CONTEXT = {
 describe("personal-funded Task controls", () => {
   let created: TaskToolCreateInput[] = [];
   const restores: Array<() => void> = [];
+
+  beforeEach(() => {
+    const versioned = spyOn(db, "getTaskByIdWithMutationVersion").mockImplementation(async (database, id) => {
+      const task = await db.getTaskById(database, id);
+      return task ? { ...task, mutationVersion: "fixture-version", contentRevision: task.contentRevision ?? 0 } : undefined;
+    });
+    restores.push(() => versioned.mockRestore());
+  });
 
   afterEach(() => {
     setTaskToolRuntime(null);
@@ -386,7 +394,7 @@ describe("personal-funded Task controls", () => {
   test("personal update rechecks the prospective Task funding before persistence", async () => {
     const task = personalTask();
     const getTask = spyOn(db, "getTaskById").mockResolvedValue(task as never);
-    const updateTask = spyOn(db, "updateTask").mockImplementation(async (_database, _id, patch) => ({
+    const updateTask = spyOn(db, "updateTaskIfCurrent").mockImplementation(async (_database, _id, patch) => ({
       ...task,
       ...patch,
     }) as never);
@@ -417,7 +425,7 @@ describe("personal-funded Task controls", () => {
     const task = personalTask();
     const getTask = spyOn(db, "getTaskById").mockResolvedValue(task as never);
     const order: string[] = [];
-    const updateTask = spyOn(db, "updateTask").mockImplementation(async (_database, _id, patch) => {
+    const updateTask = spyOn(db, "updateTaskIfCurrent").mockImplementation(async (_database, _id, patch) => {
       order.push("write");
       return { ...task, ...patch } as never;
     });
@@ -447,7 +455,7 @@ describe("personal-funded Task controls", () => {
   test("caller Task update fails closed before writes when canonical admission is absent or denied", async () => {
     const task = personalTask();
     const getTask = spyOn(db, "getTaskById").mockResolvedValue(task as never);
-    const updateTask = spyOn(db, "updateTask").mockResolvedValue(task as never);
+    const updateTask = spyOn(db, "updateTaskIfCurrent").mockResolvedValue(task as never);
     restores.push(() => { getTask.mockRestore(); updateTask.mockRestore(); });
     const serverContext = {
       ownerId: OWNER_ID,
@@ -523,7 +531,7 @@ describe("personal-funded Task controls", () => {
   test("personal controls can update and unpause a memoized orphan only after trusted funding validation", async () => {
     const task = personalTask({ targetRoomId: "hidden-task-room" });
     const getTask = spyOn(db, "getTaskById").mockResolvedValue(task as never);
-    const update = spyOn(db, "updateTask").mockResolvedValue(task as never);
+    const update = spyOn(db, "updateTaskIfCurrent").mockResolvedValue(task as never);
     restores.push(() => getTask.mockRestore(), () => update.mockRestore());
     const order: string[] = [];
     installRuntime({

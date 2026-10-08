@@ -1,3 +1,4 @@
+import { getCurrentLocalExecutionDelegation } from "../runtime/local-execution-delegation";
 import type { HumanTerminalAdmissionPort } from "../tools/terminal/admission";
 import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
 import { browserDecisionHandoffMessage, browserDecisionPlanError, browserObservationFromResult, interpretBrowserDecisionCall, settleBrowserDecision } from "../graph/browser-decision";
@@ -163,9 +164,11 @@ export function normalizeAdmittedToolCalls(
   }));
 }
 
+type DelegatedLocalExecutionPort = import("../runtime/local-execution-delegation").DelegatedLocalExecutionPort;
 type LocalExecutionHistoryPort = import("../tools/local-execution/history").LocalExecutionHistoryPort;
 
 type ProtectedToolComposition = Readonly<{
+  delegatedLocalExecutionPort?: DelegatedLocalExecutionPort | undefined;
   localExecutionHistoryPort?: LocalExecutionHistoryPort | undefined;
   humanTerminalAdmissionPort?: HumanTerminalAdmissionPort | undefined;
   personalFunding?: boolean;
@@ -409,6 +412,7 @@ async function invokeToolCall(
         };
     },
     {
+      ...(protectedComposition.delegatedLocalExecutionPort === undefined ? {} : { delegatedLocalExecutionPort: protectedComposition.delegatedLocalExecutionPort }),
       ...(protectedComposition.localExecutionHistoryPort === undefined ? {} : { localExecutionHistoryPort: protectedComposition.localExecutionHistoryPort }),
       ...(protectedComposition.humanTerminalAdmissionPort === undefined ? {} : { humanTerminalAdmissionPort: protectedComposition.humanTerminalAdmissionPort }),
       ...(protectedComposition.ordinaryContentAccess === undefined ? {} : { ordinaryContentAccess: protectedComposition.ordinaryContentAccess }),
@@ -600,6 +604,7 @@ function settleToolsNode(
     browserDecision,
     requiredHostRelays: remainingHostRelays,
     computerUseInvocationBindings: remainingComputerUseBindings,
+    delegatedLocalExecutionBindings: Object.fromEntries(Object.entries(state.delegatedLocalExecutionBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
     fullMacInvocationBindings: Object.fromEntries(Object.entries(state.fullMacInvocationBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
     githubInvocationBindings: Object.fromEntries(Object.entries(state.githubInvocationBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
     humanTerminalInvocationBindings: Object.fromEntries(Object.entries(state.humanTerminalInvocationBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
@@ -639,6 +644,7 @@ export function createToolsNode(input: Readonly<{
   personalTaskRunnableModelIds?: readonly string[];
   personalOnlyTaskModelIds?: readonly string[];
   ordinaryContentAccessForState?: OrdinaryContentAccessForState;
+  delegatedLocalExecutionPortForState?: (state: NautiloState) => DelegatedLocalExecutionPort | undefined;
   localExecutionHistoryPortForState?: (state: NautiloState) => LocalExecutionHistoryPort | undefined;
   humanTerminalAdmissionPortForState?: (state: NautiloState) => HumanTerminalAdmissionPort | undefined;
   recallRecordsPortForState?: RecallRecordsPortForState;
@@ -682,6 +688,8 @@ export function createToolsNode(input: Readonly<{
     const projection = input.protectedMemoryProjectionPortForState?.(state);
     const fullEncryptionOnly = input.fullEncryptionOnlyForState?.(state) === true;
     return executeToolsNode(state, config, {
+      delegatedLocalExecutionPort: input.delegatedLocalExecutionPortForState
+        ? input.delegatedLocalExecutionPortForState(state) : getCurrentLocalExecutionDelegation(),
       ...(input.localExecutionHistoryPortForState === undefined ? {} : { localExecutionHistoryPort: input.localExecutionHistoryPortForState(state) }),
       ...(input.humanTerminalAdmissionPortForState === undefined ? {} : { humanTerminalAdmissionPort: input.humanTerminalAdmissionPortForState(state) }),
       ...(ordinaryContentAccess === undefined ? {} : { ordinaryContentAccess }),

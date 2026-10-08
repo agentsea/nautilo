@@ -20,6 +20,12 @@ export interface TaskCreationReturnContext {
   readonly currentFolder: string;
   readonly workspacePath: string;
   readonly browserSessionId?: string;
+  readonly localExecutionSource?: {
+    readonly roomId: string;
+    readonly conversationId: string;
+    readonly agentId: string;
+    withAdmission<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T>;
+  };
 }
 
 /**
@@ -124,6 +130,7 @@ export function taskCreationReturnContextForState(
   state: NautiloState,
   relaySessionId: string | null | undefined,
   browserSessionId?: string | null,
+  options: { allowWorkspaceSource?: boolean } = {},
 ): TaskCreationReturnContext | null {
   const origin = state.verifiedOrdinaryOrigin;
   if (
@@ -132,9 +139,9 @@ export function taskCreationReturnContextForState(
     origin?.kind !== "local_electron" ||
     !state.userId ||
     origin.userId !== state.userId ||
-    !state.currentFolder ||
-    !state.currentFolderRelayId ||
-    state.currentFolderRelayId !== origin.relayId ||
+    (state.currentFolder
+      ? state.currentFolderRelayId !== origin.relayId
+      : options.allowWorkspaceSource !== true || Boolean(state.currentFolderRelayId && state.currentFolderRelayId !== origin.relayId)) ||
     !relaySessionId
   ) {
     return null;
@@ -145,7 +152,9 @@ export function taskCreationReturnContextForState(
     relaySessionId,
     desktopSessionId: origin.desktopSessionId,
     pairingGeneration: origin.pairingGeneration,
-    currentFolder: state.currentFolder,
+    // Empty means source capture only. Desktop resolves Workspace through its
+    // canonical owner; this never lends a report-back filesystem binding.
+    currentFolder: state.currentFolder || "",
     workspacePath: state.workspacePath ?? "",
     ...(browserSessionId ? { browserSessionId } : {}),
   });

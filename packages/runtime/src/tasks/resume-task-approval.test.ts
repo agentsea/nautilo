@@ -10,8 +10,9 @@ const transitionTaskApprovalExecution = mock(async (_db: unknown, input: { from:
 });
 const pauseForAuthorizationDenial = mock(async () => ({ transitioned: true,
   task: { id: "task-1", ownerId: "owner-1" } }));
+const findAwaitingTaskRunForApproval = mock(async (): Promise<{ task: Task; run: TaskRun } | undefined> => undefined);
 const actualDb = await import("@nautilo/db");
-mock.module("@nautilo/db", () => ({ ...actualDb, transitionTaskApprovalExecution,
+mock.module("@nautilo/db", () => ({ ...actualDb, transitionTaskApprovalExecution, findAwaitingTaskRunForApproval,
   pauseAwaitingTaskRunForAuthorizationDenial: pauseForAuthorizationDenial }));
 const statusEvents: unknown[] = [];
 const resumeGraphWithAskReply = mock<(...args: unknown[]) => Promise<void>>(async () => undefined);
@@ -54,6 +55,7 @@ mock.module("../executors/persisting-processor", () => ({
   createPersistingProcessor: () => ({ process: mock(() => undefined), flush: mock(() => undefined), emit: mock(() => undefined) }),
 }));
 mock.module("../event-bus", () => ({ eventBus: { emit: (event: unknown) => statusEvents.push(event) } }));
+const { taskApprovalRecipient } = await import("./emit-task-interrupt");
 const replayTaskInterruptEvents = mock(async () => [{
   type: "approval.ask",
   approvalId: "approval-current-b",
@@ -66,6 +68,7 @@ const replayTaskInterruptEvents = mock(async () => [{
 }]);
 mock.module("./emit-task-interrupt", () => ({
   patchTaskApprovalEvent: (event: unknown) => event,
+  taskApprovalRecipient,
   replayTaskInterruptEvents,
 }));
 mock.module("./report-back", () => ({
@@ -76,7 +79,7 @@ mock.module("./report-back", () => ({
 
 let runTaskApprovalResume: typeof import("./resume-task-approval")["runTaskApprovalResume"];
 
-const laneKey = "task:d525-task";
+const laneKey = "task:fixture-task";
 const exact = {
   mediaGenerationApprovalId: "media-generation:approval-1",
   mediaGenerationDigest: "a".repeat(64),
@@ -86,7 +89,7 @@ const exact = {
 };
 
 const task = {
-  id: "d525-task",
+  id: "fixture-task",
   ownerId: "owner-1",
   requestorId: "requestor-1",
   agentId: "agent-1",
@@ -123,6 +126,7 @@ const task = {
   fireLockedAt: null,
   lastError: null,
   metadata: {},
+  localExecutionDelegation: null,
   contentRepresentation: "ordinary",
   contentNamespaceId: null,
   contentRevision: 0,
@@ -136,7 +140,7 @@ const task = {
 } satisfies Task;
 const run = {
   id: "run-1",
-  taskId: "d525-task",
+  taskId: "fixture-task",
   jobId: null,
   graphThreadId: "thread-1",
   status: "awaiting",
@@ -155,9 +159,10 @@ const run = {
   resultCryptoRequiredNamespaceFingerprint: null,
   resultCryptoMappingState: "unmapped",
 } satisfies TaskRun;
+const { createMaintenanceAcceptanceAuthority } = await import("../maintenance-controller");
 const authorities = {
   invocationAuthority: createAcceptedInvocationAuthority("requestor-1"),
-  maintenanceAuthority: { __brand: "D420-accepted-before-drain" },
+  maintenanceAuthority: createMaintenanceAcceptanceAuthority(),
 } satisfies Pick<RunTaskApprovalResumeArgs, "invocationAuthority" | "maintenanceAuthority">;
 
 type EchoShape = "exact" | "absent" | "missing-digest" | "forged-quote" | "stale-revision" | "cross-lane";
@@ -187,7 +192,7 @@ function resumeArgs(echo: EchoShape = "exact"): RunTaskApprovalResumeArgs {
   return { ...base, ...exact, mediaGenerationLaneKey: "task:other" };
 }
 
-describe("D525 Task paid media approval echo", () => {
+describe("Task paid media approval echo", () => {
   beforeAll(async () => {
     ({ runTaskApprovalResume } = await import("./resume-task-approval"));
   });
@@ -351,7 +356,7 @@ describe("D525 Task paid media approval echo", () => {
     expect(reportBackTaskError).toHaveBeenCalledTimes(4);
     for (const call of reportBackTaskError.mock.calls) {
       expect(call[1]).toMatchObject({
-        taskId: "d525-task",
+        taskId: "fixture-task",
         runId: "run-1",
         error: "runTaskApprovalResume: paid media approval is incomplete or stale",
         failureResultText: safeBackgroundTaskFailureResult,
@@ -359,4 +364,67 @@ describe("D525 Task paid media approval echo", () => {
       });
     }
   });
+});
+
+
+test("offline approval preserves the exact pending interrupt and requires a fresh approval after reconnect", async () => {
+  const { authorizeTaskApprovalResume } = await import("./resume-task-approval");
+  const delegation = { version: 1 as const, humanUserId: task.requestorId, agentId: task.agentId,
+    sourceRoomId: "source-room", sourceConversationId: "source-thread", rootTaskId: task.id,
+    projectGrantId: "grant", ceiling: "basic" as const, profile: null,
+    target: { instanceId: "", relayId: "relay", pairingGeneration: "raw-pair", serverOrigin: "https://server.invalid", serverFingerprint: "fingerprint" } };
+  const current: Task = { ...task, localExecutionDelegation: delegation };
+  findAwaitingTaskRunForApproval.mockImplementation(async () => ({ task: current, run }));
+  let online = false;
+  let sourceAllowed = true;
+  const deps = { assertInvocation: async () => {}, assertServerFunding: async () => {},
+    targetAvailable: () => online,
+    resolveLocalExecution: async () => ({ taskId: task.id, taskRunId: run.id, signal: new AbortController().signal,
+      withAdmission: async <T>(_operation: unknown, work: (source: import("@nautilo/agent").DelegatedLocalExecutionAdmission) => Promise<T>) => {
+        if (!sourceAllowed) throw new Error("source lost");
+        return work({ taskId: task.id, taskRunId: run.id, delegation, signal: new AbortController().signal });
+      } }),
+  };
+  transitions.length = 0;
+  const args = { taskId: task.id, threadId: run.graphThreadId, sessionUserId: task.requestorId };
+  expect(await authorizeTaskApprovalResume(args, deps)).toMatchObject({ ok: false, status: 409, code: "task_original_mac_offline" });
+  expect(transitions).toEqual([]);
+  online = true;
+  expect(await authorizeTaskApprovalResume(args, deps)).toMatchObject({ ok: true, task: { id: task.id }, run: { id: run.id } });
+  sourceAllowed = false;
+  expect(await authorizeTaskApprovalResume(args, deps)).toMatchObject({ ok: false, status: 403, code: "task_local_execution_authority_unavailable" });
+  expect(transitions).toEqual([]);
+});
+
+
+test("delegated approval authorizes only its exact requesting Human, preserving ordinary owner replies", async () => {
+  const { authorizeTaskApprovalResume } = await import("./resume-task-approval");
+  const delegation = { version: 1 as const, humanUserId: task.requestorId, agentId: task.agentId,
+    sourceRoomId: "source-room", sourceConversationId: "source-thread", rootTaskId: task.id,
+    projectGrantId: "grant", ceiling: "basic" as const, profile: null,
+    target: { instanceId: "", relayId: "relay", pairingGeneration: "pair", serverOrigin: "https://server.invalid", serverFingerprint: "fingerprint" } };
+  let current: Task = { ...task, localExecutionDelegation: delegation };
+  findAwaitingTaskRunForApproval.mockImplementation(async () => ({ task: current, run }));
+  const resolveLocalExecution = mock(async () => ({ taskId: task.id, taskRunId: run.id, signal: new AbortController().signal,
+    withAdmission: async <T>(_operation: unknown, work: (source: import("@nautilo/agent").DelegatedLocalExecutionAdmission) => Promise<T>) =>
+      work({ taskId: task.id, taskRunId: run.id, delegation, signal: new AbortController().signal }) }));
+  const invocations: string[] = [];
+  const deps = { assertInvocation: async (input: { humanUserId: string }) => { invocations.push(input.humanUserId); },
+    assertServerFunding: async () => {}, resolveLocalExecution, targetAvailable: () => true };
+  const args = { taskId: task.id, threadId: run.graphThreadId, sessionUserId: task.requestorId };
+  expect(await authorizeTaskApprovalResume(args, deps)).toMatchObject({ ok: true, task: { ownerId: task.ownerId, requestorId: task.requestorId } });
+  expect(invocations).toEqual([task.requestorId]);
+  resolveLocalExecution.mockClear(); invocations.length = 0;
+  for (const sessionUserId of [task.ownerId, "wrong-human"]) {
+    expect(await authorizeTaskApprovalResume({ ...args, sessionUserId }, deps)).toEqual({ ok: false, status: 404, error: "task_approval_not_found" });
+  }
+  for (const descriptor of [{ ...delegation, humanUserId: task.ownerId }, { ...delegation, agentId: "other-agent" }, { ...delegation, untrusted: true }]) {
+    current = { ...task, localExecutionDelegation: descriptor };
+    expect(await authorizeTaskApprovalResume(args, deps)).toMatchObject({ ok: false, status: 404 });
+  }
+  expect(resolveLocalExecution).not.toHaveBeenCalled(); expect(invocations).toEqual([]);
+  current = { ...task, localExecutionDelegation: null };
+  expect(await authorizeTaskApprovalResume({ ...args, sessionUserId: task.ownerId }, deps)).toMatchObject({ ok: true });
+  expect(invocations).toEqual([task.requestorId, task.ownerId]);
+  expect(await authorizeTaskApprovalResume(args, deps)).toMatchObject({ ok: false, status: 404 });
 });

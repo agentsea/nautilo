@@ -1441,3 +1441,5 @@ export { surplusCredentialFingerprint, fetchSurplusSettlement } from "./provider
 
 export { normalizeGatewayBaseUrl } from "./providers/universal";
 export type { LocalExecutionHistoryPort, LocalExecutionHistoryReference } from "./tools/local-execution/history";
+
+export { runWithLocalExecutionDelegation, getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort, type DelegatedLocalExecutionAdmission, type DelegatedLocalExecutionOperation } from "./runtime/local-execution-delegation";
