@@ -17,7 +17,7 @@ import { parseWriterCreatedArtifactReceipt, writerCreationRenderer } from "./wri
 import { securityScanRenderer } from "./security-scan";
 import type { ToolRenderer } from "./types";
 import { runShellRenderer } from "./run-shell";
-import { execCommandRenderer } from "./exec-command";
+import { execCommandRenderer, getWriteStdinRenderer } from "./exec-command";
 import { searchRenderer } from "./search";
 import { deleteRenderer } from "./delete";
 import { fileRenderer } from "./file-renderer";
@@ -55,7 +55,6 @@ const toolRenderers: Record<string, ToolRenderer> = {
   // the same command/result shape and rich terminal presentation.
   run_command: runShellRenderer,
   exec_command: execCommandRenderer,
-  write_stdin: execCommandRenderer,
   structured_ssh_exec: structuredSshRenderer,
   structured_ssh_copy_upload: structuredSshRenderer,
   structured_ssh_copy_download: structuredSshRenderer,
@@ -115,6 +114,7 @@ export function getToolRenderer(
   resultText?: string,
   args: Record<string, unknown> = {},
 ): ToolRenderer | undefined {
+  if (toolName === "write_stdin") return getWriteStdinRenderer(args);
   return toolRenderers[toolName]
     ?? (toolName === "app_nautilo_writer__create_file" && parseWriterCreatedArtifactReceipt(resultText)
       ? writerCreationRenderer : undefined)

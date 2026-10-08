@@ -165,6 +165,20 @@ function commandLabel(args: Record<string, unknown>): string {
   return "Local execution";
 }
 
+type ContinuationOperation = "read" | "input" | "cancel" | "search";
+function continuationOperation(args: Record<string, unknown>): ContinuationOperation {
+  if (args.cancel === true) return "cancel";
+  if (typeof args.chars === "string" && args.chars.length > 0) return "input";
+  if (typeof args.search === "string" && args.search.length > 0) return "search";
+  return "read";
+}
+const continuationCopy: Record<ContinuationOperation, { label: string; description: string }> = {
+  read: { label: "Command output", description: "Read output from the existing command." },
+  input: { label: "Command input", description: "Interactive input for the existing command." },
+  cancel: { label: "Stop command", description: "Stop request for the existing command." },
+  search: { label: "Search command output", description: "Search retained output from the existing command." },
+};
+
 function loopbackUrls(output: string): string[] {
   const urls = new Set<string>();
   for (const match of stripAnsiSgr(output).matchAll(/https?:\/\/[^\s<>"'`]+/g)) {
@@ -206,7 +220,7 @@ function canStopExecution(snapshot: LocalExecutionSnapshot): boolean {
 }
 
 
-function ExecCommandExpanded({ args, event, resultText, resultTruncated, state, onSemanticStateChange }: ToolRendererProps): React.ReactElement {
+function ExecCommandExpanded({ toolName, args, event, resultText, resultTruncated, state, onSemanticStateChange }: ToolRendererProps): React.ReactElement {
   const initial = useMemo(() => liveSnapshotFromResult(resultText) ?? historicalSnapshotFromResult(resultText), [resultText]);
   const initialUncertainty = useMemo(() => uncertaintyFromResult(resultText), [resultText]);
   const [view, setView] = useState<ExecutionView | null>(() => initial ? initialView(initial) : null);
@@ -373,9 +387,11 @@ function ExecCommandExpanded({ args, event, resultText, resultTruncated, state, 
 
   return (
     <div className="space-y-2 border-t border-border px-3 py-2">
-      <section aria-label="command">
+      {toolName === "write_stdin" ? <p className="text-xs text-foreground-muted">
+        {continuationCopy[continuationOperation(args)].description}
+      </p> : <section aria-label="command">
         <pre className="rounded bg-background px-2 py-1.5 font-mono text-xs leading-relaxed text-foreground">$ {commandLabel(args)}</pre>
-      </section>
+      </section>}
       {active && (
         <div className="text-xs text-foreground-muted" aria-live="polite">
           {(active.archived === true || active.historical === true) && <>Saved history · </>}Process: <span data-testid="exec-process-state">{active.state === "running" && (active.exitCode !== null || active.signal !== null) ? "Finishing cleanup" : active.state}</span>
@@ -464,3 +480,22 @@ export const execCommandRenderer: ToolRenderer = {
   },
   ExpandedBody: ExecCommandExpanded,
 };
+
+function continuationRenderer(operation: ContinuationOperation): ToolRenderer {
+  return {
+    ...execCommandRenderer,
+    displayName: continuationCopy[operation].label,
+    collapsedSummary: () => continuationCopy[operation].description,
+    // Reads keep their observation alive without opening a second output view.
+    autoExpandWhileRunning: operation !== "read",
+    autoExpandOnResult: operation !== "read",
+  };
+}
+const continuationRenderers: Record<ContinuationOperation, ToolRenderer> = {
+  read: continuationRenderer("read"), input: continuationRenderer("input"),
+  cancel: continuationRenderer("cancel"), search: continuationRenderer("search"),
+};
+
+export function getWriteStdinRenderer(args: Record<string, unknown>): ToolRenderer {
+  return continuationRenderers[continuationOperation(args)];
+}

@@ -1,6 +1,6 @@
 import "../bun-dom-preload.ts";
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { projectToolResultForEvent } from "@nautilo/types";
 import type { DesktopLocalExecutionAPI, LocalExecutionSnapshot } from "../../src/lib/desktop";
 import { ToolCard } from "../../src/components/tool-card/tool-card";
@@ -81,6 +81,54 @@ function installBridge(localExecution: {
 }
 
 describe("unified local execution ToolCard renderer", () => {
+  test("pure read stays compact while updating the original command and permits explicit expansion", async () => {
+    const initial = snapshot();
+    const data = "first line\nlogin ready\n";
+    const completed = snapshot({ state: "completed", exitCode: 0, resources: "released", output: {
+      data, cursor: 0, nextCursor: data.length, availableFrom: 0, produced: data.length, gap: false, hasMore: false,
+    } });
+    const view = render(<>
+      <ToolCard toolName="exec_command" toolCallId="compact-start" args={{ cmd: "bolter-agent login" }} result={result(initial)} status={{ type: "complete" }} />
+      <ToolCard toolName="write_stdin" toolCallId="compact-read" args={{ session_id: initial.executionId }} result={result(completed)} status={{ type: "complete" }} />
+    </>);
+    const [start, read] = view.getAllByRole("group");
+    if (!start || !read) throw new Error("Expected start and read cards");
+    await waitFor(() => expect(start.getAttribute("data-tool-card-state")).toBe("success"));
+    expect(start.getAttribute("aria-expanded")).toBe("true");
+    expect(read.getAttribute("aria-expanded")).toBe("false");
+    expect(within(read).getByText("Command output")).not.toBeNull();
+    expect(view.queryByText("$ Local execution")).toBeNull();
+    expect(view.getAllByRole("region", { name: "output" })).toHaveLength(1);
+    expect(within(start).getByTestId("exec-output").textContent).toBe(data);
+    fireEvent.click(within(read).getByRole("button", { name: /Expand/ }));
+    expect(read.getAttribute("aria-expanded")).toBe("true");
+    expect(view.getAllByRole("region", { name: "output" })).toHaveLength(2);
+    expect(within(read).getByText("Read output from the existing command.")).not.toBeNull();
+  });
+
+  test("a compact read of the same execution id in another generation cannot settle the start", async () => {
+    const initial = snapshot();
+    const completed = snapshot({ generation: "other-generation", state: "completed", exitCode: 0, resources: "released" });
+    const view = render(<>
+      <ToolCard toolName="exec_command" toolCallId="generation-start" args={{ cmd: "build" }} result={result(initial)} status={{ type: "complete" }} />
+      <ToolCard toolName="write_stdin" toolCallId="generation-read" args={{ session_id: initial.executionId }} result={result(completed)} status={{ type: "complete" }} />
+    </>);
+    await waitFor(() => expect(view.getAllByRole("group").map(group => group.getAttribute("data-tool-card-state"))).toEqual(["running", "success"]));
+    expect(view.getAllByRole("group")[1]?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  for (const operation of ["input", "cancel", "search"] as const) {
+    test(`${operation} retains explicit continuation evidence without a fake command`, () => {
+      const args = operation === "input" ? { chars: "yes\n" } : operation === "cancel" ? { cancel: true } : { search: "first" };
+      const label = operation === "input" ? "Command input" : operation === "cancel" ? "Stop command" : "Search command output";
+      const view = render(<ToolCard toolName="write_stdin" toolCallId={`explicit-${operation}`} args={args} result={result(snapshot())} status={{ type: "complete" }} />);
+      expect(view.getByText(label)).not.toBeNull();
+      expect(view.getByRole("group").getAttribute("aria-expanded")).toBe("true");
+      expect(view.queryByRole("region", { name: "command" })).toBeNull();
+      expect(view.getByRole("region", { name: "output" })).not.toBeNull();
+    });
+  }
+
   test("empty historical search and read pages never display a reversed saved-byte range", () => {
     const empty = snapshot({ state: "completed", exitCode: 0, resources: "released", historical: true,
       output: { data: "", cursor: 85051, nextCursor: 85051, availableFrom: 0, produced: 85051, gap: false, hasMore: false } });
