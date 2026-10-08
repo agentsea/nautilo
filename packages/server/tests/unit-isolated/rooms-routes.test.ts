@@ -847,7 +847,11 @@ const updateRoomVisibilityMock = mock(
     _roomId: string,
     _kind: "open" | "group",
     _discoverable?: boolean,
-  ) => true,
+  ) => ({
+    changed: true,
+    kind: _kind,
+    discoverable: _discoverable ?? true,
+  }),
 );
 
 mock.module("@nautilo/trust", () => {
@@ -2033,7 +2037,7 @@ describe("D287 — archive / unarchive routes", () => {
 });
 
 /**
- * D194 — `POST /api/rooms/:id/visibility` (manage_rooms gate, open ↔ group).
+ * `POST /api/rooms/:id/visibility` (manage_rooms gate).
  */
 describe("D194 — room visibility flip", () => {
   const MANAGER_USER = "99999999-9999-4999-8999-999999999999";
@@ -2041,7 +2045,13 @@ describe("D194 — room visibility flip", () => {
 
   beforeEach(() => {
     updateRoomVisibilityMock.mockClear();
-    updateRoomVisibilityMock.mockImplementation(async () => true);
+    updateRoomVisibilityMock.mockImplementation(
+      async (_roomId, kind, discoverable) => ({
+        changed: true,
+        kind,
+        discoverable: discoverable ?? true,
+      }),
+    );
     userHasCapabilityMock.mockClear();
     userHasCapabilityMock.mockImplementation(
       async (_userId, slug) => slug === "manage_rooms",
@@ -2098,6 +2108,7 @@ describe("D194 — room visibility flip", () => {
       roomId: UUID_A,
       actorId: MANAGER_ACTOR,
       newKind: "open",
+      discoverable: true,
     });
   });
 
@@ -2122,6 +2133,52 @@ describe("D194 — room visibility flip", () => {
       newKind: "open",
       discoverable: false,
     });
+  });
+
+  test("POST private ignores stale discoverable input and audits the restored private kind", async () => {
+    updateRoomVisibilityMock.mockImplementationOnce(async () => ({
+      changed: true,
+      kind: "private",
+      discoverable: true,
+    }));
+    const app = makeApp("owner", MANAGER_ACTOR, MANAGER_USER);
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/rooms/${UUID_A}/visibility`,
+      headers: { "content-type": "application/json" },
+      payload: { public: false, discoverable: false },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(updateRoomVisibilityMock.mock.calls[0]).toEqual([
+      UUID_A,
+      "group",
+    ]);
+    expect(writeSecurityAuditEventMock.mock.calls[0]?.[1]).toMatchObject({
+      kind: "room_visibility_changed",
+      roomId: UUID_A,
+      newKind: "private",
+      discoverable: true,
+    });
+  });
+
+  test("POST visibility does not audit an idempotent private request", async () => {
+    updateRoomVisibilityMock.mockImplementationOnce(async () => ({
+      changed: false,
+      kind: "private",
+      discoverable: true,
+    }));
+    const app = makeApp("owner", MANAGER_ACTOR, MANAGER_USER);
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/rooms/${UUID_A}/visibility`,
+      headers: { "content-type": "application/json" },
+      payload: { public: false, discoverable: false },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ ok: true });
+    expect(writeSecurityAuditEventMock.mock.calls.length).toBe(0);
   });
 
   test("POST visibility rejects non-boolean discoverable before authorization", async () => {

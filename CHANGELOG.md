@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Chat managers can change personal 1:1 chats between Private, External, and
+  Public. Returning an unchanged personal Human–Genie chat to Private restores
+  its private-chat behavior without replacing the conversation.
+
 - Genies no longer discover or activate the legacy `run_shell` tool, including
   in background Tasks and on older clients. Managed command tools remain
   available where supported; existing command history remains readable.

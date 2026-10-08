@@ -1337,7 +1337,7 @@ export function roomsRoutes(
     return reply.send({ ok: true });
   });
 
-  // flip room visibility (open ↔ group). Gated on `manage_rooms`
+  // Change Room visibility. Gated on `manage_rooms`
   // (same axis as public-room creation); room ownership alone is not
   // sufficient.
   app.post<{ Params: { id: string }; Body: SetRoomVisibilityRequest }>(
@@ -1368,18 +1368,18 @@ export function roomsRoutes(
 
       const targetKind = request.body.public ? "open" : "group";
       try {
-        const changed = request.body.discoverable === undefined
+        // `discoverable` has meaning only for an open Room. Ignoring it on a
+        // private request keeps an already-private Room an idempotent no-op.
+        const result = !request.body.public || request.body.discoverable === undefined
           ? await updateRoomVisibility(roomId, targetKind)
           : await updateRoomVisibility(roomId, targetKind, request.body.discoverable);
-        if (changed) {
+        if (result.changed) {
           roomAudit(request, {
             kind: "room_visibility_changed",
             actorId: request.sessionActorId,
             roomId,
-            newKind: targetKind,
-            ...(request.body.discoverable === undefined
-              ? {}
-              : { discoverable: request.body.discoverable }),
+            newKind: result.kind,
+            discoverable: result.discoverable,
           });
         }
         return reply.send({ ok: true });
