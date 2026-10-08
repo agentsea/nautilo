@@ -3,10 +3,8 @@ import type { TaskHarnessActivity } from "@nautilo/types";
 import { ToolCard } from "../../../components/tool-card/tool-card";
 import {
   projectToolArgsForCardDisplay,
-  projectToolResultTextForDisplay,
 } from "../../../components/tool-argument-preview";
-import { preserveComputerUseResultForCard } from "../../../components/tool-card/renderers/computer-use";
-import { preserveConnectedAppResultForCard } from "../../../components/tool-card/renderers/connected-app-receipt";
+import { projectToolResultForCard } from "../../../adapters/local-execution-result-projection";
 import type { ToolActivityEvent } from "../../../adapters/runtime-contexts";
 import { ReaderMarkdown } from "../../../viewers/markdown/markdown-viewer";
 
@@ -50,9 +48,7 @@ function HarnessActivityCard({
   readonly terminalState?: "cancelled";
 }): ReactElement {
   const safeArgs = projectToolArgsForCardDisplay(activity.args);
-  const safeResult = preserveComputerUseResultForCard(activity.name, activity.result)
-    ?? preserveConnectedAppResultForCard(activity.name, activity.result)
-    ?? projectToolResultTextForDisplay(activity.result);
+  const safeResult = projectToolResultForCard(activity.name, activity.result);
   const status =
     activity.status === "completed"
       ? "ok"

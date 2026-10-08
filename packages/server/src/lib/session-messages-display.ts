@@ -15,6 +15,9 @@ export interface SessionMessageInput {
   toolCalls: string | null;
   /** Persisted tool name on `role = 'tool'` rows; optional for legacy. */
   toolName?: string | null;
+  toolCallId?: string;
+  toolStatus?: "success" | "error";
+  authorAgentId?: string;
   createdAt?: Date;
   /** Quote-reply FK when set. */
   replyToMessageId?: number | null;
@@ -39,6 +42,7 @@ export function isVisibleSessionMessage(message: Readonly<{
 }
 
 interface ParsedToolCall {
+  authorAgentId?: string;
   id?: string;
   name?: string;
 }
@@ -64,7 +68,7 @@ export function parseAssistantToolCallsJson(raw: string | null | undefined): Par
   }
 }
 
-/** Best-effort success vs error for persisted tool message bodies (no WS metadata in DB). */
+/** Legacy fallback when persisted tool status is absent. */
 export function inferToolEndStatusFromContent(content: string): "success" | "error" {
   const t = content.trim();
   if (!t) return "success";
@@ -79,8 +83,8 @@ export function inferToolEndStatusFromContent(content: string): "success" | "err
 }
 
 /**
- * Walks messages in DB order, pairs each `tool` row with the next pending
- * assistant `tool_calls` entry (FIFO), and sets `displayContent` on tool rows
+ * Uses persisted call identity for optional assistant-name lookup and sets
+ * `displayContent` on tool rows
  * to a WS-style one-liner. Raw `content` is unchanged (FTS / ToolCard body).
  */
 export function enrichSessionMessagesForDisplay<M extends SessionMessageInput>(
@@ -100,17 +104,31 @@ export function enrichSessionMessagesForDisplay<M extends SessionMessageInput>(
     }
 
     if (m.role === "assistant") {
-      pending.push(...parseAssistantToolCallsJson(m.toolCalls));
+      pending.push(...parseAssistantToolCallsJson(m.toolCalls).map((call) => ({
+        ...call, ...(m.authorAgentId === undefined ? {} : { authorAgentId: m.authorAgentId }),
+      })));
     }
 
     if (m.role === "tool") {
       // A protected-only row has no ordinary body from which status or a
       // semantic result can truthfully be inferred.
       if (m.content === null) return out;
-      const call = pending.shift();
+      const candidates = typeof m.toolCallId === "string" && m.toolCallId.length > 0
+        ? pending.filter((call) => call.id === m.toolCallId
+          && (m.authorAgentId === undefined || call.authorAgentId === m.authorAgentId)) : [];
+      const call = new Set(candidates.map((candidate) => candidate.authorAgentId)).size === 1
+        ? candidates[0] : undefined;
+      if (call !== undefined) {
+        for (let index = pending.length - 1; index >= 0; index -= 1) {
+          if (pending[index]?.id === call.id && pending[index]?.authorAgentId === call.authorAgentId) {
+            pending.splice(index, 1);
+          }
+        }
+      }
       const fromDb = typeof m.toolName === "string" ? m.toolName.trim() : "";
       const name = (fromDb.length > 0 ? fromDb : call?.name?.trim()) || "tool";
-      const status = inferToolEndStatusFromContent(m.content);
+      const status = m.toolStatus === "success" || m.toolStatus === "error"
+        ? m.toolStatus : inferToolEndStatusFromContent(m.content);
       // The database intentionally retains Computer Use's scanned host result
       // for diagnostics. REST history must expose only the same strict compact
       // envelope as live tool events; Workbench never parses raw provider bytes.

@@ -1,60 +1,10 @@
 /**
- * D418 Commit 3 — Workstation execution-admission engine.
- *
- * This is a **strict pure module**: no Electron, no HTTP, no filesystem, no
- * process state, no database, and no dependency on `@nautilo/security`,
- * `@nautilo/desktop-filesystem-grants`, `@nautilo/relay`, or `@nautilo/runtime`. It
- * takes a slim execution-admission contract and returns one decision:
- *
- *   - `auto`   — the dispatch is either a `run_shell` profile-bound sandbox
- *                attempt under an exact Full Workstation session+plan, or an
- *                explicit real-workstation `run_shell` attempt proceeding to
- *                Electron's independent local consent authority.
- *                The caller MAY suppress the normal `ask` / `prove_it`
- *                prompt for this dispatch and run it as a Full Workstation
- *                auto-approval.
- *   - `none`   — at least one admission gate failed. The caller MUST leave
- *                the normal approval logic intact (the dock / PIN / block
- *                path runs unchanged). The `reason` is for audit / telemetry
- *                only; it is NOT an execution denial by itself — normal
- *                approval still decides.
- *
- * The engine superseds the paused 3.2.5c nine-field
- * `WorkstationOverrideEvidence` model. It removes caller-authored
- * profile/path/network/OS/boundedness/MCP/escape booleans: those are no
- * longer admission inputs. Local execution (the relay sandbox / grant
- * authority) remains the authority for roots, paths, network, OS, and
- * boundedness. The server admits an attempt, never confirms local sandbox
- * construction: an Electron-local binding, sandbox, stale-grant, protected-
- * path, or OS denial remains fail-closed at execution and surfaces as a
- * command failure — never a silent bypass. Critical / elevation scanning is
- * an independent server-side refusal defense; it is not admission evidence.
- *
- * The contract is exactly: `executionClass + activeSession + exactPlan +
- * tool/operation identity`. The concrete tool identity MUST be `run_shell`.
- * Profile-bound sandbox admission additionally requires the exact Full
- * Workstation session+plan. Real-workstation admission authorizes only an
- * attempt: Electron still requires active-Human session or durable exact
- * local consent before it will spawn. The engine does NOT take a
- * caller-authored dispatch binding copied from the active session: the exact
- * binding proof is the `exactPlan` flag (a live, admitted, revalidated
- * `WorkstationDispatchPlan` pins the relay + profile + grant + capability
- * revisions), so the engine never compares a fabricated dispatch against the
- * session.
- *
- * Integration: the server-side post-model approval resolver
- * (`packages/server/src/routes/workstation-access.ts`) reads the LIVE
- * `InMemoryWorkstationSessionRegistry` session, admits + revalidates the
- * transient `WorkstationDispatchPlan`, and calls {@link
- * resolveWorkstationAdmission}. Commit 4 admits only an active-session,
- * exact-plan `profile_bound_sandbox` `run_shell` attempt. Electron-local
- * shell binding and sandbox construction remain the execution authority and
- * are never represented as a server-confirmed boolean.
- *
- * The `FullWorkstationSessionEvidence` shape is structurally compatible with
- * `@nautilo/runtime`'s `FullWorkstationSession` so the integrator can pass
- * the registry's session object directly without a remap. The fields are
- * re-declared here (not imported) to keep this package dependency-free.
+ * Pure workstation admission decisions. Basic requires an exact foreground
+ * managed-execution plan; Development requires its active session and plan.
+ * Explicit host commands retain their independent Electron consent gate.
+ * This module never authorizes paths, accounts, network, or containment:
+ * those are revalidated locally before effects. Actor/protected-content
+ * admission and critical-command refusal remain the caller's responsibility.
  */
 
 // ---------------------------------------------------------------------------
@@ -93,7 +43,7 @@ export interface FullWorkstationSessionEvidence {
 // ---------------------------------------------------------------------------
 
 /**
- * The three Workstation execution classes. This replaces the old six-value
+ * The Workstation execution classes. This replaces the old six-value
  * operation taxonomy (`file / shell / network / background / package / mcp`):
  *   - `profile_bound_sandbox` — a relay-dispatched, sandbox-contained
  *     operation whose roots / paths / network / OS authority is the live
@@ -107,7 +57,9 @@ export interface FullWorkstationSessionEvidence {
  *     `run_shell` attempts may auto-admit past command-shape approval, but
  *     Electron's exact local consent remains final execution authority.
  */
+/** Basic never represents a synthetic Development activation. */
 export type WorkstationExecutionClass =
+  | "basic_sandbox"
   | "profile_bound_sandbox"
   | "typed_broker"
   | "real_workstation";
@@ -150,9 +102,9 @@ export interface WorkstationAdmissionEvidence {
    */
   readonly exactPlan: boolean;
   /**
-   * Concrete tool/operation identity. Auto admission requires `name` to be
-   * `run_shell`; this is classification only and is NOT a server claim that
-   * the Electron-local sandbox has been created or remains active.
+   * Concrete tool/operation identity. Auto admission requires a tool supported
+   * by the exact execution class; this classification is not a server claim
+   * that the Electron-local sandbox has been created or remains active.
    */
   readonly tool: WorkstationToolIdentity;
 }
@@ -169,14 +121,14 @@ export type WorkstationAdmissionReason =
   | "no_active_session"
   // No live admitted+revalidated plan pins this dispatch.
   | "no_admitted_plan"
-  // This B4 slice only auto-admits run_shell attempts.
+  // Compatibility reason for an unsupported tool/execution-class combination.
   | "run_shell_required"
   // The independent static scan refused critical destruction or elevation.
   | "critical_or_elevation_command";
 
 export interface WorkstationAdmissionAuto {
   readonly override: "auto";
-  readonly executionClass: "profile_bound_sandbox" | "typed_broker" | "real_workstation";
+  readonly executionClass: WorkstationExecutionClass;
 }
 
 export interface WorkstationAdmissionNone {
@@ -201,15 +153,13 @@ export type WorkstationAdmissionDecision =
  *   1. Explicit real-workstation `run_shell` attempts return `auto` to the
  *      independent Electron-local consent gate. Other tools fail closed.
  *   2. The active-session gate: no session ⇒ `no_active_session` (Full Mode
- *      off; normal approval + D375 client ask→auto run unchanged).
+ *      off; normal approval + client ask→auto run unchanged).
  *   3. The exact-plan gate: no live admitted+revalidated plan ⇒
  *      `no_admitted_plan` — auto REQUIRES a live exact plan.
- *   4. The tool gate: only `run_shell` ⇒ `auto`; other tools return
- *      `run_shell_required`. This is an admission classification, not a
- *      claim that Electron has constructed a sandbox.
- *   5. Every gate passed for a `profile_bound_sandbox` or `typed_broker`
- *      `run_shell` attempt
- *      ⇒ `auto`.
+ *   4. The tool gate: `run_shell`, contained managed execution, or
+ *      `local_git` in its typed-broker class. Other tools fail closed. This
+ *      classification does not claim Electron has constructed a sandbox.
+ *   5. Every gate passed ⇒ `auto`.
  *
  * The engine is fail-closed: anything it cannot prove eligible is `none`.
  * It deliberately does NOT read a global `security.level` ("yolo") and does
@@ -233,6 +183,11 @@ export function resolveWorkstationAdmission(
     }
     return { override: "auto", executionClass: "real_workstation" };
   }
+  if (executionClass === "basic_sandbox") {
+    if (!exactPlan) return none(executionClass, "no_admitted_plan", "Basic requires an exact foreground Desktop plan");
+    if (tool.name !== "exec_command" || tool.operation !== "execute") return none(executionClass, "run_shell_required", "Basic starts only managed contained commands");
+    return { override: "auto", executionClass };
+  }
   // ---- Active authenticated Full Workstation session required -----------
 
   if (session === null) {
@@ -253,13 +208,15 @@ export function resolveWorkstationAdmission(
     );
   }
 
-  // ---- Workstation admission admits run_shell attempts only ----------------
+  // ---- Concrete contained command identity only ---------------------------
 
-  if (tool.name !== "run_shell") {
+  if (tool.name !== "run_shell" && !(executionClass === "profile_bound_sandbox"
+    && (tool.name === "exec_command" || tool.name === "write_stdin"))
+    && !(executionClass === "typed_broker" && tool.name === "local_git")) {
     return none(
       executionClass,
       "run_shell_required",
-      "workstation admission auto-admits only run_shell attempts; other tools leave the normal approval path intact",
+      "workstation admission accepts only explicit command tools within their supported execution class",
     );
   }
 

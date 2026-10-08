@@ -1,5 +1,5 @@
 /**
- * D440 Phase 2 — Git broker preflight: canonicalize identity and
+ * Git broker preflight: canonicalize identity and
  * reject every Git-controlled execution / path-escape surface before
  * any mutation.
  *
@@ -27,6 +27,48 @@ import {
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import type { GitRepositoryIdentity } from "./types";
+
+export interface GitDirectoryPin { readonly path: string; readonly dev: number; readonly ino: number }
+export function pinGitDirectory(path: string): GitDirectoryPin {
+  const canonical = realpathSync(path); const info = lstatSync(path);
+  if (canonical !== resolve(path) || !info.isDirectory() || info.isSymbolicLink()) throw new Error("Noncanonical directory");
+  return { path: canonical, dev: info.dev, ino: info.ino };
+}
+export function sameGitDirectory(pin: GitDirectoryPin): boolean {
+  try { const now = pinGitDirectory(pin.path); return now.dev === pin.dev && now.ino === pin.ino; } catch { return false; }
+}
+export function validateCloneChild(root: string, directory: string, grantedRoots: readonly string[], protectedPaths: readonly string[] = []): {
+  readonly root: GitDirectoryPin; readonly target: string;
+} {
+  const pinned = pinGitDirectory(root);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(directory) || directory.endsWith(".") || directory.toLowerCase().startsWith(".git")) throw new Error("Clone requires one child name");
+  const target = resolve(pinned.path, directory);
+  if (!grantedRoots.some(grant => isUnderRoot(pinned.path, realpathSync(grant)))
+    || protectedPaths.some(path => isUnderRoot(target, path) || isUnderRoot(path, target))) throw new Error("Clone target outside authority");
+  // lstat detects dangling symlinks too; existsSync alone does not.
+  try { lstatSync(target); throw new Error("Clone target already exists"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  return { root: pinned, target };
+}
+
+/** Git may replace a tracked symlink leaf, but never traverse a symlinked
+ * ancestor supplied by the worktree. This check is repeated before apply. */
+export function validateNetworkPathAncestors(root: string, paths: readonly string[], replacedFiles: ReadonlySet<string> = new Set()): void {
+  for (const path of paths) {
+    const parts = path.split("/"); let current = root;
+    for (const [index, part] of parts.slice(0, -1).entries()) {
+      current = resolve(current, part);
+      try {
+        const info = lstatSync(current);
+        // A tracked regular leaf may become a directory after Git removes it.
+        // Symlink ancestors remain denied, including tracked symlink leaves.
+        if (info.isFile() && replacedFiles.has(parts.slice(0, index + 1).join("/"))) break;
+        if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Unsafe worktree ancestor");
+      }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+  }
+}
 
 /**
  * Raised when preflight cannot establish a safe, canonical

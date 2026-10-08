@@ -35,6 +35,7 @@ const VENDORED_TOOL_BINARY_NAMES = new Set([
   "nautilo-computer-use-host",
   "ffmpeg",
   "gog",
+  "gh",
   "nautilo-apply-patch",
   "officecli",
   "openhue",
@@ -219,6 +220,7 @@ exports.default = async function afterPack(context) {
   });
 
   if (electronPlatformName === "darwin" || electronPlatformName === "mas") {
+    execFileSync("bun", ["run", join(__dirname, "verify-github-cli.ts"), join(resourcesDir, "tools-github-cli")], { stdio: "inherit", cwd: join(__dirname, "..") });
     execFileSync("bun", ["run", join(__dirname, "verify-ffmpeg.ts"), join(resourcesDir, "tools-ffmpeg"), "--allow-resigned"], { stdio: "inherit", cwd: join(__dirname, "..") });
   }
 

@@ -107,12 +107,14 @@ describe("restoreSessionMessages edit metadata", () => {
       {
         id: "result-page-1",
         role: "tool",
+        toolCallId: "inspect-page-1",
         toolName: "inspect_open_design",
         content: "page one",
       },
       {
         id: "result-page-2",
         role: "tool",
+        toolCallId: "inspect-page-2",
         toolName: "inspect_open_design",
         content: "page two",
       },
@@ -493,7 +495,7 @@ test("hidden image helper declaration does not consume another visible tool resu
     { id: "1", role: "assistant", content: "", toolCalls: JSON.stringify([{ id: "image-assistance:input-digest", name: "image_assistance", args: {} }]) },
     { id: "2", role: "tool", toolName: "image_assistance", content: '{"observations":"private observation"}' },
     { id: "3", role: "assistant", content: "", toolCalls: JSON.stringify([{ id: "call-visible", name: "lookup", args: {} }]) },
-    { id: "4", role: "tool", toolName: "lookup", content: "Visible result" },
+    { id: "4", role: "tool", toolCallId: "call-visible", toolName: "lookup", content: "Visible result" },
   ]);
   expect(restored).toHaveLength(1);
   expect(restored[0]?.content).toMatchObject([{ type: "tool-call", toolCallId: "call-visible", toolName: "lookup" }]);

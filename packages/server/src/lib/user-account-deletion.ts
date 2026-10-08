@@ -312,6 +312,7 @@ export function startAccountDeletionPhotoCleanupRecovery(input: {
  */
 export async function deleteLocalUserAccount(
   targetUserId: string,
+  options: { readonly onCommitted?: (userId: string) => void } = {},
 ): Promise<AccountDeletionResult> {
   const directDb = getSharedDirectDb();
   const deletion = await directDb.transaction(async (tx) => {
@@ -608,6 +609,13 @@ export async function deleteLocalUserAccount(
       deletedSessions: sessionIdList.length,
     };
   });
+
+  // Fence owned execution immediately after the local transaction commits,
+  // before best-effort filesystem or external identity-provider cleanup.
+  try { options.onCommitted?.(targetUserId); }
+  catch (error) {
+    warn(`[account-deletion] post-commit authority revocation failed: ${String(error)}`);
+  }
 
   await reconcileAccountDeletionPhotoCleanup({ db: directDb }).catch(() => {
     warn(`[account-deletion] photo cleanup deferred for ${targetUserId}`);

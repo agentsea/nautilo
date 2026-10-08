@@ -35,11 +35,12 @@ const readyToWork = {
 } satisfies DesktopReadyToWorkAPI;
 
 function aggregate(
-  mode: "standard" | "ready",
+  mode: "standard" | "ready" | "needs_attention",
   changes: Partial<Record<ReadyToWorkComponentId, Partial<ReadyToWorkAggregateStatus["components"][number]>>> = {},
 ): ReadyToWorkAggregateStatus {
   return {
     mode,
+    ...(mode === "needs_attention" ? { persistence: { reason: "unavailable" as const, liveAccess: "unchanged" as const } } : {}),
     components: componentIds.map((id) => ({
       id,
       state: mode === "ready" ? "ready" as const : "off_by_choice" as const,
@@ -216,6 +217,74 @@ describe("AutoApproveBar Ready to work slot", () => {
     await act(async () => { rejectGet?.(new Error("raw desktop error")); });
     await view.findByText("Ready: Unavailable");
     expect(view.queryByText("Ready: On")).toBeNull();
+  });
+
+  test("shows persistence attention separately from Standard and retries the status receipt", async () => {
+    nextStatus = {
+      ...aggregate("needs_attention"),
+      persistence: { reason: "unsupported", liveAccess: "unchanged" },
+    };
+    const view = renderBar();
+    const trigger = await view.findByRole("button", { name: "Ready to work: Needs attention" });
+    expect(trigger.textContent).toBe("Ready: Needs attention");
+    fireEvent.click(trigger);
+    expect(await view.findByText("Saved settings need attention. Check the individual controls for current access.")).toBeTruthy();
+    expect(view.getByText("Use a compatible Desktop version to read these saved settings.")).toBeTruthy();
+
+    nextStatus = aggregate("standard");
+    fireEvent.click(view.getByRole("button", { name: "Retry status" }));
+    await view.findByRole("button", { name: "Ready to work: Set up" });
+  });
+
+  test("reports an outstanding stop without claiming it completed", async () => {
+    nextStatus = {
+      ...aggregate("needs_attention"),
+      persistence: { reason: "invalid", liveAccess: "stopping" },
+    };
+    const view = renderBar();
+    fireEvent.click(await view.findByRole("button", { name: "Ready to work: Needs attention" }));
+    expect(await view.findByText("Stopping current access. Saved startup settings still need attention.")).toBeTruthy();
+    expect(view.getByText("The saved settings could not be validated. Retry the status check or turn off Ready to work.")).toBeTruthy();
+  });
+
+  test("anchors and viewport-clamps the attention popover, with Escape restoring focus", async () => {
+    nextStatus = aggregate("needs_attention");
+    const view = renderBar();
+    const trigger = await view.findByRole("button", { name: "Ready to work: Needs attention" });
+    const originalWidth = window.innerWidth;
+    const originalHeight = window.innerHeight;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 240 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 300 });
+    trigger.getBoundingClientRect = () => ({ left: 200, right: 238, top: 100, bottom: 120 } as DOMRect);
+
+    fireEvent.click(trigger);
+    const dialog = await view.findByRole("dialog", { name: "Ready to work details" });
+    expect(dialog.style.left).toBe("8px");
+    expect(dialog.style.width).toBe("224px");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(view.queryByRole("dialog", { name: "Ready to work details" })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: originalWidth });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: originalHeight });
+  });
+
+  test("ignores a retry reply after a newer subscription status replaces the attention view", async () => {
+    nextStatus = aggregate("needs_attention");
+    let resolveRetry!: (next: ReadyToWorkAggregateStatus) => void;
+    get.mockImplementationOnce(async () => nextStatus);
+    get.mockImplementationOnce(() => new Promise((resolve) => { resolveRetry = resolve; }));
+    const view = renderBar();
+    fireEvent.click(await view.findByRole("button", { name: "Ready to work: Needs attention" }));
+    fireEvent.click(await view.findByRole("button", { name: "Retry status" }));
+    await act(async () => { listener?.(aggregate("standard")); });
+    await view.findByRole("button", { name: "Ready to work: Set up" });
+    await act(async () => {
+      resolveRetry(aggregate("needs_attention"));
+      await Promise.resolve();
+    });
+    expect(view.queryByRole("button", { name: "Ready to work: Needs attention" })).toBeNull();
+    expect(view.getByRole("button", { name: "Ready to work: Set up" })).toBeTruthy();
   });
 
   test("closes on Escape and outside pointer input while restoring trigger focus", async () => {

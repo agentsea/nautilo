@@ -1,5 +1,5 @@
 /**
- * D373 / Stack 137 — PTY session host (Electron main process).
+ * PTY session host (Electron main process).
  *
  * A per-process pool of `node-pty` sessions keyed by id, shared by two
  * consumers that both live in the Electron main process:
@@ -25,8 +25,13 @@
 
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
 import { createRequire } from "node:module";
+import { randomUUID, createHash } from "node:crypto";
 import type { IPty } from "node-pty";
 import type { Sandbox } from "@nautilo/sandbox";
+import { parseHumanTerminalOperation, parseHumanTerminalOwner, parseHumanTerminalConsentOwner, sameHumanTerminalConsentOwner,
+  type HumanTerminalConsent, type HumanTerminalConsentOwner,
+  type HumanTerminalGrant, type HumanTerminalOperation, type HumanTerminalOwner,
+  type HumanTerminalResult } from "../../../packages/types/src/human-terminal";
 
 const require = createRequire(import.meta.url);
 
@@ -52,8 +57,8 @@ export interface TerminalSessionInfo {
   readonly controller: Controller;
   /** P2.2b — agent tried to write while the user holds the lock (a pending request). */
   readonly requested: boolean;
-  /** D438 — main-owned per-PTY consent: the user has explicitly handed this
-   *  one PTY to Genie for its lifetime. False at birth for both origins
+  /** main-owned per-PTY consent: the user has explicitly handed this
+   *  one PTY to Genie until Human retake. False at birth for both origins
    *  (sandboxed PTYs are born agent-controlled and need no consent; a
    *  user-created real shell needs this set before `setController("agent")`
    *  can transfer). Not durable: dies with the session map entry. */
@@ -76,11 +81,13 @@ interface Session {
   /** P2.2b — set when the agent's write was refused (user holds the lock); a
    *  standing request the user can approve. Cleared on any control transfer. */
   requested: boolean;
-  /** D438 — main-owned per-PTY consent flag (see TerminalSessionInfo). */
+  /** main-owned per-PTY consent flag (see TerminalSessionInfo). */
   agentControlConsented: boolean;
+  /** Once scoped, legacy Agent APIs remain unavailable even after revocation. */
+  humanTerminalScoped: boolean;
   /** Bounded scrollback so a reopened view / late reader isn't blank. */
   scrollback: string;
-  /** Total bytes ever produced — the monotone cursor space for polled reads. */
+  /** Total UTF-16 code units produced — the existing monotone cursor space. */
   produced: number;
   /** 0.5 throughput — output coalesced within a frame before one IPC send. */
   pendingOut: string;
@@ -99,6 +106,11 @@ let pendingAgentHandoffSessionId: string | null = null;
 // the pending notification above, this survives the first successful call and
 // lasts exactly as long as the Human keeps Genie in control of that PTY.
 let boundAgentTerminalSessionId: string | null = null;
+// One explicitly selected Human PTY. Neither the grant nor its PTY id is a
+// model-facing selector; terminal-host remains the sole owner of that PTY.
+let humanTerminalGrant: (HumanTerminalConsent & { readonly sessionId: string; conversationId: string | null; inputs: Map<string, { digest: string; result: Promise<HumanTerminalResult> }> }) | null = null;
+let humanTerminalInputCapacity = 0;
+let publishHumanTerminalConsentChanged: (() => void | Promise<void>) | null = null;
 let publishAgentHandoffChanged: ((pending: boolean) => void | Promise<void>) | null = null;
 let pendingAgentHandoffPublication: Promise<void> = Promise.resolve();
 
@@ -118,6 +130,15 @@ function setPendingAgentHandoffSessionId(sessionId: string | null): void {
 
 async function waitForAgentHandoffPublication(): Promise<void> {
   await pendingAgentHandoffPublication;
+}
+
+function humanTerminalConsentChanged(): void {
+  const publisher = publishHumanTerminalConsentChanged;
+  if (!publisher) return;
+  pendingAgentHandoffPublication = pendingAgentHandoffPublication
+    .then(() => publisher(), () => publisher()).catch(() => {
+      console.warn("[terminal] Human terminal availability could not be refreshed");
+    });
 }
 
 /** Scrollback cap per session (chars). Head is dropped past the cap. */
@@ -149,7 +170,7 @@ function hostEnvironment(): Record<string, string> {
 
 /** Lazy bind — node-pty is native; defer load so bun:test imports of relay.ts
  *  don't require pty.node on Linux CI (only spawnSession needs it). */
-function spawnPty(...args: Parameters<typeof import("node-pty").spawn>): IPty {
+export function spawnTerminalPty(...args: Parameters<typeof import("node-pty").spawn>): IPty {
   // `require` here is the module-scope createRequire binding (line 31), not the
   // global — so `@typescript-eslint/no-require-imports` does not flag it and no
   // eslint-disable is needed. (A prior directive here was flagged "unused" and
@@ -217,7 +238,7 @@ export function spawnSession(args: TerminalCreateArgs = {}): TerminalSessionInfo
     env = wrapped.env;
   }
 
-  const pty = spawnPty(program, spawnArgs, {
+  const pty = spawnTerminalPty(program, spawnArgs, {
     name: "xterm-color",
     cols: args.cols && args.cols > 0 ? args.cols : 80,
     rows: args.rows && args.rows > 0 ? args.rows : 24,
@@ -237,6 +258,7 @@ export function spawnSession(args: TerminalCreateArgs = {}): TerminalSessionInfo
     controller,
     requested: false,
     agentControlConsented: false,
+    humanTerminalScoped: false,
     scrollback: "",
     produced: 0,
     pendingOut: "",
@@ -250,6 +272,7 @@ export function spawnSession(args: TerminalCreateArgs = {}): TerminalSessionInfo
     if (session.flushTimer !== null) clearTimeout(session.flushTimer);
     flushOutput(session);
     sessions.delete(id);
+    if (humanTerminalGrant?.sessionId === id) { humanTerminalGrant = null; humanTerminalConsentChanged(); }
     if (pendingAgentHandoffSessionId === id) setPendingAgentHandoffSessionId(null);
     if (boundAgentTerminalSessionId === id) boundAgentTerminalSessionId = null;
     getWebContents?.()?.send("terminal:exit", { sessionId: id, exitCode });
@@ -261,13 +284,16 @@ export function spawnSession(args: TerminalCreateArgs = {}): TerminalSessionInfo
 export function writeSession(id: string, data: string, by: Controller = "user"): WriteResult {
   const s = sessions.get(id);
   if (!s) return { ok: false, reason: "no-session" };
+  // Legacy Agent input has no authenticated tuple and cannot borrow a scoped
+  // Human grant. Human IPC continues to use its existing controller lock.
+  if (by === "agent" && s.humanTerminalScoped) return { ok: false, reason: "locked" };
   // P2.2b single-writer lock: only the current controller may write. The
   // other party (a user keystroke while Genie drives, or an agent write while
   // the user holds control) is refused — no interleaved bytes on one stdin.
   if (s.controller !== by) {
     // The agent's refused write IS its request for control: raise a standing
     // flag the user can approve from the surface (no chat round-trip needed).
-    // D438 — this applies to BOTH origins: an agent write against a live
+    // this applies to BOTH origins: an agent write against a live
     // user-controlled PTY (sandboxed or not) raises at most one standing
     // request and returns `locked`. The relay then waits on the bounded
     // grant path; the user's explicit `grantAgentControl` (or a consented
@@ -291,20 +317,22 @@ export function writeSession(id: string, data: string, by: Controller = "user"):
  * operation. It may NOT mint consent for a real user shell — that requires
  * {@link grantAgentControl}, the active-sender-validated grant IPC.
  *
- * User retake (`controller="user"`) is always allowed and does NOT clear
- * consent: once the user has handed a PTY to Genie, control may move back
- * and forth for that PTY's lifetime without re-confirming. Both directions
- * resolve a pending agent request.
+ * User retake (`controller="user"`) revokes consent and all routing state.
+ * A later Agent transfer requires a fresh explicit grant. Neither transfer
+ * kills the PTY or interrupts the Human's job.
  */
 function setController(id: string, controller: Controller): boolean {
   const s = sessions.get(id);
   if (!s) return false;
+  if (controller === "agent" && s.humanTerminalScoped) return false;
   if (controller === "agent" && !s.sandboxed && !s.agentControlConsented) return false;
   s.controller = controller;
   if (controller === "agent" && !s.sandboxed && s.agentControlConsented) {
     boundAgentTerminalSessionId = id;
     setPendingAgentHandoffSessionId(id);
   } else if (controller === "user") {
+    s.agentControlConsented = false;
+    if (humanTerminalGrant?.sessionId === id) { humanTerminalGrant = null; humanTerminalConsentChanged(); }
     if (pendingAgentHandoffSessionId === id) setPendingAgentHandoffSessionId(null);
     if (boundAgentTerminalSessionId === id) boundAgentTerminalSessionId = null;
   }
@@ -317,19 +345,19 @@ function setController(id: string, controller: Controller): boolean {
 }
 
 /**
- * D438 — the explicit, active-sender-validated grant operation. Atomically
+ * the explicit, active-sender-validated grant operation. Atomically
  * records per-PTY consent, transfers the input lock to Genie, emits the
  * authoritative `terminal:controller` event, and clears/emits any standing
- * `terminal:request`. Returns `false` only when the session is gone.
+ * `terminal:request`. Missing or scoped sessions refuse this legacy grant.
  *
- * This is the ONE operation that mints consent. Generic `setController` may
- * consume it but never creates it. After this call, `setController("agent")`
- * succeeds for this PTY for the rest of its lifetime (even after the user
- * retakes), and no confirmation is re-raised.
+ * This operation mints legacy consent only. Generic `setController` may
+ * consume it but never creates it. Human retake revokes it; scoped handoff
+ * uses grantHumanTerminalControl with an authenticated owner instead.
  */
 function grantAgentControl(id: string): boolean {
   const s = sessions.get(id);
   if (!s) return false;
+  if (s.humanTerminalScoped) return false;
   s.agentControlConsented = true;
   s.controller = "agent";
   boundAgentTerminalSessionId = id;
@@ -420,6 +448,9 @@ function resizeSession(id: string, cols: number, rows: number): void {
   if (s && cols > 0 && rows > 0) s.pty.resize(cols, rows);
 }
 
+/** Legacy Agent dispatch must not discover, kill or borrow a scoped Human PTY. */
+export function isHumanTerminalScoped(id: string): boolean { return sessions.get(id)?.humanTerminalScoped === true; }
+
 export function killSession(id: string): void {
   const s = sessions.get(id);
   if (!s) return;
@@ -430,6 +461,7 @@ export function killSession(id: string): void {
     /* already dead */
   }
   sessions.delete(id);
+  if (humanTerminalGrant?.sessionId === id) { humanTerminalGrant = null; humanTerminalConsentChanged(); }
   if (pendingAgentHandoffSessionId === id) setPendingAgentHandoffSessionId(null);
   if (boundAgentTerminalSessionId === id) boundAgentTerminalSessionId = null;
 }
@@ -476,6 +508,17 @@ export function readTerminalSince(
   id: string,
   cursor: number,
 ): { ok: true; data: string; cursor: number; truncated: boolean } | { ok: false } {
+  // This is the legacy Agent helper, not Human renderer authority.
+  if (sessions.get(id)?.humanTerminalScoped) return { ok: false };
+  return readHumanTerminalSince(id, cursor);
+}
+
+/** Trusted Human IPC may read its own PTY without consuming Genie consent.
+ * Do not expose this helper through an unscoped Agent dispatcher. */
+export function readHumanTerminalSince(
+  id: string,
+  cursor: number,
+): { ok: true; data: string; cursor: number; truncated: boolean } | { ok: false } {
   const s = sessions.get(id);
   if (!s) return { ok: false };
   const bufferStart = s.produced - s.scrollback.length;
@@ -493,6 +536,169 @@ export function readTerminalSince(
   };
 }
 
+/** Called only after fresh explicit Human UI consent and trusted main tuple
+ * validation. This never spawns a PTY and never infers an Agent from a name. */
+export function grantHumanTerminalControl(id: string, owner: HumanTerminalOwner): HumanTerminalGrant | null {
+  const parsed = parseHumanTerminalOwner(owner);
+  if (!parsed) return null;
+  const { conversationId: _conversationId, ...selection } = parsed;
+  const consent = grantHumanTerminalConsent(id, selection);
+  return consent ? bindHumanTerminalConsent(parsed, consent.generation) : null;
+}
+
+/** Explicit Human consent is pending until an admitted foreground dispatch
+ * supplies the canonical conversation. Selection metadata is never a grant. */
+export function grantHumanTerminalConsent(id: string, owner: HumanTerminalConsentOwner): HumanTerminalConsent | null {
+  const parsed = parseHumanTerminalConsentOwner(owner);
+  const session = sessions.get(id);
+  if (!parsed || !session || session.sandboxed) return null;
+  if (humanTerminalGrant) setController(humanTerminalGrant.sessionId, "user");
+  if (boundAgentTerminalSessionId !== null && boundAgentTerminalSessionId !== id) setController(boundAgentTerminalSessionId, "user");
+  const grant = { owner: parsed, generation: randomUUID(), sessionId: id, conversationId: null, inputs: new Map<string, { digest: string; result: Promise<HumanTerminalResult> }>() };
+  humanTerminalGrant = grant;
+  session.humanTerminalScoped = true;
+  session.agentControlConsented = true;
+  session.controller = "agent";
+  // The scoped lane cannot be discovered or selected through legacy routing.
+  boundAgentTerminalSessionId = null;
+  setPendingAgentHandoffSessionId(null);
+  humanTerminalConsentChanged();
+  getWebContents?.()?.send("terminal:controller", { sessionId: id, controller: "agent" });
+  if (session.requested) {
+    session.requested = false;
+    getWebContents?.()?.send("terminal:request", { sessionId: id, requested: false });
+  }
+  return { owner: { ...parsed }, generation: grant.generation };
+}
+
+/** Main-owned consent metadata only; no terminal bytes or model selector. */
+export function peekHumanTerminalConsent(): HumanTerminalConsent | null {
+  const grant = humanTerminalGrant;
+  const session = grant && sessions.get(grant.sessionId);
+  return grant && session?.controller === "agent" && session.agentControlConsented
+    ? { owner: { ...grant.owner }, generation: grant.generation } : null;
+}
+
+/** Called only after fresh canonical foreground admission. Atomic binding
+ * cannot select a different PTY or replace an already bound conversation. */
+export function bindHumanTerminalConsent(owner: HumanTerminalOwner, generation: string): HumanTerminalGrant | null {
+  const parsed = parseHumanTerminalOwner(owner);
+  const grant = humanTerminalGrant;
+  const consent = peekHumanTerminalConsent();
+  if (!parsed || !grant || !consent || grant.generation !== generation
+    || !sameHumanTerminalConsentOwner(grant.owner, parsed)
+    || (grant.conversationId !== null && grant.conversationId !== parsed.conversationId)) return null;
+  grant.conversationId = parsed.conversationId;
+  return { owner: parsed, generation };
+}
+
+export function revokeHumanTerminalConsent(generation: string): boolean {
+  const grant = humanTerminalGrant;
+  return grant?.generation === generation ? setController(grant.sessionId, "user") : false;
+}
+
+/** Electron-local discovery for an already authenticated exact owner. */
+export function peekHumanTerminalGrant(owner: HumanTerminalOwner): HumanTerminalGrant | null {
+  const parsed = parseHumanTerminalOwner(owner);
+  const grant = humanTerminalGrant;
+  const session = grant && sessions.get(grant.sessionId);
+  return parsed && grant && session && session.controller === "agent" && session.agentControlConsented
+    && grant.conversationId === parsed.conversationId && sameHumanTerminalConsentOwner(grant.owner, parsed)
+    ? { owner: { ...grant.owner, conversationId: grant.conversationId }, generation: grant.generation } : null;
+}
+
+/** Session/auth retirement uses the captured generation, so stale cleanup
+ * cannot revoke a newer explicit handoff. No PTY is killed. */
+export function revokeHumanTerminalGrant(owner: HumanTerminalOwner, generation: string): boolean {
+  const grant = peekHumanTerminalGrant(owner);
+  if (!grant || grant.generation !== generation || !humanTerminalGrant) return false;
+  return setController(humanTerminalGrant.sessionId, "user");
+}
+
+/** Fresh checks surround awaits; the exact retained grant is rechecked in the
+ * same turn immediately before reads/input. Input acknowledgement is not a
+ * shell exit/completion receipt. Existing scrollback uses UTF-16 cursors. */
+async function executeHumanTerminalOnce(owner: HumanTerminalOwner, generation: string,
+  operation: HumanTerminalOperation, isCurrent: () => boolean | Promise<boolean>, signal?: AbortSignal): Promise<HumanTerminalResult> {
+  const parsedOwner = parseHumanTerminalOwner(owner);
+  const request = parseHumanTerminalOperation(operation);
+  const action = request?.action ?? "read";
+  let inputWritten = false;
+  const failure = (code: Extract<HumanTerminalResult, { ok: false }>["code"]): HumanTerminalResult => ({
+    ok: false, action, code, inputWritten: code === "input_failed" ? "unknown" : inputWritten, retrySafe: !inputWritten && code !== "input_failed",
+  });
+  if (!parsedOwner || !request || typeof generation !== "string" || !generation) return failure("invalid_request");
+  const grant = humanTerminalGrant;
+  const matches = () => !!grant && humanTerminalGrant === grant && grant.generation === generation
+    && grant.conversationId === parsedOwner.conversationId && sameHumanTerminalConsentOwner(grant.owner, parsedOwner) && !signal?.aborted
+    && sessions.get(grant.sessionId)?.controller === "agent" && sessions.get(grant.sessionId)?.agentControlConsented === true;
+  if (!matches()) return failure("grant_required");
+  const fresh = async () => {
+    try { return await isCurrent() && matches(); } catch { return false; }
+  };
+  if (!await fresh()) return failure("authority_changed");
+  const session = grant && sessions.get(grant.sessionId);
+  if (!session) return failure("no_session");
+  const cursor = request.action === "read" ? request.cursor ?? 0 : session.produced;
+  if (!matches()) return failure("authority_changed");
+  if (request.action !== "read") {
+    try {
+      // Preserve the current program: it may be a shell, REPL or TUI.
+      session.pty.write(request.action === "run" ? `${request.command}\r` : request.data);
+      inputWritten = true;
+    } catch { return failure("input_failed"); }
+  }
+  if (!matches()) return failure(inputWritten ? "outcome_unknown" : "authority_changed");
+  if (request.action !== "read") {
+    if (!await fresh() || !matches()) return failure("outcome_unknown");
+    // A submission receipt retains no duplicate scrollback. Read from this
+    // pre-input cursor to observe subsequent output, including synchronous data.
+    return { ok: true, action, inputWritten, commandOutcome: "not_observed", data: "", cursor,
+      truncated: false, availableFrom: cursor, produced: cursor, cursorUnit: "utf16_code_units" };
+  }
+  const output = readHumanTerminalSince(session.id, cursor);
+  const availableFrom = session.produced - session.scrollback.length;
+  if (!output.ok) return failure(inputWritten ? "outcome_unknown" : "no_session");
+  if (!await fresh() || !matches()) return failure(inputWritten ? "outcome_unknown" : "authority_changed");
+  return { ...output, action, inputWritten, commandOutcome: "not_observed",
+    availableFrom, produced: output.cursor, cursorUnit: "utf16_code_units" };
+}
+
+/** One grant owns its input identity ledger. Never evict an identity while
+ * the grant can still write; exact concurrent repeats share the same outcome. */
+export async function executeHumanTerminal(owner: HumanTerminalOwner, generation: string,
+  operation: HumanTerminalOperation, isCurrent: () => boolean | Promise<boolean>, signal?: AbortSignal,
+  invocationId?: string): Promise<HumanTerminalResult> {
+  const request = parseHumanTerminalOperation(operation);
+  if (!request || request.action === "read") return executeHumanTerminalOnce(owner, generation, operation, isCurrent, signal);
+  const failure = (code: Extract<HumanTerminalResult, { ok: false }>["code"]): HumanTerminalResult => ({
+    ok: false, action: request.action, code, inputWritten: false, retrySafe: true,
+  });
+  const grant = humanTerminalGrant;
+  if (!grant || !peekHumanTerminalGrant(owner) || grant.generation !== generation) return {
+    ok: false, action: request.action, code: "grant_required", inputWritten: "unknown", retrySafe: false,
+  };
+  if (!invocationId || invocationId.trim() !== invocationId) return failure("invalid_request");
+  const digest = createHash("sha256").update(JSON.stringify(request)).digest("hex");
+  const previous = grant.inputs.get(invocationId);
+  if (previous && previous.digest !== digest) return {
+    ok: false, action: request.action, code: "invocation_conflict", inputWritten: "unknown", retrySafe: false,
+  };
+  if (!previous && grant.inputs.size >= humanTerminalInputCapacity) return failure("capacity_reached");
+  if (previous) {
+    const result = await previous.result;
+    let current = false;
+    try { current = await isCurrent(); } catch { /* fail closed */ }
+    if (!current || signal?.aborted || humanTerminalGrant !== grant || !peekHumanTerminalGrant(owner)) {
+      return { ok: false, action: request.action, code: "outcome_unknown", inputWritten: result.inputWritten, retrySafe: false };
+    }
+    return result;
+  }
+  const result = executeHumanTerminalOnce(owner, generation, request, isCurrent, signal);
+  grant.inputs.set(invocationId, { digest, result });
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Renderer IPC (user-driven sessions — real shell, no sandbox).
 // ---------------------------------------------------------------------------
@@ -505,12 +711,17 @@ export interface TerminalHostDeps {
    * The PTY id and shell state remain Electron-local; session-less terminal
    * operations resolve through the local binding. */
   readonly onAgentHandoffChanged?: (pending: boolean) => void | Promise<void>;
+  readonly onHumanTerminalConsentChanged?: () => void | Promise<void>;
+  /** Explicit caller policy; capacity exhaustion refuses further input until fresh Human consent. */
+  readonly humanTerminalInputCapacity?: number;
 }
 
 export function registerTerminalHost(deps: TerminalHostDeps): void {
   const { ipcMain, assertSender } = deps;
+  humanTerminalInputCapacity = Number.isSafeInteger(deps.humanTerminalInputCapacity) && deps.humanTerminalInputCapacity! > 0 ? deps.humanTerminalInputCapacity! : 0;
   getWebContents = deps.getWebContents;
   publishAgentHandoffChanged = deps.onAgentHandoffChanged ?? null;
+  publishHumanTerminalConsentChanged = deps.onHumanTerminalConsentChanged ?? null;
 
   ipcMain.handle(
     "terminal:create",
@@ -556,7 +767,7 @@ export function registerTerminalHost(deps: TerminalHostDeps): void {
     },
   );
 
-  // D438 — the explicit grant IPC, distinct from the generic
+  // the explicit grant IPC, distinct from the generic
   // `terminal:set-controller`. It is the only operation that mints per-PTY
   // consent; `assertSender` keeps a background/foreign renderer from granting
   // control of another session's PTY. Registered separately so the generic
@@ -615,7 +826,9 @@ export function disposeAllTerminals(): void {
     }
   }
   sessions.clear();
+  humanTerminalGrant = null;
   setPendingAgentHandoffSessionId(null);
   boundAgentTerminalSessionId = null;
   publishAgentHandoffChanged = null;
+  publishHumanTerminalConsentChanged = null;
 }

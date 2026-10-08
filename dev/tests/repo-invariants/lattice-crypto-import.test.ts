@@ -1398,6 +1398,10 @@ function isLatticeBridgeTarget(value: string): boolean {
 }
 
 const reviewedBridgeProductConsumerInventory = [
+  // Local execution history borrows the existing protected Agent reader and
+  // references its public payload type without importing a crypto runtime.
+  "packages/runtime/src/conversation/local-execution-history.ts -> @nautilo/lattice-bridge",
+  "packages/runtime/tests/unit/local-execution-history-recovery.test.ts -> @nautilo/lattice-bridge",
   // Protected Task publication and client custody use the reviewed bridge
   // facades; isolated tests exercise those exact seams.
   "apps/desktop/electron/task-operation-ipc.ts -> @nautilo/lattice-bridge",

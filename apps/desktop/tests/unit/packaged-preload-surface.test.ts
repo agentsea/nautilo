@@ -12,6 +12,7 @@ import {
 describe("packaged Desktop preload smoke contract", () => {
   test("includes recently added privileged bridges", () => {
     expect(NAUTILO_DESKTOP_SURFACE).toContain("companion");
+    expect(NAUTILO_DESKTOP_SURFACE).toContain("localExecution");
     expect(NAUTILO_DESKTOP_SURFACE).toContain("miniAppRecovery");
     expect(NAUTILO_DESKTOP_SURFACE).toContain("binaryRead");
     expect(NAUTILO_DESKTOP_SURFACE).toContain("mediaProxy");

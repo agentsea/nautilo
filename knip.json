@@ -311,6 +311,7 @@
         "tests/unit/**/*.test.ts",
         "tests/unit-isolated/**/*.test.ts",
         "tests/integration/**/*.test.ts",
+        "tests/integration/local-execution-native.ts",
         "tests/integration-isolated/**/*.test.ts",
         "tests/fixtures/sequence-text-electron.ts"
       ],

@@ -134,5 +134,25 @@
         "sizeMin": 4442900
       }
     }
+  },
+  "github-cli": {
+    "version": "2.102.0",
+    "license": "MIT",
+    "source": "https://github.com/cli/cli",
+    "binaryName": "gh",
+    "artifacts": {
+      "darwin-arm64": {
+        "url": "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_macOS_arm64.zip",
+        "sha256": "da922c20d1792e5b2cbf375593d7a658acf034c12c84e007e71c76ef959c337e",
+        "binarySha256": "8a4258433c81106343144857750316241759d06dcf16265cf3c4864a8f2f2ad6",
+        "member": "gh_2.102.0_macOS_arm64/bin/gh"
+      },
+      "darwin-x64": {
+        "url": "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_macOS_amd64.zip",
+        "sha256": "b245f24eb2bf5f75b426b4c26da3651a107f8d5b6f4fddfbfccc5679041378b3",
+        "binarySha256": "df615405bcf707c5855f22c8be477c62cd7f7af743de75c4805c2b375b3a479c",
+        "member": "gh_2.102.0_macOS_amd64/bin/gh"
+      }
+    }
   }
 }

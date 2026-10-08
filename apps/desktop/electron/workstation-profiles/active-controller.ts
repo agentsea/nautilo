@@ -1,5 +1,5 @@
 /**
- * D418 — Electron-main active Workstation Profile state machine.
+ * Electron-main active Workstation Profile state machine.
  *
  * One `ActiveWorkstationProfileController` owns the instance-scoped
  * `WorkstationProfileStore`, shares the single main-process
@@ -154,6 +154,8 @@ export class ActiveWorkstationProfileController {
   private readonly mintGrantId: () => string;
   private readonly onActiveProfileChanged: ((reason: string) => void) | undefined;
   private activeSession: ActiveWorkstationProfileSession | null = null;
+  private authorityHidden = false;
+  private pendingDeactivations = 0;
   private pending: Promise<void> = Promise.resolve();
 
   constructor(options: ActiveWorkstationProfileControllerOptions) {
@@ -202,7 +204,7 @@ export class ActiveWorkstationProfileController {
 
       const stored = await this.profileStore.get({ profileId: input.profileId });
       if (!stored.ok) {
-        // D418 — distinguish store health from a missing profile so the
+        // distinguish store health from a missing profile so the
         // caller (future settings/discovery wiring) can react differently:
         //   - profile_not_found  → the store is fine, the id is unknown;
         //   - store_unavailable  → the store file could not be read;
@@ -281,6 +283,9 @@ export class ActiveWorkstationProfileController {
         })),
       };
       this.activeSession = nextSession;
+      // An already-requested Off wins over an older queued activation. Only
+      // a successful activation after all reductions may expose authority.
+      this.authorityHidden = this.pendingDeactivations > 0;
 
       // Notify after the swap so the relay's atomic re-advertise reflects
       // the new binding. Fired within the serialized section so a concurrent
@@ -297,29 +302,33 @@ export class ActiveWorkstationProfileController {
    * caller can distinguish a no-op from a real teardown.
    */
   deactivate(): Promise<ActiveWorkstationProfileDeactivateResult> {
+    this.authorityHidden = true;
+    this.pendingDeactivations += 1;
     return this.serialized(async () => {
-      const current = this.activeSession;
-      if (current === null) {
-        return {
-          ok: false,
-          code: "no_active_profile",
-          message: "no active workstation profile is bound",
-        };
+      try {
+        const current = this.activeSession;
+        if (current === null) {
+          return { ok: false, code: "no_active_profile", message: "no active workstation profile is bound" };
+        }
+        const cleared = await clearCompiledProfileSession({
+          authority: this.authority,
+          userId: current.subject.userId,
+          grantIds: current.grantIds,
+        });
+        this.activeSession = null;
+        this.onActiveProfileChanged?.("workstation profile deactivate");
+        return { ok: true, data: { cleared: cleared.cleared, skipped: [...cleared.skipped] } };
+      } finally {
+        // Keep authority hidden even when grant teardown throws. A fresh
+        // successful activation is required to expose another session.
+        this.pendingDeactivations -= 1;
       }
-      const cleared = await clearCompiledProfileSession({
-        authority: this.authority,
-        userId: current.subject.userId,
-        grantIds: current.grantIds,
-      });
-      this.activeSession = null;
-      this.onActiveProfileChanged?.("workstation profile deactivate");
-      return { ok: true, data: { cleared: cleared.cleared, skipped: [...cleared.skipped] } };
     });
   }
 
   /** The currently bound session, or `null`. Read-only snapshot. */
   getActiveSession(): ActiveWorkstationProfileSession | null {
-    return this.activeSession;
+    return this.authorityHidden ? null : this.activeSession;
   }
 
   /**
@@ -331,7 +340,7 @@ export class ActiveWorkstationProfileController {
    * never cross the wire.
    */
   getActiveNetworkPolicy(): ProfileNetworkPolicy | null {
-    return this.activeSession === null ? null : this.activeSession.network;
+    return this.getActiveSession()?.network ?? null;
   }
 
   /**
@@ -340,7 +349,7 @@ export class ActiveWorkstationProfileController {
    * rather than advertising a partial or misleading binding.
    */
   getProfileSnapshot(): Promise<RelayWorkstationProfileSnapshot | undefined> {
-    const session = this.activeSession;
+    const session = this.getActiveSession();
     if (session === null) return Promise.resolve(undefined);
     return Promise.resolve({
       profileId: session.profileId,

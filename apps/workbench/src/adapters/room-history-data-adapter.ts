@@ -19,6 +19,14 @@ import {
 } from "./session-rehydrate";
 import { consumeRoomHistoryRows } from "./room-history-row-access";
 import type { MessageBackfillUrgentSelection } from "@nautilo/api-client/browser";
+import { getLocalExecutionAPI, type DesktopLocalExecutionHistoryOverlay } from "../lib/desktop";
+import { publishLocalExecutionHistoryOverlay } from "../lib/local-execution-observation";
+
+type HistoryWithExecutionOverlays = VaultRoomHistoryShadowReadResultV1 & {
+  localExecutionHistoryOverlays?: readonly (DesktopLocalExecutionHistoryOverlay & {
+    sessionId: string; messageId: string; editRevision: number;
+  })[];
+};
 
 function decodeOrdinaryPayload(encoded: string) {
   try {
@@ -45,6 +53,8 @@ export function createRoomHistoryDataAdapter(input: Readonly<{
   readerDeviceId: string;
   prioritize?(selection: MessageBackfillUrgentSelection): void;
   onAuthorityWaiting?(roomId: string): void;
+  captureHistoryScope?(roomId: string): () => boolean;
+  onLocalExecutionHistory?(overlay: DesktopLocalExecutionHistoryOverlay): void;
   read(
     readerInput: VaultRoomHistoryShadowReadInputV1,
     acknowledgement: Omit<BrowserRoomHistoryShadowAcknowledgementInput, "result">,
@@ -60,6 +70,7 @@ export function createRoomHistoryDataAdapter(input: Readonly<{
       assertCryptoAdmissionAccess();
       const generation = getCryptoAdmissionSnapshot().generation;
       const { roomId, messages, sidecar } = reconcileInput;
+      const historyScopeIsCurrent = input.captureHistoryScope?.(roomId) ?? (() => false);
       const selectedMessages = messages.filter((message) =>
         Number.isSafeInteger(Number(message.id)) && Number(message.id) > 0
       );
@@ -307,10 +318,23 @@ export function createRoomHistoryDataAdapter(input: Readonly<{
           pageFailure: failureClass,
         });
       }
-      return consumeRoomHistoryRows(input.owner, messages, result.records, {
+      const consumed = await consumeRoomHistoryRows(input.owner, messages, result.records, {
         requireVerified: reconcileInput.requireVerified,
         expectedResults: records,
       });
+      assertCryptoAdmissionAccess(generation);
+      // Separate presentation only, after the same per-row protected access
+      // admission as the canonical payload. Never rewrite its signed content.
+      for (const overlay of (result as HistoryWithExecutionOverlays).localExecutionHistoryOverlays ?? []) {
+        const admitted = consumed.find(row => row.id === overlay.messageId &&
+          (row.editRevision ?? 0) === overlay.editRevision && !row.historyUnavailable && row.role === "tool");
+        const verified = result.records.filter(row => row.sessionId === overlay.sessionId &&
+          row.messageId === overlay.messageId && row.editRevision === overlay.editRevision && row.status === "verified");
+        if (admitted && verified.length === 1 && historyScopeIsCurrent()) {
+          (input.onLocalExecutionHistory ?? ((value) => publishLocalExecutionHistoryOverlay(getLocalExecutionAPI(), value)))(overlay);
+        }
+      }
+      return consumed;
     },
   });
 }

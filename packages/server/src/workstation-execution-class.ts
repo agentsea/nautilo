@@ -10,7 +10,7 @@ export function classifyWorkstationExecutionClass(
   toolName: string,
   args?: Readonly<Record<string, unknown>>,
 ): WorkstationExecutionClass {
-  if (toolName === "run_shell" && args?.["git"] !== undefined) {
+  if (toolName === "local_git" || (toolName === "run_shell" && args?.["git"] !== undefined)) {
     return "typed_broker";
   }
   if (toolName === "run_shell" && args?.["execution"] === "workstation") {
@@ -29,12 +29,16 @@ export function requiresNormalWorkstationCommandApproval(input: {
   readonly executionClass: WorkstationExecutionClass;
   readonly args?: unknown;
 }): boolean {
-  if (input.toolName !== "run_shell" || input.executionClass === "typed_broker") {
+  if (input.toolName === "write_stdin") {
+    const args = input.args as Readonly<Record<string, unknown>> | null | undefined;
+    return typeof args?.["chars"] === "string" && args["chars"].length > 0;
+  }
+  if ((input.toolName !== "run_shell" && input.toolName !== "exec_command") || input.executionClass === "typed_broker") {
     return false;
   }
   const raw =
     typeof input.args === "object" && input.args !== null
-      ? (input.args as Readonly<Record<string, unknown>>)["command"]
+      ? (input.args as Readonly<Record<string, unknown>>)[input.toolName === "exec_command" ? "cmd" : "command"]
       : undefined;
   const command = typeof raw === "string" ? raw : "";
   const severity = scanCommand(command, "standard").severity;

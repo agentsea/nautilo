@@ -1,5 +1,5 @@
 /**
- * D440 Phase 1 — revision-coherent plan fields + same-authority re-admission.
+ * Revision-coherent plan fields and same-authority re-admission.
  *
  * Pins the Phase 1 additions to `WorkstationDispatchPlan` /
  * `WorkstationRelayFingerprint` (Current Folder, durable grant-store
@@ -26,7 +26,7 @@ import {
 const FIXED_TS = "2026-07-20T12:00:00.000Z";
 const clock = () => new Date(FIXED_TS);
 
-function plan(overrides: Partial<WorkstationDispatchPlan> = {}): WorkstationDispatchPlan {
+function plan(overrides: Partial<Extract<WorkstationDispatchPlan, { executionClass: "profile_bound_sandbox" | "typed_broker" | "real_workstation" }>> = {}): Extract<WorkstationDispatchPlan, { executionClass: "profile_bound_sandbox" | "typed_broker" | "real_workstation" }> {
   return {
     toolCallId: "tc-1",
     userId: "user-1",
@@ -41,7 +41,7 @@ function plan(overrides: Partial<WorkstationDispatchPlan> = {}): WorkstationDisp
     capabilityRevision: 10,
     executionClass: "profile_bound_sandbox",
     admittedAt: FIXED_TS,
-    currentFolder: "/Users/d440/exact-project",
+    currentFolder: "/tmp/exact-project",
     grantRevision: 8,
     protectedPolicyVersion: 3,
     ...overrides,
@@ -84,7 +84,7 @@ function binding(
   };
 }
 
-describe("D440 Phase 1 — revision-coherent revalidation", () => {
+describe("Phase 1 — revision-coherent revalidation", () => {
   it("accepts an exact fingerprint match including the new revision fields", () => {
     expect(revalidatePlanAgainstRelay(plan(), fingerprint())).toEqual({ ok: true });
   });
@@ -124,14 +124,14 @@ describe("D440 Phase 1 — revision-coherent revalidation", () => {
   });
 });
 
-describe("D440 Phase 1 — InMemoryWorkstationDispatchPlanRegistry.readmit", () => {
-  it("returns null when getActiveBinding is not wired (legacy / pre-D440 no-op)", () => {
+describe("Phase 1 — InMemoryWorkstationDispatchPlanRegistry.readmit", () => {
+  it("returns null when getActiveBinding is not wired (legacy registry)", () => {
     const registry = new InMemoryWorkstationDispatchPlanRegistry({ now: clock });
     expect(
       registry.readmit({
         toolCallId: "tc-refresh",
         userId: "user-1",
-        currentFolder: "/Users/d440/exact-project",
+        currentFolder: "/tmp/exact-project",
         executionClass: "profile_bound_sandbox",
         fingerprint: fingerprint(),
       }),
@@ -149,7 +149,7 @@ describe("D440 Phase 1 — InMemoryWorkstationDispatchPlanRegistry.readmit", () 
     const readmitted = registry.readmit({
       toolCallId: "tc-refresh",
       userId: "user-1",
-      currentFolder: "/Users/d440/exact-project",
+      currentFolder: "/tmp/exact-project",
       executionClass: "profile_bound_sandbox",
       fingerprint: fingerprint(),
     });
@@ -157,7 +157,7 @@ describe("D440 Phase 1 — InMemoryWorkstationDispatchPlanRegistry.readmit", () 
     if (!readmitted) throw new Error("unreachable");
     expect(readmitted.toolCallId).toBe("tc-refresh");
     expect(readmitted.relayId).toBe("relay-A");
-    expect(readmitted.currentFolder).toBe("/Users/d440/exact-project");
+    expect(readmitted.currentFolder).toBe("/tmp/exact-project");
     expect(readmitted.grantRevision).toBe(8);
     expect(readmitted.protectedPolicyVersion).toBe(3);
     expect(readmitted.admittedAt).toBe(FIXED_TS);
@@ -176,7 +176,7 @@ describe("D440 Phase 1 — InMemoryWorkstationDispatchPlanRegistry.readmit", () 
       registry.readmit({
         toolCallId: "tc-drift",
         userId: "user-1",
-        currentFolder: "/Users/d440/exact-project",
+        currentFolder: "/tmp/exact-project",
         executionClass: "profile_bound_sandbox",
         fingerprint: fingerprint({ capabilityRevision: 10 }),
       }),
@@ -194,7 +194,7 @@ describe("D440 Phase 1 — InMemoryWorkstationDispatchPlanRegistry.readmit", () 
       registry.readmit({
         toolCallId: "tc-grant-drift",
         userId: "user-1",
-        currentFolder: "/Users/d440/exact-project",
+        currentFolder: "/tmp/exact-project",
         executionClass: "profile_bound_sandbox",
         fingerprint: fingerprint({ grantRevision: 8 }),
       }),
@@ -210,7 +210,7 @@ describe("D440 Phase 1 — InMemoryWorkstationDispatchPlanRegistry.readmit", () 
       registry.readmit({
         toolCallId: "tc-no-session",
         userId: "user-1",
-        currentFolder: "/Users/d440/exact-project",
+        currentFolder: "/tmp/exact-project",
         executionClass: "profile_bound_sandbox",
         fingerprint: fingerprint(),
       }),
@@ -226,7 +226,7 @@ describe("D440 Phase 1 — InMemoryWorkstationDispatchPlanRegistry.readmit", () 
       registry.readmit({
         toolCallId: "",
         userId: "user-1",
-        currentFolder: "/Users/d440/exact-project",
+        currentFolder: "/tmp/exact-project",
         executionClass: "profile_bound_sandbox",
         fingerprint: fingerprint(),
       }),

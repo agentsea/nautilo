@@ -1,5 +1,5 @@
 /**
- * D438 — terminal co-driving consent state machine.
+ * terminal co-driving consent state machine.
  *
  * terminal-host imports a native node-pty binding lazily, so loading the
  * Electron runtime in bun:test is not viable. These structural tests pin the
@@ -15,15 +15,13 @@
  *  - An agent write against a user-controlled PTY raises at most one standing
  *    request and returns `locked` (no `non-grantable` short-circuit).
  *  - Generic `setController("agent")` may consume consent but never mints it:
- *    it refuses unsandboxed AND unconsented sessions, and user retake does not
- *    clear consent.
- *  - `grantAgentControl` is the single consent-minting op: records consent,
- *    transfers to agent, emits controller, clears the request, returns false
- *    only for a missing session.
+ *    it refuses unsandboxed AND unconsented sessions; user retake revokes consent.
+ *  - Legacy `grantAgentControl` records consent, transfers to agent, emits
+ *    controller and clears the request; scoped PTYs require exact owner grants.
  *  - A distinct, active-sender-validated `terminal:grant-agent-control` IPC is
  *    registered separately from `terminal:set-controller`.
  *  - list/attach expose `agentControlConsented`.
- *  - The sandboxed-birth environment contract (D373) is preserved.
+ *  - The sandboxed-birth environment contract is preserved.
  *  - The relay no longer branches on `non-grantable`; the Workbench + preload
  *    mirrors expose the consent field and the grant method.
  */
@@ -126,11 +124,11 @@ describe("terminal real-shell authority boundary", () => {
     expect(fn).toContain('return { ok: false, reason: "locked" };');
   });
 
-  test("generic setController consumes consent but cannot mint it; retake keeps consent", () => {
+  test("generic setController consumes consent but cannot mint it; retake revokes consent", () => {
     const fn = sliceFrom(
       terminalHost,
       "function setController(id: string, controller: Controller): boolean",
-      "\n}\n\n/**\n * D438 — the explicit, active-sender-validated grant operation",
+      "\n}\n\n/**\n * the explicit, active-sender-validated grant operation",
     );
     // Refuses agent transfer only when BOTH unsandboxed AND unconsented.
     expect(fn).toContain('if (controller === "agent" && !s.sandboxed && !s.agentControlConsented) return false;');
@@ -138,19 +136,21 @@ describe("terminal real-shell authority boundary", () => {
     expect(fn).toContain('"terminal:controller"');
     // Resolves a standing request on transfer.
     expect(fn).toContain("s.requested = false;");
-    // Must NOT clear consent on retake (consent survives for the PTY lifetime).
-    expect(fn).not.toContain("s.agentControlConsented = false");
+    // A new explicit grant is required after Human retake.
+    expect(fn).toContain("s.agentControlConsented = false");
+    expect(fn).toContain("humanTerminalGrant = null");
   });
 
-  test("grantAgentControl is the single consent-minting atomic op; false only for missing session", () => {
+  test("legacy grantAgentControl mints consent only for live unscoped sessions", () => {
     const fn = sliceFrom(
       terminalHost,
       "function grantAgentControl(id: string): boolean",
       "\n}\n\n/** Current lock state for a session",
     );
-    // Missing session -> false (and that is the ONLY false return).
+    // Missing and already scoped sessions cannot receive an unbound grant.
     expect(fn).toContain("if (!s) return false;");
-    expect((fn.match(/return false/g) ?? []).length).toBe(1);
+    expect(fn).toContain("if (s.humanTerminalScoped) return false;");
+    expect((fn.match(/return false/g) ?? []).length).toBe(2);
     // Records consent.
     expect(fn).toContain("s.agentControlConsented = true;");
     // Transfers to agent.
@@ -217,7 +217,7 @@ describe("terminal real-shell authority boundary", () => {
     const setControllerFn = sliceFrom(
       terminalHost,
       "function setController(id: string, controller: Controller): boolean",
-      "\n}\n\n/**\n * D438 — the explicit, active-sender-validated grant operation",
+      "\n}\n\n/**\n * the explicit, active-sender-validated grant operation",
     );
     expect(setControllerFn).toContain("boundAgentTerminalSessionId = id;");
     expect(setControllerFn).toContain("if (boundAgentTerminalSessionId === id) boundAgentTerminalSessionId = null;");

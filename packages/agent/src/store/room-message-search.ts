@@ -5,6 +5,7 @@ import {
   type RoomHistorySelectedMessageCoordinate,
   type SessionMessage,
 } from "./session-store";
+import { readTranscriptToolPresentation } from "./transcript-tool-result";
 import { sanitizeSerializedTranscriptToolCalls } from "./transcript-tool-arguments";
 import { withAgentTrustContext, rowsFromExecute as rowsFromTrustExecute } from "./trust-agent-db";
 
@@ -99,6 +100,7 @@ interface RawHumanRoomMessageRow extends Record<string, unknown> {
   role: string;
   content: string;
   tool_calls: string | null;
+  tool_presentation?: unknown;
   tool_name: string | null;
   created_at: Date | string;
   edited_at: Date | string | null;
@@ -199,6 +201,7 @@ async function queryVisibleHumanRoomMessages(args: {
           sm.content,
           sm.content_search,
           sm.tool_calls,
+          sm.metadata->'nautilo_tool_result' AS tool_presentation,
           sm.tool_name,
           sm.created_at,
           sm.edited_at,
@@ -306,6 +309,8 @@ function toSessionMessage(row: RawHumanRoomMessageRow): SessionMessage {
     role: row.role,
     content: row.content,
     toolCalls: sanitizeSerializedTranscriptToolCalls(row.tool_calls),
+    ...(row.role === "tool"
+      ? readTranscriptToolPresentation({ nautilo_tool_result: row.tool_presentation }) : {}),
     toolName: row.tool_name,
     createdAt,
     editedAt: row.edited_at ? dateOf(row.edited_at) : null,

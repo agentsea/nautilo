@@ -67,3 +67,9 @@ export type { EmbeddingProvider, EmbeddingWithProvenanceV1 } from "./embedding";
 export * from "./voice-stream";
 
 export * from "./moderation";
+
+export { isLocalExecutionReadArgs } from "./local-execution-read";
+
+export * from "./github-invocation";
+
+export * from "./github-broker";

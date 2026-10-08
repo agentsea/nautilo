@@ -215,6 +215,8 @@ type AroundDisplayMessage = {
   editedAt?: Date | string | null;
   editRevision?: number;
   toolName?: string | null;
+  toolCallId?: string;
+  toolStatus?: "success" | "error";
   displayContent?: string;
   replyToMessageId?: number | null;
   replyCount?: number;
@@ -242,6 +244,10 @@ function serializeRoomMessageForAround(message: AroundDisplayMessage) {
       ? { editRevision: message.editRevision }
       : {}),
     ...(message.toolName != null && message.toolName !== "" ? { toolName: message.toolName } : {}),
+    ...(message.role === "tool" && typeof message.toolCallId === "string" && message.toolCallId.length > 0
+      ? { toolCallId: message.toolCallId } : {}),
+    ...(message.role === "tool" && (message.toolStatus === "success" || message.toolStatus === "error")
+      ? { toolStatus: message.toolStatus } : {}),
     ...(message.displayContent !== undefined ? { displayContent: message.displayContent } : {}),
     ...(message.replyToMessageId != null ? { replyToMessageId: message.replyToMessageId } : {}),
     ...(typeof message.replyCount === "number" ? { replyCount: message.replyCount } : {}),
@@ -379,6 +385,10 @@ export function sessionRoutes(
           ? { editRevision: m.editRevision }
           : {}),
         ...(m.toolName != null && m.toolName !== "" ? { toolName: m.toolName } : {}),
+        ...(m.role === "tool" && typeof m.toolCallId === "string" && m.toolCallId.length > 0
+          ? { toolCallId: m.toolCallId } : {}),
+        ...(m.role === "tool" && (m.toolStatus === "success" || m.toolStatus === "error")
+          ? { toolStatus: m.toolStatus } : {}),
         ...(m.displayContent !== undefined ? { displayContent: m.displayContent } : {}),
         ...(m.replyToMessageId != null && m.replyToMessageId !== undefined
           ? { replyToMessageId: m.replyToMessageId }
@@ -564,6 +574,10 @@ export function sessionRoutes(
           ? { editRevision: m.editRevision }
           : {}),
         ...(m.toolName != null && m.toolName !== "" ? { toolName: m.toolName } : {}),
+        ...(m.role === "tool" && typeof m.toolCallId === "string" && m.toolCallId.length > 0
+          ? { toolCallId: m.toolCallId } : {}),
+        ...(m.role === "tool" && (m.toolStatus === "success" || m.toolStatus === "error")
+          ? { toolStatus: m.toolStatus } : {}),
         ...(m.displayContent !== undefined ? { displayContent: m.displayContent } : {}),
         ...(m.replyToMessageId != null && m.replyToMessageId !== undefined
           ? { replyToMessageId: m.replyToMessageId }

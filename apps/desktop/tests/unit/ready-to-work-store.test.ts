@@ -117,8 +117,82 @@ describe("Ready-to-work desired state", () => {
     const store = new ReadyToWorkStore({ filePath: storePath() });
     expect(store.loadFor(binding)).toBeNull();
     expect(readyToWorkAggregateStatus(store.loadFor(binding)).mode).toBe("standard");
-    expect(store.clear()).toBeTrue();
-    expect(fs.existsSync(storePath())).toBeFalse();
+    expect(store.inspect()).toEqual({ status: "invalid" });
+    expect(() => store.save(createReadyToWorkDesiredState(binding, selection))).toThrow("READY_TO_WORK_PERSISTENCE_INVALID");
+    expect(() => store.clear()).toThrow("READY_TO_WORK_PERSISTENCE_INVALID");
+    expect(fs.readFileSync(storePath(), "utf8")).toBe("{half-written");
+  });
+
+  test("preserves unknown versions across every mutation entry point", () => {
+    const bytes = JSON.stringify({ version: 2, entries: [{ preserved: true }] });
+    fs.writeFileSync(storePath(), bytes);
+    const store = new ReadyToWorkStore({ filePath: storePath() });
+    expect(store.inspect()).toEqual({ status: "unsupported" });
+    expect(store.load()).toBeNull();
+    const desired = createReadyToWorkDesiredState(binding, selection);
+    for (const mutate of [() => store.save(desired), () => store.clear(), () => store.clearFor(binding),
+      () => writeReadyToWorkDesiredStateAtomically({ filePath: storePath(), desired, temporaryId: "guarded", fs })]) {
+      expect(mutate).toThrow("READY_TO_WORK_PERSISTENCE_UNSUPPORTED");
+      expect(fs.readFileSync(storePath(), "utf8")).toBe(bytes);
+    }
+    expect(fs.readdirSync(tempRoot)).toEqual(["ready-to-work.json"]);
+  });
+
+  test("missing remains writable and understood current records remain replaceable and removable", () => {
+    const store = new ReadyToWorkStore({ filePath: storePath() });
+    expect(store.inspect()).toEqual({ status: "missing" });
+    expect(store.clear()).toBeFalse();
+    const desired = createReadyToWorkDesiredState(binding, selection);
+    store.save(desired);
+    expect(store.inspect()).toEqual({ status: "ready", desired });
+    store.save(createReadyToWorkDesiredState(binding, { ...selection, workstation: false }));
+    expect(store.load()?.components.workstation).toBeFalse();
+    expect(store.clearFor(binding)).toBeTrue();
+    expect(store.inspect()).toEqual({ status: "missing" });
+  });
+
+  test("unreadable state cannot be treated as a missing writable file", () => {
+    const unavailableFs: ReadyToWorkStoreFs = { ...fs,
+      readFileSync: () => { throw Object.assign(new Error("private path must not escape"), { code: "EACCES" }); },
+    };
+    const store = new ReadyToWorkStore({ filePath: storePath(), fs: unavailableFs });
+    expect(store.inspect()).toEqual({ status: "unavailable" });
+    expect(() => store.save(createReadyToWorkDesiredState(binding, selection))).toThrow("READY_TO_WORK_PERSISTENCE_UNAVAILABLE");
+    expect(() => store.clear()).toThrow("READY_TO_WORK_PERSISTENCE_UNAVAILABLE");
+  });
+
+  test("a record changed during replacement is preserved and the owned temporary file is removed", () => {
+    const first = createReadyToWorkDesiredState(binding, selection);
+    fs.writeFileSync(storePath(), JSON.stringify(first));
+    const replacement = JSON.stringify(createReadyToWorkDesiredState(binding, { ...selection, voice: false }));
+    const racingFs: ReadyToWorkStoreFs = { ...fs, writeFileSync: (fd, data, options) => {
+      fs.writeFileSync(fd, data, options);
+      fs.writeFileSync(storePath(), replacement);
+    } };
+    const store = new ReadyToWorkStore({ filePath: storePath(), fs: racingFs, mintTemporaryId: () => "race" });
+    expect(() => store.save(first)).toThrow("READY_TO_WORK_PERSISTENCE_CHANGED");
+    expect(fs.readFileSync(storePath(), "utf8")).toBe(replacement);
+    expect(fs.existsSync(`${storePath()}.race.tmp`)).toBeFalse();
+  });
+
+  test("clear detects a newly unsupported record and preserves an unsupported symlink target", () => {
+    fs.writeFileSync(storePath(), JSON.stringify(createReadyToWorkDesiredState(binding, selection)));
+    let reads = 0;
+    const future = JSON.stringify({ version: 2, entries: [] });
+    const racingFs: ReadyToWorkStoreFs = { ...fs, readFileSync: (file, encoding) => {
+      if (++reads === 2) fs.writeFileSync(file, future);
+      return fs.readFileSync(file, encoding);
+    } };
+    expect(() => new ReadyToWorkStore({ filePath: storePath(), fs: racingFs }).clear())
+      .toThrow("READY_TO_WORK_PERSISTENCE_UNSUPPORTED");
+    const target = path.join(tempRoot, "future.json");
+    fs.renameSync(storePath(), target);
+    fs.symlinkSync(target, storePath());
+    const store = new ReadyToWorkStore({ filePath: storePath() });
+    expect(() => store.clear()).toThrow("READY_TO_WORK_PERSISTENCE_UNSUPPORTED");
+    expect(() => store.save(createReadyToWorkDesiredState(binding, selection))).toThrow("READY_TO_WORK_PERSISTENCE_UNSUPPORTED");
+    expect(fs.lstatSync(storePath()).isSymbolicLink()).toBeTrue();
+    expect(fs.readFileSync(target, "utf8")).toBe(future);
   });
 
   test("scopes desired intent to the exact Human and complete active authority", () => {

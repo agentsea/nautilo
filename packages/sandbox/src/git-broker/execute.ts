@@ -1,5 +1,5 @@
 /**
- * D440 Phase 2 — bounded sandboxed executor for the Git broker.
+ * bounded sandboxed executor for the Git broker.
  *
  * Runs `/usr/bin/sandbox-exec -p <profile> <git> <args...>` with an
  * explicit, hardened env map and bounded in-memory stdout/stderr
@@ -28,6 +28,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 
 export interface ExecInputs {
+  readonly signal?: AbortSignal;
   readonly sandboxExecutable: string;
   readonly profile: string;
   readonly gitExecutable: string;
@@ -228,6 +229,7 @@ function killTree(child: ChildProcess): void {
  * typed disposition.
  */
 export function runGitSandboxed(inputs: ExecInputs): Promise<ExecResult> {
+  if (inputs.signal?.aborted) return Promise.resolve({ stdout: "", stderr: "Authority cancelled", exitCode: null, timedOut: true, signal: "SIGKILL" });
   const env = {
     ...buildGitBrokerEnv(inputs.homeDir),
     ...inputs.env,
@@ -262,9 +264,10 @@ export function runGitSandboxed(inputs: ExecInputs): Promise<ExecResult> {
       settled = true;
       clearTimeout(timer);
       clearTimeout(graceTimer);
+      inputs.signal?.removeEventListener("abort", abort);
       resolve(result);
     };
-    const timer = setTimeout(() => {
+    const abort = () => {
       timedOut = true;
       killTree(child);
       // Hard fallback: if the `close` event does not fire within 2s
@@ -273,7 +276,7 @@ export function runGitSandboxed(inputs: ExecInputs): Promise<ExecResult> {
       // resolve so the broker never hangs. The disposition will be
       // exec-timeout; the broker classifies it as unknown-outcome
       // for side-effect-begun ops.
-      graceTimer = setTimeout(() => {
+      if (graceTimer === undefined) graceTimer = setTimeout(() => {
         const bin = binOut !== null ? binOut.finalize() : null;
         finish({
           stdout: out !== null ? out.finalize() : "",
@@ -284,8 +287,11 @@ export function runGitSandboxed(inputs: ExecInputs): Promise<ExecResult> {
           signal: null,
         });
       }, 2000);
-    }, inputs.timeoutMs);
+    };
+    const timer = setTimeout(abort, inputs.timeoutMs);
     let graceTimer: NodeJS.Timeout | undefined;
+    inputs.signal?.addEventListener("abort", abort, { once: true });
+    if (inputs.signal?.aborted) abort();
 
     child.stdout?.on("data", (buf: Buffer) => {
       if (out !== null) out.append(buf.toString("utf8"));
@@ -300,6 +306,7 @@ export function runGitSandboxed(inputs: ExecInputs): Promise<ExecResult> {
       settled = true;
       clearTimeout(timer);
       if (graceTimer) clearTimeout(graceTimer);
+      inputs.signal?.removeEventListener("abort", abort);
       reject(e);
     });
     child.on("close", (code, signal) => {
@@ -313,5 +320,62 @@ export function runGitSandboxed(inputs: ExecInputs): Promise<ExecResult> {
         signal,
       });
     });
+  });
+}
+
+/** Transfer validated objects without privileged pathname writes in Electron.
+ * Each process has a separate sandbox; only the receiver may write, and only
+ * to the exact repository object store. Pack bytes stream without accumulation.
+ * No credentials, hooks, remote URLs or project-selected commands are involved. */
+export function transferGitObjectsSandboxed(input: {
+  readonly gitExecutable: string;
+  readonly sandboxExecutable: string;
+  readonly sourceObjectsPath: string;
+  readonly sourceOid: string;
+  /** Clean callback-scoped metadata for network worktree application. */
+  readonly metadataPath?: string;
+  readonly identity: { readonly gitDir: string; readonly commonDir: string; readonly workTree: string };
+  readonly sourceProfile: string;
+  readonly destinationProfile: string;
+  readonly timeoutMs: number;
+  readonly signal?: AbortSignal;
+  readonly disableSandboxForTests?: boolean;
+}): Promise<boolean> {
+  if (input.signal?.aborted || (process.platform !== "darwin" && !input.disableSandboxForTests)) return Promise.resolve(false);
+  return new Promise(resolve => {
+    const children: ChildProcess[] = [];
+    let closed = 0; let failed = false; let stopped = false;
+    const stop = () => { failed = true; if (!stopped) { stopped = true; for (const child of children) if (child.exitCode === null && child.signalCode === null) killTree(child); } };
+    const finish = () => {
+      if (closed !== children.length) return;
+      clearTimeout(timer); input.signal?.removeEventListener("abort", stop);
+      resolve(!failed && children.length === 2);
+    };
+    const launch = (profile: string, gitArgs: readonly string[], env: Record<string, string>): ChildProcess => {
+      const child = spawn(input.disableSandboxForTests ? input.gitExecutable : input.sandboxExecutable,
+        input.disableSandboxForTests ? [...gitArgs] : ["-p", profile, input.gitExecutable, ...gitArgs],
+        { cwd: input.identity.workTree, env, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
+      children.push(child);
+      child.stderr?.resume();
+      child.on("error", stop);
+      child.once("close", code => { if (code !== 0) failed = true; closed++; finish(); });
+      return child;
+    };
+    const timer = setTimeout(stop, input.timeoutMs);
+    input.signal?.addEventListener("abort", stop, { once: true });
+    try {
+      const destination = launch(input.destinationProfile,
+        [...gitBrokerConfigOverrides(), `--git-dir=${input.metadataPath ?? input.identity.gitDir}`, "unpack-objects", "-q"],
+        { ...buildGitBrokerEnv(input.identity.workTree), GIT_NO_REPLACE_OBJECTS: "1", GIT_OBJECT_DIRECTORY: `${input.identity.commonDir}/objects` });
+      const source = launch(input.sourceProfile,
+        [...gitBrokerConfigOverrides(), `--git-dir=${input.metadataPath ?? input.identity.gitDir}`, "pack-objects", "--stdout", "--revs"],
+        { ...buildGitBrokerEnv(input.identity.workTree), GIT_NO_REPLACE_OBJECTS: "1", GIT_OBJECT_DIRECTORY: input.sourceObjectsPath });
+      destination.stdout?.resume();
+      destination.stdin?.on("error", stop);
+      source.stdin?.on("error", stop);
+      source.stdout?.pipe(destination.stdin!);
+      source.stdin?.end(`${input.sourceOid}\n`);
+      if (input.signal?.aborted) stop();
+    } catch { stop(); if (children.length === 0) finish(); }
   });
 }
