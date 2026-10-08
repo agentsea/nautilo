@@ -212,6 +212,12 @@ const terminalInput = {
     jobId: ids.job,
   },
 };
+const broadTerminalInput = {
+  taskId: ids.task,
+  taskStatus: "cancelled" as const,
+  taskPatch: { cancelledAt: new Date("2026-10-08T09:05:00.000Z") },
+  runStatus: "cancelled" as const,
+};
 
 describe("exact Task invocation terminal transition", () => {
   test("stops only the Human's locked run with its exact attached Job", async () => {
@@ -315,6 +321,94 @@ describe("exact Task invocation terminal transition", () => {
     expect(fixture.locks.filter((lock) => (
       lock as { table: unknown }
     ).table === jobs)).toEqual([]);
+  });
+
+  test("broad protected Stop cancels the exact Job linked by the current run", async () => {
+    const fixture = harness();
+
+    expect(await transitionTaskLifecycleTerminal(
+      fixture.db,
+      broadTerminalInput,
+    )).toMatchObject({ transitioned: true, outcome: "transitioned" });
+    expect(fixture.locks.slice(0, 3).map((lock) => (
+      lock as { table: unknown }
+    ).table)).toEqual([tasks, taskRuns, jobs]);
+    expect(fixture.writes.map((write) => write.table)).toEqual([
+      jobs,
+      taskRuns,
+      tasks,
+    ]);
+  });
+
+  test("broad protected Stop rejects a substituted current Job", async () => {
+    const fixture = harness({
+      run: run({ jobId: ids.replacementJob }),
+    });
+
+    expect(await transitionTaskLifecycleTerminal(
+      fixture.db,
+      broadTerminalInput,
+    )).toMatchObject({ transitioned: false, outcome: "authority_changed" });
+    expect(fixture.writes).toEqual([]);
+  });
+
+  test("broad protected Stop leaves an exact completed parked Job terminal", async () => {
+    const fixture = harness({
+      run: run({ status: "awaiting" }),
+      job: job({
+        status: "completed",
+        completedAt: new Date("2026-10-08T09:04:00.000Z"),
+      }),
+    });
+
+    expect(await transitionTaskLifecycleTerminal(
+      fixture.db,
+      broadTerminalInput,
+    )).toMatchObject({ transitioned: true, outcome: "transitioned" });
+    expect(fixture.writes.map((write) => write.table)).toEqual([
+      taskRuns,
+      tasks,
+    ]);
+  });
+
+  test("broad protected Stop preserves failed and timed-out Job outcomes", async () => {
+    for (const terminalJob of [
+      job({
+        status: "failed",
+        startedAt: null,
+        completedAt: new Date("2026-10-08T09:04:00.000Z"),
+      }),
+      job({
+        status: "timed_out",
+        completedAt: new Date("2026-10-08T09:04:00.000Z"),
+      }),
+    ]) {
+      const fixture = harness({
+        run: run({ status: "awaiting" }),
+        job: terminalJob,
+      });
+
+      expect(await transitionTaskLifecycleTerminal(
+        fixture.db,
+        broadTerminalInput,
+      )).toMatchObject({ transitioned: true, outcome: "transitioned" });
+      expect(fixture.writes.map((write) => write.table)).toEqual([
+        taskRuns,
+        tasks,
+      ]);
+    }
+  });
+
+  test("broad protected Stop rejects a terminal Job without completion proof", async () => {
+    const fixture = harness({
+      job: job({ status: "failed", completedAt: null }),
+    });
+
+    expect(await transitionTaskLifecycleTerminal(
+      fixture.db,
+      broadTerminalInput,
+    )).toMatchObject({ transitioned: false, outcome: "authority_changed" });
+    expect(fixture.writes).toEqual([]);
   });
 
   test("accepts an exact already-cancelled Job replay without rewriting it", async () => {
@@ -425,6 +519,19 @@ describe("exact Task invocation terminal transition", () => {
     const fixture = harness({
       job: job({
         status: "completed",
+        completedAt: new Date("2026-10-08T09:04:00.000Z"),
+      }),
+    });
+
+    expect(await transitionTaskLifecycleTerminal(fixture.db, terminalInput))
+      .toMatchObject({ transitioned: false, outcome: "authority_changed" });
+    expect(fixture.writes).toEqual([]);
+  });
+
+  test("keeps exact Job-bound Stop strict for an already-failed Job", async () => {
+    const fixture = harness({
+      job: job({
+        status: "failed",
         completedAt: new Date("2026-10-08T09:04:00.000Z"),
       }),
     });

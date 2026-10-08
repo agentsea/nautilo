@@ -315,7 +315,14 @@ export async function stopTask(
       message: "Task review acceptance is being saved and can no longer be stopped.",
     };
   }
+  const protectedContent = task.contentRepresentation === "dual"
+    || task.contentRepresentation === "protected";
   if (!transition.transitioned) {
+    if (protectedContent && transition.outcome === "same_terminal"
+      && task.status === "cancelled") {
+      const observer = deps.observer ?? getTaskObserver();
+      observer?.kick();
+    }
     return {
       ok: true,
       status: task.status,
@@ -336,8 +343,10 @@ export async function stopTask(
   }
   removeTaskReturnBinding(taskId);
   const run = transition.run;
-  const protectedContent = task.contentRepresentation === "dual"
-    || task.contentRepresentation === "protected";
+  if (protectedContent) {
+    const observer = deps.observer ?? getTaskObserver();
+    observer?.kick();
+  }
   if (run && protectedContent && expectedInvocation?.jobId !== undefined
     && jobManager.abortProtectedTaskRunAndWait !== undefined) {
     try {

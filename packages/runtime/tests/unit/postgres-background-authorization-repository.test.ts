@@ -581,6 +581,19 @@ function recordRow(record: BackgroundAuthorizationRecord) {
   };
 }
 
+function taskRuntimeCancellationRow(
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+) {
+  return {
+    request_id: record.snapshot.requestId,
+    work_id: record.snapshot.workId,
+    namespace_id: record.snapshot.namespaceId,
+    recipient_generation: record.snapshot.recipientGeneration,
+    request_revision: record.snapshot.requestRevision,
+    updated_at_ms: record.snapshot.updatedAt,
+  };
+}
+
 function verifiedResponse(
   record: BackgroundAuthorizationRecord,
   device = "device_1",
@@ -1700,6 +1713,115 @@ describe("Postgres background authorization repository", () => {
       after: { updatedAt: START + 1, requestId: "runtime_request_1" },
       limit: 1,
     })).rejects.toThrow("must be bounded");
+  });
+
+  test("Task Runtime cancellation discovery is metadata-only and advances past malformed rows", async () => {
+    const first = taskRuntimeRecipientCandidate({
+      requestId: "runtime_cancel_1",
+      workId: "10000000-0000-4000-8000-000000000921",
+      updatedAt: START + 1,
+    });
+    const second = taskRuntimeRecipientCandidate({
+      requestId: "runtime_cancel_2",
+      workId: "10000000-0000-4000-8000-000000000922",
+      updatedAt: START + 2,
+    });
+    const third = taskRuntimeRecipientCandidate({
+      requestId: "runtime_cancel_3",
+      workId: "10000000-0000-4000-8000-000000000923",
+      updatedAt: START + 3,
+    });
+    const malformed = {
+      ...taskRuntimeCancellationRow(first),
+      namespace_id: null,
+    };
+    const postgres = await setup([
+      [malformed, taskRuntimeCancellationRow(second)],
+      [taskRuntimeCancellationRow(third)],
+    ]);
+    const firstPage = await postgres.repository
+      .listTaskRuntimeCancellationPage({
+        throughUpdatedAt: START + 3,
+        after: { updatedAt: START, requestId: "runtime_cancel_0" },
+        limit: 2,
+      });
+    expect(firstPage.candidates).toEqual([{
+      requestId: second.snapshot.requestId,
+      workId: second.snapshot.workId,
+      namespaceId: second.snapshot.namespaceId,
+      recipientGeneration: second.snapshot.recipientGeneration,
+      requestRevision: second.snapshot.requestRevision,
+      updatedAt: second.snapshot.updatedAt,
+    }]);
+    expect(firstPage.continuation).toEqual({
+      updatedAt: second.snapshot.updatedAt,
+      requestId: second.snapshot.requestId,
+    });
+    expect(await postgres.repository.listTaskRuntimeCancellationPage({
+      throughUpdatedAt: START + 3,
+      after: firstPage.continuation!,
+      limit: 2,
+    })).toEqual({
+      candidates: [{
+        requestId: third.snapshot.requestId,
+        workId: third.snapshot.workId,
+        namespaceId: third.snapshot.namespaceId,
+        recipientGeneration: third.snapshot.recipientGeneration,
+        requestRevision: third.snapshot.requestRevision,
+        updatedAt: third.snapshot.updatedAt,
+      }],
+      continuation: null,
+    });
+
+    const statement = normalizedSql(postgres.connection.statements[1]);
+    const parameters = postgres.connection.parameters[1] ?? [];
+    expect(statement).toContain(
+      "SELECT REQUEST_ID, WORK_ID, NAMESPACE_ID, RECIPIENT_GENERATION, "
+        + "REQUEST_REVISION, UPDATED_AT",
+    );
+    expect(statement).not.toContain("DESCRIPTOR_BYTES");
+    expect(statement).not.toContain("ACCEPTED_RESPONSE_BYTES");
+    expect(statement).not.toContain("RECIPIENT_PUBLIC_KEY");
+    expect(statement).toContain("FORMAT_VERSION =");
+    expect(statement).toContain("CREDENTIAL_SUBJECT_KIND =");
+    expect(statement).toContain("RUNTIME_KIND =");
+    expect(statement).toContain("RUNTIME_VERSION =");
+    expect(statement).toContain("WORK_KIND =");
+    expect(statement).toContain("PURPOSE =");
+    expect(statement).toContain("PROCESSOR_AUTHORIZATION_REVISION IS NULL");
+    expect(statement).toContain("TERMINAL_REASON =");
+    expect(statement).toContain("UPDATED_AT <=");
+    expect(statement).toContain("UPDATED_AT >");
+    expect(statement).toContain("REQUEST_ID >");
+    expect(statement).toContain(
+      "ORDER BY BACKGROUND_CRYPTO_AUTHORIZATION_REQUESTS.UPDATED_AT ASC, "
+        + "BACKGROUND_CRYPTO_AUTHORIZATION_REQUESTS.REQUEST_ID ASC",
+    );
+    for (const state of [
+      "awaiting_recipient",
+      "awaiting_device",
+      "grant_ready",
+      "claimed",
+      "running",
+      "publication_reconciliation",
+      "cancelled",
+    ]) expect(parameters).toContain(state);
+    expect(parameters).toContain("runtime");
+    expect(parameters).toContain("task");
+    expect(parameters).toContain("task.execute");
+
+    const invalidCursor = postgres.repository
+      .listTaskRuntimeCancellationPage({
+        throughUpdatedAt: START,
+        after: { updatedAt: START + 1, requestId: "runtime_cancel_1" },
+        limit: 1,
+      });
+    const failure = await invalidCursor.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(TypeError);
+    expect((failure as Error).message).toContain("must be bounded");
   });
 
   test("signer evidence has no standalone repository write operation", async () => {

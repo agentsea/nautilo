@@ -360,6 +360,28 @@ export type BackgroundAuthorizationAwaitingTaskRuntimeRecipientPage =
       BackgroundAuthorizationAwaitingTaskRuntimeRecipientCursor | null;
   }>;
 
+export type BackgroundAuthorizationTaskRuntimeCancellationCursor = Readonly<{
+  readonly updatedAt: number;
+  readonly requestId: string;
+}>;
+
+export type BackgroundAuthorizationTaskRuntimeCancellationCandidate =
+  Readonly<{
+    readonly requestId: string;
+    readonly workId: string;
+    readonly namespaceId: string;
+    readonly recipientGeneration: number;
+    readonly requestRevision: number;
+    readonly updatedAt: number;
+  }>;
+
+export type BackgroundAuthorizationTaskRuntimeCancellationPage = Readonly<{
+  readonly candidates:
+    readonly BackgroundAuthorizationTaskRuntimeCancellationCandidate[];
+  readonly continuation:
+    BackgroundAuthorizationTaskRuntimeCancellationCursor | null;
+}>;
+
 export type BackgroundAuthorizationSupersedeResult =
   | Readonly<{status: "superseded" | "existing"; record: BackgroundAuthorizationRecord}>
   | Readonly<{status: "stale"; current: BackgroundAuthorizationRecord | null}>;
@@ -456,6 +478,15 @@ export interface BackgroundAuthorizationTaskRuntimeDeferralRepository
     expected: BackgroundAuthorizationTaskRuntimeRecordV3;
     now: number;
   }>): Promise<BackgroundAuthorizationTaskRuntimeDeferralResult>;
+}
+
+export interface BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository
+  extends BackgroundAuthorizationRepository {
+  listTaskRuntimeCancellationPage(input: Readonly<{
+    readonly throughUpdatedAt: number;
+    readonly after?: BackgroundAuthorizationTaskRuntimeCancellationCursor;
+    readonly limit: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeCancellationPage>;
 }
 
 export type BackgroundAuthorizationRepositoryConflictReason =
@@ -2168,6 +2199,58 @@ function validateAwaitingTaskRuntimeRecipientPageInput(input: Readonly<{
   return limit;
 }
 
+function validateTaskRuntimeCancellationPageInput(input: Readonly<{
+  readonly throughUpdatedAt: number;
+  readonly after?: BackgroundAuthorizationTaskRuntimeCancellationCursor;
+  readonly limit: number;
+}>): number {
+  timestamp("Task Runtime cancellation page watermark", input.throughUpdatedAt);
+  const limit = boundedLimit("Task Runtime cancellation page limit", input.limit);
+  if (input.after !== undefined) {
+    timestamp(
+      "Task Runtime cancellation page cursor timestamp",
+      input.after.updatedAt,
+    );
+    portable(
+      "Task Runtime cancellation page cursor request id",
+      input.after.requestId,
+    );
+    if (input.after.updatedAt > input.throughUpdatedAt) {
+      throw new TypeError(
+        "Task Runtime cancellation page cursor exceeds watermark",
+      );
+    }
+  }
+  return limit;
+}
+
+function isTaskRuntimeCancellationCandidate(
+  record: BackgroundAuthorizationRecord,
+): record is BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const snapshot = record.snapshot;
+  return snapshot.formatVersion === 3
+    && snapshot.credentialSubject.kind === "runtime"
+    && snapshot.credentialSubject.runtimeKind === "task"
+    && snapshot.credentialSubject.runtimeVersion === 1
+    && record.workKind === "task.execute"
+    && record.purpose === "task.execute"
+    && record.processorAuthorizationRevision === null
+    && (
+      [
+        "awaiting_recipient",
+        "awaiting_device",
+        "grant_ready",
+        "claimed",
+        "running",
+        "publication_reconciliation",
+      ].includes(snapshot.state)
+      || (
+        snapshot.state === "cancelled"
+        && snapshot.terminalReason === "cancelled"
+      )
+    );
+}
+
 function isDueTaskRuntimeRecipient(
   record: BackgroundAuthorizationRecord,
   now: number,
@@ -2395,7 +2478,8 @@ export function buildDeferredUnstartedTaskRuntimeRequest(input: Readonly<{
 
 export class InMemoryBackgroundAuthorizationRepository
   implements BackgroundAuthorizationTaskRuntimeReplacementRepository,
-    BackgroundAuthorizationTaskRuntimeDeferralRepository {
+    BackgroundAuthorizationTaskRuntimeDeferralRepository,
+    BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository {
   readonly #records = new Map<string, BackgroundAuthorizationRecord>();
   readonly #evidence = new Map<string, ProcessorSignerAuthorizationEvidence>();
 
@@ -2739,6 +2823,50 @@ export class InMemoryBackgroundAuthorizationRepository
         ? Object.freeze({
           updatedAt: last.snapshot.updatedAt,
           requestId: last.snapshot.requestId,
+        })
+        : null,
+    });
+  }
+
+  async listTaskRuntimeCancellationPage(input: Readonly<{
+    readonly throughUpdatedAt: number;
+    readonly after?: BackgroundAuthorizationTaskRuntimeCancellationCursor;
+    readonly limit: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeCancellationPage> {
+    await Promise.resolve();
+    const limit = validateTaskRuntimeCancellationPageInput(input);
+    const candidates = [...this.#records.values()]
+      .filter((record): record is BackgroundAuthorizationTaskRuntimeRecordV3 => {
+        const after = input.after;
+        return isTaskRuntimeCancellationCandidate(record)
+          && record.snapshot.updatedAt <= input.throughUpdatedAt
+          && (after === undefined
+            || record.snapshot.updatedAt > after.updatedAt
+            || (
+              record.snapshot.updatedAt === after.updatedAt
+              && record.snapshot.requestId.localeCompare(after.requestId) > 0
+            ));
+      })
+      .sort((left, right) =>
+        left.snapshot.updatedAt - right.snapshot.updatedAt
+        || left.snapshot.requestId.localeCompare(right.snapshot.requestId)
+      )
+      .slice(0, limit)
+      .map((record) => Object.freeze({
+        requestId: record.snapshot.requestId,
+        workId: record.snapshot.workId,
+        namespaceId: record.snapshot.namespaceId,
+        recipientGeneration: record.snapshot.recipientGeneration,
+        requestRevision: record.snapshot.requestRevision,
+        updatedAt: record.snapshot.updatedAt,
+      }));
+    const last = candidates.at(-1);
+    return Object.freeze({
+      candidates: Object.freeze(candidates),
+      continuation: candidates.length === limit && last !== undefined
+        ? Object.freeze({
+          updatedAt: last.updatedAt,
+          requestId: last.requestId,
         })
         : null,
     });

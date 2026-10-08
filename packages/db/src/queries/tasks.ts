@@ -580,6 +580,10 @@ export interface TransitionTaskLifecycleTerminalInput {
 }
 
 type ProtectedTaskLifecycleRun = Pick<TaskRun, "id" | "jobId">;
+type ProtectedTaskLifecycleTask = Pick<
+  Task,
+  "id" | "requestorId" | "contentRepresentation" | "cryptoObjectId"
+>;
 type ProtectedTaskLifecycleJob = Pick<
   Job,
   | "id"
@@ -595,9 +599,38 @@ type ProtectedTaskLifecycleJob = Pick<
   resultIsNull: boolean;
   messageIsNull: boolean;
 }>;
+type ProtectedTaskLifecycleTx = Pick<DirectDatabase, "select" | "update">;
 
-function exactProtectedTaskLifecycleJob(
-  task: Task,
+type ProtectedTaskLifecycleJobDisposition =
+  | "active"
+  | "cancelled"
+  | "completed"
+  | "failed"
+  | "timed_out"
+  | "invalid";
+
+function protectedTaskLifecycleJobDisposition(
+  job: ProtectedTaskLifecycleJob,
+): ProtectedTaskLifecycleJobDisposition {
+  if (job.status === "queued"
+    && job.startedAt === null
+    && job.completedAt === null) return "active";
+  if (job.status === "running"
+    && job.startedAt !== null
+    && job.completedAt === null) return "active";
+  if (job.status === "cancelled" && job.completedAt !== null) {
+    return "cancelled";
+  }
+  if (job.status === "completed"
+    && job.startedAt !== null
+    && job.completedAt !== null) return "completed";
+  if ((job.status === "failed" || job.status === "timed_out")
+    && job.completedAt !== null) return job.status;
+  return "invalid";
+}
+
+function exactProtectedTaskLifecycleJobIdentity(
+  task: ProtectedTaskLifecycleTask,
   run: ProtectedTaskLifecycleRun,
   job: ProtectedTaskLifecycleJob,
   expectedJobId: string,
@@ -628,16 +661,60 @@ function exactProtectedTaskLifecycleJob(
     && reference.taskRunId === run.id
     && reference.inputObjectId === task.cryptoObjectId
     && reference.resultObjectId
-      === protectedTaskRunResultObjectId(task.id, run.id)
-    && (
-      (job.status === "queued"
-        && job.startedAt === null
-        && job.completedAt === null)
-      || (job.status === "running"
-        && job.startedAt !== null
-        && job.completedAt === null)
-      || (job.status === "cancelled" && job.completedAt !== null)
-    );
+      === protectedTaskRunResultObjectId(task.id, run.id);
+}
+
+function exactProtectedTaskLifecycleJob(
+  task: ProtectedTaskLifecycleTask,
+  run: ProtectedTaskLifecycleRun,
+  job: ProtectedTaskLifecycleJob,
+  expectedJobId: string,
+): job is ProtectedTaskLifecycleJob & { input: ProtectedTaskDurableJobReference } {
+  const disposition = protectedTaskLifecycleJobDisposition(job);
+  return exactProtectedTaskLifecycleJobIdentity(task, run, job, expectedJobId)
+    && (disposition === "active" || disposition === "cancelled");
+}
+
+async function lockProtectedTaskLifecycleJob(
+  tx: Pick<DirectDatabase, "select">,
+  jobId: string,
+): Promise<ProtectedTaskLifecycleJob | undefined> {
+  const [job] = await tx.select({
+    id: jobs.id,
+    ownerId: jobs.ownerId,
+    requestorId: jobs.requestorId,
+    laneKey: jobs.laneKey,
+    type: jobs.type,
+    status: jobs.status,
+    input: jobs.input,
+    resultIsNull: isNull(jobs.result).mapWith(Boolean),
+    messageIsNull: isNull(jobs.message).mapWith(Boolean),
+    startedAt: jobs.startedAt,
+    completedAt: jobs.completedAt,
+  }).from(jobs)
+    .where(eq(jobs.id, jobId))
+    .limit(1)
+    .for("update");
+  return job;
+}
+
+async function cancelProtectedTaskLifecycleJob(
+  tx: ProtectedTaskLifecycleTx,
+  job: ProtectedTaskLifecycleJob & { input: ProtectedTaskDurableJobReference },
+): Promise<boolean> {
+  if (protectedTaskLifecycleJobDisposition(job) === "cancelled") return true;
+  const [cancelledJob] = await tx.update(jobs).set({
+    status: "cancelled",
+    completedAt: new Date(),
+  }).where(and(
+    eq(jobs.id, job.id),
+    inArray(jobs.status, ["queued", "running"]),
+    isNull(jobs.completedAt),
+    isNull(jobs.result),
+    isNull(jobs.message),
+    eq(jobs.input, job.input),
+  )).returning({ id: jobs.id });
+  return cancelledJob !== undefined;
 }
 
 /**
@@ -699,22 +776,7 @@ export async function transitionTaskLifecycleTerminal(
         return { task, run: undefined, transitioned: false, outcome: "authority_changed" };
       }
       if (expectedJobId !== undefined) {
-        const [job] = await tx.select({
-          id: jobs.id,
-          ownerId: jobs.ownerId,
-          requestorId: jobs.requestorId,
-          laneKey: jobs.laneKey,
-          type: jobs.type,
-          status: jobs.status,
-          input: jobs.input,
-          resultIsNull: isNull(jobs.result).mapWith(Boolean),
-          messageIsNull: isNull(jobs.message).mapWith(Boolean),
-          startedAt: jobs.startedAt,
-          completedAt: jobs.completedAt,
-        }).from(jobs)
-          .where(eq(jobs.id, expectedJobId))
-          .limit(1)
-          .for("update");
+        const job = await lockProtectedTaskLifecycleJob(tx, expectedJobId);
         if (!job || !exactProtectedTaskLifecycleJob(
           task,
           { id: expected.id, jobId: expectedJobId },
@@ -743,18 +805,7 @@ export async function transitionTaskLifecycleTerminal(
 
     const cancelExpectedProtectedJob = async (): Promise<void> => {
       if (expectedJob === undefined || expectedJob.status === "cancelled") return;
-      const [cancelledJob] = await tx.update(jobs).set({
-        status: "cancelled",
-        completedAt: new Date(),
-      }).where(and(
-        eq(jobs.id, expectedJob.id),
-        inArray(jobs.status, ["queued", "running"]),
-        isNull(jobs.completedAt),
-        isNull(jobs.result),
-        isNull(jobs.message),
-        eq(jobs.input, expectedJob.input),
-      )).returning();
-      if (!cancelledJob) {
+      if (!await cancelProtectedTaskLifecycleJob(tx, expectedJob)) {
         throw new Error("Task stop lost its locked protected Job");
       }
     };
@@ -780,6 +831,31 @@ export async function transitionTaskLifecycleTerminal(
         .orderBy(desc(taskRuns.startedAt))
         .limit(1)
         .for("update");
+    }
+
+    const protectedStop = input.taskStatus === "cancelled"
+      && input.runStatus === "cancelled"
+      && (task.contentRepresentation === "dual"
+        || task.contentRepresentation === "protected");
+    if (protectedStop && typeof run?.jobId === "string"
+      && expectedJob === undefined) {
+      const linkedJob = await lockProtectedTaskLifecycleJob(tx, run.jobId);
+      if (!linkedJob || !exactProtectedTaskLifecycleJobIdentity(
+        task,
+        { id: run.id, jobId: run.jobId },
+        linkedJob,
+        run.jobId,
+      )) {
+        return { task, run: undefined, transitioned: false, outcome: "authority_changed" };
+      }
+      const disposition = protectedTaskLifecycleJobDisposition(linkedJob);
+      if (disposition === "active" || disposition === "cancelled") {
+        expectedJob = linkedJob;
+      } else if (disposition !== "completed"
+        && disposition !== "failed"
+        && disposition !== "timed_out") {
+        return { task, run: undefined, transitioned: false, outcome: "authority_changed" };
+      }
     }
 
     const taskIsTerminal = TERMINAL_TASK_STATUSES.includes(
@@ -2102,6 +2178,134 @@ function exactProtectedTaskJobReference(
     && reference["executionSegment"] === expected.executionSegment
     && reference["resumeAcceptanceId"] === acceptance
     && reference["resumeContinuationFingerprint"] === continuation;
+}
+
+export type SettleCancelledProtectedTaskRunAuthorizationInput = Readonly<{
+  taskRunId: string;
+  contentNamespaceId: string;
+  authorizationRequestId: string;
+  policyRevision: number;
+}>;
+
+/**
+ * Revoke one protected Task runtime authorization only while its exact product
+ * Task and TaskRun remain durably cancelled. The callback owns the crypto
+ * transaction; product locks stay held until any linked or pre-link initial
+ * Job cleanup commits in this transaction.
+ */
+export async function settleCancelledProtectedTaskRunAuthorization(
+  db: DirectDatabase,
+  input: SettleCancelledProtectedTaskRunAuthorizationInput,
+  cancelAuthorization: () => Promise<boolean>,
+): Promise<boolean> {
+  if (
+    input.taskRunId.length === 0
+    || input.contentNamespaceId.length === 0
+    || input.authorizationRequestId.length === 0
+    || !Number.isSafeInteger(input.policyRevision)
+    || input.policyRevision < 1
+    || typeof cancelAuthorization !== "function"
+  ) {
+    throw new TypeError("Protected Task cancellation settlement is invalid");
+  }
+
+  const [located] = await db.select({ taskId: taskRuns.taskId })
+    .from(taskRuns)
+    .where(eq(taskRuns.id, input.taskRunId))
+    .limit(1);
+  if (!located) return false;
+
+  return db.transaction(async (tx) => {
+    const [task] = await tx.select({
+      id: tasks.id,
+      requestorId: tasks.requestorId,
+      status: tasks.status,
+      contentRepresentation: tasks.contentRepresentation,
+      contentNamespaceId: tasks.contentNamespaceId,
+      cryptoObjectId: tasks.cryptoObjectId,
+    }).from(tasks)
+      .where(eq(tasks.id, located.taskId))
+      .limit(1)
+      .for("update");
+    if (
+      !task
+      || task.status !== "cancelled"
+      || task.contentRepresentation !== "dual"
+        && task.contentRepresentation !== "protected"
+      || task.contentNamespaceId !== input.contentNamespaceId
+      || task.cryptoObjectId === null
+      || task.cryptoObjectId.length === 0
+    ) return false;
+
+    const [run] = await tx.select({
+      id: taskRuns.id,
+      taskId: taskRuns.taskId,
+      jobId: taskRuns.jobId,
+      status: taskRuns.status,
+    }).from(taskRuns)
+      .where(and(
+        eq(taskRuns.id, input.taskRunId),
+        eq(taskRuns.taskId, task.id),
+      ))
+      .limit(1)
+      .for("update");
+    if (!run || run.status !== "cancelled") return false;
+
+    let linkedJob: (ProtectedTaskLifecycleJob & {
+      input: ProtectedTaskDurableJobReference;
+    }) | undefined;
+    if (run.jobId !== null) {
+      const job = await lockProtectedTaskLifecycleJob(tx, run.jobId);
+      if (!job || !exactProtectedTaskLifecycleJobIdentity(
+        task,
+        { id: run.id, jobId: run.jobId },
+        job,
+        run.jobId,
+      )) return false;
+      const disposition = protectedTaskLifecycleJobDisposition(job);
+      if (disposition === "active") linkedJob = job;
+      else if (disposition !== "cancelled"
+        && disposition !== "completed"
+        && disposition !== "failed"
+        && disposition !== "timed_out") {
+        return false;
+      }
+    }
+
+    if (!await cancelAuthorization()) return false;
+
+    if (linkedJob !== undefined
+      && !await cancelProtectedTaskLifecycleJob(tx, linkedJob)) {
+      throw new Error("Protected Task cancellation lost its linked Job");
+    }
+
+    const initialReference: ProtectedTaskDurableJobReference = Object.freeze({
+      kind: "protected_task_run_v1",
+      taskId: task.id,
+      taskRunId: run.id,
+      inputObjectId: task.cryptoObjectId,
+      resultObjectId: protectedTaskRunResultObjectId(task.id, run.id),
+      authorizationRequestId: input.authorizationRequestId,
+      policyRevision: input.policyRevision,
+      executionSegment: 1,
+    });
+    await tx.update(jobs).set({
+      status: "cancelled",
+      completedAt: new Date(),
+    }).where(and(
+      eq(jobs.ownerId, task.requestorId),
+      eq(jobs.requestorId, task.requestorId),
+      eq(jobs.laneKey, `task:${task.id}`),
+      eq(jobs.type, "foreground"),
+      eq(jobs.status, "queued"),
+      isNull(jobs.startedAt),
+      isNull(jobs.completedAt),
+      isNull(jobs.result),
+      isNull(jobs.message),
+      eq(jobs.input, initialReference),
+    ));
+    return true;
+  });
 }
 
 /**

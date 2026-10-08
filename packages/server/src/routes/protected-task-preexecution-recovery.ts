@@ -123,7 +123,6 @@ function exactTaskRuntimeRecord(
     && record.processorAuthorizationRevision === null
     && record.expectedPolicyRevision === input.jobReference.policyRevision
     && record.expectedDomainEpoch !== null
-    && record.finishedAt === null
     && content.length === 1
     && anchored !== undefined
     && anchored.domainId === record.domainId
@@ -144,7 +143,8 @@ function exactTaskRuntimeRecord(
 function activeGrant(
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): boolean {
-  return (record.snapshot.state === "claimed"
+  return record.finishedAt === null
+    && (record.snapshot.state === "claimed"
       || record.snapshot.state === "running")
     && record.snapshot.claimId !== null
     && record.snapshot.claimExpiresAt !== null
@@ -157,7 +157,8 @@ function activeGrant(
 function recoverableDeferredGrant(
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): boolean {
-  return record.snapshot.state === "awaiting_recipient"
+  return record.finishedAt === null
+    && record.snapshot.state === "awaiting_recipient"
     && record.snapshot.recipientGeneration > 0
     && record.snapshot.requestRevision > 0
     && record.snapshot.descriptorDigest === null
@@ -214,6 +215,20 @@ export function createProtectedTaskPreexecutionRecovery(input: Readonly<{
     );
     if (selected === null || !exactTaskRuntimeRecord(start, selected)) {
       return { cancelled: false, reset: false, failed: false };
+    }
+    if (selected.snapshot.state === "cancelled"
+      && selected.snapshot.terminalReason === "cancelled"
+      && selected.finishedAt !== null) {
+      // Stop can revoke the grant before its queued Job is persisted. That
+      // exact Job may be cancelled, but a stopped Run must never be reset.
+      const cancellation = await dependencies.cancel(
+        input.db, start.jobId, start.jobReference,
+      );
+      return {
+        cancelled: cancellation !== "ineligible",
+        reset: false,
+        failed: false,
+      };
     }
     const active = activeGrant(selected);
     const deferred = recoverableDeferredGrant(selected);

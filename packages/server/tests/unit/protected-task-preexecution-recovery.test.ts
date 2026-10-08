@@ -8,6 +8,7 @@ import type {
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import {
   attachBackgroundAuthorizationRecipient,
+  cancelBackgroundAuthorizationRequest,
   claimBackgroundAuthorizationRequest,
   createBackgroundAuthorizationTaskRuntimeRequestV3,
   markBackgroundAuthorizationGrantReady,
@@ -186,6 +187,7 @@ function harness(options?: Readonly<{
   let cancelCalls = 0;
   let resetCalls = 0;
   let deferCalls = 0;
+  const cancelledJobs: unknown[] = [];
   const recovery = createProtectedTaskPreexecutionRecovery({
     db: database,
     now: () => now,
@@ -202,7 +204,8 @@ function harness(options?: Readonly<{
       },
     },
     dependencies: {
-      cancel: async () => {
+      cancel: async (_db, jobId, reference) => {
+        cancelledJobs.push({ jobId, reference });
         const result = cancellations[cancelCalls] ?? "ineligible";
         cancelCalls += 1;
         if (result !== "ineligible" && options?.currentAfterCancel !== undefined) {
@@ -228,6 +231,7 @@ function harness(options?: Readonly<{
       now = value;
     },
     counts: () => ({ cancelCalls, resetCalls, deferCalls }),
+    cancelledJobs: () => cancelledJobs,
   };
 }
 
@@ -275,6 +279,74 @@ describe("protected Task pre-execution recovery", () => {
     })).toBe(false);
     expect(value.counts()).toEqual({
       cancelCalls: 1,
+      resetCalls: 0,
+      deferCalls: 0,
+    });
+  });
+
+  test("a canonically cancelled grant cancels only its exact unstarted Job and never resets the Run", async () => {
+    const start = startInput();
+    const active = runningRecord(start);
+    const cancelled: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...active,
+      snapshot: cancelBackgroundAuthorizationRequest(
+        active.snapshot,
+        "cancelled",
+        START + 10,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      finishedAt: START + 10,
+    };
+    const recovered = harness({
+      input: start,
+      current: cancelled,
+      cancellations: ["cancelled"],
+    });
+    expect(await recovered.recovery.recover(start, {
+      immediate: true,
+    })).toBe(true);
+    expect(recovered.counts()).toEqual({
+      cancelCalls: 1,
+      resetCalls: 0,
+      deferCalls: 0,
+    });
+    expect(recovered.cancelledJobs()).toEqual([{
+      jobId: start.jobId,
+      reference: start.jobReference,
+    }]);
+
+    const started = harness({
+      input: start,
+      current: cancelled,
+      cancellations: ["ineligible"],
+    });
+    expect(await started.recovery.recover(start, {
+      immediate: true,
+    })).toBe(false);
+    expect(started.counts()).toEqual({
+      cancelCalls: 1,
+      resetCalls: 0,
+      deferCalls: 0,
+    });
+  });
+
+  test("a superseded terminal grant cannot cancel or reset a Job", async () => {
+    const start = startInput();
+    const active = runningRecord(start);
+    const superseded: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...active,
+      snapshot: cancelBackgroundAuthorizationRequest(
+        active.snapshot,
+        "superseded",
+        START + 10,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      finishedAt: START + 10,
+    };
+    const value = harness({ input: start, current: superseded });
+    expect(await value.recovery.recover(start, {
+      immediate: true,
+    })).toBe(false);
+    expect(value.counts()).toEqual({
+      cancelCalls: 0,
       resetCalls: 0,
       deferCalls: 0,
     });

@@ -1,5 +1,9 @@
 import { log } from "@nautilo/logger";
 import {
+  createProtectedTaskCancellationRecovery,
+  type ProtectedTaskCancellationRecoveryCursor,
+} from "./protected-task-cancellation-recovery";
+import {
   createProtectedTaskPreexecutionRecovery,
   type ProtectedTaskPreexecutionRecoveryPageCursor,
 } from "./protected-task-preexecution-recovery";
@@ -266,6 +270,10 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     db: input.db, repository, now,
   });
   let recoveryCursor: ProtectedTaskPreexecutionRecoveryPageCursor | undefined;
+  const cancellation = createProtectedTaskCancellationRecovery({
+    db: input.db, repository, recipients: input.recipients, now,
+  });
+  let cancellationCursor: ProtectedTaskCancellationRecoveryCursor | undefined;
   const predispatch = createProductionProtectedTaskPredispatch({
     db: input.db,
     resolver: input.resolver,
@@ -400,6 +408,14 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
   const coordinator = createProtectedTaskOccurrenceCoordinator({
     authorization: claim,
     recoverBeforeObservation: async limit => {
+      const cancelled = await cancellation.recoverPage({
+        limit,
+        ...(cancellationCursor === undefined ? {} : { after: cancellationCursor }),
+      });
+      cancellationCursor = cancelled.next;
+      if (cancelled.failures > 0) {
+        log("[task-observer] protected cancellation recovery deferred code=PROTECTED_STOP_RECOVERY_RETRY");
+      }
       const page = await recovery.recoverPage({
         limit, ...(recoveryCursor === undefined ? {} : { after: recoveryCursor }),
       });

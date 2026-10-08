@@ -2187,26 +2187,35 @@ async function createConnectedProtectedTask(base: BaseFixture) {
 async function waitForConnectedCompletion(
   base: BaseFixture,
   taskRunId: string,
+  terminalStatus: Promise<void>,
 ): Promise<Readonly<{
   run: typeof taskRuns.$inferSelect;
   job: typeof jobs.$inferSelect;
 }>> {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    const [run] = await base.admin.select().from(taskRuns)
-      .where(eq(taskRuns.id, taskRunId));
-    if (run?.jobId !== null && run?.jobId !== undefined) {
-      const [job] = await base.admin.select().from(jobs)
-        .where(eq(jobs.id, run.jobId));
-      if (job !== undefined
-        && ["completed", "failed", "cancelled", "timed_out"]
-          .includes(job.status)) {
-        return Object.freeze({ run, job });
-      }
-    }
-    await new Promise<void>(resolve => setTimeout(resolve, 10));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Real crypto and database work has no ten-second product SLA. Wait for
+    // the test's durable status sink rather than continuously polling the DB.
+    await Promise.race([
+      terminalStatus,
+      new Promise<void>(resolve => { timer = setTimeout(resolve, 30_000); }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
-  throw new Error("Connected protected Task did not settle");
+  const [run] = await base.admin.select().from(taskRuns)
+    .where(eq(taskRuns.id, taskRunId));
+  const [job] = run?.jobId ? await base.admin.select().from(jobs)
+    .where(eq(jobs.id, run.jobId)) : [];
+  if (run !== undefined && job !== undefined
+    && ["completed", "failed", "cancelled", "timed_out"].includes(job.status)) {
+    return Object.freeze({ run, job });
+  }
+  throw new Error(`Connected protected Task did not settle: ${JSON.stringify({
+    runStatus: run?.status, resultRevision: run?.resultRevision,
+    resultMapping: run?.resultCryptoMappingState, jobStatus: job?.status,
+    jobStarted: job?.startedAt !== null && job?.startedAt !== undefined,
+  })}`);
 }
 
 async function waitForConnectedRelease(
@@ -2285,7 +2294,7 @@ function destroyConnectedDomainSecrets(
 }
 
 describePostgres("sealed protected Task Memory object writer", () => {
-  test.each(["result", "pre-execution recovery"] as const)("executes one genuine-role protected Task through %s", async scenario => {
+  test.each(["result", "pre-execution recovery", "cancellation recovery", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
     const base = await createBaseFixture({ connectedExecution: true });
     const recipients = new TaskRuntimeRecipientRegistry(base.crypto, {
       now: () => NOW,
@@ -2355,6 +2364,8 @@ describePostgres("sealed protected Task Memory object writer", () => {
           throw error;
         }
       };
+      let notifyTerminal!: () => void;
+      const terminalStatus = new Promise<void>(resolve => { notifyTerminal = resolve; });
       jobManager = new JobManager({
         laneLock: new InMemoryLaneLock(),
         persist: async payload => {
@@ -2363,24 +2374,34 @@ describePostgres("sealed protected Task Memory object writer", () => {
           base.jobIds.add(jobId);
           return jobId;
         },
-        startProtectedTaskJob: (
+        startProtectedTaskJob: async (
           jobId,
           expectedReference,
           publicationPolicy,
-        ) => startProtectedTaskJobWithDatabase(
-          base.productDb,
-          jobId,
-          expectedReference,
-          publicationPolicy,
-        ),
-        updateStatus: (jobId, status, fields, publicationPolicy) =>
-          updateJobStatusWithDatabase(
-            base.productDb,
-            jobId,
-            status,
-            fields,
-            publicationPolicy,
-          ),
+        ) => {
+          if (scenario === "linked cancellation") {
+            expect(await transitionTaskLifecycleTerminal(base.productDb, {
+              taskId: expectedReference.taskId,
+              taskStatus: "cancelled",
+              taskPatch: { cancelledAt: new Date(NOW) },
+              runStatus: "cancelled",
+            })).toMatchObject({ transitioned: true,
+              task: { status: "cancelled" },
+              run: { status: "cancelled", jobId } });
+          }
+          return startProtectedTaskJobWithDatabase(
+            base.productDb, jobId, expectedReference, publicationPolicy,
+          );
+        },
+        updateStatus: async (jobId, status, fields, publicationPolicy) => {
+          await updateJobStatusWithDatabase(
+            base.productDb, jobId, status, fields, publicationPolicy,
+          );
+          if (jobId === connectedJobId
+            && ["completed", "failed", "cancelled", "timed_out"].includes(status)) {
+            notifyTerminal();
+          }
+        },
       });
       const owner = bindEncryptionDataOperationOwner({
         policy: {
@@ -2625,6 +2646,70 @@ describePostgres("sealed protected Task Memory object writer", () => {
       }
       expect(kicks).toBe(1);
 
+      if (scenario === "cancellation recovery") {
+        const requestId = `task-run-authorization:${connected.taskRunId}`;
+        const persistOrphan = async () => {
+          const jobId = await persistJobWithDatabase(base.productDb, {
+            ownerId: base.userId,
+            requestorId: base.userId,
+            laneKey: `task:${connected!.taskId}`,
+            type: "foreground",
+            input: {
+              kind: "protected_task_run_v1",
+              taskId: connected!.taskId,
+              taskRunId: connected!.taskRunId,
+              inputObjectId: connected!.inputObjectId,
+              resultObjectId: connected!.resultObjectId,
+              authorizationRequestId: requestId,
+              policyRevision: base.policyRevision,
+              executionSegment: 1,
+            },
+            publicationPolicy: {
+              expectedRevision: base.policyRevision,
+              representation: "protected_only",
+            },
+          });
+          base.jobIds.add(jobId);
+          return jobId;
+        };
+        // Simulate process loss after persistence but before attaching the Job.
+        const orphanIds = [await persistOrphan(), await persistOrphan()];
+        expect(await transitionTaskLifecycleTerminal(base.productDb, {
+          taskId: connected.taskId,
+          taskStatus: "cancelled",
+          taskPatch: { cancelledAt: new Date(NOW) },
+          runStatus: "cancelled",
+        })).toMatchObject({ transitioned: true,
+          task: { status: "cancelled" }, run: { status: "cancelled", jobId: null } });
+        await composition.coordinator.recoverBeforeObservation(100);
+        expect(recipients.size).toBe(0);
+        const [grant] = await base.admin.select({
+          state: backgroundCryptoAuthorizationRequests.state,
+          reason: backgroundCryptoAuthorizationRequests.terminalReason,
+          finishedAt: backgroundCryptoAuthorizationRequests.finishedAt,
+        }).from(backgroundCryptoAuthorizationRequests).where(eq(
+          backgroundCryptoAuthorizationRequests.requestId, requestId,
+        ));
+        expect(grant).toMatchObject({ state: "cancelled", reason: "cancelled" });
+        expect(grant?.finishedAt).not.toBeNull();
+        // A persistence transaction already in flight can arrive after revocation.
+        orphanIds.push(await persistOrphan());
+        await composition.coordinator.recoverBeforeObservation(100);
+        const orphanRows = await base.admin.select({
+          status: jobs.status, startedAt: jobs.startedAt,
+          completedAt: jobs.completedAt, result: jobs.result, message: jobs.message,
+        }).from(jobs).where(inArray(jobs.id, orphanIds));
+        expect(orphanRows).toHaveLength(3);
+        for (const job of orphanRows) {
+          expect(job).toMatchObject({ status: "cancelled", startedAt: null,
+            result: null, message: null });
+          expect(job.completedAt).not.toBeNull();
+        }
+        expect(segmentCalls).toEqual([]);
+        expect(await loadInitialProtectedTaskOccurrence(base.productDb, {
+          taskRunId: connected.taskRunId, authorizationRequestId: requestId,
+        })).toBeNull();
+      } else {
       const claimable = await loadInitialProtectedTaskOccurrence(
         base.productDb,
         {
@@ -2637,7 +2722,37 @@ describePostgres("sealed protected Task Memory object writer", () => {
         throw new Error("Accepted protected Task occurrence was unavailable");
       }
       await composition.coordinator.observeProtectedTaskOccurrence(claimable);
-      if (scenario === "pre-execution recovery") {
+      if (scenario === "linked cancellation") {
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          const [run] = await base.admin.select({ status: taskRuns.status })
+            .from(taskRuns).where(eq(taskRuns.id, connected.taskRunId));
+          if (run?.status === "cancelled" && connectedJobId !== null
+            && jobManager.getJob(connectedJobId) === undefined) break;
+          await new Promise<void>(resolve => setTimeout(resolve, 10));
+        }
+        await composition.coordinator.recoverBeforeObservation(100);
+        const [run] = await base.admin.select({ status: taskRuns.status,
+          jobId: taskRuns.jobId }).from(taskRuns)
+          .where(eq(taskRuns.id, connected.taskRunId));
+        expect(connectedJobId).not.toBeNull();
+        expect(run).toEqual({ status: "cancelled", jobId: connectedJobId });
+        const [job] = await base.admin.select({ status: jobs.status,
+          startedAt: jobs.startedAt, result: jobs.result, message: jobs.message })
+          .from(jobs).where(eq(jobs.id, connectedJobId!));
+        expect(job).toEqual({ status: "cancelled", startedAt: null,
+          result: null, message: null });
+        const [grant] = await base.admin.select({
+          state: backgroundCryptoAuthorizationRequests.state,
+          reason: backgroundCryptoAuthorizationRequests.terminalReason,
+        }).from(backgroundCryptoAuthorizationRequests).where(eq(
+          backgroundCryptoAuthorizationRequests.requestId,
+          `task-run-authorization:${connected.taskRunId}`,
+        ));
+        expect(grant).toEqual({ state: "cancelled", reason: "cancelled" });
+        expect(recipients.size).toBe(0);
+        expect(segmentCalls).toEqual([]);
+      } else if (scenario === "pre-execution recovery") {
         const deadline = Date.now() + 10_000;
         while (Date.now() < deadline) {
           const [run] = await base.admin.select().from(taskRuns)
@@ -2689,6 +2804,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
       const terminal = await waitForConnectedCompletion(
         base,
         connected.taskRunId,
+        terminalStatus,
       );
       if (terminal.job.status !== "completed") {
         const [authorization] = await base.admin.select({
@@ -2788,6 +2904,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
         ))).toEqual([]);
       expect(recipients.size).toBe(0);
       }
+      }
     } catch (error) {
       testError = error;
     }
@@ -2829,7 +2946,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
           { cause: cleanupError },
         );
     }
-  }, 30_000);
+  }, 60_000);
 
   test("commits under genuine authority and serializes cancellation and expiry", async () => {
     const base = await createBaseFixture();

@@ -17,6 +17,9 @@ const task: {
   contentRepresentation: "ordinary",
 };
 let transitionTask = task;
+let transitionRun: typeof run | undefined;
+let transitioned: boolean;
+let transitionOutcome: string;
 const run = {
   id: "20000000-0000-4000-8000-000000000002",
   taskId: task.id,
@@ -41,9 +44,9 @@ mock.module("@nautilo/db", () => ({
     transitionInputs.push(input);
     return {
       task: transitionTask,
-      run,
-      transitioned: true,
-      outcome: "transitioned",
+      run: transitionRun,
+      transitioned,
+      outcome: transitionOutcome,
     };
   },
   updateTask: async () => undefined,
@@ -54,10 +57,14 @@ const { stopTask } = await import("../../src/tasks/lifecycle");
 beforeEach(() => {
   transitionInputs.length = 0;
   transitionTask = task;
+  transitionRun = run;
+  transitioned = true;
+  transitionOutcome = "transitioned";
 });
 
 test("stopTask forwards the exact Job authority and aborts only the transitioned run", async () => {
   const aborts: unknown[] = [];
+  let observerKicks = 0;
   const result = await stopTask(
     {
       db: {} as never,
@@ -67,6 +74,7 @@ test("stopTask forwards the exact Job authority and aborts only the transitioned
           return false;
         },
       },
+      observer: { kick: () => { observerKicks += 1; } },
       reportBackCancellation: async () => undefined,
     },
     task.id,
@@ -92,6 +100,7 @@ test("stopTask forwards the exact Job authority and aborts only the transitioned
     reason: "stop",
     taskRun: { taskId: task.id, taskRunId: run.id },
   }]);
+  expect(observerKicks).toBe(0);
 });
 
 test("stopTask awaits exact protected process quiescence without ordinary report-back", async () => {
@@ -102,6 +111,7 @@ test("stopTask awaits exact protected process quiescence without ordinary report
   const aborts: unknown[] = [];
   const protectedAborts: unknown[] = [];
   const reports: unknown[] = [];
+  const order: string[] = [];
 
   const result = await stopTask(
     {
@@ -112,11 +122,13 @@ test("stopTask awaits exact protected process quiescence without ordinary report
           return true;
         },
         abortProtectedTaskRunAndWait: async (input) => {
+          order.push("abort");
           await Promise.resolve();
           protectedAborts.push(input);
           return { status: "stopped" };
         },
       },
+      observer: { kick: () => { order.push("kick"); } },
       reportBackCancellation: async (...args) => {
         reports.push(args);
       },
@@ -137,4 +149,65 @@ test("stopTask awaits exact protected process quiescence without ordinary report
   }]);
   expect(aborts).toEqual([]);
   expect(reports).toEqual([]);
+  expect(order).toEqual(["kick", "abort"]);
+});
+
+test("stopTask kicks protected cancellation recovery on canonical cancelled replay", async () => {
+  transitionTask = { ...task, contentRepresentation: "dual" };
+  transitioned = false;
+  transitionOutcome = "same_terminal";
+  let observerKicks = 0;
+  const aborts: unknown[] = [];
+
+  const result = await stopTask({
+    db: {} as never,
+    jobManager: {
+      abortJob: (...args) => {
+        aborts.push(args);
+        return true;
+      },
+      abortProtectedTaskRunAndWait: async (...args) => {
+        aborts.push(args);
+        return { status: "stopped" };
+      },
+    },
+    observer: { kick: () => { observerKicks += 1; } },
+  }, task.id, {
+    humanUserId: task.requestorId,
+    taskRunId: run.id,
+    jobId: run.jobId,
+  });
+
+  expect(result).toEqual({
+    ok: true,
+    status: "cancelled",
+    message: "Task is already cancelled.",
+  });
+  expect(observerKicks).toBe(1);
+  expect(aborts).toEqual([]);
+});
+
+test("stopTask does not kick protected cancellation recovery after rejected authority", async () => {
+  transitionTask = { ...task, contentRepresentation: "protected", status: "running" };
+  transitionRun = undefined;
+  transitioned = false;
+  transitionOutcome = "authority_changed";
+  let observerKicks = 0;
+
+  const result = await stopTask({
+    db: {} as never,
+    jobManager: { abortJob: () => true },
+    observer: { kick: () => { observerKicks += 1; } },
+  }, task.id, {
+    humanUserId: task.requestorId,
+    taskRunId: run.id,
+    jobId: run.jobId,
+  });
+
+  expect(result).toEqual({
+    ok: false,
+    status: "authority_changed",
+    message: "Task invocation changed.",
+  });
+  expect(observerKicks).toBe(0);
 });

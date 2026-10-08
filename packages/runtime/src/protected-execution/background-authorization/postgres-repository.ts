@@ -27,6 +27,7 @@ import {
   sql,
 } from "@nautilo/db";
 import {
+  BACKGROUND_AUTHORIZATION_MAX_GENERATION,
   BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES,
   BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT,
   BACKGROUND_AUTHORIZATION_MAX_TIMESTAMP_MS,
@@ -66,6 +67,10 @@ import {
   type BackgroundAuthorizationTaskRuntimeRecordV3,
   type BackgroundAuthorizationTaskRuntimeDeferralRepository,
   type BackgroundAuthorizationTaskRuntimeDeferralResult,
+  type BackgroundAuthorizationTaskRuntimeCancellationCandidate,
+  type BackgroundAuthorizationTaskRuntimeCancellationCursor,
+  type BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository,
+  type BackgroundAuthorizationTaskRuntimeCancellationPage,
   type BackgroundAuthorizationTaskRuntimeReplacementRepository,
   type BackgroundAuthorizationTaskRuntimeReplacementResult,
   type BackgroundAuthorizationVerifiedDeviceResponse,
@@ -143,6 +148,53 @@ function requiredTimestamp(row: Row, field: string): number {
   const value = nullableTimestamp(row, field);
   if (value === null) throw new TypeError(`${field} must be a timestamp`);
   return value;
+}
+
+function taskRuntimeCancellationIdentifier(row: Row, field: string): string {
+  const value = requiredString(row, field);
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u.test(value)
+    || new TextEncoder().encode(value).length
+      > BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES
+  ) {
+    throw new TypeError(
+      `Background authorization column ${field} must be a portable identifier`,
+    );
+  }
+  return value;
+}
+
+function taskRuntimeCancellationCursorFromRow(
+  row: Row,
+): BackgroundAuthorizationTaskRuntimeCancellationCursor {
+  return Object.freeze({
+    updatedAt: requiredTimestamp(row, "updated_at"),
+    requestId: taskRuntimeCancellationIdentifier(row, "request_id"),
+  });
+}
+
+function taskRuntimeCancellationCandidateFromRow(
+  row: Row,
+): BackgroundAuthorizationTaskRuntimeCancellationCandidate | null {
+  try {
+    const recipientGeneration = requiredCounter(row, "recipient_generation");
+    const requestRevision = requiredCounter(row, "request_revision");
+    if (
+      recipientGeneration > BACKGROUND_AUTHORIZATION_MAX_GENERATION
+      || requestRevision > BACKGROUND_AUTHORIZATION_MAX_GENERATION
+    ) throw new TypeError("Task Runtime cancellation counter is invalid");
+    return Object.freeze({
+      requestId: taskRuntimeCancellationIdentifier(row, "request_id"),
+      workId: taskRuntimeCancellationIdentifier(row, "work_id"),
+      namespaceId: taskRuntimeCancellationIdentifier(row, "namespace_id"),
+      recipientGeneration,
+      requestRevision,
+      updatedAt: requiredTimestamp(row, "updated_at"),
+    });
+  } catch (error) {
+    if (error instanceof TypeError) return null;
+    throw error;
+  }
 }
 
 function requiredBytes(row: Row, field: string): Uint8Array {
@@ -531,7 +583,8 @@ function rowToEvidence(row: Row): ProcessorSignerAuthorizationEvidence {
 
 export class PostgresBackgroundAuthorizationRepository
   implements BackgroundAuthorizationTaskRuntimeReplacementRepository,
-    BackgroundAuthorizationTaskRuntimeDeferralRepository {
+    BackgroundAuthorizationTaskRuntimeDeferralRepository,
+    BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository {
   constructor(private readonly handle: CryptoPostgresHandle) {
     assertVerifiedCryptoPostgresHandle(handle);
   }
@@ -1529,6 +1582,88 @@ export class PostgresBackgroundAuthorizationRepository
           updatedAt: last.snapshot.updatedAt,
           requestId: last.snapshot.requestId,
         })
+        : null,
+    });
+  }
+
+  async listTaskRuntimeCancellationPage(input: Readonly<{
+    readonly throughUpdatedAt: number;
+    readonly after?: BackgroundAuthorizationTaskRuntimeCancellationCursor;
+    readonly limit: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeCancellationPage> {
+    if (
+      !Number.isSafeInteger(input.throughUpdatedAt)
+      || input.throughUpdatedAt < 0
+      || input.throughUpdatedAt > BACKGROUND_AUTHORIZATION_MAX_TIMESTAMP_MS
+      || !Number.isSafeInteger(input.limit)
+      || input.limit < 1
+      || input.limit > BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH
+      || (input.after !== undefined && (
+        !Number.isSafeInteger(input.after.updatedAt)
+        || input.after.updatedAt < 0
+        || input.after.updatedAt > input.throughUpdatedAt
+        || !/^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u.test(input.after.requestId)
+        || new TextEncoder().encode(input.after.requestId).length
+          > BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES
+      ))
+    ) throw new TypeError("Task Runtime cancellation page input must be bounded");
+    const table = backgroundCryptoAuthorizationRequests;
+    const after = input.after;
+    const rows = await executeTypedCryptoQuery(
+      this.handle,
+      cryptoTypedDb.select({
+        request_id: table.requestId,
+        work_id: table.workId,
+        namespace_id: table.namespaceId,
+        recipient_generation: table.recipientGeneration,
+        request_revision: table.requestRevision,
+        updated_at: table.updatedAt,
+      }).from(table).where(and(
+        eq(table.formatVersion, 3),
+        eq(table.credentialSubjectKind, "runtime"),
+        eq(table.runtimeKind, "task"),
+        eq(table.runtimeVersion, 1),
+        eq(table.workKind, "task.execute"),
+        eq(table.purpose, "task.execute"),
+        isNull(table.processorAuthorizationRevision),
+        or(
+          inArray(table.state, [
+            "awaiting_recipient",
+            "awaiting_device",
+            "grant_ready",
+            "claimed",
+            "running",
+            "publication_reconciliation",
+          ]),
+          and(
+            eq(table.state, "cancelled"),
+            eq(table.terminalReason, "cancelled"),
+          ),
+        ),
+        lte(table.updatedAt, new Date(input.throughUpdatedAt)),
+        ...(after === undefined ? [] : [or(
+          gt(table.updatedAt, new Date(after.updatedAt)),
+          and(
+            eq(table.updatedAt, new Date(after.updatedAt)),
+            gt(table.requestId, after.requestId),
+          ),
+        )]),
+      )).orderBy(
+        asc(table.updatedAt),
+        asc(table.requestId),
+      ).limit(input.limit),
+    );
+    const rawRows = rows as readonly Row[];
+    const candidates = rawRows
+      .map(taskRuntimeCancellationCandidateFromRow)
+      .filter((candidate): candidate is
+        BackgroundAuthorizationTaskRuntimeCancellationCandidate =>
+        candidate !== null);
+    const lastRow = rawRows.at(-1);
+    return Object.freeze({
+      candidates: Object.freeze(candidates),
+      continuation: rawRows.length === input.limit && lastRow !== undefined
+        ? taskRuntimeCancellationCursorFromRow(lastRow)
         : null,
     });
   }

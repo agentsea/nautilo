@@ -608,6 +608,7 @@ export {
   getActiveTaskRun,
   transitionTaskLifecyclePaused,
   transitionTaskLifecycleTerminal,
+  settleCancelledProtectedTaskRunAuthorization,
   countActiveTaskWorkWith,
   getLatestResumableTaskRun,
   repairTaskContentAccessRecovery,
@@ -719,6 +720,7 @@ export {
   type TerminalizeWriterReviewVerificationLostResult,
   type ListAwaitingWriterReviewTasksOptions,
   type TransitionTaskLifecycleTerminalInput,
+  type SettleCancelledProtectedTaskRunAuthorizationInput,
 } from "./queries/tasks";
 export {
   appendPendingArtifactEvent,
