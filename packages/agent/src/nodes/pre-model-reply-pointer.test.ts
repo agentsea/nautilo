@@ -112,6 +112,25 @@ describe("preModelNode — D359 quote-reply pointer", () => {
     expect(prompt).toContain("(#4242)");
   });
 
+  test("keeps the accepted Human reply target when refreshed Room context follows it", async () => {
+    const prompt = await systemPromptOf(
+      makeState({
+        messages: [
+          new HumanMessage({
+            content: "continue from this quoted message",
+            additional_kwargs: { nautilo_reply_to_message_id: 5150 },
+          }),
+          new HumanMessage({
+            content: "[Room context]\nThe active turn already made progress.",
+            additional_kwargs: { nautilo_transient_context: true },
+          }),
+        ],
+      }),
+    );
+    expect(prompt).toContain("## Reply target");
+    expect(prompt).toContain("(#5150)");
+  });
+
   test("no kwarg on the latest human message → no `## Reply target` block", async () => {
     const prompt = await systemPromptOf(
       makeState({

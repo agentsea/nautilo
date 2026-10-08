@@ -17,6 +17,7 @@ import {
   formatSubagentTranscriptForParent,
   lastAssistantPlainText,
 } from "../subagents/scope-subagent/run";
+import { streamForegroundGraph } from "./foreground-context-refresh";
 
 /**
  * M151 (Task Phase 7a) — resume a run parked on `await_human_reply`.
@@ -77,9 +78,16 @@ export async function resumeGraphWithHumanReply(
 
     try {
       await processEvent.beginResume?.(threadId, turnId);
-      for await (const ev of graph.streamEvents(
+      for await (const ev of streamForegroundGraph(
+        graph,
         new Command({ resume: { reply: replyText, fromUserId } }),
         resumeConfig,
+        {
+          ...(processEvent.rebuildForegroundContext === undefined
+            ? {}
+            : { rebuildForegroundContext: processEvent.rebuildForegroundContext }),
+          ...(signal === undefined ? {} : { signal }),
+        },
       )) {
         metrics.noteStreamEvent(ev);
         await Promise.resolve(processEvent.process(ev));

@@ -103,6 +103,38 @@ describe("resolveForegroundHistoryMessages", () => {
     expect(scopes[0]!.subthread).toBeUndefined();
   });
 
+  test("refresh keeps prior history and only this execution's post-trigger rows", async () => {
+    const { deps, scopes } = capturingDeps([
+      { ...makeHit("alice", "Alice", "older request", "2026-06-01T10:00:00Z"), messageId: 8, role: "user" },
+      { ...makeHit("alice", "Alice", "active request", "2026-06-01T10:00:01Z"), messageId: 10, role: "user" },
+      { ...makeHit("nova", "Nova", "own completed result", "2026-06-01T10:00:02Z"), messageId: 12, role: "tool", foregroundExecutionId: "turn-active" },
+      { ...makeHit("nova", "Nova", "other concurrent result", "2026-06-01T10:00:03Z"), messageId: 13, role: "tool", foregroundExecutionId: "turn-other" },
+    ]);
+
+    const out = await resolveForegroundHistoryMessages({
+      turnKind: "fresh",
+      roomId: "room-2",
+      transcriptOwnerId: "owner-1",
+      agentId: "agent-2",
+      currentMessageId: 10,
+      throughMessageIdInclusive: 13,
+      foregroundExecutionId: "turn-active",
+    }, deps);
+
+    expect(scopes[0]).toMatchObject({
+      excludeMessageId: 10,
+      throughMessageIdInclusive: 13,
+      foregroundExecutionId: "turn-active",
+    });
+    const rendered = typeof out[0]?.content === "string"
+      ? out[0].content
+      : JSON.stringify(out[0]?.content ?? "");
+    expect(rendered).toContain("older request");
+    expect(rendered).toContain("own completed result");
+    expect(rendered).not.toContain("active request");
+    expect(rendered).not.toContain("other concurrent result");
+  });
+
   test("subthread fresh turn passes parent-anchor windowing (R3)", async () => {
     const { deps, scopes } = capturingDeps([
       makeHit("alice", "Alice", "parent anchor line", "2026-06-01T10:00:00Z"),

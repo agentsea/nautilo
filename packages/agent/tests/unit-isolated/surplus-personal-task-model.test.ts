@@ -19,6 +19,8 @@ const invocation = mock(async (..._args: unknown[]) => ({
 mock.module("../../src/utils/chat-model-invocation", () => ({
   invokeChatModelWithFallback: invocation,
   resolvePreparedMessageBudget: async () => 4_096,
+  // This suite binds no tools, so the real estimator's exact result is zero.
+  estimateBoundToolTokens: () => 0,
 }));
 const { agentNode } = await import("../../src/nodes/agent");
 afterAll(() => clearToolCatalog());

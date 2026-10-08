@@ -59,6 +59,8 @@ export interface RoomHistoryHit {
   toolName?: string | null | undefined;
   /** count-only reaction snapshot for woken-bot transcript lines. */
   reactions?: { emoji: string; count: number }[];
+  /** Invocation-only durable identity used to isolate concurrent same-Agent turns. */
+  foregroundExecutionId?: string;
 }
 
 /**
@@ -82,6 +84,8 @@ interface RawHistoryRow {
   user_handle: string | null;
   user_name: string | null;
   user_actor_id: string | null;
+  metadata?: unknown;
+  foreground_execution_id?: string | null;
 }
 
 const SNIPPET_MAX = 280;
@@ -104,6 +108,7 @@ function selectHistoryRows(db: Pick<DirectDatabase, "select">) {
       user_handle: sql<string | null>`${users.handle}`.as("user_handle"),
       user_name: sql<string | null>`${userAuthor.displayName}`.as("user_name"),
       user_actor_id: sql<string | null>`${userAuthor.id}`.as("user_actor_id"),
+      metadata: sessionMessages.metadata,
     })
     .from(sessionMessages)
     .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
@@ -325,6 +330,14 @@ function mapHistoryRows(
     // Rows whose author cannot be resolved (orphaned/legacy) are evidence
     // with no owner — skip rather than emit an ID-less hit.
     if (!actorId || !handle) continue;
+    const metadata = row.metadata !== null
+      && typeof row.metadata === "object"
+      && !Array.isArray(row.metadata)
+      ? row.metadata as Readonly<Record<string, unknown>>
+      : undefined;
+    const foregroundExecutionId = typeof row.foreground_execution_id === "string"
+      ? row.foreground_execution_id
+      : metadata?.["nautilo_foreground_execution_id"];
     hits.push({
       messageId: Number(row.message_id),
       ts: row.ts instanceof Date ? row.ts : new Date(row.ts),
@@ -336,6 +349,10 @@ function mapHistoryRows(
       authorActorId: actorId,
       toolName: row.tool_name,
       snippet: contentProjection === "full" ? row.content : snippetOf(row.content),
+      ...(typeof foregroundExecutionId === "string"
+        && foregroundExecutionId.length > 0
+        ? { foregroundExecutionId }
+        : {}),
     });
   }
   return hits;
@@ -434,9 +451,11 @@ export async function allRoomMessages(
  *
  * Selects the configured newest conversational boundaries after collapsing only
  * non-null user fingerprints, then retains every assistant/tool evidence row
- * from the earliest surviving boundary through the exclusive current-turn
- * bound. The SQL may rank newest-first, but callers always receive
- * `(created_at, id)` oldest-first.
+ * from the earliest surviving boundary through either the exclusive fresh-turn
+ * trigger or an inclusive committed refresh cut. Refresh reads keep only the
+ * active Agent's output after the trigger, so later queued Human input remains
+ * outside the running turn. The SQL may rank newest-first, but callers always
+ * receive `(created_at, id)` oldest-first.
  */
 export async function recentBoundedRoomMessages(
   db: RoomHistorySearchDb,
@@ -446,10 +465,47 @@ export async function recentBoundedRoomMessages(
     agentId?: string | null;
     botActorId?: string;
     excludeMessageId?: number;
+    /** Other accepted Human coordinates omitted from the narrative copy. */
+    excludeMessageIds?: readonly number[];
+    /**
+     * Stable durable upper cut for an in-process foreground refresh. Requires
+     * both `excludeMessageId` (the accepted Human trigger) and `agentId`.
+     * Rows after the trigger are then limited to this Agent's assistant/tool
+     * output, so a queued Human message cannot leak into the active turn.
+     */
+    throughMessageIdInclusive?: number;
     imageAssistanceTurnId?: string;
     conversationalLimit?: number;
   },
 ): Promise<RoomHistoryHit[]> {
+  if (
+    args.throughMessageIdInclusive !== undefined
+    && (
+      !Number.isSafeInteger(args.throughMessageIdInclusive)
+      || args.throughMessageIdInclusive < 1
+      || args.excludeMessageId === undefined
+      || !Number.isSafeInteger(args.excludeMessageId)
+      || args.excludeMessageId < 1
+      || args.throughMessageIdInclusive < args.excludeMessageId
+      || typeof args.agentId !== "string"
+      || args.agentId.length === 0
+    )
+  ) {
+    throw new TypeError(
+      "foreground transcript cut requires its trigger and Agent identity",
+    );
+  }
+  const excludeMessageIds = [...new Set(args.excludeMessageIds ?? [])];
+  if (
+    (excludeMessageIds.length > 0 && args.excludeMessageId === undefined)
+    || excludeMessageIds.some((id) =>
+      !Number.isSafeInteger(id)
+      || id < 1
+      || id > args.excludeMessageId!
+    )
+  ) {
+    throw new TypeError("foreground transcript exclusions must be message coordinates");
+  }
   const conversationalLimit = Math.max(
     1,
     Math.min(
@@ -463,25 +519,51 @@ export async function recentBoundedRoomMessages(
         AND starts_with(sm.metadata->'nautilo_tool_result'->>'toolCallId', ${`image-assistance:${args.imageAssistanceTurnId}:`})
         AND s.agent_id = ${args.agentId ?? null})`
     : sql`false`;
-  const exclusiveBound =
-    args.excludeMessageId != null
+  const transcriptBound = args.throughMessageIdInclusive !== undefined
+    ? sql`AND sm.id <= ${args.throughMessageIdInclusive}
+        AND (
+          sm.id < ${args.excludeMessageId!}
+          OR (
+            sm.id > ${args.excludeMessageId!}
+            AND sm.role IN ('assistant', 'tool')
+            AND s.agent_id = ${args.agentId!}
+          )
+        )`
+    : args.excludeMessageId != null
       ? sql`AND (sm.id < ${args.excludeMessageId} OR ${currentImageResult})`
       : sql``;
-  const triggeringFingerprintFilter =
-    args.excludeMessageId != null
+  const triggerAndAcceptedMessageIds = [...new Set([
+    ...(args.excludeMessageId === undefined ? [] : [args.excludeMessageId]),
+    ...excludeMessageIds,
+  ])];
+  const acceptedSourceFilter = triggerAndAcceptedMessageIds.length > 0
       ? sql`AND (
-          sm.role <> 'user'
-          OR sm.fingerprint IS NULL
-          OR sm.fingerprint IS DISTINCT FROM (
-            SELECT trigger_sm.fingerprint
-            FROM session_messages trigger_sm
-            INNER JOIN sessions trigger_s ON trigger_s.id = trigger_sm.session_id
-            WHERE trigger_sm.id = ${args.excludeMessageId}
-              AND trigger_s.room_id = ${args.roomId}
-            LIMIT 1
+          sm.id NOT IN (${sql.join(triggerAndAcceptedMessageIds.map((id) => sql`${id}`), sql`, `)})
+          AND (
+            sm.role <> 'user'
+            OR sm.fingerprint IS NULL
+            OR NOT EXISTS (
+              SELECT 1
+              FROM session_messages accepted_sm
+              INNER JOIN sessions accepted_s ON accepted_s.id = accepted_sm.session_id
+              WHERE accepted_sm.id IN (${sql.join(triggerAndAcceptedMessageIds.map((id) => sql`${id}`), sql`, `)})
+                AND accepted_s.room_id = ${args.roomId}
+                AND accepted_sm.fingerprint IS NOT NULL
+                AND accepted_sm.fingerprint = sm.fingerprint
+            )
           )
         )`
       : sql``;
+  // A first-turn tool-only tail has no conversational anchor after the
+  // triggering Human is excluded: its assistant call has blank visible text
+  // and Tool rows are evidence rather than boundaries. In refresh mode retain
+  // that admitted post-trigger tail instead of letting the LEFT JOIN's null
+  // anchor discard it. Do not widen an ordinary fresh read or pull older
+  // pre-trigger evidence into this fallback.
+  const refreshTailWithoutConversationalAnchor =
+    args.throughMessageIdInclusive !== undefined
+      ? sql`(first.message_id IS NULL AND e.message_id > ${args.excludeMessageId!})`
+      : sql`false`;
   const raw = await db.execute(sql`
     WITH eligible AS (
       SELECT
@@ -497,6 +579,7 @@ export async function recentBoundedRoomMessages(
         u.handle AS user_handle,
         ua.display_name AS user_name,
         ua.id AS user_actor_id,
+        sm.metadata->>'nautilo_foreground_execution_id' AS foreground_execution_id,
         CASE
           WHEN sm.role = 'user' AND sm.fingerprint IS NOT NULL
           THEN row_number() OVER (
@@ -522,8 +605,8 @@ export async function recentBoundedRoomMessages(
           AND COALESCE(sm.metadata->'nautilo_tool_result'->>'toolCallId', '') LIKE 'browser-choice:%'
           AND sm.metadata->'nautilo_tool_result'->>'toolStatus' = 'success'
         )
-        ${exclusiveBound}
-        ${triggeringFingerprintFilter}
+        ${transcriptBound}
+        ${acceptedSourceFilter}
         ${deafFilter}
     ),
     conversational AS (
@@ -551,11 +634,17 @@ export async function recentBoundedRoomMessages(
       e.agent_actor_id,
       e.user_handle,
       e.user_name,
-      e.user_actor_id
+      e.user_actor_id,
+      e.foreground_execution_id
     FROM eligible e
     LEFT JOIN earliest first ON true
     WHERE
-      (e.current_image_result OR e.ts > first.ts OR (e.ts = first.ts AND e.message_id >= first.message_id))
+      (
+        e.current_image_result
+        OR ${refreshTailWithoutConversationalAnchor}
+        OR e.ts > first.ts
+        OR (e.ts = first.ts AND e.message_id >= first.message_id)
+      )
       AND NOT (e.role = 'user' AND e.fingerprint IS NOT NULL AND e.fingerprint_ordinal > 1)
     ORDER BY e.ts ASC, e.message_id ASC
   `);

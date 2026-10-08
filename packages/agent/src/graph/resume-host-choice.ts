@@ -11,6 +11,7 @@ import {
   resolveGraphExecutionPolicy,
   toGraphBudgetOutcome,
 } from "./execution-policy";
+import { streamForegroundGraph } from "./foreground-context-refresh";
 
 /** Resume the exact graph interrupt that requested a paired-computer choice. */
 export async function resumeGraphWithHostChoice(
@@ -32,13 +33,21 @@ export async function resumeGraphWithHostChoice(
     log(`[agent/resume-host-choice] Resuming thread ${threadId}`);
     try {
       await processEvent.beginResume?.(threadId, turnId);
-      for await (const event of graph.streamEvents(
+      const resumeConfig = {
+        configurable: { thread_id: threadId },
+        version: "v2" as const,
+        recursionLimit: executionPolicy.recursionLimit,
+        ...(signal ? { signal } : {}),
+      };
+      for await (const event of streamForegroundGraph(
+        graph,
         new Command({ resume: choice }),
+        resumeConfig,
         {
-          configurable: { thread_id: threadId },
-          version: "v2" as const,
-          recursionLimit: executionPolicy.recursionLimit,
-          ...(signal ? { signal } : {}),
+          ...(processEvent.rebuildForegroundContext === undefined
+            ? {}
+            : { rebuildForegroundContext: processEvent.rebuildForegroundContext }),
+          ...(signal === undefined ? {} : { signal }),
         },
       )) {
         metrics.noteStreamEvent(event);

@@ -23,6 +23,9 @@ import type {
   ProtectedConversationProductReadAuthorization,
 } from "./active-conversation-repository";
 import type {
+  ProtectedConversationExecutorTurnScope,
+} from "./conversation-execution-services";
+import type {
   ForegroundAuthorizationView,
 } from "../protected-execution/foreground-authorization-session";
 import type {
@@ -40,6 +43,13 @@ export class ProtectedConversationPersistenceError extends Error {
   ) {
     super(`Protected conversation ${phase} failed: ${outcome}`);
     this.name = "ProtectedConversationPersistenceError";
+  }
+}
+
+class ProtectedConversationFreshReadClosedError extends Error {
+  constructor() {
+    super("Protected conversation fresh read authorization callback closed");
+    this.name = "ProtectedConversationFreshReadClosedError";
   }
 }
 
@@ -198,6 +208,7 @@ function canonicalToolCalls(message: BaseMessage): CanonicalToolCallV2[] {
  */
 export function protectedAgentMessagePayload(
   source: BaseMessage,
+  foregroundExecutionId?: string,
 ): MessagePayloadV2 {
   if (HumanMessage.isInstance(source)) {
     throw new TypeError(
@@ -239,6 +250,15 @@ export function protectedAgentMessagePayload(
   } else {
     throw new TypeError("Unsupported protected Agent message type");
   }
+  if (foregroundExecutionId) {
+    payload = {
+      ...payload,
+      sensitiveMetadata: {
+        ...(payload.sensitiveMetadata ?? {}),
+        foregroundExecutionId,
+      },
+    };
+  }
   return decodeMessagePayloadV2(encodeMessagePayloadV2(payload));
 }
 
@@ -261,6 +281,7 @@ export async function persistProtectedAgentMessages(input: Readonly<{
   readonly authorization: ForegroundAuthorizationView;
   readonly entrypointId?: ProtectedAgentRuntimeForegroundEntrypointId;
   readonly agentId?: string;
+  readonly foregroundExecutionId?: string;
   readonly appendContext?: Parameters<
     ProtectedAgentMessageWritePreparer["prepare"]
   >[0]["appendContext"];
@@ -281,7 +302,10 @@ export async function persistProtectedAgentMessages(input: Readonly<{
     const prepared = await input.preparer.prepare({
       sessionId: input.sessionId,
       idempotencyKey: fingerprint,
-      payload: protectedAgentMessagePayload(message),
+      payload: protectedAgentMessagePayload(
+        message,
+        input.foregroundExecutionId,
+      ),
       authorization: input.authorization,
       ...(input.entrypointId === undefined
         ? {}
@@ -352,12 +376,9 @@ export async function executeProtectedConversationTurn<Value>(
       "withAgentTranscript" | "appendPreparedAgent"
     >;
     readonly preparer: ProtectedAgentMessageWritePreparer;
-    readonly execute: (scope: Readonly<{
-      readonly history: readonly RoomHistoryHit[];
-      readonly persist: (
-        messages: readonly BaseMessage[],
-      ) => Promise<readonly ProtectedMessageDtoV2[]>;
-    }>) => Value | PromiseLike<Value>;
+    readonly execute: (
+      scope: ProtectedConversationExecutorTurnScope,
+    ) => Value | PromiseLike<Value>;
   }>,
 ): Promise<AgentTranscriptOpenResult<Value>> {
   const savedFingerprints = new Set<string>();
@@ -374,8 +395,91 @@ export async function executeProtectedConversationTurn<Value>(
     ...(input.signal === undefined ? {} : { signal: input.signal }),
     execute: async (history) => {
       let callbackLive = true;
+      const readFreshHistory: ProtectedConversationExecutorTurnScope["readFreshHistory"] =
+        async <ReadValue>(readInput: Readonly<{
+          readonly throughMessageIdInclusive: number;
+          readonly excludeMessageId: number;
+          readonly excludeMessageIds?: readonly number[];
+          readonly foregroundExecutionId?: string;
+          readonly execute: (
+            history: readonly RoomHistoryHit[],
+          ) => ReadValue | PromiseLike<ReadValue>;
+        }>): Promise<AgentTranscriptOpenResult<ReadValue>> => {
+          if (
+            !Number.isSafeInteger(readInput.throughMessageIdInclusive)
+            || readInput.throughMessageIdInclusive < 1
+            || !Number.isSafeInteger(readInput.excludeMessageId)
+            || readInput.excludeMessageId < 1
+            || readInput.throughMessageIdInclusive < readInput.excludeMessageId
+          ) {
+            throw new RangeError(
+              "protected transcript refresh cut is out of bounds",
+            );
+          }
+          const excludedMessageIds = new Set([
+            readInput.excludeMessageId,
+            ...(readInput.excludeMessageIds ?? []),
+          ]);
+          if ([...excludedMessageIds].some((id) =>
+            !Number.isSafeInteger(id)
+            || id < 1
+            || id > readInput.excludeMessageId
+          )) {
+            throw new RangeError(
+              "protected transcript refresh exclusion is out of bounds",
+            );
+          }
+          if (!callbackLive) {
+            return Object.freeze({
+              status: "unavailable" as const,
+              reason: "authorization_unavailable" as const,
+            });
+          }
+          try {
+            return await withProtectedAgentTranscriptHistory(input.repository, {
+              sessionId: input.sessionId,
+              namespaceId: input.namespaceId,
+              upToMessageId: readInput.throughMessageIdInclusive,
+              limit: input.limit,
+              productReadAuthorization: input.productReadAuthorization,
+              authorization: input.authorization,
+              entrypointId: input.entrypointId,
+              ...(input.signal === undefined ? {} : { signal: input.signal }),
+              execute: (freshHistory) => {
+                if (!callbackLive) {
+                  throw new ProtectedConversationFreshReadClosedError();
+                }
+                return readInput.execute(
+                  freshHistory.filter((hit) =>
+                    (
+                      hit.messageId < readInput.excludeMessageId
+                      && !excludedMessageIds.has(hit.messageId)
+                    )
+                    || (
+                      hit.messageId > readInput.excludeMessageId
+                      && (hit.role === "assistant" || hit.role === "tool")
+                      && (
+                        readInput.foregroundExecutionId === undefined
+                        || hit.foregroundExecutionId === readInput.foregroundExecutionId
+                      )
+                    )
+                  ),
+                );
+              },
+            });
+          } catch (error) {
+            if (error instanceof ProtectedConversationFreshReadClosedError) {
+              return Object.freeze({
+                status: "unavailable" as const,
+                reason: "authorization_unavailable" as const,
+              });
+            }
+            throw error;
+          }
+        };
       const persist = async (
         messages: readonly BaseMessage[],
+        foregroundExecutionId?: string,
       ): Promise<readonly ProtectedMessageDtoV2[]> => {
         if (!callbackLive) {
           throw new ProtectedConversationPersistenceError(
@@ -392,6 +496,9 @@ export async function executeProtectedConversationTurn<Value>(
           authorization: input.authorization,
           entrypointId: input.entrypointId,
           agentId: input.agentId,
+          ...(foregroundExecutionId === undefined
+            ? {}
+            : { foregroundExecutionId }),
           appendContext: input.appendContext,
           productReadAuthorization:
             input.productReadAuthorization,
@@ -399,7 +506,7 @@ export async function executeProtectedConversationTurn<Value>(
         });
       };
       try {
-        return await input.execute({ history, persist });
+        return await input.execute({ history, readFreshHistory, persist });
       } finally {
         callbackLive = false;
       }

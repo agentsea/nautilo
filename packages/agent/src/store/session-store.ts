@@ -233,6 +233,8 @@ export interface AppendTranscriptOptions {
    * (the synthetic human input row), never on a mixed assistant/tool batch.
    */
   metadata?: Record<string, unknown>;
+  /** Server-owned active foreground execution identity; never model-authored. */
+  foregroundExecutionId?: string;
   /** Hidden supervision audit for tool-call/result rows, never a tool-free answer. */
   internalToolMetadata?: Record<string, unknown>;
   /**
@@ -301,6 +303,12 @@ export function transcriptMetadataForMessage(message: BaseMessage, options: Appe
   const imageAssistance = AIMessage.isInstance(message)
     ? parseImageAssistanceSummary(message.additional_kwargs["nautilo_image_assistance"]) : undefined;
   if (imageAssistance) metadata = { ...metadata, nautilo_image_assistance: imageAssistance };
+  if (options.foregroundExecutionId) {
+    metadata = {
+      ...(metadata ?? {}),
+      nautilo_foreground_execution_id: options.foregroundExecutionId,
+    };
+  }
   return withTranscriptToolPresentation(message, metadata);
 }
 

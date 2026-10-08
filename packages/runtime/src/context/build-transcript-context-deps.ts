@@ -179,6 +179,12 @@ export function defaultBuildTranscriptContextDeps(
           ...(scope.excludeMessageId != null
             ? { excludeMessageId: scope.excludeMessageId }
             : {}),
+          ...(scope.excludeMessageIds === undefined
+            ? {}
+            : { excludeMessageIds: scope.excludeMessageIds }),
+          ...(scope.throughMessageIdInclusive != null
+            ? { throughMessageIdInclusive: scope.throughMessageIdInclusive }
+            : {}),
         });
         return [...parent, ...sub];
       }
@@ -190,6 +196,12 @@ export function defaultBuildTranscriptContextDeps(
         ...(scope.agentId ? { agentId: scope.agentId } : {}),
         ...(botActorId ? { botActorId } : {}),
         ...(scope.excludeMessageId != null ? { excludeMessageId: scope.excludeMessageId } : {}),
+        ...(scope.excludeMessageIds === undefined
+          ? {}
+          : { excludeMessageIds: scope.excludeMessageIds }),
+        ...(scope.throughMessageIdInclusive != null
+          ? { throughMessageIdInclusive: scope.throughMessageIdInclusive }
+          : {}),
       });
     },
     async readRoomJournal(scope) {

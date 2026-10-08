@@ -14,6 +14,14 @@ import {
   protectLiveShadowAssistantToken,
   publishLiveShadowRuntimeMessages,
 } from "../conversation/live-shadow-agent-runtime-events";
+import {
+  createForegroundContextRebuilder,
+  ForegroundContextReceipts,
+} from "./foreground-context-refresh";
+import { foregroundRecordContextPortForRoom } from
+  "../reflection/foreground-record-context";
+import { protectLiveShadowForegroundRecordContext } from
+  "../conversation/live-shadow-turn-context";
 
 export interface PersistingProcessorDeps {
   threadId: string;
@@ -33,6 +41,33 @@ export interface PersistingProcessorDeps {
  * `messagesToPersist` → `persistMessages` (matches `langgraphExecutor`).
  */
 export function createPersistingProcessor(deps: PersistingProcessorDeps) {
+  const foregroundRefreshEnabled =
+    deps.roomId !== undefined
+    && deps.agentId !== undefined
+    && deps.laneKey.startsWith("room:");
+  const foregroundContextReceipts = foregroundRefreshEnabled
+    ? new ForegroundContextReceipts(undefined, false)
+    : undefined;
+  let foregroundExecutionId = foregroundRefreshEnabled
+    ? deps.humanTurnId?.trim() || undefined
+    : undefined;
+  const ordinaryRecordContext = foregroundRefreshEnabled
+    ? foregroundRecordContextPortForRoom(deps.roomId!)
+    : undefined;
+  const rebuildForegroundContext = foregroundContextReceipts === undefined
+    ? undefined
+    : createForegroundContextRebuilder({
+        roomId: deps.roomId!,
+        ownerId: deps.ownerId,
+        agentId: deps.agentId!,
+        receipts: foregroundContextReceipts,
+        ...(ordinaryRecordContext === undefined
+          ? {}
+          : {
+              recordContext:
+                protectLiveShadowForegroundRecordContext(ordinaryRecordContext),
+            }),
+      });
   const tokenBatcher = new TokenBatcher({
     laneKey: deps.laneKey,
     ...(deps.agentId ? { authorAgentId: deps.agentId } : {}),
@@ -60,6 +95,7 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
       context.enforcementPolicy,
       context.observeBoundary,
       context.dataOperationPolicy,
+      foregroundExecutionId,
     );
     return liveShadowRuntime;
   };
@@ -89,12 +125,30 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
         : null,
     },
     laneKey: deps.laneKey,
+    ...(foregroundContextReceipts === undefined
+      ? {}
+      : {
+          ...(foregroundExecutionId === undefined
+            ? {}
+            : { foregroundExecutionId }),
+          onCommittedRows: (rows: readonly { id: string }[]) =>
+            foregroundContextReceipts.recordIds(
+              rows.map((row) => Number(row.id)),
+            ),
+          requireDurable: "foreground-context" as const,
+        }),
   });
 
   return {
+    ...(rebuildForegroundContext === undefined
+      ? {}
+      : { rebuildForegroundContext }),
     async beginResume(checkpointThreadId: string, turnId: string) {
       persistenceFailed = false;
       resumedMemory = undefined;
+      if (foregroundRefreshEnabled && foregroundExecutionId === undefined) {
+        foregroundExecutionId = turnId.trim() || undefined;
+      }
       if (!deps.agentId) return;
       try {
         resumedMemory = await findResumedMemoryReviewAdmission({ checkpointThreadId, turnId,
@@ -124,6 +178,9 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
             state: liveShadowStreamState,
             event,
             messagesToPersist,
+            ...(foregroundExecutionId === undefined
+              ? {}
+              : { foregroundExecutionId }),
           });
           for (const protectedEvent of protectedStream.events) {
             deps.eventBus.emit(protectedEvent);
@@ -140,6 +197,15 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
             laneKey: deps.laneKey,
             agentId: deps.agentId ?? "",
             messages: messagesToPersist,
+            ...(foregroundExecutionId === undefined
+              ? {}
+              : { foregroundExecutionId }),
+            ...(foregroundContextReceipts === undefined
+              ? {}
+              : {
+                  onCommittedMessageIds:
+                    foregroundContextReceipts.recordIds,
+                }),
             persistOrdinary: (messages) =>
               persistOrdinary([...messages], assistantMessageKey),
             warn: () => undefined,

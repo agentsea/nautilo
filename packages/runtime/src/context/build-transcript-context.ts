@@ -15,6 +15,7 @@ import {
   buildForegroundContextProjectionV1,
   buildForegroundRecordQueryV1,
   type ForegroundContextProjectionFactsV1,
+  type ForegroundNarrativeTranscriptV1,
   type ForegroundPriorTurnLine,
   type ForegroundRecordContextPort,
   type ForegroundRecordSelectionResult,
@@ -53,6 +54,12 @@ export type TranscriptContextScope =
        * live turn message). Passed straight through to the room reader.
        */
       excludeMessageId?: number;
+      /** Other already-admitted Human rows carried separately in the live request. */
+      excludeMessageIds?: readonly number[];
+      /** Stable inclusive durable cut used when rebuilding an active turn. */
+      throughMessageIdInclusive?: number;
+      /** Active execution whose post-trigger rows may enter a refresh. */
+      foregroundExecutionId?: string;
       /** Exact current turn observation can be newer than its persisted Human input. */
       imageAssistanceTurnId?: string;
       /** Subthread anchoring (optional): include parent up-to-anchor window. */
@@ -74,6 +81,8 @@ export interface BuildTranscriptContextOptions {
   modelId?: string;
   /** Optional renderer clamp; the production Room reader is already bounded. */
   maxLines?: number;
+  /** Invocation allowance left after immutable prompt/tool/live-suffix input. */
+  maximumContextCharacters?: number;
   /** Optional: who addressed the agent this turn (passes through to the block). */
   addressedBy?: string;
   /** Raw Human-authored text; excludes server presentation/time prefixes. */
@@ -130,8 +139,6 @@ export interface BuildTranscriptContextDeps {
 }
 
 const ESTIMATED_CHARS_PER_TOKEN = 4;
-const BUDGET_ELISION_MARKER = "\n… context omitted to respect the Room budget …\n";
-
 function renderTranscriptBlock(
   hits: RoomHistoryHit[],
   opts: Pick<BuildTranscriptContextOptions, "maxLines" | "addressedBy">,
@@ -155,6 +162,59 @@ function completeTurns(hits: RoomHistoryHit[]): RoomHistoryHit[][] {
     }
   }
   return turns;
+}
+
+function narrativeTranscript(
+  hits: RoomHistoryHit[],
+  opts: Pick<BuildTranscriptContextOptions, "maxLines" | "addressedBy">,
+  minimumCompleteTurns: number,
+  activeTurnAfterMessageId?: number,
+): ForegroundNarrativeTranscriptV1 {
+  const maximumLines = Math.max(
+    1,
+    Math.trunc(opts.maxLines ?? Number.MAX_SAFE_INTEGER),
+  );
+  const earlierEntriesOmitted = hits.length > maximumLines;
+  const boundedHits = earlierEntriesOmitted
+    ? hits.slice(hits.length - maximumLines)
+    : hits;
+  const turns: Array<{
+    completeness: "complete" | "partial";
+    provenance: "prior" | "active_turn";
+    entries: string[];
+  }> = [];
+  for (const hit of boundedHits) {
+    const provenance = activeTurnAfterMessageId !== undefined
+      && hit.messageId > activeTurnAfterMessageId
+      ? "active_turn"
+      : "prior";
+    if (
+      hit.role === "user"
+      || turns.length === 0
+      || turns.at(-1)!.provenance !== provenance
+    ) {
+      turns.push({
+        completeness: hit.role === "user" ? "complete" : "partial",
+        provenance,
+        entries: [],
+      });
+    }
+    const entry = renderTranscriptBlock([hit], {});
+    if (entry !== null) turns.at(-1)!.entries.push(entry);
+  }
+  const baseline = renderTranscriptBlock(hits, opts);
+  return {
+    baselineBlock: baseline === null
+      ? null
+      : `${ROOM_CONTEXT_MESSAGE_HEADER}${baseline}`,
+    header: ROOM_CONTEXT_MESSAGE_HEADER.trimEnd(),
+    turns,
+    minimumCompleteTurns,
+    earlierEntriesOmitted,
+    ...(opts.addressedBy
+      ? { suffix: `--- you were addressed by: ${opts.addressedBy} ---` }
+      : {}),
+  };
 }
 
 function defaultForegroundContextClock(): ForegroundContextClock {
@@ -264,31 +324,12 @@ export async function selectForegroundRecordsWithDeadline(input: Readonly<{
   });
 }
 
-function clampText(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  if (maxChars <= BUDGET_ELISION_MARKER.length) {
-    return BUDGET_ELISION_MARKER.trim().slice(0, Math.max(0, maxChars));
-  }
-  const available = maxChars - BUDGET_ELISION_MARKER.length;
-  const head = Math.ceil(available / 2);
-  const tail = Math.floor(available / 2);
-  return `${text.slice(0, head)}${BUDGET_ELISION_MARKER}${
-    tail > 0 ? text.slice(-tail) : ""
-  }`;
-}
-
-function joinRoomSections(journalBlock: string | null, transcriptBlock: string | null): string | null {
-  const sections = [journalBlock, transcriptBlock].filter(
-    (section): section is string => Boolean(section),
-  );
-  return sections.length > 0 ? sections.join("\n\n") : null;
-}
-
 function roomContextMaximumCharacters(input: Readonly<{
   readonly modelContextTokens: number;
   readonly maxRoomContextPercent?: number;
+  readonly maximumContextCharacters?: number;
 }>): number {
-  return Math.max(
+  const roomMaximum = Math.max(
     1,
     Math.floor(
       input.modelContextTokens
@@ -301,6 +342,11 @@ function roomContextMaximumCharacters(input: Readonly<{
       )
       / 100,
     ) * ESTIMATED_CHARS_PER_TOKEN,
+  );
+  if (input.maximumContextCharacters === undefined) return roomMaximum;
+  return Math.min(
+    roomMaximum,
+    Math.max(0, Math.floor(input.maximumContextCharacters)),
   );
 }
 
@@ -315,11 +361,17 @@ export function buildBudgetedRoomContext(input: {
   modelContextTokens: number;
   minimumFullTurns?: number;
   maxRoomContextPercent?: number;
+  maximumContextCharacters?: number;
   maxLines?: number;
   addressedBy?: string;
+  /** Accepted-request coordinate separating prior history from current progress. */
+  activeTurnAfterMessageId?: number;
 }): string | null {
   const maxChars = roomContextMaximumCharacters(input);
-  const renderOpts = {
+  const renderOpts: Pick<
+    BuildTranscriptContextOptions,
+    "maxLines" | "addressedBy"
+  > = {
     ...(input.maxLines !== undefined ? { maxLines: input.maxLines } : {}),
     ...(input.addressedBy ? { addressedBy: input.addressedBy } : {}),
   };
@@ -334,61 +386,34 @@ export function buildBudgetedRoomContext(input: {
       ),
     ),
   );
-  let selectedTurns = minimum > 0 ? turns.slice(-minimum) : [];
-  let transcriptBlock = renderTranscriptBlock(selectedTurns.flat(), renderOpts);
   const journalBlock = buildRoomContextPayload({
     journal: input.journal,
     transcriptBlock: null,
   });
-
-  const mandatoryTranscript = transcriptBlock
-    ? `${ROOM_CONTEXT_MESSAGE_HEADER}${transcriptBlock}`
-    : null;
-  if (mandatoryTranscript && mandatoryTranscript.length > maxChars) {
-    return clampText(mandatoryTranscript, maxChars);
-  }
-
-  let boundedJournal = journalBlock;
-  let combined = joinRoomSections(boundedJournal, mandatoryTranscript);
-  if (combined && combined.length > maxChars) {
-    const transcriptCost = mandatoryTranscript?.length ?? 0;
-    const separatorCost = mandatoryTranscript && journalBlock ? 2 : 0;
-    const journalAllowance = Math.max(0, maxChars - transcriptCost - separatorCost);
-    boundedJournal =
-      journalBlock && journalAllowance > 0
-        ? clampText(journalBlock, journalAllowance)
-        : null;
-    combined = joinRoomSections(boundedJournal, mandatoryTranscript);
-  }
-
-  for (let index = turns.length - minimum - 1; index >= 0; index -= 1) {
-    const candidateTurns = [turns[index]!, ...selectedTurns];
-    const candidateTranscript = renderTranscriptBlock(candidateTurns.flat(), renderOpts);
-    const candidate = joinRoomSections(
-      boundedJournal,
-      candidateTranscript
-        ? `${ROOM_CONTEXT_MESSAGE_HEADER}${candidateTranscript}`
-        : null,
-    );
-    if (!candidate || candidate.length > maxChars) break;
-    selectedTurns = candidateTurns;
-    transcriptBlock = candidateTranscript;
-    combined = candidate;
-  }
-
-  if (turns.length === 0) {
-    const fallbackTranscript = renderTranscriptBlock(input.hits, renderOpts);
-    const candidate = joinRoomSections(
-      boundedJournal,
-      fallbackTranscript ? `${ROOM_CONTEXT_MESSAGE_HEADER}${fallbackTranscript}` : null,
-    );
-    if (candidate) {
-      return candidate.length <= maxChars
-        ? candidate
-        : clampText(candidate, maxChars);
-    }
-  }
-  return combined;
+  return buildForegroundContextProjectionV1({
+    maximumCharacters: maxChars,
+    journalBlock,
+    journalRollupPresent: input.journal.rollup !== null,
+    journalStatements: [
+      ...(input.journal.rollup?.content.trim()
+        ? [input.journal.rollup.content.trim()]
+        : []),
+      ...input.journal.events
+        .filter((event) => event.status === "active")
+        .map((event) => event.statement),
+    ],
+    journalEventCount: input.journal.events.filter(
+      (event) => event.status === "active",
+    ).length,
+    recentMessageCount: input.hits.length,
+    completeTurnCount: turns.length,
+    narrative: narrativeTranscript(
+      input.hits,
+      renderOpts,
+      minimum,
+      input.activeTurnAfterMessageId,
+    ),
+  }).body;
 }
 
 export function buildRoomContextPayload(input: {
@@ -536,41 +561,29 @@ export async function buildTranscriptContext(
               roomPolicy?.minimumFullTurns ?? MINIMUM_FULL_TURNS_DEFAULT,
             maxRoomContextPercent:
               roomPolicy?.maxRoomContextPercent ?? MAX_ROOM_CONTEXT_PERCENT_DEFAULT,
+            ...(opts.maximumContextCharacters !== undefined
+              ? { maximumContextCharacters: opts.maximumContextCharacters }
+              : {}),
             ...(opts.maxLines !== undefined ? { maxLines: opts.maxLines } : {}),
             ...(opts.addressedBy ? { addressedBy: opts.addressedBy } : {}),
           };
-          const baselineBody = buildBudgetedRoomContext(budgetInput);
           const turns = completeTurns(hits);
           const minimum = Math.min(
             turns.length,
             Math.max(0, Math.min(10, Math.trunc(budgetInput.minimumFullTurns))),
           );
-          let selectedTurns = minimum > 0 ? turns.slice(-minimum) : [];
-          const renderOpts = {
+          const renderOpts: Pick<
+            BuildTranscriptContextOptions,
+            "maxLines" | "addressedBy"
+          > = {
             ...(opts.maxLines !== undefined ? { maxLines: opts.maxLines } : {}),
             ...(opts.addressedBy ? { addressedBy: opts.addressedBy } : {}),
           };
-          const mandatoryTranscript = renderTranscriptBlock(
-            selectedTurns.flat(),
-            renderOpts,
-          );
-          const olderTranscriptCandidates: string[] = [];
-          for (let index = turns.length - minimum - 1; index >= 0; index -= 1) {
-            selectedTurns = [turns[index]!, ...selectedTurns];
-            const candidate = renderTranscriptBlock(selectedTurns.flat(), renderOpts);
-            if (candidate !== null) {
-              olderTranscriptCandidates.push(`${ROOM_CONTEXT_MESSAGE_HEADER}${candidate}`);
-            }
-          }
-          const fallbackTranscript = turns.length === 0
-            ? renderTranscriptBlock(hits, renderOpts)
-            : null;
           const journalBlock = buildRoomContextPayload({
             journal,
             transcriptBlock: null,
           });
           const projection = buildForegroundContextProjectionV1({
-            baselineBody,
             maximumCharacters: roomContextMaximumCharacters(budgetInput),
             journalBlock,
             journalRollupPresent: journal.rollup !== null,
@@ -588,15 +601,16 @@ export async function buildTranscriptContext(
             ...(selectionResult === undefined
               ? {}
               : { selection: selectionResult.selection }),
-            mandatoryTranscriptBlock: mandatoryTranscript === null
-              ? null
-              : `${ROOM_CONTEXT_MESSAGE_HEADER}${mandatoryTranscript}`,
-            olderTranscriptCandidates,
-            fallbackTranscriptBlock: fallbackTranscript === null
-              ? null
-              : `${ROOM_CONTEXT_MESSAGE_HEADER}${fallbackTranscript}`,
             recentMessageCount: hits.length,
             completeTurnCount: turns.length,
+            narrative: narrativeTranscript(
+              hits,
+              renderOpts,
+              minimum,
+              opts.scope.kind === "room"
+                ? opts.scope.excludeMessageId
+                : undefined,
+            ),
           });
           if (
             (selectionResult !== undefined || !passiveRecallEnabled)
@@ -647,12 +661,16 @@ export async function buildTranscriptContext(
 export function buildProtectedRoomTranscriptContext(
   hits: readonly RoomHistoryHit[],
   modelId?: string,
+  maximumContextCharacters?: number,
 ): BaseMessage[] {
   const block = buildBudgetedRoomContext({
     journal: { rollup: null, events: [] },
     hits: [...hits],
     modelContextTokens: modelId ? getModelTokenLimit(modelId) : 128_000,
     maxLines: Number.MAX_SAFE_INTEGER,
+    ...(maximumContextCharacters === undefined
+      ? {}
+      : { maximumContextCharacters }),
   });
   if (block === null) return [];
   return [
@@ -676,10 +694,13 @@ export async function buildProtectedRoomHybridContext(input: Readonly<{
   readonly currentHumanText: string;
   readonly recordContext?: ForegroundRecordContextPort;
   readonly modelId?: string;
+  readonly maximumContextCharacters?: number;
   readonly signal?: AbortSignal;
   readonly roomPolicy?: ResolvedServerContextConfig;
   readonly emitDiagnostic?: BuildTranscriptContextDeps["emitForegroundContextDiagnostic"];
   readonly clock?: ForegroundContextClock;
+  /** Accepted-request coordinate separating prior history from current progress. */
+  readonly activeTurnAfterMessageId?: number;
 }>): Promise<BaseMessage[]> {
   const roomPolicy = input.roomPolicy;
   return buildTranscriptContext({
@@ -687,12 +708,18 @@ export async function buildProtectedRoomHybridContext(input: Readonly<{
       kind: "room",
       roomId: "protected-invocation",
       ownerId: "protected-invocation",
+      ...(input.activeTurnAfterMessageId === undefined
+        ? {}
+        : { excludeMessageId: input.activeTurnAfterMessageId }),
     },
     currentHumanText: input.currentHumanText,
     ...(input.recordContext === undefined
       ? {}
       : { recordContext: input.recordContext }),
     ...(input.modelId === undefined ? {} : { modelId: input.modelId }),
+    ...(input.maximumContextCharacters === undefined
+      ? {}
+      : { maximumContextCharacters: input.maximumContextCharacters }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
     maxLines: Number.MAX_SAFE_INTEGER,
   }, {

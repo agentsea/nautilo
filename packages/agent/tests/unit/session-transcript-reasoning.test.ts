@@ -31,6 +31,23 @@ describe("session transcript reasoning sanitization", () => {
     expect(transcriptMetadataForMessage(call, {})).toBeNull();
     expect(transcriptMetadataForMessage(new HumanMessage("internal wake"), { metadata })).toEqual(metadata);
   });
+
+  test("server execution identity overrides caller metadata on every durable role", () => {
+    const options = {
+      metadata: { nautilo_foreground_execution_id: "caller-value" },
+      foregroundExecutionId: "turn-owned",
+    };
+    expect(transcriptMetadataForMessage(new AIMessage("answer"), options)).toEqual({
+      nautilo_foreground_execution_id: "turn-owned",
+    });
+    expect(transcriptMetadataForMessage(new ToolMessage({
+      content: "result",
+      tool_call_id: "call-1",
+    }), options)).toEqual({
+      nautilo_foreground_execution_id: "turn-owned",
+      nautilo_tool_result: { toolCallId: "call-1" },
+    });
+  });
   test("strips reasoning blocks from AIMessage content arrays", () => {
     const msg = new AIMessage({
       content: [

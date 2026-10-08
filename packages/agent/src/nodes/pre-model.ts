@@ -43,7 +43,7 @@ import { log } from "@nautilo/logger";
 import { validateMessageHistory, assertMessageInvariants } from "@nautilo/message-invariants";
 import { activeComputerUseModelGuidanceForBoundTools } from "../config/computer-use-catalogue/host-tool-admission";
 import { processHistory, estimateTokenCount, taskReadResponseByteBudget, pendingTaskReadPages, type HistoryConfig } from "../utils/history-manager";
-import { resolvePreparedMessageBudget } from "../utils/chat-model-invocation";
+import { estimateBoundToolTokens, resolvePreparedMessageBudget } from "../utils/chat-model-invocation";
 import { budgetResearchContext, isResearchPreEvictionConsolidating, prepareResearchContextOrigins, restoreResearchContextControlCycle } from "../tools/security/research-context-rollover";
 import { SECURITY_RESEARCH_WORKFLOW } from "../tools/security/research-protocol";
 import { buildResearchWorkContextMessage } from "../tools/security/research-work-context";
@@ -95,6 +95,12 @@ import {
   usesOpenAICompatibleChatTransport,
 } from "../providers/model-route";
 import { modelUsesAnthropicPromptCache } from "../utils/model-context-cache";
+import {
+  acceptedForegroundMessages,
+  foregroundContextNarrativeAllowanceCharacters,
+  foregroundContextProjectionFingerprint,
+  foregroundContextReservedMessageTokens,
+} from "../graph/foreground-context-refresh";
 import { projectSystemMessagesForProvider } from "../utils/provider-system-messages";
 import { COMPUTER_RESULT_DURABLE_SIDECAR_KEY } from "../tools/computer/model-result-projector";
 import { getCurrentInitiatingClientSurface } from "../runtime/initiating-client-surface-context";
@@ -418,7 +424,11 @@ function tombstoneEjectedSkillBodies(
 
 function latestHumanMessageIndex(messages: BaseMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i] instanceof HumanMessage) return i;
+    const message = messages[i];
+    if (
+      message instanceof HumanMessage
+      && message.additional_kwargs["nautilo_transient_context"] !== true
+    ) return i;
   }
   return -1;
 }
@@ -1304,6 +1314,72 @@ export async function preModelNode(
   }
   const finalPreparedMessages = finalResearchContext?.messages ?? preparedMessages;
   assertMessageInvariants(finalPreparedMessages, "pre_model.research_context");
+  let foregroundContextRefreshUpdate: Partial<NautiloState> = {};
+  if (state.foregroundContextRefreshEligible === true) {
+    const acceptedRefreshMessages = acceptedForegroundMessages(
+      state.foregroundContextRefreshSource?.acceptedMessages ?? [],
+      state.messages,
+    );
+    // Token accounting only: accepted Humans and the exact retained non-Human
+    // suffix are disjoint and this array is never used as message history.
+    // eslint-disable-next-line nautilo-msg/no-naked-message-concat
+    const requiredRefreshMessages = [
+      ...acceptedRefreshMessages,
+      ...(state.foregroundContextRefreshSource?.retainedMessages ?? []),
+    ];
+    const maximumContextCharacters = foregroundContextNarrativeAllowanceCharacters(
+      finalMessageTokens,
+      finalPreparedMessages,
+      requiredRefreshMessages,
+    );
+    const reservedMessageTokens = foregroundContextReservedMessageTokens(
+      finalPreparedMessages,
+      requiredRefreshMessages,
+    );
+    const projectionFingerprint = foregroundContextProjectionFingerprint(
+      finalPreparedMessages,
+      requestedModelId,
+      maximumContextCharacters,
+    );
+    const progressFingerprint = foregroundContextProjectionFingerprint(
+      state.messages,
+      requestedModelId,
+      maximumContextCharacters,
+    );
+    const browserDecisionPhase = currentBrowserDecision(state)?.phase;
+    const pressure =
+      state.foregroundContextRefresh == null
+      && state.foregroundContextRefreshLastProjection !== progressFingerprint
+      && estimateTokenCount(finalPreparedMessages) > finalMessageTokens
+      && state.noProgressPendingCorrection == null
+      && state.noProgressPendingStop == null
+      && state.approvalDenied !== true
+      && !(state.modelRejectedToolCallIds?.length)
+      && !(state.projectionRejectedToolCallIds?.length)
+      && !(state.ordinaryContentAccessRejectedToolCallIds?.length)
+      && state.researchContinuationRequired !== true
+      && browserDecisionPhase !== "waiting"
+      && browserDecisionPhase !== "observe"
+      && browserDecisionPhase !== "decide";
+    foregroundContextRefreshUpdate = {
+      foregroundContextPreparedModelId: requestedModelId,
+      foregroundContextMaximumCharacters: maximumContextCharacters,
+      foregroundContextBoundToolTokens: estimateBoundToolTokens(finalTools),
+      foregroundContextReservedMessageTokens: reservedMessageTokens,
+      ...(pressure
+        ? {
+            foregroundContextRefresh: {
+              kind: "foreground_context_refresh" as const,
+              reason: "context_pressure" as const,
+              status: "pending" as const,
+              modelId: requestedModelId,
+              maximumContextCharacters,
+              projectionFingerprint,
+            },
+          }
+        : {}),
+    };
+  }
 
   if (config.nautilo_log_tool_calls) {
     logProgressiveToolExposure(
@@ -1338,6 +1414,7 @@ export async function preModelNode(
     promptTimeReference,
     toolNames: finalTools.map((t) => t.name),
     connectedAppProviderIds: [...connectedAppProviderIds],
+    ...foregroundContextRefreshUpdate,
     // consume the pending correction flag so the corrective
     // instruction is injected exactly once. Cleared on this turn; a later
     // identical failure (count = limit + 1) is what maps to `no_progress`.

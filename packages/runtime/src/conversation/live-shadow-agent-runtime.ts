@@ -81,9 +81,11 @@ export interface LiveShadowAgentRuntimeTurn {
     ordinaryChunk: Uint8Array;
     done: boolean;
     finalMessage?: BaseMessage;
+    foregroundExecutionId?: string;
   }>): Promise<LiveShadowAgentStreamFrameResult | null>;
   publishMessages(
     messages: readonly BaseMessage[],
+    foregroundExecutionId?: string,
   ): Promise<LiveShadowAgentPublishBatchResult>;
 }
 
@@ -123,6 +125,7 @@ export function createLiveShadowAgentRuntimeTurn(
     retryable?: boolean;
   }>) => Promise<void>) | undefined,
   livePolicy: DataOperationPolicyBinding | undefined,
+  foregroundExecutionId?: string,
 ): LiveShadowAgentRuntimeTurn {
   if (livePolicy === undefined) {
     throw new Error("Protected Runtime requires a live data-operation policy binding");
@@ -154,6 +157,18 @@ export function createLiveShadowAgentRuntimeTurn(
   ): never => {
     if (reason === "deadline_expired") throw deadlineExpiredError("agent");
     throw new Error(`Live Shadow Agent protection failed terminally: ${reason}`);
+  };
+  const resolveForegroundExecutionId = (
+    invocationExecutionId?: string,
+  ): string | undefined => {
+    if (
+      foregroundExecutionId !== undefined
+      && invocationExecutionId !== undefined
+      && foregroundExecutionId !== invocationExecutionId
+    ) {
+      throw new Error("Live Shadow publication execution identity changed within one turn");
+    }
+    return invocationExecutionId ?? foregroundExecutionId;
   };
   const throwTerminalToolFailure = (
     reason: LiveShadowAgentSessionFailureReason,
@@ -255,6 +270,7 @@ export function createLiveShadowAgentRuntimeTurn(
     source: BaseMessage,
     stage: "assistant_message" | "tool_call" | "tool_result",
     reservation?: LiveShadowAgentMessageReservation,
+    invocationExecutionId?: string,
   ): Promise<LiveShadowAgentSessionResult<LiveShadowAgentPublishedMessage>> => {
     requireActiveAuthorization(stage);
     const prior = published.get(source);
@@ -267,7 +283,10 @@ export function createLiveShadowAgentRuntimeTurn(
     // Browser parity impossible to reconstruct after the ordinary commit.
     let payload: MessagePayloadV2;
     try {
-      payload = protectedAgentMessagePayload(source);
+      payload = protectedAgentMessagePayload(
+        source,
+        resolveForegroundExecutionId(invocationExecutionId),
+      );
     } catch (error) {
       session.fail(stage, "integrity_failure");
       await observeBoundary?.({
@@ -475,6 +494,7 @@ export function createLiveShadowAgentRuntimeTurn(
       ordinaryChunk: Uint8Array;
       done: boolean;
       finalMessage?: BaseMessage;
+      foregroundExecutionId?: string;
     }>) {
       requireActiveAuthorization("assistant_stream");
       const stream = streams.get(input.assistantMessageKey);
@@ -502,7 +522,10 @@ export function createLiveShadowAgentRuntimeTurn(
           );
         }
         try {
-          finalPayload = protectedAgentMessagePayload(input.finalMessage);
+          finalPayload = protectedAgentMessagePayload(
+            input.finalMessage,
+            resolveForegroundExecutionId(input.foregroundExecutionId),
+          );
         } catch (error) {
           session.fail("assistant_stream", "integrity_failure");
           throw error;
@@ -531,7 +554,10 @@ export function createLiveShadowAgentRuntimeTurn(
       if (result === null) return null;
       return result.value;
     },
-    async publishMessages(messages: readonly BaseMessage[]) {
+    async publishMessages(
+      messages: readonly BaseMessage[],
+      invocationExecutionId?: string,
+    ) {
       requireActiveAuthorization("assistant_message");
       const results: LiveShadowAgentPublishedMessage[] = [];
       for (let index = 0; index < messages.length; index += 1) {
@@ -558,6 +584,7 @@ export function createLiveShadowAgentRuntimeTurn(
           message,
           AIMessage.isInstance(message) ? "assistant_message" : "tool_result",
           key === undefined ? undefined : (await key[1])?.reservation,
+          resolveForegroundExecutionId(invocationExecutionId),
         );
         if (result.status !== "protected") {
           const ordinaryPublication = result.ordinaryPublication;

@@ -184,6 +184,29 @@ describe("buildTranscriptContext (M166 Phase A)", () => {
     expect(content).not.toContain("old answer");
   });
 
+  test("labels durable progress after the accepted request inside the shared narrative", () => {
+    const prior = {
+      ...makeHit("alice", "Alice", "prior conversation", "2026-06-01T10:00:00Z", "user"),
+      messageId: 9,
+    };
+    const progress = {
+      ...makeHit("nova", "Nova", "finished current step", "2026-06-01T10:01:00Z", "assistant"),
+      messageId: 11,
+    };
+    const content = buildBudgetedRoomContext({
+      journal: { rollup: null, events: [] },
+      hits: [prior, progress],
+      modelContextTokens: 1_000,
+      activeTurnAfterMessageId: 10,
+    })!;
+    const priorIndex = content.indexOf("prior conversation");
+    const markerIndex = content.indexOf("Completed progress in the current logical turn");
+    const progressIndex = content.indexOf("finished current step");
+    expect(priorIndex).toBeGreaterThanOrEqual(0);
+    expect(markerIndex).toBeGreaterThan(priorIndex);
+    expect(progressIndex).toBeGreaterThan(markerIndex);
+  });
+
   test("M219 trims journal before sacrificing a minimum complete turn", () => {
     const content = buildBudgetedRoomContext({
       journal: {
@@ -280,7 +303,7 @@ describe("buildTranscriptContext (M166 Phase A)", () => {
     expect(content).toContain("context omitted");
   });
 
-  test("M219 zero minimum lets journal context win the Room budget", () => {
+  test("zero complete-turn preference lets unused semantic space return to recent entries", () => {
     const content = buildBudgetedRoomContext({
       journal: {
         rollup: {
@@ -299,11 +322,11 @@ describe("buildTranscriptContext (M166 Phase A)", () => {
     });
     expect(content!.length).toBeLessThanOrEqual(600);
     expect(content).toContain("durable journal");
-    expect(content).not.toContain("optional recent question");
-    expect(content).not.toContain("optional recent answer");
+    expect(content).toContain("optional recent question");
+    expect(content).toContain("optional recent answer");
   });
 
-  test("M219 preserves a configured two-turn suffix before journal text", () => {
+  test("keeps the newest whole turn when the configured complete-turn preference cannot fit", () => {
     const content = buildBudgetedRoomContext({
       journal: {
         rollup: {
@@ -323,11 +346,90 @@ describe("buildTranscriptContext (M166 Phase A)", () => {
       maxRoomContextPercent: 30,
     });
     expect(content!.length).toBeLessThanOrEqual(600);
-    expect(content).toContain("first protected question");
-    expect(content).toContain("first protected answer");
+    expect(content).not.toContain("first protected question");
+    expect(content).not.toContain("first protected answer");
     expect(content).toContain("second protected question");
     expect(content).toContain("second protected answer");
     expect(content).toContain("context omitted");
+    expect(content).toContain("earlier narrative entries omitted");
+  });
+
+  test("bounds narrative by the smaller invocation allowance", () => {
+    const content = buildBudgetedRoomContext({
+      journal: { rollup: null, events: [] },
+      hits: [
+        makeHit("alice", "Alice", `question ${"q".repeat(1_000)}`, "2026-06-01T10:00:00Z", "user"),
+        makeHit("nova", "Nova", `answer ${"a".repeat(1_000)}`, "2026-06-01T10:00:01Z", "assistant"),
+      ],
+      modelContextTokens: 128_000,
+      maximumContextCharacters: 420,
+    });
+    expect(content!.length).toBeLessThanOrEqual(420);
+    expect(content).toContain("Excerpt from one oversized narrative entry");
+  });
+
+  test("reserves Journal space when one recent turn is oversized", () => {
+    const content = buildBudgetedRoomContext({
+      journal: {
+        rollup: { throughEventSequence: 1, content: `durable context ${"j".repeat(1_000)}` },
+        events: [],
+      },
+      hits: [
+        makeHit("alice", "Alice", `large request ${"q".repeat(2_000)}`, "2026-06-01T10:00:00Z", "user"),
+        makeHit("nova", "Nova", `large response ${"a".repeat(2_000)}`, "2026-06-01T10:00:01Z", "assistant"),
+      ],
+      modelContextTokens: 128_000,
+      maximumContextCharacters: 700,
+    });
+    expect(content!.length).toBeLessThanOrEqual(700);
+    expect(content).toContain("durable context");
+    expect(content).toContain("Excerpt from one oversized narrative entry");
+    expect(content).toContain("context omitted");
+  });
+
+  test("preserves and labels an orphan assistant/tool source tail", () => {
+    const content = buildBudgetedRoomContext({
+      journal: { rollup: null, events: [] },
+      hits: [
+        makeHit("nova", "Nova", `earlier assistant ${"a".repeat(800)}`, "2026-06-01T10:00:00Z", "assistant"),
+        makeHit("nova", "Nova", "latest durable tool result", "2026-06-01T10:00:01Z", "tool"),
+      ],
+      modelContextTokens: 128_000,
+      maximumContextCharacters: 360,
+    });
+    expect(content!.length).toBeLessThanOrEqual(360);
+    expect(content).toContain("Partial recent turn");
+    expect(content).toContain("latest durable tool result");
+    expect(content).not.toContain("earlier assistant");
+  });
+
+  test("labels a fitting orphan source tail without dropping its entries", () => {
+    const content = buildBudgetedRoomContext({
+      journal: { rollup: null, events: [] },
+      hits: [
+        makeHit("nova", "Nova", "assistant tail", "2026-06-01T10:00:00Z", "assistant"),
+        makeHit("nova", "Nova", "tool tail", "2026-06-01T10:00:01Z", "tool"),
+      ],
+      modelContextTokens: 128_000,
+    });
+    expect(content).toContain("source window begins after its Human request");
+    expect(content).toContain("assistant tail");
+    expect(content).toContain("tool tail");
+  });
+
+  test("keeps short context identical when the invocation allowance still fits", () => {
+    const input = {
+      journal: { rollup: null, events: [] },
+      hits: [
+        makeHit("alice", "Alice", "short question", "2026-06-01T10:00:00Z", "user"),
+        makeHit("nova", "Nova", "short answer", "2026-06-01T10:00:01Z", "assistant"),
+      ],
+      modelContextTokens: 128_000,
+    };
+    expect(buildBudgetedRoomContext(input)).toBe(buildBudgetedRoomContext({
+      ...input,
+      maximumContextCharacters: 10_000,
+    }));
   });
 
   test("subagent scope maps run transcript via runAgentTranscriptToHits", async () => {
@@ -775,5 +877,21 @@ describe("M277 foreground hybrid context", () => {
     expect(content).toContain("Protected Journal statement.");
     expect(content).toContain("Protected Record statement.");
     expect(content).toContain("protected prior");
+  });
+
+  test("protected hybrid labels authorized current-turn progress", async () => {
+    const progress = {
+      ...makeHit("nova", "Nova", "protected completed step", "2026-06-01T10:00:01Z", "assistant"),
+      messageId: 11,
+    };
+    const result = await buildProtectedRoomHybridContext({
+      hits: [progress],
+      journal: { rollup: null, events: [] },
+      currentHumanText: "run the checks",
+      activeTurnAfterMessageId: 10,
+    });
+    const content = result[0]!.content as string;
+    expect(content).toContain("Completed progress in the current logical turn");
+    expect(content).toContain("protected completed step");
   });
 });

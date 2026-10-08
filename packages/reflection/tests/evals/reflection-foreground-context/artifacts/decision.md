@@ -14,8 +14,9 @@ balanced_semantic_first | PASS | 100.0%
 journal_first | FAIL | 83.3%
 records_first | FAIL | 50.0%
 
-The selected policy preserves the mandatory recent suffix, then gives bounded
-space to both Journal continuity and organized Records before older turns.
+The selected policy preserves complete recent turns when they fit, labels
+partial or oversized narrative evidence, and gives bounded space to Journal
+continuity and organized Records.
 The two rejected orders each starve one semantic source in the cramped corpus.
 No runtime semantic dedupe or quality classifier is introduced.
 
