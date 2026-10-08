@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, boolean, integer, jsonb, timestamp, index, check, customType, foreignKey } from "drizzle-orm/pg-core";
-import { SELECTION_PROFILES, TASK_FUNDING_MODES, type ComboSpec } from "@nautilo/types";
+import { SELECTION_PROFILES, TASK_FUNDING_MODES, type ComboSpec, type LocalExecutionDelegation } from "@nautilo/types";
 import { users } from "./users";
 import { agents } from "./agents";
 import { rooms } from "./rooms";
@@ -43,7 +43,7 @@ export const tasks = pgTable(
     toolsMode: text("tools_mode", { enum: ["auto", "none", "whitelist"] }).notNull().default("auto"),
     toolsWhitelist: text("tools_whitelist").array().notNull().default([]),
     awaitResponse: boolean("await_response").notNull().default(false),
-    // M152 — multi-axis model selection. Replaces the one-dimensional
+    // Multi-axis model selection replaces the one-dimensional
     // `privacy_mode boolean`. `selection_profile` is the named intent (Tier-1);
     // `selection_spec` is the explicit {band?, objective} override (Tier-2).
     selectionProfile: text("selection_profile", {
@@ -52,7 +52,7 @@ export const tasks = pgTable(
       .notNull()
       .default("balanced"),
     selectionSpec: jsonb("selection_spec").$type<ComboSpec | null>(),
-    // D429 Phase 3 — exact model pin. Mutually exclusive with the M152
+    // Exact model pin. Mutually exclusive with the
     // selection profile/spec above. Null = no exact pin (the row falls back to
     // the profile/spec resolver at dispatch). No FK: the resolved catalog is a
     // runtime projection, not a static table, so a FK would couple the schema
@@ -72,6 +72,8 @@ export const tasks = pgTable(
     fireLockId: uuid("fire_lock_id"),
     fireLockedAt: timestamp("fire_locked_at", { withTimezone: true }),
     lastError: text("last_error"),
+    // Server-authored reference; never accepted from Task input or protected payload metadata.
+    localExecutionDelegation: jsonb("local_execution_delegation").$type<LocalExecutionDelegation | null>(),
     metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
     contentRepresentation: text("content_representation", {
       enum: ["ordinary", "dual", "protected"],

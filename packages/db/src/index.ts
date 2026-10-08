@@ -24,7 +24,7 @@ export {
   type Database,
 } from "./config/database";
 
-// D427 (Wave 4) — shared recovery/acceptance helpers used by both the
+// Shared recovery/acceptance helpers used by both the
 // Compose restore/upgrade path and the `nautilo-dev` restore/upgrade/verify
 // path. Pure + dependency-free so operator tooling can import them without
 // pulling the full @nautilo/db runtime.
@@ -70,7 +70,7 @@ export {
   type OfflineDirectQueryRow,
   resolveDirectDatabaseConnectionString,
 };
-// D129 P3 — agent-vs-auth Postgres role split (Stack 11.5).
+// Separate Agent and authenticated-user Postgres roles.
 // The agent runtime should use `agentDb` (or `createAgentDatabase()`)
 // instead of the full-privilege `db` singleton. See packages/db/README.md
 // for role-specific connection setup.
@@ -122,7 +122,7 @@ export {
   type RegisteredPool,
 } from "./config/pool-shutdown-registry";
 
-// D168 P2 — Path C RLS trust-context wrapper.
+// Row-level-security trust-context wrapper.
 export {
   withTrustContext,
   setTrustContextOnTx,
@@ -237,7 +237,7 @@ export {
   claimBootstrapSeedUserInTx,
   seedPersonalAgentForInviteeInTx,
   seedPersonalPrivateRoomInTx,
-  // M128 D2: seedInviterAgentPrivateRoomInTx removed — every invitee gets their own Personal Room.
+  // Every invitee gets their own Personal Room.
   type InviteSeedTx,
   type SeedPersonalAgentResult,
   type ClaimBootstrapSeedUserResult,
@@ -251,11 +251,11 @@ export {
   renameAgentProfileIdentity,
   setAgentHandle,
 } from "./utils/rename-agent-profile-identity";
-// D425 Wave 1A — transaction-aware profile/identity/handle primitives for
+// Transaction-aware profile/identity/handle primitives for
 // the portable Genie profile importer. The existing rename/setAgentHandle
 // helpers each open their own transaction; these twins take a caller-supplied
-// tx so the importer owns the commit boundary. Also exports the frozen Wave
-// 1A profile allowlist and the target-state digest used for stale-plan
+// tx so the importer owns the commit boundary. Also exports the profile
+// allowlist and the target-state digest used for stale-plan
 // detection. See packages/db/src/utils/profile-migration-primitives.ts.
 export {
   applyWave1AProfileAllowlist,
@@ -280,7 +280,7 @@ export {
   type HandleIntent,
   type TargetStateDigestInput,
 } from "./utils/profile-migration-primitives";
-// D425 Wave 1B — narrow, transaction-aware private-memory migration
+// Narrow, transaction-aware private-memory migration
 // primitives for the portable Genie profile importer: a source-eligibility
 // helper (pure evaluator + transaction-aware fetcher) that walks every
 // memory_namespaces / memory_scopes edge and accepts a memory only when it
@@ -310,7 +310,7 @@ export {
   type PrivateMemoryScopeEdge,
   type ReplayPrivateMemoryRecordInTxArgs,
 } from "./utils/profile-migration-memory-primitives";
-// D425 Wave 3 — narrow, transaction-aware private-artifact migration
+// Narrow, transaction-aware private-artifact migration
 // primitives for the portable Genie profile importer: a source-eligibility
 // helper (pure evaluator + transaction-aware fetcher) that walks every
 // artifact_namespaces edge and accepts an artifact only when every edge's
@@ -597,6 +597,16 @@ export {
   listStoppableTasksForOwnerRoom,
   updateTask,
   updateTaskIfCurrent,
+  memoizeTaskExecutionCoordinates,
+  TASK_LOCAL_EXECUTION_OFFLINE_WAIT,
+  TASK_LOCAL_EXECUTION_OFFLINE_TEXT,
+  taskLocalExecutionOfflineMarker,
+  taskLocalExecutionOfflinePhase,
+  isTaskLocalExecutionOfflineWait,
+  parkTaskLocalExecutionOffline,
+  listTaskLocalExecutionOfflineWaits,
+  rearmTaskLocalExecutionOffline,
+  claimTaskLocalExecutionOfflineRun,
   insertTaskRun,
   getTaskRuns,
   getTaskRunForTask,
@@ -604,6 +614,10 @@ export {
   getAgentDisplayNamesByAgentId,
   getOwnerAgentDisplayNamesByAgentId,
   getActiveTaskRun,
+  markTaskAwaitingIfCurrentRun,
+  taskRequiresLocalExecutionRecapture,
+  taskLocalExecutionDefinitionInvalidationPatch,
+  TASK_LOCAL_EXECUTION_RECREATE_TEXT,
   transitionTaskLifecyclePaused,
   transitionTaskLifecycleTerminal,
   countActiveTaskWorkWith,
@@ -704,7 +718,7 @@ export {
   _deletePendingArtifactEventsForArtifact,
   type AppendPendingArtifactEventResult,
 } from "./queries/pending-artifact-events";
-// D448 Phase 8.2 — transaction-bound coordinator persistence substrate.
+// Transaction-bound coordinator persistence substrate.
 // These do not choose authority, open a transaction, or perform a writer cutover.
 export {
   acquireWorkspaceDocumentMutationOperationLock,

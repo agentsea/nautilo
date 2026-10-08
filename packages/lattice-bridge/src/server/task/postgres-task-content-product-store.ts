@@ -13,6 +13,8 @@ import {
   taskRunResultCryptoRevisions,
   taskRuns,
   tasks,
+  taskLocalExecutionDefinitionInvalidationPatch,
+  TASK_LOCAL_EXECUTION_RECREATE_TEXT,
 } from "@nautilo/db";
 
 import type { TaskContentAuthorityV1 } from "../../task/task-content-authority-v1.ts";
@@ -858,7 +860,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       && (lifecycle.representation !== "protected" || (
         text(row, "prompt") === ""
         && nullableText(row, "expected_output") === null
-        && nullableText(row, "last_error") === null
+        && (nullableText(row, "last_error") === null || nullableText(row, "last_error") === TASK_LOCAL_EXECUTION_RECREATE_TEXT)
         && sameJson(jsonObject(row, "metadata_json"), lifecycle.operationalMetadata)
       ))
       && sameBytes(nullableBytes(row, "crypto_required_namespace_fingerprint") ?? new Uint8Array(), lifecycle.requiredNamespaceFingerprint)) return "duplicate";
@@ -879,7 +881,9 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         lastError: null,
         metadata: sql`convert_from(${new TextEncoder().encode(JSON.stringify(lifecycle.operationalMetadata ?? {}))}::bytea, 'UTF8')::jsonb`,
       } : {}),
-      ...(expected === 0 ? { status: "pending" as const } : {}),
+      ...(expected === 0 ? { status: "pending" as const } : taskLocalExecutionDefinitionInvalidationPatch(
+        lifecycle.representation === "protected" ? { lastError: null } : {},
+      )),
       updatedAt: sql`CURRENT_TIMESTAMP`,
     }).where(and(eq(tasks.id, coordinate.taskId), eq(tasks.ownerId, requesterOwnerId), inArray(tasks.status, ["pending", "paused"]), isNull(tasks.fireLockId), eq(tasks.contentRevision, expected), expected === 0
       ? and(isNull(tasks.contentNamespaceId), eq(tasks.contentRepresentation, "ordinary"))

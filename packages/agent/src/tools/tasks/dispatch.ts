@@ -8,7 +8,8 @@ import {
   getTaskRuns,
   getLatestRunModelByTask,
   listTasksForOwner,
-  updateTask,
+  getTaskByIdWithMutationVersion,
+  updateTaskIfCurrent,
   users,
   and,
   eq,
@@ -187,7 +188,7 @@ function personalTaskMutationRejection(
 }
 
 /**
- * M165 — resolve the `create` command's `target_users` (@handles) to local
+ * Resolve the `create` command's `target_users` (@handles) to local
  * `users.id`s, with the requester always auto-included (dedup, requester
  * first). Returns a friendly error string when a handle doesn't resolve to a
  * local human, so the namespace derivation never silently drops a named peer.
@@ -394,9 +395,9 @@ export async function dispatchTaskCommand(
 
         const toolsFields = toolsFieldsFromArgs(args.tools);
 
-        // D429 Phase 3 / M152 — create-time model-selection guard (A8): the
+        // Create-time model-selection guard: the
         // combined validator owns BOTH the exact `model_id` pin (curated IDs,
-        // capability truth, mutual-exclusion conflict) and the M152
+        // capability truth, mutual-exclusion conflict) and the
         // profile/spec bias. Reject an unsatisfiable selection with the
         // actionable message; do NOT insert.
         const selectionError = ctx.personalTaskControls || getCapabilityFundingSession() ? null : validateTaskModelSelectionForCreate({
@@ -411,7 +412,7 @@ export async function dispatchTaskCommand(
         const scheduleKind = args.schedule_kind ?? "now";
         const runAt = parseRunAt(args.run_at);
 
-        // M165 — derive the namespace target-users set from @handles (requester
+        // derive the namespace target-users set from @handles (requester
         // auto-included). Drives `buildEnvelopeForTargetUsers` at the dispatch
         // seam; orthogonal to `target_chat` (where the result lands).
         const targets = await resolveTargetUserIds(
@@ -642,7 +643,7 @@ export async function dispatchTaskCommand(
             resultDelivery: task.resultDelivery,
             selectionProfile: task.selectionProfile,
             selectionSpec: task.selectionSpec,
-            // D429 Phase 3 — the requested exact pin (distinct from the
+            // the requested exact pin (distinct from the
             // per-run actual model in `runs[].modelId`).
             requestedModelId: task.requestedModelId,
             harnessId: taskExternalHarnessId(task.metadata),
@@ -680,7 +681,7 @@ export async function dispatchTaskCommand(
             scheduleKind: task.scheduleKind,
             callingRoomId: task.callingRoomId,
             selectionProfile: task.selectionProfile,
-            // D429 Phase 3 — requested exact pin (null when none). The actual
+            // requested exact pin (null when none). The actual
             // run model is surfaced separately as `lastModelId` below.
             requestedModelId: task.requestedModelId,
             lastModelId: lastModels.get(task.id) ?? null,
@@ -696,7 +697,7 @@ export async function dispatchTaskCommand(
         if (reject) return reject;
 
         const rt = getTaskToolRuntime();
-        const task = await getTaskById(rt.db, args.taskId);
+        const task = await getTaskByIdWithMutationVersion(rt.db, args.taskId);
         if (!task || task.ownerId !== ctx.ownerId) {
           return "Task not found.";
         }
@@ -710,9 +711,9 @@ export async function dispatchTaskCommand(
           return `Cannot update task: only pending or paused tasks can be updated (this one is '${task.status}').`;
         }
 
-        // D429 Phase 3 / M152 — validate a changed selection before patching
+        // validate a changed selection before patching
         // the row. The combined validator owns the exact `model_id` pin, the
-        // M152 profile/spec bias, and their mutual-exclusion conflict. We
+        // profile/spec bias, and their mutual-exclusion conflict. We
         // validate the EFFECTIVE selection (patch overlaid on the existing
         // row) so setting model_id on a row that still carries a non-default
         // profile/spec is caught as a conflict — the caller must clear the
@@ -786,7 +787,7 @@ export async function dispatchTaskCommand(
         if (args.model_selection_spec !== undefined) {
           patch.selectionSpec = args.model_selection_spec;
         }
-        // D429 Phase 3 — explicit clearing semantics: `model_id: null` clears
+        // explicit clearing semantics: `model_id: null` clears
         // the pin; a string sets it; omission preserves the existing value
         // (omission is NOT treated as clear).
         if (args.model_id !== undefined) {
@@ -828,8 +829,12 @@ export async function dispatchTaskCommand(
           patch,
         });
 
-        const updated = await updateTask(rt.db, args.taskId, patch);
-        if (!updated) return "Task not found.";
+        const updated = await updateTaskIfCurrent(rt.db, {
+          id: task.id, ownerId: task.ownerId, expectedStatus: task.status,
+          expectedMutationVersion: task.mutationVersion, expectedContentRevision: task.contentRevision,
+        }, patch);
+        if (!updated) return "Cannot update task: it changed during validation. Read its current state before trying again.";
+        rt.onDefinitionChanged?.(updated);
         return JSON.stringify({
           task: {
             id: updated.id,
@@ -849,7 +854,7 @@ export async function dispatchTaskCommand(
           return `Cannot ${args.command} task: 'taskId' is required for command '${args.command}'.`;
         }
         const rt = getTaskToolRuntime();
-        // Owner check (M146 pattern): don't leak existence of another owner's task.
+        // Owner check: don't leak existence of another owner's task.
         const task = await getTaskById(rt.db, args.taskId);
         if (!task || task.ownerId !== ctx.ownerId) {
           return "Task not found.";

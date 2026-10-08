@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { beforeEach, afterEach, describe, expect, spyOn, test } from "bun:test";
 import { z } from "zod";
 import * as db from "@nautilo/db";
 import { createTaskTool } from "../../src/tools/tasks/task-tool";
@@ -22,9 +22,17 @@ const OTHER_OWNER_ID = "40000000-0000-4000-8000-000000000004";
 
 const CTX = { ownerId: OWNER_ID, causalHumanUserId: OWNER_ID, agentId: AGENT_ID, roomId: ROOM_ID, taskReadMaxResponseBytes: 100_000 };
 
-describe("task tool (M143)", () => {
+describe("task tool", () => {
   let capturedCreate: TaskToolCreateInput | null = null;
   const restores: Array<() => void> = [];
+
+  beforeEach(() => {
+    const versioned = spyOn(db, "getTaskByIdWithMutationVersion").mockImplementation(async (database, id) => {
+      const task = await db.getTaskById(database, id);
+      return task ? { ...task, mutationVersion: "fixture-version", contentRevision: task.contentRevision ?? 0 } : undefined;
+    });
+    restores.push(() => versioned.mockRestore());
+  });
 
   afterEach(() => {
     setTaskToolRuntime(null);
@@ -58,7 +66,7 @@ describe("task tool (M143)", () => {
       prompt: "",
     } as never);
     const getRuns = spyOn(db, "getTaskRuns").mockResolvedValue([]);
-    const update = spyOn(db, "updateTask").mockResolvedValue(undefined);
+    const update = spyOn(db, "updateTaskIfCurrent").mockResolvedValue(undefined);
     restores.push(() => { getTask.mockRestore(); getRuns.mockRestore(); update.mockRestore(); });
 
     const read = JSON.parse(await dispatchTaskCommand({
@@ -97,7 +105,7 @@ describe("task tool (M143)", () => {
     const getRuns = spyOn(db, "getTaskRuns").mockResolvedValue([]);
     const list = spyOn(db, "listTasksForOwner").mockResolvedValue([ordinary] as never);
     const models = spyOn(db, "getLatestRunModelByTask").mockResolvedValue(new Map());
-    const update = spyOn(db, "updateTask").mockResolvedValue(undefined);
+    const update = spyOn(db, "updateTaskIfCurrent").mockResolvedValue(undefined);
     restores.push(() => {
       getTask.mockRestore(); getRuns.mockRestore(); list.mockRestore();
       models.mockRestore(); update.mockRestore();
@@ -796,7 +804,7 @@ describe("task tool (M143)", () => {
       resultDelivery: "wake",
     } as never);
     restores.push(() => sp.mockRestore());
-    // M163 — the transcript helper must NOT run for another owner's task.
+    // the transcript helper must NOT run for another owner's task.
     const transcriptSp = spyOn(sessionStore, "getRunAgentTranscript");
     restores.push(() => transcriptSp.mockRestore());
 
@@ -1144,9 +1152,16 @@ describe("task tool (M143)", () => {
   });
 });
 
-describe("task tool dispatcher (M146 Phase 5)", () => {
+describe("task tool dispatcher", () => {
   let capturedCreate: TaskToolCreateInput | null = null;
   const restores: Array<() => void> = [];
+  beforeEach(() => {
+    const versioned = spyOn(db, "getTaskByIdWithMutationVersion").mockImplementation(async (database, id) => {
+      const task = await db.getTaskById(database, id);
+      return task ? { ...task, mutationVersion: "fixture-version", contentRevision: task.contentRevision ?? 0 } : undefined;
+    });
+    restores.push(() => versioned.mockRestore());
+  });
 
   afterEach(() => {
     setTaskToolRuntime(null);
@@ -1292,12 +1307,12 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
         { command: "create", prompt: "x", ...extra } as never,
         CTX,
       );
-      expect(raw).toMatch(/not available yet \(lands in Phase \d\)/);
+      expect(raw).toContain("not available yet");
       expect(capturedCreate).toBeNull();
     }
   });
 
-  test("M147 — create maps time_limit_seconds → timeLimitSeconds (no longer rejected)", async () => {
+  test("create maps time_limit_seconds → timeLimitSeconds (no longer rejected)", async () => {
     stubRuntime();
     await dispatchTaskCommand(
       { command: "create", prompt: "p", time_limit_seconds: 90 },
@@ -1306,7 +1321,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     expect(capturedCreate?.timeLimitSeconds).toBe(90);
   });
 
-  test("M147 — lifecycle commands owner-check then call the seam", async () => {
+  test("lifecycle commands owner-check then call the seam", async () => {
     let paused = "";
     let unpaused = "";
     let stopped = "";
@@ -1349,7 +1364,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     expect(sRaw).toContain("cancelled");
   });
 
-  test("M147 — lifecycle command on another owner's task returns 'Task not found.' and does not call the seam", async () => {
+  test("lifecycle command on another owner's task returns 'Task not found.' and does not call the seam", async () => {
     let called = false;
     setTaskToolRuntime({
       db: {} as never,
@@ -1376,10 +1391,34 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     expect(called).toBe(false);
   });
 
-  test("M147 — lifecycle command without taskId returns a friendly error", async () => {
+  test("lifecycle command without taskId returns a friendly error", async () => {
     stubRuntime();
     const raw = await dispatchTaskCommand({ command: "stop" }, CTX);
     expect(raw).toContain("'taskId' is required");
+  });
+
+  test("update reports a concurrent definition change without retrying the mutation", async () => {
+    stubRuntime();
+    const getTask = spyOn(db, "getTaskById").mockResolvedValue({
+      id: "task-1", ownerId: OWNER_ID, status: "pending", prompt: "old",
+      scheduleKind: "now", cron: null, runAt: null, timezone: "UTC",
+      targetChat: "orphan", resultDelivery: "wake", depth: 0,
+      contentRevision: 7,
+    } as never);
+    const update = spyOn(db, "updateTaskIfCurrent").mockResolvedValue(undefined);
+    const unconditional = spyOn(db, "updateTask");
+    restores.push(() => getTask.mockRestore(), () => update.mockRestore(), () => unconditional.mockRestore());
+
+    const result = await dispatchTaskCommand({ command: "update", taskId: "task-1", prompt: "new" }, CTX);
+
+    expect(result).toBe("Cannot update task: it changed during validation. Read its current state before trying again.");
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(expect.anything(), {
+      id: "task-1", ownerId: OWNER_ID, expectedStatus: "pending",
+      expectedMutationVersion: "fixture-version", expectedContentRevision: 7,
+    }, expect.objectContaining({ prompt: "new" }));
+    expect(unconditional).not.toHaveBeenCalled();
+    expect(getTask).toHaveBeenCalledTimes(1);
   });
 
   test("update happy path recomputes next_fire_at", async () => {
@@ -1417,7 +1456,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     } as never);
     restores.push(() => getSp.mockRestore());
 
-    const updateSp = spyOn(db, "updateTask").mockImplementation(
+    const updateSp = spyOn(db, "updateTaskIfCurrent").mockImplementation(
       async (_db, _id, patch) => {
         capturedPatch = patch as Record<string, unknown>;
         return {
@@ -1479,7 +1518,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     } as never);
     restores.push(() => getSp.mockRestore());
 
-    const updateSp = spyOn(db, "updateTask").mockImplementation(
+    const updateSp = spyOn(db, "updateTaskIfCurrent").mockImplementation(
       async (_db, _id, patch) => ({
         id: "task-1",
         ownerId: OWNER_ID,
@@ -1501,7 +1540,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
 
     expect(updateSp).toHaveBeenCalledWith(
       expect.anything(),
-      "task-1",
+      { id: "task-1", ownerId: OWNER_ID, expectedStatus: "pending", expectedMutationVersion: "fixture-version", expectedContentRevision: 0 },
       expect.objectContaining({ targetChat: "orphan", targetRoomId: null }),
     );
   });
@@ -1537,7 +1576,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     } as never);
     restores.push(() => getSp.mockRestore());
 
-    const updateSp = spyOn(db, "updateTask").mockImplementation(
+    const updateSp = spyOn(db, "updateTaskIfCurrent").mockImplementation(
       async (_db, _id, patch) => {
         capturedPatch = patch as Record<string, unknown>;
         return {
@@ -1565,7 +1604,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
 
   test("update status guard — running and completed", async () => {
     stubRuntime();
-    const updateSp = spyOn(db, "updateTask");
+    const updateSp = spyOn(db, "updateTaskIfCurrent");
     restores.push(() => updateSp.mockRestore());
 
     for (const status of ["running", "completed"] as const) {
@@ -1602,7 +1641,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     } as never);
     restores.push(() => getSp.mockRestore());
 
-    const updateSp = spyOn(db, "updateTask");
+    const updateSp = spyOn(db, "updateTaskIfCurrent");
     restores.push(() => updateSp.mockRestore());
 
     const raw = await dispatchTaskCommand(
@@ -1613,7 +1652,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     expect(updateSp).not.toHaveBeenCalled();
   });
 
-  test("M152 — create persists selectionProfile", async () => {
+  test("create persists selectionProfile", async () => {
     stubRuntime();
     const prev = process.env["ANTHROPIC_API_KEY"];
     process.env["ANTHROPIC_API_KEY"] = "x";
@@ -1629,8 +1668,8 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     expect(capturedCreate?.selectionProfile).toBe("cheapest");
   });
 
-  // D429 Phase 3 — exact model_id pin threading + mutual-exclusion guard.
-  describe("D429 Phase 3 — exact model_id", () => {
+  // Exact model_id pin threading + mutual-exclusion guard.
+  describe("exact model_id selection", () => {
     test("create persists requestedModelId when a valid curated id is supplied", async () => {
       stubRuntime();
       const prev = process.env["ANTHROPIC_API_KEY"];
@@ -1760,7 +1799,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
         toolsWhitelist: [],
       } as never);
       let patched: Record<string, unknown> | null = null;
-      const updateSp = spyOn(db, "updateTask").mockImplementation(async (_db, _id, patch) => {
+      const updateSp = spyOn(db, "updateTaskIfCurrent").mockImplementation(async (_db, _id, patch) => {
         patched = patch as Record<string, unknown>;
         return { id: "task-1", ownerId: OWNER_ID, status: "pending", prompt: "old", scheduleKind: "now", targetChat: "orphan", resultDelivery: "wake" } as never;
       });
@@ -1798,7 +1837,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
         toolsMode: "none",
         toolsWhitelist: [],
       } as never);
-      const updateSp = spyOn(db, "updateTask");
+      const updateSp = spyOn(db, "updateTaskIfCurrent");
       restores.push(() => {
         getSp.mockRestore();
         updateSp.mockRestore();
@@ -1838,7 +1877,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
         toolsWhitelist: [],
       } as never);
       let patched: Record<string, unknown> | null = null;
-      const updateSp = spyOn(db, "updateTask").mockImplementation(async (_db, _id, patch) => {
+      const updateSp = spyOn(db, "updateTaskIfCurrent").mockImplementation(async (_db, _id, patch) => {
         patched = patch as Record<string, unknown>;
         return { id: "task-1", ownerId: OWNER_ID, status: "pending", prompt: "old", scheduleKind: "now", targetChat: "orphan", resultDelivery: "wake" } as never;
       });
@@ -1874,7 +1913,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
         toolsWhitelist: [],
       } as never);
       let patched: Record<string, unknown> | null = null;
-      const updateSp = spyOn(db, "updateTask").mockImplementation(async (_db, _id, patch) => {
+      const updateSp = spyOn(db, "updateTaskIfCurrent").mockImplementation(async (_db, _id, patch) => {
         patched = patch as Record<string, unknown>;
         return { id: "task-1", ownerId: OWNER_ID, status: "pending", prompt: "old", scheduleKind: "now", targetChat: "orphan", resultDelivery: "wake" } as never;
       });
@@ -1909,7 +1948,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
         toolsMode: "auto",
         toolsWhitelist: [],
       } as never);
-      const updateSp = spyOn(db, "updateTask");
+      const updateSp = spyOn(db, "updateTaskIfCurrent");
       restores.push(() => {
         getSp.mockRestore();
         updateSp.mockRestore();
@@ -2281,7 +2320,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     });
   });
 
-  test("M152 — unsatisfiable privacy profile returns the error and does NOT insert", async () => {
+  test("unsatisfiable privacy profile returns the error and does NOT insert", async () => {
     stubRuntime();
     const savedKeys: Record<string, string | undefined> = {};
     for (const k of ["ANTHROPIC_API_KEY", "FIREWORKS_API_KEY", "OPENROUTER_API_KEY", "VENICE_API_KEY"]) {
@@ -2305,7 +2344,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     expect(capturedCreate).toBeNull();
   });
 
-  test("M152 — update persists selectionProfile on the patch", async () => {
+  test("update persists selectionProfile on the patch", async () => {
     stubRuntime();
     const prev = process.env["ANTHROPIC_API_KEY"];
     process.env["ANTHROPIC_API_KEY"] = "x";
@@ -2319,7 +2358,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
       resultDelivery: "wake",
     } as never);
     let patched: Record<string, unknown> | null = null;
-    const updateSp = spyOn(db, "updateTask").mockImplementation(async (_db, _id, patch) => {
+    const updateSp = spyOn(db, "updateTaskIfCurrent").mockImplementation(async (_db, _id, patch) => {
       patched = patch as Record<string, unknown>;
       return { id: "task-1", ownerId: OWNER_ID, status: "pending", prompt: "old", scheduleKind: "now", targetChat: "orphan", resultDelivery: "wake" } as never;
     });
@@ -2338,7 +2377,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     expect(patched!["selectionProfile"]).toBe("smartest");
   });
 
-  test("M163 — read attaches agent-authored transcript for orphan (assistant w/ toolCalls + tool w/ null)", async () => {
+  test("read attaches agent-authored transcript for orphan (assistant w/ toolCalls + tool w/ null)", async () => {
     stubRuntime();
     const startedAt = new Date("2024-01-01T00:00:00.000Z");
     const completedAt = new Date("2024-01-01T00:05:00.000Z");
@@ -2436,13 +2475,13 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
       startedAt,
       completedAt,
     });
-    // M152 — read surfaces the model each run actually used.
+    // read surfaces the model each run actually used.
     expect(body.runs[0]?.modelId).toBe(
       "fireworks:accounts/fireworks/models/kimi-k2p6",
     );
   });
 
-  test("M163 — read attaches transcript for a named-target task too (was orphan-only)", async () => {
+  test("read attaches transcript for a named-target task too (was orphan-only)", async () => {
     stubRuntime();
     const transcriptSp = spyOn(
       sessionStore,
@@ -2533,7 +2572,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
     }>;
     expect(body).toHaveLength(1);
     expect(body[0]?.status).toBe("completed");
-    // M152 — list surfaces the most-recent run's model id.
+    // list surfaces the most-recent run's model id.
     expect(body[0]?.lastModelId).toBe(
       "fireworks:accounts/fireworks/models/kimi-k2p6",
     );
@@ -2551,7 +2590,7 @@ describe("task tool dispatcher (M146 Phase 5)", () => {
   });
 });
 
-describe("task tool target_users (M165)", () => {
+describe("task tool target_users", () => {
   const PEER_ID = "50000000-0000-4000-8000-000000000005";
   let capturedCreate: TaskToolCreateInput | null = null;
 

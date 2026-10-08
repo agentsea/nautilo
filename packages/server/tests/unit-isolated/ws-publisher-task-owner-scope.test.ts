@@ -1,11 +1,15 @@
 /**
- * M143 — `task.*` lifecycle events are owner-scoped (Blast-radius S7, D14).
+ * `task.*` lifecycle events are owner-scoped.
  * A `task.completed` event must reach ONLY the owner's WS sockets, never the
  * other connected users (no room-wide broadcast).
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { WebSocket as WsWebSocket } from "ws";
-import { addClient, broadcast } from "../../src/realtime/ws-publisher";
+
+mock.module("@nautilo/runtime", () => ({
+  eventBus: { invalidateTaskLocalExecutionSources: mock(() => {}) },
+}));
+const { addClient, broadcast } = await import("../../src/realtime/ws-publisher");
 
 interface MockWs {
   readyState: number;
@@ -36,7 +40,7 @@ function makeClient(): MockWs {
   };
 }
 
-describe("ws-publisher task.* owner-scope (M143 S7)", () => {
+describe("ws-publisher task.* owner-scope", () => {
   test("task.completed delivered only to the owner's sockets", async () => {
     const ownerSock = makeClient();
     const otherSock = makeClient();
@@ -66,7 +70,7 @@ describe("ws-publisher task.* owner-scope (M143 S7)", () => {
     expect(otherSock.sent.length).toBe(0);
   });
 
-  test("M147 — task.status delivered only to the owner's sockets", async () => {
+  test("task.status delivered only to the owner's sockets", async () => {
     const ownerSock = makeClient();
     const otherSock = makeClient();
     addClient(ownerSock as unknown as WsWebSocket, {

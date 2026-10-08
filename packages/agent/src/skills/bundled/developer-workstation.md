@@ -3,7 +3,7 @@ name: developer-workstation
 description: Develop on the initiating Nautilo Desktop through managed local execution — Current Folder authority, contained Basic and Development access, temporary Full Mac, file editing, Git and GitHub setup, retained execution, and precise denial remediation.
 requiresTools: [exec_command, write_stdin, apply_patch]
 source: official
-version: 10
+version: 11
 ---
 # Developer Workstation — Skill
 
@@ -12,10 +12,15 @@ inspect or edit code, run Git, test, build, or configure a developer CLI.
 Use structured file tools to inspect and edit text, `exec_command` to launch a
 complete local command, and `write_stdin` to continue an execution that yields.
 
-Managed execution is available only from the exact initiating Nautilo Desktop
-in the main foreground conversation (`foreground.main`). It is not available
-to background tasks, subagents, remote-only conversations, or standalone
-relays. If the tools are absent or admission fails, explain that local
+Managed execution in the main foreground conversation (`foreground.main`)
+uses the exact initiating Nautilo Desktop. Authorized background tasks,
+schedules, and nested agents can inherit contained execution through a verified
+delegation to the original Human, Mac, and project. Every run rechecks the saved
+source, pairing, project grant, and Basic or Development ceiling. Delegated work
+never inherits Full Mac or a Human terminal handoff and cannot switch computers.
+A Task creation receipt or a filesystem path alone is not delegation;
+remote-only conversations and standalone relays do not supply this authority.
+If the tools are absent or admission fails, explain that local
 execution is unavailable in this context and continue with file-only work when
 that can still satisfy the request. Never invent results or route around the
 boundary through another shell surface.
@@ -217,7 +222,7 @@ exact read/run/write receipts and never retry uncertain input.
 
 | Failure | Meaning | Remediation |
 | --- | --- | --- |
-| Managed tools absent or local execution requires a verified initiating Human and foreground identity | This conversation is not the exact `foreground.main` Desktop context, or its local executor is unavailable | Say local execution is unavailable here. Continue with admitted file tools if useful; otherwise ask the Human to use the main conversation in Nautilo Desktop. |
+| Managed tools absent or local source admission denied | Neither the initiating foreground Desktop nor an exact saved delegation is currently admitted | Say local execution is unavailable here. For delegated work, report the original Mac or source/project permission that needs attention; never substitute another computer or recreate the Task automatically. Continue with admitted file tools only when that still satisfies the request. |
 | Current Folder missing, changed, inaccessible, or outside the admitted root | The selected project identity no longer matches | Ask the Human to choose the intended folder in the Files header, then make a fresh call. Do not escape with an absolute `workdir`. |
 | Basic command needs network, host configuration, credentials, or developer tooling | Basic intentionally isolates network and uses a private temporary `HOME` | Explain the constraint. If the task needs those capabilities, ask the Human to select the existing Development environment; never smuggle in host state. |
 | Development profile, grant, capability, protected policy, relay, or pairing changed | Exact admission went stale | Request fresh access on the current Desktop and retry only after the state is current. Do not fall back to a looser executor. |

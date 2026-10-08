@@ -8,7 +8,7 @@ test("search capability is absent on every older offered protocol and does not r
     expect(isRelayLocalExecutionSearchAllowed("write_stdin", args, { canSearchLocalExecutionOutput: true }, version)).toBeFalse();
     expect(isRelayLocalExecutionSearchAllowed("write_stdin", { session_id: "execution" }, {}, version)).toBeTrue();
   }
-  expect(RELAY_PROTOCOL_VERSION).toBe(27);
+  expect(RELAY_PROTOCOL_VERSION).toBe(28);
   expect(projectRelayCapabilitiesForProtocol({ profile: "desktop-agent", canSearchLocalExecutionOutput: true }, 26).canSearchLocalExecutionOutput).toBeTrue();
   expect(isRelayLocalExecutionSearchAllowed("write_stdin", args, { canSearchLocalExecutionOutput: true }, 26)).toBeTrue();
   expect(isRelayLocalExecutionSearchAllowed("write_stdin", args, {}, 26)).toBeFalse();

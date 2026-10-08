@@ -7,6 +7,7 @@ import { preModelNode } from "../../src/nodes/pre-model";
 import { toolsNode } from "../../src/nodes/tools";
 import { registerAllTools } from "../../src/tools/register-all";
 import { setRelayRegistry, type ToolRelayRegistry } from "../../src/tools/invocation-service";
+import { runWithLocalExecutionDelegation, type DelegatedLocalExecutionPort } from "../../src/runtime/local-execution-delegation";
 
 beforeEach(() => {
   const catalog = new ToolCatalog();
@@ -76,15 +77,20 @@ const origin = {
 } as const;
 
 function relayFixture() {
-  const live = { connected: true, owner: origin.userId as string, protocol: 20, managed: true, history: false, search: false };
+  const live = { connected: true, owner: origin.userId as string, protocol: 20, managed: true, history: false, search: false,
+    localGit: false, shellOutput: false, delegation: false };
   setRelayRegistry({
     findByCapabilityForUser: (_capability: string, userId: string) => live.connected && userId === live.owner ? [origin.relayId] : [],
     getUserId: (id: string) => live.connected && id === origin.relayId ? live.owner : undefined,
     getCapabilities: (id: string) => live.connected && id === origin.relayId ? {
       profile: "desktop-agent", canRunShell: true, canExecuteLocal: live.managed, canReadLocalExecutionHistory: live.history, canSearchLocalExecutionOutput: live.search,
+      canUseLocalGit: live.localGit, ...(live.localGit ? { localGit: { version: 1 } } : {}),
+      canReadShellOutput: live.shellOutput, canDelegateLocalExecution: live.delegation,
       ...(live.managed ? { localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, capacity: 1 } } : {}),
     } : undefined,
     getProtocolVersion: () => live.protocol,
+    getDesktopSessionId: () => origin.desktopSessionId,
+    getPairingGeneration: () => origin.pairingGeneration,
     dispatch: () => { throw new Error("Discovery and activation must not dispatch execution"); },
   } as ToolRelayRegistry);
   return live;
@@ -99,6 +105,13 @@ function executionState(overrides: Partial<NautiloState> = {}): NautiloState {
 async function project(state: NautiloState): Promise<NautiloState> {
   // LangGraph replaces each returned state field before invoking the tools node.
   return { ...state, ...await preModelNode(state) };
+}
+
+function projectedPrompt(state: NautiloState): string {
+  const content = state.preparedMessages[0]?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) throw new Error("Expected prepared system prompt");
+  return content.map(block => typeof block === "string" ? block : "text" in block ? block.text : "").join("");
 }
 
 async function discover(state: NautiloState): Promise<string[]> {
@@ -119,6 +132,47 @@ async function activate(state: NautiloState): Promise<string[]> {
 }
 
 describe("managed execution capability projection through graph state", () => {
+  test("auxiliary guidance follows the fresh exact Desktop capabilities", async () => {
+    const live = relayFixture(); live.protocol = 28; live.localGit = true; live.shellOutput = true;
+    let state = await project(executionState());
+    expect(projectedPrompt(state)).toContain("Use local_git for supported typed local Git.");
+    expect(projectedPrompt(state)).toContain("Use read_shell_output for earlier retained shell output.");
+    expect(projectedPrompt(state)).not.toContain("Use human_terminal for the exact Human terminal handoff.");
+    live.localGit = false; live.shellOutput = false;
+    state = await project(state);
+    expect(projectedPrompt(state)).not.toContain("Use local_git for supported typed local Git.");
+    expect(projectedPrompt(state)).not.toContain("Use read_shell_output for earlier retained shell output.");
+    expect(projectedPrompt(state)).toContain("Unavailable tools have no shell fallback.");
+  });
+
+  test("delegated worker guidance names only its admitted managed tools and preserves the original Mac", async () => {
+    const live = relayFixture(); live.protocol = 28; live.localGit = true; live.shellOutput = true; live.delegation = true;
+    const signal = new AbortController().signal;
+    const port: DelegatedLocalExecutionPort = { taskId: "task-fixture", taskRunId: "run-fixture", signal,
+      withAdmission: async (_operation, work) => work({ taskId: "task-fixture", taskRunId: "run-fixture", signal,
+        delegation: { version: 1, humanUserId: origin.userId, agentId: "agent-genie", sourceRoomId: "room-fixture",
+          sourceConversationId: "thread-fixture", rootTaskId: "task-fixture", projectGrantId: "grant-fixture", ceiling: "basic", profile: null,
+          target: { instanceId: "instance-fixture", relayId: origin.relayId, pairingGeneration: origin.pairingGeneration,
+            serverOrigin: "https://server.example", serverFingerprint: "fingerprint-fixture" } } }) };
+    const state = await runWithLocalExecutionDelegation(port, () => project(executionState({
+      verifiedOrdinaryOrigin: null, trustedExecutionEntrypoint: "background.task", currentTaskId: port.taskId, currentTaskRunId: port.taskRunId })));
+    expect(state.relayCapabilities?.["canExecuteLocal"]).toBeTrue();
+    expect(state.relayCapabilities?.["canReplaceLegacyShellTools"]).toBeTrue();
+    expect(state.relayCapabilities?.["canUseLocalGit"]).toBeFalse();
+    expect(state.relayCapabilities?.["canReadShellOutput"]).toBeFalse();
+    expect(await discover(state)).toContain("exec_command");
+    const prompt = projectedPrompt(state);
+    expect(prompt).toContain("original Human's saved Mac and project");
+    expect(prompt).toContain("never inherits Full Mac or a Human terminal handoff");
+    expect(prompt).not.toContain("Use local_git for supported typed local Git.");
+    expect(prompt).not.toContain("Use read_shell_output for earlier retained shell output.");
+    expect(prompt).not.toContain("Use human_terminal for the exact Human terminal handoff.");
+    live.connected = false;
+    const disconnected = await runWithLocalExecutionDelegation(port, () => project(state));
+    expect(projectedPrompt(disconnected)).not.toContain("For contained build, diagnostics, and dev-server commands");
+    expect(await discover(disconnected)).not.toContain("exec_command");
+  });
+
   test("exact local Human origin reaches discovery and activation without Computer Use", async () => {
     relayFixture();
     const initial = executionState();

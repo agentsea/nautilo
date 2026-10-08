@@ -1,6 +1,6 @@
 {
-  "id": "2905d9f3-db69-43dd-b530-eab4e9a4c2a2",
-  "prevId": "05eb06e9-3b3c-4d3b-b93a-40731a8ba9b8",
+  "id": "05eb06e9-3b3c-4d3b-b93a-40731a8ba9b8",
+  "prevId": "574d6f37-8595-4c2b-a433-83f7da4a6e73",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -9243,12 +9243,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "request_reference": {
-          "name": "request_reference",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "evidence_state": {
           "name": "evidence_state",
           "type": "text",
@@ -9489,10 +9483,6 @@
         "provider_cost_events_idempotency_digest_check": {
           "name": "provider_cost_events_idempotency_digest_check",
           "value": "\"provider_cost_events\".\"idempotency_key\" ~ '^[0-9a-f]{64}$'"
-        },
-        "provider_cost_events_request_reference_check": {
-          "name": "provider_cost_events_request_reference_check",
-          "value": "\"provider_cost_events\".\"request_reference\" IS NULL OR \"provider_cost_events\".\"request_reference\" ~ '^req_[0-9a-f]{12}$'"
         }
       },
       "isRLSEnabled": false
@@ -14038,7 +14028,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },
@@ -14074,13 +14064,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'private'"
-        },
-        "discoverable": {
-          "name": "discoverable",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
         },
         "parent_room_id": {
           "name": "parent_room_id",
@@ -14152,6 +14135,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'advanced'"
+        },
+        "discoverable": {
+          "name": "discoverable",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
         }
       },
       "indexes": {
@@ -16584,6 +16574,12 @@
         "cancelled_at": {
           "name": "cancelled_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "local_execution_delegation": {
+          "name": "local_execution_delegation",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         }

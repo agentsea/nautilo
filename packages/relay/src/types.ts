@@ -415,6 +415,8 @@ export type RelayCapabilities = {
   localGit?: { readonly version: 1 } | undefined;
   canReadShellOutput?: boolean | undefined;
   canExecuteLocal?: boolean | undefined;
+  /** Static support for fresh Task-run admission against a durable project grant. */
+  canDelegateLocalExecution?: boolean | undefined;
   canReadLocalExecutionHistory?: boolean | undefined;
   localExecution?: RelayLocalExecutionCapability | undefined;
   basicExecution?: RelayBasicExecutionCapability | undefined;

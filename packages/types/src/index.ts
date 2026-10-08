@@ -74,3 +74,4 @@ export { isLocalExecutionReadArgs } from "./local-execution-read";
 export * from "./github-invocation";
 
 export * from "./github-broker";
+export * from "./local-execution-delegation";

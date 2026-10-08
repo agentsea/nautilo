@@ -45,7 +45,7 @@ import {
 } from "./task-return-binding";
 
 /**
- * M143 (spec §5.8) — the report-back finalizer. Owns BOTH the terminal task /
+ * The report-back finalizer owns BOTH the terminal task /
  * task_run status transitions AND delivery of terminal Task outcomes back to
  * the user. Completion and failure enter here from executors/finalizers;
  * cancellation enters after the lifecycle transition has won.
@@ -62,7 +62,7 @@ import {
  *    visible result exactly once.
  *  - `calling_room_id` null → silent task: terminal status only, no room I/O.
  *
- * Plumbing note (M142 constraint): the executor has no `JobManager` and no full
+ * Plumbing note: the executor has no `JobManager` and no full
  * `Task` row in scope, so the finalizer atomically locks and loads it through
  * `transitionTaskLifecycleTerminal`, then reaches a live `JobManager` via
  * `getTaskRunJobManager()` (published by
@@ -216,7 +216,7 @@ export function renderDelegatedTaskFailureReceipt(
 }
 
 /**
- * D420 — authority retained for an accepted Task run until its report-back
+ * Authority retained for an accepted Task run until its report-back
  * terminalizes. The task-run row is durable evidence of acceptance; after a
  * process restart we reconstitute the opaque in-memory token only from this
  * internal finalizer, never from an HTTP caller.
@@ -591,7 +591,7 @@ async function wakeCallingRoom(
           ? (continuation.workspacePath ?? "")
           : "",
       taskReportBackContinuation: continuation,
-      // M143 — tags ONLY the synthetic human input row (langgraph-executor applies
+      // Tags ONLY the synthetic human input row (langgraph-executor applies
       // it to the human persist alone and suppresses its message.new); the agent's
       // composed reply renders normally.
       metadata: {
@@ -698,6 +698,7 @@ export async function reportBackTaskCompletion(
       runStatus: "completed",
       runPatch: { resultText, completedAt: new Date(), ...(args.requireRunningPair ? { lastError: null } : {}) },
       ...(args.requireRunningPair ? { requireRunningPair: true, taskPatch: { lastError: null } } : {}),
+      ...(scheduleKind === "cron" && args.requireRunningPair ? { returnRecurringTaskToPending: true } : {}),
     });
     const task = runTransition.task;
     // A same-terminal Task + run pair can be retried after a delivery failure.
@@ -805,6 +806,7 @@ export async function reportBackTaskError(
       runId,
       runStatus: "errored",
       ...(args.requireRunningPair ? { requireRunningPair: true } : {}),
+      ...(scheduleKind === "cron" && args.requireRunningPair ? { returnRecurringTaskToPending: true } : {}),
       runPatch: {
         lastError: error,
         ...(deliveredFailureText ? { resultText: deliveredFailureText } : {}),

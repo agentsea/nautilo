@@ -1455,3 +1455,5 @@ export { resolveSurplusDecisionServingAvailability, resolveQualifiedSurplusDecis
 export { runWithForegroundFundingSession, type ForegroundFundingSnapshot } from "./runtime/foreground-chat-funding";
 export { readForegroundFundingForThread } from "./graph/turn-id";
 export type { LocalExecutionHistoryPort, LocalExecutionHistoryReference } from "./tools/local-execution/history";
+
+export { runWithLocalExecutionDelegation, getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort, type DelegatedLocalExecutionAdmission, type DelegatedLocalExecutionOperation } from "./runtime/local-execution-delegation";

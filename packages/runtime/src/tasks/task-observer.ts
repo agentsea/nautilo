@@ -1,3 +1,5 @@
+import { isTaskLocalExecutionOfflineSourceReady } from "./local-execution-delegation";
+import { listTaskLocalExecutionOfflineWaits, rearmTaskLocalExecutionOffline } from "@nautilo/db";
 import { resumeReconnectedSecurityResearch } from "./security-report-recovery";
 import { randomUUID } from "node:crypto";
 import type { ServerEvent } from "@nautilo/types";
@@ -138,7 +140,7 @@ function projectProtectedTaskOccurrence(
 
 export interface TaskObserverDeps {
   db: DirectDatabase;
-  /** M147 — the watchdog (R5) pauses overrunning runs, so the observer's
+  /** The watchdog pauses overrunning runs, so the observer's
    *  JobManager must expose the `abortJob` seam in addition to dispatch. */
   jobManager: TaskJobManager & TaskLifecycleJobManager;
   /** Defaults to the process policy resolver inside `dispatchTaskRun`. */
@@ -154,7 +156,7 @@ export interface TaskObserverDeps {
   /** Clock injection for tests. */
   now?: () => Date;
   /**
-   * D420 (Wave 2 task 2.2.1) — maintenance admission gate. While the durable
+   * Maintenance admission gate. While the durable
    * state is active the observer SKIPS claiming/dispatching new task runs
    * (already-running runs finish; due rows stay pending and are claimed after
    * maintenance clears). Defaults to the runtime singleton (production gate
@@ -222,7 +224,7 @@ export function createTaskPreparationWriter(
 }
 
 /**
- * M142 (spec §5.2) — the in-process task dispatch daemon. Claims due `tasks`
+ * The in-process Task dispatch daemon. Claims due `tasks`
  * rows (`FOR UPDATE SKIP LOCKED`), dispatches each as its own job via
  * `dispatchTaskRun`, and reschedules cron rows. The DB is the source of truth,
  * so the loop is restart-safe (stale fire-locks recovered on start).
@@ -246,10 +248,11 @@ export class TaskObserver implements Observer {
   private readonly resolver: PolicyResolver | undefined;
   private readonly intervalMs: number;
   private readonly batch: number;
+  private localExecutionRecoveryAfter: string | undefined;
   private readonly staleLockMs: number;
   private readonly kickDebounceMs: number;
   private readonly now: () => Date;
-  /** D420 — admission gate; `null` resolves the runtime singleton at call time. */
+  /** Admission gate; `null` resolves the runtime singleton at call time. */
   private readonly maintenanceGate: MaintenanceGate | null;
   private readonly executionRouteSelector: TaskExecutionRouteSelector | undefined;
   private readonly assertInvocation: typeof assertCanInvokeAgent;
@@ -546,7 +549,7 @@ export class TaskObserver implements Observer {
       }
     }
 
-    // D420 (Wave 2 task 2.2.1) — while the durable maintenance state is
+    // While the durable maintenance state is
     // active, do NOT claim/dispatch new task runs. Already-running runs keep
     // running (they finish on their own); due rows stay `pending` and are
     // claimed on the first tick after maintenance clears. The time-limit
@@ -570,6 +573,15 @@ export class TaskObserver implements Observer {
 
     let due: Awaited<ReturnType<typeof claimDueTasks>>;
     try {
+      const waiting = await listTaskLocalExecutionOfflineWaits(this.db, { limit: this.batch,
+        ...(this.localExecutionRecoveryAfter ? { afterTaskId: this.localExecutionRecoveryAfter } : {}) });
+      for (const pair of waiting) {
+        if (await isTaskLocalExecutionOfflineSourceReady({ db: this.db, ...pair })
+          && await rearmTaskLocalExecutionOffline(this.db, pair)) {
+          eventBus.emit({ type: "task.status", taskId: pair.task.id, ownerId: pair.task.ownerId, status: "pending" });
+        }
+      }
+      this.localExecutionRecoveryAfter = waiting.length === this.batch ? waiting.at(-1)?.task.id : undefined;
       await resumeReconnectedSecurityResearch(this.db, this.batch);
       due = await claimDueTasks(this.db, now, this.batch);
     } catch (err) {
@@ -643,9 +655,9 @@ export class TaskObserver implements Observer {
       await this.prepareDueProtectedOccurrences(now);
     }
 
-    // M147 (R5) — time-limit watchdog. After the claim/dispatch/recurrence
+    // Time-limit watchdog. After the claim/dispatch/recurrence
     // pass, scan running tasks whose active run has overrun its
-    // `time_limit_seconds` budget and PAUSE each (D13a: on expiry the run is
+    // `time_limit_seconds` budget and pause each (on expiry the run is
     // paused, awaiting explicit unpause/stop — not stopped). Reuses `pauseTask`
     // verbatim (one abort path). A single bad task must not abort the scan.
     await this.runTimeLimitWatchdog(now);

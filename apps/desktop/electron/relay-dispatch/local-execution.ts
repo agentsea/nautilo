@@ -8,6 +8,7 @@ import {
   type RelayLocalExecutionOwnerV1,
   type RelayLocalExecutionBindingV2,
   type RelayLocalExecutionBindingV3,
+  type RelayLocalExecutionBindingV4,
   type RelayWorkstationShellBinding,
 } from "@nautilo/relay";
 import type { LocalExecutionHost, LocalExecutionSnapshot } from "../local-execution-host";
@@ -23,7 +24,7 @@ export function localExecutionOwnerKey(owner: RelayLocalExecutionOwnerV1): strin
   ]);
 }
 
-export type LocalExecutionAuthority = RelayWorkstationShellBinding | RelayLocalExecutionBindingV2 | RelayLocalExecutionBindingV3;
+export type LocalExecutionAuthority = RelayWorkstationShellBinding | RelayLocalExecutionBindingV2 | RelayLocalExecutionBindingV3 | RelayLocalExecutionBindingV4;
 
 export type LocalExecutionView = LocalExecutionSnapshot & { generation: string; session_id: string };
 export interface LocalExecutionViewRequest {
@@ -46,7 +47,7 @@ export class LocalExecutionDispatch {
   private readonly owners = new Map<string, string>();
   private readonly historyOwners = new Map<string, RelayLocalExecutionOwnerV1>();
   private readonly authorities = new Map<string, LocalExecutionAuthority>();
-  private readonly identities = new Map<string, () => Promise<void>>();
+  private readonly identities = new Map<string, { validate?: () => Promise<void>; containedRoot?: string; containedGrantIds?: readonly string[] }>();
   constructor(readonly host: LocalExecutionHost) {}
 
   private withHistoryOwner<T>(binding: { executionId: string; owner: RelayLocalExecutionOwnerV1 }, admit: () => T): T {
@@ -71,7 +72,7 @@ export class LocalExecutionDispatch {
     request: RelayDispatchRequest;
     signal?: AbortSignal | undefined;
     revalidate: (binding: LocalExecutionAuthority, retained: boolean) => Promise<void>;
-    prepare: (signal: AbortSignal) => Promise<PreparedLocalExecution & { validateContinuation?: () => Promise<void> }>;
+    prepare: (signal: AbortSignal) => Promise<PreparedLocalExecution & { validateContinuation?: () => Promise<void>; containedRoot?: string; containedGrantIds?: readonly string[] }>;
   }): Promise<RelayDispatchResult> {
     const req = input.request;
     try {
@@ -143,7 +144,7 @@ export class LocalExecutionDispatch {
         const retained = operation === "input" ? this.authorities.get(binding.executionId) : undefined;
         if (operation === "input") {
           if (retained === undefined || this.owners.get(binding.executionId) !== ownerKey) throw new Error("LOCAL_EXECUTION_OWNER_MISMATCH");
-          await this.identities.get(binding.executionId)?.();
+          await this.identities.get(binding.executionId)?.validate?.();
         }
         // First admission is reserved below before its asynchronous policy
         // check. Repeated starts still need fresh authority to read a receipt.
@@ -154,7 +155,7 @@ export class LocalExecutionDispatch {
       if (operation === "read") {
         const authority = this.authorities.get(binding.executionId);
         if (authority === undefined || this.owners.get(binding.executionId) !== ownerKey) throw new Error("LOCAL_EXECUTION_UNAVAILABLE");
-        await this.identities.get(binding.executionId)?.();
+        await this.identities.get(binding.executionId)?.validate?.();
         await input.revalidate(authority, true);
       }
       if (start) {
@@ -176,7 +177,11 @@ export class LocalExecutionDispatch {
             // policy check was pending. Do not create sandbox resources then.
             if (signal.aborted) throw new Error("LOCAL_EXECUTION_CANCELLED");
             const prepared = await input.prepare(signal);
-            if (prepared.validateContinuation !== undefined) this.identities.set(binding.executionId, prepared.validateContinuation);
+            if (prepared.validateContinuation !== undefined || prepared.containedRoot !== undefined) this.identities.set(binding.executionId, {
+              ...(prepared.validateContinuation ? { validate: prepared.validateContinuation } : {}),
+              ...(prepared.containedRoot ? { containedRoot: prepared.containedRoot } : {}),
+              ...(prepared.containedGrantIds ? { containedGrantIds: [...prepared.containedGrantIds] } : {}),
+            });
             return prepared;
           }, signal: input.signal,
         }));
@@ -222,6 +227,16 @@ export class LocalExecutionDispatch {
     }
   }
 
+  /** A disconnected server can no longer deliver Task/source revocation. */
+  fenceDelegated(): void {
+    for (const [executionId, ownerKey] of this.owners) {
+      const authority = this.authorities.get(executionId);
+      if (authority && "authority" in authority && authority.version === 4) {
+        this.host.reserveCancellation({ executionId, ownerKey, hostGeneration: this.host.hostGeneration });
+      }
+    }
+  }
+
   /** Includes reserved work and uncertain cleanup; released history is not a writer. */
   retainedContainedRoots(): readonly string[] {
     const roots = new Set<string>();
@@ -230,7 +245,10 @@ export class LocalExecutionDispatch {
       if (custody?.resources === "released" && custody.state !== "unknown") continue;
       const authority = this.authorities.get(executionId);
       if (!authority || ("authority" in authority && authority.version === 3)) continue;
-      roots.add("authority" in authority ? authority.authority.currentFolder : authority.currentFolder);
+      const root = "authority" in authority
+        ? authority.version === 4 ? this.identities.get(executionId)?.containedRoot : authority.authority.currentFolder
+        : authority.currentFolder;
+      if (root) roots.add(root);
     }
     return [...roots].sort();
   }
@@ -241,7 +259,9 @@ export class LocalExecutionDispatch {
       const custody = this.host.getCustodyState(executionId, ownerKey);
       if (custody?.resources === "released" && custody.state !== "unknown") continue;
       const authority = this.authorities.get(executionId);
+      for (const id of this.identities.get(executionId)?.containedGrantIds ?? []) ids.add(id);
       if (authority && !("authority" in authority)) for (const id of authority.grantIds) ids.add(id);
+      if (authority && "authority" in authority && authority.version === 4) ids.add(authority.authority.delegation.projectGrantId);
     }
     return [...ids].sort();
   }
@@ -250,7 +270,7 @@ export class LocalExecutionDispatch {
   fenceDevelopment(): void {
     for (const [executionId, ownerKey] of this.owners) {
       const authority = this.authorities.get(executionId);
-      if (authority && !("authority" in authority)) {
+      if (authority && (!("authority" in authority) || (authority.version === 4 && authority.authority.delegation.ceiling === "development"))) {
         this.host.reserveCancellation({ executionId, ownerKey, hostGeneration: this.host.hostGeneration });
       }
     }
@@ -259,10 +279,15 @@ export class LocalExecutionDispatch {
   fenceAll(grantId?: string, revokedRoot?: string): void {
     for (const [executionId, ownerKey] of this.owners) {
       const authority = this.authorities.get(executionId);
-      const relative = revokedRoot === undefined || authority === undefined || ("authority" in authority && authority.version === 3) ? undefined : path.relative(revokedRoot, "authority" in authority ? authority.authority.currentFolder : authority.currentFolder);
+      const root = authority === undefined ? undefined : !("authority" in authority) ? authority.currentFolder
+        : authority.version === 2 ? authority.authority.currentFolder
+          : authority.version === 4 ? this.identities.get(executionId)?.containedRoot : undefined;
+      const relative = revokedRoot === undefined || root === undefined ? undefined : path.relative(revokedRoot, root);
       const rootMatches = relative !== undefined && !path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`);
       if (grantId === undefined) this.host.fenceOwner(ownerKey);
-      else if ((authority !== undefined && !("authority" in authority) && authority.grantIds.includes(grantId)) || rootMatches) {
+      else if (this.identities.get(executionId)?.containedGrantIds?.includes(grantId)
+        || (authority !== undefined && !("authority" in authority) && authority.grantIds.includes(grantId))
+        || (authority !== undefined && "authority" in authority && authority.version === 4 && authority.authority.delegation.projectGrantId === grantId) || rootMatches) {
         this.host.reserveCancellation({ executionId, ownerKey, hostGeneration: this.host.hostGeneration });
       }
     }

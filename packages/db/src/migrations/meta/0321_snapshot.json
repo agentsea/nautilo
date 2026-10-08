@@ -1,5 +1,5 @@
 {
-  "id": "687424b4-9f24-45fd-ab76-984e2a85757f",
+  "id": "6f9dfc5b-6632-4d88-b3c4-e2561b366699",
   "prevId": "41562a47-eb77-4a25-a64a-d337aa17b7e5",
   "version": "7",
   "dialect": "postgresql",
@@ -13890,7 +13890,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },
@@ -13926,6 +13926,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'private'"
+        },
+        "discoverable": {
+          "name": "discoverable",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
         },
         "parent_room_id": {
           "name": "parent_room_id",
@@ -13997,13 +14004,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'advanced'"
-        },
-        "discoverable": {
-          "name": "discoverable",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
         }
       },
       "indexes": {
@@ -16363,6 +16363,12 @@
         "last_error": {
           "name": "last_error",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "local_execution_delegation": {
+          "name": "local_execution_delegation",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -22558,75 +22564,6 @@
         "personal_provider_credentials_receipt_read_provider_check": {
           "name": "personal_provider_credentials_receipt_read_provider_check",
           "value": "\"personal_provider_credentials\".\"receipt_read_status\" = 'unknown' or \"personal_provider_credentials\".\"provider\" = 'surplus'"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.personal_capability_preferences": {
-      "name": "personal_capability_preferences",
-      "schema": "",
-      "columns": {
-        "user_id": {
-          "name": "user_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "revision": {
-          "name": "revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "overrides": {
-          "name": "overrides",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "personal_capability_preferences_user_id_users_id_fk": {
-          "name": "personal_capability_preferences_user_id_users_id_fk",
-          "tableFrom": "personal_capability_preferences",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "personal_capability_preferences_revision_check": {
-          "name": "personal_capability_preferences_revision_check",
-          "value": "\"personal_capability_preferences\".\"revision\" >= 1"
-        },
-        "personal_capability_preferences_overrides_object_check": {
-          "name": "personal_capability_preferences_overrides_object_check",
-          "value": "jsonb_typeof(\"personal_capability_preferences\".\"overrides\") = 'object'"
         }
       },
       "isRLSEnabled": false

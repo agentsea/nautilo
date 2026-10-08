@@ -1,10 +1,11 @@
+import { parseRelayLocalExecutionDelegationCapture, type RelayLocalExecutionDelegationCapture } from "@nautilo/relay";
 import { parseGitHubCapability, parseGitHubInvocationBinding, type GitHubInvocationBinding } from "../../types/src/github-invocation";
 import { RELAY_GITHUB_PROTOCOL_VERSION, isRelayGitHubDispatch } from "@nautilo/relay";
 import { isRelayLocalExecutionSearchAllowed } from "@nautilo/relay";
 import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseHumanTerminalOperation, sameHumanTerminalConsentOwner } from "../../types/src/human-terminal";
 import { parseRelayHumanTerminalBinding, parseRelayHumanTerminalCapability, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION, type RelayHumanTerminalBinding } from "@nautilo/relay";
-import { RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
+import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseRelayBasicExecutionCapability } from "@nautilo/relay";
 import { RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION, isRelayLocalGitCapability } from "@nautilo/relay";
 import { parseRelayLocalExecutionHistoryBinding, isRelayLocalExecutionHistoryRead, RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION, type RelayLocalExecutionHistoryBindingV1 } from "@nautilo/relay";
@@ -626,6 +627,7 @@ const CAPABILITY_BOOLEAN_KEYS = [
   "canUseLocalGit",
   "canReadShellOutput",
   "canExecuteLocal",
+  "canDelegateLocalExecution",
   "canExecuteFullMacOneShot",
   "canSearchLocalExecutionOutput",
   "canReadLocalExecutionHistory",
@@ -1960,12 +1962,17 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     workstationShellBinding?: RelayWorkstationShellBinding | undefined;
     signal?: AbortSignal | undefined;
     localExecutionActivationSignal?: AbortSignal | undefined;
+    retainLocalExecutionSource?: (() => () => void) | undefined;
   }): void {
     const entry = this.relays.get(relayId);
     const capability = parseRelayLocalExecutionCapability(entry?.capabilities.localExecution);
     const binding = parseRelayLocalExecutionBinding(request.localExecutionBinding);
     if (!entry || capability === null || binding === null || entry.capabilities.profile !== "desktop-agent"
-      || entry.capabilities.canExecuteLocal !== true || entry.protocolVersion < RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION
+      || (entry.capabilities.canExecuteLocal !== true && !(binding.version === 4 && binding.operation === "cancel"))
+      || entry.protocolVersion < RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION
+      || (binding.version === 4 && (entry.protocolVersion < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION
+        || (entry.capabilities.canDelegateLocalExecution !== true && binding.operation !== "cancel")
+        || binding.authority.delegation.target.pairingGeneration !== entry.pairingGeneration))
       || (binding.version === 3 && (entry.protocolVersion < RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION
         || entry.capabilities.canExecuteFullMacOneShot !== true || request.args["tty"] === true || binding.operation === "input"))
       || (binding.version === 2 && (entry.protocolVersion < RELAY_BASIC_EXECUTION_PROTOCOL_VERSION
@@ -2014,7 +2021,8 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     };
     const signals = [request.signal, request.localExecutionActivationSignal].filter((value): value is AbortSignal => value !== undefined);
     for (const signal of signals) signal.addEventListener("abort", onAbort, { once: true });
-    stored.detach = () => { for (const signal of signals) signal.removeEventListener("abort", onAbort); };
+    const releaseSource = request.retainLocalExecutionSource?.();
+    stored.detach = () => { for (const signal of signals) signal.removeEventListener("abort", onAbort); releaseSource?.(); };
     generation.records.set(binding.executionId, stored);
     if (signals.some(signal => signal.aborted)) onAbort();
   }
@@ -2975,9 +2983,11 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       desktopFilesystemGrantRequest?: RelayDesktopFilesystemGrantRequest | undefined;
       /** opaque generic-shell binding metadata; local relay state remains authority. */
       workstationShellBinding?: RelayWorkstationShellBinding | undefined;
+      localExecutionDelegationCapture?: RelayLocalExecutionDelegationCapture | undefined;
       localExecutionBinding?: RelayLocalExecutionBinding | undefined;
       /** Retained activation fence; never serialized. */
       localExecutionActivationSignal?: AbortSignal | undefined;
+      retainLocalExecutionSource?: (() => () => void) | undefined;
       localExecutionHistoryBinding?: RelayLocalExecutionHistoryBindingV1 | undefined;
       githubBinding?: GitHubInvocationBinding | undefined;
       humanTerminalBinding?: RelayHumanTerminalBinding | undefined;
@@ -3066,6 +3076,16 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
         || binding.owner.humanUserId !== entry.userId || binding.owner.relayId !== relayId
         || binding.owner.desktopSessionId !== entry.desktopSessionId || binding.owner.pairingGeneration !== entry.pairingGenerationRef)
         throw new Error("HUMAN_TERMINAL_UNAVAILABLE");
+    }
+    if (request.toolName === "__local_execution_delegate" || request.localExecutionDelegationCapture !== undefined) {
+      const capture = parseRelayLocalExecutionDelegationCapture(request.localExecutionDelegationCapture);
+      if (!capture || request.toolName !== "__local_execution_delegate" || Object.keys(request.args).length !== 0
+        || request.localExecutionBinding !== undefined || request.workstationShellBinding !== undefined || request.hostedBy !== undefined
+        || entry.capabilities.profile !== "desktop-agent" || entry.capabilities.canDelegateLocalExecution !== true
+        || entry.protocolVersion < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION
+        || capture.source.target.relayId !== relayId || capture.source.humanUserId !== entry.userId
+        || capture.desktopSessionId !== entry.desktopSessionId || capture.pairingGeneration !== entry.pairingGenerationRef
+        || capture.source.target.pairingGeneration !== entry.pairingGeneration) throw new Error("LOCAL_EXECUTION_DELEGATION_UNAVAILABLE");
     }
     if ((request.toolName === "exec_command" || request.toolName === "write_stdin" || request.localExecutionBinding !== undefined || request.localExecutionHistoryBinding !== undefined)
       && !isRelayLocalExecutionSearchAllowed(request.toolName, request.args, entry.capabilities, entry.protocolVersion)) {
@@ -3255,6 +3275,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
           entry.protocolVersion >= DESKTOP_FILESYSTEM_GRANT_REQUEST_PROTOCOL_VERSION
             ? { desktopFilesystemGrantRequest: request.desktopFilesystemGrantRequest }
             : {}),
+          ...(request.localExecutionDelegationCapture !== undefined ? { localExecutionDelegationCapture: request.localExecutionDelegationCapture } : {}),
           ...(request.localExecutionBinding !== undefined ? { localExecutionBinding: request.localExecutionBinding } : {}),
           ...(request.githubBinding ? { githubBinding: request.githubBinding } : {}),
           ...(request.humanTerminalBinding ? { humanTerminalBinding: request.humanTerminalBinding } : {}),

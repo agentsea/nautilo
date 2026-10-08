@@ -1,9 +1,12 @@
 import {
   createTask as dbCreateTask,
+  getTaskById,
   type DirectDatabase,
   type NewTask,
   type Task,
 } from "@nautilo/db";
+import { randomUUID } from "node:crypto";
+import { parseLocalExecutionDelegation, type LocalExecutionDelegation } from "@nautilo/types";
 import { MAX_SUBAGENT_DEPTH } from "@nautilo/agent";
 import { nextCronOccurrence } from "./cron";
 import {
@@ -24,7 +27,7 @@ import {
 
 /** Input to the runtime `createTask` wrapper. `nextFireAt` / `status` are
  * computed here; everything else is a `tasks` insert field. */
-export type TaskCreateInput = Omit<NewTask, "nextFireAt" | "status">;
+export type TaskCreateInput = Omit<NewTask, "nextFireAt" | "status" | "localExecutionDelegation">;
 
 export interface CreateTaskDeps {
   db: DirectDatabase;
@@ -39,10 +42,12 @@ export interface CreateTaskDeps {
   /** Fresh exact-target RBAC check before a durable Task is created. */
   assertInvocation?: (input: AgentInvocationAdmissionInput) => Promise<void>;
   assertServerFunding?: typeof assertCanUseServerProviderCredentials;
+  /** Trusted source port, never a field supplied by a Task tool or HTTP body. */
+  captureLocalExecution?: (task: TaskCreateInput & { id: string }) => Promise<LocalExecutionDelegation | null>;
 }
 
 /**
- * M146 (Step 0) — the schedule → `next_fire_at` computation, extracted from
+ * Schedule-to-`next_fire_at` computation, extracted from
  * `createTask` so the `task` tool's `update` command + the `PATCH /api/tasks/:id`
  * route can recompute on a schedule change WITHOUT duplicating the branch.
  *
@@ -65,16 +70,18 @@ export function computeNextFireAt(
 }
 
 /**
- * M142 (spec §5.1) — runtime `createTask`. The thin entry every later
- * surface (M143's `task create` tool + the Phase 3/4 shortcuts) calls: it
- * enforces the depth cap, computes `next_fire_at`, inserts the durable
- * `tasks` row via the M141 store helper, and kicks the observer for
+ * Runtime `createTask` is the shared entry point for Task creation surfaces.
+ * It enforces the depth cap, computes `next_fire_at`, inserts the durable
+ * `tasks` row through the data-access layer, and kicks the observer for
  * now-tasks so dispatch is near-instant.
  */
 export async function createTask(
   deps: CreateTaskDeps,
   input: TaskCreateInput,
 ): Promise<{ taskId: string; status: Task["status"]; nextFireAt: Date | undefined }> {
+  if (Object.prototype.hasOwnProperty.call(input, "localExecutionDelegation")) {
+    throw new TypeError("Task local execution authority must come from its trusted source");
+  }
   const depth = input.depth ?? 0;
   if (depth >= MAX_SUBAGENT_DEPTH) {
     throw new Error(
@@ -125,8 +132,24 @@ export async function createTask(
     throw new TaskCreationUnavailableError("task_shape_unsupported");
   }
 
+  // Capture only after canonical invocation/content admission; the Desktop
+  // grant is scoped to this exact identity even if the subsequent insert fails.
+  const candidate = { ...admission.candidate, id: admission.candidate.id ?? randomUUID() };
+  const captured = await deps.captureLocalExecution?.(candidate) ?? null;
+  const localExecutionDelegation = captured === null ? null : parseLocalExecutionDelegation(captured);
+  if (captured !== null && (localExecutionDelegation === null
+    || localExecutionDelegation.humanUserId !== candidate.requestorId
+    || localExecutionDelegation.agentId !== candidate.agentId
+    || (!candidate.parentTaskId && (localExecutionDelegation.sourceRoomId !== candidate.callingRoomId
+      || localExecutionDelegation.rootTaskId !== candidate.id)))) {
+    throw new TypeError("Task local execution delegation does not match its canonical source");
+  }
+  if (localExecutionDelegation && candidate.parentTaskId) {
+    await assertCapturedParentLineage(deps.db, candidate, localExecutionDelegation);
+  }
   const row = await dbCreateTask(deps.db, {
-    ...admission.candidate,
+    ...candidate,
+    localExecutionDelegation,
     // Only the trusted funding port may author this definition discriminator.
     fundingMode: callerFunded ? "caller" : "legacy_server",
     nextFireAt,
@@ -142,4 +165,47 @@ export async function createTask(
     status: row.status,
     nextFireAt: row.nextFireAt ?? undefined,
   };
+}
+
+/** Nested tools execute in a Task Room. Only canonical parent rows can connect
+ * that Room to the original Human source and the retained project grant. */
+async function assertCapturedParentLineage(
+  db: DirectDatabase,
+  child: TaskCreateInput & { id: string },
+  delegation: LocalExecutionDelegation,
+): Promise<void> {
+  const seen = new Set([child.id]);
+  const parents: Task[] = [];
+  let parentId = child.parentTaskId;
+  let callingRoomId = child.callingRoomId;
+  const identity = (task: Task) => ({
+    id: task.id, ownerId: task.ownerId, requestorId: task.requestorId,
+    callingRoomId: task.callingRoomId, targetRoomId: task.targetRoomId,
+    parentTaskId: task.parentTaskId, status: task.status,
+    contentRevision: task.contentRevision, localExecutionDelegation: task.localExecutionDelegation,
+  });
+  const deny = () => new TypeError("Task local execution delegation has no current parent lineage");
+  while (parentId) {
+    if (seen.has(parentId)) throw deny();
+    seen.add(parentId);
+    const parent = await getTaskById(db, parentId);
+    const inherited = parseLocalExecutionDelegation(parent?.localExecutionDelegation);
+    if (!parent || !inherited || parent.ownerId !== child.ownerId
+      || parent.requestorId !== child.requestorId || inherited.agentId !== parent.agentId
+      || ["cancelled", "paused", "errored"].includes(parent.status)
+      || (callingRoomId !== parent.callingRoomId && callingRoomId !== parent.targetRoomId)
+      || JSON.stringify({ ...inherited, agentId: delegation.agentId }) !== JSON.stringify(delegation)) throw deny();
+    parents.push(parent);
+    if (parent.id === delegation.rootTaskId) {
+      if (parent.parentTaskId !== null || parent.callingRoomId !== delegation.sourceRoomId) throw deny();
+      // Close awaits through the parent chain before persisting the child.
+      const refreshed = await Promise.all(parents.map(value => getTaskById(db, value.id)));
+      if (refreshed.some((value, index) => !value
+        || JSON.stringify(identity(value)) !== JSON.stringify(identity(parents[index]!)))) throw deny();
+      return;
+    }
+    callingRoomId = parent.callingRoomId;
+    parentId = parent.parentTaskId;
+  }
+  throw deny();
 }

@@ -139,7 +139,7 @@ function clearArchivedEntries(hub: Hub | undefined): void {
   }
 }
 
-/** Publish a receipt returned by an authenticated room-history lookup. */
+/** Publish a receipt returned by authenticated native history observation. */
 export function publishLocalExecutionHistoryOverlay(
   api: DesktopLocalExecutionAPI | undefined,
   overlay: LocalExecutionHistoryOverlay,
@@ -202,7 +202,13 @@ export function observeLocalExecution(api: DesktopLocalExecutionAPI | undefined,
   const publish = (target: Entry, value: LocalExecutionSnapshot, observed = false, replaceOutput = false) => {
     if (target.disposed || target.fenced) return;
     const next = parseLocalExecutionSnapshot(JSON.stringify(value));
-    if (!next || next.archived === true || next.historical === true || next.generation !== reference.generation || next.executionId !== reference.executionId) return;
+    if (!next || next.historical === true || next.generation !== reference.generation || next.executionId !== reference.executionId) return;
+    if (next.archived === true) {
+      // Only a native read response may introduce history here. Ordinary tool
+      // results still cannot confer archived presentation authority.
+      if (api && observed) publishLocalExecutionHistoryOverlay(api, { ...reference, snapshot: { ...next, archived: true } });
+      return;
+    }
     // Match pages are card-local observations. They cannot replace another
     // card's full retained window or move its ordinary output paging cursor.
     if (next.search) {
@@ -266,7 +272,7 @@ export function observeLocalExecution(api: DesktopLocalExecutionAPI | undefined,
         void api.read({ ...reference, cursor, maxBytes: Number.MAX_SAFE_INTEGER }).then((next) => {
           if (created.disposed || created.fenced) return;
           const validated = parseLocalExecutionSnapshot(JSON.stringify(next));
-          if (!validated || validated.search || validated.archived === true || validated.historical === true || validated.generation !== reference.generation || validated.executionId !== reference.executionId ||
+          if (!validated || validated.search || validated.historical === true || validated.generation !== reference.generation || validated.executionId !== reference.executionId ||
             (!validated.output.gap && !(validated.output.cursor <= cursor && validated.output.nextCursor >= cursor))) {
             throw new Error("Execution observation did not match its reference");
           }

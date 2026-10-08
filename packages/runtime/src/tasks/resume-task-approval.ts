@@ -1,5 +1,6 @@
 import { openTaskFundingSession } from "../task-funding-port";
-import { runWithForegroundFundingSession } from "@nautilo/agent";
+import { resolveTaskLocalExecutionPort, isTaskLocalExecutionTargetAvailable } from "./local-execution-delegation";
+import { runWithForegroundFundingSession, runWithLocalExecutionDelegation } from "@nautilo/agent";
 import { assertSecurityReportTaskActive, finalizeSecurityReportDelivery } from "./security-report-artifact";
 import { parkTaskContentAccessRecovery } from "./ordinary-content-access-recovery";
 import { recordSecurityResearchFailure, parkSecurityResearchInterruption, parkSecurityReportDelivery, SecurityReportDeliveryPendingError } from "./security-report-recovery";
@@ -48,6 +49,7 @@ import type { MaintenanceAcceptanceAuthority } from "../maintenance-controller";
 import { createPersistingProcessor } from "../executors/persisting-processor";
 import {
   patchTaskApprovalEvent,
+  taskApprovalRecipient,
   replayTaskInterruptEvents,
 } from "./emit-task-interrupt";
 import {
@@ -57,22 +59,22 @@ import {
 } from "./report-back";
 
 /**
- * M164 — owner-only resume + finalization for a Task/subagent approval.
+ * Recipient-authorized resume and finalization for a Task or subagent approval.
  *
- * Mirror of M151's `maybeResumeAwaitingTask` (the await_human_reply path), but
+ * This mirrors `maybeResumeAwaitingTask` for the `await_human_reply` path, but
  * for the approval trio. Two functions:
- *   - `authorizeTaskApprovalResume` — fast, synchronous owner-auth + checkpoint
+ *   - `authorizeTaskApprovalResume` — exact recipient authorization + checkpoint
  *     binding for the HTTP route's status code (404 fail-closed).
  *   - `runTaskApprovalResume` — the fire-and-forget resume + finalization,
  *     analogous to the main-thread auth routes' async resume.
  *
  * The resume reuses the existing graph resume helpers
  * (`resumeGraphWith{AskReply,Approval,Identity}`) with a Task-aware processor
- * whose `emit` patches any chained interrupt with Task context before fanout
- * (R11). After the resume drains, `inspectTaskResumeOutcome` decides
+ * whose `emit` patches any chained interrupt with Task context before fanout.
+ * After the resume drains, `inspectTaskResumeOutcome` decides
  * reparked-vs-terminal and `reportBackTaskCompletion` finalizes — keeping
  * status, report-back, and cron rescheduling consistent with ordinary Task
- * completion (R10).
+ * completion.
  */
 
 export interface TaskApprovalAuthSuccess {
@@ -92,11 +94,11 @@ export type TaskApprovalAuthResult =
   | TaskApprovalAuthFailure;
 
 /**
- * Resolve + owner-authorize a Task approval resume. Returns the parked task+run
+ * Resolve and authorize the canonical Task approval recipient. Returns the parked task+run
  * when (a) both are still `awaiting`, (b) the run's `graph_thread_id` matches
- * `threadId`, and (c) the caller owns the task. Otherwise 404 fail-closed (we
+ * `threadId`, and (c) the caller is its approval recipient. Otherwise 404 fail-closed (we
  * do NOT distinguish "not found" from "not yours" — same posture as Task
- * read/lifecycle routes, R12).
+ * read and lifecycle routes).
  */
 export async function authorizeTaskApprovalResume(
   args: { taskId: string; threadId: string; sessionUserId: string },
@@ -105,12 +107,14 @@ export async function authorizeTaskApprovalResume(
     assertInvocation?: typeof assertCanInvokeAgent;
     assertServerFunding?: typeof assertCanUseServerProviderCredentials;
     pauseForAuthorizationDenial?: typeof pauseAwaitingTaskRunForAuthorizationDenial;
+    resolveLocalExecution?: typeof resolveTaskLocalExecutionPort;
+    targetAvailable?: typeof isTaskLocalExecutionTargetAvailable;
   } = {},
 ): Promise<TaskApprovalAuthResult> {
   const db = deps.db ?? getSharedDirectDb();
   const found = await findAwaitingTaskRunForApproval(db, args.taskId, args.threadId);
   if (!found) return { ok: false, status: 404, error: "task_approval_not_found" };
-  if (found.task.ownerId !== args.sessionUserId) {
+  if (taskApprovalRecipient(found.task) !== args.sessionUserId) {
     return { ok: false, status: 404, error: "task_approval_not_found" };
   }
 
@@ -166,6 +170,20 @@ export async function authorizeTaskApprovalResume(
       return { ok: false, status: 403, error: error.code, code: error.code, capability: error.capability };
     }
   }
+  if (found.task.localExecutionDelegation) {
+    try {
+      const port = await (deps.resolveLocalExecution ?? resolveTaskLocalExecutionPort)({ db,
+        taskId: found.task.id, taskRunId: found.run.id, signal: new AbortController().signal });
+      if (!port) throw new Error("Saved Task source changed");
+      const available = await port.withAdmission("read", source => Promise.resolve(
+        (deps.targetAvailable ?? isTaskLocalExecutionTargetAvailable)(source.delegation)));
+      if (!available) return { ok: false, status: 409, code: "task_original_mac_offline",
+        error: "Reconnect the original Mac, then approve this waiting Task again. No command was submitted." };
+    } catch {
+      return { ok: false, status: 403, code: "task_local_execution_authority_unavailable",
+        error: "This Task's saved project or source permissions changed. Recreate it from the original chat and Mac." };
+    }
+  }
   return { ok: true, task: found.task, run: found.run };
 }
 
@@ -182,13 +200,13 @@ export interface RunTaskApprovalResumeArgs {
   verb?: ApprovalReplyVerb;
   /** Exact durable approval.ask identity; absent for legacy clients. */
   approvalId?: string;
-  /** D503 exact local MCP install binding echoed by the approval client. */
+  /** Exact local MCP install binding echoed by the approval client. */
   localMcpInstallApprovalId?: string;
-  /** D503 exact local MCP install binding echoed by the approval client. */
+  /** Exact local MCP install binding echoed by the approval client. */
   localMcpInstallDigest?: string;
-  /** D500 exact SSH preparation approval id echoed by the approval client. */
+  /** Exact SSH preparation approval id echoed by the approval client. */
   structuredSshApprovalId?: string;
-  /** D525 exact paid media approval echoed after authenticated review. */
+  /** Exact paid media approval echoed after authenticated review. */
   mediaGenerationApprovalId?: string;
   mediaGenerationDigest?: string;
   mediaGenerationQuoteDigest?: string;
@@ -209,7 +227,7 @@ export interface RunTaskApprovalResumeResult {
   recoveryOutcome?: "completed" | "unavailable" | "retry_required";
 }
 
-/** D525: task callers must carry the paid approval receipt completely or not at all. */
+/** Callers must carry the paid approval receipt completely or not at all. */
 function exactTaskMediaGenerationResumeEcho(
   args: Pick<RunTaskApprovalResumeArgs,
     "mediaGenerationApprovalId" | "mediaGenerationDigest" |
@@ -316,7 +334,7 @@ async function runTaskApprovalResumeWorker(
     // never error a Task that Pause already fenced. Invalid echoes still stop
     // before any graph/provider execution through the guarded failure path.
     const mediaGenerationEcho = exactTaskMediaGenerationResumeEcho(args, laneKey);
-    // Mirror M151: persist resumed turns under a room MEMBER (the room owner)
+    // Persist resumed turns under a room member (the room owner)
     // for room-backed targets, else the task owner.
     let transcriptOwnerId = task.ownerId;
     let sessionRoomKind: string | null = null;
@@ -340,8 +358,11 @@ async function runTaskApprovalResumeWorker(
         : {}),
       laneKey,
       eventBus,
+      ...(sessionRoomId && task.contentRepresentation === "ordinary" ? {
+        taskToolLifecycle: { taskId: task.id, taskRunId: run.id, isCurrent: () => !signal.aborted },
+      } : {}),
     });
-    // R11 — any chained interrupt emitted by `emitChainedInterrupts` during the
+    // Any chained interrupt emitted by `emitChainedInterrupts` during the
     // resume must be patched with Task context before fanout, else it lands as a
     // generic room-gated event the workbench would drop.
     const savedPreparation = readTaskPreparation(task.metadata["preparation"]);
@@ -368,6 +389,7 @@ async function runTaskApprovalResumeWorker(
             taskId: task.id,
             taskRunId: run.id,
             ownerId: task.ownerId,
+            approvalRecipientId: taskApprovalRecipient(task),
             hasRoom,
           });
         if (event.type === "approval.ask" || event.type === "prove_it.challenge" || event.type === "identity.challenge") {
@@ -384,10 +406,15 @@ async function runTaskApprovalResumeWorker(
           modelId: run.modelId ?? "", graphThreadId: run.graphThreadId,
         })
       : null;
+    const delegatedLocalExecutionPort = task.localExecutionDelegation
+      ? await resolveTaskLocalExecutionPort({ db, taskId: task.id, taskRunId: run.id, signal }) : undefined;
+    if (task.localExecutionDelegation && !delegatedLocalExecutionPort) {
+      throw new Error("This Task’s saved project authority changed. Recreate it from the original chat and Mac.");
+    }
     await runWithForegroundFundingSession(fundingSession, () => runWithAcceptedWorkAuthorities(
       args.maintenanceAuthority,
       args.invocationAuthority,
-      () => runWithTaskCausalHuman(task.requestorId, async () => {
+      () => runWithLocalExecutionDelegation(delegatedLocalExecutionPort, () => runWithTaskCausalHuman(task.requestorId, async () => {
         if (args.kind === "ordinary_recovery") {
           if (!args.ordinaryRecovery) throw new OrdinaryContentAccessRecoveryUnavailableError();
           await resumeOrdinaryContentAccessRecovery(args.ordinaryRecovery.expected, args.ordinaryRecovery.deps, processor, signal);
@@ -445,9 +472,9 @@ async function runTaskApprovalResumeWorker(
             signal,
           );
         }
-      }),
+      })),
     ));
-    // R10 / R11 — finalize via the Task finalizer, or stay awaiting if the
+    // Finalize via the Task finalizer, or stay awaiting if the
     // resume re-parked on a chained approval/PIN/identity interrupt (the patched
     // chained events are buffered until the durable transition succeeds).
     if (signal.aborted) return { reparked: false };
@@ -520,6 +547,7 @@ async function runTaskApprovalResumeWorker(
           taskId: task.id,
           taskRunId: run.id,
           ownerId: task.ownerId,
+          approvalRecipientId: taskApprovalRecipient(task),
           graphThreadId: run.graphThreadId,
           laneKey,
           hasRoom,

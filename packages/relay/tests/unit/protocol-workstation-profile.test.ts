@@ -193,7 +193,7 @@ describe("Protocol v7 profile snapshot wire compatibility", () => {
   });
 
   test("capability updates remain v7 in the current Relay protocol", () => {
-    expect(RELAY_PROTOCOL_VERSION).toBe(27);
+    expect(RELAY_PROTOCOL_VERSION).toBe(28);
     expect(CAPABILITY_UPDATE_PROTOCOL_VERSION).toBe(7);
   });
 });

@@ -269,7 +269,7 @@ describe("OFFICIAL_SKILLS registry", () => {
   test("developer-workstation metadata + body", () => {
     const skill = getBundledSkill("developer-workstation")!;
     expect(skill.source).toBe("official");
-    expect(skill.version).toBe(10);
+    expect(skill.version).toBe(11);
     expect(skill.id).toBe("official:developer-workstation");
     expect(skill.requiresTools).toEqual(["exec_command", "write_stdin", "apply_patch"]);
 
@@ -277,7 +277,11 @@ describe("OFFICIAL_SKILLS registry", () => {
     expect(skill.body).toContain("Current Folder");
     expect(skill.body).toContain("`foreground.main`");
     expect(skill.body).toContain("exact initiating Nautilo Desktop");
-    expect(skill.body).toContain("background tasks, subagents");
+    expect(skill.body).toContain("Authorized background tasks,");
+    expect(skill.body).toContain("schedules, and nested agents");
+    expect(skill.body).toContain("original Human, Mac, and project");
+    expect(skill.body).toContain("never inherits Full Mac or a Human terminal handoff");
+    expect(skill.body).not.toContain("It is not available\nto background tasks");
     expect(skill.body).toContain("Basic runs contained");
     expect(skill.body).toContain("isolated network");
     expect(skill.body).toContain("private temporary `HOME`");
@@ -319,12 +323,17 @@ describe("OFFICIAL_SKILLS registry", () => {
   test("shell-execution metadata + body", () => {
     const skill = getBundledSkill("shell-execution")!;
     expect(skill.source).toBe("official");
-    expect(skill.version).toBe(7);
+    expect(skill.version).toBe(8);
     expect(skill.id).toBe("official:shell-execution");
     expect(skill.requiresTools).toEqual(["exec_command", "write_stdin"]);
 
     expect(skill.body.startsWith("# Shell Execution")).toBe(true);
     expect(skill.body).toContain("main foreground conversation (`foreground.main`)");
+    expect(skill.body).toContain("Authorized background tasks, schedules, and nested");
+    expect(skill.body).toContain("original Human, Mac, and project");
+    expect(skill.body).toContain("Every run rechecks the saved source");
+    expect(skill.body).toContain("Delegated work never inherits\nFull Mac or a Human terminal handoff");
+    expect(skill.body).not.toContain("It is unavailable to\nbackground tasks");
     expect(skill.body).toContain("standalone relays");
     expect(skill.body).toContain("unavailable in this context");
     expect(skill.body).toContain("isolated network");
@@ -430,13 +439,13 @@ Body text.
 });
 
 // ---------------------------------------------------------------------------
-// D397 Wave 2 — R7: skill body / requiresTools consistency guardrails.
+// Skill body / requiresTools consistency guardrails.
 //
 // Two regression tests so a future bundled skill can't silently ship with:
 //   (a) a `requiresTools` entry that isn't a registered catalog tool, or
 //   (b) a body that names a SPECIFIC other catalog tool outside its own
 //       `requiresTools` set (the `google-workspace-control` Anomaly 1 class
-//       from the D397 audit, had it been worded with a concrete tool name
+//       had it been worded with a concrete tool name
 //       instead of the `browser_*` wildcard).
 //
 // The check is intentionally a mechanical whole-word text scan, not an AST
@@ -524,13 +533,13 @@ const PER_SKILL_CROSS_REFERENCES: Record<string, Set<string>> = {
   // office-control (requiresTools: [edit_doc, office]) — the interactive
   // editing skill — teaches the interactive-vs-headless routing split by
   // pointing at `officecli` (see the office-generate skill) for
-  // from-scratch generation. Landed with D396 (#475). Pedagogical
+  // from-scratch generation. Pedagogical
   // cross-reference, not a workflow dependency on `officecli`.
   "office-control": new Set(["officecli"]),
   // office-generate (requiresTools: [officecli]) — the headless generation
   // skill — mirrors the above in reverse, pointing at `edit_doc`/`office`
-  // for interactive editing of a document the user has open. Landed with
-  // D396 (#475). Pedagogical cross-reference, not a workflow dependency.
+  // for interactive editing of a document the user has open. Pedagogical
+  // cross-reference, not a workflow dependency.
   "office-generate": new Set(["edit_doc"]),
 };
 
@@ -542,12 +551,12 @@ function wholeWordRegex(toolName: string): RegExp {
   return new RegExp(`\\b${escapeRegex(toolName)}\\b`);
 }
 
-describe("OFFICIAL_SKILLS × ToolCatalog contract (D397 Wave 2 R7)", () => {
+describe("OFFICIAL_SKILLS × ToolCatalog contract", () => {
   let catalog: ToolCatalog;
   let registeredToolNames: Set<string>;
 
   beforeAll(() => {
-    // Enable the D362 office tooling flag so the office-* skills'
+    // Enable the office tooling flag so the office-* skills'
     // `requiresTools` ([office, edit_doc]) resolve to real catalog entries.
     // Default is false; restore in afterAll so this describe doesn't leak
     // config into sibling test files in the same bun test run.

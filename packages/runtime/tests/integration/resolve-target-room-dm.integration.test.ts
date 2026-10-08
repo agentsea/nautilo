@@ -1,5 +1,5 @@
 /**
- * M151 (Phase 7b) — `resolveTargetRoom` DM routing (`last_dm` / `new_dm`)
+ * `resolveTargetRoom` DM routing (`last_dm` / `new_dm`)
  * against real Postgres.
  *
  * This is the "the peer never saw the message" guard. `ask_peer` sends the
@@ -23,6 +23,7 @@ import { randomUUID } from "node:crypto";
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import {
   tasks,
+  serverAdmission,
   taskRuns,
   users,
   agents,
@@ -65,10 +66,11 @@ const extraActorIds: string[] = [];
 
 beforeAll(async () => {
   await setupTestDb();
-  const env = await setupAgentTestEnv("m151-dm");
+  const env = await setupAgentTestEnv("task-dm");
   ownerUserId = env.userId;
   agentId = env.agentId;
   db = getDirectDb();
+  await db.insert(serverAdmission).values({ userId: ownerUserId, admitted: true });
 
   // The agent-actor mirror seeded by setupAgentTestEnv (kind='agent').
   const [aa] = await db
@@ -85,7 +87,6 @@ beforeAll(async () => {
     .insert(users)
     .values({
       name: "Test006",
-      email: `${peerHandle}@test.local`,
       handle: peerHandle,
     })
     .returning({ id: users.id });
@@ -149,7 +150,7 @@ async function insertDmTask(args: {
   return row.id;
 }
 
-describe("M151 — resolveTargetRoom DM routing (live PG)", () => {
+describe("resolveTargetRoom DM routing (live PG)", () => {
   test("new_dm: creates a kind='private' room owned by the PEER with {agent, peer}; memoizes room + appends peer to target_user_ids", async () => {
     const taskId = await insertDmTask({ targetChat: "new_dm" });
     const task = await getTaskById(db, taskId);
@@ -235,7 +236,7 @@ describe("M151 — resolveTargetRoom DM routing (live PG)", () => {
 
     const [ns] = await db
       .insert(namespaces)
-      .values({ scope: "private", label: `m151-peerdm-${randomUUID().slice(0, 8)}` })
+      .values({ scope: "private", label: `task-peerdm-${randomUUID().slice(0, 8)}` })
       .returning({ id: namespaces.id });
     createdNamespaceIds.push(ns!.id);
     const peerOwnRoomId = randomUUID();
@@ -282,7 +283,7 @@ describe("M151 — resolveTargetRoom DM routing (live PG)", () => {
 
     const [ns] = await db
       .insert(namespaces)
-      .values({ scope: "private", label: `m151-multichat-${randomUUID().slice(0, 8)}` })
+      .values({ scope: "private", label: `task-multichat-${randomUUID().slice(0, 8)}` })
       .returning({ id: namespaces.id });
     createdNamespaceIds.push(ns!.id);
     const multiRoomId = randomUUID();

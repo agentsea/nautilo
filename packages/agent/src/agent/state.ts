@@ -249,6 +249,10 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /** Server-selected mode, checkpointed before approval; never model arguments. */
+  delegatedLocalExecutionBindings: Annotation<Readonly<Record<string, import("@nautilo/relay").RelayLocalExecutionBindingV4>>>({
+    reducer: (_, update) => update,
+    default: () => ({}),
+  }),
   fullMacInvocationBindings: Annotation<Readonly<Record<string, { activationId: string | null; relayId: string; desktopSessionId: string; pairingGeneration: string; humanUserId: string; agentId: string; roomId: string; conversationId: string }>>>({
     reducer: (_, update) => update,
     default: () => ({}),
@@ -981,6 +985,7 @@ export type NautiloState = Omit<
   | "humanTerminalInvocationBindings"
   | "githubInvocationBindings"
   | "fullMacInvocationBindings"
+  | "delegatedLocalExecutionBindings"
   | "ordinaryContentAccessBindings" | "ordinaryContentAccessRejectedToolCallIds"
   | "autoApprove"
   | "requiredHostRelays"
@@ -1049,6 +1054,7 @@ export type NautiloState = Omit<
   desktopAutomationRouteBinding?: DesktopAutomationRouteBinding | null;
   /** per-call admission metadata; an absent/malformed map is empty. */
   computerUseInvocationBindings?: Readonly<Record<string, ComputerUseInvocationBinding>>;
+  delegatedLocalExecutionBindings?: Readonly<Record<string, import("@nautilo/relay").RelayLocalExecutionBindingV4>>;
   fullMacInvocationBindings?: Readonly<Record<string, { activationId: string | null; relayId: string; desktopSessionId: string; pairingGeneration: string; humanUserId: string; agentId: string; roomId: string; conversationId: string }>>;
   githubInvocationBindings?: Readonly<Record<string, GitHubInvocationBinding>>;
   humanTerminalInvocationBindings?: Readonly<Record<string, RelayHumanTerminalBinding>>;
