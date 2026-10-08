@@ -2,11 +2,15 @@ import { describe, test, expect } from "bun:test";
 import { getToolPolicy, getRegisteredToolNames } from "../../src/tool-policies";
 
 describe("tool policy registry", () => {
-  test("all built-in tool policies are registered, including transcribe_audio + M088A share_artifact", () => {
+  test("all built-in tool policies are registered, including local execution replacements", () => {
     const names = getRegisteredToolNames();
-    expect(names).toHaveLength(107);
+    expect(names).toHaveLength(111);
     expect(names).toContain("exec_command");
     expect(names).toContain("write_stdin");
+    expect(names).toContain("local_git");
+    expect(names).toContain("read_shell_output");
+    expect(names).toContain("human_terminal");
+    expect(names).toContain("local_github");
     expect(names).toContain("browse_web");
     expect(names).toContain("apply_patch");
     expect(names).toContain("select_current_folder");
@@ -71,13 +75,13 @@ describe("tool policy registry", () => {
   });
 
   test("read-only tools have no required capability", () => {
-    // M128 — search_memory now requires read_memories; session_search / run_web_search / read_webpage unchanged
+    // search_memory now requires read_memories; session_search / run_web_search / read_webpage unchanged
     for (const name of ["session_search", "run_web_search", "read_webpage"]) {
       const policy = getToolPolicy(name);
       expect(policy.requiredCapability).toBeNull();
       expect(policy.impact).toBe("read-only");
     }
-    // M128 — search_memory is still read-only impact but now gated by read_memories
+    // search_memory is still read-only impact but now gated by read_memories
     const searchPolicy = getToolPolicy("search_memory");
     expect(searchPolicy.requiredCapability).toBe("read_memories");
     expect(searchPolicy.impact).toBe("read-only");
@@ -126,7 +130,7 @@ describe("tool policy registry", () => {
   });
 
   test("manage_memory requires manage_memories", () => {
-    // M128 — write_shared_memory retired; manage_memories is the replacement
+    // write_shared_memory retired; manage_memories is the replacement
     const policy = getToolPolicy("manage_memory");
     expect(policy.requiredCapability).toBe("manage_memories");
     expect(policy.impact).toBe("low");
@@ -141,38 +145,38 @@ describe("tool policy registry", () => {
   });
 
   test("config/onboarding tools are registered with correct policies", () => {
-    // M128 — onboarding_status / find_voice unchanged (no cap required)
+    // onboarding_status / find_voice unchanged (no cap required)
     const nullCapReadOnly = ["onboarding_status", "find_voice", "audition_voices"];
     for (const name of nullCapReadOnly) {
       const policy = getToolPolicy(name);
       expect(policy.requiredCapability).toBeNull();
       expect(policy.impact).toBe("read-only");
     }
-    // M128 — check_config now gated by read_server_settings (was null)
+    // check_config now gated by read_server_settings (was null)
     const checkConfig = getToolPolicy("check_config");
     expect(checkConfig.requiredCapability).toBe("read_server_settings");
     expect(checkConfig.impact).toBe("read-only");
 
-    // M128 D4-A — manage_profile is self-edit by construction (no target
+    // manage_profile is self-edit by construction (no target
     // parameter; the tool body operates on context.ownerId). Static cap
     // is null; see tool-policy-cap-remap.test.ts for the rationale.
     const low = getToolPolicy("manage_profile");
     expect(low.requiredCapability).toBeNull();
     expect(low.impact).toBe("low");
 
-    // M128 — update_config: manage_server_settings (was use_high_impact_tools)
+    // update_config: manage_server_settings (was use_high_impact_tools)
     const updateConfig = getToolPolicy("update_config");
     expect(updateConfig.requiredCapability).toBe("manage_server_settings");
     expect(updateConfig.impact).toBe("destructive");
 
-    // M128 D4-A — regenerate_soul: same as manage_profile, self-edit by construction.
+    // regenerate_soul: same as manage_profile, self-edit by construction.
     const regenerateSoul = getToolPolicy("regenerate_soul");
     expect(regenerateSoul.requiredCapability).toBeNull();
     expect(regenerateSoul.impact).toBe("destructive");
   });
 
   test("transcribe_audio is high-impact and explicitly approval-gated (local file → hosted STT)", () => {
-    // M128 — use_transcription replaces use_high_impact_tools for transcribe_audio
+    // use_transcription replaces use_high_impact_tools for transcribe_audio
     const policy = getToolPolicy("transcribe_audio");
     expect(policy.requiredCapability).toBe("use_transcription");
     expect(policy.impact).toBe("high");
@@ -185,7 +189,7 @@ describe("tool policy registry", () => {
     expect(policy.impact).toBe("destructive");
   });
 
-  test("M189 mini_app requires Admin-grade manage_server_operations, destructive, static approval", () => {
+  test("mini_app requires Admin-grade manage_server_operations, destructive, static approval", () => {
     const policy = getToolPolicy("mini_app");
     expect(policy.requiredCapability).toBe("manage_server_operations");
     expect(policy.impact).toBe("destructive");
@@ -194,7 +198,7 @@ describe("tool policy registry", () => {
   });
 
   test("list_my_users is read-only; share_memory is hybrid + manage_memories", () => {
-    // M128 — write_shared_memory retired; share_memory now uses manage_memories
+    // write_shared_memory retired; share_memory now uses manage_memories
     expect(getToolPolicy("list_my_users").impact).toBe("read-only");
     expect(getToolPolicy("list_my_users").requiredCapability).toBeNull();
     const share = getToolPolicy("share_memory");
@@ -203,7 +207,7 @@ describe("tool policy registry", () => {
     expect(share.impact).toBe("destructive");
   });
 
-  test("M080 scope tools mirror manage_memory / search_memory posture in deprecated table", () => {
+  test("scope tools mirror manage_memory / search_memory posture in deprecated table", () => {
     expect(getToolPolicy("find_scope").impact).toBe("read-only");
     expect(getToolPolicy("find_scope").requiredCapability).toBeNull();
     for (const name of ["create_scope", "add_memory_to_scope", "close_scope", "task"]) {
@@ -213,7 +217,7 @@ describe("tool policy registry", () => {
     }
   });
 
-  test("M144 in_scope / in_background / schedule are low + ungated; cross-context shortcuts require agent invocation", () => {
+  test("in_scope / in_background / schedule are low + ungated; cross-context shortcuts require agent invocation", () => {
     for (const name of ["in_scope", "in_background", "schedule"]) {
       const p = getToolPolicy(name);
       expect(p.impact).toBe("low");
@@ -224,7 +228,7 @@ describe("tool policy registry", () => {
     expect(priv.impact).toBe("destructive");
     expect(priv.requiredCapability).toBe("invoke_agents");
     expect(priv.executor).toBe("cloud");
-    // M151 — ask_peer uses the same agent-invocation authority.
+    // ask_peer uses the same agent-invocation authority.
     const askPeer = getToolPolicy("ask_peer");
     expect(askPeer.impact).toBe("destructive");
     expect(askPeer.requiredCapability).toBe("invoke_agents");
@@ -232,21 +236,21 @@ describe("tool policy registry", () => {
     expect(askPeer.executor).toBe("cloud");
   });
 
-  test("M137 get_room_members is read-only, room-scoped, no capability gate", () => {
+  test("get_room_members is read-only, room-scoped, no capability gate", () => {
     const p = getToolPolicy("get_room_members");
     expect(p.impact).toBe("read-only");
     expect(p.requiredCapability).toBeNull();
   });
 
-  test("M087 get_current_time is low-impact cloud tool with no capability gate", () => {
+  test("get_current_time is low-impact cloud tool with no capability gate", () => {
     const policy = getToolPolicy("get_current_time");
     expect(policy.executor).toBe("cloud");
     expect(policy.impact).toBe("low");
     expect(policy.requiredCapability).toBeNull();
   });
 
-  test("generate_image is low-impact, gated by use_image_generation (M128)", () => {
-    // M128 — generate_image now requires use_image_generation (was null)
+  test("generate_image is low-impact, gated by use_image_generation", () => {
+    // generate_image now requires use_image_generation (was null)
     const policy = getToolPolicy("generate_image");
     expect(policy.requiredCapability).toBe("use_image_generation");
     expect(policy.impact).toBe("low");
