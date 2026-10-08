@@ -122,7 +122,7 @@ export function computeTaskRelayCapabilities(
   return buildRuntimeCapabilityTokens(getRelayRegistry(), ownerId);
 }
 
-export class TaskLocalExecutionAuthorityUnavailableError extends Error {
+class TaskLocalExecutionAuthorityUnavailableError extends Error {
   constructor(cause: unknown) {
     super("Saved Mac, project, or source access could not be confirmed. Review access, then recreate this Task from its original chat on the intended Mac.", { cause });
     this.name = "TaskLocalExecutionAuthorityUnavailableError";

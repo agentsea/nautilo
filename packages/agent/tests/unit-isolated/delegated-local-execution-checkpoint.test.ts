@@ -155,7 +155,7 @@ test("delegated command approvals belong to the initiating Human rather than the
   const flow = await park(f, () => f.port, {
     matchCommandApproval: async ({ userId }) => {
       lookedUp.push(userId);
-      return userId === "agent-owner" ? { id: "other-human-rule", scope: "always" } : null;
+      return userId === "agent-owner" ? { id: "other-human-rule", scope: "server" } : null;
     },
     createCommandApproval: async ({ userId }) => {
       createdFor.push(userId); return { id: "human-rule", created: true };
@@ -181,7 +181,7 @@ test("mixed local and ordinary Task calls share the requesting Human's approval 
   const flow = await park(f, () => f.port, {
     matchCommandApproval: async ({ userId, toolName }) => {
       lookedUp.push({ userId, toolName });
-      return userId === "agent-owner" ? { id: "other-human-rule", scope: "always" } : null;
+      return userId === "agent-owner" ? { id: "other-human-rule", scope: "server" } : null;
     },
     createCommandApproval: async ({ userId, toolName }) => {
       created.push({ userId, toolName }); return { id: "human-rule", created: true };

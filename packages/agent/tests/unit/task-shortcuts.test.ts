@@ -217,17 +217,22 @@ describe("task intent shortcuts", () => {
   });
 
   test.each([
-    ["in_background", createInBackgroundTool],
-    ["in_scope", createInScopeTool],
-  ] as const)("%s keeps the original calling Room in an orphan Task after resume", async (_name, factory) => {
+    {
+      name: "in_background",
+      invoke: (context: unknown) => createInBackgroundTool(context).invoke({ brief: "nested work", tools: ["exec_command"] }),
+    },
+    {
+      name: "in_scope",
+      invoke: (context: unknown) => createInScopeTool(context).invoke({ brief: "nested work", tools: ["exec_command"] }),
+    },
+  ] as const)("$name keeps the original calling Room in an orphan Task after resume", async ({ invoke }) => {
     stubRuntime();
     const parentSp = spyOn(db, "getTaskById").mockResolvedValue({
       id: "parent-task", ownerId: OWNER_ID, depth: 1,
     } as never);
     restores.push(() => parentSp.mockRestore());
-    await factory({ ...CTX, roomId: "", callingRoomId: ROOM_ID,
-      currentTaskId: "parent-task", currentTaskRunId: "parent-run" })
-      .invoke({ brief: "nested work", tools: ["exec_command"] });
+    await invoke({ ...CTX, roomId: "", callingRoomId: ROOM_ID,
+      currentTaskId: "parent-task", currentTaskRunId: "parent-run" });
     expect(capturedCreate).toMatchObject({
       callingRoomId: ROOM_ID, parentTaskId: "parent-task", depth: 2,
     });
@@ -249,17 +254,23 @@ describe("task intent shortcuts", () => {
   });
 
   test.each([
-    ["in_background", createInBackgroundTool],
-    ["in_scope", createInScopeTool],
-  ] as const)("%s cannot create nested work from a missing or foreign parent", async (_name, factory) => {
+    {
+      name: "in_background",
+      invoke: (context: unknown) => createInBackgroundTool(context).invoke({ brief: "nested work", tools: ["exec_command"] }),
+    },
+    {
+      name: "in_scope",
+      invoke: (context: unknown) => createInScopeTool(context).invoke({ brief: "nested work", tools: ["exec_command"] }),
+    },
+  ] as const)("$name cannot create nested work from a missing or foreign parent", async ({ invoke }) => {
     stubRuntime();
     const parentSp = spyOn(db, "getTaskById").mockResolvedValue(undefined);
     restores.push(() => parentSp.mockRestore());
-    const tool = factory({ ...CTX, roomId: "", callingRoomId: ROOM_ID, currentTaskId: "parent-task" });
-    await tool.invoke({ brief: "nested work", tools: ["exec_command"] });
+    const context = { ...CTX, roomId: "", callingRoomId: ROOM_ID, currentTaskId: "parent-task" };
+    await invoke(context);
     expect(capturedCreate).toBeNull();
     parentSp.mockResolvedValue({ id: "parent-task", ownerId: "other-owner", depth: 1 } as never);
-    await tool.invoke({ brief: "nested work", tools: ["exec_command"] });
+    await invoke(context);
     expect(capturedCreate).toBeNull();
   });
 
