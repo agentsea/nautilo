@@ -1,5 +1,5 @@
 import { describe, test, expect, mock } from "bun:test";
-import type { ServerEvent } from "@nautilo/types";
+import type { LocalExecutionDelegation, ServerEvent } from "@nautilo/types";
 import {
   buildTaskInterruptEvent,
   emitTaskInterruptEvent,
@@ -305,21 +305,30 @@ describe("pending Task attention replay", () => {
 
 
 test("canonical delegated recipient routes approval, PIN and replay without changing management owner", async () => {
-  const task = { ownerId: "owner", requestorId: "requestor", agentId: "agent", localExecutionDelegation: {
+  const delegation = {
     version: 1, humanUserId: "requestor", agentId: "agent", sourceRoomId: "room", sourceConversationId: "thread",
     rootTaskId: "task", target: { instanceId: "", relayId: "relay", pairingGeneration: "pair", serverOrigin: "https://server.invalid", serverFingerprint: "fingerprint" },
-    projectGrantId: "project", ceiling: "basic", profile: null } };
+    projectGrantId: "project", ceiling: "basic", profile: null,
+  } satisfies LocalExecutionDelegation;
+  const task = { ownerId: "owner", requestorId: "requestor", agentId: "agent", localExecutionDelegation: delegation };
   expect(taskApprovalRecipient(task)).toBe("requestor");
   expect(taskApprovalRecipient({ ...task, localExecutionDelegation: null })).toBe("owner");
-  for (const localExecutionDelegation of [{}, { ...task.localExecutionDelegation, humanUserId: "owner" }, { ...task.localExecutionDelegation, agentId: "other" }]) {
-    expect(taskApprovalRecipient({ ...task, localExecutionDelegation })).toBeNull();
+  const recipientForPersistedValue = (localExecutionDelegation: unknown) => taskApprovalRecipient({
+    ...task,
+    // Persisted JSON may be malformed despite the statically typed DB row.
+    localExecutionDelegation,
+  } as unknown as Parameters<typeof taskApprovalRecipient>[0]);
+  for (const localExecutionDelegation of [{}, { ...delegation, humanUserId: "owner" }, { ...delegation, agentId: "other" }]) {
+    expect(recipientForPersistedValue(localExecutionDelegation)).toBeNull();
   }
   const ctx = baseCtx({ ownerId: task.ownerId, approvalRecipientId: taskApprovalRecipient(task)! });
   for (const interrupt of [{ type: "approval_ask", approvalId: "ask", tools: [], allowedVerbs: ["once", "deny"], reason: "Review" },
     { type: "prove_it_challenge", tools: [], challengeId: "proof" }, { type: "identity_challenge", mode: "enrollPin" }]) {
     expect(buildTaskInterruptEvent({ ...ctx, interrupt })).toMatchObject({ userId: task.requestorId, origin: "task" });
   }
-  const events = await replayTaskInterruptEvents(ctx, async () => [buildTaskInterruptEvent({ ...ctx, approvalRecipientId: undefined,
+  const { approvalRecipientId, ...legacyCtx } = ctx;
+  expect(approvalRecipientId).toBe(task.requestorId);
+  const events = await replayTaskInterruptEvents(ctx, async () => [buildTaskInterruptEvent({ ...legacyCtx,
     interrupt: { type: "identity_challenge", mode: "enrollPin" } })!]);
   expect(events).toMatchObject([{ userId: task.requestorId }]);
   expect(ctx.ownerId).toBe("owner");
@@ -332,5 +341,7 @@ test("invalid canonical delegated recipients cannot fall back to management-owne
   const emit = mock(() => {}); expect(emitTaskInterruptEvent(ctx, emit)).toBeNull(); expect(emit).not.toHaveBeenCalled();
   const read = mock(async () => [] as ServerEvent[]);
   expect(await replayTaskInterruptEvents(ctx, read)).toEqual([]); expect(read).not.toHaveBeenCalled();
-  expect(() => patchTaskApprovalEvent({ type: "identity.challenge", mode: "enrollPin", threadId: "thread", laneKey: "task:task-1", userId: "owner" }, ctx)).toThrow("recipient unavailable");
+  expect(() => patchTaskApprovalEvent({ type: "identity.challenge", mode: "enrollPin", challengeId: "challenge",
+    expiresAt: "2099-01-01T00:00:00.000Z", threadId: "thread", laneKey: "task:task-1", userId: "owner" }, ctx))
+    .toThrow("recipient unavailable");
 });

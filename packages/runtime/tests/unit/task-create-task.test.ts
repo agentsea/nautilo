@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import type { DirectDatabase, Task } from "@nautilo/db";
+import type { LocalExecutionDelegation } from "@nautilo/types";
 import { createTask, type TaskCreateInput } from "../../src/tasks/create-task";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
 import {
@@ -220,15 +221,15 @@ describe("Task creation wrapper", () => {
 });
 
 const delegatedSource = {
-  version: 1 as const,
+  version: 1,
   humanUserId: "11111111-1111-1111-1111-111111111111",
   agentId: "22222222-2222-2222-2222-222222222222",
   sourceRoomId: "original-room", sourceConversationId: "original-thread",
   rootTaskId: "parent-task", projectGrantId: "task-project-grant",
   target: { instanceId: "", relayId: "relay", pairingGeneration: "pairing",
     serverOrigin: "https://server.example", serverFingerprint: "fingerprint" },
-  ceiling: "basic" as const, profile: null,
-};
+  ceiling: "basic", profile: null,
+} satisfies LocalExecutionDelegation;
 function parentTask(patch: Partial<Task> = {}): Task {
   return { ...baseInput(), id: "parent-task", parentTaskId: null, status: "completed",
     callingRoomId: "original-room", targetRoomId: "task-room", contentRevision: 0,
@@ -243,8 +244,25 @@ test("nested creation preserves the original source through its canonical parent
 test("resumed orphan parent accepts its original calling Room with persisted descriptor key order", async () => {
   // PostgreSQL JSONB returns a different key order from the initial capture.
   // The source port inherits that same persisted descriptor when resuming.
-  const persisted = Object.fromEntries(Object.entries(delegatedSource).reverse());
-  const inherited = { ...persisted, agentId: delegatedSource.agentId } as typeof delegatedSource;
+  const persisted: LocalExecutionDelegation = {
+    profile: delegatedSource.profile,
+    ceiling: delegatedSource.ceiling,
+    projectGrantId: delegatedSource.projectGrantId,
+    target: {
+      serverFingerprint: delegatedSource.target.serverFingerprint,
+      serverOrigin: delegatedSource.target.serverOrigin,
+      pairingGeneration: delegatedSource.target.pairingGeneration,
+      relayId: delegatedSource.target.relayId,
+      instanceId: delegatedSource.target.instanceId,
+    },
+    rootTaskId: delegatedSource.rootTaskId,
+    sourceConversationId: delegatedSource.sourceConversationId,
+    sourceRoomId: delegatedSource.sourceRoomId,
+    agentId: delegatedSource.agentId,
+    humanUserId: delegatedSource.humanUserId,
+    version: delegatedSource.version,
+  };
+  const inherited: LocalExecutionDelegation = { ...persisted, agentId: delegatedSource.agentId };
   const { db, lastValues } = fakeDb(() => parentTask({ status: "running", targetChat: "orphan",
     localExecutionDelegation: persisted }));
   await createTask({ ...taskDeps(db, { kick() {} }), captureLocalExecution: async () => inherited },
