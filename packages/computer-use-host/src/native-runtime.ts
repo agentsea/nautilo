@@ -22,7 +22,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Jimp, JimpMime } from "jimp";
 import { COMPUTER_USE_HOST_PNG_MAX_BYTES } from "@nautilo/computer-use-host-protocol";
-import { normalizeCuaMacosKey, normalizeCuaMacosHotkey } from "@nautilo/computer-use-contracts/native";
+import { normalizeCuaMacosKey, normalizeCuaMacosHotkey, type ComputerNativeControlState, type ComputerNativeControlCollection } from "@nautilo/computer-use-contracts/native";
 
 const execFileAsync = promisify(execFile);
 const HUMAN_INPUT_EPOCH_TOLERANCE_MILLISECONDS = 100;
@@ -378,6 +378,7 @@ export type CuaWindowStateObserveResult =
     version: 1; operation: "window_state"; target: Readonly<{ version: 1; context: string; reference: string }>;
     evidence: ComputerUseTargetEvidence | null; completeness: "sufficient" | "partial" | "unavailable";
     degraded: boolean; verification: "supported" | "indeterminate" | "unavailable";
+    controlCollection?: ComputerNativeControlCollection;
     element?: Readonly<{
       selector: Readonly<{ role: string; interaction?: "right_click" | "double_click"; action?: "scroll" | "click" | "type_text" | "set_value" | "press_key" }>;
       disposition: "zero" | "unique" | "ambiguous" | "incomplete";
@@ -385,6 +386,7 @@ export type CuaWindowStateObserveResult =
       evidence?: Readonly<
         { kind: "element"; role: string; action: "type_text" | "scroll" | "set_value" | "click" | "right_click" | "double_click" | "press_key"; enabled?: boolean }
       >;
+      state?: ComputerNativeControlState;
     }>;
     windowSnapshot?: Readonly<{
       target: Readonly<{ version: 1; context: string; reference: string }>;
@@ -791,7 +793,9 @@ function parseWindows(
       layer,
       zIndex: zIndex as number | null,
       onScreen,
-      appWindowCandidate: semanticTitle !== undefined && bounds.width > 0 && bounds.height > 0
+      // A title is presentation, not window identity. Located untitled windows
+      // remain candidates; their accessibility/input readiness is checked later.
+      appWindowCandidate: bounds.width > 0 && bounds.height > 0
         && isLocatedWindowSurface(onScreen, onCurrentSpace, spaceIds as readonly unknown[] | null),
     });
   }
@@ -851,7 +855,7 @@ function parseLaunchWindows(value: unknown, pid: number, returnedName: string): 
     windows.push({
       windowId, pid: windowPid, appName: returnedName, title, bounds, layer,
       zIndex: window["z_index"] as number, onScreen: window["is_on_screen"],
-      appWindowCandidate: semanticTitle !== undefined && bounds.width > 0 && bounds.height > 0
+      appWindowCandidate: bounds.width > 0 && bounds.height > 0
         && isLocatedWindowSurface(
           window["is_on_screen"],
           window["on_current_space"],
@@ -1170,14 +1174,14 @@ function clickControlRole(role: unknown): string | null {
  * Select one exact snapshot-bound native element for the requested operation.
  * Role, content, geometry and advisory actions do not establish writability.
  * Cua attempts the operation and reports the actual effect. An exact label is a
- * model-supplied disambiguator only; neither it nor any provider label crosses
- * the observation/result boundary.
+ * model-supplied disambiguator only. Selected control content is published only
+ * in the fresh observation, never retained in action authority or receipts.
  */
 function parseNativeElementSelection(
   result: CuaContextToolResult,
   selector: Readonly<{ role: string; labelEquals?: string }>,
 ): Readonly<{ disposition: "zero" | "ambiguous" | "incomplete" }>
-  | Readonly<{ disposition: "unique"; elementToken: string; enabled?: boolean; observedValue?: boolean; value?: string }> {
+  | Readonly<{ disposition: "unique"; elementToken: string; enabled?: boolean; observedValue?: boolean; value?: string; state: ComputerNativeControlState }> {
   const data = result.structuredContent;
   const elements = data === null ? null : list(data["elements"]);
   if (elements === null) return { disposition: "incomplete" };
@@ -1213,12 +1217,98 @@ function parseNativeElementSelection(
       : typeof value === "string" && ["0", "false", "no", "off"].includes(value.trim().toLowerCase())
         ? false
         : undefined;
+  const state = nativeControlState(sole);
   return {
-    disposition: "unique", elementToken: token,
+    disposition: "unique", elementToken: token, state,
     ...(enabled === undefined ? {} : { enabled }),
     ...(typeof value === "string" ? { value } : {}),
     ...(normalizedValue === undefined ? {} : { observedValue: normalizedValue }),
   };
+}
+
+function nativeControlState(element: Readonly<Record<string, unknown>>): ComputerNativeControlState {
+  const value = element["value"];
+  const selected = element["selected"];
+  const minimum = element["min"];
+  const maximum = element["max"];
+  // The public state projection preserves typed provider attributes without
+  // coercion, placeholder inference, or first-N text truncation. Unknown
+  // optional metadata does not retire the driver session.
+  return {
+    completeness: "partial",
+    ...(typeof value === "string" ? { value } : {}),
+    ...(typeof element["value_description"] === "string" ? { valueDescription: element["value_description"] } : {}),
+    ...(typeof selected === "boolean" ? { selected } : {}),
+    ...(typeof minimum === "number" && Number.isFinite(minimum)
+      && typeof maximum === "number" && Number.isFinite(maximum) && maximum > minimum
+      ? { range: { minimum, maximum } } : {}),
+  };
+}
+
+/** Optional provider evidence never restricts dispatch or supplies pixel authority. */
+function nativeControlMetadata(row: Record<string, unknown>) {
+  const actions = Array.isArray(row["actions"]) && row["actions"].every((action) => typeof action === "string")
+    ? row["actions"].map((action: string) => normalizeSemanticText(action)).filter((action): action is string => action !== undefined)
+    : undefined;
+  const depth = typeof row["depth"] === "number" && Number.isSafeInteger(row["depth"]) && row["depth"] >= 0 ? row["depth"] : undefined;
+  const frame = record(row["frame"]);
+  const validFrame = frame && ["x", "y", "w", "h"].every((key) => typeof frame[key] === "number" && Number.isFinite(frame[key]))
+    && (frame["w"] as number) >= 0 && (frame["h"] as number) >= 0;
+  return {
+    ...(actions === undefined ? {} : { actions }),
+    ...(depth === undefined ? {} : { depth }),
+    ...(validFrame ? { frame: { x: frame["x"] as number, y: frame["y"] as number,
+      width: frame["w"] as number, height: frame["h"] as number, coordinateSpace: "provider_layout" as const } } : {}),
+  };
+}
+
+function nativeControlCollection(result: CuaContextToolResult, provider: ComputerUseProviderTarget) {
+  const rows = list(result.structuredContent?.["elements"]) ?? [];
+  const tokenCounts = new Map<string, number>();
+  const indexCounts = new Map<number, number>();
+  for (const raw of rows) {
+    const row = record(raw);
+    if (typeof row?.["element_token"] === "string") {
+      const token = row["element_token"];
+      tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
+    }
+    if (typeof row?.["element_index"] === "number") {
+      const index = row["element_index"];
+      indexCounts.set(index, (indexCounts.get(index) ?? 0) + 1);
+    }
+  }
+  const collection: ComputerNativeControlCollection = { completeness: "partial", received: rows.length, omitted: 0, controls: [] };
+  const elements: Array<{ evidence: ComputerUseTargetEvidence; providerTarget: ComputerUseProviderTarget }> = [];
+  const bindings: Array<{ controlIndex: number; elementIndex: number }> = [];
+  const parents = new Map<number, string>();
+  for (const raw of rows) {
+    const row = record(raw);
+    const role = clickControlRole(row?.["role"]);
+    if (row === null || role === null) { collection.omitted++; continue; }
+    const id = `c${collection.controls.length}`;
+    const parent = typeof row["parent_index"] === "number" ? parents.get(row["parent_index"]) : undefined;
+    const label = typeof row["label"] === "string" ? normalizeSemanticText(row["label"]) : undefined;
+    const enabled = typeof row["enabled"] === "boolean" ? row["enabled"] : undefined;
+    const control = { id, role, state: nativeControlState(row), ...nativeControlMetadata(row),
+      ...(label === undefined ? {} : { label }), ...(enabled === undefined ? {} : { enabled }),
+      ...(parent === undefined ? {} : { parent }),
+    };
+    const token = row["element_token"];
+    if (typeof token === "string" && token.length > 0 && tokenCounts.get(token) === 1
+      && (row["enabled"] === undefined || enabled === true)) {
+      bindings.push({ controlIndex: collection.controls.length, elementIndex: elements.length });
+      elements.push({ evidence: { kind: "element", role }, providerTarget: {
+        ...provider, operation: "element", elementToken: token,
+        // No label-based post-read identity: a same-labelled sibling can
+        // replace this control when Cua rebuilds the tree. Trust only the
+        // driver's exact action evidence or explicit fresh task verification.
+      } });
+    }
+    collection.controls.push(control);
+    const index = row["element_index"];
+    if (typeof index === "number" && Number.isSafeInteger(index) && index >= 0 && indexCounts.get(index) === 1) parents.set(index, id);
+  }
+  return { collection, elements, bindings };
 }
 
 function outcome(
@@ -1352,7 +1442,7 @@ type CuaTextOrKeyEffect =
   /** Exact element resolver/background gate refusal before an element action. */
   | { readonly kind: "refused_element" }
   | { readonly kind: "chunk_refusal"; readonly maxChunkCharacters: number }
-  | { readonly kind: "partial"; readonly delivered: number; readonly delivery: "background" | "foreground" | "unknown" }
+  | { readonly kind: "partial"; readonly delivered: number; readonly delivery: "background" | "foreground" | "unknown"; readonly synthesizedInput: boolean }
   | { readonly kind: "indeterminate" }
   | { readonly kind: "provider_failure" }
   | { readonly kind: "malformed" };
@@ -1477,6 +1567,7 @@ function parseTextOrKeyEffect(
       || (expected.deliveryMode === "foreground" && data["path"] !== "key_events_fg" && data["path"] !== "key_events")) return { kind: "malformed" };
     return {
       kind: "partial", delivered: data["delivered_chars"],
+      synthesizedInput: data["path"] !== "ax",
       delivery: data["path"] === "key_events_fg" ? "foreground" : data["path"] === "key_events" || data["path"] === "ax" ? "background" : "unknown",
     };
   }
@@ -2348,12 +2439,12 @@ export class CuaComputerUseAdapter {
         return unique;
       }, []);
       if (matches.length !== 1) {
-        const result = preEffect("ready", "safe", []);
+        const result = preEffect("ready", "safe", ["observe_again", "retry_same_request"]);
         return { ok: false, receipt: knownNotStarted(result), error: matches.length === 0 ? "That application is unavailable on this desktop." : "That application name is ambiguous on this desktop.", outcome: result };
       }
       const matchedApplication = matches[0]!;
       if (matchedApplication.bundleId === undefined) {
-        const result = preEffect("ready", "safe", []);
+        const result = preEffect("ready", "safe", ["observe_again", "retry_same_request"]);
         return { ok: false, receipt: knownNotStarted(result), error: "That application is unavailable on this desktop.", outcome: result };
       }
       if (request.signal?.aborted) {
@@ -2381,7 +2472,7 @@ export class CuaComputerUseAdapter {
         return { ok: false, receipt, error: "Application launch completion is unknown. Observe again; do not replay it.", outcome: receipt.outcome };
       }
       if (parsed.kind === "refused") {
-        const result = preEffect("ready", "safe", []);
+        const result = preEffect("ready", "safe", ["observe_again", "retry_same_request"]);
         return { ok: false, receipt: knownNotStarted(result), error: "The requested application is unavailable for launch.", outcome: result };
       }
       if (parsed.kind === "failed") {
@@ -2789,14 +2880,22 @@ export class CuaComputerUseAdapter {
           ...(selection.observedValue === undefined ? {} : { observedValue: selection.observedValue }),
         },
       } : null;
+      const controls = request.selector === undefined && !parsed.degraded ? nativeControlCollection(state.result, provider) : null;
       const committed = this.registry.registerWindowObservation(request.target.context, request.scope, state.readTicket, {
         ...(parsed.bounds === undefined ? {} : { bounds: parsed.bounds }),
         ...(elementInput === null ? {} : { element: elementInput }),
+        ...(controls === null ? {} : { elements: controls.elements }),
         ...(snapshotInput === undefined ? {} : { snapshot: snapshotInput }),
       });
       if (!committed.ok) return unavailable("stale", "ready", "This window observation could not publish current targets. Observe again.");
       const mintedElement = committed.data.element;
       const windowSnapshot = committed.data.snapshot;
+      if (controls !== null) {
+        for (const binding of controls.bindings) {
+          const target = committed.data.elements![binding.elementIndex]!;
+          controls.collection.controls[binding.controlIndex]!.target = { version: 1, context: request.target.context, reference: target.reference };
+        }
+      }
       const element = selection === null || selectedRole === undefined ? undefined : {
         selector: {
           role: selectedRole,
@@ -2807,6 +2906,7 @@ export class CuaComputerUseAdapter {
         ...(mintedElement !== null ? {
           target: { version: 1 as const, context: request.target.context, reference: mintedElement.reference },
           evidence: elementInput!.evidence,
+          ...(selection?.disposition === "unique" ? { state: selection.state } : {}),
         } : {}),
       };
       // A deliberate fresh read replaces old tokens; it never replays an effect.
@@ -2818,6 +2918,7 @@ export class CuaComputerUseAdapter {
           version: 1, operation: "window_state", target: { version: 1, context: request.target.context, reference: request.target.reference },
           evidence: { ...target.data.evidence, ...(parsed.bounds === undefined ? {} : { bounds: parsed.bounds }) }, completeness: parsed.degraded ? "partial" : "sufficient", degraded: parsed.degraded,
           verification: parsed.degraded ? "indeterminate" : "supported", ...(element === undefined ? {} : { element }),
+          ...(controls === null ? {} : { controlCollection: controls.collection }),
           ...(windowSnapshot !== null ? {
             windowSnapshot: {
               target: { version: 1 as const, context: request.target.context, reference: windowSnapshot.reference },
@@ -3115,13 +3216,9 @@ export class CuaComputerUseAdapter {
       const coverage: ComputerUseObservationCoverage | null = apps.uninspectedApplications > 0 || windows.uninspectedWindows > 0
         ? { uninspectedApplications: apps.uninspectedApplications, knownUninspectedWindows: windows.uninspectedWindows, windowCountExact: windows.uninspectedWindows === 0 }
         : null;
-      // `list_windows` is complete raw layer-zero WindowServer inventory. It
-      // legitimately contains positive-size, titleless helper surfaces (ten
-      // each for Spotify and Chrome in CUA-LAB-0101), which are useful private
-      // discovery evidence but are not truthful user-facing windows. Apply the
-      // same conservative admission boundary as app-scoped observation before
-      // minting semantic targets; the full raw set remains accounted for by
-      // the checked parse and coverage calculation above.
+      // Raw layer-zero inventory includes unlocated retained/helper surfaces.
+      // Use the same geometry/location evidence as app-scoped discovery, never
+      // a title or size heuristic. A candidate is not proof of input readiness.
       const semanticWindows = windows.windows.filter((window) => window.appWindowCandidate);
       const omitted = Math.max(0, semanticWindows.length - limit);
       const targets: readonly { readonly evidence: ComputerUseTargetEvidence; readonly providerTarget: ComputerUseProviderTarget }[] = [
@@ -3385,7 +3482,7 @@ export class CuaComputerUseAdapter {
     // The first vertical's AX element capability is single-use.  Retain the
     // established window-scoped text route for historical flows, which have
     // no element authority to claim.
-    const resolved = this.registry.resolveTarget(context, request.scope, reference);
+    let resolved = this.registry.resolveTarget(context, request.scope, reference);
     const unavailable: CuaComputerMutationReceipt["resolvedTarget"] = reference.startsWith("detgt_")
       ? { kind: "element", state: "unavailable" }
       : { kind: "window", role: "unavailable" };
@@ -3393,6 +3490,14 @@ export class CuaComputerUseAdapter {
       const result = outcome("resolve_target", { retrySafety: "observe_before_retry", stateChangeCertainty: "not_changed", targetCondition: "stale", recovery: ["observe_again"] });
       return { ok: false, receipt: windowMutationFailureReceipt(request, unavailable, "not_completed", result), error: registryError(resolved.code), outcome: result };
     }
+    // New collection references select identity; the admitted operation selects
+    // semantics. Legacy operation-specific references remain unchanged.
+    const bindAction = (data: { evidence: ComputerUseTargetEvidence; providerTarget: ComputerUseProviderTarget }) => {
+      if (data.providerTarget.operation !== "element") return data;
+      const operation = request.operation.kind;
+      return { evidence: { ...data.evidence, action: operation }, providerTarget: { ...data.providerTarget, operation } };
+    };
+    resolved = { ok: true, data: bindAction(resolved.data) };
     if (request.signal?.aborted) {
       const result = outcome("pre_effect_dispatch", { retrySafety: "safe", stateChangeCertainty: "not_changed", providerCondition: "cancelled", targetCondition: "current", recovery: ["retry_same_request"] });
       return { ok: false, receipt: windowMutationFailureReceipt(request, resolved.data.evidence, "not_completed", result), error: "Desktop input was cancelled before it began.", outcome: result };
@@ -3417,7 +3522,7 @@ export class CuaComputerUseAdapter {
             ? (provider.operation !== "click" && provider.operation !== "right_click" && provider.operation !== "double_click") || provider.elementToken === undefined
           : provider.operation !== "focus" && (provider.operation !== "press_key" || provider.elementToken === undefined))) {
       const result = outcome("resolve_target", { retrySafety: "observe_before_retry", stateChangeCertainty: "not_changed", providerCondition: "ready", targetCondition: "unavailable", recovery: ["observe_again"] });
-      return { ok: false, receipt: windowMutationFailureReceipt(request, target.data.evidence, "not_completed", result), error: "This target cannot receive typed desktop input by the selected provider.", outcome: result };
+      return { ok: false, receipt: windowMutationFailureReceipt(request, target.data.evidence, "not_completed", result), error: `This target was not selected for ${request.operation.kind}. Observe the window and select a fresh target for the intended action; no input was sent.`, outcome: result };
     }
     const leases: Lease[] = [];
     const requestedCharacters = request.operation.kind === "type_text" ? [...request.operation.text].length : null;
@@ -3506,8 +3611,8 @@ export class CuaComputerUseAdapter {
           elementClaimRejected = true;
           return false;
         }
-        target = claimed;
-        provider = claimed.data.providerTarget;
+        target = { ok: true, data: bindAction(claimed.data) };
+        provider = target.data.providerTarget;
         return true;
       };
       let deliveryMode: "background" | "foreground" = "deliveryMode" in request.operation ? request.operation.deliveryMode ?? "background" : "background";
@@ -3579,7 +3684,15 @@ export class CuaComputerUseAdapter {
       // check instead of falsely attributing our own event to the Human.
       const confirmedSelectionPointer = name === "click" && effect.kind === "completed"
         && effect.providerAction.route === "synthetic_events";
+      // Background is a delivery mode, not evidence of AX-only input. Cua
+      // can post keyboard events to the PID; those events share HIDIdleTime
+      // with Human input. Preserve its parsed receipt and fence old actions
+      // until a fresh read, just as for foreground input and pointer fallback.
+      const synthesizedKeyboard = (name === "type_text" || name === "press_key")
+        && (effect.kind === "partial" ? effect.synthesizedInput
+          : "providerAction" in effect && effect.providerAction.route === "synthetic_events");
       const postDispatchHumanControl = deliveryMode === "foreground" || provider.operation === "right_click" || provider.operation === "double_click" || confirmedSelectionPointer
+        || synthesizedKeyboard
         || (name === "scroll" && effect.kind === "synthetic_unverifiable")
         ? "current"
         : await this.assertContextHumanControl(context, request.scope);
@@ -3793,6 +3906,7 @@ export class CuaComputerUseAdapter {
         };
       }
       if (effect.kind === "partial") {
+        if (synthesizedKeyboard) this.registry.retireMutationCapabilities(context, request.scope);
         const result = outcome("post_effect_verification", { retrySafety: "observe_before_retry", stateChangeCertainty: "changed", providerCondition: "ready", targetCondition: "current", recovery: ["observe_again"] });
         return {
           ok: false,
@@ -3848,11 +3962,11 @@ export class CuaComputerUseAdapter {
       }
       if (effect.providerAction.delivery?.mode === "foreground") {
         // Global HID necessarily advances the same host signal used for Human
-        // takeover. We retain Cua's confirmed semantic input truth, but have
-        // no signed agent-input rearm primitive with which to attribute any
-        // post-dispatch epoch. Fence the old window context and require a
-        // fresh observation before a later action.
-        this.registry.markUnknownCompletion(context, request.scope);
+        // takeover. The settled, confirmed action consumes old input authority,
+        // not the exact app/window identity needed to observe its result. A
+        // fresh read establishes and checks a new epoch before minting targets;
+        // it neither replays this action nor reuses pre-input capabilities.
+        this.registry.retireMutationCapabilities(context, request.scope);
         const result = outcome("post_effect_verification", {
           retrySafety: "never", stateChangeCertainty: "changed", providerCondition: "ready", targetCondition: "unknown",
           recovery: ["observe_again", "do_not_replay"],
@@ -3877,17 +3991,18 @@ export class CuaComputerUseAdapter {
           outcome: result,
         };
       }
-      // A token-addressed row selection can itself synthesize pointer input.
-      // Keep the driver's verified selection, but reacquire state rather than
-      // attributing its HID epoch to the Human or reusing pre-gesture targets.
-      if (confirmedSelectionPointer) this.registry.markUnknownCompletion(context, request.scope);
+      // Token-addressed selection and background keyboard synthesis can both
+      // advance HID. Keep verified effects, but reacquire state instead of
+      // attributing that epoch to the Human or reusing pre-gesture targets.
+      const requiresFreshRead = confirmedSelectionPointer || synthesizedKeyboard;
+      if (requiresFreshRead) this.registry.retireMutationCapabilities(context, request.scope);
       const postconditionOnly = name === "set_value" || name === "click" && effect.providerAction.effect === "confirmed";
       const result = outcome("post_effect_verification", {
         // Readback proves the requested value/selection, not a before/after
         // transition: the control may already have held that value.
         retrySafety: "never", stateChangeCertainty: postconditionOnly ? "unknown" : "changed", providerCondition: "ready",
-        targetCondition: confirmedSelectionPointer ? "unknown" : "current",
-        recovery: confirmedSelectionPointer ? ["observe_again", "do_not_replay"]
+        targetCondition: requiresFreshRead ? "unknown" : "current",
+        recovery: requiresFreshRead ? ["observe_again", "do_not_replay"]
           : postconditionOnly ? ["do_not_replay"] : [],
       });
       return {
@@ -4629,8 +4744,8 @@ export class CuaComputerUseAdapter {
           if (post === null) this.invalidateMalformedProvider();
           break;
         }
-        // A browser window legitimately creates several untitled layer-zero
-        // helper surfaces. Only titled positive-size ordinary candidates are
+        // Window creation can also produce unlocated layer-zero helper surfaces.
+        // Only located positive-size candidates are
         // semantic windows; retain the raw complete set solely as the checked
         // provider envelope and compare the ordinary candidate sets here.
         appeared = post.windows.filter((window) => window.appWindowCandidate && !baselineIds.has(window.windowId));

@@ -9,6 +9,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./native": "./src/native.ts",
+    "./native-compatibility": "./src/native-compatibility.ts",
     "./schema-digest": "./src/schema-digest.ts"
   },
   "scripts": {
@@ -17,7 +18,8 @@
     "test": "bun test tests/unit/"
   },
   "dependencies": {
-    "zod": "4.3.6"
+    "zod": "4.3.6",
+    "@cfworker/json-schema": "4.1.1"
   },
   "devDependencies": {
     "@types/node": "24.10.4",

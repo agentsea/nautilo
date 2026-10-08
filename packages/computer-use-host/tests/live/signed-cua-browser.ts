@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 
 import { COMPUTER_USE_BROWSER_CONTRACTS } from "@nautilo/computer-use-contracts";
 import { COMPUTER_USE_NATIVE_CONTRACTS } from "@nautilo/computer-use-contracts/native";
+import { NATIVE_COMPATIBILITY_SCHEMAS } from "@nautilo/computer-use-contracts/native-compatibility";
 import type { ComputerUseHostAuthorityScope, ComputerUseHostContract, ComputerUseHostResult, ComputerUseJson } from "@nautilo/computer-use-host-protocol";
 
 import { createNativeCuaHost, type NativeCuaHost } from "../../src/index.ts";
@@ -183,7 +184,14 @@ try {
     hostBundleId: "com.nautilo.desktop",
     hostGeneration: "host:signed-cua-live",
   });
-  if (runtime.host.ready().contracts.length !== 12) throw new Error("production Host did not advertise all 12 reviewed contracts");
+  const expectedContracts = [...Object.values(COMPUTER_USE_NATIVE_CONTRACTS), ...Object.values(COMPUTER_USE_BROWSER_CONTRACTS),
+    ...NATIVE_COMPATIBILITY_SCHEMAS.map(schema => schema.descriptor)];
+  const advertisedContracts = runtime.host.ready().contracts;
+  if (advertisedContracts.length !== expectedContracts.length || expectedContracts.some(expected => !advertisedContracts.some(actual =>
+    actual.contractNamespace === expected.contractNamespace && actual.contractId === expected.contractId
+      && actual.contractVersion === expected.contractVersion && actual.schemaDigest === expected.schemaDigest))) {
+    throw new Error("production Host did not advertise the exact reviewed contracts");
+  }
 
   const observeNative = async (): Promise<Readonly<Record<string, ComputerUseJson>>> => {
     let continuation: Readonly<Record<string, ComputerUseJson>> | undefined;

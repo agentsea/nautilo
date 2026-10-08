@@ -1,6 +1,8 @@
 import { deflateSync } from "node:zlib";
 import { expect, mock, test } from "bun:test";
 import { COMPUTER_USE_NATIVE_CONTRACTS, NATIVE_CONTRACT_SCHEMAS } from "@nautilo/computer-use-contracts/native";
+import { NATIVE_COMPATIBILITY_SCHEMAS, validateNativeCompatibility } from "@nautilo/computer-use-contracts/native-compatibility";
+import { parseComputerUseHostContract, type ComputerUseHostContract } from "@nautilo/computer-use-host-protocol";
 import { encodePngAttachmentFrame } from "@nautilo/computer-use-host-protocol/node";
 
 import { CuaNativeContractRuntime } from "../../src/native-contract-runtime.ts";
@@ -171,9 +173,137 @@ function fakeAdapter() {
   };
 }
 
-function request(contract: typeof COMPUTER_USE_NATIVE_CONTRACTS[keyof typeof COMPUTER_USE_NATIVE_CONTRACTS], requestId: string, argumentsValue: object) {
+function request(contract: ComputerUseHostContract, requestId: string, argumentsValue: object) {
   return { kind: "request" as const, protocol: { major: 3 as const, minor: 0 as const }, requestId, authority, fence, contract, arguments: argumentsValue };
 }
+
+test("a new Host serves the previous native contracts without changing their schema or dispatching twice", async () => {
+  const adapter = fakeAdapter();
+  const original = adapter.observeWindowState;
+  const enhanced = {
+    ...adapter,
+    observeWindowState: mock(async () => {
+      const result = await original();
+      return { ...result, observation: {
+        ...result.observation,
+        element: { ...result.observation.element, state: { completeness: "partial", value: "current" } },
+        controlCollection: { completeness: "partial", received: 1, omitted: 0, controls: [
+          { id: "c0", role: "button", label: "Continue", state: { completeness: "partial" },
+            actions: ["AXPress"], depth: 1, frame: { x: 1, y: 2, width: 30, height: 10, coordinateSpace: "provider_layout" } },
+        ] },
+      } };
+    }),
+  };
+  const native = new CuaNativeContractRuntime({ adapter: enhanced as never, scopeForAuthority: nativeScope });
+  const host = new ComputerUseHost({ hostGeneration: "host-1", driverGeneration: "driver-1", handlers: native.handlers });
+  for (const schema of NATIVE_COMPATIBILITY_SCHEMAS) {
+    const contract = parseComputerUseHostContract(schema.descriptor);
+    expect(host.ready().contracts).toContainEqual(contract);
+    const observe = contract.contractId === "native.observe";
+    const requestId = `old-${observe ? "read" : "action"}-${contract.contractVersion}`;
+    const result = await host.dispatch(request(contract, requestId, observe
+      ? { operation: "window_state", target: windowTarget, capture: "window_snapshot", selector: { role: "button" } }
+      : { operation: { kind: "launch_app", app: { name: "Spotify" } } }));
+    expect(result?.settlement).toBe("completed");
+    expect(validateNativeCompatibility(result?.result, schema.result)).toBe(true);
+    expect(result?.contract).toEqual(contract);
+    if (observe) {
+      if (contract.contractVersion === 11) {
+        expect(result?.result).toHaveProperty("element.state.value", "current");
+        expect(result?.result).toHaveProperty("controlCollection.controls", [
+          { id: "c0", role: "button", label: "Continue", state: { completeness: "partial" } },
+        ]);
+      } else {
+        expect(result?.result).not.toHaveProperty("controlCollection");
+        expect(result?.result).not.toHaveProperty("element.state");
+      }
+      expect(host.takeAttachment(requestId)).not.toBeNull();
+    }
+  }
+  expect(enhanced.observeWindowState).toHaveBeenCalledTimes(2);
+  expect(adapter.launchApp).toHaveBeenCalledTimes(2);
+});
+
+test("native do carries Host failure detail without changing uncertainty or released results", async () => {
+  const menuFailure = (unknown = false, cancelled = false) => ({
+    version: 1, timing: "immediate", action: "invoke_menu", target: windowTarget,
+    resolvedTarget: { kind: "window", appLabel: "Editor" }, provider: "cua", deliveryMode: unknown ? "unknown" : "not_delivered",
+    completionCertainty: unknown ? "unknown_completion" : "not_completed", verification: unknown ? "not_verified" : "unavailable",
+    providerAction: null, unexecutedRemainder: { count: 1, reason: unknown ? "unknown_completion" : "failed" },
+    outcome: { version: 1, phase: unknown ? "post_effect_verification" : "pre_effect_dispatch", retrySafety: "never",
+      stateChangeCertainty: unknown ? "unknown" : "not_changed", providerCondition: cancelled ? "cancelled" : "ready",
+      targetCondition: unknown ? "unknown" : "current", recovery: unknown ? ["observe_again", "do_not_replay"] : [] },
+  });
+  for (const [unknown, cancelled, detail] of [
+    [false, false, "That exact native menu path is unavailable in the current window."],
+    [true, false, "Native menu completion is unknown. Observe again; do not replay it."],
+    [true, true, "Local input interrupted the desktop operation. Observe again; do not replay it."],
+  ] as const) {
+    const receipt = menuFailure(unknown, cancelled);
+    const adapter = { ...fakeAdapter(), invokeMenu: mock(async () => ({ ok: false, receipt, error: detail, outcome: receipt.outcome })) };
+    const runtime = new CuaNativeContractRuntime({ adapter: adapter as never, scopeForAuthority: nativeScope });
+    const host = new ComputerUseHost({ hostGeneration: "host-1", driverGeneration: "driver-1", handlers: runtime.handlers });
+    const current = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.do, "current-menu", {
+      operation: { kind: "invoke_menu", target: windowTarget, menuPath: ["File", "New"] },
+    }));
+    expect(current.result).toEqual({ ...receipt, failureDetail: detail });
+    expect(current.settlement).toBe(unknown ? "unknown_completion" : "not_completed");
+    expect(NATIVE_CONTRACT_SCHEMAS.do.result.safeParse(current.result).success).toBe(true);
+    for (const schema of NATIVE_COMPATIBILITY_SCHEMAS.filter(schema => schema.descriptor.contractId === "native.do")) {
+      const prior = await host.dispatch(request(parseComputerUseHostContract(schema.descriptor), `prior-${schema.descriptor.contractVersion}`, {
+        operation: { kind: "invoke_menu", target: windowTarget, menuPath: ["File", "New"] },
+      }));
+      expect(prior.result).toEqual(receipt);
+      expect(prior.settlement).toBe(current.settlement);
+      expect(validateNativeCompatibility(prior.result, schema.result)).toBe(true);
+    }
+    expect(adapter.invokeMenu).toHaveBeenCalledTimes(3);
+  }
+});
+
+test("a compatibility request with a substituted digest never reaches the native adapter", async () => {
+  const adapter = fakeAdapter();
+  const native = new CuaNativeContractRuntime({ adapter: adapter as never, scopeForAuthority: nativeScope });
+  const host = new ComputerUseHost({ hostGeneration: "host-1", driverGeneration: "driver-1", handlers: native.handlers });
+  const contract = parseComputerUseHostContract(NATIVE_COMPATIBILITY_SCHEMAS[0]!.descriptor);
+  const result = await host.dispatch(request({ ...contract, schemaDigest: "sha256:" + "f".repeat(64) }, "wrong-digest", {
+    operation: "window_state", target: windowTarget,
+  }));
+  expect(result?.result).toEqual({ status: "host_rejected", reason: "unsupported_contract" });
+  expect(adapter.observeWindowState).not.toHaveBeenCalled();
+});
+
+test("native do preserves launch diagnostics, omits successful detail, and keeps cancelled unknown effects", async () => {
+  const failedLaunch = { version: 1, timing: "immediate", action: "launch_app", app: { name: "Editor", target: null },
+    window: null, launchProgress: { requested: true, processRunning: false, windowReady: false }, windowSelection: "none",
+    completionCertainty: "not_completed", verification: "not_applicable",
+    outcome: { version: 1, phase: "pre_effect_dispatch", stateChangeCertainty: "not_changed", retrySafety: "never", recovery: [] } };
+  const error = "That application is unavailable on this desktop.";
+  const adapter = { ...fakeAdapter(), launchApp: mock(async () => ({ ok: false, receipt: failedLaunch, error, outcome: failedLaunch.outcome })) };
+  const runtime = new CuaNativeContractRuntime({ adapter: adapter as never, scopeForAuthority: nativeScope });
+  const handler = runtime.handlers.find(row => row.contract === COMPUTER_USE_NATIVE_CONTRACTS.do)!;
+  const signal = new AbortController();
+  const ctx = { authority, contract: COMPUTER_USE_NATIVE_CONTRACTS.do, signal: signal.signal };
+  const args = { operation: { kind: "launch_app", app: { name: "Editor" } } };
+  const failed = await handler.execute(args, ctx);
+  expect(failed).toEqual({ settlement: "not_completed", result: { ...failedLaunch, failureDetail: error } });
+  expect(adapter.launchApp).toHaveBeenCalledTimes(1);
+  const successful = await fakeAdapter().launchApp();
+  adapter.launchApp.mockImplementation(async () => successful as never);
+  const completed = await handler.execute(args, ctx);
+  expect(completed.result).toEqual(successful.receipt);
+  expect(completed.result).not.toHaveProperty("failureDetail");
+  const unknown = { ...failedLaunch, completionCertainty: "unknown_completion", launchProgress: null, windowSelection: "unknown",
+    outcome: { ...failedLaunch.outcome, phase: "post_effect_verification", stateChangeCertainty: "unknown", providerCondition: "cancelled", recovery: ["observe_again", "do_not_replay"] } };
+  const unknownDetail = "Application launch completion is unknown. Observe again; do not replay it.";
+  adapter.launchApp.mockImplementation(async () => {
+    signal.abort();
+    return { ok: false, receipt: unknown, error: unknownDetail, outcome: unknown.outcome } as never;
+  });
+  const cancelled = await handler.execute(args, ctx);
+  expect(cancelled).toEqual({ settlement: "cancelled", result: { ...unknown, failureDetail: unknownDetail } });
+  expect(adapter.launchApp).toHaveBeenCalledTimes(3);
+});
 
 test("native Host delegates exact semantic contracts and keeps PNG bytes on the dedicated attachment lane", async () => {
   const adapter = fakeAdapter();

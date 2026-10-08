@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { CUA_MACOS_KEY_PATTERN, CUA_MACOS_KEY_MODIFIERS, normalizeCuaMacosHotkey } from "./native-keyboard.js";
-export { CUA_MACOS_KEY_PATTERN, CUA_MACOS_KEY_MODIFIERS, normalizeCuaMacosKey, normalizeCuaMacosHotkey } from "./native-keyboard.js";
+export { CUA_MACOS_KEY_NAMES, CUA_MACOS_KEY_PATTERN, CUA_MACOS_KEY_MODIFIERS, normalizeCuaMacosKey, normalizeCuaMacosHotkey } from "./native-keyboard.js";
 import { computeComputerUseSchemaDigest } from "./schema-digest.js";
 import {
   computerAppTargetReferenceSchema as sharedComputerAppTargetReferenceSchema,
@@ -254,6 +254,59 @@ const computerElementRequestSelectorSchema = z.union([
   computerKeyElementSelectorSchema,
 ]);
 
+/** Fresh provider-reported content, separate from retained action authority.
+ * Missing attributes are unknown, not empty/false. Accessibility values can
+ * include placeholders or renderer echoes; task verification remains explicit.
+ */
+export const computerNativeControlStateSchema = z.object({
+  completeness: z.literal("partial"),
+  value: z.string().optional(),
+  valueDescription: z.string().optional(),
+  selected: z.boolean().optional(),
+  range: z.object({ minimum: z.number().finite(), maximum: z.number().finite() }).strict()
+    .refine((range) => range.maximum > range.minimum, "a provider range must have increasing endpoints").optional(),
+}).strict().describe("Partial accessibility state for the selected control. Missing fields are unknown. Provider values may include placeholders or renderer echoes; they are not independent proof of task completion.");
+export type ComputerNativeControlState = z.infer<typeof computerNativeControlStateSchema>;
+
+/** A compact view of all rows received from one native snapshot. References
+ * identify controls, not guessed capabilities; ordinary action schemas still
+ * govern dispatch, and Cua reports whether the control accepts the operation. */
+export const computerNativeControlCollectionSchema = z.object({
+  completeness: z.literal("partial"),
+  received: nonnegativeSafeIntegerSchema,
+  omitted: nonnegativeSafeIntegerSchema,
+  controls: z.array(z.object({
+    id: z.string().regex(/^c[0-9]+$/),
+    parent: z.string().regex(/^c[0-9]+$/).optional(),
+    role: computerNativeRoleSchema,
+    label: sanitizedTargetLabelSchema.optional(),
+    enabled: z.boolean().optional(),
+    target: computerElementTargetReferenceSchema.optional(),
+    state: computerNativeControlStateSchema,
+    actions: z.array(sanitizedTargetLabelSchema).optional().describe("Provider-advertised actions: descriptive hints, not an exhaustive capability list or permission to act."),
+    depth: nonnegativeSafeIntegerSchema.optional(),
+    frame: z.object({
+      x: z.number().finite(), y: z.number().finite(),
+      width: z.number().finite().nonnegative(), height: z.number().finite().nonnegative(),
+      coordinateSpace: z.literal("provider_layout"),
+    }).strict().optional().describe("Provider layout evidence, not screenshot pixels or coordinate-click authority. Use snapshot-bound coordinates for pixel actions."),
+  }).strict()),
+}).strict().superRefine((value, context) => {
+  const ids = new Set(value.controls.map((control) => control.id));
+  if (ids.size !== value.controls.length || value.received !== value.controls.length + value.omitted) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "control collection identity and accounting must agree" });
+  }
+  for (const control of value.controls) {
+    if (control.parent !== undefined && (control.parent === control.id || !ids.has(control.parent))) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "control parent must name another returned control" });
+    }
+    if (control.enabled === false && control.target !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "disabled controls cannot publish action targets" });
+    }
+  }
+});
+export type ComputerNativeControlCollection = z.infer<typeof computerNativeControlCollectionSchema>;
+
 const computerTextElementEvidenceSchema = z
   .object({
     kind: z.literal("element"),
@@ -269,6 +322,7 @@ const computerTextElementSelectionSchema = z
     disposition: z.enum(["zero", "unique", "ambiguous", "incomplete"]),
     target: computerElementTargetReferenceSchema.optional(),
     evidence: computerTextElementEvidenceSchema.optional(),
+    state: computerNativeControlStateSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -296,6 +350,7 @@ const computerValueElementSelectionSchema = z
     disposition: z.enum(["zero", "unique", "ambiguous", "incomplete"]),
     target: computerElementTargetReferenceSchema.optional(),
     evidence: computerValueElementEvidenceSchema.optional(),
+    state: computerNativeControlStateSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -323,6 +378,7 @@ const computerClickElementSelectionSchema = z
     disposition: z.enum(["zero", "unique", "ambiguous", "incomplete"]),
     target: computerElementTargetReferenceSchema.optional(),
     evidence: computerClickElementEvidenceSchema.optional(),
+    state: computerNativeControlStateSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -349,6 +405,7 @@ const computerScrollElementSelectionSchema = z
     disposition: z.enum(["zero", "unique", "ambiguous", "incomplete"]),
     target: computerElementTargetReferenceSchema.optional(),
     evidence: computerScrollElementEvidenceSchema.optional(),
+    state: computerNativeControlStateSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -369,6 +426,7 @@ const computerKeyElementSelectionSchema = z.object({
   disposition: z.enum(["zero", "unique", "ambiguous", "incomplete"]),
   target: computerElementTargetReferenceSchema.optional(),
   evidence: computerKeyElementEvidenceSchema.optional(),
+  state: computerNativeControlStateSchema.optional(),
 }).strict().superRefine((value, context) => {
   const unique = value.disposition === "unique";
   if (unique !== (value.target !== undefined) || unique !== (value.evidence !== undefined)
@@ -383,7 +441,11 @@ const computerElementSelectionSchema = z.union([
   computerClickElementSelectionSchema,
   computerScrollElementSelectionSchema,
   computerKeyElementSelectionSchema,
-]);
+]).superRefine((value, context) => {
+  if (value.state !== undefined && value.disposition !== "unique") {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "control state belongs only to one freshly selected element" });
+  }
+});
 
 const computerWindowSemanticQuerySchema = sanitizedTargetLabelSchema
   .max(240)
@@ -719,6 +781,8 @@ export const windowStateObservationSchema = z
     verification: z.enum(["supported", "indeterminate", "unavailable"]),
     /** Present only when the request selected one admitted semantic control role. */
     element: computerElementSelectionSchema.optional(),
+    /** Current structured controls when no single-control selector was requested. */
+    controlCollection: computerNativeControlCollectionSchema.optional(),
     /** Exact Cua window-local pixel frame from the same read as any query or token selection. */
     windowSnapshot: computerWindowSnapshotSchema.optional(),
     /** Bounded positive semantic evidence from one exact Cua query. */
@@ -744,6 +808,9 @@ export const windowStateObservationSchema = z
     }
     if (value.element?.target !== undefined && value.element.target.context !== value.target.context) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: "a selected element must share the observed window context" });
+    }
+    if (value.controlCollection?.controls.some((control) => control.target !== undefined && control.target.context !== value.target.context)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "control references must share the observed window context" });
     }
     if (value.windowSnapshot !== undefined && value.windowSnapshot.target.context !== value.target.context) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: "a window snapshot must share the observed window context" });
@@ -1308,6 +1375,34 @@ export const computerMutationReceiptSchema = z
   .superRefine((value, context) => {
     const unavailableAppEvidence = computerUnavailableAppReceiptEvidenceSchema.safeParse(value.resolvedTarget).success;
     const unavailableElementEvidence = computerUnavailableElementReceiptEvidenceSchema.safeParse(value.resolvedTarget).success;
+    // Before dispatch, evidence describes what was selected, not what the
+    // requested action could operate on. Keep that evidence truthful when an
+    // incompatible selection, cancellation, or Human takeover prevents input.
+    // This exception never admits delivered or ambiguous action results.
+    const undispatchedElementOutcome = value.outcome.requiredCapability === undefined
+      && value.outcome.recovery.length === 1
+      && (value.outcome.phase === "resolve_target"
+        && value.unexecutedRemainder.reason === "failed"
+        && value.outcome.retrySafety === "observe_before_retry"
+        && value.outcome.recovery[0] === "observe_again"
+        && (value.outcome.providerCondition === "ready" && value.outcome.targetCondition === "unavailable"
+          && value.outcome.externalInterference === undefined
+          || value.outcome.providerCondition === "unknown" && value.outcome.targetCondition === "unknown")
+        || value.outcome.phase === "pre_effect_dispatch"
+        && value.unexecutedRemainder.reason === "failed"
+        && value.outcome.providerCondition === "cancelled" && value.outcome.targetCondition === "current"
+        && value.outcome.retrySafety === "safe" && value.outcome.recovery[0] === "retry_same_request"
+        && value.outcome.externalInterference === undefined);
+    const undispatchedElement = computerElementTargetReferenceSchema.safeParse(value.target).success
+      && value.resolvedTarget.kind === "element" && !unavailableElementEvidence
+      && value.completionCertainty === "not_completed"
+      && value.deliveryMode === "not_delivered"
+      && value.verification === "unavailable"
+      && value.providerAction === null
+      && value.unexecutedRemainder.count === (value.action === "type_text" ? value.textDelivery?.requestedCharacters : 1)
+      && undispatchedElementOutcome
+      && value.outcome.stateChangeCertainty === "not_changed"
+      && (value.action !== "type_text" || value.textDelivery?.deliveredCharacters === 0);
     if (unavailableAppEvidence && !(value.action === "create_window" && value.completionCertainty === "not_completed")) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: "unavailable app evidence is only valid for a preboundary create_window failure" });
     }
@@ -1447,7 +1542,7 @@ export const computerMutationReceiptSchema = z
     }
     if ((value.action === "press_key" || value.action === "hotkey")
       && !((computerWindowTargetReferenceSchema.safeParse(value.target).success && value.resolvedTarget.kind === "window")
-        || (computerElementTargetReferenceSchema.safeParse(value.target).success && (computerKeyElementEvidenceSchema.safeParse(value.resolvedTarget).success || unavailableElementEvidence))
+        || (computerElementTargetReferenceSchema.safeParse(value.target).success && (computerKeyElementEvidenceSchema.safeParse(value.resolvedTarget).success || unavailableElementEvidence || undispatchedElement))
         || (computerScreenSnapshotReferenceSchema.safeParse(value.target).success && value.resolvedTarget.kind === "screen"))) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: "keyboard actions require exact window or fresh window-snapshot evidence" });
     }
@@ -1475,7 +1570,7 @@ export const computerMutationReceiptSchema = z
         && unavailableElementEvidence;
       const isScreen = computerScreenSnapshotReferenceSchema.safeParse(value.target).success
         && value.resolvedTarget.kind === "screen";
-      if ((!isWindow || value.resolvedTarget.kind !== "window") && !isTextElement && !isUnavailableTextElement && !isScreen) {
+      if ((!isWindow || value.resolvedTarget.kind !== "window") && !isTextElement && !isUnavailableTextElement && !isScreen && !undispatchedElement) {
         context.addIssue({ code: z.ZodIssueCode.custom, message: "type_text requires exact window, fresh window-snapshot, or role-selected text-element evidence" });
       }
       if (isTextElement && value.provider !== "cua") {
@@ -1524,7 +1619,7 @@ export const computerMutationReceiptSchema = z
         && computerValueElementEvidenceSchema.safeParse(value.resolvedTarget).success;
       const isUnavailableValueElement = computerElementTargetReferenceSchema.safeParse(value.target).success
         && unavailableElementEvidence;
-      if (!isValueElement && !isUnavailableValueElement) {
+      if (!isValueElement && !isUnavailableValueElement && !undispatchedElement) {
         context.addIssue({ code: z.ZodIssueCode.custom, message: "set_value requires one role-selected value-control element" });
       }
       if (isValueElement && value.provider !== "cua") {
@@ -1561,7 +1656,7 @@ export const computerMutationReceiptSchema = z
         && unavailableElementEvidence;
       const isScreenScroll = computerScreenSnapshotReferenceSchema.safeParse(value.target).success
         && value.resolvedTarget.kind === "screen";
-      if (!isScrollCandidateElement && !isUnavailableScrollCandidateElement && !isScreenScroll) {
+      if (!isScrollCandidateElement && !isUnavailableScrollCandidateElement && !isScreenScroll && !undispatchedElement) {
         context.addIssue({ code: z.ZodIssueCode.custom, message: "scroll requires one role-selected scroll candidate or exact window snapshot" });
       }
       if ((isScrollCandidateElement || isScreenScroll) && value.provider !== "cua") {
@@ -1767,7 +1862,7 @@ export const computerMutationReceiptSchema = z
       if (!unavailableResolveTarget && !preEffectBackgroundUnavailable && !preEffectTokenRefusal && !preEffectCancelled && !preEffectCancelledUnavailable && !preEffectPreflightFailure
         && !resolveCandidateUnavailableOrClaimStale && !resolveHumanStateUnknown && !crossedUnknownNullProviderFailure && !crossedUnknownStageAmbiguous
         && !crossedUnknownSyntheticFallback && !crossedUnknownAccessibilityFailure
-        && !screenPreEffectFailure && !screenUnknownSynthetic && !screenUnknownProviderFailure) {
+        && !screenPreEffectFailure && !screenUnknownSynthetic && !screenUnknownProviderFailure && !undispatchedElement) {
         context.addIssue({ code: z.ZodIssueCode.custom, message: "scroll requires one closed receipt family with an explicit provider action or null" });
       }
     }
@@ -1834,7 +1929,7 @@ export const computerMutationReceiptSchema = z
         && parsedClickElement.success;
       const isUnavailableClickElement = computerElementTargetReferenceSchema.safeParse(value.target).success
         && unavailableElementEvidence;
-      if (!isScreen && !isClickElement && !isUnavailableClickElement) {
+      if (!isScreen && !isClickElement && !isUnavailableClickElement && !undispatchedElement) {
         context.addIssue({ code: z.ZodIssueCode.custom, message: "click requires an opaque screen snapshot or one role-selected click control" });
       }
       if (value.provider !== "cua") {
@@ -2259,6 +2354,17 @@ const computerObservationResultVariants = [
 /** Successful observations only; Host attachment handling relies on this narrower type. */
 export const computerObservationResultSchema = z.union(computerObservationResultVariants);
 
+/** Host-authored recovery context, never raw provider prose or effect authority. */
+const nativeDoFailureDetail = z.string().regex(/\S/u, "failure detail cannot be blank").optional();
+const nativeDoResultSchema = z.intersection(z.union([
+  computerMutationReceiptSchema.safeExtend({ failureDetail: nativeDoFailureDetail }),
+  computerLaunchReceiptSchema.safeExtend({ failureDetail: nativeDoFailureDetail }),
+]), z.union([
+  // Keep this rule in the public JSON schema as well as the Host parser.
+  z.looseObject({ completionCertainty: z.literal("completed"), failureDetail: z.never().optional() }),
+  z.looseObject({ completionCertainty: z.enum(["partially_completed", "not_completed", "unknown_completion"]) }),
+]));
+
 /** Public native Cua schemas. Provider JSON, native identifiers, and image bytes never enter them. */
 export const NATIVE_CONTRACT_SCHEMAS = {
   observe: {
@@ -2270,7 +2376,7 @@ export const NATIVE_CONTRACT_SCHEMAS = {
   },
   do: {
     input: computerDoInputSchema,
-    result: z.union([computerMutationReceiptSchema, computerLaunchReceiptSchema]),
+    result: nativeDoResultSchema,
   },
   verify: {
     input: computerVerifyInputSchema,
@@ -2287,7 +2393,7 @@ export const COMPUTER_USE_NATIVE_CONTRACTS = {
   observe: {
     contractNamespace: "nautilo.computer_use",
     contractId: "native.observe",
-    contractVersion: 9,
+    contractVersion: 12,
     schemaDigest: schemaDigest(NATIVE_CONTRACT_SCHEMAS.observe),
     effectClass: "read",
     replayClass: "safe",
@@ -2298,7 +2404,8 @@ export const COMPUTER_USE_NATIVE_CONTRACTS = {
   do: {
     contractNamespace: "nautilo.computer_use",
     contractId: "native.do",
-    contractVersion: 11,
+    // v14 retains checked Host failure detail without changing effect or replay facts.
+    contractVersion: 14,
     schemaDigest: schemaDigest(NATIVE_CONTRACT_SCHEMAS.do),
     effectClass: "mutate",
     replayClass: "at_most_once",

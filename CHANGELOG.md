@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Computer Use Host exposes current native control state and descriptive layout
+  evidence, preserves actionable failure details, and retains compatible native
+  contracts for older clients. Native input settlement keeps confirmed effects
+  while requiring fresh targets after synthesized input.
+
 - Rooms can be marked External to keep public-room behavior while hiding them
   from discovery and automatic onboarding. Existing members and explicit
   invitations continue to work normally.

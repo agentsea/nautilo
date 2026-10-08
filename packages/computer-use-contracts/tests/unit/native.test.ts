@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
+import { validateNativeCompatibility } from "../../src/native-compatibility";
 
 import {
   COMPUTER_DO_ACTIONS,
   NATIVE_CONTRACT_SCHEMAS,
   computerDoInputSchema,
   computerObserveInputSchema,
+  computerNativeControlStateSchema,
 } from "../../src/native.ts";
 
 const suffix = "a".repeat(43);
@@ -14,7 +17,48 @@ const appTarget = { version: 1, context, reference: `datgt_${"c".repeat(43)}` } 
 const snapshotTarget = { version: 1, context, reference: `dsnap_${suffix}` } as const;
 const regionTarget = { version: 1, context, reference: `dsnap_${"b".repeat(43)}` } as const;
 
+test("native do alone accepts nonblank failure detail only for incomplete results in both schema forms", () => {
+  const resultSchema = z.toJSONSchema(NATIVE_CONTRACT_SCHEMAS.do.result);
+  const launch = { version: 1, timing: "immediate", action: "launch_app", app: { name: "Editor", target: null },
+    window: null, launchProgress: { requested: true, processRunning: false, windowReady: false }, windowSelection: "none",
+    completionCertainty: "not_completed", verification: "not_applicable",
+    outcome: { version: 1, phase: "pre_effect_dispatch", stateChangeCertainty: "not_changed", retrySafety: "never", recovery: [] } };
+  const menu = { version: 1, timing: "immediate", action: "invoke_menu", target: windowTarget,
+    resolvedTarget: { kind: "window", appLabel: "Editor" }, provider: "cua", deliveryMode: "not_delivered",
+    completionCertainty: "not_completed", verification: "unavailable", providerAction: null,
+    unexecutedRemainder: { count: 1, reason: "failed" }, outcome: { ...launch.outcome, providerCondition: "ready", targetCondition: "current" } };
+  for (const base of [launch, menu]) for (const detail of [undefined, "Exact native menu path unavailable.", "", " \n", 12, { message: "raw-provider-marker" }]) {
+    const value = { ...base, ...(detail === undefined ? {} : { failureDetail: detail }) };
+    const accepted = detail === undefined || detail === "Exact native menu path unavailable.";
+    expect(NATIVE_CONTRACT_SCHEMAS.do.result.safeParse(value).success).toBe(accepted);
+    expect(validateNativeCompatibility(value, resultSchema)).toBe(accepted);
+  }
+  const completed = { ...launch, app: { name: "Editor", target: appTarget },
+    launchProgress: { requested: true, processRunning: true, windowReady: false }, completionCertainty: "completed" };
+  expect(NATIVE_CONTRACT_SCHEMAS.do.result.safeParse(completed).success).toBe(true);
+  expect(validateNativeCompatibility(completed, resultSchema)).toBe(true);
+  const contradictory = { ...completed, failureDetail: "Not completed." };
+  expect(NATIVE_CONTRACT_SCHEMAS.do.result.safeParse(contradictory).success).toBe(false);
+  expect(validateNativeCompatibility(contradictory, resultSchema)).toBe(false);
+  for (const operation of ["observe", "verify"] as const) expect(NATIVE_CONTRACT_SCHEMAS[operation].result.safeParse({
+    version: 1, operation, outcome: launch.outcome, failureDetail: "Not admitted here.",
+  }).success).toBe(false);
+});
+
 describe("native Computer Use action contract", () => {
+  test("selected control state preserves provider values without inventing missing state", () => {
+    const state = { completeness: "partial" as const, value: "0", valueDescription: "Muted", selected: false,
+      range: { minimum: 0, maximum: 100 } };
+    expect(computerNativeControlStateSchema.parse(state)).toEqual(state);
+    expect(computerNativeControlStateSchema.parse({ completeness: "partial", value: "" }))
+      .toEqual({ completeness: "partial", value: "" });
+    for (const invalid of [
+      { ...state, value: 0 }, { ...state, selected: "false" }, { ...state, completeness: "complete" },
+      { ...state, range: { minimum: 1, maximum: 1 } }, { ...state, range: { minimum: 0 } },
+      { ...state, range: { minimum: 0, maximum: Infinity } }, { ...state, checked: false },
+      { ...state, element_token: "private-token" },
+    ]) expect(computerNativeControlStateSchema.safeParse(invalid).success).toBe(false);
+  });
   test("exposes real pointer movement only with its truthful desktop-coordinate contract", () => {
     const operation = { kind: "move_pointer", scope: "desktop", target: snapshotTarget, coordinateSpace: "presented_snapshot_pixels", x: 12, y: 24 };
     expect(computerDoInputSchema.safeParse({ operation }).success).toBe(true);

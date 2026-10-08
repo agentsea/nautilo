@@ -228,12 +228,18 @@ describe("HostContractRunner", () => {
       subscribeCheckedGenerationInvalidation: mock(() => () => undefined),
       shutdown: mock(async () => undefined),
     } as unknown as CuaMainLifecycle;
+    let inputMonitorUnavailable = false;
+    const readHidIdleNanoseconds = mock(async () => {
+      if (inputMonitorUnavailable) throw new Error("fixture monitor unavailable");
+      return 1_000_000_000;
+    });
     const runtime = await createNativeCuaHost({
       driverPath: "/fixture/cua-driver",
       runtimeRoot: "/fixture/runtime",
       hostBundleId: "example.fixture",
       hostGeneration: fence.hostGeneration,
       createLifecycle: () => lifecycle,
+      readHidIdleNanoseconds,
     });
     const runner = new HostContractRunner({
       host: runtime.host,
@@ -256,6 +262,14 @@ describe("HostContractRunner", () => {
     });
     expect(observed.result).toMatchObject({ settlement: "not_completed", result: { operation: "desktop_state" } });
     expect(NATIVE_CONTRACT_SCHEMAS.observe.result.safeParse(observed.result.result).success).toBe(true);
+    expect(readHidIdleNanoseconds).toHaveBeenCalledTimes(1);
+    expect(port.callContextTool).toHaveBeenCalledTimes(1);
+    inputMonitorUnavailable = true;
+    const unavailable = await runner.execute({ requestId: "input-monitor-unavailable",
+      contract: COMPUTER_USE_NATIVE_CONTRACTS.observe, arguments: { operation: "desktop_state" } });
+    expect(unavailable.result).toMatchObject({ settlement: "not_completed", result: { outcome: { providerCondition: "unknown" } } });
+    expect(unavailable.result.result["outcome"]).not.toHaveProperty("externalInterference");
+    expect(port.callContextTool).toHaveBeenCalledTimes(1);
     await runner.dispose();
     await runtime.shutdown();
   });

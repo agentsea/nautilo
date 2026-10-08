@@ -6,7 +6,7 @@ import { ComputerUseHost } from "../../src/runtime.ts";
 import { ComputerUseContextRegistry, type ComputerUseContextScope } from "../../src/native-context-registry.ts";
 import type { CuaCheckedContextPort } from "../../src/native-cua-lifecycle.ts";
 import type { CuaContextToolCallResult, CuaContextToolName, CuaContextToolResult } from "../../src/native-cua-supervisor.ts";
-import { applicationWindowsObservationSchema, COMPUTER_USE_NATIVE_CONTRACTS, computerLaunchReceiptSchema, computerMutationReceiptSchema, computerVerificationReceiptSchema, windowRegionObservationSchema, windowStateObservationSchema } from "@nautilo/computer-use-contracts/native";
+import { applicationWindowsObservationSchema, COMPUTER_USE_NATIVE_CONTRACTS, NATIVE_CONTRACT_SCHEMAS, computerLaunchReceiptSchema, computerMutationReceiptSchema, computerVerificationReceiptSchema, windowRegionObservationSchema, windowStateObservationSchema } from "@nautilo/computer-use-contracts/native";
 
 const scope: ComputerUseContextScope = {
   computerUseContextId: "computer-use-context-1",
@@ -75,11 +75,14 @@ function rawWindowRow(options: Readonly<{
   width: number;
   height: number;
   onScreen?: boolean;
+  located?: boolean;
 }>) {
   return {
     window_id: options.windowId, pid: options.pid ?? 77, app_name: options.appName, title: options.title,
     bounds: { x: 1, y: 2, width: options.width, height: options.height }, layer: 0, z_index: options.windowId,
-    is_on_screen: options.onScreen ?? false, current_space_id: 1, on_current_space: false, space_ids: [2],
+    is_on_screen: options.onScreen ?? false, current_space_id: 1,
+    on_current_space: options.located === false ? null : false,
+    space_ids: options.located === false ? null : [2],
   };
 }
 
@@ -290,7 +293,7 @@ function port(responses: readonly CuaContextToolResult[]) {
   };
 }
 
-describe("D516 Cua semantic adapter foundation", () => {
+describe("Cua semantic adapter foundation", () => {
   test("launches only one exact full-inventory semantic match through the named bundle seam", async () => {
     const checked = port([
       installedApps([
@@ -449,10 +452,10 @@ describe("D516 Cua semantic adapter foundation", () => {
   test("admits only the ordinary Spotify candidate from raw launch/list inventory and keeps helpers private", async () => {
     const rows = [
       rawWindowRow({ windowId: 610, appName: "Spotify", title: "Spotify Premium", width: 1200, height: 800 }),
-      rawWindowRow({ windowId: 611, appName: "Spotify", title: "", width: 1512, height: 33 }),
-      rawWindowRow({ windowId: 612, appName: "Spotify", title: " ", width: 1512, height: 32 }),
-      rawWindowRow({ windowId: 613, appName: "Spotify", title: "", width: 500, height: 500 }),
-      rawWindowRow({ windowId: 614, appName: "Spotify", title: "", width: 64, height: 64 }),
+      rawWindowRow({ windowId: 611, appName: "Spotify", title: "", width: 1512, height: 33, located: false }),
+      rawWindowRow({ windowId: 612, appName: "Spotify", title: " ", width: 1512, height: 32, located: false }),
+      rawWindowRow({ windowId: 613, appName: "Spotify", title: "", width: 500, height: 500, located: false }),
+      rawWindowRow({ windowId: 614, appName: "Spotify", title: "", width: 64, height: 64, located: false }),
       rawWindowRow({ windowId: 615, appName: "Spotify", title: "helper", width: 0, height: 0 }),
       rawWindowRow({ windowId: 616, appName: "Spotify", title: "overlay", width: 0, height: 32 }),
     ];
@@ -480,13 +483,36 @@ describe("D516 Cua semantic adapter foundation", () => {
     expect(JSON.stringify({ launched, observed })).not.toMatch(/Untitled window|helper|overlay|1512|window_id|com\.spotify/i);
   });
 
+  test("launch discovery refusals remain valid known-no-effect receipts through the Host", async () => {
+    const app = { pid: 0, name: "Example Editor", bundle_id: "org.example.editor", active: false, running: false };
+    for (const rows of [[], [app, { ...app, bundle_id: "org.example.other-editor" }], [{ ...app, bundle_id: null }]]) {
+      const checked = port([installedApps(rows)]);
+      const adapter = new CuaComputerUseAdapter({ port: checked.value });
+      const runtime = new CuaNativeContractRuntime({ adapter, scopeForAuthority: () => scope });
+      const host = new ComputerUseHost({ hostGeneration: "host-1", driverGeneration: "driver-1", handlers: runtime.handlers });
+      const response = await host.dispatch({
+        kind: "request", protocol: { major: 3, minor: 0 }, requestId: "unavailable-launch",
+        authority: { authorityLeaseId: "lease-1", authorityGeneration: 1 },
+        fence: { hostGeneration: "host-1", driverGeneration: "driver-1", cancellationGeneration: 1 },
+        contract: COMPUTER_USE_NATIVE_CONTRACTS.do,
+        arguments: { operation: { kind: "launch_app", app: { name: "Example Editor" } } },
+      });
+      expect(response).toMatchObject({ settlement: "not_completed", result: {
+        completionCertainty: "not_completed", launchProgress: { requested: false, processRunning: false, windowReady: false },
+        outcome: { phase: "pre_effect_dispatch", stateChangeCertainty: "not_changed", retrySafety: "safe", recovery: ["observe_again", "retry_same_request"] },
+      } });
+      expect(NATIVE_CONTRACT_SCHEMAS.do.result.safeParse(response.result).success).toBe(true);
+      expect(checked.calls.map(call => call.name)).toEqual(["list_apps"]);
+    }
+  });
+
   test("joins Proton launch rows by exact pid and bundle authority rather than display-label punctuation", async () => {
     const rows = [
       rawWindowRow({ windowId: 680, appName: "ProtonVPN", title: "Proton VPN", width: 340, height: 632 }),
-      rawWindowRow({ windowId: 681, appName: "ProtonVPN", title: "", width: 1512, height: 33 }),
-      rawWindowRow({ windowId: 682, appName: "ProtonVPN", title: "", width: 500, height: 500 }),
+      rawWindowRow({ windowId: 681, appName: "ProtonVPN", title: "", width: 1512, height: 33, located: false }),
+      rawWindowRow({ windowId: 682, appName: "ProtonVPN", title: "", width: 500, height: 500, located: false }),
       rawWindowRow({ windowId: 683, appName: "ProtonVPN", title: "helper", width: 0, height: 0 }),
-      rawWindowRow({ windowId: 684, appName: "ProtonVPN", title: "", width: 64, height: 64 }),
+      rawWindowRow({ windowId: 684, appName: "ProtonVPN", title: "", width: 64, height: 64, located: false }),
       rawWindowRow({ windowId: 685, appName: "ProtonVPN", title: "overlay", width: 0, height: 32 }),
     ];
     const checked = port([
@@ -503,7 +529,7 @@ describe("D516 Cua semantic adapter foundation", () => {
     expect(JSON.stringify(launched)).not.toMatch(/ProtonVPN|ch\.protonvpn|helper|overlay|window_id/i);
   });
 
-  test("locks the captured cross-app raw-inventory cardinalities without filtering off-Space candidates", async () => {
+  test("filters unlocated helper fixtures without filtering off-Space candidates", async () => {
     const families = [
       { name: "Firefox", bundleId: "org.mozilla.firefox", raw: 9, candidates: 2 },
       { name: "TextEdit", bundleId: "com.apple.TextEdit", raw: 9, candidates: 4 },
@@ -520,6 +546,7 @@ describe("D516 Cua semantic adapter foundation", () => {
         width: index < family.candidates ? 900 : index % 2 === 0 ? 1512 : 0,
         height: index < family.candidates ? 700 : index % 2 === 0 ? 33 : 0,
         onScreen: false,
+        located: index < family.candidates,
       }));
       const checked = port([
         installedApps([{ pid: 0, name: family.name, bundle_id: family.bundleId, active: false, running: false }]),
@@ -541,9 +568,42 @@ describe("D516 Cua semantic adapter foundation", () => {
     }
   });
 
+  test("preserves untitled off-Space windows in launch, app discovery and desktop discovery", async () => {
+    const rows = [
+      rawWindowRow({ windowId: 500, appName: "Sketchpad", title: "", width: 960, height: 720 }),
+      rawWindowRow({ windowId: 501, appName: "Sketchpad", title: "", width: 1440, height: 33, located: false }),
+    ];
+    const apps = installedApps([{ pid: 77, name: "Sketchpad", bundle_id: "org.example.sketchpad", active: false, running: true }]);
+    const checked = port([apps, launchWithRawWindows("org.example.sketchpad", "Sketchpad", rows), apps, listedRawWindows(rows),
+      apps, listedRawWindows(rows), exactWindowState(77, 500, true)]);
+    const subject = new CuaComputerUseAdapter({ port: checked.value });
+    const launched = await subject.launchApp({ scope, operation: { kind: "launch_app", app: { name: "Sketchpad" } } });
+    if (!launched.ok || !launched.receipt.app.target) throw new Error("expected launched app");
+    expect(launched.receipt).toMatchObject({ windowSelection: "unique", window: { reference: expect.any(String) } });
+    const appWindows = await subject.observeApplicationWindows({ scope, target: launched.receipt.app.target });
+    expect(appWindows).toMatchObject({ ok: true, observation: { discovered: 1, candidates: [{ evidence: { windowLabel: "Untitled window" } }] } });
+    const desktop = await subject.observe({ scope, operation: "desktop_state" });
+    expect(desktop).toMatchObject({ ok: true, observation: { discovered: 1, targets: [{ evidence: { windowLabel: "Untitled window" } }] } });
+    expect(checked.calls.every(call => ["list_apps", "launch_app", "list_windows"].includes(call.name))).toBe(true);
+    if (!desktop.ok) throw new Error("expected window discovery");
+    const observed = await subject.observeWindowState({ scope, target: desktop.observation.targets[0]!.target });
+    expect(observed).toMatchObject({ ok: true, observation: { degraded: true, outcome: { recovery: ["focus_target"] } } });
+  });
+
+  test("does not hide located untitled surfaces by label or arbitrary size", async () => {
+    const rows = [
+      rawWindowRow({ windowId: 500, appName: "Sketchpad", title: "", width: 960, height: 720 }),
+      rawWindowRow({ windowId: 501, appName: "Sketchpad", title: " ", width: 64, height: 33 }),
+    ];
+    const checked = port([installedApps([{ pid: 77, name: "Sketchpad", bundle_id: "org.example.sketchpad", active: false, running: true }]),
+      launchWithRawWindows("org.example.sketchpad", "Sketchpad", rows)]);
+    const launched = await new CuaComputerUseAdapter({ port: checked.value }).launchApp({ scope, operation: { kind: "launch_app", app: { name: "Sketchpad" } } });
+    expect(launched).toMatchObject({ ok: true, receipt: { windowSelection: "ambiguous", window: null } });
+  });
+
   test("retains app authority when raw helpers contain no semantic window candidate", async () => {
     const rows = [
-      rawWindowRow({ windowId: 801, appName: "Helper App", title: "", width: 1512, height: 33 }),
+      rawWindowRow({ windowId: 801, appName: "Helper App", title: "", width: 1512, height: 33, located: false }),
       rawWindowRow({ windowId: 802, appName: "Helper App", title: "helper", width: 0, height: 0 }),
     ];
     const checked = port([
@@ -1622,7 +1682,7 @@ describe("D516 Cua semantic adapter foundation", () => {
       result({ apps: [{ pid: 42, name: "Nautilo", bundle_id: "com.nautilo.desktop", active: true, running: true }] }),
       result({
         windows: [
-          rawWindowRow({ windowId: 990, pid: 42, appName: "Nautilo", title: "", width: 500, height: 500, onScreen: false }),
+          rawWindowRow({ windowId: 990, pid: 42, appName: "Nautilo", title: "", width: 500, height: 500, onScreen: false, located: false }),
           rawWindowRow({ windowId: 991, pid: 42, appName: "Nautilo", title: "Connections", width: 800, height: 600, onScreen: false }),
         ],
         current_space_id: 1,
@@ -2765,8 +2825,8 @@ describe("D516 Cua semantic adapter foundation", () => {
     const missingWindow = { context: initial.data.context, reference: `dtgt_${"A".repeat(43)}` };
     const missingElement = { context: initial.data.context, reference: `detgt_${"B".repeat(43)}` };
     const focused = await subject.focus({ scope, operation: { kind: "focus", target: missingWindow } });
-    const typedWindow = await subject.typeText({ scope, operation: { kind: "type_text", target: missingWindow, text: "D516" } });
-    const typedElement = await subject.typeText({ scope, operation: { kind: "type_text", target: missingElement, text: "D516" } });
+    const typedWindow = await subject.typeText({ scope, operation: { kind: "type_text", target: missingWindow, text: "TEST" } });
+    const typedElement = await subject.typeText({ scope, operation: { kind: "type_text", target: missingElement, text: "TEST" } });
     expect(focused).toMatchObject({ ok: false, receipt: { resolvedTarget: { kind: "window", role: "unavailable" }, completionCertainty: "not_completed" } });
     expect(typedWindow).toMatchObject({ ok: false, receipt: { resolvedTarget: { kind: "window", role: "unavailable" }, completionCertainty: "not_completed" } });
     expect(typedElement).toMatchObject({ ok: false, receipt: { resolvedTarget: { kind: "element", state: "unavailable" }, completionCertainty: "not_completed" } });
@@ -3122,6 +3182,71 @@ describe("D516 Cua semantic adapter foundation", () => {
     expect(keyedPort.calls.at(-1)).toEqual({ name: "press_key", args: { pid: 42, window_id: 90, key: "return", modifiers: ["option", "cmd"], scope: "window", delivery_mode: "background" } });
   });
 
+  test("does not attribute background keyboard synthesis to the Human, and requires a checked read before another action", async () => {
+    for (const scenario of ["text-confirmed", "text-unverified", "key-confirmed", "key-unverified", "hotkey", "text-partial"] as const) {
+      const isText = scenario.startsWith("text-");
+      const name = isText ? "type_text" : scenario === "hotkey" ? "hotkey" : "press_key";
+      const confirmed = scenario.endsWith("confirmed");
+      const partial = scenario === "text-partial";
+      const action = partial
+        ? result({ code: "type_text_incomplete", path: "key_events", effect: "partial", requested_chars: 3, delivered_chars: 2, retryable: true, retry_from_character: 2 }, true)
+        : result({
+          effect: confirmed ? "confirmed" : "unverifiable", route: "synthetic_events",
+          delivery: { mode: "background", ...(isText ? { delivered_count: 3 } : {}) },
+          ...(confirmed ? { evidence: [{ kind: "value_readback" }] } : {}),
+          ...(isText && !confirmed ? { escalation: { target: "foreground", reason: "delivery_failed" } } : {}),
+        });
+      const checked = port([apps(), windows(), apps(), windows(), action, exactWindowState(42, 90), exactWindowState(42, 90)]);
+      let humanDuringRead = false;
+      const subject = new CuaComputerUseAdapter({ port: checked.value, monotonicMilliseconds: () => 10_000,
+        readHidIdleNanoseconds: async () => humanDuringRead && checked.dispatched.filter((call) => call.name === "get_window_state").length > 1
+          ? 0 : checked.dispatched.some((call) => call.name === name) ? 1_000_000_000 : 2_000_000_000 });
+      const observed = await subject.observe({ scope, operation: "desktop_state" });
+      if (!observed.ok) throw new Error("expected desktop");
+      const target = observed.observation.targets[0]!.target;
+      const act = () => isText ? subject.typeText({ scope, operation: { kind: "type_text", target, text: "a😀b" } })
+        : scenario === "hotkey" ? subject.hotkey({ scope, operation: { kind: "hotkey", target, keys: ["cmd", "end"] } })
+        : subject.pressKey({ scope, operation: { kind: "press_key", target, key: "return", modifiers: [] } });
+      const performed = await act();
+      expect(performed.receipt).toMatchObject({ completionCertainty: partial ? "partially_completed" : confirmed ? "completed" : "unknown_completion" });
+      expect(performed.outcome).not.toHaveProperty("externalInterference");
+      if (!partial) expect(performed.receipt).toMatchObject({ providerAction: { route: "synthetic_events" } });
+      expect(computerMutationReceiptSchema.safeParse(performed.receipt).success).toBe(true);
+      expect(subject.registry.resolveTarget(target.context, scope, target.reference).ok).toBe(false);
+      await act();
+      expect(checked.dispatched.filter((call) => call.name === name)).toHaveLength(1);
+      const read = await subject.observeWindowState({ scope, target });
+      expect(read.ok).toBe(true);
+      expect(checked.dispatched.filter((call) => call.name === name)).toHaveLength(1);
+      // Rebaselining after our own settled input must not suppress actual
+      // activity during the next read or mint targets from that changed state.
+      humanDuringRead = true;
+      const interrupted = await subject.observeWindowState({ scope, target });
+      expect(interrupted).toMatchObject({ ok: false, outcome: { externalInterference: "user_input" } });
+      expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
+      await subject.close();
+    }
+  });
+
+  test("retains pre-dispatch keyboard takeover checks and post-dispatch AX attribution", async () => {
+    for (const scenario of ["type_text", "press_key", "hotkey", "ax"] as const) {
+      const name = scenario === "ax" ? "type_text" : scenario;
+      const checked = port([apps(), windows(), apps(), windows(), result({ effect: "confirmed", route: "accessibility",
+        delivery: { mode: "background", delivered_count: 3 }, evidence: [{ kind: "value_readback" }] })]);
+      const subject = new CuaComputerUseAdapter({ port: checked.value, monotonicMilliseconds: () => 10_000,
+        readHidIdleNanoseconds: async () => (scenario === "ax" ? checked.dispatched : checked.calls).some((call) => call.name === name) ? 0 : 1_000_000_000 });
+      const observed = await subject.observe({ scope, operation: "desktop_state" });
+      if (!observed.ok) throw new Error("expected desktop");
+      const target = observed.observation.targets[0]!.target;
+      const performed = name === "type_text" ? await subject.typeText({ scope, operation: { kind: name, target, text: "abc" } })
+        : name === "hotkey" ? await subject.hotkey({ scope, operation: { kind: name, target, keys: ["cmd", "end"] } })
+        : await subject.pressKey({ scope, operation: { kind: name, target, key: "return", modifiers: [] } });
+      expect(performed).toMatchObject({ ok: false, outcome: { externalInterference: "user_input" } });
+      expect(checked.dispatched.filter((call) => call.name === name)).toHaveLength(scenario === "ax" ? 1 : 0);
+      await subject.close();
+    }
+  });
+
   test("accepts Cua 0.19.3's public background press-key ActionResult as unknown completion without a raw leak", async () => {
     const observedAdapter = new CuaComputerUseAdapter({ port: port([apps(), windows()]).value });
     const observed = await observedAdapter.observe({ scope, operation: "desktop_state" });
@@ -3235,6 +3360,53 @@ describe("D516 Cua semantic adapter foundation", () => {
         ? [{ name: "hotkey", args: { scope: "desktop", keys: ["ctrl", "left"] } }] : []);
       expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
     }
+  });
+
+  test("confirmed foreground input preserves exact-window read recovery without permitting replay", async () => {
+    const state = result({ window_id: 90, pid: 42, element_count: 0, total_element_count: 0,
+      returned_element_count: 0, elements_complete: false, elements: [], tree_markdown: "fixture", _note: "fixture" });
+    const checked = port([apps(), windows(), apps(), windows(),
+      result({ effect: "confirmed", route: "global_input", delivery: { mode: "foreground", delivered_count: 3 }, evidence: [{ kind: "value_readback" }] }),
+      state,
+    ]);
+    const subject = new CuaComputerUseAdapter({ port: checked.value, monotonicMilliseconds: () => 10_000,
+      readHidIdleNanoseconds: async () => checked.dispatched.some(call => call.name === "type_text") ? 0 : 1_000_000_000 });
+    const desktop = await subject.observe({ scope, operation: "desktop_state" });
+    if (!desktop.ok) throw new Error("expected desktop observation");
+    const target = desktop.observation.targets[0]!.target;
+    const operation = { kind: "type_text" as const, target, text: "abc", deliveryMode: "foreground" as const };
+    const typed = await subject.typeText({ scope, operation });
+    expect(typed.receipt).toMatchObject({ completionCertainty: "completed", verification: "verified" });
+    expect(subject.registry.resolveTarget(target.context, scope, target.reference)).toEqual({ ok: false, code: "replay_forbidden" });
+    await subject.typeText({ scope, operation });
+    expect(checked.dispatched.filter(call => call.name === "type_text")).toHaveLength(1);
+    await expect(subject.observeWindowState({ scope, target })).resolves.toMatchObject({ ok: true, observation: { operation: "window_state" } });
+    expect(checked.dispatched.filter(call => call.name === "list_apps")).toHaveLength(2);
+    expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
+  });
+
+  test.each(["takeover", "cancel", "authority"] as const)("settled foreground recovery still fences %s", async (variant) => {
+    const state = result({ window_id: 90, pid: 42, element_count: 0, total_element_count: 0,
+      returned_element_count: 0, elements_complete: false, elements: [], tree_markdown: "fixture", _note: "fixture" });
+    const checked = port([apps(), windows(), apps(), windows(),
+      result({ effect: "confirmed", route: "global_input", delivery: { mode: "foreground", delivered_count: 3 }, evidence: [{ kind: "value_readback" }] }), state]);
+    const subject = new CuaComputerUseAdapter({ port: checked.value, monotonicMilliseconds: () => 10_000,
+      readHidIdleNanoseconds: async () => checked.dispatched.some(call => call.name === "get_window_state") ? 0
+        : checked.dispatched.some(call => call.name === "type_text") ? 500_000_000 : 1_000_000_000 });
+    const desktop = await subject.observe({ scope, operation: "desktop_state" });
+    if (!desktop.ok) throw new Error("expected desktop observation");
+    const target = desktop.observation.targets[0]!.target;
+    await subject.typeText({ scope, operation: { kind: "type_text", target, text: "abc", deliveryMode: "foreground" } });
+    const controller = new AbortController();
+    if (variant === "cancel") controller.abort();
+    const recovered = await subject.observeWindowState({
+      scope: variant === "authority" ? { ...scope, grantGeneration: 2 } : scope, target, signal: controller.signal,
+    });
+    expect(recovered.ok).toBe(false);
+    if (variant === "takeover") expect(recovered.outcome.externalInterference).toBe("user_input");
+    else expect(checked.dispatched.filter(call => call.name === "get_window_state")).toHaveLength(0);
+    expect(subject.registry.resolveTarget(target.context, scope, target.reference).ok).toBe(false);
+    expect(checked.dispatched.filter(call => call.name === "type_text")).toHaveLength(1);
   });
 
   test("requires the pinned type-text ActionResult delivery count rather than inventing accounting", async () => {
@@ -4008,7 +4180,7 @@ describe("D516 Cua semantic adapter foundation", () => {
       window_id: windowId, pid: 77, element_count: elements.length, total_element_count: elements.length,
       returned_element_count: elements.length, elements_complete: false, tree_markdown: "private tree", elements, _note: "private note",
     });
-    const sentinel = "D516-SENTINEL";
+    const sentinel = "TEST-SENTINEL";
     const checked = port([
       result({ windows: siblingRows, current_space_id: 1 }),
       result({ effect: "unverifiable", route: "accessibility", delivery: { mode: "foreground" } }),
@@ -4065,7 +4237,7 @@ describe("D516 Cua semantic adapter foundation", () => {
     if (!typed.ok) throw new Error("expected typed receipt");
     const typedReceipt = computerMutationReceiptSchema.safeParse(typed.receipt);
     if (!typedReceipt.success) throw new Error(JSON.stringify(typedReceipt.error.issues));
-    expect(JSON.stringify(typed.receipt)).not.toMatch(/private-element-token|private tree|private note|"pid"|"window_id"|D516-SENTINEL/);
+    expect(JSON.stringify(typed.receipt)).not.toMatch(/private-element-token|private tree|private note|"pid"|"window_id"|TEST-SENTINEL/);
     const verified = await subject.verify({ scope, target: handoff.window.target, expect: [{ element: { selector: { role: "text_area" }, valueEquals: sentinel } }] });
     expect(verified).toMatchObject({ ok: true, verification: { status: "satisfied", stable: true, samples: 2 } });
     expect(checked.calls.filter((call) => call.name === "invoke_menu")).toEqual([{ name: "invoke_menu", args: { pid: 77, window_id: 513, path: ["File", "New"] } }]);
@@ -4078,7 +4250,7 @@ describe("D516 Cua semantic adapter foundation", () => {
     const consumedReceipt = computerMutationReceiptSchema.safeParse(consumed.receipt);
     if (!consumedReceipt.success) throw new Error(JSON.stringify(consumedReceipt.error.issues));
     expect(checked.calls.filter((call) => call.name === "type_text")).toHaveLength(1);
-    expect(JSON.stringify({ created, state, typed, verified })).not.toMatch(/private-element-token|private tree|private note|"pid"|"window_id"|D516-SENTINEL/);
+    expect(JSON.stringify({ created, state, typed, verified })).not.toMatch(/private-element-token|private tree|private note|"pid"|"window_id"|TEST-SENTINEL/);
   });
 
   test("selects one existing semantic value control and performs one private-token set_value", async () => {
@@ -4512,6 +4684,142 @@ describe("D516 Cua semantic adapter foundation", () => {
       expect(checked.calls.filter((call) => call.name === "scroll")).toHaveLength(1);
       await expect(subject.scroll({ scope, operation: { kind: "scroll", target: selected.observation.element.target, direction: "down", amount: 5, by: "line" } })).resolves.toMatchObject({ ok: false, receipt: { action: "scroll", completionCertainty: "not_completed" } });
       expect(checked.calls.filter((call) => call.name === "scroll")).toHaveLength(1);
+    }
+  });
+
+  test("preserves mismatched selected-action evidence through the real Host and permits fresh selection", async () => {
+    const editor = result({ window_id: 90, pid: 42, element_count: 1, total_element_count: 1, returned_element_count: 1,
+      elements_complete: false, tree_markdown: "private tree", _note: "private note",
+      elements: [{ role: "AXTextField", label: "Editor", value: "Existing contents", enabled: true, element_token: "private-editor-token" }] });
+    const checked = port([apps(), windows(), editor, editor, apps(), windows(),
+      result({ effect: "confirmed", route: "accessibility", delivery: { mode: "background", delivered_count: 6 }, evidence: [{ kind: "value_readback" }] }),
+    ]);
+    const subject = new CuaComputerUseAdapter({ port: checked.value, readHidIdleNanoseconds: async () => 1_000_000_000, monotonicMilliseconds: () => 10_000 });
+    const desktop = await subject.observe({ scope, operation: "desktop_state" });
+    if (!desktop.ok) throw new Error("expected desktop");
+    const window = desktop.observation.targets[0]!.target;
+    const selected = await subject.observeWindowState({ scope, target: window, selector: { role: "text_field", action: "set_value" } });
+    if (!selected.ok || !selected.observation.element?.target) throw new Error("expected value target");
+    const runtime = new CuaNativeContractRuntime({ adapter: subject, scopeForAuthority: () => scope });
+    const host = new ComputerUseHost({ hostGeneration: "host-1", driverGeneration: "driver-1", handlers: runtime.handlers });
+    const dispatch = (requestId: string, target: typeof window) => host.dispatch({
+      kind: "request", protocol: { major: 3, minor: 0 }, requestId,
+      authority: { authorityLeaseId: "lease-1", authorityGeneration: 1 },
+      fence: { hostGeneration: "host-1", driverGeneration: "driver-1", cancellationGeneration: 1 },
+      contract: COMPUTER_USE_NATIVE_CONTRACTS.do,
+      arguments: { operation: { kind: "type_text", target, text: "append" } },
+    });
+    const refused = await dispatch("mismatched-action", selected.observation.element.target);
+    expect(refused).toMatchObject({ settlement: "not_completed", result: {
+      action: "type_text", resolvedTarget: { kind: "element", role: "text_field", action: "set_value" },
+      completionCertainty: "not_completed", deliveryMode: "not_delivered", providerAction: null,
+      textDelivery: { requestedCharacters: 6, deliveredCharacters: 0 },
+      outcome: { phase: "resolve_target", providerCondition: "ready", targetCondition: "unavailable", recovery: ["observe_again"] },
+    } });
+    expect(checked.calls).toHaveLength(3);
+    expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
+    expect(NATIVE_CONTRACT_SCHEMAS.do.result.safeParse(refused.result).success).toBe(true);
+    // No incompatible evidence may be laundered into an effectful receipt.
+    for (const patch of [
+      { completionCertainty: "completed" },
+      { completionCertainty: "unknown_completion", deliveryMode: "unknown" },
+      { deliveryMode: "background" },
+      { verification: "verified" },
+      { providerAction: undefined },
+      { textDelivery: { requestedCharacters: 6, deliveredCharacters: 1 } },
+      { outcome: { ...(refused.result.outcome as Record<string, unknown>), phase: "post_effect_verification" } },
+      { outcome: { ...(refused.result.outcome as Record<string, unknown>), stateChangeCertainty: "unknown" } },
+    ]) expect(NATIVE_CONTRACT_SCHEMAS.do.result.safeParse({ ...refused.result, ...patch }).success).toBe(false);
+    const fresh = await subject.observeWindowState({ scope, target: window, selector: { role: "text_field", action: "type_text" } });
+    if (!fresh.ok || !fresh.observation.element?.target) throw new Error("expected fresh typing target");
+    expect(await dispatch("fresh-insertion", fresh.observation.element.target)).toMatchObject({ settlement: "completed", result: {
+      action: "type_text", textDelivery: { requestedCharacters: 6, deliveredCharacters: 6 },
+    } });
+    expect(checked.calls.filter((call) => call.name === "type_text")).toHaveLength(1);
+    expect(checked.calls.filter((call) => call.name === "set_value")).toHaveLength(0);
+    expect(JSON.stringify(refused)).not.toMatch(/private-editor-token|Existing contents|append/);
+    await subject.close();
+  });
+
+  test("settles every incompatible element-input action without invoking the driver", async () => {
+    for (const kind of ["type_text", "set_value", "scroll", "click", "press_key", "hotkey"] as const) {
+      const checked = port([apps(), windows(), result({ window_id: 90, pid: 42, element_count: 1,
+        total_element_count: 1, returned_element_count: 1, elements_complete: false,
+        tree_markdown: "private tree", _note: "private note",
+        elements: [{ role: "AXTextField", enabled: true, element_token: "private-editor-token" }] }),
+      ]);
+      const subject = new CuaComputerUseAdapter({ port: checked.value,
+        readHidIdleNanoseconds: async () => 1_000_000_000, monotonicMilliseconds: () => 10_000 });
+      const desktop = await subject.observe({ scope, operation: "desktop_state" });
+      if (!desktop.ok) throw new Error("expected desktop");
+      const selected = await subject.observeWindowState({ scope, target: desktop.observation.targets[0]!.target,
+        selector: { role: "text_field", action: kind === "set_value" ? "type_text" : "set_value" } });
+      if (!selected.ok || !selected.observation.element?.target) throw new Error("expected incompatible target");
+      const runtime = new CuaNativeContractRuntime({ adapter: subject, scopeForAuthority: () => scope });
+      const host = new ComputerUseHost({ hostGeneration: "host-1", driverGeneration: "driver-1", handlers: runtime.handlers });
+      const fields = kind === "type_text" ? { text: "append" } : kind === "set_value" ? { value: "replacement" }
+        : kind === "scroll" ? { direction: "up", amount: 2, by: "line" }
+        : kind === "press_key" ? { key: "Escape" } : kind === "hotkey" ? { keys: ["cmd", "a"] } : {};
+      const refused = await host.dispatch({ kind: "request", protocol: { major: 3, minor: 0 }, requestId: `mismatch-${kind}`,
+        authority: { authorityLeaseId: "lease-1", authorityGeneration: 1 },
+        fence: { hostGeneration: "host-1", driverGeneration: "driver-1", cancellationGeneration: 1 },
+        contract: COMPUTER_USE_NATIVE_CONTRACTS.do,
+        arguments: { operation: { kind, target: selected.observation.element.target, ...fields } },
+      });
+      expect(refused).toMatchObject({ settlement: "not_completed", result: { action: kind,
+        deliveryMode: "not_delivered", providerAction: null, outcome: { providerCondition: "ready", recovery: ["observe_again"] },
+      } });
+      expect(NATIVE_CONTRACT_SCHEMAS.do.result.safeParse(refused.result).success).toBe(true);
+      if (kind === "scroll") {
+        // A current target plus a final no-retry outcome is not one of scroll's
+        // closed pre-effect failure families. The mismatch exception must not
+        // let arbitrary outcome semantics bypass that contract.
+        expect(computerMutationReceiptSchema.safeParse({
+          ...refused.result,
+          outcome: {
+            ...refused.result.outcome,
+            retrySafety: "never",
+            targetCondition: "current",
+            recovery: [],
+          },
+        }).success).toBe(false);
+      }
+      expect(checked.calls).toHaveLength(3);
+      expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
+      await subject.close();
+    }
+  });
+
+  test("keeps mismatched target refusals valid before cancellation and Human-input checks", async () => {
+    for (const mode of ["cancelled", "external", "unavailable"] as const) {
+      let idle: number | null = 1_000_000_000;
+      const checked = port([apps(), windows(), result({ window_id: 90, pid: 42, element_count: 1,
+        total_element_count: 1, returned_element_count: 1, elements_complete: false,
+        tree_markdown: "private tree", _note: "private note",
+        elements: [{ role: "AXTextField", enabled: true, element_token: "private-editor-token" }] }),
+      ]);
+      const subject = new CuaComputerUseAdapter({ port: checked.value,
+        readHidIdleNanoseconds: async () => idle, monotonicMilliseconds: () => 10_000 });
+      const desktop = await subject.observe({ scope, operation: "desktop_state" });
+      if (!desktop.ok) throw new Error("expected desktop");
+      const selected = await subject.observeWindowState({ scope, target: desktop.observation.targets[0]!.target,
+        selector: { role: "text_field", action: "set_value" } });
+      if (!selected.ok || !selected.observation.element?.target) throw new Error("expected value target");
+      const controller = new AbortController();
+      if (mode === "cancelled") controller.abort();
+      else idle = mode === "external" ? 0 : null;
+      const refused = await subject.typeText({ scope, signal: controller.signal,
+        operation: { kind: "type_text", target: selected.observation.element.target, text: "append" } });
+      expect(refused.ok).toBe(false);
+      expect(computerMutationReceiptSchema.safeParse(refused.receipt).success).toBe(true);
+      expect(refused.receipt).toMatchObject({ resolvedTarget: { action: "set_value" },
+        textDelivery: { deliveredCharacters: 0 }, outcome: mode === "cancelled"
+          ? { providerCondition: "cancelled", targetCondition: "current" }
+          : { providerCondition: "unknown", targetCondition: "unknown", ...(mode === "external" ? { externalInterference: "user_input" } : {}) },
+      });
+      expect(checked.calls).toHaveLength(3);
+      expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
+      await subject.close();
     }
   });
 
@@ -5141,7 +5449,7 @@ describe("D516 Cua semantic adapter foundation", () => {
       });
       const checked = port([apps(), windows(), state, apps(), windows(), result({
         effect: "confirmed", route, delivery: { mode: "background" }, evidence: [{ kind: "value_readback" }],
-      })]);
+      }), state]);
       const subject = new CuaComputerUseAdapter({
         port: checked.value, monotonicMilliseconds: () => 10_000,
         readHidIdleNanoseconds: async () => checked.dispatched.some((call) => call.name === "click") && route === "synthetic_events" ? 0 : 1_000_000_000,
@@ -5166,6 +5474,7 @@ describe("D516 Cua semantic adapter foundation", () => {
       expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
       await subject.click({ scope, operation });
       expect(checked.calls.filter((call) => call.name === "click")).toHaveLength(1);
+      await expect(subject.observeWindowState({ scope, target: desktop.observation.targets[0]!.target })).resolves.toMatchObject({ ok: true });
     }
   });
 
@@ -5755,7 +6064,8 @@ describe("D516 Cua semantic adapter foundation", () => {
   test("creates a Chrome window through the caller's exact native menu path and unique set difference", async () => {
     const existing = { window_id: 700, pid: 88, app_name: "Google Chrome", title: "New Tab", bounds: { x: 1, y: 2, width: 800, height: 600 }, layer: 0, z_index: 0, is_on_screen: true, current_space_id: 1, on_current_space: true, space_ids: [1] };
     const appeared = { ...existing, window_id: 701, z_index: 1 };
-    const helper = { ...existing, window_id: 702, title: "", bounds: { x: 0, y: 0, width: 800, height: 33 }, z_index: 2 };
+    const helper = { ...existing, window_id: 702, title: "", bounds: { x: 0, y: 0, width: 800, height: 33 }, z_index: 2,
+      is_on_screen: false, on_current_space: null, space_ids: null };
     const checked = port([
       result({ windows: [existing, helper], current_space_id: 1 }),
       result({ effect: "unverifiable", route: "accessibility", delivery: { mode: "foreground" } }),
@@ -5837,7 +6147,7 @@ describe("D516 Cua semantic adapter foundation", () => {
 
     for (const mode of ["external", "unavailable"] as const) {
       const mutation = await freshTarget(mode);
-      const typed = await mutation.subject.typeText({ scope, operation: { kind: "type_text", target: mutation.target, text: "D516" } });
+      const typed = await mutation.subject.typeText({ scope, operation: { kind: "type_text", target: mutation.target, text: "TEST" } });
       expect(typed).toMatchObject({ ok: false, outcome: { recovery: ["observe_again"] } });
       expect(JSON.stringify(typed).includes("externalInterference")).toBe(mode === "external");
       expect(mutation.checked.calls.filter((call) => call.name === "type_text")).toHaveLength(0);
@@ -5863,7 +6173,7 @@ describe("D516 Cua semantic adapter foundation", () => {
       if (!observed.ok) throw new Error("expected authority mint");
       const target = observed.observation.targets[0]!.target;
       if (kind === "type") {
-        const typed = await subject.typeText({ scope, operation: { kind: "type_text", target, text: "D516" } });
+        const typed = await subject.typeText({ scope, operation: { kind: "type_text", target, text: "TEST" } });
         expect(typed).toMatchObject({ ok: false, outcome: { externalInterference: "user_input", recovery: ["observe_again"] } });
         expect(checked.calls.filter((call) => call.name === "type_text")).toHaveLength(0);
       } else {
@@ -5996,7 +6306,7 @@ describe("D516 Cua semantic adapter foundation", () => {
       if (!element.ok) throw new Error("expected element");
       const checked = port([apps(), windows(), result(refusal, true)]);
       const subject = new CuaComputerUseAdapter({ port: checked.value, registry });
-      const typed = await subject.typeText({ scope, operation: { kind: "type_text", target: { context: initial.data.context, reference: element.data[0]!.reference }, text: "D516" } });
+      const typed = await subject.typeText({ scope, operation: { kind: "type_text", target: { context: initial.data.context, reference: element.data[0]!.reference }, text: "TEST" } });
       expect(typed).toMatchObject({ ok: false, receipt: { completionCertainty: "not_completed", outcome: { phase: "pre_effect_dispatch", retrySafety: "observe_before_retry", recovery: ["observe_again"] } } });
       expect(checked.invalidateCheckedGeneration).not.toHaveBeenCalled();
     }
@@ -6085,6 +6395,15 @@ describe("D516 Cua semantic adapter foundation", () => {
     });
     if (created.ok) throw new Error("expected menu refusal");
     expect(computerMutationReceiptSchema.safeParse(created.receipt).success).toBe(true);
+    const contracts = new CuaNativeContractRuntime({ adapter: { createWindow: async () => created } as never, scopeForAuthority: () => scope });
+    const handler = contracts.handlers.find(row => row.contract === COMPUTER_USE_NATIVE_CONTRACTS.do)!;
+    const projected = await handler.execute({ operation: { kind: "create_window",
+      target: { version: 1, context: initial.data.context, reference: app.data[0]!.reference }, menuPath: ["File", "New"] } }, {
+      authority: { authorityLeaseId: "fixture-lease", authorityGeneration: 1 }, contract: COMPUTER_USE_NATIVE_CONTRACTS.do, signal: new AbortController().signal,
+    });
+    expect(projected.result["failureDetail"]).toBe("The requested native menu path is not currently available. Observe again.");
+    expect(JSON.stringify(projected)).not.toContain("private");
+    expect(projected.result["outcome"]).toEqual(created.receipt.outcome);
     expect(checked.calls.filter((call) => call.name === "bring_to_front")).toHaveLength(0);
     expect(checked.calls.filter((call) => call.name === "invoke_menu")).toHaveLength(1);
     expect(registry.resolveTarget(initial.data.context, scope, app.data[0]!.reference).ok).toBe(true);
