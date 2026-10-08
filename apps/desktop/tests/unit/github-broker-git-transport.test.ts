@@ -305,6 +305,13 @@ function fixtureChildPid(receipt: string): number | undefined {
     const pid = Number(receipt);
     return Number.isSafeInteger(pid) && pid > 1 ? pid : undefined;
 }
+function isFixtureZombie(pid: number, processStat: string): boolean {
+    // Linux retains a killed orphan's PID until its reaper waits for it. Only
+    // the exact PID's kernel state Z proves it can no longer execute; stopped,
+    // sleeping, running, malformed and unavailable observations prove nothing.
+    const matched = /^([1-9][0-9]*) \([^\n]*\) Z [0-9]+ [0-9]+ [0-9]+ (?:-?[0-9]+(?: |\n|$))+$/.exec(processStat);
+    return matched?.[1] === String(pid);
+}
 function stopFixtureChild(pid: number | undefined, program: string): boolean {
     if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 1) return false;
     const inspected = spawnSync("/bin/ps", ["-p", String(pid), "-o", "command="], {
@@ -320,6 +327,17 @@ test("fixture cleanup rejects malformed process receipts and never signals a non
         expect(stopFixtureChild(fixtureChildPid(receipt), "/nonexistent-fixture-child")).toBe(false);
     }
     expect(stopFixtureChild(process.pid, "/nonexistent-fixture-child")).toBe(false);
+});
+test("fixture zombie proof requires the exact PID and positive kernel zombie state", () => {
+    const zombie = "42 (sh) Z 1 41 41 0 -1 0 0\n";
+    expect(isFixtureZombie(42, zombie)).toBe(true);
+    expect(isFixtureZombie(43, zombie)).toBe(false);
+    for (const state of ["R", "S", "D", "T", "t", "X", "I"]) {
+        expect(isFixtureZombie(42, zombie.replace(") Z ", `) ${state} `))).toBe(false);
+    }
+    for (const invalid of ["", "42 (sh) Z", "42 (Z) S 1 41 41 0 -1 0 0\n", "42 (sh) Z bogus 41 41 0", "42 (sh) Z 1 41 41 0\nforged"]) {
+        expect(isFixtureZombie(42, invalid)).toBe(false);
+    }
 });
 for (const termination of ["abort", "timeout", "leader-exit"] as const)
     test(`default executor ${termination} settles a pipe-holding child before releasing protected scratch or acquiring credentials`, async () => {
@@ -359,12 +377,25 @@ for (const termination of ["abort", "timeout", "leader-exit"] as const)
             catch (error) {
                 absent = (error as NodeJS.ErrnoException).code === "ESRCH";
             }
-            expect(absent).toBe(true);
+            let zombie = false;
+            if (!absent && process.platform === "linux") {
+                try { zombie = isFixtureZombie(childPid, readFileSync(`/proc/${childPid}/stat`, "utf8")); }
+                catch {
+                    // The child may be reaped between the two observations.
+                    // Require ESRCH rather than treating a failed read as proof.
+                    try { process.kill(childPid, 0); }
+                    catch (error) { absent = (error as NodeJS.ErrnoException).code === "ESRCH"; }
+                }
+            }
+            expect({ absent, zombie }).not.toEqual({ absent: false, zombie: false });
+            // A zombie proves no executable child remains, but is deliberately
+            // NOT group-absence proof. Production must retain protected scratch.
             // A later child absence probe cannot upgrade an inconclusive
             // close-boundary group probe. Either proven cleanup or protected
             // retained scratch is truthful; never force removal from this test.
             const retained = readdirSync(f.storage);
             expect(retained.length).toBeLessThanOrEqual(1);
+            if (zombie) expect(retained.length).toBe(1);
             for (const name of retained) {
                 expect(name.startsWith("github-git-")).toBe(true);
                 const info = lstatSync(join(f.storage, name));
