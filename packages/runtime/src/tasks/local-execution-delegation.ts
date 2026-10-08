@@ -23,7 +23,7 @@ export interface TaskLocalExecutionSource {
 const identitySnapshot = (task: DelegatedTaskIdentity) => ({
   id: task.id, ownerId: task.ownerId, requestorId: task.requestorId, agentId: task.agentId,
   callingRoomId: task.callingRoomId, targetRoomId: task.targetRoomId, parentTaskId: task.parentTaskId,
-  status: task.status, scheduleKind: task.scheduleKind, lastError: task.lastError,
+  scheduleKind: task.scheduleKind,
   contentRepresentation: task.contentRepresentation, contentRevision: task.contentRevision,
   localExecutionDelegation: task.localExecutionDelegation,
 });
@@ -40,24 +40,38 @@ const sameTarget = (left: LocalExecutionDelegation, right: LocalExecutionDelegat
 export async function readTaskLocalExecutionLineage(source: TaskLocalExecutionSource, requireActiveRun = true) {
   return readLineage(source, requireActiveRun ? "active" : "retained");
 }
-async function readLineage(source: TaskLocalExecutionSource, mode: "active" | "retained" | "offline_wait") {
+type AdmissionMode = "active" | "retained" | "offline_wait";
+type RunIdentity = Pick<TaskRun, "id" | "taskId" | "status">;
+
+async function assertCurrentLifecycle(source: TaskLocalExecutionSource, task: DelegatedTaskIdentity,
+  run: RunIdentity, mode: AdmissionMode): Promise<void> {
   const requireActiveRun = mode === "active";
+  const automaticWait = mode === "retained" && (task.status === "paused" || task.status === "pending")
+    ? await source.readAutomaticOfflineWait?.(task.id) : null;
+  if ((task.status !== "running" && !(task.status === "pending" && task.scheduleKind === "cron")
+      && !(!requireActiveRun && (task.status === "completed" || task.status === "awaiting"))
+      && !(mode === "offline_wait" && (task.status === "paused" || task.status === "pending"))
+      && !automaticWait)
+    || (run.status !== "running" && !(!requireActiveRun && (run.status === "completed" || run.status === "awaiting"))
+      && !(mode === "offline_wait" && run.status === "paused")
+      && !(automaticWait?.taskRunId === run.id && run.status === "paused"))) throw unavailable();
+}
+
+async function assertAncestorLifecycle(source: TaskLocalExecutionSource, task: DelegatedTaskIdentity,
+  mode: AdmissionMode): Promise<void> {
+  if (["cancelled", "errored"].includes(task.status)
+    || (task.status === "paused" && !(mode === "retained" && await source.readAutomaticOfflineWait?.(task.id)))) throw unavailable();
+}
+
+async function readLineage(source: TaskLocalExecutionSource, mode: AdmissionMode) {
   source.signal.throwIfAborted();
   const task = await source.readTask(source.taskId);
   const delegation = parseLocalExecutionDelegation(task?.localExecutionDelegation);
   const run = await source.readRun(source.taskId, source.taskRunId);
-  const automaticWait = mode === "retained" && (task?.status === "paused" || task?.status === "pending")
-    ? await source.readAutomaticOfflineWait?.(task.id) : null;
   if (!task || !delegation || task.requestorId !== source.humanUserId || task.agentId !== source.agentId
     || delegation.humanUserId !== source.humanUserId || delegation.agentId !== source.agentId
-    || (task.status !== "running" && !(task.status === "pending" && task.scheduleKind === "cron")
-      && !(!requireActiveRun && (task.status === "completed" || task.status === "awaiting"))
-      && !(mode === "offline_wait" && (task.status === "paused" || task.status === "pending"))
-      && !automaticWait)
-    || !run || run.id !== source.taskRunId || run.taskId !== source.taskId
-    || (run.status !== "running" && !(!requireActiveRun && (run.status === "completed" || run.status === "awaiting"))
-      && !(mode === "offline_wait" && run.status === "paused")
-      && !(automaticWait?.taskRunId === run.id && run.status === "paused"))) throw unavailable();
+    || !run || run.id !== source.taskRunId || run.taskId !== source.taskId) throw unavailable();
+  await assertCurrentLifecycle(source, task, run, mode);
   const lineage: DelegatedTaskIdentity[] = [task];
   const seen = new Set([task.id]);
   let parent = task;
@@ -66,13 +80,11 @@ async function readLineage(source: TaskLocalExecutionSource, mode: "active" | "r
     seen.add(parent.parentTaskId);
     const next = await source.readTask(parent.parentTaskId);
     const authority = parseLocalExecutionDelegation(next?.localExecutionDelegation);
-    const ancestorWait = mode === "retained" && next?.status === "paused"
-      ? await source.readAutomaticOfflineWait?.(next.id) : null;
     if (!next || !authority || authority.agentId !== next.agentId || authority.humanUserId !== next.requestorId
       || next.ownerId !== task.ownerId || next.requestorId !== task.requestorId
       || (parent.callingRoomId !== next.callingRoomId && parent.callingRoomId !== next.targetRoomId)
-      || ["cancelled", "errored"].includes(next.status) || (next.status === "paused" && !ancestorWait)
       || !sameTarget(delegation, authority)) throw unavailable();
+    await assertAncestorLifecycle(source, next, mode);
     lineage.push(next); parent = next;
   }
   if (parent.parentTaskId !== null || parent.callingRoomId !== delegation.sourceRoomId) throw unavailable();
@@ -82,12 +94,12 @@ async function readLineage(source: TaskLocalExecutionSource, mode: "active" | "r
   const refreshed = await Promise.all(lineage.map(member => source.readTask(member.id)));
   const currentRun = await source.readRun(source.taskId, source.taskRunId);
   if (refreshed.some((member, index) => !member || JSON.stringify(identitySnapshot(member)) !== JSON.stringify(identitySnapshot(lineage[index]!)))
-    || !currentRun || currentRun.id !== run.id || currentRun.taskId !== run.taskId || currentRun.status !== run.status) throw unavailable();
-  if (mode === "retained") {
-    for (const member of refreshed) {
-      if (member?.status === "paused" && !await source.readAutomaticOfflineWait?.(member.id)) throw unavailable();
-    }
-  }
+    || !currentRun || currentRun.id !== run.id || currentRun.taskId !== run.taskId) throw unavailable();
+  // Lifecycle may advance while source validation awaits: a new cron occurrence
+  // or normal completion does not revoke retained work. Recheck eligibility on
+  // the fresh rows instead of requiring the old status bytes to stay unchanged.
+  await assertCurrentLifecycle(source, refreshed[0]!, currentRun, mode);
+  for (const member of refreshed.slice(1)) await assertAncestorLifecycle(source, member!, mode);
   source.signal.throwIfAborted();
   return { task, delegation, lineage };
 }

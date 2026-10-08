@@ -163,3 +163,86 @@ test("a later automatic offline wait preserves retained work but Human Pause rev
     expect(port.signal.aborted).toBe(true); release();
   }
 });
+
+test("a recurring lifecycle transition during source validation preserves retained commands", async () => {
+  for (const ancestorTransition of [false, true]) {
+    let parent: DelegatedTaskIdentity = { ...root, scheduleKind: "cron", status: "running" };
+    const own: DelegatedTaskIdentity = ancestorTransition
+      ? { ...root, id: "child", parentTaskId: "root", status: "completed" } : parent;
+    let changed: (() => void) | undefined;
+    const port = createDelegatedLocalExecutionPort({ taskId: own.id, taskRunId: "completed-run-A",
+      humanUserId: "human", agentId: "agent", signal: new AbortController().signal,
+      readTask: async id => structuredClone(id === "root" ? parent : own),
+      readRun: async () => ({ id: "completed-run-A", taskId: own.id, status: "completed" }),
+      assertSource: async () => { parent = { ...parent, status: "pending", lastError: null }; },
+      subscribeChanges: check => { changed = check; return () => { changed = undefined; }; },
+    });
+    const release = port.retain!();
+    changed!();
+    expect(await port.withAdmission("read", async () => "original-run-output")).toBe("original-run-output");
+    expect(port.signal.aborted).toBe(false);
+    await rejects(port.withAdmission("input", async () => "unexpected input"), /UNAVAILABLE/);
+    expect(port.signal.aborted).toBe(false);
+    release();
+  }
+});
+
+test("normal Run completion during source validation permits reads but not fresh input", async () => {
+  for (const operation of ["read", "input"] as const) {
+    let task: DelegatedTaskIdentity = { ...root, status: "running" };
+    let status: "running" | "completed" = "running";
+    let effects = 0;
+    const port = createDelegatedLocalExecutionPort({ taskId: "root", taskRunId: "run", humanUserId: "human", agentId: "agent",
+      signal: new AbortController().signal, readTask: async () => structuredClone(task),
+      readRun: async () => ({ id: "run", taskId: "root", status }),
+      assertSource: async () => { task = { ...task, status: "completed" }; status = "completed"; },
+    });
+    const result = port.withAdmission(operation, async () => { effects++; return "retained"; });
+    if (operation === "read") expect(await result).toBe("retained");
+    else await rejects(result, /UNAVAILABLE/);
+    expect(effects).toBe(operation === "read" ? 1 : 0);
+    expect(port.signal.aborted).toBe(false);
+  }
+});
+
+test("Pause, Stop and definition loss during awaited validation revoke retained work", async () => {
+  for (const ancestorTransition of [false, true]) {
+    for (const patch of [{ status: "paused" as const }, { status: "cancelled" as const },
+      { localExecutionDelegation: null }, { contentRevision: 1 }]) {
+      let parent: DelegatedTaskIdentity = { ...root, scheduleKind: "cron", status: "running" };
+      const own: DelegatedTaskIdentity = ancestorTransition
+        ? { ...root, id: "child", parentTaskId: "root", status: "completed" } : parent;
+      let changed: (() => void) | undefined;
+      const port = createDelegatedLocalExecutionPort({ taskId: own.id, taskRunId: "retained-run",
+        humanUserId: "human", agentId: "agent", signal: new AbortController().signal,
+        readTask: async id => structuredClone(id === "root" ? parent : own),
+        readRun: async () => ({ id: "retained-run", taskId: own.id, status: "completed" }),
+        assertSource: async () => { parent = { ...parent, ...patch }; },
+        subscribeChanges: check => { changed = check; return () => { changed = undefined; }; },
+      });
+      const release = port.retain!();
+      const aborted = new Promise<void>(resolve => port.signal.addEventListener("abort", () => resolve(), { once: true }));
+      changed!(); await aborted;
+      expect(port.signal.aborted).toBe(true);
+      let effects = 0;
+      await rejects(port.withAdmission("read", async () => { effects++; }), /UNAVAILABLE/);
+      expect(effects).toBe(0);
+      release();
+    }
+  }
+});
+
+test("Human Pause replacing automatic offline wait during validation cannot retain authority", async () => {
+  let manualPause = false;
+  let effects = 0;
+  const port = createDelegatedLocalExecutionPort({ taskId: "root", taskRunId: "old-run", humanUserId: "human", agentId: "agent",
+    signal: new AbortController().signal,
+    readTask: async () => ({ ...root, status: "paused", lastError: manualPause ? "Paused by Human" : "Automatic wait" }),
+    readRun: async () => ({ id: "old-run", taskId: "root", status: "completed" }),
+    readAutomaticOfflineWait: async () => manualPause ? null : { taskRunId: "new-run" },
+    assertSource: async () => { manualPause = true; },
+  });
+  await rejects(port.withAdmission("read", async () => { effects++; }), /UNAVAILABLE/);
+  expect(effects).toBe(0);
+  expect(port.signal.aborted).toBe(true);
+});

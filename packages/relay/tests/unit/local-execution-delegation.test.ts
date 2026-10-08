@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { RelayCapabilities } from "../../src/types";
 import { parseRelayLocalExecutionBinding, projectRelayCapabilitiesForProtocol,
   type RelayLocalExecutionBindingV4 } from "../../src/index";
 const binding: RelayLocalExecutionBindingV4 = {
@@ -34,8 +35,9 @@ test("Development retains its exact profile and does not promote a Basic grant",
   expect(parseRelayLocalExecutionBinding({ ...binding, owner: dev.owner })).toBeNull();
 });
 test("delegation support is withheld from every older negotiated peer", () => {
+  const capabilities: RelayCapabilities = { profile: "desktop-agent", canDelegateLocalExecution: true };
   for (let version = 9; version < 28; version++) {
-    expect(projectRelayCapabilitiesForProtocol({ canDelegateLocalExecution: true }, version).canDelegateLocalExecution).toBeUndefined();
+    expect(projectRelayCapabilitiesForProtocol(capabilities, version).canDelegateLocalExecution).toBeUndefined();
   }
-  expect(projectRelayCapabilitiesForProtocol({ canDelegateLocalExecution: true }, 28).canDelegateLocalExecution).toBe(true);
+  expect(projectRelayCapabilitiesForProtocol(capabilities, 28).canDelegateLocalExecution).toBe(true);
 });
