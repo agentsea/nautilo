@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
-import { clearToolCatalog, ToolCatalog, initToolCatalog } from "@nautilo/catalog";
+import { clearToolCatalog, ToolCatalog, initToolCatalog, getToolCatalog } from "@nautilo/catalog";
 import type { NautiloState } from "../../src/agent/state";
 import { MAX_SUBAGENT_DEPTH } from "../../src/agent/state";
 import { preModelNode } from "../../src/nodes/pre-model";
@@ -21,6 +21,7 @@ import {
   type WorkstationRelayFingerprintView,
 } from "../../src/nodes/tools";
 import { registerAllTools } from "../../src/tools/register-all";
+import { createRunShellTool } from "../../src/tools/shell/run-shell";
 
 const USER = "d497-owner";
 const RELAY = "d497-relay";
@@ -37,6 +38,26 @@ afterEach(() => {
   setWorkstationDispatchPlanRegistry(null);
   clearToolCatalog();
 });
+
+// Exercise the retained executor explicitly; production exposure stays covered above.
+function registerRetainedShellExecutor(): void {
+  const catalog = getToolCatalog()!;
+  const shell = catalog.get("run_shell")!;
+  catalog.register({
+    name: shell.name,
+    factory: createRunShellTool,
+    category: shell.category,
+    executor: shell.executor,
+    trustTier: shell.trustTier,
+    impact: shell.impact,
+    exposure: shell.exposure,
+    requiredCapabilities: [...(shell.requiredCapabilities ?? [])],
+    relayCapabilities: shell.relayCapabilities ?? [],
+    requiresApproval: true,
+    approvalLevel: "prove_it",
+    resultScanPolicy: shell.resultScanPolicy,
+  });
+}
 
 function state(overrides: Partial<NautiloState> = {}): NautiloState {
   return {
@@ -207,13 +228,13 @@ function planRegistry(
 }
 
 describe("D497 Phase 4 — Git/GitHub shell exposure and recovery", () => {
-  test("projects shell plus bounded folder adoption for an authorized GitHub request", async () => {
+  test("retains bounded folder adoption without exposing the retired shell for a GitHub request", async () => {
     const patch = await preModelNode(state({
       messages: [new HumanMessage("List open GitHub issues for this repository.")],
     }));
 
-    expect(patch.activatedToolNames).toContain("run_shell");
-    expect(patch.toolNames).toContain("run_shell");
+    expect(patch.activatedToolNames).not.toContain("run_shell");
+    expect(patch.toolNames).not.toContain("run_shell");
     expect(patch.activatedToolNames).toContain("select_current_folder");
     expect(patch.toolNames).toContain("select_current_folder");
     expect(patch.toolNames).not.toContain("file");
@@ -234,6 +255,7 @@ describe("D497 Phase 4 — Git/GitHub shell exposure and recovery", () => {
   });
 
   test("returns one actionable result when the admitted shell relay capability is unavailable", async () => {
+    registerRetainedShellExecutor();
     // A missing registry is the server-side equivalent of no authorized
     // workstation being online; it must fail before any fallback dispatch.
     setRelayRegistry(null);
@@ -244,6 +266,7 @@ describe("D497 Phase 4 — Git/GitHub shell exposure and recovery", () => {
   });
 
   test("returns one typed re-authorization result for a stale workstation binding", async () => {
+    registerRetainedShellExecutor();
     const dispatched: string[] = [];
     setRelayRegistry(workstationRelay({ dispatched }));
     setWorkstationDispatchPlanRegistry(planRegistry(plan("d497-stale-binding"), () => ({
@@ -263,6 +286,7 @@ describe("D497 Phase 4 — Git/GitHub shell exposure and recovery", () => {
   });
 
   test("surfaces a denied workstation consent once without a fallback setup or filesystem grant", async () => {
+    registerRetainedShellExecutor();
     const dispatched: string[] = [];
     setRelayRegistry(workstationRelay({
       dispatched,

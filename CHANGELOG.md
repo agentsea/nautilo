@@ -23,6 +23,15 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   and service outcomes independently of unresolved charges; service estimates
   retain their pricing version and reported usage basis.
 
+- Genies no longer discover or activate the legacy `run_shell` tool, including
+  in background Tasks and on older clients. Managed command tools remain
+  available where supported; existing command history remains readable.
+
+- Long foreground agent turns refresh their context from Room history at settled
+  tool boundaries while keeping the same running job. Oversized turns retain a
+  recent excerpt alongside available Journal context; Stop and approvals keep
+  their existing lifecycle.
+
 - Rooms can be marked External to keep public-room behavior while hiding them
   from discovery and automatic onboarding. Existing members and explicit
   invitations continue to work normally.

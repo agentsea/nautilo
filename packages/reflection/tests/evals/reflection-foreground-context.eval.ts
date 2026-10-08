@@ -25,7 +25,6 @@ interface Scenario {
   readonly journalStatements: readonly string[];
   readonly records: readonly ForegroundRecordContextItemV1[];
   readonly mandatoryTranscript: string | null;
-  readonly olderTranscriptCandidates: readonly string[];
   readonly required: readonly string[];
   readonly forbidden: readonly string[];
 }
@@ -43,7 +42,6 @@ const scenarios: readonly Scenario[] = Object.freeze([
       structuralHeight: 2,
     }],
     mandatoryTranscript: "[Recent]\nWhy did we choose that?",
-    olderTranscriptCandidates: [],
     required: ["POSTGRES_RATIONALE", "Why did we choose that?"],
     forbidden: [],
   },
@@ -59,7 +57,6 @@ const scenarios: readonly Scenario[] = Object.freeze([
       structuralHeight: 1,
     }],
     mandatoryTranscript: "[Recent]\nWhat remains open?",
-    olderTranscriptCandidates: [],
     required: ["COMMITMENT_MONDAY", "What remains open?"],
     forbidden: [],
   },
@@ -75,7 +72,6 @@ const scenarios: readonly Scenario[] = Object.freeze([
       structuralHeight: 1,
     }],
     mandatoryTranscript: "[Recent]\nRECENT_CORRECTION the launch moved to Thursday.",
-    olderTranscriptCandidates: [],
     required: ["RECENT_CORRECTION", "lifecycle=stale"],
     forbidden: [],
   },
@@ -99,7 +95,6 @@ const scenarios: readonly Scenario[] = Object.freeze([
       },
     ],
     mandatoryTranscript: "[Recent]\nSummarize our storage position.",
-    olderTranscriptCandidates: [],
     required: ["PARENT_DECISION", "VALUABLE_LEAF"],
     forbidden: [],
   },
@@ -110,25 +105,18 @@ const scenarios: readonly Scenario[] = Object.freeze([
     journalStatements: ["WEATHER_CONTEXT rain is expected."],
     records: [],
     mandatoryTranscript: "[Recent]\nWhat is the weather?",
-    olderTranscriptCandidates: [],
     required: ["WEATHER_CONTEXT", "What is the weather?"],
     forbidden: [FOREGROUND_RECORD_CONTEXT_HEADER.trim()],
   },
   {
-    id: "oversized-mandatory-suffix",
-    maximumCharacters: 120,
-    journalBlock: "[Room journal]\nMUST_NOT_FIT",
-    journalStatements: ["MUST_NOT_FIT"],
-    records: [{
-      recordRef: "record:must-not-fit",
-      statement: "RECORD_MUST_NOT_FIT",
-      lifecycle: "current",
-      structuralHeight: 0,
-    }],
+    id: "oversized-narrative-entry",
+    maximumCharacters: 220,
+    journalBlock: null,
+    journalStatements: [],
+    records: [],
     mandatoryTranscript: `MANDATORY_SUFFIX ${"x".repeat(300)}`,
-    olderTranscriptCandidates: [],
-    required: ["MANDATORY_SUFFIX", "context omitted"],
-    forbidden: ["MUST_NOT_FIT", "RECORD_MUST_NOT_FIT"],
+    required: ["Excerpt from one oversized narrative entry", "context omitted"],
+    forbidden: [],
   },
 ]);
 
@@ -160,11 +148,8 @@ function alternativeBody(candidate: Exclude<CandidateId, "balanced_semantic_firs
 }
 
 function balancedBody(scenario: Scenario): string | null {
-  const baseline = joined([scenario.journalBlock, scenario.mandatoryTranscript]);
+  const recentEntry = scenario.mandatoryTranscript?.replace(/^\[Recent\]\n/u, "") ?? null;
   return buildForegroundContextProjectionV1({
-    baselineBody: baseline === null
-      ? null
-      : baseline.slice(0, scenario.maximumCharacters),
     maximumCharacters: scenario.maximumCharacters,
     journalBlock: scenario.journalBlock,
     journalRollupPresent: scenario.journalBlock !== null,
@@ -179,11 +164,17 @@ function balancedBody(scenario: Scenario): string | null {
       candidateCount: scenario.records.length,
       records: scenario.records,
     },
-    mandatoryTranscriptBlock: scenario.mandatoryTranscript,
-    olderTranscriptCandidates: scenario.olderTranscriptCandidates,
-    fallbackTranscriptBlock: null,
     recentMessageCount: scenario.mandatoryTranscript === null ? 0 : 1,
     completeTurnCount: scenario.mandatoryTranscript === null ? 0 : 1,
+    narrative: {
+      baselineBlock: scenario.mandatoryTranscript,
+      header: "[Recent]",
+      turns: recentEntry === null
+        ? []
+        : [{ completeness: "complete", entries: [recentEntry] }],
+      minimumCompleteTurns: recentEntry === null ? 0 : 1,
+      earlierEntriesOmitted: false,
+    },
   }).body;
 }
 
@@ -250,8 +241,9 @@ export function renderForegroundContextDecision(
       `${candidate.candidate} | ${candidate.passed ? "PASS" : "FAIL"} | ${(candidate.continuityRate * 100).toFixed(1)}%`
     ),
     "",
-    "The selected policy preserves the mandatory recent suffix, then gives bounded",
-    "space to both Journal continuity and organized Records before older turns.",
+    "The selected policy preserves complete recent turns when they fit, labels",
+    "partial or oversized narrative evidence, and gives bounded space to Journal",
+    "continuity and organized Records.",
     "The two rejected orders each starve one semantic source in the cramped corpus.",
     "No runtime semantic dedupe or quality classifier is introduced.",
     "",

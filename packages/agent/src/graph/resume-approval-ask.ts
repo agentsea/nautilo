@@ -16,6 +16,7 @@ import {
   toGraphBudgetOutcome,
 } from "./execution-policy";
 import { requireGitHubApprovalEcho, requirePendingApprovalAskInterrupt } from "./interrupt-mapping";
+import { streamForegroundGraph } from "./foreground-context-refresh";
 
 /**
  * Resume an interrupted graph after an `approval.ask` reply.
@@ -154,9 +155,16 @@ export async function resumeGraphWithAskReply(
         if (expectedApprovalId.startsWith("github-publish:") || githubEcho) requireGitHubApprovalEcho(pending, githubEcho, laneKey, verb);
         if (pending.id !== undefined) resume = { [pending.id]: resumePayload };
       }
-      for await (const ev of graph.streamEvents(
+      for await (const ev of streamForegroundGraph(
+        graph,
         new Command({ resume }),
         resumeConfig,
+        {
+          ...(processEvent.rebuildForegroundContext === undefined
+            ? {}
+            : { rebuildForegroundContext: processEvent.rebuildForegroundContext }),
+          ...(signal === undefined ? {} : { signal }),
+        },
       )) {
         metrics.noteStreamEvent(ev);
         await Promise.resolve(processEvent.process(ev));

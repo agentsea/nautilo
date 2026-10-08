@@ -1,7 +1,14 @@
-import { AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { describe, test, expect } from "bun:test";
 import { END } from "@langchain/langgraph";
-import { shouldContinue, shouldContinueAfterTools } from "../../src/agent/graph";
+import {
+  shouldContinue,
+  shouldContinueAfterBrowserDecision,
+  shouldContinueAfterAwaitReply,
+  shouldContinueAfterPreModel,
+  shouldContinueAfterTools,
+  visibleTextRefreshAfterAgent,
+} from "../../src/agent/graph";
 import type { NautiloState } from "../../src/agent/state";
 import { MAX_SUBAGENT_DEPTH } from "../../src/agent/state";
 
@@ -242,6 +249,22 @@ describe("shouldContinue", () => {
     });
     expect(shouldContinue(state)).toBe(END);
   });
+
+  test("a true final answer wins over a pending internal refresh", () => {
+    const state = makeState({
+      messages: [new AIMessage("Done")],
+      foregroundContextRefreshEligible: true,
+      foregroundContextRefresh: {
+        kind: "foreground_context_refresh",
+        reason: "visible_assistant_text",
+        status: "pending",
+        modelId: "test:model",
+        maximumContextCharacters: 4000,
+        projectionFingerprint: "projection",
+      },
+    });
+    expect(shouldContinue(state)).toBe(END);
+  });
 });
 
 describe("shouldContinueAfterTools", () => {
@@ -314,6 +337,85 @@ describe("shouldContinueAfterTools", () => {
   test("returns to pre_model after the final tool checkpoint", () => {
     expect(shouldContinueAfterTools(makeState())).toBe("pre_model");
   });
+
+  test("refreshes only after the whole admitted batch settles", () => {
+    const refresh = {
+      kind: "foreground_context_refresh" as const,
+      reason: "visible_assistant_text" as const,
+      status: "pending" as const,
+      modelId: "test:model",
+      maximumContextCharacters: 4000,
+      projectionFingerprint: "projection",
+    };
+    const pending = makeState({
+      foregroundContextRefreshEligible: true,
+      foregroundContextRefresh: refresh,
+      approvedToolCalls: [{ id: "tc-later", name: "get_current_time", args: {} }],
+    });
+    expect(shouldContinueAfterTools(pending)).toBe("tools");
+    expect(shouldContinueAfterTools({ ...pending, approvedToolCalls: [] }))
+      .toBe("foreground_context_refresh");
+  });
+
+  test("corrective lanes take precedence over a pending refresh", () => {
+    expect(shouldContinueAfterTools(makeState({
+      foregroundContextRefreshEligible: true,
+      foregroundContextRefresh: {
+        kind: "foreground_context_refresh",
+        reason: "visible_assistant_text",
+        status: "pending",
+        modelId: "test:model",
+        maximumContextCharacters: 4000,
+        projectionFingerprint: "projection",
+      },
+      modelRejectedToolCallIds: ["rejected"],
+    }))).toBe("pre_model");
+  });
+});
+
+describe("shouldContinueAfterPreModel", () => {
+  test("pressure stops before provider dispatch only for trusted eligible state", () => {
+    const request = {
+      kind: "foreground_context_refresh" as const,
+      reason: "context_pressure" as const,
+      status: "pending" as const,
+      modelId: "test:model",
+      maximumContextCharacters: 4000,
+      projectionFingerprint: "projection",
+    };
+    expect(shouldContinueAfterPreModel(makeState({
+      foregroundContextRefreshEligible: true,
+      foregroundContextRefresh: request,
+    }))).toBe("foreground_context_refresh");
+    expect(shouldContinueAfterPreModel(makeState({
+      foregroundContextRefreshEligible: false,
+      foregroundContextRefresh: request,
+    }))).toBe("agent");
+  });
+});
+
+describe("awaited visible reply refresh", () => {
+  test("parks first, then refreshes only after the Human reply is injected", async () => {
+    const parked = makeState({
+      awaitResponse: true,
+      foregroundContextRefreshEligible: true,
+      foregroundContextPreparedModelId: "test:model",
+      foregroundContextMaximumCharacters: 4000,
+    });
+    const update = await visibleTextRefreshAfterAgent(parked, {
+      messages: [new AIMessage("Which option should I use?")],
+      model: "test:model",
+    });
+    const withQuestion = { ...parked, ...update };
+    expect(withQuestion.foregroundContextRefresh?.reason).toBe("visible_assistant_text");
+    expect(shouldContinue(withQuestion)).toBe("await_reply");
+    expect(shouldContinueAfterAwaitReply(withQuestion)).toBe("pre_model");
+    expect(shouldContinueAfterAwaitReply({
+      ...withQuestion,
+      awaitResponse: false,
+      messages: [...withQuestion.messages, new HumanMessage("Use the first option.")],
+    })).toBe("foreground_context_refresh");
+  });
 });
 
 
@@ -337,5 +439,18 @@ describe("routine browser routing", () => {
     } })).toBe("pre_model");
     expect(shouldContinueAfterTools({ ...state, approvedToolCalls: [{ name: "browser_snapshot", args: {} }] })).toBe("tools");
     expect(shouldContinueAfterTools({ ...state, browserDecision: { ...decision, phase: "handoff" } })).toBe("pre_model");
+    expect(shouldContinueAfterBrowserDecision({
+      ...state,
+      browserDecision: { ...decision, phase: "handoff" },
+      foregroundContextRefreshEligible: true,
+      foregroundContextRefresh: {
+        kind: "foreground_context_refresh",
+        reason: "visible_assistant_text",
+        status: "pending",
+        modelId: "test:model",
+        maximumContextCharacters: 4000,
+        projectionFingerprint: "projection",
+      },
+    })).toBe("foreground_context_refresh");
   });
 });

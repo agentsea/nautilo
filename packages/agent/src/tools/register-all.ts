@@ -606,7 +606,8 @@ export function registerAllTools(
   register({
     name: "run_shell",
     factory: () => createRunShellTool(),
-    unavailableInContext: legacyShellUnavailable,
+    // Retain the executor and historical contracts without offering this tool to agents.
+    unavailableInContext: () => "This legacy command tool is unavailable. Discover the tools supported in this conversation.",
     category: "development",
     executor: "relay",
     trustTier: "admin",

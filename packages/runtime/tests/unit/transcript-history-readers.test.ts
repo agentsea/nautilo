@@ -196,7 +196,10 @@ describe("recentBoundedRoomMessages (full retained evidence)", () => {
     const hits = await recentBoundedRoomMessages(
       fakeDb([
         userRow(1, longUser, "2026-06-01T10:00:00Z"),
-        agentRow(2, longAssistant, "2026-06-01T10:00:01Z"),
+        {
+          ...agentRow(2, longAssistant, "2026-06-01T10:00:01Z"),
+          foreground_execution_id: "turn-owned",
+        },
         agentRow(3, longTool, "2026-06-01T10:00:02Z", "tool"),
       ]),
       { roomId: "r1" },
@@ -206,6 +209,7 @@ describe("recentBoundedRoomMessages (full retained evidence)", () => {
       longAssistant,
       longTool,
     ]);
+    expect(hits[1]!.foregroundExecutionId).toBe("turn-owned");
   });
 
   test("passes the configured conversation limit into the bounded query", async () => {
@@ -224,6 +228,159 @@ describe("recentBoundedRoomMessages (full retained evidence)", () => {
     const queryText = JSON.stringify(queries[0]);
     expect(queryText).toContain("nautilo_browser_decision_observation");
     expect(queryText).toContain("browser-choice:%");
+  });
+
+  test("caps refresh history and admits only this Agent output after the trigger", async () => {
+    const queries: SQL[] = [];
+    await recentBoundedRoomMessages(
+      {
+        async execute(query) {
+          queries.push(query);
+          return [];
+        },
+      },
+      {
+        roomId: "room-refresh",
+        agentId: "agent-refresh",
+        excludeMessageId: 41,
+        throughMessageIdInclusive: 47,
+        foregroundExecutionId: "turn-owned",
+      },
+    );
+
+    const text = JSON.stringify(queries[0]);
+    const parameters = parameterValues(queries[0]!);
+    expect(text).toContain("sm.id <=");
+    expect(text).toContain("sm.id <");
+    expect(text).toContain("sm.id >");
+    expect(text).toContain("sm.role IN ('assistant', 'tool')");
+    expect(text).toContain("s.agent_id =");
+    expect(text).toContain("nautilo_foreground_execution_id");
+    expect(parameters).toContain(41);
+    expect(parameters).toContain(47);
+    expect(parameters).toContain("agent-refresh");
+    expect(parameters).toContain("turn-owned");
+  });
+
+  test("pages protected candidates by structural assistant boundaries and a strict tuple cursor", async () => {
+    const queries: SQL[] = [];
+    const before = {
+      orderTimestamp: "2026-06-01T10:00:05.000000Z",
+      messageId: 55,
+    };
+    await recentBoundedRoomMessages(
+      {
+        async execute(query) {
+          queries.push(query);
+          return [];
+        },
+      },
+      {
+        roomId: "room-protected-refresh",
+        agentId: "agent-refresh",
+        excludeMessageId: 41,
+        throughMessageIdInclusive: 60,
+        before,
+        authorizedConversationWindow: true,
+        conversationalLimit: 10,
+      },
+    );
+
+    const text = JSON.stringify(queries[0]);
+    const parameters = parameterValues(queries[0]!);
+    expect(text).toContain("page_eligible");
+    expect(text).toContain("page_cursor");
+    expect(text).toContain("e.ts < cursor.ts");
+    expect(text).toContain("e.message_id < cursor.message_id");
+    expect(parameters).toContain(55);
+    expect(parameters).not.toContain("turn-owned");
+  });
+
+  test("excludes every accepted coalesced Human coordinate and its room fingerprint", async () => {
+    const queries: SQL[] = [];
+    await recentBoundedRoomMessages(
+      {
+        async execute(query) {
+          queries.push(query);
+          return [];
+        },
+      },
+      {
+        roomId: "room-refresh",
+        agentId: "agent-refresh",
+        excludeMessageId: 43,
+        excludeMessageIds: [41, 43],
+        throughMessageIdInclusive: 47,
+      },
+    );
+
+    const text = JSON.stringify(queries[0]);
+    const parameters = parameterValues(queries[0]!);
+    expect(text).toContain("sm.id NOT IN");
+    expect(text).toContain("accepted_sm.fingerprint = sm.fingerprint");
+    expect(parameters).toContain(41);
+    expect(parameters).toContain(43);
+  });
+
+  test("retains a first-turn tool-only tail when no conversational anchor remains", async () => {
+    const queries: SQL[] = [];
+    await recentBoundedRoomMessages(
+      {
+        async execute(query) {
+          queries.push(query);
+          return [];
+        },
+      },
+      {
+        roomId: "room-refresh",
+        agentId: "agent-refresh",
+        excludeMessageId: 41,
+        throughMessageIdInclusive: 43,
+      },
+    );
+
+    const text = JSON.stringify(queries[0]);
+    const parameters = parameterValues(queries[0]!);
+    expect(text).toContain("first.message_id IS NULL");
+    expect(text).toContain("e.message_id >");
+    expect(parameters.filter((value) => value === 41)).not.toHaveLength(0);
+  });
+
+  test("rejects a refresh cut without its trigger and Agent identity", async () => {
+    const db = { execute: async () => [] };
+    const missingTrigger = await recentBoundedRoomMessages(db, {
+      roomId: "room-refresh",
+      throughMessageIdInclusive: 47,
+    }).catch((error: unknown) => error);
+    expect(missingTrigger).toBeInstanceOf(TypeError);
+    expect((missingTrigger as Error).message).toContain(
+      "requires its trigger and Agent identity",
+    );
+    const missingAgent = await recentBoundedRoomMessages(db, {
+      roomId: "room-refresh",
+      excludeMessageId: 41,
+      throughMessageIdInclusive: 47,
+    }).catch((error: unknown) => error);
+    expect(missingAgent).toBeInstanceOf(TypeError);
+    expect((missingAgent as Error).message).toContain(
+      "requires its trigger and Agent identity",
+    );
+  });
+
+  test("allows a trigger-equal cut before the first active-turn output", async () => {
+    const queries: SQL[] = [];
+    await recentBoundedRoomMessages({
+      async execute(query) {
+        queries.push(query);
+        return [];
+      },
+    }, {
+      roomId: "room-refresh",
+      agentId: "agent-refresh",
+      excludeMessageId: 41,
+      throughMessageIdInclusive: 41,
+    });
+    expect(parameterValues(queries[0]!)).toContain(41);
   });
 });
 

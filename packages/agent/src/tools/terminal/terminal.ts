@@ -34,8 +34,7 @@ export function createTerminalTool() {
     name: "terminal",
     description:
       "Drive a persistent, interactive terminal shared with the user — a SEPARATE PTY " +
-      "path from run_shell; a working terminal session is NOT evidence that the " +
-      "profile-bound run_shell mount/binding works. Actions: " +
+      "path from managed command execution; its authority does not establish access for other tools. Actions: " +
       "When the user explicitly selects 'Let Genie drive', every `run`, `read`, or `write` may " +
       "omit session_id while agent control remains active: Desktop binds it to that exact terminal and " +
       "returns session_id for follow-up calls, making list/discover/activate/spawn unnecessary. " +
@@ -56,7 +55,7 @@ export function createTerminalTool() {
       "also use after spawn to confirm the session is still alive; a spawned PTY " +
       "may exit immediately, so do not assume the returned session_id remains live), `kill` (end a session). " +
       "Prefer `run` for one-shot commands; use write+read for interactive/streaming. " +
-      "Prefer this over run_shell for long-running or interactive processes (dev servers, REPLs, TUIs). " +
+      "Use this for a shared shell, REPL, or TUI when offered; prefer exec_command for managed commands when available. " +
       "Typical new-session loop: spawn → run \"cmd\" → run \"next cmd\". " +
       "Explicit handoff loop: run/read/write without session_id → reuse returned session_id.",
     schema: z.object({

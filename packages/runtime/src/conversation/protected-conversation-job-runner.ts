@@ -12,6 +12,7 @@ import type {
 } from "./conversation-job-executor";
 import type {
   ProtectedConversationExecutionServices,
+  ProtectedConversationExecutorTurnScope,
 } from "./conversation-execution-services";
 import {
   executeProtectedConversationTurn,
@@ -31,6 +32,8 @@ export type ProtectedConversationAuthorizedCoreRunner = (
   invocation: ProtectedConversationInvocation,
   scope: Readonly<{
     readonly history: readonly RoomHistoryHit[];
+    readonly readFreshHistory:
+      ProtectedConversationExecutorTurnScope["readFreshHistory"];
     readonly persist: Parameters<
       Parameters<typeof executeProtectedConversationTurn>[0]["execute"]
     >[0]["persist"];
@@ -268,10 +271,15 @@ export function createProtectedConversationJobRunner(input: Readonly<{
         execute: async (scope) => {
           const protectedScope = Object.freeze({
             history: scope.history,
+            readFreshHistory: scope.readFreshHistory,
             persist: async (
               messages: Parameters<typeof scope.persist>[0],
+              foregroundExecutionId?: string,
             ) => {
-              const committed = await scope.persist(messages);
+              const committed = await scope.persist(
+                messages,
+                foregroundExecutionId,
+              );
               for (const message of committed) {
                 await channel.write(finalMessageEvent(roomLane, message));
               }

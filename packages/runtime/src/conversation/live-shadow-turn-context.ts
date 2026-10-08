@@ -511,11 +511,21 @@ export async function protectLiveShadowForegroundHistory(
           (entry) => entry.provenance === "repaired",
         ).length,
       });
-      return hits.map((hit) => Object.freeze({
-        ...hit,
-        snippet: byId.get(hit.messageId)!.payload.content,
-        toolName: byId.get(hit.messageId)!.payload.toolName,
-      }));
+      return hits.map((hit) => {
+        const payload = byId.get(hit.messageId)!.payload;
+        const openedExecutionId =
+          payload.sensitiveMetadata?.["foregroundExecutionId"];
+        const { foregroundExecutionId: _ordinaryExecutionId, ...publicHit } = hit;
+        return Object.freeze({
+          ...publicHit,
+          snippet: payload.content,
+          toolName: payload.toolName,
+          ...(typeof openedExecutionId === "string"
+            && openedExecutionId.length > 0
+            ? { foregroundExecutionId: openedExecutionId }
+            : {}),
+        });
+      });
     }
         }
   const waiting = outcome.status === "waiting_for_authority";
