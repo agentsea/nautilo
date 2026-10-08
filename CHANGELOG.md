@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Separate Genie tool calls keep their own arguments, results, and history even
+  when a model provider reuses call IDs. Approval resumes and repeated delivery
+  continue to use the original invocation identity.
+
 - Genies no longer discover or activate the legacy `run_shell` tool, including
   in background Tasks and on older clients. Managed command tools remain
   available where supported; existing command history remains readable.

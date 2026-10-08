@@ -36,7 +36,21 @@ export function mergeTranscriptWindow(args: {
   for (const item of args.current) byKey.set(chatItemKey(item), item);
   for (const item of args.hydrated) {
     const key = chatItemKey(item);
-    if (!byKey.has(key)) byKey.set(key, item);
+    if (byKey.has(key)) continue;
+    if (item.kind === "tool" && item.presentationKey !== undefined) {
+      const liveMatches = [...byKey.entries()].filter(([, current]) =>
+        current.kind === "tool"
+        && current.presentationKey === undefined
+        && current.toolCallId === item.toolCallId
+      );
+      if (liveMatches.length === 1) {
+        const [liveKey, live] = liveMatches[0];
+        byKey.delete(liveKey);
+        byKey.set(key, { ...live, presentationKey: item.presentationKey });
+        continue;
+      }
+    }
+    byKey.set(key, item);
   }
   const items = [...byKey.values()].sort(compareItems);
   const targetFound = items.some(

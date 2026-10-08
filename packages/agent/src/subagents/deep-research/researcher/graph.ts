@@ -11,6 +11,10 @@ import { ToolMessage, AIMessage } from "@langchain/core/messages";
 import { extractTextFromResponse } from "../shared/utils";
 import { getModelTokenLimit } from "../../../providers/models";
 import { ModelOutputLimitError, modelResponseReachedOutputLimit } from "../../../graph/model-output-limit";
+import {
+  ModelToolCallIdentityError,
+  normalizeModelToolCallIdentity,
+} from "../../../nodes/model-tool-call-identity";
 import { isTokenLimitError } from "../../../utils/errors";
 import { invokeWithRetry } from "../../../utils/invoke";
 import { hasNativeWebsearch } from "../shared/native_search";
@@ -161,9 +165,10 @@ async function researcher(
     });
     const aiResponse = response as BaseMessageLike;
     if (!AIMessage.isInstance(aiResponse as BaseMessage)) throw new Error("Model response is not an AIMessage");
-    return { researcher_messages: [aiResponse] };
+    return { researcher_messages: [normalizeModelToolCallIdentity(aiResponse as AIMessage)] };
   } catch (e) {
     if (config?.signal?.aborted) throw e;
+    if (e instanceof ModelToolCallIdentityError) throw e;
     warn(`[researcher] research step failed: ${e instanceof Error ? e.message : String(e)}`);
     return { researcher_messages: existingMessages };
   }

@@ -112,6 +112,8 @@ export type ChatItem =
   | {
       kind: "tool";
       toolCallId: string;
+      /** Persisted row identity for history deduplication and list presentation. */
+      presentationKey?: string;
       toolName: string;
       argsSummary?: string;
       status: "running" | "success" | "error";
@@ -144,6 +146,8 @@ export type HistoryMessageDto = {
   content: string;
   toolCalls?: string | null;
   toolName?: string | null;
+  /** Canonical invocation identity for persisted tool results. */
+  toolCallId?: string;
   displayContent?: string;
   createdAt: string;
   editedAt?: string | null;
@@ -264,9 +268,8 @@ export function fromHistoryMessages(
       const result = d.content ?? "";
       const item: ChatItem = {
         kind: "tool",
-        // The DTO has no separate tool-call id; reuse the row id for v1
-        // dedup. A future wire shape with toolCallId will slot in here.
-        toolCallId: d.id,
+        toolCallId: d.toolCallId ?? d.id,
+        presentationKey: d.id,
         toolName: persistedToolName,
         status: persistedStatus,
         createdAt: d.createdAt,
@@ -381,13 +384,13 @@ export function applyThreadSummaryEvent(
 
 /** Model id / dedup key for a ChatItem. */
 export function chatItemKey(item: ChatItem): string {
-  return item.kind === "tool" ? `tool:${item.toolCallId}` : `msg:${item.id}`;
+  return item.kind === "tool" ? `tool:${item.presentationKey ?? item.toolCallId}` : `msg:${item.id}`;
 }
 
 /** Stable FlatList key while a streaming message receives its server id. */
 export function chatItemPresentationKey(item: ChatItem): string {
   return item.kind === "tool"
-    ? `tool:${item.toolCallId}`
+    ? `tool:${item.presentationKey ?? item.toolCallId}`
     : `msg:${item.presentationKey ?? item.id}`;
 }
 
@@ -407,8 +410,14 @@ export function reconcileLatestHistoryItems(
 
   for (const canonical of latest) {
     const key = chatItemKey(canonical);
-    const index = indexByKey.get(key);
-    if (index === undefined) {
+    // A live card has no persisted row yet. Match that single card by its
+    // invocation ID; persisted legacy rows retain their separate row keys.
+    const index = indexByKey.get(key) ?? (canonical.kind === "tool"
+      ? next.findIndex((item) => item.kind === "tool"
+        && item.presentationKey === undefined
+        && item.toolCallId === canonical.toolCallId)
+      : -1);
+    if (index === -1) {
       indexByKey.set(key, next.length);
       next.push(canonical);
       continue;
@@ -429,6 +438,7 @@ export function reconcileLatestHistoryItems(
       next[index] = replacement;
     } else {
       next[index] = canonical;
+      indexByKey.set(key, index);
     }
   }
 
@@ -1052,6 +1062,9 @@ export function applyStreamEvent(
     }
 
     case "tool.end": {
+      // Old persisted provider IDs can be ambiguous. Keep each readable row
+      // rather than rebinding a late event to whichever row happens to be first.
+      if (items.filter((it) => it.kind === "tool" && it.toolCallId === event.toolCallId).length > 1) return items;
       const idx = items.findIndex(
         (it) => it.kind === "tool" && it.toolCallId === event.toolCallId,
       );

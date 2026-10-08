@@ -10129,6 +10129,7 @@ export class NautiloApiClient {
       content: string;
       toolCalls?: string | null;
       toolName?: string | null;
+      toolCallId?: string;
       displayContent?: string;
       createdAt: string;
       editedAt?: string | null;
@@ -10162,6 +10163,7 @@ export class NautiloApiClient {
         content: string;
         toolCalls?: string | null;
         toolName?: string | null;
+        toolCallId?: string;
         displayContent?: string;
         createdAt: string;
         editedAt?: string | null;
@@ -10193,6 +10195,7 @@ export class NautiloApiClient {
       content: string;
       toolCalls?: string | null;
       toolName?: string | null;
+      toolCallId?: string;
       displayContent?: string;
       createdAt: string;
       editedAt?: string | null;
@@ -10234,6 +10237,7 @@ export class NautiloApiClient {
         content: string;
         toolCalls?: string | null;
         toolName?: string | null;
+        toolCallId?: string;
         displayContent?: string;
         createdAt: string;
         editedAt?: string | null;

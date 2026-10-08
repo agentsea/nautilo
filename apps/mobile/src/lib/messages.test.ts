@@ -8,6 +8,7 @@ import {
   applyThreadSummaryEvent,
   applyStreamEvent,
   chatItemPresentationKey,
+  chatItemKey,
   computeMessageGroupings,
   fromHistoryMessages,
   isSelfUserMessage,
@@ -104,6 +105,181 @@ describe("mobile chat item presentation identity", () => {
       result: "available bytes",
       resultTruncated: true,
     });
+  });
+
+  test("retains six canonical tool cards while replayed deliveries dedupe by invocation", () => {
+    const laneKey = "room:00000000-0000-4000-8000-000000000001";
+    const calls = [
+      { id: "canonical-discover-previous", name: "discover_tools", args: "time tools", result: "catalogue" },
+      { id: "canonical-discover-current-1", name: "discover_tools", args: "current time", result: "catalogue" },
+      { id: "canonical-discover-current-2", name: "discover_tools", args: "timezone", result: "catalogue" },
+      { id: "canonical-activate", name: "activate_tools", args: "get_current_time", result: "activated" },
+      { id: "canonical-time-1", name: "get_current_time", args: "Europe/Athens", result: "12:00" },
+      { id: "canonical-time-2", name: "get_current_time", args: "Europe/Athens", result: "12:00" },
+    ] as const;
+    let items: ChatItem[] = [];
+
+    for (const [index, call] of calls.entries()) {
+      if (index < 5) {
+        items = apply(items, {
+          type: "message.new",
+          laneKey,
+          messageId: `assistant-intermediate-${index + 1}`,
+          role: "ai",
+          content: `Intermediate ${index + 1}`,
+        } as ServerEvent);
+      }
+      const start = {
+        type: "tool.start",
+        laneKey,
+        toolCallId: call.id,
+        toolName: call.name,
+        argsSummary: call.args,
+      } as ServerEvent;
+      items = apply(items, start);
+      const lengthAfterStart = items.length;
+      items = apply(items, start);
+      expect(items).toHaveLength(lengthAfterStart);
+
+      const end = {
+        type: "tool.end",
+        laneKey,
+        toolCallId: call.id,
+        toolName: call.name,
+        duration: 25,
+        status: "success",
+        result: call.result,
+      } as ServerEvent;
+      items = apply(items, end);
+      const lengthAfterEnd = items.length;
+      items = apply(items, end);
+      expect(items).toHaveLength(lengthAfterEnd);
+    }
+    items = apply(items, {
+      type: "message.new",
+      laneKey,
+      messageId: "assistant-final",
+      role: "ai",
+      content: "Final report",
+    } as ServerEvent);
+
+    const tools = items.filter((item) => item.kind === "tool");
+    expect(tools).toMatchObject(calls.map((call) => ({
+      kind: "tool",
+      toolCallId: call.id,
+      toolName: call.name,
+      argsSummary: call.args,
+      status: "success",
+      result: call.result,
+    })));
+    expect(new Set(tools.map((tool) => tool.kind === "tool" && tool.toolCallId)).size).toBe(6);
+    expect(items.flatMap((item) => item.kind === "message" ? [item.text] : [])).toEqual([
+      "Intermediate 1",
+      "Intermediate 2",
+      "Intermediate 3",
+      "Intermediate 4",
+      "Intermediate 5",
+      "Final report",
+    ]);
+  });
+
+  test("cold history keeps six canonical calls and reconciles a later replay by invocation id", () => {
+    const calls = [
+      { rowId: "201", id: "canonical-discover-previous", name: "discover_tools", result: "catalogue" },
+      { rowId: "203", id: "canonical-discover-current-1", name: "discover_tools", result: "catalogue" },
+      { rowId: "205", id: "canonical-discover-current-2", name: "discover_tools", result: "catalogue" },
+      { rowId: "207", id: "canonical-activate", name: "activate_tools", result: "activated" },
+      { rowId: "209", id: "canonical-time-1", name: "get_current_time", result: "12:00" },
+      { rowId: "210", id: "canonical-time-2", name: "get_current_time", result: "12:00" },
+    ] as const;
+    const history = fromHistoryMessages(calls.flatMap((call, index) => [
+      ...(index < 5 ? [{
+        id: String(Number(call.rowId) - 1),
+        role: "assistant",
+        content: `Intermediate ${index + 1}`,
+        createdAt: `2026-08-27T00:0${index}:00.000Z`,
+      }] : []),
+      {
+        id: call.rowId,
+        role: "tool",
+        content: call.result,
+        toolCallId: call.id,
+        toolName: call.name,
+        displayContent: `⚙ ${call.name} [success]`,
+        createdAt: `2026-08-27T00:0${index}:30.000Z`,
+      },
+    ]));
+
+    const historicalTools = history.filter((item) => item.kind === "tool");
+    expect(historicalTools.map((item) => item.kind === "tool" && item.toolCallId))
+      .toEqual(calls.map((call) => call.id));
+    expect(historicalTools.map(chatItemPresentationKey))
+      .toEqual(calls.map((call) => `tool:${call.rowId}`));
+    expect(history.flatMap((item) => item.kind === "message" ? [item.text] : []))
+      .toEqual(["Intermediate 1", "Intermediate 2", "Intermediate 3", "Intermediate 4", "Intermediate 5"]);
+
+    const replayStart = apply(history, {
+      type: "tool.start",
+      laneKey: "room:00000000-0000-4000-8000-000000000001",
+      toolCallId: "canonical-time-2",
+      toolName: "get_current_time",
+    } as ServerEvent);
+    expect(replayStart).toBe(history);
+    const replayEnd = apply(replayStart, {
+      type: "tool.end",
+      laneKey: "room:00000000-0000-4000-8000-000000000001",
+      toolCallId: "canonical-time-2",
+      toolName: "get_current_time",
+      duration: 25,
+      status: "success",
+      result: "12:00 replayed",
+    } as ServerEvent);
+    expect(replayEnd.filter((item) => item.kind === "tool")).toHaveLength(6);
+    expect(replayEnd.find((item) =>
+      item.kind === "tool" && item.toolCallId === "canonical-time-2")).toMatchObject({
+      result: "12:00 replayed",
+      presentationKey: "210",
+    });
+  });
+
+  test("legacy history rows without invocation ids remain separate", () => {
+    const legacy = fromHistoryMessages(["301", "302"].map((id) => ({
+      id,
+      role: "tool",
+      content: "same result",
+      toolName: "get_current_time",
+      displayContent: "⚙ get_current_time [success]",
+      createdAt: `2026-08-27T00:00:${id === "301" ? "01" : "02"}.000Z`,
+    })));
+
+    expect(legacy.map((item) => item.kind === "tool" && item.toolCallId)).toEqual(["301", "302"]);
+    expect(legacy.map(chatItemPresentationKey)).toEqual(["tool:301", "tool:302"]);
+  });
+
+  test("legacy reused invocation ids retain separate paged rows without guessing a replay target", () => {
+    const rows = fromHistoryMessages(["301", "302"].map((id) => ({
+      id, role: "tool", toolCallId: "reused", content: id,
+      toolName: "fixture_read", createdAt: `2026-08-27T00:00:${id === "301" ? "01" : "02"}.000Z`,
+    })));
+    expect(rows.map(chatItemKey)).toEqual(["tool:301", "tool:302"]);
+    const caughtUp = reconcileLatestHistoryItems(rows.slice(0, 1), rows);
+    expect(caughtUp).toEqual(rows);
+    const replay = apply(caughtUp, {
+      type: "tool.end", toolCallId: "reused", toolName: "fixture_read",
+      status: "success", duration: 1, result: "unpaired replay",
+    } as ServerEvent);
+    expect(replay).toBe(caughtUp);
+  });
+
+  test("history reconciles a live canonical card to its persisted row without adding a second card", () => {
+    const live = apply([], {
+      type: "tool.start", toolCallId: "canonical-call", toolName: "fixture_read",
+    } as ServerEvent);
+    const history = fromHistoryMessages([{
+      id: "501", role: "tool", toolCallId: "canonical-call", toolName: "fixture_read",
+      content: "result", createdAt: "2026-08-27T00:00:01.000Z",
+    }]);
+    expect(reconcileLatestHistoryItems(live, history)).toEqual(history);
   });
 
   test("hydrates persisted tool disclosure from content, not its compact display line", () => {

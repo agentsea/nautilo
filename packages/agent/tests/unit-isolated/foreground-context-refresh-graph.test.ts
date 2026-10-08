@@ -96,7 +96,10 @@ function messageCharacters(messages: readonly unknown[]): number {
   return total;
 }
 
-function installStepTool(execute: (sequence: number) => Promise<string> | string): void {
+function installStepTool(
+  execute: (sequence: number) => Promise<string> | string,
+  approval: "none" | "confirm" = "none",
+): void {
   const catalog = new ToolCatalog();
   const schema = z.object({ sequence: z.number().int().positive() });
   catalog.register({
@@ -105,6 +108,8 @@ function installStepTool(execute: (sequence: number) => Promise<string> | string
     trustTier: "standard",
     impact: "read-only",
     exposure: "core",
+    requiresApproval: approval === "confirm",
+    ...(approval === "confirm" ? { approvalLevel: "confirm" as const } : {}),
     resultScanPolicy: "never",
     factory: () => new DynamicStructuredTool({
       name: "fixture_step",
@@ -114,6 +119,68 @@ function installStepTool(execute: (sequence: number) => Promise<string> | string
     }),
   });
   initToolCatalog(catalog);
+}
+
+function providerStepResponse(
+  assistantId: string,
+  providerCallId: string,
+  sequence: number,
+  visibleText: string,
+): AIMessage {
+  return new AIMessage({
+    id: assistantId,
+    content: [
+      { type: "text", text: visibleText },
+      {
+        type: "tool_use",
+        id: providerCallId,
+        name: "fixture_step",
+        input: { sequence },
+      },
+    ],
+    tool_calls: [{
+      id: providerCallId,
+      name: "fixture_step",
+      args: { sequence },
+    }],
+    additional_kwargs: {
+      tool_calls: [{
+        id: providerCallId,
+        type: "function",
+        function: {
+          name: "fixture_step",
+          arguments: JSON.stringify({ sequence }),
+        },
+      }],
+    },
+  });
+}
+
+function assertCallRepresentationsMatch(message: AIMessage): string[] {
+  const structuredCalls = message.tool_calls ?? [];
+  const structuredIds = structuredCalls.flatMap((call) =>
+    typeof call.id === "string" ? [call.id] : [],
+  );
+  expect(structuredIds).toHaveLength(structuredCalls.length);
+  const contentIds = Array.isArray(message.content)
+    ? message.content.flatMap((block) =>
+      block && typeof block === "object"
+        && "type" in block && block.type === "tool_use"
+        && "id" in block && typeof block.id === "string"
+        ? [block.id]
+        : [])
+    : [];
+  const raw = message.additional_kwargs?.["tool_calls"];
+  const rawIds = Array.isArray(raw)
+    ? raw.flatMap((call) =>
+      call && typeof call === "object"
+        && "id" in call && typeof call.id === "string"
+        ? [call.id]
+        : [])
+    : [];
+  expect(contentIds).toEqual(structuredIds);
+  expect(rawIds).toEqual(structuredIds);
+  return structuredIds;
 }
 
 const activeRuns: Array<{ controller: AbortController; settled: Promise<void> }> = [];
@@ -382,6 +449,311 @@ test("compiled graph parks a visible question and refreshes only after the resum
     "Choose an option with me.",
     "Use the first option.",
   ]);
+});
+
+test("fresh repeated provider call ids stay distinct through model cycles, refresh, and a later user turn", async () => {
+  const providerCallId = "provider-reused-call";
+  const executions: number[] = [];
+  installStepTool((sequence) => {
+    executions.push(sequence);
+    return "identical-result";
+  });
+  let modelCalls = 0;
+  const model: ChatModel = {
+    bindTools: () => model,
+    invoke: async () => {
+      modelCalls += 1;
+      if (modelCalls === 1 || modelCalls === 2 || modelCalls === 4) {
+        return providerStepResponse(
+          `assistant-call-${modelCalls}`,
+          providerCallId,
+          1,
+          `Visible progress ${modelCalls}.`,
+        );
+      }
+      if (modelCalls === 3 || modelCalls === 5) {
+        return new AIMessage({
+          id: `assistant-final-${modelCalls}`,
+          content: `Finished turn ${modelCalls === 3 ? 1 : 2}.`,
+        });
+      }
+      throw new Error("Unexpected provider cycle");
+    },
+  };
+  setStubModel(model);
+  const graph = createNautiloGraph(new MemorySaver(), policy);
+  const firstRequest = new HumanMessage({ id: "accepted-identity-first", content: "Run twice." });
+  const config = {
+    configurable: { thread_id: "canonical-tool-identity-across-turns" },
+    recursionLimit: 200,
+    version: "v2",
+  };
+  const refreshedCallIds: string[] = [];
+  const rebuild: RebuildForegroundContext = async ({ state }) => {
+    const latest = [...state.messages].reverse().find((message) =>
+      AIMessage.isInstance(message) && message.tool_calls?.length);
+    expect(latest && AIMessage.isInstance(latest)).toBe(true);
+    if (latest && AIMessage.isInstance(latest)) {
+      const [callId] = assertCallRepresentationsMatch(latest);
+      expect(callId).toBeDefined();
+      expect(state.messages.filter((message) =>
+        ToolMessage.isInstance(message) && message.tool_call_id === callId)).toHaveLength(1);
+      refreshedCallIds.push(callId!);
+    }
+    return state.messages.filter((message) => HumanMessage.isInstance(message));
+  };
+
+  await drainGraph(graph, graphInput(firstRequest), config, {
+    rebuildForegroundContext: rebuild,
+  });
+  const secondRequest = new HumanMessage({ id: "accepted-identity-second", content: "Run once more." });
+  await drainGraph(graph, {
+    ...graphInput(secondRequest),
+    turnId: "refresh-turn-second",
+  }, config, {
+    rebuildForegroundContext: rebuild,
+  });
+
+  expect(modelCalls).toBe(5);
+  expect(executions).toEqual([1, 1, 1]);
+  expect(refreshedCallIds).toHaveLength(3);
+  expect(new Set(refreshedCallIds).size).toBe(3);
+});
+
+test("same-response duplicate provider ids execute as separate canonical invocations", async () => {
+  const providerCallId = "provider-duplicate-in-batch";
+  const executions: number[] = [];
+  installStepTool((sequence) => {
+    executions.push(sequence);
+    return `completed:${sequence}`;
+  });
+  let modelCalls = 0;
+  const model: ChatModel = {
+    bindTools: () => model,
+    invoke: async () => {
+      modelCalls += 1;
+      if (modelCalls > 1) {
+        return new AIMessage({ id: "assistant-batch-final", content: "Both calls completed." });
+      }
+      return new AIMessage({
+        id: "assistant-batch",
+        content: [
+          { type: "tool_use", id: providerCallId, name: "fixture_step", input: { sequence: 1 } },
+          { type: "tool_use", id: providerCallId, name: "fixture_step", input: { sequence: 2 } },
+        ],
+        tool_calls: [
+          { id: providerCallId, name: "fixture_step", args: { sequence: 1 } },
+          { id: providerCallId, name: "fixture_step", args: { sequence: 2 } },
+        ],
+        additional_kwargs: {
+          tool_calls: [1, 2].map((sequence) => ({
+            id: providerCallId,
+            type: "function",
+            function: { name: "fixture_step", arguments: JSON.stringify({ sequence }) },
+          })),
+        },
+      });
+    },
+  };
+  setStubModel(model);
+  const graph = createNautiloGraph(new MemorySaver(), policy);
+  const config = {
+    configurable: { thread_id: "canonical-tool-identity-same-response" },
+    recursionLimit: 200,
+    version: "v2",
+  };
+  await drainGraph(
+    graph,
+    graphInput(new HumanMessage({ id: "accepted-batch", content: "Run both steps." })),
+    config,
+  );
+
+  expect(executions).toEqual([1, 2]);
+    const checkpoint = await graph.getState(config);
+    expect(checkpoint).toBeDefined();
+    if (checkpoint === undefined) {
+      throw new Error("Duplicate-call graph did not persist a checkpoint");
+    }
+    const messages = checkpoint.values["messages"] as BaseMessage[];
+  const callMessage = messages.find((message): message is AIMessage =>
+    AIMessage.isInstance(message) && message.id === "assistant-batch");
+    expect(callMessage).toBeDefined();
+    if (callMessage === undefined) {
+      throw new Error("Duplicate-call graph did not persist its AI response");
+    }
+    const canonicalIds = assertCallRepresentationsMatch(callMessage);
+  expect(canonicalIds).toHaveLength(2);
+  expect(new Set(canonicalIds).size).toBe(2);
+  for (const canonicalId of canonicalIds) {
+    expect(messages.filter((message) =>
+      ToolMessage.isInstance(message) && message.tool_call_id === canonicalId)).toHaveLength(1);
+  }
+});
+
+test("approval checkpoint resume preserves the admitted canonical call id and executes once", async () => {
+  const providerCallId = "provider-approval-call";
+  const executions: number[] = [];
+  installStepTool((sequence) => {
+    executions.push(sequence);
+    return "approved-result";
+  }, "confirm");
+  let modelCalls = 0;
+  const model: ChatModel = {
+    bindTools: () => model,
+    invoke: async () => {
+      modelCalls += 1;
+      return modelCalls === 1
+        ? providerStepResponse("assistant-approval", providerCallId, 1, "I need approval.")
+        : new AIMessage({ id: "assistant-approved-final", content: "Approved call completed." });
+    },
+  };
+  const approvalPolicy: PolicyResolver = {
+    ...policy,
+    checkToolAccess: async () => ({
+      type: "require_approval",
+      route: { type: "prove_it", approvers: ["refresh-owner"] },
+    }),
+  };
+  setStubModel(model);
+  const graph = createNautiloGraph(new MemorySaver(), approvalPolicy, {
+    matchCommandApproval: async () => null,
+    matchCapabilityApproval: async () => null,
+  });
+  const config = {
+    configurable: { thread_id: "canonical-tool-identity-approval-resume" },
+    recursionLimit: 200,
+    version: "v2",
+  };
+  const request = new HumanMessage({ id: "accepted-approval", content: "Run the approved step." });
+
+  await drainGraph(graph, {
+    ...graphInput(request),
+    threadId: 1,
+  }, config);
+  expect(executions).toEqual([]);
+    const parked = await graph.getState(config);
+    expect(parked).toBeDefined();
+    if (parked === undefined) {
+      throw new Error("Approval graph did not persist its parked checkpoint");
+    }
+    const parkedMessages = parked.values["messages"] as BaseMessage[];
+  const parkedCall = parkedMessages.find((message): message is AIMessage =>
+    AIMessage.isInstance(message) && message.id === "assistant-approval");
+  expect(parkedCall).toBeDefined();
+  if (parkedCall === undefined) throw new Error("Approval checkpoint omitted the admitted call");
+  const [parkedCallId] = assertCallRepresentationsMatch(parkedCall);
+  expect(parkedCallId).toBeDefined();
+  if (parkedCallId === undefined) throw new Error("Approval checkpoint call has no canonical id");
+
+  await drainGraph(
+    graph,
+    new Command({ resume: { approved: true, verb: "once" } }),
+    config,
+  );
+  expect(executions).toEqual([1]);
+    const resumed = await graph.getState(config);
+    expect(resumed).toBeDefined();
+    if (resumed === undefined) {
+      throw new Error("Approval graph did not persist its resumed checkpoint");
+    }
+    const resumedMessages = resumed.values["messages"] as BaseMessage[];
+  const resumedCall = resumedMessages.find((message): message is AIMessage =>
+    AIMessage.isInstance(message) && message.id === "assistant-approval");
+  expect(resumedCall).toBeDefined();
+  if (resumedCall === undefined) throw new Error("Approval resume omitted the admitted call");
+  expect(assertCallRepresentationsMatch(resumedCall)).toEqual([parkedCallId]);
+  expect(resumedMessages.filter((message) =>
+    ToolMessage.isInstance(message) && message.tool_call_id === parkedCallId)).toHaveLength(1);
+});
+
+test("legacy approval checkpoint resumes its original provider-shaped call exactly once", async () => {
+  const legacyCallId = "legacy-provider-call:0";
+  const executions: number[] = [];
+  installStepTool((sequence) => {
+    executions.push(sequence);
+    return "legacy-approved-result";
+  }, "confirm");
+  const approvalPolicy: PolicyResolver = {
+    ...policy,
+    checkToolAccess: async () => ({
+      type: "require_approval",
+      route: { type: "prove_it", approvers: ["refresh-owner"] },
+    }),
+  };
+  let modelCalls = 0;
+  const model: ChatModel = {
+    bindTools: () => model,
+    invoke: async () => {
+      modelCalls += 1;
+      return new AIMessage({ id: "assistant-legacy-final", content: "Legacy call completed." });
+    },
+  };
+  setStubModel(model);
+  const graph = createNautiloGraph(new MemorySaver(), approvalPolicy, {
+    matchCommandApproval: async () => null,
+    matchCapabilityApproval: async () => null,
+  });
+  const config = {
+    configurable: { thread_id: "legacy-tool-identity-approval-resume" },
+    recursionLimit: 200,
+    version: "v2",
+  };
+  const request = new HumanMessage({ id: "accepted-legacy-approval", content: "Resume the parked step." });
+  const legacyResponse = providerStepResponse(
+    "assistant-legacy-approval",
+    legacyCallId,
+    1,
+    "This old checkpoint needs approval.",
+  );
+  expect(legacyResponse.additional_kwargs).not.toHaveProperty("nautilo_tool_invocations");
+
+  // Model a checkpoint written before ingress normalization by installing the
+  // old provider-shaped response as the agent node's completed output. The
+  // production preflight and approval nodes then park and resume it normally.
+  await graph.updateState(config, {
+    ...graphInput(request),
+    threadId: 2,
+    messages: [request, legacyResponse],
+  }, "agent");
+  for await (const _event of graph.streamEvents(null, config)) {
+    // Drain through the real post-model approval interrupt.
+  }
+  expect(executions).toEqual([]);
+  expect(modelCalls).toBe(0);
+    const parked = await graph.getState(config);
+    expect(parked).toBeDefined();
+    if (parked === undefined) {
+      throw new Error("Legacy approval graph did not persist its parked checkpoint");
+    }
+    const parkedMessages = parked.values["messages"] as BaseMessage[];
+  const parkedCall = parkedMessages.find((message): message is AIMessage =>
+    AIMessage.isInstance(message) && message.id === "assistant-legacy-approval");
+  expect(parkedCall).toBeDefined();
+  if (parkedCall === undefined) throw new Error("Legacy approval checkpoint omitted its call");
+  expect(assertCallRepresentationsMatch(parkedCall)).toEqual([legacyCallId]);
+  expect(parkedCall.additional_kwargs).not.toHaveProperty("nautilo_tool_invocations");
+
+  await drainGraph(
+    graph,
+    new Command({ resume: { approved: true, verb: "once" } }),
+    config,
+  );
+  expect(executions).toEqual([1]);
+  expect(modelCalls).toBe(1);
+    const resumed = await graph.getState(config);
+    expect(resumed).toBeDefined();
+    if (resumed === undefined) {
+      throw new Error("Legacy approval graph did not persist its resumed checkpoint");
+    }
+    const resumedMessages = resumed.values["messages"] as BaseMessage[];
+  const resumedCall = resumedMessages.find((message): message is AIMessage =>
+    AIMessage.isInstance(message) && message.id === "assistant-legacy-approval");
+  expect(resumedCall).toBeDefined();
+  if (resumedCall === undefined) throw new Error("Legacy approval resume omitted its call");
+  expect(assertCallRepresentationsMatch(resumedCall)).toEqual([legacyCallId]);
+  expect(resumedCall.additional_kwargs).not.toHaveProperty("nautilo_tool_invocations");
+  expect(resumedMessages.filter((message) =>
+    ToolMessage.isInstance(message) && message.tool_call_id === legacyCallId)).toHaveLength(1);
 });
 
 test("fixture teardown aborts and drains a pending graph before replacing its model stub", async () => {

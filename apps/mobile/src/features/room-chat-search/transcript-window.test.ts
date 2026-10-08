@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { ChatItem } from "@/lib/messages";
+import type { ServerEvent } from "@nautilo/types";
+import { applyStreamEvent, type ChatItem } from "@/lib/messages";
 
 import {
   mergeTranscriptWindow,
@@ -53,6 +54,84 @@ describe("D470 mobile transcript-window merge", () => {
       hasOlderGap: true,
       hasNewerGap: false,
     });
+  });
+
+  test("reconciles one live tool card to its persisted row across repeated windows", () => {
+    const live: ChatItem = {
+      kind: "tool",
+      toolCallId: "canonical-call",
+      toolName: "lookup",
+      argsSummary: "live arguments",
+      status: "running",
+      createdAt: "2026-08-01T00:00:02.000Z",
+    };
+    const hydrated: ChatItem = {
+      kind: "tool",
+      toolCallId: "canonical-call",
+      presentationKey: "persisted-row-10",
+      toolName: "lookup",
+      status: "success",
+      result: "stale hydration result",
+      createdAt: "2026-08-01T00:00:03.000Z",
+    };
+    const first = mergeTranscriptWindow({
+      current: [live],
+      hydrated: [hydrated],
+      targetMessageId: "missing",
+      hasOlder: false,
+      hasNewer: false,
+    });
+
+    expect(first.items).toEqual([{
+      ...live,
+      presentationKey: "persisted-row-10",
+    }]);
+
+    const completed = applyStreamEvent(first.items, {
+      type: "tool.end",
+      toolCallId: "canonical-call",
+      toolName: "lookup",
+      status: "success",
+      duration: 1,
+      result: "live result",
+    } as ServerEvent);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({
+      kind: "tool",
+      toolCallId: "canonical-call",
+      presentationKey: "persisted-row-10",
+      status: "success",
+      result: "live result",
+    });
+
+    const repeated = mergeTranscriptWindow({
+      current: completed,
+      hydrated: [hydrated],
+      targetMessageId: "missing",
+      hasOlder: false,
+      hasNewer: false,
+    });
+    expect(repeated.items).toEqual(completed);
+
+    const legacyRows: ChatItem[] = ["legacy-row-1", "legacy-row-2"].map(
+      (presentationKey, index) => ({
+        kind: "tool",
+        toolCallId: "reused-provider-id",
+        presentationKey,
+        toolName: "lookup",
+        status: "success",
+        result: String(index),
+        createdAt: `2026-08-01T00:00:0${index + 4}.000Z`,
+      }),
+    );
+    const legacy = mergeTranscriptWindow({
+      current: [],
+      hydrated: legacyRows,
+      targetMessageId: "missing",
+      hasOlder: false,
+      hasNewer: false,
+    });
+    expect(legacy.items).toEqual(legacyRows);
   });
 
   test("records deleted targets without inventing gaps and returns to latest cleanly", () => {
