@@ -16,7 +16,7 @@ import {
   type ProtectedTaskExecutionContinuationProof,
 } from "@nautilo/db";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
-import { inspectInitialTaskRuntimeNamespaceAuthority, inspectTaskContentNamespaceAuthority, withInitialTaskRuntimeRecipientAuthority, withParkedTaskRuntimeNamespaceAuthority, withParkedTaskRuntimeRecipientAuthority } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
+import { inspectInitialTaskRuntimeNamespaceAuthority, inspectTaskContentNamespaceAuthority, withInitialTaskRuntimeRecipientAuthority, withParkedTaskRuntimeNamespaceAuthority, withParkedTaskRuntimeRecipientAuthority, withTaskContentNamespaceAuthority } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
 
 import { PostgresDeviceAdmissionRepository, type CurrentDeviceAdmissionAuthority } from "../../src/server/device/postgres-device-admission-repository.ts";
 
@@ -154,10 +154,16 @@ function fixture(
   const executor: PostgresJsBridgeExecutor = {
     query: async <Row extends PostgresJsBridgeRow>(statement: string, parameters: readonly PostgresJsBridgeScalar[] = []) => {
       expect(productLocked).toBe(true);
-      expect(restrictedLocked).toBe(false);
+      expect(restrictedLocked).toBe(statement.includes("recovery_use_probe"));
       let stage: string;
       let rows: Rows;
-      if (statement.includes('from "tasks"')) {
+      if (statement.includes("recovery_validate_probe")) {
+        stage = "recovery-validate";
+        rows = [{ current: true }];
+      } else if (statement.includes("recovery_use_probe")) {
+        stage = "recovery-use";
+        rows = [{ current: true }];
+      } else if (statement.includes('from "tasks"')) {
         stage = "task";
         rows = [{ id: TASK, owner_id: USER, requestor_id: USER,
           agent_id: AGENT, calling_room_id: ROOMS[0], schedule_kind: "now",
@@ -331,11 +337,23 @@ function fixture(
     contentNamespaceId: NAMESPACES[0], sourceRoomId: ROOMS[0], targetRoomId: MEMORY_ROOM,
     namespaceIds: NAMESPACES,
     expectedPolicyRevision: 7 } as unknown as Input;
-  return { input, events };
+  return { input, events, canonicalTransaction: tx };
 }
 
 function substitute(stage: string, field: string, value: PostgresJsBridgeScalar): Adjust {
   return (current, rows) => current === stage ? rows.map((row) => ({ ...row, [field]: value })) : rows;
+}
+
+function contentAuthorityFixture() {
+  return fixture((stage, rows) => {
+    if (["candidates", "room-locks", "targets"].includes(stage)) {
+      return rows.slice(0, 1);
+    }
+    if (stage === "target-members") {
+      return rows.filter((row) => row["room_id"] === ROOMS[0]);
+    }
+    return rows;
+  });
 }
 
 describe("initial Task Runtime Namespace authority", () => {
@@ -481,6 +499,88 @@ describe("initial Task Runtime Namespace authority", () => {
     });
     expect(await inspectInitialTaskRuntimeNamespaceAuthority(scoped.input))
       .toBeNull();
+  });
+
+  test("lends the canonical product transaction under current content authority", async () => {
+    const { input, events, canonicalTransaction } = contentAuthorityFixture();
+    const { targetRoomId: _targetRoomId, namespaceIds: _namespaceIds,
+      ...contentInput } = input;
+    let validatedProduct: PostgresJsBridgeConnection | undefined;
+    const result = await withTaskContentNamespaceAuthority({
+      ...contentInput,
+      validateCurrentTaskRun: async (product, transaction, task) => {
+        expect(transaction as unknown).toBe(canonicalTransaction);
+        expect(task.id).toBe(TASK);
+        validatedProduct = product;
+        const rows = await product.query("SELECT recovery_validate_probe");
+        return rows[0]?.["current"] === true;
+      },
+      use: async (authority, product, transaction) => {
+        expect(transaction as unknown).toBe(canonicalTransaction);
+        if (validatedProduct === undefined) {
+          throw new Error("Content authority use ran before product validation");
+        }
+        expect(product).toBe(validatedProduct);
+        expect(authority.facts).toEqual([{
+          namespaceId: NAMESPACES[0],
+          domainId: DOMAINS[0],
+          expectedAccessRevision: 9,
+          expectedPolicyRevision: 7,
+          expectedDomainEpoch: 2,
+          expectedAuthorizationRevision: 3,
+        }]);
+        const rows = await product.query("SELECT recovery_use_probe");
+        return rows[0]?.["current"] === true ? "used" : "stale";
+      },
+    });
+
+    expect(result).toBe("used");
+    expect(events.slice(0, 4)).toEqual([
+      "policy-lock", "policy", "task", "recovery-validate",
+    ]);
+    expect(events.indexOf("recovery-use"))
+      .toBeGreaterThan(events.lastIndexOf("domain"));
+    expect(events.slice(-3)).toEqual([
+      "recovery-use", "restricted-released", "product-released",
+    ]);
+  });
+
+  test("denies content authority before Namespace locks when exact product proof fails", async () => {
+    const { input, events } = contentAuthorityFixture();
+    const { targetRoomId: _targetRoomId, namespaceIds: _namespaceIds,
+      ...contentInput } = input;
+    let used = false;
+    expect(await withTaskContentNamespaceAuthority({
+      ...contentInput,
+      validateCurrentTaskRun: async () => false,
+      use: () => {
+        used = true;
+      },
+    })).toBeNull();
+
+    expect(used).toBe(false);
+    expect(events).toEqual([
+      "policy-lock", "policy", "task", "product-released",
+    ]);
+  });
+
+  test("unwinds both held transactions when content recovery throws", async () => {
+    const { input, events } = contentAuthorityFixture();
+    const { targetRoomId: _targetRoomId, namespaceIds: _namespaceIds,
+      ...contentInput } = input;
+    const sentinel = new Error("content recovery failed");
+    const failure = await withTaskContentNamespaceAuthority({
+      ...contentInput,
+      validateCurrentTaskRun: async () => true,
+      use: () => {
+        throw sentinel;
+      },
+    }).then(() => null, (error: unknown) => error);
+
+    expect(failure).toBe(sentinel);
+    expect(events.slice(-2)).toEqual([
+      "restricted-released", "product-released",
+    ]);
   });
 
   test("rejects an archived exact Scope origin Room before restricted work", async () => {

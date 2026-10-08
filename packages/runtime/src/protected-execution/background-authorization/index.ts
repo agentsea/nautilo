@@ -162,4 +162,5 @@ export {
 
 export {
   isExactCompletedTaskRuntimeSuccessor,
+  isExactIntegrityFailedTaskRuntimeSuccessor,
 } from "./task-runtime-completion";

@@ -392,6 +392,100 @@ describe("protected Task published result recovery", () => {
     }
   });
 
+  test("maps an exact unmapped result before using the existing settlement", async () => {
+    const record = runningRecord();
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    await repository.create(record);
+    const recipients = await custody(record);
+    const calls: string[] = [];
+    try {
+      const recovery = createProtectedTaskPublishedResultRecovery({
+        db: database,
+        repository,
+        recipients,
+        loadJob: async () => ({ jobId: JOB, reference: reference(record) }),
+        settle: async (_db, _job, complete) => {
+          calls.push("settle");
+          return calls.length === 1 ? false : complete(proof(record));
+        },
+        recoverUnmapped: async () => {
+          calls.push("unmapped");
+          return "mapped";
+        },
+      });
+
+      expect(await recovery.recover(RUN)).toBe(true);
+      expect(calls).toEqual(["settle", "unmapped", "settle"]);
+      expect((await repository.get(REQUEST))?.snapshot.state)
+        .toBe("completed");
+      expect(recipients.size).toBe(0);
+    } finally {
+      recipients.close();
+    }
+  });
+
+  test("reports pending and quarantined unmapped results without false mapping", async () => {
+    for (const outcome of ["pending", "quarantined"] as const) {
+      const record = runningRecord();
+      const repository = new InMemoryBackgroundAuthorizationRepository();
+      await repository.create(record);
+      const recipients = await custody(record);
+      let settleCalls = 0;
+      try {
+        const recovery = createProtectedTaskPublishedResultRecovery({
+          db: database,
+          repository,
+          recipients,
+          loadJob: async () => ({ jobId: JOB, reference: reference(record) }),
+          settle: async () => {
+            settleCalls += 1;
+            return false;
+          },
+          recoverUnmapped: async () => outcome,
+        });
+
+        expect(await recovery.recover(RUN)).toBe(outcome === "quarantined");
+        expect(settleCalls).toBe(1);
+        expect((await repository.get(REQUEST))?.snapshot.state)
+          .toBe("running");
+        expect(recipients.size).toBe(1);
+      } finally {
+        recipients.close();
+      }
+    }
+  });
+
+  test("adopts an exact mapping after the recovery response is lost", async () => {
+    const record = runningRecord();
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    await repository.create(record);
+    const recipients = await custody(record);
+    let settleCalls = 0;
+    try {
+      const recovery = createProtectedTaskPublishedResultRecovery({
+        db: database,
+        repository,
+        recipients,
+        loadJob: async () => ({ jobId: JOB, reference: reference(record) }),
+        settle: async (_db, _job, complete) => {
+          settleCalls += 1;
+          return settleCalls === 1 ? false : complete(proof(record));
+        },
+        recoverUnmapped: async () => {
+          throw new Error("mapping response lost");
+        },
+      });
+
+      expect(await recovery.recover(RUN)).toBe(true);
+      expect(settleCalls).toBe(2);
+      expect((await repository.get(REQUEST))?.snapshot.state)
+        .toBe("completed");
+      expect(recipients.size).toBe(0);
+    } finally {
+      recipients.close();
+    }
+  });
+
   test("isolates page failures and unavailable rows without starving later work", async () => {
     const record = runningRecord();
     const repository = new InMemoryBackgroundAuthorizationRepository();

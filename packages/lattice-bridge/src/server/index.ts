@@ -1001,6 +1001,7 @@ export {
   withInitialTaskRuntimeRecipientAuthority,
   withParkedTaskRuntimeNamespaceAuthority,
   withParkedTaskRuntimeRecipientAuthority,
+  withTaskContentNamespaceAuthority,
   type InitialTaskRuntimeRecipientAuthority,
   type InitialTaskRuntimeNamespaceAuthority,
   type InitialTaskRuntimeNamespaceFact,
@@ -1026,6 +1027,12 @@ export {
   type TaskRuntimeAgentObjectPersistenceAuthority,
   type WithTaskRuntimeAgentObjectPersistenceAuthority,
 } from "./object/postgres-task-runtime-agent-object.ts";
+
+export {
+  reconcilePostgresTaskRunResultPublication,
+  type PostgresTaskRunResultRecoveryInput,
+  type TaskRunResultRecoveryOutcome,
+} from "./task/postgres-task-run-result-recovery.ts";
 
 export {
   createNativeTaskRuntimeCheckpointCellCrypto,

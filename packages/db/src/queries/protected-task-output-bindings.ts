@@ -3,9 +3,12 @@ import {
   asc,
   eq,
   gt,
+  inArray,
   isNotNull,
   isNull,
+  notExists,
   or,
+  sql,
 } from "drizzle-orm";
 import type { DirectDatabase } from "../config/direct-database";
 import { encryptionTransitionPolicy } from "../schema/encryption-transition";
@@ -19,7 +22,10 @@ import { sessionMessageCryptoRevisions } from
   "../schema/session-message-crypto-revisions";
 import { sessionMessages, sessions } from "../schema/sessions";
 import { taskRuns } from "../schema/task-runs";
+import { taskRunResultCryptoRevisions } from
+  "../schema/task-run-result-crypto-revisions";
 import { tasks } from "../schema/tasks";
+import { PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY } from "./tasks";
 import {
   protectedTaskRunMessageOperationId,
   protectedTaskRunOutputBindingId,
@@ -552,9 +558,47 @@ export async function listProtectedTaskRunOutputBindingsNeedingDelivery(
     || !Number.isFinite(after.acceptedAt.getTime())
     || !CANONICAL_UUID.test(after.taskRunId)
   )) throw new TypeError("Protected Task output recovery cursor is malformed");
+  const integrityFailureHandled = db.select({ one: sql<number>`1` })
+    .from(taskRuns)
+    .innerJoin(jobs, eq(jobs.id, taskRuns.jobId))
+    .innerJoin(taskRunResultCryptoRevisions, and(
+      eq(taskRunResultCryptoRevisions.taskId, taskRuns.taskId),
+      eq(taskRunResultCryptoRevisions.taskRunId, taskRuns.id),
+      eq(taskRunResultCryptoRevisions.resultRevision, 1),
+      eq(
+        taskRunResultCryptoRevisions.operationId,
+        protectedTaskRunOutputBindings.resultOperationId,
+      ),
+      eq(
+        taskRunResultCryptoRevisions.cryptoObjectId,
+        protectedTaskRunOutputBindings.resultObjectId,
+      ),
+    ))
+    .where(and(
+      eq(taskRuns.id, protectedTaskRunOutputBindings.taskRunId),
+      inArray(taskRuns.status, ["completed", "errored"]),
+      eq(taskRuns.completedAt, protectedTaskRunOutputBindings.resultTerminalAt),
+      eq(taskRuns.resultCryptoMappingState, "unmapped"),
+      eq(jobs.status, "failed"),
+      sql`${jobs.input}->${"kind"} = to_jsonb(${
+        "protected_task_run_v1"
+      }::text)`,
+      sql`${jobs.input}->${"taskId"} = to_jsonb(${taskRuns.taskId}::text)`,
+      sql`${jobs.input}->${"taskRunId"} = to_jsonb(${taskRuns.id}::text)`,
+      sql`${jobs.input}->${"resultObjectId"} = to_jsonb(${
+        protectedTaskRunOutputBindings.resultObjectId
+      }::text)`,
+      sql`${jobs.metadata} ? ${
+        PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY
+      }`,
+      eq(taskRunResultCryptoRevisions.disposition, "quarantined"),
+      eq(taskRunResultCryptoRevisions.failureCode, "retry_exhausted"),
+      isNull(protectedTaskRunOutputBindings.resultAttachedAt),
+    ));
   return db.select().from(protectedTaskRunOutputBindings).where(and(
     isNotNull(protectedTaskRunOutputBindings.resultTerminalAt),
     isNull(protectedTaskRunOutputBindings.completedAt),
+    notExists(integrityFailureHandled),
     after ? or(
       gt(protectedTaskRunOutputBindings.acceptedAt, after.acceptedAt),
       and(

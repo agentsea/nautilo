@@ -158,6 +158,8 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
     restricted: PostgresJsBridgeConnection,
     accessRevisions: readonly number[],
     policyRevision: number,
+    product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx,
   ) => Promise<Value | null>,
   validateCurrentTaskRun?: (
     product: PostgresJsBridgeConnection,
@@ -370,7 +372,13 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
           return request.restricted.transactionOnce(async (restrictedTx) => {
             const restricted = inTransaction(restrictedTx);
             await verifyCryptoPostgresHandle(restricted);
-            return use(restricted, accessRevisions, policy.revision);
+            return use(
+              restricted,
+              accessRevisions,
+              policy.revision,
+              product,
+              tx,
+            );
           }, { isolationLevel: "read committed" });
         },
       });
@@ -387,6 +395,8 @@ async function withTaskRuntimeNamespaceAuthority<Value>(
   use: (
     authority: InitialTaskRuntimeNamespaceAuthority,
     restricted: PostgresJsBridgeConnection,
+    product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx,
   ) => Value | Promise<Value>,
   onNamespaceReadinessUnavailable?: (namespaceId: string) => void,
   expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants,
@@ -406,7 +416,13 @@ async function withTaskRuntimeNamespaceAuthority<Value>(
       });
   return withInitialTaskRuntimeProductAuthority(
     request,
-    async (restricted, accessRevisions, policyRevision) => {
+    async (
+      restricted,
+      accessRevisions,
+      policyRevision,
+      product,
+      transaction,
+    ) => {
       const repository = new PostgresDomainKeyAuthorityRepository(
         restricted, request.crypto, request.serverScope,
       );
@@ -470,7 +486,7 @@ async function withTaskRuntimeNamespaceAuthority<Value>(
         const authority = Object.freeze({ sourceRoomId: request.sourceRoomId,
           sourceNamespaceId: request.contentNamespaceId,
           facts: Object.freeze(facts) });
-        return await use(authority, restricted);
+        return await use(authority, restricted, product, transaction);
       } finally {
         for (const authority of authorities) {
           authority.namespaceHeadDigest.fill(0);
@@ -543,6 +559,47 @@ export async function inspectTaskContentNamespaceAuthority(
     purpose: "content_only" as const,
     namespaceIds: Object.freeze([input.contentNamespaceId] as const),
   }));
+}
+
+/**
+ * Current requester-private Task content authority held with caller-supplied
+ * exact product proof. Product mutations remain inside the same canonical
+ * transaction and held Namespace/Domain authority callback.
+ */
+export async function withTaskContentNamespaceAuthority<Value>(
+  input: TaskContentNamespaceAuthorityInput & Readonly<{
+    validateCurrentTaskRun(
+      product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
+      task: LockedTaskRuntimeRoutingRow,
+    ): Promise<boolean>;
+    use(
+      authority: InitialTaskRuntimeNamespaceAuthority,
+      product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
+      restricted: PostgresJsBridgeConnection,
+    ): Value | Promise<Value>;
+  }>,
+): Promise<Value | null> {
+  const validateCurrentTaskRun = input.validateCurrentTaskRun;
+  const use = input.use;
+  if (typeof validateCurrentTaskRun !== "function"
+    || typeof use !== "function") return null;
+  const {
+    validateCurrentTaskRun: _validateCurrentTaskRun,
+    use: _use,
+    ...coordinates
+  } = input;
+  return withTaskRuntimeNamespaceAuthority(
+    Object.freeze({
+      ...coordinates,
+      purpose: "content_only" as const,
+      namespaceIds: Object.freeze([coordinates.contentNamespaceId] as const),
+    }),
+    validateCurrentTaskRun,
+    (authority, restricted, product, transaction) =>
+      use(authority, product, transaction, restricted),
+  );
 }
 
 /**

@@ -3,6 +3,7 @@ import type { SQL } from "drizzle-orm";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
+  lockExactProtectedTaskRunResultPublicationInTx,
   settlePublishedProtectedTaskRunAuthorization,
   type ProtectedTaskDurableJobReference,
 } from "../../src/queries/tasks";
@@ -141,12 +142,14 @@ type BindingRow = Readonly<{
 }>;
 
 type RevisionRow = Readonly<{
+  sequence: number;
   taskId: string;
   taskRunId: string;
   contentNamespaceId: string;
   resultRevision: number;
   operationId: string;
   requestDigest: Uint8Array;
+  authorityFingerprint: Uint8Array;
   requesterHumanId: string;
   anchorNamespaceId: string;
   cryptoObjectId: string;
@@ -156,6 +159,10 @@ type RevisionRow = Readonly<{
   requiredNamespaceFingerprint: Uint8Array;
   completion: string;
   disposition: string;
+  attemptCount: number;
+  nextAttemptAt: Date | null;
+  leaseToken: string | null;
+  leaseExpiresAt: Date | null;
   failureCode: string | null;
   cryptoCompletedAt: Date | null;
 }>;
@@ -205,6 +212,19 @@ function run(overrides: Partial<RunRow> = {}): RunRow {
   };
 }
 
+function unmappedRun(overrides: Partial<RunRow> = {}): RunRow {
+  return run({
+    resultRepresentation: "ordinary",
+    resultContentNamespaceId: null,
+    resultRevision: 0,
+    resultCryptoObjectId: null,
+    resultCryptoAccessRevision: 0,
+    resultCryptoRequiredNamespaceFingerprint: null,
+    resultCryptoMappingState: "unmapped",
+    ...overrides,
+  });
+}
+
 function job(overrides: Partial<JobRow> = {}): JobRow {
   return {
     id: ids.job,
@@ -241,12 +261,14 @@ function binding(overrides: Partial<BindingRow> = {}): BindingRow {
 
 function revision(overrides: Partial<RevisionRow> = {}): RevisionRow {
   return {
+    sequence: 1,
     taskId: ids.task,
     taskRunId: ids.run,
     contentNamespaceId: ids.namespace,
     resultRevision: 1,
     operationId: `task-run-result:${ids.run}`,
     requestDigest: digest,
+    authorityFingerprint: new Uint8Array(32).fill(0x63),
     requesterHumanId: ids.requesterHuman,
     anchorNamespaceId: ids.namespace,
     cryptoObjectId: resultObjectId,
@@ -256,10 +278,23 @@ function revision(overrides: Partial<RevisionRow> = {}): RevisionRow {
     requiredNamespaceFingerprint: fingerprint,
     completion: "complete",
     disposition: "mapped",
+    attemptCount: 0,
+    nextAttemptAt: null,
+    leaseToken: null,
+    leaseExpiresAt: null,
     failureCode: null,
     cryptoCompletedAt,
     ...overrides,
   };
+}
+
+function activeRevision(overrides: Partial<RevisionRow> = {}): RevisionRow {
+  return revision({
+    completion: "pending",
+    disposition: "active",
+    cryptoCompletedAt: null,
+    ...overrides,
+  });
 }
 
 type FixtureOptions = Readonly<{
@@ -363,7 +398,160 @@ async function settle(
   }, completeAuthorization);
 }
 
+async function lockProof(
+  f: ReturnType<typeof fixture>,
+  phase: "mapped" | "unmapped",
+  jobReference = reference(),
+) {
+  return f.db.transaction(tx =>
+    lockExactProtectedTaskRunResultPublicationInTx(tx, {
+      jobId: ids.job,
+      reference: jobReference,
+    }, phase)
+  );
+}
+
 describe("published protected Task result settlement", () => {
+  test("returns an immutable metadata proof for an exact unmapped result", async () => {
+    const nextAttemptAt = new Date("2026-10-08T08:02:00.000Z");
+    const leaseExpiresAt = new Date("2026-10-08T08:03:00.000Z");
+    const f = fixture({
+      run: unmappedRun(),
+      revision: activeRevision({
+        attemptCount: 2,
+        nextAttemptAt,
+        leaseToken: "70000000-0000-4000-8000-000000000007",
+        leaseExpiresAt,
+      }),
+    });
+
+    const proof = await lockProof(f, "unmapped");
+
+    expect(proof).toMatchObject({
+      phase: "unmapped",
+      reference: reference(),
+      run: {
+        id: ids.run,
+        outcome: "completed",
+      },
+      lifecycle: {
+        sequence: 1,
+        operationId: `task-run-result:${ids.run}`,
+        attemptCount: 2,
+        leaseToken: "70000000-0000-4000-8000-000000000007",
+        cryptoCompletedAt: null,
+      },
+    });
+    expect(proof?.lifecycle.authorityFingerprint)
+      .toEqual(new Uint8Array(32).fill(0x63));
+    expect(proof?.lifecycle.requiredNamespaceFingerprint).toEqual(fingerprint);
+    expect(proof?.lifecycle.requiredNamespaceFingerprint).not.toBe(fingerprint);
+    expect(proof?.run.completedAt).not.toBe(completedAt);
+    expect(f.writes).toEqual([]);
+    expect(f.locks).toEqual([
+      { table: tasks, kind: "update" },
+      { table: taskRuns, kind: "update" },
+      { table: jobs, kind: "update" },
+      { table: protectedTaskRunOutputBindings, kind: "update" },
+      { table: taskRunResultCryptoRevisions, kind: "update" },
+      { table: taskDefinitionCryptoRevisions, kind: "share" },
+    ]);
+  });
+
+  test("accepts an active complete lifecycle and the historically bound definition", async () => {
+    const f = fixture({
+      task: task({
+        contentRepresentation: "dual",
+        contentNamespaceId: ids.requestor,
+        cryptoObjectId: `task-definition:v1:${"c".repeat(64)}`,
+        cryptoRequiredNamespaceFingerprint: new Uint8Array(32).fill(0x7f),
+      }),
+      run: unmappedRun(),
+      revision: activeRevision({
+        completion: "complete",
+        cryptoCompletedAt,
+      }),
+    });
+
+    expect(await lockProof(f, "unmapped")).toMatchObject({
+      lifecycle: {
+        cryptoCompletedAt,
+      },
+    });
+    expect(f.projections.find(item => item.table === tasks)?.keys)
+      .toEqual(["id", "requestorId"]);
+  });
+
+  test("proves dual ordinary content from nullness metadata only", async () => {
+    const f = fixture({
+      run: unmappedRun({ resultTextIsNull: false }),
+      job: job({ terminalReceipt: receipt({ resultRepresentation: "dual" }) }),
+      revision: activeRevision({ representation: "dual" }),
+      definition: definition({ representation: "dual" }),
+    });
+
+    expect(await lockProof(f, "unmapped")).toMatchObject({
+      lifecycle: { representation: "dual" },
+    });
+    const runProjection = f.projections.find(item => item.table === taskRuns);
+    expect(runProjection?.keys).toContain("resultTextIsNull");
+    expect(runProjection?.keys).not.toContain("resultText");
+  });
+
+  test("rejects malformed or mismatched unmapped publication proof", async () => {
+    const cases: FixtureOptions[] = [
+      { run: unmappedRun({ resultRevision: 1 }) },
+      { run: unmappedRun({ resultCryptoMappingState: "stale" }) },
+      { binding: binding({ resultAttachedAt: completedAt }), run: unmappedRun() },
+      { binding: binding({ completedAt }), run: unmappedRun() },
+      { revision: revision({ disposition: "mapped" }), run: unmappedRun() },
+      { revision: activeRevision({ disposition: "quarantined" }), run: unmappedRun() },
+      {
+        revision: activeRevision({ cryptoCompletedAt }),
+        run: unmappedRun(),
+      },
+      {
+        revision: activeRevision({ completion: "complete" }),
+        run: unmappedRun(),
+      },
+      {
+        revision: activeRevision({
+          leaseExpiresAt: new Date("2026-10-08T08:03:00.000Z"),
+        }),
+        run: unmappedRun(),
+      },
+      {
+        revision: activeRevision({
+          requiredNamespaceFingerprint: new Uint8Array(32).fill(0x99),
+        }),
+        run: unmappedRun(),
+      },
+      {
+        job: job({ terminalReceipt: receipt({ resultObjectId: definitionObjectId }) }),
+        run: unmappedRun(),
+        revision: activeRevision(),
+      },
+      {
+        definition: definition({ cryptoObjectId: `${definitionObjectId}:other` }),
+        run: unmappedRun(),
+        revision: activeRevision(),
+      },
+    ];
+    for (const options of cases) {
+      const f = fixture(options);
+      expect(await lockProof(f, "unmapped")).toBeNull();
+      expect(f.writes).toEqual([]);
+    }
+  });
+
+  test("keeps mapped and unmapped publication phases distinct", async () => {
+    expect(await lockProof(fixture(), "unmapped")).toBeNull();
+    expect(await lockProof(fixture({
+      run: unmappedRun(),
+      revision: activeRevision(),
+    }), "mapped")).toBeNull();
+  });
+
   test("holds exact metadata locks before authorization and attaches the mapped result", async () => {
     const f = fixture();
     const proofs: unknown[] = [];

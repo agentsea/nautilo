@@ -1,4 +1,7 @@
-import { completeBackgroundAuthorizationRequest } from "./lifecycle";
+import {
+  completeBackgroundAuthorizationRequest,
+  failBackgroundAuthorizationRequest,
+} from "./lifecycle";
 import {
   sameBackgroundAuthorizationRecord,
   type BackgroundAuthorizationRecord,
@@ -32,6 +35,28 @@ export function isExactCompletedTaskRuntimeSuccessor(
       ...expected,
       snapshot,
       finishedAt: current.snapshot.updatedAt,
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** Adopt only the canonical integrity failure after an uncertain CAS response. */
+export function isExactIntegrityFailedTaskRuntimeSuccessor(
+  current: BackgroundAuthorizationRecord | null,
+  expected: BackgroundAuthorizationTaskRuntimeRecordV3,
+): boolean {
+  if (current === null
+    || current.snapshot.state !== "terminal_failure"
+    || current.snapshot.terminalReason !== "integrity_failure"
+    || (expected.snapshot.state !== "running"
+      && expected.snapshot.state !== "publication_reconciliation")) return false;
+  try {
+    const snapshot = failBackgroundAuthorizationRequest(
+      expected.snapshot, "integrity_failure", current.snapshot.updatedAt,
+    ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"];
+    return sameBackgroundAuthorizationRecord(current, {
+      ...expected, snapshot, finishedAt: current.snapshot.updatedAt,
     });
   } catch {
     return false;

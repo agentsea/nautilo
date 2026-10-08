@@ -145,6 +145,7 @@ import {
   fingerprintRequiredMemoryNamespaces,
   MEMORY_OBJECT_TYPE,
   prepareTaskRuntimeAgentObject,
+  TASK_CONTENT_RECONCILE_MAX_ATTEMPTS,
   taskContentObjectTypeV1,
   type ProtectedAgentMemoryRepository,
   type ProtectedMemoryAuthority,
@@ -156,7 +157,9 @@ import {
   PostgresHumanDeviceGroupRepository,
   PostgresLatticeStorage,
   PostgresTaskContentProductStore,
+  bindDurableTaskContentRepositoryV1,
   createPostgresTaskContentCryptoCompletion,
+  createPostgresTaskContentRepositoryV1,
   PostgresNamespaceProductAuthority,
   inspectInitialTaskRuntimeNamespaceAuthority,
   inspectTaskContentNamespaceAuthority,
@@ -239,6 +242,56 @@ const EXPECTED_POSTGRES_PORT = "6234";
 const NOW = Date.parse("2042-07-08T09:00:00.000Z");
 const EXPIRES_AT = NOW + 60_000;
 const SERVER_SCOPE = "https://task-memory.integration.test";
+
+class CrashAfterTaskResultCryptoStore extends PostgresTaskContentProductStore {
+  override async compareAndSwapCryptoMapping(
+    _input: Parameters<
+      PostgresTaskContentProductStore["compareAndSwapCryptoMapping"]
+    >[0],
+  ): ReturnType<PostgresTaskContentProductStore["compareAndSwapCryptoMapping"]> {
+    throw new Error("synthetic loss after result crypto storage");
+  }
+}
+
+function createCrashAfterTaskResultCryptoRepository<ProductResult>(
+  input: Parameters<
+    typeof createPostgresTaskContentRepositoryV1<ProductResult>
+  >[0],
+): ReturnType<typeof createPostgresTaskContentRepositoryV1<ProductResult>> {
+  return bindDurableTaskContentRepositoryV1({
+    protectedRepository: createDormantTaskContentShadowRepository({
+      product: new CrashAfterTaskResultCryptoStore(
+        input.product.handle,
+        input.product.resolveCurrentAuthority,
+      ),
+      crypto: createPostgresTaskContentCryptoCompletion(input.crypto),
+    }),
+    content: input.content,
+  });
+}
+
+function createMissingTaskResultCiphertextRepository<ProductResult>(
+  input: Parameters<
+    typeof createPostgresTaskContentRepositoryV1<ProductResult>
+  >[0],
+): ReturnType<typeof createPostgresTaskContentRepositoryV1<ProductResult>> {
+  const crypto = createPostgresTaskContentCryptoCompletion(input.crypto);
+  return bindDurableTaskContentRepositoryV1({
+    protectedRepository: createDormantTaskContentShadowRepository({
+      product: new PostgresTaskContentProductStore(
+        input.product.handle,
+        input.product.resolveCurrentAuthority,
+      ),
+      crypto: {
+        complete: () => Promise.reject(
+          new Error("synthetic loss before result crypto storage"),
+        ),
+        verify: reference => crypto.verify(reference),
+      },
+    }),
+    content: input.content,
+  });
+}
 
 function assertExactTarget(): void {
   if (process.env[ENABLE_ENV] !== "1") return;
@@ -2385,11 +2438,15 @@ describePostgres("sealed protected Task Memory object writer", () => {
     }
   }, 60_000);
 
-  test.each(["result", "attachment recovery", "publication recovery", "pre-execution recovery", "cancellation recovery", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
+  test.each(["result", "attachment recovery", "publication recovery", "unmapped recovery", "unmapped expired grant recovery", "missing ciphertext recovery", "pre-execution recovery", "cancellation recovery", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
     const base = await createBaseFixture({ connectedExecution: true });
     const recipients = new TaskRuntimeRecipientRegistry(base.crypto, {
       now: () => NOW,
     });
+    const unmappedRecovery = scenario === "unmapped recovery"
+      || scenario === "unmapped expired grant recovery";
+    const missingCiphertextRecovery = scenario === "missing ciphertext recovery";
+    let recoveryNow = NOW;
     let testError: unknown;
     let cleanupError: unknown;
     let connected: Awaited<ReturnType<
@@ -2399,7 +2456,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
     let jobManager: JobManager | null = null;
     try {
       connected = await createConnectedProtectedTask(base, {
-        noDelivery: scenario === "publication recovery",
+        noDelivery: scenario === "publication recovery"
+          || unmappedRecovery
+          || missingCiphertextRecovery,
       });
       const segmentCalls: Array<Readonly<{
         taskId: string;
@@ -2532,17 +2591,27 @@ describePostgres("sealed protected Task Memory object writer", () => {
         restricted: base.restricted,
         crypto: base.crypto,
         serverScope: SERVER_SCOPE,
-        now: () => NOW,
+        now: () => recoveryNow,
       }, {
         nativeExecution: input => {
           const native = createProductionProtectedTaskNativeExecution(input, {
             result: resultInput => createProtectedTaskNativeResultPublication(
               resultInput,
-              scenario === "attachment recovery" ? {
-                recordAttached: async () => {
-                  throw new Error("synthetic loss before result attachment");
-                },
-              } : {},
+              {
+                ...(scenario === "attachment recovery" ? {
+                  recordAttached: async () => {
+                    throw new Error("synthetic loss before result attachment");
+                  },
+                } : {}),
+                ...(unmappedRecovery ? {
+                  createRepository:
+                    createCrashAfterTaskResultCryptoRepository,
+                } : {}),
+                ...(missingCiphertextRecovery ? {
+                  createRepository:
+                    createMissingTaskResultCiphertextRepository,
+                } : {}),
+              },
             ),
             segment: segmentInput => createProtectedTaskNativeFixedMemorySegment({
               ...segmentInput,
@@ -2912,160 +2981,379 @@ describePostgres("sealed protected Task Memory object writer", () => {
         connected.taskRunId,
         terminalStatus,
       );
-      if (scenario === "attachment recovery" || scenario === "publication recovery") {
+      if (missingCiphertextRecovery) {
         expect(terminal.job.status).toBe("failed");
-        expect(terminal.run.resultCryptoMappingState).toBe("verified");
-        const [before] = await base.admin.select({
+        expect(terminal.run).toMatchObject({
+          status: "completed",
+          resultRepresentation: "ordinary",
+          resultContentNamespaceId: null,
+          resultRevision: 0,
+          resultCryptoObjectId: null,
+          resultCryptoAccessRevision: 0,
+          resultCryptoRequiredNamespaceFingerprint: null,
+          resultCryptoMappingState: "unmapped",
+        });
+        expect(await objectRowCounts(base, connected.resultObjectId)).toEqual({
+          payload: 0,
+          head: 0,
+          manifest: 0,
+          envelope: 0,
+        });
+        const [initialLifecycle] = await base.admin.select({
+          completion: taskRunResultCryptoRevisions.completion,
+          disposition: taskRunResultCryptoRevisions.disposition,
+          attemptCount: taskRunResultCryptoRevisions.attemptCount,
+          nextAttemptAt: taskRunResultCryptoRevisions.nextAttemptAt,
+          failureCode: taskRunResultCryptoRevisions.failureCode,
+          cryptoCompletedAt: taskRunResultCryptoRevisions.cryptoCompletedAt,
+        }).from(taskRunResultCryptoRevisions).where(and(
+          eq(taskRunResultCryptoRevisions.taskId, connected.taskId),
+          eq(taskRunResultCryptoRevisions.taskRunId, connected.taskRunId),
+          eq(taskRunResultCryptoRevisions.resultRevision, 1),
+        ));
+        expect(initialLifecycle).toMatchObject({
+          completion: "pending",
+          disposition: "active",
+          attemptCount: 0,
+          failureCode: null,
+          cryptoCompletedAt: null,
+        });
+        expect(initialLifecycle?.nextAttemptAt).toBeInstanceOf(Date);
+        const [initialBinding] = await base.admin.select({
+          terminalAt: protectedTaskRunOutputBindings.resultTerminalAt,
+          attachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
+          completedAt: protectedTaskRunOutputBindings.completedAt,
+        }).from(protectedTaskRunOutputBindings).where(eq(
+          protectedTaskRunOutputBindings.taskRunId,
+          connected.taskRunId,
+        ));
+        expect(initialBinding).toMatchObject({
+          attachedAt: null,
+          completedAt: null,
+        });
+        expect(initialBinding?.terminalAt).toEqual(terminal.run.completedAt);
+
+        for (
+          let attempt = 1;
+          attempt <= TASK_CONTENT_RECONCILE_MAX_ATTEMPTS;
+          attempt += 1
+        ) {
+          await composition.coordinator.recoverBeforeObservation(100);
+          const [lifecycle] = await base.admin.select({
+            completion: taskRunResultCryptoRevisions.completion,
+            disposition: taskRunResultCryptoRevisions.disposition,
+            attemptCount: taskRunResultCryptoRevisions.attemptCount,
+            nextAttemptAt: taskRunResultCryptoRevisions.nextAttemptAt,
+            failureCode: taskRunResultCryptoRevisions.failureCode,
+            cryptoCompletedAt: taskRunResultCryptoRevisions.cryptoCompletedAt,
+          }).from(taskRunResultCryptoRevisions).where(and(
+            eq(taskRunResultCryptoRevisions.taskId, connected.taskId),
+            eq(taskRunResultCryptoRevisions.taskRunId, connected.taskRunId),
+            eq(taskRunResultCryptoRevisions.resultRevision, 1),
+          ));
+          expect(lifecycle?.attemptCount).toBe(attempt);
+          expect(lifecycle?.completion).toBe("pending");
+          expect(lifecycle?.cryptoCompletedAt).toBeNull();
+          if (attempt === TASK_CONTENT_RECONCILE_MAX_ATTEMPTS) {
+            expect(lifecycle).toMatchObject({
+              disposition: "quarantined",
+              failureCode: "retry_exhausted",
+              nextAttemptAt: null,
+            });
+          } else {
+            expect(lifecycle?.disposition).toBe("active");
+            expect(lifecycle?.failureCode).toBeNull();
+            expect(lifecycle?.nextAttemptAt).toBeInstanceOf(Date);
+            const [deferred] = await base.admin
+              .update(taskRunResultCryptoRevisions).set({
+                nextAttemptAt: new Date(0),
+              }).where(and(
+                eq(taskRunResultCryptoRevisions.taskId, connected.taskId),
+                eq(taskRunResultCryptoRevisions.taskRunId, connected.taskRunId),
+                eq(taskRunResultCryptoRevisions.resultRevision, 1),
+                eq(taskRunResultCryptoRevisions.attemptCount, attempt),
+                eq(taskRunResultCryptoRevisions.disposition, "active"),
+              )).returning({
+                nextAttemptAt: taskRunResultCryptoRevisions.nextAttemptAt,
+              });
+            expect(deferred?.nextAttemptAt).toEqual(new Date(0));
+          }
+        }
+
+        terminal = await waitForConnectedCompletion(
+          base,
+          connected.taskRunId,
+          terminalStatus,
+        );
+        expect(terminal.job.status).toBe("failed");
+        expect(terminal.run).toMatchObject({
+          status: "completed",
+          resultRepresentation: "ordinary",
+          resultRevision: 0,
+          resultCryptoMappingState: "unmapped",
+        });
+        const [authorization] = await base.admin.select({
+          state: backgroundCryptoAuthorizationRequests.state,
+          terminalReason: backgroundCryptoAuthorizationRequests.terminalReason,
+        }).from(backgroundCryptoAuthorizationRequests).where(eq(
+          backgroundCryptoAuthorizationRequests.requestId,
+          `task-run-authorization:${connected.taskRunId}`,
+        ));
+        expect(authorization).toEqual({
+          state: "terminal_failure",
+          terminalReason: "integrity_failure",
+        });
+        const [settledBinding] = await base.admin.select({
+          terminalAt: protectedTaskRunOutputBindings.resultTerminalAt,
+          attachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
+          completedAt: protectedTaskRunOutputBindings.completedAt,
+        }).from(protectedTaskRunOutputBindings).where(eq(
+          protectedTaskRunOutputBindings.taskRunId,
+          connected.taskRunId,
+        ));
+        expect(settledBinding).toMatchObject({
+          attachedAt: null,
+          completedAt: null,
+        });
+        expect(settledBinding?.terminalAt).toEqual(terminal.run.completedAt);
+        expect(await objectRowCounts(base, connected.resultObjectId)).toEqual({
+          payload: 0,
+          head: 0,
+          manifest: 0,
+          envelope: 0,
+        });
+        expect(recipients.size).toBe(0);
+
+        await composition.coordinator.recoverBeforeObservation(100);
+        const [unchangedLifecycle] = await base.admin.select({
+          disposition: taskRunResultCryptoRevisions.disposition,
+          attemptCount: taskRunResultCryptoRevisions.attemptCount,
+          failureCode: taskRunResultCryptoRevisions.failureCode,
+        }).from(taskRunResultCryptoRevisions).where(and(
+          eq(taskRunResultCryptoRevisions.taskId, connected.taskId),
+          eq(taskRunResultCryptoRevisions.taskRunId, connected.taskRunId),
+          eq(taskRunResultCryptoRevisions.resultRevision, 1),
+        ));
+        expect(unchangedLifecycle).toEqual({
+          disposition: "quarantined",
+          attemptCount: TASK_CONTENT_RECONCILE_MAX_ATTEMPTS,
+          failureCode: "retry_exhausted",
+        });
+        expect(segmentCalls).toEqual([{
+          taskId: connected.taskId,
+          taskRunId: connected.taskRunId,
+          graphThreadId: connected.graphThreadId,
+        }]);
+        expect(await base.admin.select({ id: jobs.id }).from(jobs).where(eq(
+          jobs.laneKey,
+          `task:${connected.taskId}`,
+        ))).toEqual([{ id: terminal.job.id }]);
+      }
+      if (!missingCiphertextRecovery) {
+        if (scenario === "attachment recovery"
+          || scenario === "publication recovery"
+          || unmappedRecovery) {
+          expect(terminal.job.status).toBe("failed");
+          if (unmappedRecovery) {
+            expect(terminal.run).toMatchObject({
+              status: "completed",
+              resultRepresentation: "ordinary",
+              resultContentNamespaceId: null,
+              resultRevision: 0,
+              resultCryptoObjectId: null,
+              resultCryptoAccessRevision: 0,
+              resultCryptoRequiredNamespaceFingerprint: null,
+              resultCryptoMappingState: "unmapped",
+            });
+            const [lifecycle] = await base.admin.select({
+              completion: taskRunResultCryptoRevisions.completion,
+              disposition: taskRunResultCryptoRevisions.disposition,
+              cryptoObjectId: taskRunResultCryptoRevisions.cryptoObjectId,
+            }).from(taskRunResultCryptoRevisions).where(and(
+              eq(taskRunResultCryptoRevisions.taskId, connected.taskId),
+              eq(taskRunResultCryptoRevisions.taskRunId, connected.taskRunId),
+              eq(taskRunResultCryptoRevisions.resultRevision, 1),
+            ));
+            expect(lifecycle).toEqual({
+              completion: "complete",
+              disposition: "active",
+              cryptoObjectId: connected.resultObjectId,
+            });
+            expect(await objectRowCounts(base, connected.resultObjectId)).toEqual({
+              payload: 1,
+              head: 1,
+              manifest: 1,
+              envelope: 1,
+            });
+          } else {
+            expect(terminal.run.resultCryptoMappingState).toBe("verified");
+          }
+          const [before] = await base.admin.select({
+            attachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
+            completedAt: protectedTaskRunOutputBindings.completedAt,
+          }).from(protectedTaskRunOutputBindings).where(eq(
+            protectedTaskRunOutputBindings.taskRunId, connected.taskRunId,
+          ));
+          expect(before?.completedAt).toBeNull();
+          if (scenario === "attachment recovery" || unmappedRecovery) {
+            expect(before?.attachedAt).toBeNull();
+          } else {
+            expect(before?.attachedAt).toBeInstanceOf(Date);
+          }
+          if (scenario === "unmapped expired grant recovery") {
+            const [grant] = await base.admin.select({
+              authorizationExpiresAt:
+                backgroundCryptoAuthorizationRequests.authorizationExpiresAt,
+            }).from(backgroundCryptoAuthorizationRequests).where(eq(
+              backgroundCryptoAuthorizationRequests.requestId,
+              `task-run-authorization:${connected.taskRunId}`,
+            ));
+            expect(grant?.authorizationExpiresAt).toBeInstanceOf(Date);
+            recoveryNow = grant!.authorizationExpiresAt!.getTime() + 1;
+          }
+        }
+        // The existing observer repairs final publication without invoking the
+        // model or allocating another TaskRun/Job.
+        await composition.coordinator.recoverBeforeObservation(100);
+        terminal = await waitForConnectedCompletion(base, connected.taskRunId, terminalStatus);
+        if (terminal.job.status !== "completed") {
+          const [authorization] = await base.admin.select({
+            state: backgroundCryptoAuthorizationRequests.state,
+          }).from(backgroundCryptoAuthorizationRequests).where(eq(
+            backgroundCryptoAuthorizationRequests.requestId,
+            `task-run-authorization:${connected.taskRunId}`,
+          ));
+          throw new Error(`Connected protected Task Job failed: ${JSON.stringify({
+            jobStatus: terminal.job.status,
+            runStatus: terminal.run.status,
+            authorizationState: authorization?.state ?? "missing",
+            segmentCalls,
+            nativeErrors,
+          })}`);
+        }
+        await waitForConnectedRelease(
+          base,
+          `task-run-authorization:${connected.taskRunId}`,
+          recipients,
+        );
+        const [settledBinding] = await base.admin.select({
+          deliveryMode: protectedTaskRunOutputBindings.deliveryMode,
           attachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
           completedAt: protectedTaskRunOutputBindings.completedAt,
         }).from(protectedTaskRunOutputBindings).where(eq(
           protectedTaskRunOutputBindings.taskRunId, connected.taskRunId,
         ));
-        expect(before?.completedAt).toBeNull();
-        if (scenario === "attachment recovery") expect(before?.attachedAt).toBeNull();
-        else expect(before?.attachedAt).toBeInstanceOf(Date);
-      }
-      // The existing observer repairs final publication without invoking the
-      // model or allocating another TaskRun/Job.
-      await composition.coordinator.recoverBeforeObservation(100);
-      terminal = await waitForConnectedCompletion(base, connected.taskRunId, terminalStatus);
-      if (terminal.job.status !== "completed") {
-        const [authorization] = await base.admin.select({
-          state: backgroundCryptoAuthorizationRequests.state,
-        }).from(backgroundCryptoAuthorizationRequests).where(eq(
-          backgroundCryptoAuthorizationRequests.requestId,
-          `task-run-authorization:${connected.taskRunId}`,
+        expect(settledBinding?.attachedAt).toEqual(terminal.run.completedAt);
+        if (scenario === "publication recovery" || unmappedRecovery) {
+          expect(settledBinding?.deliveryMode).toBe("none");
+          expect(settledBinding?.completedAt).toEqual(terminal.run.completedAt);
+        } else {
+          // Message/wake delivery is a separate unfinished owner.
+          expect(settledBinding?.completedAt).toBeNull();
+        }
+        expect(terminal.job.input).toEqual({
+          kind: "protected_task_run_v1",
+          taskId: connected.taskId,
+          taskRunId: connected.taskRunId,
+          inputObjectId: connected.inputObjectId,
+          resultObjectId: connected.resultObjectId,
+          authorizationRequestId:
+            `task-run-authorization:${connected.taskRunId}`,
+          policyRevision: base.policyRevision,
+          executionSegment: 1,
+        });
+        expect(terminal.job.message).toBeNull();
+        expect(terminal.job.result).toBeNull();
+        // A delayed process cannot overwrite the completed durable result.
+        const expectedReference = {
+          kind: "protected_task_run_v1" as const,
+          taskId: connected.taskId,
+          taskRunId: connected.taskRunId,
+          inputObjectId: connected.inputObjectId,
+          resultObjectId: connected.resultObjectId,
+          authorizationRequestId: `task-run-authorization:${connected.taskRunId}`,
+          policyRevision: base.policyRevision,
+          executionSegment: 1,
+        };
+        for (const requested of ["failed", "cancelled"] as const) {
+          expect(await settleProtectedTaskJobTerminalWithDatabase(
+            base.productDb, terminal.job.id, expectedReference, requested,
+            { expectedRevision: base.policyRevision, representation: "protected_only" },
+          )).toEqual({ kind: "existing_terminal", status: "completed" });
+        }
+        expect((await base.admin.select({ status: jobs.status }).from(jobs)
+          .where(eq(jobs.id, terminal.job.id)))[0]?.status).toBe("completed");
+        if (terminal.run.status !== "completed") {
+          throw new Error(`Connected Task execution did not succeed: ${JSON.stringify({
+            scenario, segmentCalls, nativeErrors,
+          })}`);
+        }
+        expect(terminal.run).toMatchObject({
+          id: connected.taskRunId,
+          taskId: connected.taskId,
+          jobId: terminal.job.id,
+          status: "completed",
+          resultRepresentation: "protected",
+          resultContentNamespaceId: base.namespaceValue,
+          resultRevision: 1,
+          resultCryptoObjectId: connected.resultObjectId,
+          resultCryptoAccessRevision: 0,
+          resultCryptoMappingState: "verified",
+          resultText: null,
+          lastError: null,
+          modelId: connected.requestedModelId,
+        });
+        const exactRuns = await base.admin.select({ id: taskRuns.id })
+          .from(taskRuns).where(eq(taskRuns.taskId, connected.taskId));
+        const exactJobs = await base.admin.select({ id: jobs.id })
+          .from(jobs).where(eq(jobs.laneKey, `task:${connected.taskId}`));
+        expect(exactRuns).toEqual([{ id: connected.taskRunId }]);
+        expect(exactJobs).toEqual([{ id: terminal.job.id }]);
+        const [terminalTask] = await base.admin.select({
+          status: tasks.status,
+          prompt: tasks.prompt,
+          expectedOutput: tasks.expectedOutput,
+          lastError: tasks.lastError,
+        }).from(tasks).where(eq(tasks.id, connected.taskId));
+        expect(terminalTask).toEqual({
+          status: "completed",
+          prompt: "",
+          expectedOutput: null,
+          lastError: null,
+        });
+        expect(segmentCalls).toEqual([{
+          taskId: connected.taskId,
+          taskRunId: connected.taskRunId,
+          graphThreadId: connected.graphThreadId,
+        }]);
+        expect(await objectRowCounts(base, connected.resultObjectId)).toEqual({
+          payload: 1,
+          head: 1,
+          manifest: 1,
+          envelope: 1,
+        });
+        const sessionRows = await base.admin.select({
+          id: sessions.id,
+          ownerId: sessions.ownerId,
+          agentId: sessions.agentId,
+          roomId: sessions.roomId,
+        }).from(sessions).where(eq(
+          sessions.threadId,
+          connected.graphThreadId,
         ));
-        throw new Error(`Connected protected Task Job failed: ${JSON.stringify({
-          jobStatus: terminal.job.status,
-          runStatus: terminal.run.status,
-          authorizationState: authorization?.state ?? "missing",
-          segmentCalls,
-          nativeErrors,
-        })}`);
+        expect(sessionRows).toHaveLength(1);
+        expect(sessionRows[0]).toMatchObject({
+          ownerId: base.userId,
+          agentId: base.productAgentId,
+          roomId: base.roomId,
+        });
+        expect(await base.admin.select({ id: sessionMessages.id })
+          .from(sessionMessages).where(eq(
+            sessionMessages.sessionId,
+            sessionRows[0]!.id,
+          ))).toEqual([]);
+        expect(recipients.size).toBe(0);
       }
-      await waitForConnectedRelease(
-        base,
-        `task-run-authorization:${connected.taskRunId}`,
-        recipients,
-      );
-      const [settledBinding] = await base.admin.select({
-        deliveryMode: protectedTaskRunOutputBindings.deliveryMode,
-        attachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
-        completedAt: protectedTaskRunOutputBindings.completedAt,
-      }).from(protectedTaskRunOutputBindings).where(eq(
-        protectedTaskRunOutputBindings.taskRunId, connected.taskRunId,
-      ));
-      expect(settledBinding?.attachedAt).toEqual(terminal.run.completedAt);
-      if (scenario === "publication recovery") {
-        expect(settledBinding?.deliveryMode).toBe("none");
-        expect(settledBinding?.completedAt).toEqual(terminal.run.completedAt);
-      } else {
-        // Message/wake delivery is a separate unfinished owner.
-        expect(settledBinding?.completedAt).toBeNull();
-      }
-      expect(terminal.job.input).toEqual({
-        kind: "protected_task_run_v1",
-        taskId: connected.taskId,
-        taskRunId: connected.taskRunId,
-        inputObjectId: connected.inputObjectId,
-        resultObjectId: connected.resultObjectId,
-        authorizationRequestId:
-          `task-run-authorization:${connected.taskRunId}`,
-        policyRevision: base.policyRevision,
-        executionSegment: 1,
-      });
-      expect(terminal.job.message).toBeNull();
-      expect(terminal.job.result).toBeNull();
-      // A delayed process cannot overwrite the completed durable result.
-      const expectedReference = {
-        kind: "protected_task_run_v1" as const,
-        taskId: connected.taskId,
-        taskRunId: connected.taskRunId,
-        inputObjectId: connected.inputObjectId,
-        resultObjectId: connected.resultObjectId,
-        authorizationRequestId: `task-run-authorization:${connected.taskRunId}`,
-        policyRevision: base.policyRevision,
-        executionSegment: 1,
-      };
-      for (const requested of ["failed", "cancelled"] as const) {
-        expect(await settleProtectedTaskJobTerminalWithDatabase(
-          base.productDb, terminal.job.id, expectedReference, requested,
-          { expectedRevision: base.policyRevision, representation: "protected_only" },
-        )).toEqual({ kind: "existing_terminal", status: "completed" });
-      }
-      expect((await base.admin.select({ status: jobs.status }).from(jobs)
-        .where(eq(jobs.id, terminal.job.id)))[0]?.status).toBe("completed");
-      if (terminal.run.status !== "completed") {
-        throw new Error(`Connected Task execution did not succeed: ${JSON.stringify({
-          scenario, segmentCalls, nativeErrors,
-        })}`);
-      }
-      expect(terminal.run).toMatchObject({
-        id: connected.taskRunId,
-        taskId: connected.taskId,
-        jobId: terminal.job.id,
-        status: "completed",
-        resultRepresentation: "protected",
-        resultContentNamespaceId: base.namespaceValue,
-        resultRevision: 1,
-        resultCryptoObjectId: connected.resultObjectId,
-        resultCryptoAccessRevision: 0,
-        resultCryptoMappingState: "verified",
-        resultText: null,
-        lastError: null,
-        modelId: connected.requestedModelId,
-      });
-      const exactRuns = await base.admin.select({ id: taskRuns.id })
-        .from(taskRuns).where(eq(taskRuns.taskId, connected.taskId));
-      const exactJobs = await base.admin.select({ id: jobs.id })
-        .from(jobs).where(eq(jobs.laneKey, `task:${connected.taskId}`));
-      expect(exactRuns).toEqual([{ id: connected.taskRunId }]);
-      expect(exactJobs).toEqual([{ id: terminal.job.id }]);
-      const [terminalTask] = await base.admin.select({
-        status: tasks.status,
-        prompt: tasks.prompt,
-        expectedOutput: tasks.expectedOutput,
-        lastError: tasks.lastError,
-      }).from(tasks).where(eq(tasks.id, connected.taskId));
-      expect(terminalTask).toEqual({
-        status: "completed",
-        prompt: "",
-        expectedOutput: null,
-        lastError: null,
-      });
-      expect(segmentCalls).toEqual([{
-        taskId: connected.taskId,
-        taskRunId: connected.taskRunId,
-        graphThreadId: connected.graphThreadId,
-      }]);
-      expect(await objectRowCounts(base, connected.resultObjectId)).toEqual({
-        payload: 1,
-        head: 1,
-        manifest: 1,
-        envelope: 1,
-      });
-      const sessionRows = await base.admin.select({
-        id: sessions.id,
-        ownerId: sessions.ownerId,
-        agentId: sessions.agentId,
-        roomId: sessions.roomId,
-      }).from(sessions).where(eq(
-        sessions.threadId,
-        connected.graphThreadId,
-      ));
-      expect(sessionRows).toHaveLength(1);
-      expect(sessionRows[0]).toMatchObject({
-        ownerId: base.userId,
-        agentId: base.productAgentId,
-        roomId: base.roomId,
-      });
-      expect(await base.admin.select({ id: sessionMessages.id })
-        .from(sessionMessages).where(eq(
-          sessionMessages.sessionId,
-          sessionRows[0]!.id,
-        ))).toEqual([]);
-      expect(recipients.size).toBe(0);
       }
       }
     } catch (error) {

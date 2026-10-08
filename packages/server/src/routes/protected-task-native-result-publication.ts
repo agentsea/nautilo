@@ -1,8 +1,4 @@
 import {
-  and,
-  eq,
-  humanCryptoDevices,
-  inArray,
   recordProtectedTaskRunResultAttached,
   type DirectDatabase,
   type PostgresJsBridgeConnection,
@@ -17,8 +13,6 @@ import {
   PostgresHumanDeviceSignerHistory,
   PostgresLatticeStorage,
   createPostgresTaskContentRepositoryV1,
-  cryptoTypedDb,
-  executeTypedCryptoQuery,
   prepareNativeTaskRuntimeRunResult,
   verifyCryptoPostgresHandle,
   type ConversationProductCanonicalTransactionRunner,
@@ -43,6 +37,9 @@ import {
 import {
   createProtectedTaskResultPhaseAuthorityResolver,
 } from "./protected-task-result-phase-authority";
+import {
+  createProtectedTaskHistoricalHumanDeviceSigningKeyResolver,
+} from "./protected-task-historical-human-device-signing-key";
 import {
   withProtectedTaskResultSignerHistory,
 } from "./protected-task-result-signer-history";
@@ -196,34 +193,6 @@ function matchingResultDomain(input: Readonly<{
     );
   }
   return domain;
-}
-
-function humanDeviceSigningKeyResolver(handle: CryptoPostgresHandle) {
-  return async (context: Readonly<{
-    subjectHumanId: string;
-    committerDeviceId: string;
-    hostAuthorizationRevision: number;
-  }>): Promise<Uint8Array | null> => {
-    const rows = await executeTypedCryptoQuery(
-      handle,
-      cryptoTypedDb.select({
-        human_id: humanCryptoDevices.humanId,
-        signing_public_key: humanCryptoDevices.signingPublicKey,
-        revision: humanCryptoDevices.revision,
-      }).from(humanCryptoDevices).where(and(
-        eq(humanCryptoDevices.deviceId, context.committerDeviceId),
-        eq(humanCryptoDevices.humanId, context.subjectHumanId),
-        inArray(humanCryptoDevices.state, ["active", "revoked"]),
-      )).limit(2),
-    );
-    const row = rows[0];
-    return rows.length === 1
-        && row !== undefined
-        && row.revision >= context.hostAuthorizationRevision
-        && row.signing_public_key instanceof Uint8Array
-      ? row.signing_public_key.slice()
-      : null;
-  };
 }
 
 /**
@@ -427,7 +396,7 @@ export function createProtectedTaskNativeResultPublication(
           resolveHistoricalAgentSignerAuthority:
             history.resolveAgentRuntimeSignerManager,
           resolveHistoricalHumanDeviceSigningPublicKey:
-            humanDeviceSigningKeyResolver(handle),
+            createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(handle),
         },
         content: {
           prepareProtected: () => Promise.reject(new ClassifiedDataOperationError(

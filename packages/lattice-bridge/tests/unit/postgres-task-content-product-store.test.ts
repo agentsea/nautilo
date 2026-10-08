@@ -517,6 +517,15 @@ describe("PostgresTaskContentProductStore", () => {
         },
       },
       {
+        contains: 'from "encryption_transition_policy"',
+        rows: [{ mode: "encrypted_only", revision: 1 }],
+        inspect(_parameters, statement) {
+          expect(statement).toContain("for share");
+          expect(activeConnection.current?.transactionDepth).toBe(1);
+          expect(activeConnection.current?.productUpdateLocks).toBe(0);
+        },
+      },
+      {
         contains: 'from "tasks"',
         rows: [{
           owner_id: OWNER_ID, namespace_id: NAMESPACE_ID,
@@ -551,7 +560,6 @@ describe("PostgresTaskContentProductStore", () => {
         },
       },
       requesterOwner,
-      protectedPublicationPolicy,
       {
         contains: 'update "task_runs"',
         rows: [{ task_run_id: RUN_ID }],
@@ -698,6 +706,81 @@ describe("PostgresTaskContentProductStore", () => {
     expect(connection.steps).toHaveLength(0);
   });
 
+  test("allows exact result replay after policy drift but fences a fresh mapping", async () => {
+    const coordinate = result();
+    const complete = lifecycleRow(coordinate, {
+      completion: "complete", crypto_completed_at: NOW, lease_is_live: true,
+    });
+    const parent = {
+      owner_id: OWNER_ID, namespace_id: NAMESPACE_ID,
+      task_status: "completed",
+    };
+    const stalePolicy: Step = {
+      contains: 'from "encryption_transition_policy"',
+      rows: [{ mode: "encrypted_only", revision: 2 }],
+      inspect(_parameters, statement) {
+        expect(statement).toContain("for share");
+      },
+    };
+    const duplicateRun = {
+      task_id: TASK_ID, task_run_id: RUN_ID, result_revision: 1,
+      run_status: "completed",
+      result_content_namespace_id: NAMESPACE_ID,
+      result_representation: "protected",
+      crypto_object_id: deriveTaskContentCryptoObjectIdV1(coordinate),
+      crypto_access_revision: 0,
+      crypto_required_namespace_fingerprint: fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
+      crypto_mapping_state: "verified",
+    };
+    const replay = await setup([
+      { contains: 'from "task_run_result_crypto_revisions"', rows: [complete] },
+      stalePolicy,
+      { contains: 'from "tasks"', rows: [parent] },
+      { contains: 'from "task_runs"', rows: [duplicateRun] },
+      { contains: 'from "task_run_result_crypto_revisions"', rows: [complete] },
+      requesterOwner,
+      { contains: 'update "task_run_result_crypto_revisions"', rows: [{
+        ...complete, disposition: "mapped",
+      }] },
+    ]);
+    expect(await replay.store.compareAndSwapCryptoMapping({
+      coordinate,
+      cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
+      expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
+      expectedRepresentation: "protected",
+      leaseToken: null,
+    })).toBe("duplicate");
+    expect(replay.connection.steps).toHaveLength(0);
+
+    const fresh = await setup([
+      { contains: 'from "task_run_result_crypto_revisions"', rows: [complete] },
+      stalePolicy,
+      { contains: 'from "tasks"', rows: [parent] },
+      { contains: 'from "task_runs"', rows: [{
+        ...duplicateRun,
+        result_revision: 0,
+        result_content_namespace_id: null,
+        result_representation: "ordinary",
+        crypto_object_id: null,
+        crypto_required_namespace_fingerprint: null,
+        crypto_mapping_state: "unmapped",
+      }] },
+      { contains: 'from "task_run_result_crypto_revisions"', rows: [complete] },
+      requesterOwner,
+      { contains: 'update "task_run_result_crypto_revisions"', rows: [{
+        ...complete, disposition: "stale_mapping", failure_code: "authority_stale",
+      }] },
+    ]);
+    expect(await fresh.store.compareAndSwapCryptoMapping({
+      coordinate,
+      cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
+      expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
+      expectedRepresentation: "protected",
+      leaseToken: null,
+    })).toBe("wrong_authority");
+    expect(fresh.connection.steps).toHaveLength(0);
+  });
+
   test("refuses result mapping after the TaskRun is cancelled", async () => {
     const coordinate = result();
     const complete = lifecycleRow(coordinate, {
@@ -711,6 +794,7 @@ describe("PostgresTaskContentProductStore", () => {
           expect(statement).not.toContain("for update");
         },
       },
+      protectedPublicationPolicy,
       { contains: 'from "tasks"', rows: [{
         owner_id: OWNER_ID, namespace_id: NAMESPACE_ID,
         task_status: "running",
@@ -754,6 +838,7 @@ describe("PostgresTaskContentProductStore", () => {
     });
     const { store, connection } = await setup([
       { contains: 'from "task_run_result_crypto_revisions"', rows: [observed] },
+      protectedPublicationPolicy,
       { contains: 'from "tasks"', rows: [{
         owner_id: OWNER_ID, namespace_id: NAMESPACE_ID,
         task_status: "completed",

@@ -424,13 +424,13 @@ describe("protected TaskRun result terminal CAS", () => {
     expect(await terminalizeProtectedTaskRunResult(fixture.db, input()))
       .toEqual({ status: "transitioned" });
     expect(fixture.locks).toEqual([
+      { table: encryptionTransitionPolicy, kind: "share" },
       { table: tasks, kind: "update" },
       { table: taskRuns, kind: "update" },
       { table: jobs, kind: "update" },
       { table: taskDefinitionCryptoRevisions, kind: "share" },
       { table: taskRunResultCryptoRevisions, kind: "share" },
       { table: actors, kind: "share" },
-      { table: encryptionTransitionPolicy, kind: "share" },
       { table: protectedTaskRunOutputBindings, kind: "update" },
     ]);
     const requesterPredicate = new PgDialect().sqlToQuery(
@@ -604,6 +604,26 @@ describe("protected TaskRun result terminal CAS", () => {
       const fixture = harness(options);
       const result = await terminalizeProtectedTaskRunResult(fixture.db, input());
       expect(result.status).toBe("rejected");
+      expect(fixture.writes).toEqual([]);
+    }
+  });
+
+  test("locks policy before product rows and still rejects a mismatched fence", async () => {
+    for (const changedPolicy of [
+      undefined,
+      policy({ revision: 10 }),
+      policy({ mode: "shadow_encryption" }),
+    ]) {
+      const fixture = harness({ policy: changedPolicy });
+      expect(await terminalizeProtectedTaskRunResult(fixture.db, input()))
+        .toEqual({ status: "rejected", reason: "authority_changed" });
+      expect(fixture.locks[0]).toEqual({
+        table: encryptionTransitionPolicy,
+        kind: "share",
+      });
+      expect(fixture.locks.filter(lock =>
+        lock.table === encryptionTransitionPolicy
+      )).toHaveLength(1);
       expect(fixture.writes).toEqual([]);
     }
   });

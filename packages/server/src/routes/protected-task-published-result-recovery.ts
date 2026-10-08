@@ -22,12 +22,12 @@ import {
   type ProtectedTaskJobReferenceV1,
 } from "@nautilo/runtime";
 
-type PublishedJob = Readonly<{
+export type ProtectedTaskPublishedResultJob = Readonly<{
   jobId: string;
   reference: ProtectedTaskJobReferenceV1;
 }>;
 
-function exactTaskRecord(
+export function isExactProtectedTaskPublishedResultRecord(
   record: BackgroundAuthorizationRecord | null,
   reference: ProtectedTaskJobReferenceV1,
   proof: Readonly<{ contentNamespaceId: string; requesterHumanId: string }>,
@@ -57,20 +57,25 @@ export function createProtectedTaskPublishedResultRecovery(input: Readonly<{
   now?: () => number;
   settle?: typeof settlePublishedProtectedTaskRunAuthorization;
   list?: typeof listProtectedTaskRunOutputBindingsNeedingDelivery;
-  loadJob?: (taskRunId: string) => Promise<PublishedJob | null>;
+  loadJob?: (
+    taskRunId: string,
+  ) => Promise<ProtectedTaskPublishedResultJob | null>;
+  recoverUnmapped?: (
+    publication: ProtectedTaskPublishedResultJob,
+  ) => Promise<"mapped" | "pending" | "quarantined">;
 }>) {
   const now = input.now ?? Date.now;
   const settle = input.settle ?? settlePublishedProtectedTaskRunAuthorization;
   const list = input.list ?? listProtectedTaskRunOutputBindingsNeedingDelivery;
-  const loadJob = input.loadJob ?? (async (taskRunId: string): Promise<PublishedJob | null> => {
+  const loadJob = input.loadJob ?? (async (
+    taskRunId: string,
+  ): Promise<ProtectedTaskPublishedResultJob | null> => {
     const [row] = await input.db.select({ jobId: jobs.id, reference: jobs.input })
       .from(taskRuns)
       .innerJoin(jobs, eq(jobs.id, taskRuns.jobId))
       .where(and(
         eq(taskRuns.id, taskRunId),
-        inArray(taskRuns.resultRepresentation, ["dual", "protected"]),
         inArray(taskRuns.status, ["completed", "errored"]),
-        eq(taskRuns.resultCryptoMappingState, "verified"),
         inArray(jobs.status, ["running", "failed", "completed"]),
       )).limit(1);
     if (row === undefined) return null;
@@ -82,43 +87,80 @@ export function createProtectedTaskPublishedResultRecovery(input: Readonly<{
   const recover = async (taskRunId: string): Promise<boolean> => {
     const job = await loadJob(taskRunId);
     if (job === null) return false;
-    let released: Readonly<{ requestId: string; generation: number }> | undefined;
-    const settled = await settle(input.db, job, async proof => {
-      const raw = await input.repository.get(job.reference.authorizationRequestId);
-      const record = raw === null ? null : parseBackgroundAuthorizationRecord(raw);
-      if (!exactTaskRecord(record, job.reference, proof)) return false;
-      if (record.snapshot.state === "completed") {
-        if (record.finishedAt !== record.snapshot.updatedAt) return false;
-      } else {
-        if (record.finishedAt !== null
-          || (record.snapshot.state !== "running"
-            && record.snapshot.state !== "publication_reconciliation")) return false;
-        const completedAt = now();
-        const next = parseBackgroundAuthorizationRecord({
-          ...record,
-          snapshot: completeBackgroundAuthorizationRequest(record.snapshot, completedAt),
-          finishedAt: completedAt,
-        });
-        let completed: BackgroundAuthorizationRecord | null;
-        try {
-          const result = await input.repository.compareAndSwap({
-            expectedRequestRevision: record.snapshot.requestRevision,
-            next,
+    const settleMapped = async (): Promise<boolean> => {
+      let released: Readonly<{
+        requestId: string;
+        generation: number;
+      }> | undefined;
+      const settled = await settle(input.db, job, async proof => {
+        const raw = await input.repository.get(
+          job.reference.authorizationRequestId,
+        );
+        const record = raw === null
+          ? null
+          : parseBackgroundAuthorizationRecord(raw);
+        if (!isExactProtectedTaskPublishedResultRecord(
+          record,
+          job.reference,
+          proof,
+        )) return false;
+        if (record.snapshot.state === "completed") {
+          if (record.finishedAt !== record.snapshot.updatedAt) return false;
+        } else {
+          if (record.finishedAt !== null
+            || (record.snapshot.state !== "running"
+              && record.snapshot.state !== "publication_reconciliation")) {
+            return false;
+          }
+          const completedAt = now();
+          const next = parseBackgroundAuthorizationRecord({
+            ...record,
+            snapshot: completeBackgroundAuthorizationRequest(
+              record.snapshot,
+              completedAt,
+            ),
+            finishedAt: completedAt,
           });
-          completed = result.status === "updated" ? result.record : result.current;
-        } catch {
-          completed = await input.repository.get(record.snapshot.requestId);
+          let completed: BackgroundAuthorizationRecord | null;
+          try {
+            const result = await input.repository.compareAndSwap({
+              expectedRequestRevision: record.snapshot.requestRevision,
+              next,
+            });
+            completed = result.status === "updated"
+              ? result.record
+              : result.current;
+          } catch {
+            completed = await input.repository.get(record.snapshot.requestId);
+          }
+          if (!isExactCompletedTaskRuntimeSuccessor(completed, record)) {
+            return false;
+          }
         }
-        if (!isExactCompletedTaskRuntimeSuccessor(completed, record)) return false;
+        released = { requestId: record.snapshot.requestId,
+          generation: record.snapshot.recipientGeneration };
+        return true;
+      });
+      if (settled && released !== undefined) {
+        input.recipients.delete(released.requestId, released.generation);
       }
-      released = { requestId: record.snapshot.requestId,
-        generation: record.snapshot.recipientGeneration };
-      return true;
-    });
-    if (settled && released !== undefined) {
-      input.recipients.delete(released.requestId, released.generation);
+      return settled;
+    };
+
+    if (await settleMapped()) return true;
+    if (input.recoverUnmapped === undefined) return false;
+    let recovered: "mapped" | "pending" | "quarantined";
+    try {
+      recovered = await input.recoverUnmapped(job);
+    } catch (error) {
+      // The mapping transaction may have committed before its response was
+      // lost. Adopt only the existing exact mapped settlement proof.
+      if (await settleMapped()) return true;
+      throw error;
     }
-    return settled;
+    if (recovered === "pending") return false;
+    if (recovered === "quarantined") return true;
+    return settleMapped();
   };
 
   return Object.freeze({

@@ -5770,15 +5770,52 @@ export type PublishedProtectedTaskRunAuthorizationProof = Readonly<{
   requesterHumanId: string;
 }>;
 
+export type ProtectedTaskRunResultPublicationPhase = "mapped" | "unmapped";
+export type ProtectedTaskRunResultPublicationTransaction =
+  Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0];
+
+export type ExactProtectedTaskRunResultPublicationProof = Readonly<{
+  phase: ProtectedTaskRunResultPublicationPhase;
+  reference: ProtectedTaskDurableJobReference;
+  task: Readonly<{ id: string; requestorId: string }>;
+  run: Readonly<{
+    id: string;
+    outcome: ProtectedTaskRunTerminalOutcome;
+    completedAt: Date;
+  }>;
+  job: Readonly<{
+    id: string;
+    status: "running" | "failed" | "completed";
+    startedAt: Date;
+    completedAt: Date | null;
+  }>;
+  binding: Readonly<{
+    bindingId: string;
+    deliveryMode: "none" | "wake" | "raw" | "raw_and_wake";
+    resultAttachedAt: Date | null;
+    completedAt: Date | null;
+  }>;
+  lifecycle: Readonly<{
+    sequence: number;
+    operationId: string;
+    authorityFingerprint: Uint8Array;
+    requesterHumanId: string;
+    contentNamespaceId: string;
+    cryptoObjectId: string;
+    representation: "protected" | "dual";
+    requiredNamespaceFingerprint: Uint8Array;
+    attemptCount: number;
+    leaseToken: string | null;
+    cryptoCompletedAt: Date | null;
+  }>;
+}>;
+
 function finiteDate(value: unknown): value is Date {
   return value instanceof Date && Number.isFinite(value.getTime());
 }
 
 function assertPublishedProtectedTaskRunSettlementInput(
   input: SettlePublishedProtectedTaskRunAuthorizationInput,
-  completeAuthorization: (
-    proof: PublishedProtectedTaskRunAuthorizationProof,
-  ) => Promise<boolean>,
 ): void {
   const reference = input.reference;
   if (
@@ -5795,10 +5832,353 @@ function assertPublishedProtectedTaskRunSettlementInput(
     || !Number.isSafeInteger(reference.executionSegment)
     || reference.executionSegment < 1
     || !exactProtectedTaskJobReference(reference, reference)
-    || typeof completeAuthorization !== "function"
   ) {
     throw new TypeError("Published protected Task settlement is invalid");
   }
+}
+
+function copyOptionalDate(value: Date | null): Date | null {
+  return value === null ? null : new Date(value.getTime());
+}
+
+/**
+ * Lock and prove one exact terminal run-result publication without mutating it.
+ * Callers own the transaction and any policy fence acquired before this helper.
+ */
+export async function lockExactProtectedTaskRunResultPublicationInTx(
+  tx: ProtectedTaskRunResultPublicationTransaction,
+  input: SettlePublishedProtectedTaskRunAuthorizationInput,
+  phase: ProtectedTaskRunResultPublicationPhase,
+): Promise<ExactProtectedTaskRunResultPublicationProof | null> {
+  assertPublishedProtectedTaskRunSettlementInput(input);
+  if (phase !== "mapped" && phase !== "unmapped") {
+    throw new TypeError("Protected Task publication phase is invalid");
+  }
+  const { reference } = input;
+  const [task] = await tx.select({
+    id: tasks.id,
+    requestorId: tasks.requestorId,
+  }).from(tasks).where(eq(tasks.id, reference.taskId))
+    .limit(1).for("update");
+  if (!task) return null;
+
+  const [run] = await tx.select({
+    id: taskRuns.id,
+    taskId: taskRuns.taskId,
+    jobId: taskRuns.jobId,
+    status: taskRuns.status,
+    completedAt: taskRuns.completedAt,
+    resultRepresentation: taskRuns.resultRepresentation,
+    resultContentNamespaceId: taskRuns.resultContentNamespaceId,
+    resultRevision: taskRuns.resultRevision,
+    resultCryptoObjectId: taskRuns.resultCryptoObjectId,
+    resultCryptoAccessRevision: taskRuns.resultCryptoAccessRevision,
+    resultCryptoRequiredNamespaceFingerprint:
+      taskRuns.resultCryptoRequiredNamespaceFingerprint,
+    resultCryptoMappingState: taskRuns.resultCryptoMappingState,
+    resultTextIsNull: isNull(taskRuns.resultText).mapWith(Boolean),
+    lastErrorIsNull: isNull(taskRuns.lastError).mapWith(Boolean),
+  }).from(taskRuns).where(and(
+    eq(taskRuns.id, reference.taskRunId),
+    eq(taskRuns.taskId, reference.taskId),
+  )).limit(1).for("update");
+  if (!run) return null;
+
+  const [job] = await tx.select({
+    id: jobs.id,
+    ownerId: jobs.ownerId,
+    requestorId: jobs.requestorId,
+    laneKey: jobs.laneKey,
+    type: jobs.type,
+    status: jobs.status,
+    input: jobs.input,
+    terminalReceipt: sql<unknown>`${jobs.metadata}->${PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY}`,
+    resultIsNull: isNull(jobs.result).mapWith(Boolean),
+    messageIsNull: isNull(jobs.message).mapWith(Boolean),
+    startedAt: jobs.startedAt,
+    completedAt: jobs.completedAt,
+  }).from(jobs).where(eq(jobs.id, input.jobId))
+    .limit(1).for("update");
+  if (!job) return null;
+
+  const [binding] = await tx.select({
+    taskRunId: protectedTaskRunOutputBindings.taskRunId,
+    bindingId: protectedTaskRunOutputBindings.bindingId,
+    deliveryMode: protectedTaskRunOutputBindings.deliveryMode,
+    resultOperationId: protectedTaskRunOutputBindings.resultOperationId,
+    resultObjectId: protectedTaskRunOutputBindings.resultObjectId,
+    acceptedPolicyRevision:
+      protectedTaskRunOutputBindings.acceptedPolicyRevision,
+    acceptedAt: protectedTaskRunOutputBindings.acceptedAt,
+    resultTerminalAt: protectedTaskRunOutputBindings.resultTerminalAt,
+    resultAttachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
+    completedAt: protectedTaskRunOutputBindings.completedAt,
+  }).from(protectedTaskRunOutputBindings).where(eq(
+    protectedTaskRunOutputBindings.taskRunId,
+    reference.taskRunId,
+  )).limit(1).for("update");
+  if (!binding) return null;
+
+  const [revision] = await tx.select({
+    sequence: taskRunResultCryptoRevisions.sequence,
+    taskId: taskRunResultCryptoRevisions.taskId,
+    taskRunId: taskRunResultCryptoRevisions.taskRunId,
+    contentNamespaceId: taskRunResultCryptoRevisions.contentNamespaceId,
+    resultRevision: taskRunResultCryptoRevisions.resultRevision,
+    operationId: taskRunResultCryptoRevisions.operationId,
+    requestDigest: taskRunResultCryptoRevisions.requestDigest,
+    authorityFingerprint: taskRunResultCryptoRevisions.authorityFingerprint,
+    requesterHumanId: taskRunResultCryptoRevisions.requesterHumanId,
+    anchorNamespaceId: taskRunResultCryptoRevisions.anchorNamespaceId,
+    cryptoObjectId: taskRunResultCryptoRevisions.cryptoObjectId,
+    representation: taskRunResultCryptoRevisions.representation,
+    payloadVersion: taskRunResultCryptoRevisions.payloadVersion,
+    cryptoAccessRevision: taskRunResultCryptoRevisions.cryptoAccessRevision,
+    requiredNamespaceFingerprint:
+      taskRunResultCryptoRevisions.requiredNamespaceFingerprint,
+    completion: taskRunResultCryptoRevisions.completion,
+    disposition: taskRunResultCryptoRevisions.disposition,
+    attemptCount: taskRunResultCryptoRevisions.attemptCount,
+    nextAttemptAt: taskRunResultCryptoRevisions.nextAttemptAt,
+    leaseToken: taskRunResultCryptoRevisions.leaseToken,
+    leaseExpiresAt: taskRunResultCryptoRevisions.leaseExpiresAt,
+    failureCode: taskRunResultCryptoRevisions.failureCode,
+    cryptoCompletedAt: taskRunResultCryptoRevisions.cryptoCompletedAt,
+  }).from(taskRunResultCryptoRevisions).where(and(
+    eq(taskRunResultCryptoRevisions.taskId, reference.taskId),
+    eq(taskRunResultCryptoRevisions.taskRunId, reference.taskRunId),
+    eq(taskRunResultCryptoRevisions.resultRevision, 1),
+  )).limit(1).for("update");
+  if (!revision) return null;
+
+  const [definition] = await tx.select({
+    taskId: taskDefinitionCryptoRevisions.taskId,
+    contentNamespaceId: taskDefinitionCryptoRevisions.contentNamespaceId,
+    contentRevision: taskDefinitionCryptoRevisions.contentRevision,
+    cryptoObjectId: taskDefinitionCryptoRevisions.cryptoObjectId,
+    representation: taskDefinitionCryptoRevisions.representation,
+    payloadVersion: taskDefinitionCryptoRevisions.payloadVersion,
+    cryptoAccessRevision: taskDefinitionCryptoRevisions.cryptoAccessRevision,
+    requiredNamespaceFingerprint:
+      taskDefinitionCryptoRevisions.requiredNamespaceFingerprint,
+    completion: taskDefinitionCryptoRevisions.completion,
+    disposition: taskDefinitionCryptoRevisions.disposition,
+    failureCode: taskDefinitionCryptoRevisions.failureCode,
+  }).from(taskDefinitionCryptoRevisions).where(and(
+    eq(taskDefinitionCryptoRevisions.taskId, reference.taskId),
+    eq(taskDefinitionCryptoRevisions.cryptoObjectId, reference.inputObjectId),
+  )).limit(1).for("share");
+  if (!definition) return null;
+
+  const runOutcome: ProtectedTaskRunTerminalOutcome | null =
+    run.status === "completed" || run.status === "errored"
+      ? run.status
+      : null;
+  const runCompletedAt = finiteDate(run.completedAt) ? run.completedAt : null;
+  const jobStatus: ExactProtectedTaskRunResultPublicationProof["job"]["status"]
+    | null = job.status === "running"
+      || job.status === "failed"
+      || job.status === "completed"
+      ? job.status
+      : null;
+  const jobStartedAt = finiteDate(job.startedAt) ? job.startedAt : null;
+  const jobDispositionIsExact = jobStatus !== null
+    && jobStartedAt !== null && (
+    jobStatus === "running"
+      ? job.completedAt === null
+      : finiteDate(job.completedAt)
+        && job.completedAt.getTime() >= jobStartedAt.getTime()
+  );
+  const representation = revision.representation;
+  const expectedReceipt: ProtectedTaskRunTerminalReceipt | null =
+    runOutcome !== null
+      && runCompletedAt !== null
+      && revision.requestDigest instanceof Uint8Array
+      && revision.requestDigest.length === 32
+      ? Object.freeze({
+          version: 1 as const,
+          taskId: reference.taskId,
+          taskRunId: reference.taskRunId,
+          operationId: revision.operationId,
+          requestDigest: terminalRequestDigestHex(revision.requestDigest),
+          resultObjectId: reference.resultObjectId,
+          resultRevision: 1 as const,
+          resultRepresentation: representation,
+          outcome: runOutcome,
+          completedAt: runCompletedAt.toISOString(),
+        })
+      : null;
+  const acceptedAt = binding.acceptedAt;
+  const terminalAt = binding.resultTerminalAt;
+  const attachedAt = binding.resultAttachedAt;
+  const bindingCompletedAt = binding.completedAt;
+  const leaseIsExact = revision.leaseToken === null
+    ? revision.leaseExpiresAt === null
+    : CANONICAL_UUID.test(revision.leaseToken)
+      && finiteDate(revision.leaseExpiresAt);
+  const lifecycleShapeIsExact =
+    Number.isSafeInteger(revision.sequence)
+    && revision.sequence > 0
+    && Number.isSafeInteger(revision.attemptCount)
+    && revision.attemptCount >= 0
+    && (revision.nextAttemptAt === null || finiteDate(revision.nextAttemptAt))
+    && leaseIsExact
+    && revision.requestDigest instanceof Uint8Array
+    && revision.requestDigest.length === 32
+    && revision.authorityFingerprint instanceof Uint8Array
+    && revision.authorityFingerprint.length === 32
+    && revision.requiredNamespaceFingerprint instanceof Uint8Array
+    && revision.requiredNamespaceFingerprint.length === 32;
+  const commonProof =
+    task.id === reference.taskId
+    && task.requestorId.length > 0
+    && run.id === reference.taskRunId
+    && run.taskId === task.id
+    && run.jobId === job.id
+    && runOutcome !== null
+    && runCompletedAt !== null
+    && jobStatus !== null
+    && jobStartedAt !== null
+    && job.id === input.jobId
+    && job.ownerId === task.requestorId
+    && job.requestorId === task.requestorId
+    && job.laneKey === `task:${task.id}`
+    && job.type === "foreground"
+    && job.resultIsNull
+    && job.messageIsNull
+    && exactProtectedTaskJobReference(job.input, reference)
+    && jobDispositionIsExact
+    && expectedReceipt !== null
+    && exactTerminalReceipt(job.terminalReceipt, expectedReceipt)
+    && (representation === "protected"
+      ? run.resultTextIsNull && run.lastErrorIsNull
+      : !run.resultTextIsNull || !run.lastErrorIsNull)
+    && binding.taskRunId === run.id
+    && binding.bindingId === `task-run-output:${run.id}`
+    && binding.resultOperationId === revision.operationId
+    && binding.resultObjectId === reference.resultObjectId
+    && binding.acceptedPolicyRevision === reference.policyRevision
+    && finiteDate(acceptedAt)
+    && finiteDate(terminalAt)
+    && terminalAt.getTime() === runCompletedAt.getTime()
+    && terminalAt.getTime() >= acceptedAt.getTime()
+    && lifecycleShapeIsExact
+    && revision.taskId === task.id
+    && revision.taskRunId === run.id
+    && CANONICAL_UUID.test(revision.contentNamespaceId)
+    && revision.resultRevision === 1
+    && revision.operationId === `task-run-result:${run.id}`
+    && CANONICAL_UUID.test(revision.requesterHumanId)
+    && revision.anchorNamespaceId === revision.contentNamespaceId
+    && revision.cryptoObjectId === reference.resultObjectId
+    && (representation === "protected" || representation === "dual")
+    && revision.payloadVersion === 1
+    && revision.cryptoAccessRevision === 0
+    && revision.failureCode === null
+    && definition.taskId === task.id
+    && definition.contentNamespaceId === revision.contentNamespaceId
+    && definition.contentRevision > 0
+    && definition.cryptoObjectId === reference.inputObjectId
+    && definition.representation === representation
+    && definition.payloadVersion === 1
+    && definition.cryptoAccessRevision === 0
+    && definition.requiredNamespaceFingerprint instanceof Uint8Array
+    && definition.requiredNamespaceFingerprint.length === 32
+    && sameBytes(
+      revision.requiredNamespaceFingerprint,
+      definition.requiredNamespaceFingerprint,
+    )
+    && definition.completion === "complete"
+    && definition.disposition === "mapped"
+    && definition.failureCode === null;
+  if (
+    !commonProof
+    || runOutcome === null
+    || runCompletedAt === null
+    || jobStatus === null
+    || jobStartedAt === null
+  ) return null;
+
+  const mappedProof =
+    run.resultRepresentation === representation
+    && run.resultContentNamespaceId === revision.contentNamespaceId
+    && run.resultRevision === 1
+    && run.resultCryptoObjectId === reference.resultObjectId
+    && run.resultCryptoAccessRevision === revision.cryptoAccessRevision
+    && run.resultCryptoRequiredNamespaceFingerprint instanceof Uint8Array
+    && sameBytes(
+      run.resultCryptoRequiredNamespaceFingerprint,
+      revision.requiredNamespaceFingerprint,
+    )
+    && run.resultCryptoMappingState === "verified"
+    && revision.completion === "complete"
+    && revision.disposition === "mapped"
+    && finiteDate(revision.cryptoCompletedAt)
+    && (attachedAt === null
+      || finiteDate(attachedAt)
+        && attachedAt.getTime() === runCompletedAt.getTime())
+    && (bindingCompletedAt === null
+      || finiteDate(bindingCompletedAt)
+        && attachedAt !== null
+        && bindingCompletedAt.getTime() >= acceptedAt.getTime())
+    && (binding.deliveryMode !== "none"
+      || bindingCompletedAt === null
+      || finiteDate(attachedAt)
+        && finiteDate(bindingCompletedAt)
+        && attachedAt.getTime() === bindingCompletedAt.getTime());
+  const unmappedProof =
+    run.resultRepresentation === "ordinary"
+    && run.resultContentNamespaceId === null
+    && run.resultRevision === 0
+    && run.resultCryptoObjectId === null
+    && run.resultCryptoAccessRevision === 0
+    && run.resultCryptoRequiredNamespaceFingerprint === null
+    && run.resultCryptoMappingState === "unmapped"
+    && attachedAt === null
+    && bindingCompletedAt === null
+    && revision.disposition === "active"
+    && (revision.completion === "pending"
+      ? revision.cryptoCompletedAt === null
+      : revision.completion === "complete"
+        && finiteDate(revision.cryptoCompletedAt));
+  if (phase === "mapped" ? !mappedProof : !unmappedProof) return null;
+
+  return Object.freeze({
+    phase,
+    reference: Object.freeze({ ...reference }),
+    task: Object.freeze({ id: task.id, requestorId: task.requestorId }),
+    run: Object.freeze({
+      id: run.id,
+      outcome: runOutcome,
+      completedAt: new Date(runCompletedAt.getTime()),
+    }),
+    job: Object.freeze({
+      id: job.id,
+      status: jobStatus,
+      startedAt: new Date(jobStartedAt.getTime()),
+      completedAt: copyOptionalDate(job.completedAt),
+    }),
+    binding: Object.freeze({
+      bindingId: binding.bindingId,
+      deliveryMode: binding.deliveryMode,
+      resultAttachedAt: copyOptionalDate(attachedAt),
+      completedAt: copyOptionalDate(bindingCompletedAt),
+    }),
+    lifecycle: Object.freeze({
+      sequence: revision.sequence,
+      operationId: revision.operationId,
+      authorityFingerprint: revision.authorityFingerprint.slice(),
+      requesterHumanId: revision.requesterHumanId,
+      contentNamespaceId: revision.contentNamespaceId,
+      cryptoObjectId: revision.cryptoObjectId,
+      representation,
+      requiredNamespaceFingerprint:
+        revision.requiredNamespaceFingerprint.slice(),
+      attemptCount: revision.attemptCount,
+      leaseToken: revision.leaseToken,
+      cryptoCompletedAt: copyOptionalDate(revision.cryptoCompletedAt),
+    }),
+  });
 }
 
 /**
@@ -5815,278 +6195,62 @@ export async function settlePublishedProtectedTaskRunAuthorization(
     proof: PublishedProtectedTaskRunAuthorizationProof,
   ) => Promise<boolean>,
 ): Promise<boolean> {
-  assertPublishedProtectedTaskRunSettlementInput(input, completeAuthorization);
-  const { reference } = input;
+  assertPublishedProtectedTaskRunSettlementInput(input);
+  if (typeof completeAuthorization !== "function") {
+    throw new TypeError("Published protected Task settlement is invalid");
+  }
   return db.transaction(async (tx) => {
-    const [task] = await tx.select({
-      id: tasks.id,
-      requestorId: tasks.requestorId,
-    }).from(tasks).where(eq(tasks.id, reference.taskId))
-      .limit(1).for("update");
-    if (!task) return false;
-
-    const [run] = await tx.select({
-      id: taskRuns.id,
-      taskId: taskRuns.taskId,
-      jobId: taskRuns.jobId,
-      status: taskRuns.status,
-      completedAt: taskRuns.completedAt,
-      resultRepresentation: taskRuns.resultRepresentation,
-      resultContentNamespaceId: taskRuns.resultContentNamespaceId,
-      resultRevision: taskRuns.resultRevision,
-      resultCryptoObjectId: taskRuns.resultCryptoObjectId,
-      resultCryptoAccessRevision: taskRuns.resultCryptoAccessRevision,
-      resultCryptoRequiredNamespaceFingerprint:
-        taskRuns.resultCryptoRequiredNamespaceFingerprint,
-      resultCryptoMappingState: taskRuns.resultCryptoMappingState,
-      resultTextIsNull: isNull(taskRuns.resultText).mapWith(Boolean),
-      lastErrorIsNull: isNull(taskRuns.lastError).mapWith(Boolean),
-    }).from(taskRuns).where(and(
-      eq(taskRuns.id, reference.taskRunId),
-      eq(taskRuns.taskId, reference.taskId),
-    )).limit(1).for("update");
-    if (!run) return false;
-
-    const [job] = await tx.select({
-      id: jobs.id,
-      ownerId: jobs.ownerId,
-      requestorId: jobs.requestorId,
-      laneKey: jobs.laneKey,
-      type: jobs.type,
-      status: jobs.status,
-      input: jobs.input,
-      terminalReceipt: sql<unknown>`${jobs.metadata}->${PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY}`,
-      resultIsNull: isNull(jobs.result).mapWith(Boolean),
-      messageIsNull: isNull(jobs.message).mapWith(Boolean),
-      startedAt: jobs.startedAt,
-      completedAt: jobs.completedAt,
-    }).from(jobs).where(eq(jobs.id, input.jobId))
-      .limit(1).for("update");
-    if (!job) return false;
-
-    const [binding] = await tx.select({
-      taskRunId: protectedTaskRunOutputBindings.taskRunId,
-      bindingId: protectedTaskRunOutputBindings.bindingId,
-      deliveryMode: protectedTaskRunOutputBindings.deliveryMode,
-      resultOperationId: protectedTaskRunOutputBindings.resultOperationId,
-      resultObjectId: protectedTaskRunOutputBindings.resultObjectId,
-      acceptedPolicyRevision:
-        protectedTaskRunOutputBindings.acceptedPolicyRevision,
-      acceptedAt: protectedTaskRunOutputBindings.acceptedAt,
-      resultTerminalAt: protectedTaskRunOutputBindings.resultTerminalAt,
-      resultAttachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
-      completedAt: protectedTaskRunOutputBindings.completedAt,
-    }).from(protectedTaskRunOutputBindings).where(eq(
-      protectedTaskRunOutputBindings.taskRunId,
-      reference.taskRunId,
-    )).limit(1).for("update");
-    if (!binding) return false;
-
-    const [revision] = await tx.select({
-      taskId: taskRunResultCryptoRevisions.taskId,
-      taskRunId: taskRunResultCryptoRevisions.taskRunId,
-      contentNamespaceId:
-        taskRunResultCryptoRevisions.contentNamespaceId,
-      resultRevision: taskRunResultCryptoRevisions.resultRevision,
-      operationId: taskRunResultCryptoRevisions.operationId,
-      requestDigest: taskRunResultCryptoRevisions.requestDigest,
-      requesterHumanId: taskRunResultCryptoRevisions.requesterHumanId,
-      anchorNamespaceId: taskRunResultCryptoRevisions.anchorNamespaceId,
-      cryptoObjectId: taskRunResultCryptoRevisions.cryptoObjectId,
-      representation: taskRunResultCryptoRevisions.representation,
-      payloadVersion: taskRunResultCryptoRevisions.payloadVersion,
-      cryptoAccessRevision:
-        taskRunResultCryptoRevisions.cryptoAccessRevision,
-      requiredNamespaceFingerprint:
-        taskRunResultCryptoRevisions.requiredNamespaceFingerprint,
-      completion: taskRunResultCryptoRevisions.completion,
-      disposition: taskRunResultCryptoRevisions.disposition,
-      failureCode: taskRunResultCryptoRevisions.failureCode,
-      cryptoCompletedAt: taskRunResultCryptoRevisions.cryptoCompletedAt,
-    }).from(taskRunResultCryptoRevisions).where(and(
-      eq(taskRunResultCryptoRevisions.taskId, reference.taskId),
-      eq(taskRunResultCryptoRevisions.taskRunId, reference.taskRunId),
-      eq(taskRunResultCryptoRevisions.resultRevision, 1),
-    )).limit(1).for("update");
-    if (!revision) return false;
-
-    const [definition] = await tx.select({
-      taskId: taskDefinitionCryptoRevisions.taskId,
-      contentNamespaceId: taskDefinitionCryptoRevisions.contentNamespaceId,
-      contentRevision: taskDefinitionCryptoRevisions.contentRevision,
-      cryptoObjectId: taskDefinitionCryptoRevisions.cryptoObjectId,
-      representation: taskDefinitionCryptoRevisions.representation,
-      payloadVersion: taskDefinitionCryptoRevisions.payloadVersion,
-      cryptoAccessRevision: taskDefinitionCryptoRevisions.cryptoAccessRevision,
-      requiredNamespaceFingerprint:
-        taskDefinitionCryptoRevisions.requiredNamespaceFingerprint,
-      completion: taskDefinitionCryptoRevisions.completion,
-      disposition: taskDefinitionCryptoRevisions.disposition,
-      failureCode: taskDefinitionCryptoRevisions.failureCode,
-    }).from(taskDefinitionCryptoRevisions).where(and(
-      eq(taskDefinitionCryptoRevisions.taskId, reference.taskId),
-      eq(taskDefinitionCryptoRevisions.cryptoObjectId, reference.inputObjectId),
-    )).limit(1).for("share");
-    if (!definition) return false;
-
-    const runCompletedAt = run.completedAt;
-    const jobStartedAt = job.startedAt;
-    const jobDispositionIsExact =
-      job.status === "running"
-        ? finiteDate(jobStartedAt)
-          && job.completedAt === null
-        : (job.status === "failed" || job.status === "completed")
-          && finiteDate(jobStartedAt)
-          && finiteDate(job.completedAt)
-          && job.completedAt.getTime() >= jobStartedAt.getTime();
-    const protectedContentIsEmpty = run.resultTextIsNull
-      && run.lastErrorIsNull;
-    const dualContentExists = !run.resultTextIsNull || !run.lastErrorIsNull;
-    const representation = revision.representation;
-    const expectedReceipt: ProtectedTaskRunTerminalReceipt | null =
-      (run.status === "completed" || run.status === "errored")
-        && (representation === "protected" || representation === "dual")
-        && finiteDate(runCompletedAt)
-        && revision.requestDigest instanceof Uint8Array
-        && revision.requestDigest.length === 32
-        ? Object.freeze({
-            version: 1 as const,
-            taskId: reference.taskId,
-            taskRunId: reference.taskRunId,
-            operationId: revision.operationId,
-            requestDigest: terminalRequestDigestHex(revision.requestDigest),
-            resultObjectId: reference.resultObjectId,
-            resultRevision: 1 as const,
-            resultRepresentation: representation,
-            outcome: run.status,
-            completedAt: runCompletedAt.toISOString(),
-          })
-        : null;
-    const acceptedAt = binding.acceptedAt;
-    const terminalAt = binding.resultTerminalAt;
-    const attachedAt = binding.resultAttachedAt;
-    const bindingCompletedAt = binding.completedAt;
-    const exactProof =
-      task.id === reference.taskId
-      && task.requestorId.length > 0
-      && run.id === reference.taskRunId
-      && run.taskId === task.id
-      && run.jobId === job.id
-      && job.id === input.jobId
-      && job.ownerId === task.requestorId
-      && job.requestorId === task.requestorId
-      && job.laneKey === `task:${task.id}`
-      && job.type === "foreground"
-      && job.resultIsNull
-      && job.messageIsNull
-      && exactProtectedTaskJobReference(job.input, reference)
-      && jobDispositionIsExact
-      && expectedReceipt !== null
-      && exactTerminalReceipt(job.terminalReceipt, expectedReceipt)
-      && (representation === "protected"
-        ? protectedContentIsEmpty
-        : dualContentExists)
-      && run.resultRepresentation === representation
-      && run.resultContentNamespaceId === revision.contentNamespaceId
-      && run.resultRevision === 1
-      && run.resultCryptoObjectId === reference.resultObjectId
-      && run.resultCryptoAccessRevision === revision.cryptoAccessRevision
-      && run.resultCryptoRequiredNamespaceFingerprint !== null
-      && sameBytes(
-        run.resultCryptoRequiredNamespaceFingerprint,
-        revision.requiredNamespaceFingerprint,
-      )
-      && run.resultCryptoMappingState === "verified"
-      && binding.taskRunId === run.id
-      && binding.bindingId === `task-run-output:${run.id}`
-      && binding.resultOperationId === revision.operationId
-      && binding.resultObjectId === reference.resultObjectId
-      && binding.acceptedPolicyRevision === reference.policyRevision
-      && finiteDate(acceptedAt)
-      && finiteDate(terminalAt)
-      && terminalAt.getTime() === runCompletedAt!.getTime()
-      && terminalAt.getTime() >= acceptedAt.getTime()
-      && (attachedAt === null
-        || finiteDate(attachedAt)
-          && attachedAt.getTime() === runCompletedAt!.getTime())
-      && (bindingCompletedAt === null
-        || finiteDate(bindingCompletedAt)
-          && attachedAt !== null
-          && bindingCompletedAt.getTime() >= acceptedAt.getTime())
-      && (binding.deliveryMode !== "none"
-        || bindingCompletedAt === null
-        || finiteDate(attachedAt)
-          && finiteDate(bindingCompletedAt)
-          && attachedAt.getTime() === bindingCompletedAt.getTime())
-      && revision.taskId === task.id
-      && revision.taskRunId === run.id
-      && CANONICAL_UUID.test(revision.contentNamespaceId)
-      && revision.resultRevision === 1
-      && revision.operationId === `task-run-result:${run.id}`
-      && revision.requestDigest instanceof Uint8Array
-      && revision.requestDigest.length === 32
-      && revision.requesterHumanId.length > 0
-      && revision.anchorNamespaceId === revision.contentNamespaceId
-      && revision.cryptoObjectId === reference.resultObjectId
-      && revision.representation === representation
-      && revision.payloadVersion === 1
-      && revision.cryptoAccessRevision === 0
-      && revision.requiredNamespaceFingerprint.length === 32
-      && sameBytes(
-        revision.requiredNamespaceFingerprint,
-        definition.requiredNamespaceFingerprint,
-      )
-      && revision.completion === "complete"
-      && revision.disposition === "mapped"
-      && revision.failureCode === null
-      && finiteDate(revision.cryptoCompletedAt)
-      && definition.taskId === task.id
-      && definition.contentNamespaceId === revision.contentNamespaceId
-      && definition.contentRevision > 0
-      && definition.cryptoObjectId === reference.inputObjectId
-      && definition.representation === representation
-      && definition.payloadVersion === 1
-      && definition.cryptoAccessRevision === 0
-      && definition.requiredNamespaceFingerprint.length === 32
-      && definition.completion === "complete"
-      && definition.disposition === "mapped"
-      && definition.failureCode === null;
-    if (!exactProof) return false;
+    const proof = await lockExactProtectedTaskRunResultPublicationInTx(
+      tx, input, "mapped",
+    );
+    if (proof === null) return false;
 
     const authorized = await completeAuthorization(Object.freeze({
-      contentNamespaceId: revision.contentNamespaceId,
-      requesterHumanId: revision.requesterHumanId,
+      contentNamespaceId: proof.lifecycle.contentNamespaceId,
+      requesterHumanId: proof.lifecycle.requesterHumanId,
     }));
     if (!authorized) return false;
 
     if (
-      binding.resultAttachedAt === null
-      || binding.deliveryMode === "none" && binding.completedAt === null
+      proof.binding.resultAttachedAt === null
+      || proof.binding.deliveryMode === "none"
+        && proof.binding.completedAt === null
     ) {
       const [attached] = await tx.update(protectedTaskRunOutputBindings).set({
-        ...(binding.resultAttachedAt === null
-          ? { resultAttachedAt: new Date(runCompletedAt!.getTime()) }
+        ...(proof.binding.resultAttachedAt === null
+          ? { resultAttachedAt: new Date(proof.run.completedAt.getTime()) }
           : {}),
-        ...(binding.deliveryMode === "none" && binding.completedAt === null
-          ? { completedAt: new Date(runCompletedAt!.getTime()) }
+        ...(proof.binding.deliveryMode === "none"
+            && proof.binding.completedAt === null
+          ? { completedAt: new Date(proof.run.completedAt.getTime()) }
           : {}),
       }).where(and(
-        eq(protectedTaskRunOutputBindings.taskRunId, run.id),
-        eq(protectedTaskRunOutputBindings.bindingId, binding.bindingId),
-        eq(protectedTaskRunOutputBindings.resultOperationId, revision.operationId),
-        eq(protectedTaskRunOutputBindings.resultObjectId, reference.resultObjectId),
+        eq(protectedTaskRunOutputBindings.taskRunId, proof.run.id),
+        eq(protectedTaskRunOutputBindings.bindingId, proof.binding.bindingId),
+        eq(
+          protectedTaskRunOutputBindings.resultOperationId,
+          proof.lifecycle.operationId,
+        ),
+        eq(
+          protectedTaskRunOutputBindings.resultObjectId,
+          proof.reference.resultObjectId,
+        ),
         eq(
           protectedTaskRunOutputBindings.acceptedPolicyRevision,
-          reference.policyRevision,
+          proof.reference.policyRevision,
         ),
-        eq(protectedTaskRunOutputBindings.resultTerminalAt, runCompletedAt!),
-        binding.resultAttachedAt === null
+        eq(
+          protectedTaskRunOutputBindings.resultTerminalAt,
+          proof.run.completedAt,
+        ),
+        proof.binding.resultAttachedAt === null
           ? isNull(protectedTaskRunOutputBindings.resultAttachedAt)
           : eq(
               protectedTaskRunOutputBindings.resultAttachedAt,
-              binding.resultAttachedAt,
+              proof.binding.resultAttachedAt,
             ),
-        binding.deliveryMode === "none" && binding.completedAt === null
+        proof.binding.deliveryMode === "none"
+            && proof.binding.completedAt === null
           ? isNull(protectedTaskRunOutputBindings.completedAt)
           : undefined,
       )).returning({ taskRunId: protectedTaskRunOutputBindings.taskRunId });
@@ -6095,22 +6259,22 @@ export async function settlePublishedProtectedTaskRunAuthorization(
       }
     }
 
-    if (job.status === "completed") return true;
+    if (proof.job.status === "completed") return true;
     const [completedJob] = await tx.update(jobs).set({
       status: "completed",
-      ...(job.status === "running"
+      ...(proof.job.status === "running"
         ? { completedAt: new Date() }
         : {}),
     }).where(and(
-      eq(jobs.id, job.id),
-      eq(jobs.input, reference),
-      eq(jobs.laneKey, `task:${task.id}`),
+      eq(jobs.id, proof.job.id),
+      eq(jobs.input, proof.reference),
+      eq(jobs.laneKey, `task:${proof.task.id}`),
       eq(jobs.type, "foreground"),
-      eq(jobs.status, job.status),
+      eq(jobs.status, proof.job.status),
       isNotNull(jobs.startedAt),
-      job.status === "running"
+      proof.job.status === "running"
         ? isNull(jobs.completedAt)
-        : eq(jobs.completedAt, job.completedAt!),
+        : eq(jobs.completedAt, proof.job.completedAt!),
       isNull(jobs.result),
       isNull(jobs.message),
     )).returning({ id: jobs.id });
@@ -6128,6 +6292,10 @@ async function terminalizeTaskRunResult(
   const { input, ordinaryResult } = plan;
   const receipt = terminalReceipt(input);
   return db.transaction(async (tx) => {
+    const [policy] = await tx.select().from(encryptionTransitionPolicy)
+      .where(eq(encryptionTransitionPolicy.id, "server"))
+      .limit(1).for("share");
+
     const [task] = await tx.select().from(tasks)
       .where(eq(tasks.id, input.taskId)).limit(1).for("update");
     if (!task) return terminalRejected("not_found");
@@ -6178,9 +6346,6 @@ async function terminalizeTaskRunResult(
       return terminalRejected("conflict");
     }
 
-    const [policy] = await tx.select().from(encryptionTransitionPolicy)
-      .where(eq(encryptionTransitionPolicy.id, "server"))
-      .limit(1).for("share");
     if (
       !policy
       || policy.revision !== policyRevision

@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 
-import type { DirectDatabase } from "../../src/config/direct-database";
+import {
+  createOfflineDirectDb,
+  type DirectDatabase,
+} from "../../src/config/direct-database";
 import {
   listProtectedTaskRunOutputBindingsNeedingDelivery,
   protectedTaskRunMessageOperationId,
@@ -164,8 +169,13 @@ describe("protected TaskRun output receipts", () => {
   test("uses the caller's restart reconciliation batch and includes terminal unattached work", async () => {
     const pending = binding();
     let limit: number | undefined;
+    let predicate: SQL | undefined;
+    const offline = createOfflineDirectDb();
     const query = {
-      where: (_condition: unknown) => query,
+      where: (condition: SQL) => {
+        predicate = condition;
+        return query;
+      },
       orderBy: (..._order: unknown[]) => query,
       limit: async (value: number) => {
         limit = value;
@@ -173,7 +183,9 @@ describe("protected TaskRun output receipts", () => {
       },
     };
     const db = {
-      select: () => ({ from: () => query }),
+      select: (projection?: Record<string, SQL>) => projection === undefined
+        ? { from: () => query }
+        : offline.select(projection),
     } as unknown as DirectDatabase;
 
     expect(await listProtectedTaskRunOutputBindingsNeedingDelivery(db, 1))
@@ -182,6 +194,21 @@ describe("protected TaskRun output receipts", () => {
     expect(await listProtectedTaskRunOutputBindingsNeedingDelivery(db, 33))
       .toEqual([pending]);
     expect(limit).toBe(33);
+    const compiled = new PgDialect().sqlToQuery(predicate!);
+    expect(compiled.sql).toContain("not exists");
+    expect(compiled.sql).toContain('inner join "jobs"');
+    expect(compiled.sql).toContain(
+      'inner join "task_run_result_crypto_revisions"',
+    );
+    expect(compiled.sql).not.toContain("jsonb_build_object");
+    expect(compiled.sql).toContain('"result_attached_at" is null');
+    for (const value of [
+      "nautilo.protectedTaskRunTerminal.v1",
+      "protected_task_run_v1",
+      "failed",
+      "quarantined",
+      "retry_exhausted",
+    ]) expect(compiled.params).toContain(value);
     expect(listProtectedTaskRunOutputBindingsNeedingDelivery(db, -1))
       .rejects.toThrow("recovery batch is malformed");
   });

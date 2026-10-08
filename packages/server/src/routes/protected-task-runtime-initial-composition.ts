@@ -1,6 +1,8 @@
 import { log } from "@nautilo/logger";
 import { createProtectedTaskPublishedResultRecovery } from
   "./protected-task-published-result-recovery";
+import { createProtectedTaskUnmappedResultRecovery } from
+  "./protected-task-unmapped-result-recovery";
 import {
   createProtectedTaskCancellationRecovery,
   type ProtectedTaskCancellationRecoveryCursor,
@@ -104,11 +106,13 @@ export type ProductionProtectedTaskRuntimeInitialComposition = Readonly<
 type Dependencies = Readonly<{
   productContext: typeof createHumanProductTransactionContext;
   nativeExecution: typeof createProductionProtectedTaskNativeExecution;
+  unmappedResultRecovery: typeof createProtectedTaskUnmappedResultRecovery;
 }>;
 
 const productionDependencies: Dependencies = Object.freeze({
   productContext: createHumanProductTransactionContext,
   nativeExecution: createProductionProtectedTaskNativeExecution,
+  unmappedResultRecovery: createProtectedTaskUnmappedResultRecovery,
 });
 
 function projectOccurrence(
@@ -266,8 +270,9 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     ?? (process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim()
       || "http://localhost:3001");
   const now = input.now ?? Date.now;
+  const cryptoHandle = await verifyCryptoPostgresHandle(restricted);
   const repository = new PostgresBackgroundAuthorizationRepository(
-    await verifyCryptoPostgresHandle(restricted),
+    cryptoHandle,
   );
   const recovery = createProtectedTaskPreexecutionRecovery({
     db: input.db, repository, now,
@@ -277,8 +282,21 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     db: input.db, repository, recipients: input.recipients, now,
   });
   let cancellationCursor: ProtectedTaskCancellationRecoveryCursor | undefined;
+  const unmapped = dependencies.unmappedResultRecovery({
+    db: input.db,
+    restricted,
+    crypto,
+    cryptoHandle,
+    serverScope,
+    recipients: input.recipients,
+    now,
+  }, { createProductContext: dependencies.productContext });
   const published = createProtectedTaskPublishedResultRecovery({
-    db: input.db, repository, recipients: input.recipients, now,
+    db: input.db,
+    repository,
+    recipients: input.recipients,
+    recoverUnmapped: unmapped.recover,
+    now,
   });
   let publishedCursor: ProtectedTaskRunOutputRecoveryCursor | undefined;
   const predispatch = createProductionProtectedTaskPredispatch({
