@@ -55,6 +55,12 @@ function visibilityDbMock(
         }
         if (table === RealDb.roomMembers) {
           return {
+            where: () => ({
+              orderBy: async () => {
+                operations.push("parent-roster");
+                return [];
+              },
+            }),
             innerJoin: () => ({
               where: async () => {
                 operations.push("roster");
@@ -178,7 +184,12 @@ describe("updateRoomVisibility", () => {
       discoverable: false,
     });
     expect(fixture.getUpdatedValues()).toMatchObject({ kind: "open" });
-    expect(fixture.getOperations()).toEqual(["lock", "room", "update"]);
+    expect(fixture.getOperations()).toEqual([
+      "lock",
+      "room",
+      "update",
+      "parent-roster",
+    ]);
   });
 
   test("a private target leaves an existing private Room private without inspecting its roster", async () => {

@@ -1374,6 +1374,33 @@ export function roomsRoutes(
           ? await updateRoomVisibility(roomId, targetKind)
           : await updateRoomVisibility(roomId, targetKind, request.body.discoverable);
         if (result.changed) {
+          try {
+            const detail = await service.getRoomDetailForManager(
+              roomId,
+              sessionUserId,
+              { isAdmin: true },
+            );
+            if (detail) {
+              await convergeHumanRoomCatalogs(
+                detail.members.flatMap((member) =>
+                  member.kind === "user" && member.userId
+                    ? [{ userId: member.userId, actorId: member.actorId }]
+                    : []),
+              );
+            }
+          } catch (error) {
+            // The visibility transaction has committed. Connected members can
+            // recover on reconnect; a transient catalogue refresh failure must
+            // not turn the successful mutation into an HTTP failure.
+            warn(
+              `[rooms] visibility catalogue convergence unavailable roomId=${roomId}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+          for (const repair of result.subthreadMembershipRepairs ?? []) {
+            publishRoomMembersChanged(repair.roomId, repair.event);
+          }
           roomAudit(request, {
             kind: "room_visibility_changed",
             actorId: request.sessionActorId,

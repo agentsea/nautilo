@@ -19,6 +19,8 @@ let manageDetailError: Error | null = null;
 let manageDetailGate: Promise<void> | null = null;
 const manageDetailGateByRoomId = new Map<string, Promise<void>>();
 const manageDetailKindByRoomId = new Map<string, RoomKind>();
+const manageDetailLabelByRoomId = new Map<string, string>();
+const manageDetailMembersByRoomId = new Map<string, RoomMemberDto[]>();
 let visibilityMutationGate: Promise<void> | null = null;
 const setRoomVisibility = mock(async () => {
   await visibilityMutationGate;
@@ -64,25 +66,30 @@ const addRoomMember = mock(
 );
 const happyWindow = new Window({ url: "http://127.0.0.1:3001/" });
 const priorGlobals: Record<string, unknown> = {};
+const toastShow = mock(() => undefined);
+
+const getRoomManageDetail = mock(async (roomId: string) => {
+  const detailKind = manageDetailKindByRoomId.get(roomId) ?? manageDetailKind;
+  const detailLabel = manageDetailLabelByRoomId.get(roomId) ?? "Test room";
+  const detailMembers = manageDetailMembersByRoomId.get(roomId) ?? manageDetailMembers;
+  await (manageDetailGateByRoomId.get(roomId) ?? manageDetailGate);
+  if (manageDetailError) throw manageDetailError;
+  return {
+    id: roomId,
+    label: detailLabel,
+    kind: detailKind,
+    ...(manageDetailDiscoverable === undefined
+      ? {}
+      : { discoverable: manageDetailDiscoverable }),
+    conductorMode: manageDetailConductorMode,
+    members: detailMembers,
+  };
+});
 
 mock.module("../../../../lib/api", () => ({
   apiClient: {
     getTokenProvider: () => async () => null,
-    getRoomManageDetail: async (roomId: string) => {
-      const detailKind = manageDetailKindByRoomId.get(roomId) ?? manageDetailKind;
-      await (manageDetailGateByRoomId.get(roomId) ?? manageDetailGate);
-      if (manageDetailError) throw manageDetailError;
-      return {
-        id: roomId,
-        label: "Test room",
-        kind: detailKind,
-        ...(manageDetailDiscoverable === undefined
-          ? {}
-          : { discoverable: manageDetailDiscoverable }),
-        conductorMode: manageDetailConductorMode,
-        members: manageDetailMembers,
-      };
-    },
+    getRoomManageDetail,
     getRoomPresence: async () => ({ members: [] }),
     listAddableUsersForRoom: async () => addableUsers,
     listAddableAgentsForRoom: async () => addableAgents,
@@ -100,7 +107,7 @@ mock.module("../../../../lib/api", () => ({
 }));
 
 mock.module("../../../../components/toast", () => ({
-  useToast: () => ({ show: () => undefined, dismiss: () => undefined, _current: null }),
+  useToast: () => ({ show: toastShow, dismiss: () => undefined, _current: null }),
 }));
 
 mock.module("../use-room-focus", () => ({
@@ -141,12 +148,16 @@ beforeEach(() => {
   manageDetailGate = null;
   manageDetailGateByRoomId.clear();
   manageDetailKindByRoomId.clear();
+  manageDetailLabelByRoomId.clear();
+  manageDetailMembersByRoomId.clear();
   visibilityMutationGate = null;
   failingMemberKeys.clear();
   protectHumanAdds = false;
   markMembershipPending.mockClear();
   addRoomMember.mockClear();
   setRoomVisibility.mockClear();
+  getRoomManageDetail.mockClear();
+  toastShow.mockClear();
 });
 
 afterAll(async () => {
@@ -850,6 +861,79 @@ describe("MembersPanel — room management", () => {
     await waitFor(() => {
       expect((view.getByTestId("visibility-radio-public") as HTMLInputElement).checked).toBe(true);
     });
+    view.unmount();
+  });
+
+  test("a pending visibility mutation cannot refresh over a newly selected room", async () => {
+    let releaseMutation = () => undefined;
+    visibilityMutationGate = new Promise<void>((resolve) => {
+      releaseMutation = resolve;
+    });
+    const formerMembers = [
+      human("u1", "Room Admin", "admin"),
+      agent("a1", "Former Genie", "active"),
+    ];
+    const currentMembers = [
+      human("u1", "Room Admin", "admin"),
+      human("u2", "Current Teammate", "member"),
+    ];
+    manageDetailKindByRoomId.set("r1", "private");
+    manageDetailKindByRoomId.set("r2", "group");
+    manageDetailLabelByRoomId.set("r1", "Former chat");
+    manageDetailLabelByRoomId.set("r2", "Current chat");
+    manageDetailMembersByRoomId.set("r1", formerMembers);
+    manageDetailMembersByRoomId.set("r2", currentMembers);
+    const onMembershipChanged = mock(() => undefined);
+    const view = render(
+      <MembersPanel
+        roomId="r1"
+        viewerActorId="u1"
+        initialMembers={formerMembers}
+        open={true}
+        onClose={() => undefined}
+        onMembershipChanged={onMembershipChanged}
+        viewerCanManageRooms={true}
+        viewerSupportsRoomDiscoverability={true}
+      />,
+    );
+
+    fireEvent.click(await view.findByTestId("visibility-radio-public"));
+    await waitFor(() => expect(setRoomVisibility).toHaveBeenCalledWith("r1", true, true));
+
+    view.rerender(
+      <MembersPanel
+        roomId="r2"
+        viewerActorId="u1"
+        initialMembers={currentMembers}
+        open={true}
+        onClose={() => undefined}
+        onMembershipChanged={onMembershipChanged}
+        viewerCanManageRooms={false}
+        viewerSupportsRoomDiscoverability={true}
+      />,
+    );
+    await waitFor(() => {
+      expect((view.getByTestId("members-panel-rename") as HTMLInputElement).value).toBe("Current chat");
+      expect(view.getByText("Current Teammate")).toBeTruthy();
+      expect(view.queryByText("Former Genie")).toBeNull();
+      expect(view.queryByTestId("visibility-radio-public")).toBeNull();
+    });
+
+    await act(async () => {
+      releaseMutation();
+      await visibilityMutationGate;
+      await Promise.resolve();
+    });
+
+    expect(getRoomManageDetail).toHaveBeenCalledTimes(2);
+    expect(getRoomManageDetail).toHaveBeenNthCalledWith(1, "r1");
+    expect(getRoomManageDetail).toHaveBeenNthCalledWith(2, "r2");
+    expect((view.getByTestId("members-panel-rename") as HTMLInputElement).value).toBe("Current chat");
+    expect(view.getByText("Current Teammate")).toBeTruthy();
+    expect(view.queryByText("Former Genie")).toBeNull();
+    expect(view.queryByTestId("visibility-radio-public")).toBeNull();
+    expect(onMembershipChanged).not.toHaveBeenCalled();
+    expect(toastShow).not.toHaveBeenCalled();
     view.unmount();
   });
 

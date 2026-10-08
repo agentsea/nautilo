@@ -182,7 +182,10 @@ export function MembersPanel({
   const [conductorModeBusy, setConductorModeBusy] = useState<boolean>(false);
 
   const [pickerOpen, setPickerOpen] = useState<boolean>(false);
+  const currentRoomIdRef = useRef(roomId);
+  currentRoomIdRef.current = roomId;
   const refreshGenerationRef = useRef(0);
+  const visibilityOperationGenerationRef = useRef(0);
   // Only dismiss when a click both STARTS and ENDS on the backdrop. Without
   // this, drag-selecting text inside the panel that releases over the dim
   // backdrop fires a `click` on the overlay and nukes the panel mid-edit.
@@ -197,14 +200,18 @@ export function MembersPanel({
   const presence = useRoomPresence(roomId, viewerActorId, open);
 
   const refresh = useCallback(async () => {
+    if (currentRoomIdRef.current !== roomId) return;
     const generation = refreshGenerationRef.current + 1;
     refreshGenerationRef.current = generation;
+    const refreshIsCurrent = () =>
+      currentRoomIdRef.current === roomId &&
+      refreshGenerationRef.current === generation;
     setLoading(true);
     setLoadedRoomId(null);
     setError(null);
     try {
       const detail: RoomDetailResponse = await apiClient.getRoomManageDetail(roomId);
-      if (refreshGenerationRef.current !== generation) return;
+      if (!refreshIsCurrent()) return;
       setMembers(detail.members);
       setRoomLabel(detail.label);
       setRoomKind(detail.kind);
@@ -212,10 +219,10 @@ export function MembersPanel({
       setConductorMode(detail.conductorMode === "standard" ? "standard" : "advanced");
       setLoadedRoomId(roomId);
     } catch (e) {
-      if (refreshGenerationRef.current !== generation) return;
+      if (!refreshIsCurrent()) return;
       setError(e instanceof Error ? e.message : "Failed to load members");
     } finally {
-      if (refreshGenerationRef.current === generation) {
+      if (refreshIsCurrent()) {
         setLoading(false);
       }
     }
@@ -226,6 +233,11 @@ export function MembersPanel({
       void refresh();
     }
   }, [open, refresh]);
+
+  useEffect(() => {
+    visibilityOperationGenerationRef.current += 1;
+    setVisibilityBusy(false);
+  }, [roomId]);
 
   useEffect(() => {
     if (!open) return;
@@ -402,6 +414,12 @@ export function MembersPanel({
         ? "private"
         : roomDiscoverable ? "public" : "external";
       if (visibility === currentVisibility) return;
+      const operationRoomId = roomId;
+      const operationGeneration = visibilityOperationGenerationRef.current + 1;
+      visibilityOperationGenerationRef.current = operationGeneration;
+      const operationIsCurrent = () =>
+        currentRoomIdRef.current === operationRoomId &&
+        visibilityOperationGenerationRef.current === operationGeneration;
       setVisibilityBusy(true);
       try {
         const isPublic = visibility !== "private";
@@ -412,7 +430,9 @@ export function MembersPanel({
             ? visibility === "public"
             : undefined,
         );
+        if (!operationIsCurrent()) return;
         await refresh();
+        if (!operationIsCurrent()) return;
         onMembershipChanged?.();
         toast.show({
           variant: "success",
@@ -424,13 +444,16 @@ export function MembersPanel({
               : "Private",
         });
       } catch (e) {
+        if (!operationIsCurrent()) return;
         toast.show({
           variant: "error",
           title: "Could not change visibility",
           message: e instanceof Error ? e.message : "Unknown error.",
         });
       } finally {
-        setVisibilityBusy(false);
+        if (operationIsCurrent()) {
+          setVisibilityBusy(false);
+        }
       }
     },
     [

@@ -762,6 +762,16 @@ const userHasCapabilityMock = mock(
 const refreshRoomSubscriptionsMock = mock(
   async (_userId: string, _actorId: string) => {},
 );
+const convergeHumanRoomCatalogsMock = mock(
+  async (targets: readonly { userId: string; actorId: string }[]) => {
+    for (const target of targets) {
+      await refreshRoomSubscriptionsMock(target.userId, target.actorId);
+    }
+    for (const target of targets) {
+      publishRoomCatalogChangedMock(target.userId);
+    }
+  },
+);
 const publishRoomCatalogChangedMock = mock((_userId: string) => {});
 const publishRoomMembersChangedMock = mock(
   (_roomId: string, _event: unknown, _recipientSyncNamespaceId?: string) => {},
@@ -847,7 +857,20 @@ const updateRoomVisibilityMock = mock(
     _roomId: string,
     _kind: "open" | "group",
     _discoverable?: boolean,
-  ) => ({
+  ): Promise<{
+    changed: boolean;
+    kind: "private" | "group" | "open";
+    discoverable: boolean;
+    subthreadMembershipRepairs?: readonly {
+      roomId: string;
+      event: {
+        kind: "member_added" | "member_removed";
+        actorId: string;
+        actorKind: "user" | "agent";
+        displayName: string;
+      };
+    }[];
+  }> => ({
     changed: true,
     kind: _kind,
     discoverable: _discoverable ?? true,
@@ -896,6 +919,7 @@ mock.module("../../src/lib/agent-room-authz", () => ({
 
 mock.module("../../src/realtime/ws-publisher", () => ({
   refreshRoomSubscriptionsForUser: refreshRoomSubscriptionsMock,
+  convergeHumanRoomCatalogs: convergeHumanRoomCatalogsMock,
   publishRoomCatalogChanged: publishRoomCatalogChangedMock,
   publishRoomMembersChanged: publishRoomMembersChangedMock,
 }));
@@ -2042,6 +2066,13 @@ describe("D287 — archive / unarchive routes", () => {
 describe("D194 — room visibility flip", () => {
   const MANAGER_USER = "99999999-9999-4999-8999-999999999999";
   const MANAGER_ACTOR = "act-visibility-manager";
+  const visibilityDetailMock = mock(
+    async (
+      _roomId: string,
+      _managerUserId: string,
+      _opts: { isAdmin: boolean },
+    ): Promise<RoomDetailPayload | null> => null,
+  );
 
   beforeEach(() => {
     updateRoomVisibilityMock.mockClear();
@@ -2052,6 +2083,12 @@ describe("D194 — room visibility flip", () => {
         discoverable: discoverable ?? true,
       }),
     );
+    visibilityDetailMock.mockClear();
+    visibilityDetailMock.mockImplementation(async () => null);
+    convergeHumanRoomCatalogsMock.mockClear();
+    refreshRoomSubscriptionsMock.mockClear();
+    publishRoomCatalogChangedMock.mockClear();
+    publishRoomMembersChangedMock.mockClear();
     userHasCapabilityMock.mockClear();
     userHasCapabilityMock.mockImplementation(
       async (_userId, slug) => slug === "manage_rooms",
@@ -2074,7 +2111,7 @@ describe("D194 — room visibility flip", () => {
       createRoomForOwner: mock(async () => ({}) as RoomDetailPayload),
       renamePrivateRoomForOwner: mock(async () => null),
       listManageableRoomsForUser: mock(async () => []),
-      getRoomDetailForManager: mock(async () => null),
+      getRoomDetailForManager: visibilityDetailMock,
     };
     roomsRoutes(app, service);
     app.addHook("preHandler", async (request) => {
@@ -2179,6 +2216,77 @@ describe("D194 — room visibility flip", () => {
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ ok: true });
     expect(writeSecurityAuditEventMock.mock.calls.length).toBe(0);
+    expect(visibilityDetailMock).not.toHaveBeenCalled();
+    expect(convergeHumanRoomCatalogsMock).not.toHaveBeenCalled();
+    expect(publishRoomMembersChangedMock).not.toHaveBeenCalled();
+  });
+
+  test("POST visibility lets a nonmember manager converge actual member catalogues before publishing child repair", async () => {
+    const convergenceOrder: string[] = [];
+    convergeHumanRoomCatalogsMock.mockImplementationOnce(async () => {
+      convergenceOrder.push("converge:start");
+      await Promise.resolve();
+      convergenceOrder.push("converge:end");
+    });
+    publishRoomMembersChangedMock.mockImplementationOnce(() => {
+      convergenceOrder.push("publish");
+    });
+    const childEvent = {
+      kind: "member_added" as const,
+      actorId: UUID_B,
+      actorKind: "user" as const,
+      displayName: "Member",
+    };
+    updateRoomVisibilityMock.mockImplementationOnce(async () => ({
+      changed: true,
+      kind: "open",
+      discoverable: false,
+      subthreadMembershipRepairs: [{ roomId: UUID_B, event: childEvent }],
+    }));
+    visibilityDetailMock.mockResolvedValueOnce({
+      members: [
+        { actorId: UUID_A, kind: "user", userId: UUID_B },
+        {
+          actorId: "44444444-4444-4444-8444-444444444444",
+          kind: "user",
+          userId: "55555555-5555-4555-8555-555555555555",
+        },
+        { actorId: "agent", kind: "agent" },
+      ],
+    } as RoomDetailPayload);
+    const app = makeApp("owner", MANAGER_ACTOR, MANAGER_USER);
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/rooms/${UUID_A}/visibility`,
+      headers: { "content-type": "application/json" },
+      payload: { public: true, discoverable: false },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(visibilityDetailMock).toHaveBeenCalledWith(
+      UUID_A,
+      MANAGER_USER,
+      { isAdmin: true },
+    );
+    expect(convergeHumanRoomCatalogsMock).toHaveBeenCalledWith([
+      { userId: UUID_B, actorId: UUID_A },
+      {
+        userId: "55555555-5555-4555-8555-555555555555",
+        actorId: "44444444-4444-4444-8444-444444444444",
+      },
+    ]);
+    expect(JSON.stringify(convergeHumanRoomCatalogsMock.mock.calls)).not.toContain(
+      MANAGER_USER,
+    );
+    expect(publishRoomMembersChangedMock).toHaveBeenCalledWith(
+      UUID_B,
+      childEvent,
+    );
+    expect(convergenceOrder).toEqual([
+      "converge:start",
+      "converge:end",
+      "publish",
+    ]);
   });
 
   test("POST visibility rejects non-boolean discoverable before authorization", async () => {

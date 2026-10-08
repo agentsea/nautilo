@@ -8,6 +8,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   actors,
   agents,
+  moderationActions,
+  moderationRestrictions,
+  moderationSubjects,
   createDirectDb,
   ensureDatabase,
   eq,
@@ -22,6 +25,7 @@ import {
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import {
   createRoomForOwner,
+  createSubthreadRoom,
   joinOpenRoom,
   MembershipOpError,
   updateRoomVisibility,
@@ -32,11 +36,14 @@ let ownerUserId: string;
 let ownerActorId: string;
 let joinedUserId: string;
 let joinedActorId: string;
+let laterUserId: string;
+let laterActorId: string;
 let ownedAgentId: string;
 let ownedAgentActorId: string;
 const createdRoomIds: string[] = [];
 const createdNamespaceIds: string[] = [];
 const createdSessionIds: string[] = [];
+const createdRestrictionIds: string[] = [];
 
 async function createFixtureRoom(input: {
   type: "private" | "shared";
@@ -95,12 +102,37 @@ async function createFixtureRoom(input: {
   return { roomId, messageId };
 }
 
+async function banHumanFromChild(userId: string, childRoomId: string): Promise<void> {
+  const [subject] = await db.insert(moderationSubjects).values({ userId })
+    .returning({ id: moderationSubjects.id });
+  if (!subject) throw new Error("moderation subject");
+  const operationId = randomUUID();
+  const restrictionId = randomUUID();
+  createdRestrictionIds.push(restrictionId);
+  await db.insert(moderationActions).values({
+    operationId,
+    requestDigest: "0".repeat(64),
+    requesterUserId: ownerUserId,
+    subjectId: subject.id,
+    roomId: childRoomId,
+    action: "ban",
+    restrictionId,
+  });
+  await db.insert(moderationRestrictions).values({
+    id: restrictionId,
+    subjectId: subject.id,
+    roomId: childRoomId,
+    kind: "access",
+    createOperationId: operationId,
+  });
+}
+
 beforeAll(async () => {
   bootstrapTestDbInstance();
   await ensureDatabase();
   db = createDirectDb(1);
   const suffix = randomUUID().slice(0, 8);
-  const [owner, joined] = await db.insert(users).values([
+  const [owner, joined, later] = await db.insert(users).values([
     {
       name: "Visibility owner",
       email: `visibility-owner-${suffix}@test.local`,
@@ -111,11 +143,17 @@ beforeAll(async () => {
       email: `visibility-joiner-${suffix}@test.local`,
       handle: `visibilityjoiner${suffix}`,
     },
+    {
+      name: "Visibility later joiner",
+      email: `visibility-later-${suffix}@test.local`,
+      handle: `visibilitylater${suffix}`,
+    },
   ]).returning({ id: users.id });
-  if (!owner || !joined) throw new Error("users");
+  if (!owner || !joined || !later) throw new Error("users");
   ownerUserId = owner.id;
   joinedUserId = joined.id;
-  const [ownerActor, joinedActor] = await db.insert(actors).values([
+  laterUserId = later.id;
+  const [ownerActor, joinedActor, laterActor] = await db.insert(actors).values([
     {
       ownerId: ownerUserId,
       displayName: "Visibility owner",
@@ -128,10 +166,17 @@ beforeAll(async () => {
       trustState: "verified",
       kind: "user",
     },
+    {
+      ownerId: laterUserId,
+      displayName: "Visibility later joiner",
+      trustState: "verified",
+      kind: "user",
+    },
   ]).returning({ id: actors.id });
-  if (!ownerActor || !joinedActor) throw new Error("human actors");
+  if (!ownerActor || !joinedActor || !laterActor) throw new Error("human actors");
   ownerActorId = ownerActor.id;
   joinedActorId = joinedActor.id;
+  laterActorId = laterActor.id;
   const [agent] = await db.insert(agents).values({
     handle: `visibility-agent-${suffix}`,
   }).returning({ id: agents.id });
@@ -150,7 +195,21 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!db) return;
   try {
+    if (createdRestrictionIds.length > 0) {
+      await db.delete(moderationRestrictions)
+        .where(inArray(moderationRestrictions.id, createdRestrictionIds));
+    }
     if (createdRoomIds.length > 0) {
+      // Anchored messages use ON DELETE SET NULL, while the Subthread shape
+      // requires one live/tombstoned anchor. Remove child Rooms first.
+      const childRooms = await db.select({ id: rooms.id, kind: rooms.kind }).from(rooms)
+        .where(inArray(rooms.id, createdRoomIds));
+      const childRoomIds = childRooms
+        .filter((room) => room.kind === "subthread")
+        .map((room) => room.id);
+      if (childRoomIds.length > 0) {
+        await db.delete(rooms).where(inArray(rooms.id, childRoomIds));
+      }
       const storedSessions = await db.select({ id: sessions.id }).from(sessions)
         .where(inArray(sessions.roomId, createdRoomIds));
       const sessionIds = [...new Set([
@@ -169,10 +228,15 @@ afterAll(async () => {
     if (createdNamespaceIds.length > 0) {
       await db.delete(namespaces).where(inArray(namespaces.id, createdNamespaceIds));
     }
-    const actorIds = [ownerActorId, joinedActorId, ownedAgentActorId].filter(Boolean);
+    const actorIds = [
+      ownerActorId,
+      joinedActorId,
+      laterActorId,
+      ownedAgentActorId,
+    ].filter(Boolean);
     if (actorIds.length > 0) await db.delete(actors).where(inArray(actors.id, actorIds));
     if (ownedAgentId) await db.delete(agents).where(eq(agents.id, ownedAgentId));
-    const userIds = [ownerUserId, joinedUserId].filter(Boolean);
+    const userIds = [ownerUserId, joinedUserId, laterUserId].filter(Boolean);
     if (userIds.length > 0) await db.delete(users).where(inArray(users.id, userIds));
   } finally {
     await db.end();
@@ -294,6 +358,83 @@ describe("updateRoomVisibility (integration)", () => {
         [ownerActorId, ownedAgentActorId].sort(),
       );
     }
+  });
+
+  test("opening a restricted child repairs the inherited audience and later joins stay consistent", async () => {
+    const parentMembers = [ownerActorId, ownedAgentActorId, joinedActorId];
+    const { roomId, messageId } = await createFixtureRoom({
+      type: "private",
+      kind: "group",
+      members: parentMembers,
+      withMessage: true,
+    });
+    const { subthreadRoomId } = await createSubthreadRoom({
+      parentRoomId: roomId,
+      anchorMessageId: messageId!,
+      requesterActorId: ownerActorId,
+      members: [{ actorId: ownerActorId }, { actorId: ownedAgentActorId }],
+    });
+    createdRoomIds.push(subthreadRoomId);
+
+    const opened = await updateRoomVisibility(roomId, "open", false);
+    expect(opened.subthreadMembershipRepairs).toEqual([
+      {
+        roomId: subthreadRoomId,
+        event: {
+          kind: "member_added",
+          actorId: joinedActorId,
+          actorKind: "user",
+          displayName: "Visibility joiner",
+        },
+      },
+    ]);
+    let childMembers = await db.select({ actorId: roomMembers.actorId })
+      .from(roomMembers).where(eq(roomMembers.roomId, subthreadRoomId));
+    expect(childMembers.map((member) => member.actorId).sort()).toEqual(
+      [...parentMembers].sort(),
+    );
+
+    await joinOpenRoom({
+      userId: laterUserId,
+      actorId: laterActorId,
+      roomId,
+    });
+    childMembers = await db.select({ actorId: roomMembers.actorId })
+      .from(roomMembers).where(eq(roomMembers.roomId, subthreadRoomId));
+    expect(childMembers.map((member) => member.actorId).sort()).toEqual(
+      [...parentMembers, laterActorId].sort(),
+    );
+  });
+
+  test("opening preserves a child-scoped Human ban while repairing other inherited actors", async () => {
+    const parentMembers = [ownerActorId, ownedAgentActorId, joinedActorId];
+    const { roomId, messageId } = await createFixtureRoom({
+      type: "private",
+      kind: "group",
+      members: parentMembers,
+      withMessage: true,
+    });
+    const { subthreadRoomId } = await createSubthreadRoom({
+      parentRoomId: roomId,
+      anchorMessageId: messageId!,
+      requesterActorId: ownerActorId,
+      members: [{ actorId: ownerActorId }, { actorId: ownedAgentActorId }],
+    });
+    createdRoomIds.push(subthreadRoomId);
+    await banHumanFromChild(joinedUserId, subthreadRoomId);
+
+    const opened = await updateRoomVisibility(roomId, "open", false);
+    expect(opened.subthreadMembershipRepairs).toBeUndefined();
+    const parentRows = await db.select({ actorId: roomMembers.actorId })
+      .from(roomMembers).where(eq(roomMembers.roomId, roomId));
+    const childRows = await db.select({ actorId: roomMembers.actorId })
+      .from(roomMembers).where(eq(roomMembers.roomId, subthreadRoomId));
+    expect(parentRows.map((member) => member.actorId).sort()).toEqual(
+      [...parentMembers].sort(),
+    );
+    expect(childRows.map((member) => member.actorId).sort()).toEqual(
+      [ownerActorId, ownedAgentActorId].sort(),
+    );
   });
 
   test("rejects unsupported Room kinds", async () => {

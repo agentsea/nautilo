@@ -4343,6 +4343,10 @@ export type RoomVisibilityUpdateResult = Readonly<{
   changed: boolean;
   kind: "private" | "group" | "open";
   discoverable: boolean;
+  subthreadMembershipRepairs?: readonly Readonly<{
+    roomId: string;
+    event: RoomMembershipSystemEventPayload;
+  }>[];
 }>;
 
 /**
@@ -4442,10 +4446,45 @@ export async function updateRoomVisibility(
         updatedAt: new Date(),
       })
       .where(eq(rooms.id, roomId));
+
+    const subthreadMembershipRepairs: Array<{
+      roomId: string;
+      event: RoomMembershipSystemEventPayload;
+    }> = [];
+    if (row.kind !== "open" && resultingKind === "open") {
+      const parentMembers = await tx
+        .select({ actorId: roomMembers.actorId })
+        .from(roomMembers)
+        .where(eq(roomMembers.roomId, roomId))
+        .orderBy(asc(roomMembers.actorId));
+      for (const member of parentMembers) {
+        const repaired = await inheritOpenParentMemberIntoSubthreadsInTx(
+          tx,
+          roomId,
+          member.actorId,
+        );
+        if (!repaired.event) continue;
+        for (const childRoomId of repaired.roomIds) {
+          subthreadMembershipRepairs.push({
+            roomId: childRoomId,
+            event: repaired.event,
+          });
+        }
+      }
+      const repairedRoomIds = [
+        ...new Set(subthreadMembershipRepairs.map((repair) => repair.roomId)),
+      ];
+      if (repairedRoomIds.length > 0) {
+        await reconcileRoomJournalMembershipInTx(tx, repairedRoomIds);
+      }
+    }
     return {
       changed: true,
       kind: resultingKind,
       discoverable: discoverableChanged ? discoverable : row.discoverable,
+      ...(subthreadMembershipRepairs.length === 0
+        ? {}
+        : { subthreadMembershipRepairs }),
     };
   });
 }
