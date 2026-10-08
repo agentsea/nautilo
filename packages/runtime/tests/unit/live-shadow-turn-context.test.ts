@@ -346,6 +346,60 @@ describe("V2 live Shadow turn execution context", () => {
     }]);
   });
 
+  test("projects Full execution identity only after the protected payload is opened", async () => {
+    const session = {
+      protectForegroundHistory: () => Promise.resolve(Object.freeze({
+        status: "verified" as const,
+        messages: Object.freeze([Object.freeze({
+          messageId: 42,
+          payload: {
+            role: "assistant" as const,
+            content: "protected progress",
+            sensitiveMetadata: {
+              foregroundExecutionId: "turn-authorized",
+            },
+          },
+          provenance: "existing" as const,
+        })]),
+      })),
+    } as unknown as LiveShadowAgentTurnSession;
+    const policy = {
+      mode: "encrypted_only" as const,
+      shadowBehavior: "strict" as const,
+      revision: 15,
+    };
+
+    expect(await runWithLiveShadowTurnSession({
+      operationId: "operation-full-history-identity",
+      capability: capability("operation-full-history-identity"),
+      session,
+      enforcementPolicy: policy,
+      dataOperationPolicy: createLiveShadowDataOperationPolicyBinding(
+        () => Promise.resolve(policy),
+      ),
+      work: () => protectLiveShadowForegroundHistory([{
+        messageId: 42,
+        ts: new Date(0),
+        role: "assistant",
+        authorDisplayName: "Agent",
+        handle: "agent",
+        authorActorId: "actor-agent",
+        // Full rows expose only structure before authorized opening.
+        snippet: null as unknown as string,
+      }]),
+    })).toEqual([{
+      messageId: 42,
+      ts: new Date(0),
+      role: "assistant",
+      authorDisplayName: "Agent",
+      handle: "agent",
+      authorActorId: "actor-agent",
+      snippet: "protected progress",
+      toolName: undefined,
+      foregroundExecutionId: "turn-authorized",
+    }]);
+  });
+
   test("never substitutes ordinary history after protected failure in Strict", async () => {
     const created = capability("operation-history-integrity");
     const session = {

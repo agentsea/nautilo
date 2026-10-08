@@ -122,6 +122,21 @@ export interface BuildTranscriptContextDeps {
   readRoomTranscript(
     scope: Extract<TranscriptContextScope, { kind: "room" }>,
   ): Promise<RoomHistoryHit[]>;
+  /**
+   * Production Live Shadow refresh seam. Pages the same canonical Room source
+   * window so execution identity can be opened under authorization before the
+   * configured conversational bound is applied. A fixed Subthread parent
+   * prefix is returned only on the first page and never participates in the
+   * child transcript cursor.
+   */
+  readRoomTranscriptSourcePage?(
+    scope: Extract<TranscriptContextScope, { kind: "room" }>,
+    before?: Readonly<{ orderTimestamp: string; messageId: number }>,
+  ): Promise<Readonly<{
+    fixedPrefix: RoomHistoryHit[];
+    page: RoomHistoryHit[];
+    nextBefore?: Readonly<{ orderTimestamp: string; messageId: number }>;
+  }>>;
   /** Subagent run transcript → RoomHistoryHit[] (map via runAgentTranscriptToHits). */
   readSubagentTranscript(
     scope: Extract<TranscriptContextScope, { kind: "subagent" }>,

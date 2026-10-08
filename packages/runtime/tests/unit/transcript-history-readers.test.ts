@@ -244,6 +244,7 @@ describe("recentBoundedRoomMessages (full retained evidence)", () => {
         agentId: "agent-refresh",
         excludeMessageId: 41,
         throughMessageIdInclusive: 47,
+        foregroundExecutionId: "turn-owned",
       },
     );
 
@@ -254,9 +255,45 @@ describe("recentBoundedRoomMessages (full retained evidence)", () => {
     expect(text).toContain("sm.id >");
     expect(text).toContain("sm.role IN ('assistant', 'tool')");
     expect(text).toContain("s.agent_id =");
+    expect(text).toContain("nautilo_foreground_execution_id");
     expect(parameters).toContain(41);
     expect(parameters).toContain(47);
     expect(parameters).toContain("agent-refresh");
+    expect(parameters).toContain("turn-owned");
+  });
+
+  test("pages protected candidates by structural assistant boundaries and a strict tuple cursor", async () => {
+    const queries: SQL[] = [];
+    const before = {
+      orderTimestamp: "2026-06-01T10:00:05.000000Z",
+      messageId: 55,
+    };
+    await recentBoundedRoomMessages(
+      {
+        async execute(query) {
+          queries.push(query);
+          return [];
+        },
+      },
+      {
+        roomId: "room-protected-refresh",
+        agentId: "agent-refresh",
+        excludeMessageId: 41,
+        throughMessageIdInclusive: 60,
+        before,
+        authorizedConversationWindow: true,
+        conversationalLimit: 10,
+      },
+    );
+
+    const text = JSON.stringify(queries[0]);
+    const parameters = parameterValues(queries[0]!);
+    expect(text).toContain("page_eligible");
+    expect(text).toContain("page_cursor");
+    expect(text).toContain("e.ts < cursor.ts");
+    expect(text).toContain("e.message_id < cursor.message_id");
+    expect(parameters).toContain(55);
+    expect(parameters).not.toContain("turn-owned");
   });
 
   test("excludes every accepted coalesced Human coordinate and its room fingerprint", async () => {

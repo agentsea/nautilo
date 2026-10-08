@@ -40,7 +40,12 @@ export interface PersistingProcessorDeps {
  * M070 — same stream adapter as auth resume sites used inline, plus
  * `messagesToPersist` → `persistMessages` (matches `langgraphExecutor`).
  */
-export function createPersistingProcessor(deps: PersistingProcessorDeps) {
+export function createPersistingProcessor(
+  deps: PersistingProcessorDeps,
+  internal: Readonly<{
+    createForegroundContextRebuilder: typeof createForegroundContextRebuilder;
+  }> = { createForegroundContextRebuilder },
+) {
   const foregroundRefreshEnabled =
     deps.roomId !== undefined
     && deps.agentId !== undefined
@@ -51,23 +56,32 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
   let foregroundExecutionId = foregroundRefreshEnabled
     ? deps.humanTurnId?.trim() || undefined
     : undefined;
-  const ordinaryRecordContext = foregroundRefreshEnabled
-    ? foregroundRecordContextPortForRoom(deps.roomId!)
-    : undefined;
   const rebuildForegroundContext = foregroundContextReceipts === undefined
     ? undefined
-    : createForegroundContextRebuilder({
+    : (transition: Parameters<ReturnType<typeof createForegroundContextRebuilder>>[0]) => {
+      const recordContextEligible =
+        transition.state.trustedExecutionEntrypoint === "foreground.main"
+        || transition.state.trustedExecutionEntrypoint === "foreground.fork";
+      const ordinaryRecordContext = recordContextEligible
+        ? foregroundRecordContextPortForRoom(deps.roomId!)
+        : undefined;
+      return internal.createForegroundContextRebuilder({
         roomId: deps.roomId!,
         ownerId: deps.ownerId,
         agentId: deps.agentId!,
         receipts: foregroundContextReceipts,
+        // A resume processor is created before the protected session enters
+        // its AsyncLocalStorage scope. Bind protection at rebuild time so the
+        // reader sees the current resume grant and policy instead of retaining
+        // the ordinary port selected outside that scope.
         ...(ordinaryRecordContext === undefined
           ? {}
           : {
               recordContext:
                 protectLiveShadowForegroundRecordContext(ordinaryRecordContext),
             }),
-      });
+      })(transition);
+    };
   const tokenBatcher = new TokenBatcher({
     laneKey: deps.laneKey,
     ...(deps.agentId ? { authorAgentId: deps.agentId } : {}),

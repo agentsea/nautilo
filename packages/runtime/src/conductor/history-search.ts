@@ -61,6 +61,8 @@ export interface RoomHistoryHit {
   reactions?: { emoji: string; count: number }[];
   /** Invocation-only durable identity used to isolate concurrent same-Agent turns. */
   foregroundExecutionId?: string;
+  /** Internal exact UTC ordering coordinate for authorized source paging. */
+  sourceOrderTimestamp?: string;
 }
 
 /**
@@ -86,6 +88,7 @@ interface RawHistoryRow {
   user_actor_id: string | null;
   metadata?: unknown;
   foreground_execution_id?: string | null;
+  source_order_timestamp?: string | null;
 }
 
 const SNIPPET_MAX = 280;
@@ -353,9 +356,44 @@ function mapHistoryRows(
         && foregroundExecutionId.length > 0
         ? { foregroundExecutionId }
         : {}),
+      ...(typeof row.source_order_timestamp === "string"
+        && row.source_order_timestamp.length > 0
+        ? { sourceOrderTimestamp: row.source_order_timestamp }
+        : {}),
     });
   }
   return hits;
+}
+
+/**
+ * Applies the same conversational-boundary rule as the production SQL to an
+ * already-authorized oldest-first source. Tool rows remain attached to the
+ * surviving boundary; a tool-only active tail remains intact.
+ */
+export function recentConversationWindow(
+  hits: readonly RoomHistoryHit[],
+  conversationalLimit: number,
+): RoomHistoryHit[] {
+  const limit = Math.max(
+    1,
+    Math.min(Math.trunc(conversationalLimit), RECENT_CONVERSATION_LIMIT_MAX),
+  );
+  const boundaries: number[] = [];
+  for (let index = 0; index < hits.length; index += 1) {
+    const hit = hits[index]!;
+    if (
+      hit.role === "user"
+      || (
+        hit.role === "assistant"
+        && typeof hit.snippet === "string"
+        && hit.snippet.trim().length > 0
+      )
+    ) {
+      boundaries.push(index);
+    }
+  }
+  if (boundaries.length <= limit) return [...hits];
+  return hits.slice(boundaries[boundaries.length - limit]);
 }
 
 /**
@@ -474,6 +512,20 @@ export async function recentBoundedRoomMessages(
      * output, so a queued Human message cannot leak into the active turn.
      */
     throughMessageIdInclusive?: number;
+    /**
+     * Ordinary server-owned execution identity. When supplied, competing
+     * post-trigger output is removed before the conversational source window
+     * is ranked.
+     */
+    foregroundExecutionId?: string;
+    /**
+     * Strict source-page cursor used by authorized protected reads. Execution
+     * identity is intentionally unavailable to this SQL path until the page
+     * has been opened.
+     */
+    before?: Readonly<{ orderTimestamp: string; messageId: number }>;
+    /** Count bodyless protected assistant rows as source-page candidates. */
+    authorizedConversationWindow?: boolean;
     imageAssistanceTurnId?: string;
     conversationalLimit?: number;
   },
@@ -494,6 +546,29 @@ export async function recentBoundedRoomMessages(
     throw new TypeError(
       "foreground transcript cut requires its trigger and Agent identity",
     );
+  }
+  if (
+    args.foregroundExecutionId !== undefined
+    && (
+      args.foregroundExecutionId.length === 0
+      || args.throughMessageIdInclusive === undefined
+    )
+  ) {
+    throw new TypeError(
+      "foreground execution identity requires a committed transcript cut",
+    );
+  }
+  if (
+    args.before !== undefined
+    && (
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(
+        args.before.orderTimestamp,
+      )
+      || !Number.isSafeInteger(args.before.messageId)
+      || args.before.messageId < 1
+    )
+  ) {
+    throw new TypeError("foreground transcript page cursor is invalid");
   }
   const excludeMessageIds = [...new Set(args.excludeMessageIds ?? [])];
   if (
@@ -527,6 +602,9 @@ export async function recentBoundedRoomMessages(
             sm.id > ${args.excludeMessageId!}
             AND sm.role IN ('assistant', 'tool')
             AND s.agent_id = ${args.agentId!}
+            ${args.foregroundExecutionId === undefined
+              ? sql``
+              : sql`AND sm.metadata->>'nautilo_foreground_execution_id' = ${args.foregroundExecutionId}`}
           )
         )`
     : args.excludeMessageId != null
@@ -579,6 +657,10 @@ export async function recentBoundedRoomMessages(
         u.handle AS user_handle,
         ua.display_name AS user_name,
         ua.id AS user_actor_id,
+        to_char(
+          sm.created_at AT TIME ZONE 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+        ) AS source_order_timestamp,
         sm.metadata->>'nautilo_foreground_execution_id' AS foreground_execution_id,
         CASE
           WHEN sm.role = 'user' AND sm.fingerprint IS NOT NULL
@@ -609,12 +691,35 @@ export async function recentBoundedRoomMessages(
         ${acceptedSourceFilter}
         ${deafFilter}
     ),
+    page_cursor AS (
+      SELECT ts, message_id
+      FROM eligible
+      WHERE message_id = ${args.before?.messageId ?? null}
+    ),
+    page_eligible AS (
+      SELECT e.*
+      FROM eligible e
+      WHERE ${args.before === undefined
+        ? sql`true`
+        : sql`EXISTS (
+            SELECT 1
+            FROM page_cursor cursor
+            WHERE
+              e.ts < cursor.ts
+              OR (e.ts = cursor.ts AND e.message_id < cursor.message_id)
+          )`}
+    ),
     conversational AS (
       SELECT message_id, ts
-      FROM eligible
+      FROM page_eligible
       WHERE
         (role = 'user' AND fingerprint_ordinal = 1)
-        OR (role = 'assistant' AND btrim(content) <> '')
+        OR (
+          role = 'assistant'
+          AND ${args.authorizedConversationWindow
+            ? sql`true`
+            : sql`btrim(content) <> ''`}
+        )
       ORDER BY ts DESC, message_id DESC
       LIMIT ${conversationalLimit}
     ),
@@ -635,8 +740,9 @@ export async function recentBoundedRoomMessages(
       e.user_handle,
       e.user_name,
       e.user_actor_id,
+      e.source_order_timestamp,
       e.foreground_execution_id
-    FROM eligible e
+    FROM page_eligible e
     LEFT JOIN earliest first ON true
     WHERE
       (
