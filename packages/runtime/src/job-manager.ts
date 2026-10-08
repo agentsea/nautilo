@@ -1167,6 +1167,7 @@ export class JobManager {
         if (
           tryRes.acquired &&
           forkCoordinator.hasUnreconciledLowerTurns(threadId) &&
+          !q[0]?.system &&
           q[0]?.route.contention === "fork"
         ) {
           const item = q.shift()!;
