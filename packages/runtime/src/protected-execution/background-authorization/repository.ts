@@ -22,6 +22,7 @@ import {
   BACKGROUND_AUTHORIZATION_MAX_TIMESTAMP_MS,
   advanceBackgroundAuthorizationGeneration,
   cancelBackgroundAuthorizationRequest,
+  deferUnstartedTaskRuntimeRequestSnapshot,
   markBackgroundAuthorizationGrantReady,
   parseBackgroundAuthorizationRequestSnapshot,
   replaceBackgroundAuthorizationPreclaimAuthority,
@@ -373,6 +374,16 @@ export type BackgroundAuthorizationTaskRuntimeReplacementResult =
     current: BackgroundAuthorizationRecord | null;
   }>;
 
+export type BackgroundAuthorizationTaskRuntimeDeferralResult =
+  | Readonly<{
+    status: "deferred" | "exact_replay";
+    record: BackgroundAuthorizationTaskRuntimeRecordV3;
+  }>
+  | Readonly<{
+    status: "stale";
+    current: BackgroundAuthorizationRecord | null;
+  }>;
+
 export interface BackgroundAuthorizationRepository {
   /** Product owner holds current policy, exact source and live lease before this atomic handoff. */
   supersedeUnstartedProcessorRequest?(input: Readonly<{
@@ -432,6 +443,19 @@ export interface BackgroundAuthorizationTaskRuntimeReplacementRepository
     replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
     now: number;
   }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult>;
+}
+
+/**
+ * Narrow recovery owner for an unstarted Task Runtime execution. Callers must
+ * first prove that the exact durable Job was cancelled and never entered
+ * running; this repository operation does not establish that product proof.
+ */
+export interface BackgroundAuthorizationTaskRuntimeDeferralRepository
+  extends BackgroundAuthorizationRepository {
+  deferUnstartedTaskRuntimeRequest(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeDeferralResult>;
 }
 
 export type BackgroundAuthorizationRepositoryConflictReason =
@@ -2322,8 +2346,56 @@ export function buildUnclaimedTaskRuntimeAuthorityReplacement(input: Readonly<{
   }) as BackgroundAuthorizationTaskRuntimeRecordV3;
 }
 
+/** Build the sole retry-preserving successor after proven pre-execution loss. */
+export function buildDeferredUnstartedTaskRuntimeRequest(input: Readonly<{
+  expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+  now: number;
+}>): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  timestamp("Unstarted Task Runtime deferral time", input.now);
+  const parsed = parseBackgroundAuthorizationRecord(input.expected);
+  if (
+    parsed.snapshot.formatVersion !== 3
+    || parsed.snapshot.credentialSubject.kind !== "runtime"
+    || parsed.snapshot.credentialSubject.runtimeKind !== "task"
+    || parsed.snapshot.credentialSubject.runtimeVersion !== 1
+    || parsed.authoritySet === undefined
+  ) {
+    throw new TypeError(
+      "Unstarted Task Runtime deferral requires a V3 Task record",
+    );
+  }
+  const expected = parsed as BackgroundAuthorizationTaskRuntimeRecordV3;
+  if (
+    expected.workKind !== "task.execute"
+    || expected.purpose !== "task.execute"
+    || expected.processorAuthorizationRevision !== null
+    || expected.finishedAt !== null
+    || !isTaskRuntimeStableIdempotencyKey(
+      expected.idempotencyKey,
+      expected.snapshot.workId,
+    )
+    || !exactTaskRuntimeAuthorityAnchor(expected)
+  ) {
+    throw new TypeError(
+      "Unstarted Task Runtime deferral changed stable work identity",
+    );
+  }
+  const snapshot = deferUnstartedTaskRuntimeRequestSnapshot(
+    expected.snapshot,
+    input.now,
+  );
+  return parseBackgroundAuthorizationRecord({
+    ...expected,
+    snapshot,
+    descriptorBytes: null,
+    acceptedMaterial: null,
+    finishedAt: null,
+  }) as BackgroundAuthorizationTaskRuntimeRecordV3;
+}
+
 export class InMemoryBackgroundAuthorizationRepository
-  implements BackgroundAuthorizationTaskRuntimeReplacementRepository {
+  implements BackgroundAuthorizationTaskRuntimeReplacementRepository,
+    BackgroundAuthorizationTaskRuntimeDeferralRepository {
   readonly #records = new Map<string, BackgroundAuthorizationRecord>();
   readonly #evidence = new Map<string, ProcessorSignerAuthorizationEvidence>();
 
@@ -2464,6 +2536,42 @@ export class InMemoryBackgroundAuthorizationRepository
     this.#records.set(next.snapshot.requestId, next);
     return {
       status: "replaced",
+      record: parseBackgroundAuthorizationRecord(
+        next,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3,
+    };
+  }
+
+  async deferUnstartedTaskRuntimeRequest(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeDeferralResult> {
+    await Promise.resolve();
+    const expected = parseBackgroundAuthorizationRecord(input.expected);
+    const next = buildDeferredUnstartedTaskRuntimeRequest({
+      expected: expected as BackgroundAuthorizationTaskRuntimeRecordV3,
+      now: input.now,
+    });
+    const current = this.#records.get(expected.snapshot.requestId) ?? null;
+    if (current !== null && sameBackgroundAuthorizationRecord(current, next)) {
+      return {
+        status: "exact_replay",
+        record: parseBackgroundAuthorizationRecord(
+          current,
+        ) as BackgroundAuthorizationTaskRuntimeRecordV3,
+      };
+    }
+    if (current === null || !sameBackgroundAuthorizationRecord(current, expected)) {
+      return {
+        status: "stale",
+        current: current === null
+          ? null
+          : parseBackgroundAuthorizationRecord(current),
+      };
+    }
+    this.#records.set(next.snapshot.requestId, next);
+    return {
+      status: "deferred",
       record: parseBackgroundAuthorizationRecord(
         next,
       ) as BackgroundAuthorizationTaskRuntimeRecordV3,

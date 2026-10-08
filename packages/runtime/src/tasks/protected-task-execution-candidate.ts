@@ -16,6 +16,14 @@ export type ProtectedTaskExecutionStartResult =
   | Readonly<{ status: "started" }>
   | Readonly<{ status: "stale" }>;
 
+/** The candidate released its custody without calling the execution callback. */
+export class ProtectedTaskExecutionDidNotBeginError extends Error {
+  constructor() {
+    super("Protected Task execution did not begin");
+    this.name = "ProtectedTaskExecutionDidNotBeginError";
+  }
+}
+
 /**
  * One process-local accepted authority. Implementations open the protected
  * Task definition inside `run`, release all plaintext and capability material
@@ -37,6 +45,8 @@ export interface ProtectedTaskExecutionCandidate {
       }>,
     ) => Promise<T>,
   ): Promise<T>;
+  /** Reconcile only after the exact durable Job is proved cancelled and unstarted. */
+  deferBeforeExecution?(jobId: string): Promise<boolean>;
   onIneligible(): void;
 }
 

@@ -2285,7 +2285,7 @@ function destroyConnectedDomainSecrets(
 }
 
 describePostgres("sealed protected Task Memory object writer", () => {
-  test("executes one genuine-role protected Task from device grant through protected result", async () => {
+  test.each(["result", "pre-execution recovery"] as const)("executes one genuine-role protected Task through %s", async scenario => {
     const base = await createBaseFixture({ connectedExecution: true });
     const recipients = new TaskRuntimeRecipientRegistry(base.crypto, {
       now: () => NOW,
@@ -2484,6 +2484,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
               const openTransientInput: typeof prepared.openTransientInput =
                 async grant => {
                   try {
+                    if (scenario === "pre-execution recovery") {
+                      throw new Error("synthetic protected setup failure");
+                    }
                     return await prepared.openTransientInput(grant);
                   } catch (error) {
                     recordNativeError("open", error);
@@ -2634,6 +2637,55 @@ describePostgres("sealed protected Task Memory object writer", () => {
         throw new Error("Accepted protected Task occurrence was unavailable");
       }
       await composition.coordinator.observeProtectedTaskOccurrence(claimable);
+      if (scenario === "pre-execution recovery") {
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          const [run] = await base.admin.select().from(taskRuns)
+            .where(eq(taskRuns.id, connected.taskRunId));
+          if (connectedJobId !== null && run?.status === "awaiting"
+            && run.jobId === null && jobManager.getJob(connectedJobId) === undefined) break;
+          await new Promise<void>(resolve => setTimeout(resolve, 10));
+        }
+        const [run] = await base.admin.select().from(taskRuns)
+          .where(eq(taskRuns.id, connected.taskRunId));
+        expect(run).toMatchObject({ status: "awaiting", jobId: null,
+          modelId: null, resultText: null, lastError: null, resultRevision: 0 });
+        const [task] = await base.admin.select({ status: tasks.status })
+          .from(tasks).where(eq(tasks.id, connected.taskId));
+        expect(task?.status).toBe("awaiting");
+        expect(connectedJobId).not.toBeNull();
+        const [job] = await base.admin.select().from(jobs)
+          .where(eq(jobs.id, connectedJobId!));
+        expect(job).toMatchObject({ status: "cancelled", startedAt: null,
+          result: null, message: null });
+        expect(job?.completedAt).not.toBeNull();
+        const [grant] = await base.admin.select({
+          state: backgroundCryptoAuthorizationRequests.state,
+          retryCount: backgroundCryptoAuthorizationRequests.retryCount,
+          claimId: backgroundCryptoAuthorizationRequests.claimId,
+          lastRetryReason: backgroundCryptoAuthorizationRequests.lastRetryReason,
+        }).from(backgroundCryptoAuthorizationRequests).where(eq(
+          backgroundCryptoAuthorizationRequests.requestId,
+          `task-run-authorization:${connected.taskRunId}`,
+        ));
+        expect(grant).toEqual({ state: "awaiting_recipient", retryCount: 0,
+          claimId: null, lastRetryReason: "stale_authority" });
+        expect(recipients.size).toBe(0);
+        expect(segmentCalls).toEqual([]);
+        // The normal observer/device flow can offer a fresh grant automatically.
+        await composition.coordinator.observeProtectedTaskOccurrence(occurrence);
+        const refreshed = await deviceService.list(subject, {});
+        let freshGeneration: number | undefined;
+        for (const request of refreshed.requests) {
+          const decoded = decodeTaskRuntimeBackgroundAuthorizationRequestV1(request.requestBytes);
+          if (decoded !== null) {
+            if (decoded.workId === connected.taskRunId) freshGeneration = decoded.recipientGeneration;
+            destroyTaskRuntimeBackgroundAuthorizationRequestV1(decoded);
+          }
+          request.requestBytes.fill(0);
+        }
+        expect(freshGeneration).toBe(1);
+      } else {
       const terminal = await waitForConnectedCompletion(
         base,
         connected.taskRunId,
@@ -2735,6 +2787,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
           sessionRows[0]!.id,
         ))).toEqual([]);
       expect(recipients.size).toBe(0);
+      }
     } catch (error) {
       testError = error;
     }

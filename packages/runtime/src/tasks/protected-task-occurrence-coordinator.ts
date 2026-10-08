@@ -54,6 +54,7 @@ export interface ProtectedTaskOccurrenceClaimPort {
 
 export interface ProtectedTaskOccurrenceCoordinatorDeps {
   authorization: ProtectedTaskOccurrenceClaimPort;
+  recoverBeforeObservation?(limit: number): Promise<void>;
   jobManager: ProtectedTaskOccurrenceJobManager;
   /** Wakes the observer after an accepted device response. */
   kick(): void;
@@ -117,6 +118,10 @@ implements ProtectedTaskOccurrencePort {
    * its exact durable CAS; the normal observer recovery page then re-offers the
    * awaiting occurrence without changing the Task to a user-paused state.
    */
+  async recoverBeforeObservation(limit: number): Promise<void> {
+    await this.deps.recoverBeforeObservation?.(limit);
+  }
+
   authorizationAccepted(): void {
     this.deps.kick();
   }

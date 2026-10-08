@@ -77,10 +77,11 @@ import {
   assertProtectedTaskJobReferenceV1,
   type ProtectedTaskJobReferenceV1,
 } from "./tasks/protected-task-job-reference";
-import type {
-  CreateProtectedTaskJobInput,
-  ProtectedTaskExecutionCandidate,
-  ProtectedTaskJobSchedulingFacts,
+import {
+  ProtectedTaskExecutionDidNotBeginError,
+  type CreateProtectedTaskJobInput,
+  type ProtectedTaskExecutionCandidate,
+  type ProtectedTaskJobSchedulingFacts,
 } from "./tasks/protected-task-execution-candidate";
 
 /**
@@ -431,8 +432,6 @@ const PLANNED_SHUTDOWN_CANCELLATION_REASON =
   "Cancelled because the server is shutting down for planned maintenance";
 const ACCEPTANCE_LINK_FAILURE_CANCELLATION_REASON =
   "Cancelled before dispatch because durable acceptance linkage failed";
-const PROTECTED_TASK_START_FAILURE_CANCELLATION_REASON =
-  "Cancelled before dispatch because the protected Task lifecycle was no longer current";
 /**
  * D420 (Wave 2 task 2.2.3) — operator-visible reason stamped on every running
  * Job terminalized at the `--wait-for` deadline. Mirrors the acceptance
@@ -1417,26 +1416,33 @@ export class JobManager {
           throw new Error("Protected Task execution candidate became ineligible during start");
         }
         registerMainTurn();
-      } catch (err) {
-        this.invalidateProtectedTaskExecutions(virtualIds);
+      } catch {
         let settlementError: unknown;
         try {
-          await this.cancelUndispatchedJobForLedgerFailure(
-            job,
-            err,
-            PROTECTED_TASK_START_FAILURE_CANCELLATION_REASON,
-            "protected Task lifecycle start failed",
-          );
-        } catch (compensationErr) {
-          log(
-            `[maintenance] main job=${job.id} could not be fully compensated after protected Task lifecycle start failure: ${
-              compensationErr instanceof Error
-                ? compensationErr.message
-                : String(compensationErr)
-            }`,
-          );
-          settlementError = compensationErr;
+          try {
+            protectedTaskExecution.candidate.onIneligible();
+          } catch {
+            // Recovery still owns the exact durable never-started proof.
+          }
+          for (const virtualId of virtualIds) {
+            if (this.virtualToProtectedTaskExecution.get(virtualId)
+              === protectedTaskExecution) {
+              this.virtualToProtectedTaskExecution.delete(virtualId);
+            }
+          }
+          this.invalidateProtectedTaskExecutions(virtualIds);
+          // A lost product-start response is not permission for an id-only write.
+          if (await protectedTaskExecution.candidate.deferBeforeExecution?.(job.id)) {
+            job.acknowledgeProtectedTaskDidNotBegin();
+          }
+        } catch (error) {
+          settlementError = error;
+          log("[maintenance] protected Task pre-execution recovery deferred");
         } finally {
+          this.active.delete(job.id);
+          this.abortReasons.delete(job.id);
+          this.jobToAuthority.delete(job.id);
+          this.jobToInvocationAuthority.delete(job.id);
           try {
             await tryRes.release();
           } catch (releaseError) {
@@ -1560,10 +1566,18 @@ export class JobManager {
       .catch(async (error: unknown) => {
         if (
           armedProtectedTaskExecution !== undefined
-          && error instanceof ProtectedTaskJobStartNotOwnedError
+          && (error instanceof ProtectedTaskJobStartNotOwnedError
+            || error instanceof ProtectedTaskExecutionDidNotBeginError)
           && job.status === "queued"
         ) {
           protectedStartNotOwned = true;
+          try {
+            if (await armedProtectedTaskExecution.candidate.deferBeforeExecution?.(job.id)) {
+              job.acknowledgeProtectedTaskDidNotBegin();
+            }
+          } catch {
+            log("[maintenance] protected Task pre-execution recovery deferred");
+          }
           return;
         }
         await job.fail(error);

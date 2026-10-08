@@ -1,3 +1,4 @@
+import { ProtectedTaskExecutionDidNotBeginError } from "../../src/tasks/protected-task-execution-candidate";
 import { createHash } from "node:crypto";
 
 import { describe, expect, test } from "bun:test";
@@ -1908,9 +1909,56 @@ describe("Task Runtime grant claim", () => {
     // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
     await expect(claimed.dispatch.candidate.run(async () => {
       invoked = true;
-    })).rejects.toThrow("authority is no longer current");
+    })).rejects.toThrow("Protected Task execution did not begin");
     expect(invoked).toBe(false);
     expect(value.recipients.size).toBe(0);
+  });
+
+  test("pre-execution deferral runs once after custody closes and keeps the exact Job", async () => {
+    const value = await fixture();
+    let recovered = 0;
+    value.setSubstitutePlan(plan => ({
+      ...plan,
+      openTransientInput: async () => { throw new Error("sensitive setup failure"); },
+      deferBeforeExecution: async input => {
+        expect(value.recipients.size).toBe(0);
+        expect(input.jobId).toBe("unstarted-job");
+        recovered += 1;
+        return true;
+      },
+    }));
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    const candidate = claimed.dispatch.candidate;
+    expect(await candidate.start("unstarted-job")).toEqual({ status: "started" });
+    let workCalls = 0;
+    const error = await candidate.run(async () => { workCalls += 1; })
+      .catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(ProtectedTaskExecutionDidNotBeginError);
+    expect(String(error)).not.toContain("sensitive setup failure");
+    expect(workCalls).toBe(0);
+    expect(await candidate.deferBeforeExecution?.("other-job")).toBe(false);
+    expect(await candidate.deferBeforeExecution?.("unstarted-job")).toBe(true);
+    expect(await candidate.deferBeforeExecution?.("unstarted-job")).toBe(true);
+    expect(recovered).toBe(1);
+    value.recipients.close();
+  });
+
+  test("work failures cannot masquerade as a candidate setup failure", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    await claimed.dispatch.candidate.start("started-job");
+    const failure = new Error("executor failed");
+    const error = await claimed.dispatch.candidate.run(async () => { throw failure; })
+      .catch((value: unknown) => value);
+    expect(error).toBe(failure);
+    expect(value.recipients.size).toBe(0);
+    value.recipients.close();
   });
 
   test("rejects swapped durable claim identity and authorization bytes before work", async () => {

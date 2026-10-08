@@ -322,6 +322,9 @@ test("a recovery-only protected port never claims or prepares due initial work",
     run: existingRun,
   }]);
   const recoveryPort = {
+    recoverBeforeObservation: mock(async (_limit: number) => {
+      expect(listAwaiting).not.toHaveBeenCalled();
+    }),
     observeProtectedTaskOccurrence: mock(async (_occurrence: unknown) => {}),
   };
   const observer = new TaskObserver({
@@ -336,6 +339,8 @@ test("a recovery-only protected port never claims or prepares due initial work",
   expect(ordinaryDispatch).toHaveBeenCalledTimes(1);
   expect(ordinaryDispatch.mock.calls[0]?.[0]).toBe(ordinary);
   expect(listAwaiting).toHaveBeenCalledTimes(1);
+  expect(recoveryPort.recoverBeforeObservation).toHaveBeenCalledTimes(1);
+  expect(recoveryPort.recoverBeforeObservation.mock.calls[0]?.[0]).toBeGreaterThan(0);
   expect(recoveryPort.observeProtectedTaskOccurrence).toHaveBeenCalledTimes(1);
   expect(recoveryPort.observeProtectedTaskOccurrence.mock.calls[0]?.[0])
     .toMatchObject({ task: { id: TASK_ID }, run: { id: EXISTING_RUN_ID } });

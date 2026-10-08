@@ -523,6 +523,19 @@ export class Job {
     });
   }
 
+  /** Adopt a cancellation already proved by the protected unstarted-Job CAS. */
+  acknowledgeProtectedTaskDidNotBegin(): void {
+    if (this.config.durableInputReference?.kind !== "protected_task_run_v1"
+      || this._status !== "queued") return;
+    this._status = "cancelled";
+    this.abortController?.abort();
+    eventBus.emit({
+      type: "job.status", jobId: this.id, status: "cancelled",
+      ...this.lifecycleIdentity(),
+      ...(this.config.laneKey ? { laneKey: this.config.laneKey } : {}),
+    });
+  }
+
   private cancellationPersistencePending = false;
 
   async cancel(

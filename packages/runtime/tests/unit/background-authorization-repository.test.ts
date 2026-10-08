@@ -6,6 +6,7 @@ import type {
   VerifiedProcessorBackgroundAuthorizationDeviceResponse,
 } from "@nautilo/lattice-bridge";
 import {
+  BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT,
   advanceBackgroundAuthorizationGeneration,
   attachBackgroundAuthorizationRecipient,
   cancelBackgroundAuthorizationRequest,
@@ -37,6 +38,7 @@ import {
   BACKGROUND_AUTHORIZATION_TERMINAL_RETENTION_MS,
   BackgroundAuthorizationRepositoryConflictError,
   InMemoryBackgroundAuthorizationRepository,
+  buildDeferredUnstartedTaskRuntimeRequest,
   buildUnclaimedTaskRuntimeAuthorityReplacement,
   buildAcceptedBackgroundAuthorizationResponse,
   assertBackgroundAuthorizationCasSuccessor,
@@ -666,6 +668,71 @@ describe("background authorization repository contract", () => {
         ),
       },
     })).status).toBe("stale");
+  });
+
+  test("defers an exact unstarted Task request once without spending its retry budget", async () => {
+    const waiting = taskRuntimeRecordV3();
+    const accepted = buildAcceptedBackgroundAuthorizationResponse(
+      waiting,
+      verifiedTaskRuntimeResponseV3(waiting),
+      START + 2,
+    ).next as BackgroundAuthorizationTaskRuntimeRecordV3;
+    const claimed: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...accepted,
+      snapshot: {
+        ...claimBackgroundAuthorizationRequest(
+          accepted.snapshot,
+          "task-runtime-deferral-claim",
+          START + 3,
+          START + 30_000,
+        ),
+        retryCount: BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT,
+        lastRetryReason: "provider_transient_failure",
+      } as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    };
+    const running: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...claimed,
+      snapshot: markBackgroundAuthorizationRunning(
+        claimed.snapshot,
+        START + 4,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    };
+    const next = buildDeferredUnstartedTaskRuntimeRequest({
+      expected: running,
+      now: START + 5,
+    });
+    expect(next).toMatchObject({
+      snapshot: {
+        state: "awaiting_recipient",
+        recipientGeneration: running.snapshot.recipientGeneration + 1,
+        requestRevision: running.snapshot.requestRevision + 1,
+        descriptorDigest: null,
+        recipient: null,
+        acceptedResponse: null,
+        claimId: null,
+        claimExpiresAt: null,
+        retryCount: BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT,
+        lastRetryReason: "stale_authority",
+        nextAttemptAt: START + 5,
+      },
+      descriptorBytes: null,
+      acceptedMaterial: null,
+    });
+
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    expect((await repository.create(running)).status).toBe("created");
+    expect(await repository.deferUnstartedTaskRuntimeRequest({
+      expected: running,
+      now: START + 5,
+    })).toEqual({ status: "deferred", record: next });
+    expect(await repository.deferUnstartedTaskRuntimeRequest({
+      expected: running,
+      now: START + 5,
+    })).toEqual({ status: "exact_replay", record: next });
+    expect(await repository.deferUnstartedTaskRuntimeRequest({
+      expected: running,
+      now: START + 6,
+    })).toEqual({ status: "stale", current: next });
   });
 
   test("refuses an unversioned Task identity at the replacement boundary", () => {

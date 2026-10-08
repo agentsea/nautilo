@@ -1,8 +1,9 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, isNotNull } from "drizzle-orm";
 import { jobs } from "../schema/jobs";
 import type { JobStatus } from "@nautilo/types";
 import { getSharedDirectDb } from "../config/direct-database";
 import {
+  acquireEncryptionConsumptionFence,
   acquireEncryptionPublicationFence,
   acquireOrdinaryEncryptionPublicationFence,
 } from
@@ -143,6 +144,40 @@ export async function startProtectedTaskJobWithDatabase(
       ))
       .returning({ id: jobs.id });
     return rows.length === 1 ? "started" : "rejected";
+  });
+}
+
+/** Cancel only a content-free protected Job that never crossed its start fence. */
+export async function cancelUnstartedProtectedTaskJobWithDatabase(
+  database: ReturnType<typeof db>,
+  jobId: string,
+  expectedReference: ProtectedTaskDurableJobReference,
+): Promise<"cancelled" | "exact_replay" | "ineligible"> {
+  if (!jobId || expectedReference.kind !== "protected_task_run_v1"
+    || expectedReference.executionSegment !== 1
+    || expectedReference.resumeAcceptanceId !== undefined
+    || expectedReference.resumeContinuationFingerprint !== undefined) {
+    throw new TypeError("Protected Task unstarted cancellation is invalid");
+  }
+  return database.transaction(async tx => {
+    // Cleanup is valid after a policy change; it never writes content.
+    await acquireEncryptionConsumptionFence(tx);
+    const exact = and(
+      eq(jobs.id, jobId),
+      eq(jobs.input, { ...expectedReference }),
+      isNull(jobs.startedAt),
+      isNull(jobs.result),
+      isNull(jobs.message),
+    );
+    const cancelled = await tx.update(jobs).set({
+      status: "cancelled", completedAt: new Date(),
+    }).where(and(exact, eq(jobs.status, "queued"), isNull(jobs.completedAt)))
+      .returning({ id: jobs.id });
+    if (cancelled.length === 1) return "cancelled";
+    const replay = await tx.select({ id: jobs.id }).from(jobs).where(and(
+      exact, eq(jobs.status, "cancelled"), isNotNull(jobs.completedAt),
+    )).limit(1);
+    return replay.length === 1 ? "exact_replay" : "ineligible";
   });
 }
 

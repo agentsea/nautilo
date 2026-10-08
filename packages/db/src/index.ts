@@ -346,6 +346,7 @@ export {
 export {
   persistJob,
   startProtectedTaskJob,
+  cancelUnstartedProtectedTaskJobWithDatabase,
   updateJobStatus,
   getJobById,
   type PersistJobPayload,
@@ -930,3 +931,13 @@ export { PHYSICAL_FILE_URI_COLUMNS, physicalFileUriBase, rebindPhysicalFileUri }
 
 export * from "./queries/task-run-message-associations";
 export * from "./queries/protected-task-execution-receipts";
+
+export {
+  recoverUnstartedProtectedTaskRun,
+  getUnstartedProtectedTaskRunRecoveryBoundary,
+  listUnstartedProtectedTaskRunRecoveryCandidates,
+  type ProtectedTaskPreexecutionRecoveryPage,
+  type ProtectedTaskPreexecutionRecoveryResult,
+  type ProtectedTaskPreexecutionRecoveryCursor,
+  type ProtectedTaskPreexecutionRecoveryCandidate,
+} from "./queries/protected-task-preexecution";

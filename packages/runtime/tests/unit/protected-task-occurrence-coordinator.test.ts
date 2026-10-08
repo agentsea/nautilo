@@ -247,3 +247,15 @@ describe("parked protected Task occurrence coordinator", () => {
     expect(attempts).toBe(2);
   });
 });
+
+test("protected pre-execution recovery uses the observer's existing page budget", async () => {
+  const limits: number[] = [];
+  const coordinator = createProtectedTaskOccurrenceCoordinator({
+    authorization: { prepareOrClaimExact: async () => ({ status: "inactive" }) },
+    jobManager: { createProtectedTaskJob: async () => { throw new Error("not dispatched"); } },
+    recoverBeforeObservation: async limit => { limits.push(limit); },
+    kick() {},
+  });
+  await coordinator.recoverBeforeObservation(17);
+  expect(limits).toEqual([17]);
+});

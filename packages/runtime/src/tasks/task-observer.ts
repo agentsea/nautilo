@@ -106,6 +106,8 @@ export type ProtectedTaskAuthorityOccurrence =
  * new, already executing, or parked for a Human decision.
  */
 export interface ProtectedTaskOccurrencePort {
+  /** Bounded recovery uses the same observer cadence and page budget. */
+  recoverBeforeObservation?(limit: number): Promise<void>;
   observeProtectedTaskOccurrence(occurrence: ProtectedTaskOccurrence): Promise<void>;
 }
 
@@ -696,6 +698,7 @@ export class TaskObserver implements Observer {
   ): Promise<void> {
     let awaiting: Awaited<ReturnType<typeof listProtectedAwaitingTaskRunsForAuthorization>>;
     try {
+      await port.recoverBeforeObservation?.(this.batch);
       awaiting = await listProtectedAwaitingTaskRunsForAuthorization(
         this.db,
         this.batch,

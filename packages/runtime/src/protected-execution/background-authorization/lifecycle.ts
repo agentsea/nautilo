@@ -1099,6 +1099,47 @@ export function replaceBackgroundAuthorizationPreclaimAuthority(
   }) as BackgroundAuthorizationTaskRuntimeRequestSnapshotV3;
 }
 
+/**
+ * Return an unstarted Task Runtime grant to device selection without spending
+ * its execution retry budget. The caller must separately prove that the exact
+ * durable Job was cancelled and never started; this snapshot transition does
+ * not establish that product fact.
+ */
+export function deferUnstartedTaskRuntimeRequestSnapshot(
+  value: BackgroundAuthorizationRequestSnapshot,
+  now: number,
+): BackgroundAuthorizationTaskRuntimeRequestSnapshotV3 {
+  if (
+    value.formatVersion !== BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V3
+    || value.credentialSubject.kind !== "runtime"
+    || value.credentialSubject.runtimeKind !== "task"
+    || value.credentialSubject.runtimeVersion !== 1
+  ) {
+    throw new TypeError(
+      "Unstarted Task Runtime deferral requires a V3 Task request",
+    );
+  }
+  assertActive(value);
+  assertState(value, ["claimed", "running"]);
+  assertTime(value, now);
+  if (value.recipientGeneration >= BACKGROUND_AUTHORIZATION_MAX_GENERATION) {
+    throw new BackgroundAuthorizationTransitionError("counter_exhausted");
+  }
+  return update(value, {
+    recipientGeneration: value.recipientGeneration + 1,
+    descriptorDigest: null,
+    recipient: null,
+    acceptedResponse: null,
+    state: "awaiting_recipient",
+    claimId: null,
+    claimExpiresAt: null,
+    updatedAt: now,
+    retryCount: value.retryCount,
+    lastRetryReason: "stale_authority",
+    nextAttemptAt: now,
+  }) as BackgroundAuthorizationTaskRuntimeRequestSnapshotV3;
+}
+
 export function markBackgroundAuthorizationRunning(
   value: BackgroundAuthorizationRequestSnapshot,
   now: number,

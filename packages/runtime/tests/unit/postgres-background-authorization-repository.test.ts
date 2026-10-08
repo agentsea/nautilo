@@ -13,6 +13,7 @@ import {
   type BackgroundReflectionWorkDescriptorV2,
 } from "@nautilo/lattice-crypto/background";
 import {
+  BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT,
   attachBackgroundAuthorizationRecipient,
   createBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequestV2,
@@ -28,6 +29,7 @@ import {
   BackgroundAuthorizationRepositoryConflictError,
   InMemoryBackgroundAuthorizationRepository,
   buildAcceptedBackgroundAuthorizationResponse,
+  buildDeferredUnstartedTaskRuntimeRequest,
   buildUnclaimedTaskRuntimeAuthorityReplacement,
   type BackgroundAuthorizationRecord,
   type BackgroundAuthorizationAgentRecordV2,
@@ -1163,6 +1165,83 @@ describe("Postgres background authorization repository", () => {
     expect(namespaceInsert).toBeGreaterThan(domainInsert);
     expect(statements[update]).toContain("REQUEST_REVISION");
     expect(statements[update]).toContain("WORK_IDENTITY_HASH");
+  });
+
+  test("defers an exact unstarted Task Runtime request under its row lock", async () => {
+    const fixture = claimedTaskRuntimeV3();
+    const canonical: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...fixture,
+      idempotencyKey:
+        `task-runtime-stable-v1:${fixture.snapshot.workId}:${"d".repeat(43)}`,
+      authoritySet: {
+        ...fixture.authoritySet,
+        namespaceRequirements: fixture.authoritySet.namespaceRequirements.map(
+          requirement => ({
+            ...requirement,
+            expectedPolicyRevision: fixture.expectedPolicyRevision,
+          }),
+        ),
+      },
+      snapshot: {
+        ...fixture.snapshot,
+        retryCount: BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT,
+        lastRetryReason: "provider_transient_failure",
+      },
+    };
+    const expected = runningTaskRuntimeV3(canonical);
+    const next = buildDeferredUnstartedTaskRuntimeRequest({
+      expected,
+      now: START + 5,
+    });
+    const value = await setup([
+      [recordRow(expected)],
+      taskRuntimeDomainRows(expected),
+      namespaceRows(expected),
+      [recordRow(next)],
+      taskRuntimeDomainRows(next),
+      namespaceRows(next),
+    ]);
+
+    expect(await value.repository.deferUnstartedTaskRuntimeRequest({
+      expected,
+      now: START + 5,
+    })).toEqual({ status: "deferred", record: next });
+    expect(value.connection.transactions).toBe(1);
+    const statements = value.connection.statements.map(normalizedSql);
+    const lock = statements.findIndex(statement => statement.includes(
+      "FOR UPDATE",
+    ));
+    const update = statements.findIndex(statement => statement.startsWith(
+      "UPDATE BACKGROUND_CRYPTO_AUTHORIZATION_REQUESTS",
+    ));
+    expect(lock).toBeGreaterThanOrEqual(0);
+    expect(update).toBeGreaterThan(lock);
+    expect(statements[update]).toContain("REQUEST_REVISION");
+    expect(statements[update]).toContain("RECIPIENT_GENERATION");
+    expect(statements[update]).toContain("ACCEPTED_RESPONSE_BYTES");
+    expect(next.snapshot.retryCount).toBe(BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT);
+
+    const replay = await setup([
+      [recordRow(next)],
+      taskRuntimeDomainRows(next),
+      namespaceRows(next),
+    ]);
+    expect(await replay.repository.deferUnstartedTaskRuntimeRequest({
+      expected,
+      now: START + 5,
+    })).toEqual({ status: "exact_replay", record: next });
+    expect(replay.connection.statements.some(statement => normalizedSql(statement)
+      .startsWith("UPDATE BACKGROUND_CRYPTO_AUTHORIZATION_REQUESTS"))).toBe(false);
+
+    const stale = await setup([
+      [recordRow(next)],
+      taskRuntimeDomainRows(next),
+      namespaceRows(next),
+    ]);
+    expect(await stale.repository.deferUnstartedTaskRuntimeRequest({
+      expected,
+      now: START + 6,
+    })).toEqual({ status: "stale", current: next });
   });
 
   test("create has the same exact-idempotency result as the in-memory port", async () => {

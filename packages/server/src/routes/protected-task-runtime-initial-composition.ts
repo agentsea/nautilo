@@ -1,3 +1,8 @@
+import { log } from "@nautilo/logger";
+import {
+  createProtectedTaskPreexecutionRecovery,
+  type ProtectedTaskPreexecutionRecoveryPageCursor,
+} from "./protected-task-preexecution-recovery";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 
 import {
@@ -257,6 +262,10 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
   const repository = new PostgresBackgroundAuthorizationRepository(
     await verifyCryptoPostgresHandle(restricted),
   );
+  const recovery = createProtectedTaskPreexecutionRecovery({
+    db: input.db, repository, now,
+  });
+  let recoveryCursor: ProtectedTaskPreexecutionRecoveryPageCursor | undefined;
   const predispatch = createProductionProtectedTaskPredispatch({
     db: input.db,
     resolver: input.resolver,
@@ -302,6 +311,7 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
       acceptProtectedTaskRunOutputBinding(input.db, value),
     prepareExecution: nativeExecution.prepareExecution,
     startProtectedTaskRun: value => startProtectedTaskRun(input.db, value),
+    deferBeforeExecution: value => recovery.recover(value, { immediate: true }),
     publishResult: nativeExecution.publishResult,
     now,
   });
@@ -389,6 +399,15 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
   });
   const coordinator = createProtectedTaskOccurrenceCoordinator({
     authorization: claim,
+    recoverBeforeObservation: async limit => {
+      const page = await recovery.recoverPage({
+        limit, ...(recoveryCursor === undefined ? {} : { after: recoveryCursor }),
+      });
+      recoveryCursor = page.next;
+      if (page.failures > 0) {
+        log("[task-observer] protected pre-execution recovery deferred code=PROTECTED_START_RECOVERY_RETRY");
+      }
+    },
     jobManager: input.jobManager,
     kick: input.kick,
   });

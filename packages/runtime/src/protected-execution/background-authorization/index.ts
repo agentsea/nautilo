@@ -71,6 +71,8 @@ export {
   type BackgroundAuthorizationRecordV1,
   type BackgroundAuthorizationAgentRecordV2,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
+  type BackgroundAuthorizationTaskRuntimeDeferralRepository,
+  type BackgroundAuthorizationTaskRuntimeDeferralResult,
   type BackgroundAuthorizationTaskRuntimeReplacementRepository,
   type BackgroundAuthorizationTaskRuntimeReplacementResult,
   type BackgroundAuthorizationVerifiedRuntimeResponseV3,

@@ -149,6 +149,7 @@ export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
     modelAttribution?: "external";
   }>>;
   startProtectedTaskRun: TaskRuntimeGrantClaimPlan["startProtectedTaskRun"];
+  deferBeforeExecution?: TaskRuntimeGrantClaimPlan["deferBeforeExecution"];
   publishResult: TaskRuntimeGrantClaimPlan["publishResult"];
   now?: () => number;
 }>;
@@ -633,6 +634,9 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       ...(scopeMemory === undefined ? {} : { scopeMemory }),
       executor: execution.executor,
       startProtectedTaskRun: dependencies.startProtectedTaskRun,
+      ...(dependencies.deferBeforeExecution === undefined ? {} : {
+        deferBeforeExecution: dependencies.deferBeforeExecution,
+      }),
       ...recipientRequest,
       openTransientInput: execution.openTransientInput,
       publishResult: dependencies.publishResult,

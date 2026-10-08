@@ -1,3 +1,4 @@
+import { ProtectedTaskExecutionDidNotBeginError } from "../../tasks/protected-task-execution-candidate";
 import { createHash, randomUUID } from "node:crypto";
 
 import {
@@ -202,6 +203,7 @@ export type TaskRuntimeGrantClaimPlan = Readonly<{
   startProtectedTaskRun(
     input: StartProtectedTaskRunInput,
   ): Promise<StartProtectedTaskRunResult>;
+  deferBeforeExecution?(input: StartProtectedTaskRunInput): Promise<boolean>;
   recipientAttempt(input: Readonly<{
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     now: number;
@@ -1410,6 +1412,8 @@ function createCandidate(input: Readonly<{
     "ready";
   let runningOccurrence: ProtectedTaskRunningOccurrence | null = null;
   let released = false;
+  let startInput: StartProtectedTaskRunInput | null = null;
+  let deferral: Promise<boolean> | undefined;
   const release = (): void => {
     if (released) return;
     released = true;
@@ -1428,7 +1432,7 @@ function createCandidate(input: Readonly<{
       }
       state = "starting";
       try {
-        const result = await input.plan.startProtectedTaskRun({
+        startInput = {
           taskId: input.occurrence.task.id,
           taskRunId: input.occurrence.run.id,
           graphThreadId: input.occurrence.run.graphThreadId,
@@ -1442,7 +1446,8 @@ function createCandidate(input: Readonly<{
           cryptoRequiredNamespaceFingerprint:
             input.occurrence.task.cryptoRequiredNamespaceFingerprint.slice(),
           jobReference: input.plan.reference,
-        });
+        };
+        const result = await input.plan.startProtectedTaskRun(startInput);
         if (state !== "starting") {
           release();
           return Object.freeze({ status: "stale" as const });
@@ -1495,6 +1500,7 @@ function createCandidate(input: Readonly<{
         throw new Error("Task Runtime running occurrence is unavailable");
       }
       state = "running";
+      let workInvoked = false;
       try {
         const current = await input.dependencies.repository.get(
           input.claimed.snapshot.requestId,
@@ -1613,6 +1619,7 @@ function createCandidate(input: Readonly<{
                   },
                 });
                 try {
+                  workInvoked = true;
                   const result = await work(transientInput, signal, publication);
                   await Promise.all(pendingPublications);
                   signal.throwIfAborted();
@@ -1658,10 +1665,22 @@ function createCandidate(input: Readonly<{
         } finally {
           destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
         }
+      } catch (error) {
+        // The outer finally releases recipient custody before the caller sees this.
+        if (!workInvoked) throw new ProtectedTaskExecutionDidNotBeginError();
+        throw error;
       } finally {
         state = "finished";
         release();
       }
+    },
+    deferBeforeExecution(jobId: string): Promise<boolean> {
+      if (state !== "finished" || startInput === null
+        || startInput.jobId !== jobId || input.plan.deferBeforeExecution === undefined) {
+        return Promise.resolve(false);
+      }
+      deferral ??= input.plan.deferBeforeExecution(startInput);
+      return deferral;
     },
     onIneligible(): void {
       if (state === "running" || state === "finished") return;

@@ -39,6 +39,7 @@ import {
   BACKGROUND_AUTHORIZATION_TERMINAL_RETENTION_MS,
   BackgroundAuthorizationRepositoryConflictError,
   assertBackgroundAuthorizationCasSuccessor,
+  buildDeferredUnstartedTaskRuntimeRequest,
   buildUnclaimedTaskRuntimeAuthorityReplacement,
   assertUnstartedProcessorSupersession,
   isExactProcessorSupersessionCancellation,
@@ -63,6 +64,8 @@ import {
   type BackgroundAuthorizationAwaitingTaskRuntimeRecipientCursor,
   type BackgroundAuthorizationAwaitingTaskRuntimeRecipientPage,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
+  type BackgroundAuthorizationTaskRuntimeDeferralRepository,
+  type BackgroundAuthorizationTaskRuntimeDeferralResult,
   type BackgroundAuthorizationTaskRuntimeReplacementRepository,
   type BackgroundAuthorizationTaskRuntimeReplacementResult,
   type BackgroundAuthorizationVerifiedDeviceResponse,
@@ -527,7 +530,8 @@ function rowToEvidence(row: Row): ProcessorSignerAuthorizationEvidence {
 }
 
 export class PostgresBackgroundAuthorizationRepository
-  implements BackgroundAuthorizationTaskRuntimeReplacementRepository {
+  implements BackgroundAuthorizationTaskRuntimeReplacementRepository,
+    BackgroundAuthorizationTaskRuntimeDeferralRepository {
   constructor(private readonly handle: CryptoPostgresHandle) {
     assertVerifiedCryptoPostgresHandle(handle);
   }
@@ -876,6 +880,98 @@ export class PostgresBackgroundAuthorizationRepository
       const stored = await repository.#recordFromRow(updated[0] as Row);
       return {
         status: "replaced" as const,
+        record: stored as BackgroundAuthorizationTaskRuntimeRecordV3,
+      };
+    });
+  }
+
+  deferUnstartedTaskRuntimeRequest(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeDeferralResult> {
+    const parsed = parseBackgroundAuthorizationRecord(input.expected);
+    const next = buildDeferredUnstartedTaskRuntimeRequest({
+      expected: parsed as BackgroundAuthorizationTaskRuntimeRecordV3,
+      now: input.now,
+    });
+    return withVerifiedCryptoPostgresTransaction<
+      BackgroundAuthorizationTaskRuntimeDeferralResult
+    >(this.handle, async handle => {
+      const table = backgroundCryptoAuthorizationRequests;
+      const rows = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.select().from(table)
+          .where(eq(table.requestId, parsed.snapshot.requestId))
+          .limit(2).for("update"),
+      );
+      const row = rows[0] as Row | undefined;
+      const repository = new PostgresBackgroundAuthorizationRepository(handle);
+      const current = row === undefined
+        ? null
+        : await repository.#recordFromRow(row);
+      if (
+        rows.length !== 1
+        || row === undefined
+        || current === null
+        || row["transform_commit_claim_id"] !== null
+        || row["transform_commit_descriptor_hash"] !== null
+        || row["transform_commit_recipient_generation"] !== null
+        || row["transform_commit_output_count"] !== null
+        || row["transform_committed_at"] !== null
+      ) return { status: "stale", current };
+      if (sameBackgroundAuthorizationRecord(current, next)) {
+        return {
+          status: "exact_replay",
+          record: current as BackgroundAuthorizationTaskRuntimeRecordV3,
+        };
+      }
+      if (!sameBackgroundAuthorizationRecord(current, parsed)) {
+        return { status: "stale", current };
+      }
+      const values = requestValues(next);
+      const updated = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.update(table).set({
+          recipientGeneration: values.recipientGeneration,
+          descriptorHash: values.descriptorHash,
+          descriptorBytes: values.descriptorBytes,
+          recipientKeyId: values.recipientKeyId,
+          recipientPublicKey: values.recipientPublicKey,
+          recipientExpiresAt: values.recipientExpiresAt,
+          acceptedResponseKind: values.acceptedResponseKind,
+          acceptedResponseHash: values.acceptedResponseHash,
+          acceptedResponseBytes: values.acceptedResponseBytes,
+          credentialId: values.credentialId,
+          credentialHash: values.credentialHash,
+          issuingHumanId: values.issuingHumanId,
+          issuingDeviceId: values.issuingDeviceId,
+          issuingDeviceAuthorizationRevision:
+            values.issuingDeviceAuthorizationRevision,
+          issuerSigningPublicKeyHash: values.issuerSigningPublicKeyHash,
+          acceptedAt: values.acceptedAt,
+          authorizationExpiresAt: values.authorizationExpiresAt,
+          requestRevision: values.requestRevision,
+          state: values.state,
+          claimId: values.claimId,
+          claimExpiresAt: values.claimExpiresAt,
+          retryCount: values.retryCount,
+          lastRetryReason: values.lastRetryReason,
+          nextAttemptAt: values.nextAttemptAt,
+          updatedAt: values.updatedAt,
+        }).where(and(
+          eq(table.requestId, parsed.snapshot.requestId),
+          eq(table.requestRevision, parsed.snapshot.requestRevision),
+        )).returning(),
+      );
+      if (updated.length !== 1) {
+        return {
+          status: "stale",
+          current: await repository.get(parsed.snapshot.requestId),
+        };
+      }
+      const stored = await repository.#recordFromRow(updated[0] as Row);
+      return {
+        status: "deferred",
         record: stored as BackgroundAuthorizationTaskRuntimeRecordV3,
       };
     });

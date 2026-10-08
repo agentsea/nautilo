@@ -1,3 +1,4 @@
+import { ProtectedTaskExecutionDidNotBeginError } from "../../src/tasks/protected-task-execution-candidate";
 import { describe, expect, test } from "bun:test";
 import type { PersistJobPayload } from "@nautilo/db";
 import type { JobStatus, ServerEvent } from "@nautilo/types";
@@ -259,7 +260,7 @@ describe("JobManager protected Task execution", () => {
     expect(opened).toBe(0);
   });
 
-  test("a stale protected lifecycle start cancels the Job without opening content", async () => {
+  test("a stale protected lifecycle start uses exact recovery without a generic write", async () => {
     const order: string[] = [];
     const updates: Array<{ status: JobStatus; fields: unknown }> = [];
     let opened = 0;
@@ -290,29 +291,87 @@ describe("JobManager protected Task execution", () => {
           opened += 1;
           return work({ message: "must-not-open" }, new AbortController().signal, publication);
         },
+        async deferBeforeExecution(jobId) {
+          expect(jobId).toBe("protected-job-stale");
+          order.push("recover");
+          return true;
+        },
         onIneligible() {
           ineligible += 1;
         },
       },
     });
-    await waitFor(() => updates.some((update) => update.status === "cancelled"));
+    await waitFor(() => ineligible === 1);
+    expect(order).toContain("recover");
+    expect(updates).toEqual([]);
 
     expect(order.slice(0, 4)).toEqual(["accept", "persist", "link", "start"]);
     expect(opened).toBe(0);
     expect(ineligible).toBe(1);
   });
 
+  test("a Stop racing lifecycle start releases the candidate before recovery", async () => {
+    const order: string[] = [];
+    let finished = false;
+    let opened = 0;
+    let manager: JobManager;
+    const jm = manager = new JobManager({
+      laneLock: new InMemoryLaneLock(),
+      acceptanceSinks: acceptanceSinks([]),
+      startProtectedTaskJob,
+      persist: async () => "protected-job-start-stop-race",
+      updateStatus: async () => {},
+    });
+
+    await jm.createProtectedTaskJob({
+      scheduling: scheduling("subagent:protected-start-stop-race"),
+      reference: reference(),
+      executor: async function* () { yield* []; },
+      candidate: {
+        async start(jobId) {
+          order.push("start");
+          expect(await manager.cancelJob(jobId)).toBe(true);
+          return { status: "started" };
+        },
+        async run(work) {
+          opened += 1;
+          return work(
+            { message: "must-not-open" },
+            new AbortController().signal,
+            publication,
+          );
+        },
+        async deferBeforeExecution(jobId) {
+          expect(jobId).toBe("protected-job-start-stop-race");
+          expect(finished).toBe(true);
+          order.push("recover");
+          return true;
+        },
+        onIneligible() {
+          if (finished) return;
+          finished = true;
+          order.push("ineligible");
+          throw new Error("candidate cleanup diagnostic");
+        },
+      },
+    });
+    await waitFor(() => order.includes("recover"));
+    await waitFor(() => jm.getJob("protected-job-start-stop-race") === undefined);
+
+    expect(order).toEqual(["start", "ineligible", "recover"]);
+    expect(opened).toBe(0);
+  });
+
   test("a protected lifecycle start failure cannot open content", async () => {
     let opened = 0;
-    let cancelled = 0;
+    let recoveryAttempts = 0;
+    let writes = 0;
     const jm = new JobManager({
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks([]),
       startProtectedTaskJob,
       persist: async () => "protected-job-start-failure",
-      updateStatus: async (_jobId, status) => {
-        if (status === "cancelled") cancelled += 1;
-      },
+      updateStatus: async () => { writes += 1; },
     });
 
     await jm.createProtectedTaskJob({
@@ -327,10 +386,16 @@ describe("JobManager protected Task execution", () => {
           opened += 1;
           return work({ message: "must-not-open" }, new AbortController().signal, publication);
         },
+        async deferBeforeExecution() {
+          recoveryAttempts += 1;
+          throw new Error("recovery response unknown");
+        },
         onIneligible() {},
       },
     });
-    await waitFor(() => cancelled === 1);
+    await waitFor(() => recoveryAttempts === 1);
+    await waitFor(() => jm.getJob("protected-job-start-failure") === undefined);
+    expect(writes).toBe(0);
     expect(opened).toBe(0);
   });
 
@@ -518,6 +583,34 @@ describe("JobManager protected Task execution", () => {
         { expectedRevision: 7, representation: "protected_only" },
       ]);
     }
+  });
+
+  test("a typed pre-executor failure settles through guarded recovery, never generic fail", async () => {
+    let writes = 0;
+    let recovered = 0;
+    let executed = 0;
+    const jm = new JobManager({
+      laneLock: new InMemoryLaneLock(), acceptanceSinks: acceptanceSinks([]),
+      persist: async () => "protected-before-work",
+      updateStatus: async () => { writes += 1; },
+      startProtectedTaskJob,
+    });
+    await jm.createProtectedTaskJob({
+      scheduling: scheduling("subagent:protected-before-work"), reference: reference(),
+      executor: async function* () { executed += 1; yield* []; },
+      candidate: {
+        start: async () => ({ status: "started" }),
+        run: async () => { throw new ProtectedTaskExecutionDidNotBeginError(); },
+        deferBeforeExecution: async jobId => {
+          expect(jobId).toBe("protected-before-work"); recovered += 1; return true;
+        },
+        onIneligible() {},
+      },
+    });
+    await waitFor(() => recovered === 1);
+    await waitFor(() => jm.getJob("protected-before-work") === undefined);
+    expect(writes).toBe(0);
+    expect(executed).toBe(0);
   });
 
   test("a start-shaped candidate close failure after confirmed running is terminalized normally", async () => {

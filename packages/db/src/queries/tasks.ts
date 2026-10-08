@@ -553,7 +553,12 @@ export interface TerminalTaskLifecycleTransition {
 export interface TransitionTaskLifecycleTerminalInput {
   taskId: string;
   /** Selective cancellation may only stop this Human's exact current run. */
-  expectedInvocation?: { humanUserId: string; taskRunId: string };
+  expectedInvocation?: {
+    humanUserId: string;
+    taskRunId: string;
+    /** Bind a durable Job stop to the exact Job still attached to this run. */
+    jobId?: string;
+  };
   /** Omit for a recurring-run finalization that leaves its Task pending. */
   taskStatus?: Extract<TaskStatus, (typeof TERMINAL_TASK_STATUSES)[number]>;
   /** Terminal Task metadata intentionally allowed to lifecycle callers. */
@@ -574,6 +579,67 @@ export interface TransitionTaskLifecycleTerminalInput {
   blockPendingWriterWorkspaceAcceptance?: boolean;
 }
 
+type ProtectedTaskLifecycleRun = Pick<TaskRun, "id" | "jobId">;
+type ProtectedTaskLifecycleJob = Pick<
+  Job,
+  | "id"
+  | "ownerId"
+  | "requestorId"
+  | "laneKey"
+  | "type"
+  | "status"
+  | "input"
+  | "startedAt"
+  | "completedAt"
+> & Readonly<{
+  resultIsNull: boolean;
+  messageIsNull: boolean;
+}>;
+
+function exactProtectedTaskLifecycleJob(
+  task: Task,
+  run: ProtectedTaskLifecycleRun,
+  job: ProtectedTaskLifecycleJob,
+  expectedJobId: string,
+): job is ProtectedTaskLifecycleJob & { input: ProtectedTaskDurableJobReference } {
+  if (
+    job.id !== expectedJobId
+    || run.jobId !== job.id
+    || job.ownerId !== task.requestorId
+    || job.requestorId !== task.requestorId
+    || job.laneKey !== `task:${task.id}`
+    || job.type !== "foreground"
+    || !job.resultIsNull
+    || !job.messageIsNull
+    || task.contentRepresentation !== "dual"
+      && task.contentRepresentation !== "protected"
+    || job.input === null
+    || typeof job.input !== "object"
+    || Array.isArray(job.input)
+  ) return false;
+  const reference = job.input as ProtectedTaskDurableJobReference;
+  return reference.kind === "protected_task_run_v1"
+    && typeof reference.authorizationRequestId === "string"
+    && reference.authorizationRequestId.length > 0
+    && Number.isSafeInteger(reference.policyRevision)
+    && reference.policyRevision > 0
+    && exactProtectedTaskJobReference(reference, reference)
+    && reference.taskId === task.id
+    && reference.taskRunId === run.id
+    && reference.inputObjectId === task.cryptoObjectId
+    && reference.resultObjectId
+      === protectedTaskRunResultObjectId(task.id, run.id)
+    && (
+      (job.status === "queued"
+        && job.startedAt === null
+        && job.completedAt === null)
+      || (job.status === "running"
+        && job.startedAt !== null
+        && job.completedAt === null)
+      || (job.status === "cancelled" && job.completedAt !== null)
+    );
+}
+
 /**
  * Serialize terminal lifecycle writers on the parent Task row.
  *
@@ -586,6 +652,14 @@ export async function transitionTaskLifecycleTerminal(
   db: DirectDatabase,
   input: TransitionTaskLifecycleTerminalInput,
 ): Promise<TerminalTaskLifecycleTransition> {
+  if (
+    input.expectedInvocation?.jobId !== undefined
+    && (input.taskStatus !== "cancelled"
+      || input.runStatus !== "cancelled"
+      || input.runId !== input.expectedInvocation.taskRunId)
+  ) {
+    throw new TypeError("Job-bound Task terminal transition must be an exact Stop");
+  }
   return db.transaction(async (tx) => {
     const [task] = await tx
       .select()
@@ -594,17 +668,62 @@ export async function transitionTaskLifecycleTerminal(
       .limit(1)
       .for("update");
     if (!task) return { task: undefined, run: undefined, transitioned: false, outcome: "not_found" };
+    let expectedJob: (ProtectedTaskLifecycleJob & {
+      input: ProtectedTaskDurableJobReference;
+    }) | undefined;
     if (input.expectedInvocation) {
-      const [expected] = await tx.select({ id: taskRuns.id }).from(taskRuns)
-        .where(and(eq(taskRuns.taskId, task.id), eq(taskRuns.id, input.expectedInvocation.taskRunId))).for("update");
+      const expectedJobId = input.expectedInvocation.jobId;
+      const expectedRunPredicate = and(
+        eq(taskRuns.taskId, task.id),
+        eq(taskRuns.id, input.expectedInvocation.taskRunId),
+      );
+      const [expected]: Array<Pick<TaskRun, "id"> & {
+        jobId?: string | null;
+      }> = expectedJobId === undefined
+        ? await tx.select({ id: taskRuns.id }).from(taskRuns)
+            .where(expectedRunPredicate).for("update")
+        : await tx.select({ id: taskRuns.id, jobId: taskRuns.jobId }).from(taskRuns)
+            .where(expectedRunPredicate).for("update");
       // Compare database timestamps without JS millisecond truncation. An
       // ambiguous tie is not authority to stop either run.
       const [newer] = expected ? await tx.select({ id: taskRuns.id }).from(taskRuns).where(and(
         eq(taskRuns.taskId, task.id), sql`${taskRuns.id} <> ${expected.id}::uuid`,
         sql`${taskRuns.startedAt} >= (SELECT started_at FROM task_runs WHERE id = ${expected.id}::uuid)`,
       )).limit(1) : [];
-      if (task.requestorId !== input.expectedInvocation.humanUserId || !expected || newer) {
+      if (
+        task.requestorId !== input.expectedInvocation.humanUserId
+        || !expected
+        || newer
+        || (expectedJobId !== undefined && expected.jobId !== expectedJobId)
+      ) {
         return { task, run: undefined, transitioned: false, outcome: "authority_changed" };
+      }
+      if (expectedJobId !== undefined) {
+        const [job] = await tx.select({
+          id: jobs.id,
+          ownerId: jobs.ownerId,
+          requestorId: jobs.requestorId,
+          laneKey: jobs.laneKey,
+          type: jobs.type,
+          status: jobs.status,
+          input: jobs.input,
+          resultIsNull: isNull(jobs.result).mapWith(Boolean),
+          messageIsNull: isNull(jobs.message).mapWith(Boolean),
+          startedAt: jobs.startedAt,
+          completedAt: jobs.completedAt,
+        }).from(jobs)
+          .where(eq(jobs.id, expectedJobId))
+          .limit(1)
+          .for("update");
+        if (!job || !exactProtectedTaskLifecycleJob(
+          task,
+          { id: expected.id, jobId: expectedJobId },
+          job,
+          expectedJobId,
+        )) {
+          return { task, run: undefined, transitioned: false, outcome: "authority_changed" };
+        }
+        expectedJob = job;
       }
     }
     // Older callers and narrow test fixtures may not hydrate JSON metadata.
@@ -621,6 +740,24 @@ export async function transitionTaskLifecycleTerminal(
     ) {
       return { task, run: undefined, transitioned: false, outcome: "writer_review_pending" };
     }
+
+    const cancelExpectedProtectedJob = async (): Promise<void> => {
+      if (expectedJob === undefined || expectedJob.status === "cancelled") return;
+      const [cancelledJob] = await tx.update(jobs).set({
+        status: "cancelled",
+        completedAt: new Date(),
+      }).where(and(
+        eq(jobs.id, expectedJob.id),
+        inArray(jobs.status, ["queued", "running"]),
+        isNull(jobs.completedAt),
+        isNull(jobs.result),
+        isNull(jobs.message),
+        eq(jobs.input, expectedJob.input),
+      )).returning();
+      if (!cancelledJob) {
+        throw new Error("Task stop lost its locked protected Job");
+      }
+    };
 
     let run: TaskRun | undefined;
     if (input.runId) {
@@ -657,6 +794,18 @@ export async function transitionTaskLifecycleTerminal(
         Boolean(input.runId) &&
         task.status === input.taskStatus &&
         run?.status === input.runStatus;
+      if (isSameTerminal && expectedJob !== undefined
+        && expectedJob.status !== "cancelled") {
+        // Repair an older split Stop outcome only when all three immutable
+        // identities still match and Task + Run already prove cancellation.
+        await cancelExpectedProtectedJob();
+        return {
+          task,
+          run,
+          transitioned: true,
+          outcome: "transitioned",
+        };
+      }
       return {
         task,
         run,
@@ -688,6 +837,8 @@ export async function transitionTaskLifecycleTerminal(
         return { task, run, transitioned: false, outcome: "same_terminal" };
       }
     }
+
+    await cancelExpectedProtectedJob();
 
     let nextRun = run;
     if (run && input.runStatus && run.status !== input.runStatus) {
