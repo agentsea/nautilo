@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { ComputerUseLocalStore } from "../../electron/computer-use/local-store.ts";
 import {
   createComputerUseSetupController,
@@ -46,7 +46,7 @@ function controller(options: {
   store: ComputerUseLocalStore;
   getRuntime?: () => ComputerUseSetupRuntime | null;
   verifyOwnPin?: (pin: string, humanUserId: string) => Promise<{ accessToken: string; humanUserId: string } | null>;
-  resolveOwnedAgent?: (accessToken: string, humanUserId: string) => Promise<string | null>;
+  resolveOwnedAgent?: (accessToken: string, humanUserId: string, requestedAgentId: string) => Promise<string | null>;
   attestActivation?: (expected: ComputerUseSetupRuntime) => Promise<ComputerUseSetupRuntime & { controlDesktop: boolean } | null>;
   cancelAndFenceOwnedWork?: (fence: ComputerUseRevocationFence) => void;
 }) {
@@ -63,7 +63,17 @@ function controller(options: {
   });
 }
 
-describe("D516 Computer use setup controller", () => {
+function barrier() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
+async function rejected(operation: Promise<unknown>): Promise<unknown> {
+  return await operation.catch((error: unknown) => error);
+}
+
+describe("Computer use setup controller", () => {
   test("wrong PIN and foreign-Human proof never write local authority", async () => {
     for (const verifyOwnPin of [
       async () => null,
@@ -71,7 +81,7 @@ describe("D516 Computer use setup controller", () => {
     ]) {
       const { store, memory } = makeStore();
       const managed = controller({ store, verifyOwnPin });
-      await expect(managed.enable("847291", "agent-1")).rejects.toThrow("PIN could not be verified");
+      expect(await rejected(managed.enable("847291", "agent-1"))).toMatchObject({ message: expect.stringContaining("PIN could not be verified") as unknown });
       expect(memory.writes()).toBe(0);
       expect((await store.get()).data).toMatchObject({ receipt: null, grantGeneration: 0 });
     }
@@ -91,22 +101,22 @@ describe("D516 Computer use setup controller", () => {
         return "agent-personal";
       },
     });
-    await expect(managed.enable("847291", "agent-personal")).resolves.toEqual({
+    expect(await managed.enable("847291", "agent-personal")).toEqual({
       state: "enabled",
       reason: null,
       agentId: "agent-personal",
       grantGeneration: 1,
     });
     expect(calls).toEqual(["verify:847291:human-1", "agent:fresh-bearer:human-1:agent-personal"]);
-    const persisted = JSON.parse(memory.bytes() ?? "{}");
-    expect(persisted.receipt).toMatchObject({
+    const persisted: unknown = JSON.parse(memory.bytes() ?? "{}");
+    expect(persisted).toMatchObject({ receipt: {
       instanceId: "",
       humanUserId: "human-1",
       agentId: "agent-personal",
       serverBindingId: binding,
       relayId: "relay-1",
       pairingGeneration: "pairing-1",
-    });
+    } });
     expect(JSON.stringify(persisted)).not.toMatch(/847291|fresh-bearer|pin|desktop-session/i);
   });
 
@@ -127,7 +137,7 @@ describe("D516 Computer use setup controller", () => {
           controlDesktop: denied.controlDesktop,
         }),
       });
-      await expect(managed.enable("847291", "agent-1")).rejects.toThrow(denied.message);
+      expect(await rejected(managed.enable("847291", "agent-1"))).toMatchObject({ message: expect.stringContaining(denied.message) as unknown });
       expect(pinCalls).toBe(0);
       expect(memory.writes()).toBe(0);
     }
@@ -144,7 +154,7 @@ describe("D516 Computer use setup controller", () => {
         };
       },
     });
-    await expect(permissionDrift.enable("847291", "agent-1")).rejects.toThrow("permission changed");
+    expect(await rejected(permissionDrift.enable("847291", "agent-1"))).toMatchObject({ message: expect.stringContaining("permission changed") as unknown });
     expect(attestations).toBe(2);
     expect(drift.memory.writes()).toBe(0);
   });
@@ -163,17 +173,17 @@ describe("D516 Computer use setup controller", () => {
         attestActivation: async (expected) => ({ ...expected, ...denied }),
         cancelAndFenceOwnedWork: (fence) => { fences.push(fence); },
       });
-      await expect(managed.status()).resolves.toMatchObject({
+      expect(await managed.status()).toMatchObject({
         state: "not-enabled",
-        reason: expect.stringContaining(denied.reason),
+        reason: expect.stringContaining(denied.reason) as unknown,
         grantGeneration: null,
       });
       expect(pinCalls).toBe(0);
       expect(fences).toEqual([expect.objectContaining({
         kind: "exact_grant",
-        receipt: expect.objectContaining({ grantGeneration: 1 }),
+        receipt: expect.objectContaining({ grantGeneration: 1 }) as unknown,
         grantGeneration: 2,
-      })]);
+      }) as unknown]);
       expect((await store.get()).data).toMatchObject({ receipt: null, grantGeneration: 2 });
     }
   });
@@ -190,14 +200,14 @@ describe("D516 Computer use setup controller", () => {
       }),
       cancelAndFenceOwnedWork: (fence) => { fences.push(fence); },
     });
-    await expect(managed.check()).resolves.toMatchObject({
+    expect(await managed.check()).toMatchObject({
       state: "not-enabled",
-      reason: expect.stringContaining("control permission changed"),
+      reason: expect.stringContaining("control permission changed") as unknown,
       agentId: null,
       grantGeneration: null,
     });
     expect((await store.get()).data).toMatchObject({ receipt: null, grantGeneration: 2 });
-    expect(fences).toEqual([expect.objectContaining({ kind: "exact_grant", grantGeneration: 2 })]);
+    expect(fences).toEqual([expect.objectContaining({ kind: "exact_grant", grantGeneration: 2 }) as unknown]);
   });
 
   test("local status and PIN-free Off never wait for live authority attestation", async () => {
@@ -211,8 +221,8 @@ describe("D516 Computer use setup controller", () => {
         return await new Promise<never>(() => undefined);
       },
     });
-    await expect(managed.localStatus()).resolves.toMatchObject({ state: "enabled", agentId: "agent-1" });
-    await expect(managed.disable()).resolves.toMatchObject({ state: "not-enabled" });
+    expect(await managed.localStatus()).toMatchObject({ state: "enabled", agentId: "agent-1" });
+    expect(await managed.disable()).toMatchObject({ state: "not-enabled" });
     expect(attestations).toBe(0);
     expect((await store.get()).data).toMatchObject({ receipt: null, grantGeneration: 2 });
   });
@@ -228,21 +238,162 @@ describe("D516 Computer use setup controller", () => {
         return "agent-1";
       },
     });
-    await expect(beforeMint.enable("847291", "agent-1")).rejects.toThrow("connection changed");
+    expect(await rejected(beforeMint.enable("847291", "agent-1"))).toMatchObject({ message: expect.stringContaining("connection changed") as unknown });
     expect(before.memory.writes()).toBe(0);
 
     const after = makeStore();
     active = runtime;
-    let runtimeReads = 0;
+    const originalMint = after.store.mint.bind(after.store);
+    const mint = spyOn(after.store, "mint").mockImplementationOnce(async (input) => {
+      const result = await originalMint(input);
+      active = { ...runtime, desktopSessionId: "desktop-session-2" };
+      return result;
+    });
     const afterMint = controller({
       store: after.store,
-      getRuntime: () => {
-        runtimeReads += 1;
-        return runtimeReads >= 4 ? { ...runtime, desktopSessionId: "desktop-session-2" } : active;
+      getRuntime: () => active,
+    });
+    try {
+      expect(await rejected(afterMint.enable("847291", "agent-1"))).toMatchObject({ message: expect.stringContaining("was not enabled") as unknown });
+      expect((await after.store.get()).data).toMatchObject({ receipt: null, grantGeneration: 2 });
+    } finally {
+      mint.mockRestore();
+    }
+  });
+
+  test.each(["initial attestation", "PIN", "Agent resolution", "final attestation"])(
+    "same-binding Off invalidates an enable awaiting %s before mint",
+    async (stage) => {
+      const { store } = makeStore();
+      const entered = barrier();
+      const resume = barrier();
+      let attestations = 0;
+      const pause = async () => { entered.release(); await resume.promise; };
+      const managed = controller({
+        store,
+        attestActivation: async (expected) => {
+          attestations++;
+          if ((stage === "initial attestation" && attestations === 1) ||
+            (stage === "final attestation" && attestations === 2)) await pause();
+          return { ...expected, controlDesktop: true };
+        },
+        verifyOwnPin: async (_pin, humanUserId) => {
+          if (stage === "PIN") await pause();
+          return { accessToken: "fresh-bearer", humanUserId };
+        },
+        resolveOwnedAgent: async () => {
+          if (stage === "Agent resolution") await pause();
+          return "agent-1";
+        },
+      });
+      const mint = spyOn(store, "mint");
+      const enabling = managed.enable("847291", "agent-1").catch((error: unknown) => error);
+      try {
+        await entered.promise;
+        expect(await managed.disable()).toMatchObject({ state: "not-enabled" });
+        resume.release();
+        expect(await enabling).toMatchObject({ message: expect.stringContaining("cancelled by a local Off") as unknown });
+        expect(mint).not.toHaveBeenCalled();
+        expect((await store.get()).data).toMatchObject({ receipt: null, grantGeneration: 0 });
+        expect(await managed.enable("847291", "agent-1")).toMatchObject({ state: "enabled", grantGeneration: 1 });
+      } finally {
+        resume.release();
+        await enabling;
+        mint.mockRestore();
+      }
+    },
+  );
+
+  test("a failed Off still invalidates an older pending enable; a fresh explicit enable may recover", async () => {
+    const { store } = makeStore();
+    const entered = barrier();
+    const resume = barrier();
+    let pinChecks = 0;
+    const managed = controller({
+      store,
+      verifyOwnPin: async (_pin, humanUserId) => {
+        if (++pinChecks === 1) { entered.release(); await resume.promise; }
+        return { accessToken: "fresh-bearer", humanUserId };
       },
     });
-    await expect(afterMint.enable("847291", "agent-1")).rejects.toThrow("was not enabled");
-    expect((await after.store.get()).data).toMatchObject({ receipt: null, grantGeneration: 2 });
+    const revoke = spyOn(store, "revoke").mockImplementationOnce(async () => { throw new Error("fixture unavailable"); });
+    const enabling = managed.enable("847291", "agent-1").catch((error: unknown) => error);
+    try {
+      await entered.promise;
+      const failure = await managed.disable().catch((error: unknown) => error);
+      expect(failure).toMatchObject({ message: "Nautilo could not turn off Computer use on this Mac." });
+      resume.release();
+      expect(await enabling).toMatchObject({ message: expect.stringContaining("cancelled by a local Off") as unknown });
+      expect((await store.get()).data).toMatchObject({ receipt: null, grantGeneration: 0 });
+      expect(await managed.enable("847291", "agent-1")).toMatchObject({ state: "enabled", grantGeneration: 1 });
+    } finally {
+      resume.release();
+      await enabling;
+      revoke.mockRestore();
+    }
+  });
+
+  test("Off during an in-flight mint rolls back that exact grant without revoking a newer explicit enable", async () => {
+    const { store } = makeStore();
+    const entered = barrier();
+    const resume = barrier();
+    const originalMint = store.mint.bind(store);
+    const mint = spyOn(store, "mint").mockImplementationOnce(async (input) => {
+      const result = await originalMint(input);
+      entered.release();
+      await resume.promise;
+      return result;
+    });
+    const fences: ComputerUseRevocationFence[] = [];
+    const managed = controller({
+      store,
+      resolveOwnedAgent: async (_token, _human, requestedAgentId) => requestedAgentId,
+      cancelAndFenceOwnedWork: (fence) => { fences.push(fence); },
+    });
+    const older = managed.enable("847291", "agent-1").catch((error: unknown) => error);
+    await entered.promise;
+    const off = managed.disable();
+    const newer = managed.enable("847291", "agent-2");
+    try {
+      resume.release();
+      expect(await older).toMatchObject({ message: expect.stringContaining("cancelled by a local Off") as unknown });
+      await off;
+      expect(await newer).toMatchObject({ state: "enabled", agentId: "agent-2", grantGeneration: 3 });
+      expect((await store.get()).data).toMatchObject({ receipt: { agentId: "agent-2", grantGeneration: 3 } });
+      expect(fences).toEqual([expect.objectContaining({
+        kind: "exact_grant", receipt: expect.objectContaining({ agentId: "agent-1", grantGeneration: 1 }) as unknown, grantGeneration: 2,
+      }) as unknown]);
+    } finally {
+      resume.release();
+      await Promise.allSettled([older, off, newer]);
+      mint.mockRestore();
+    }
+  });
+
+  test("a late local status read cannot report enabled after same-binding Off completed", async () => {
+    const { store } = makeStore();
+    const entered = barrier();
+    const resume = barrier();
+    const originalGet = store.get.bind(store);
+    const get = spyOn(store, "get").mockImplementationOnce(async () => {
+      const result = await originalGet();
+      entered.release();
+      await resume.promise;
+      return result;
+    });
+    const managed = controller({ store });
+    const enabling = managed.enable("847291", "agent-1").catch((error: unknown) => error);
+    try {
+      await entered.promise;
+      expect(await managed.disable()).toMatchObject({ state: "not-enabled" });
+      resume.release();
+      expect(await enabling).toMatchObject({ message: expect.stringContaining("cancelled by a local Off") as unknown });
+      expect((await store.get()).data).toMatchObject({ receipt: null, grantGeneration: 2 });
+    } finally {
+      resume.release();
+      await enabling;
+      get.mockRestore();
+    }
   });
 
   test("Off is PIN-free and works while the Desktop runtime is disconnected", async () => {
@@ -255,7 +406,7 @@ describe("D516 Computer use setup controller", () => {
       getRuntime: () => null,
       verifyOwnPin: async () => { pinCalls += 1; return null; },
     });
-    await expect(disabling.disable()).resolves.toMatchObject({ state: "unavailable" });
+    expect(await disabling.disable()).toMatchObject({ state: "unavailable" });
     expect(pinCalls).toBe(0);
     expect((await store.get()).data).toMatchObject({ receipt: null, grantGeneration: 2 });
   });
@@ -268,15 +419,15 @@ describe("D516 Computer use setup controller", () => {
       store,
       cancelAndFenceOwnedWork: (fence) => { fences.push(fence); },
     });
-    await expect(disabling.disable()).resolves.toMatchObject({ state: "not-enabled" });
+    expect(await disabling.disable()).toMatchObject({ state: "not-enabled" });
     expect(fences).toEqual([{
       kind: "exact_grant",
       receipt: expect.objectContaining({
         humanUserId: "human-1",
         relayId: "relay-1",
         grantGeneration: 1,
-      }),
-      installationEpoch: expect.any(String),
+      }) as unknown,
+      installationEpoch: expect.any(String) as unknown,
       grantGeneration: 2,
     }]);
     expect((await store.get()).data).toMatchObject({ receipt: null, grantGeneration: 2 });
@@ -289,7 +440,7 @@ describe("D516 Computer use setup controller", () => {
       store,
       cancelAndFenceOwnedWork: () => { throw new Error("cancel failed"); },
     });
-    await expect(disabling.disable()).rejects.toThrow("Computer use is Off");
+    expect(await rejected(disabling.disable())).toMatchObject({ message: expect.stringContaining("Computer use is Off") as unknown });
     expect((await store.get()).data).toMatchObject({ receipt: null, grantGeneration: 2 });
   });
 
@@ -301,12 +452,12 @@ describe("D516 Computer use setup controller", () => {
       getRuntime: () => null,
       cancelAndFenceOwnedWork: (fence) => { fences.push(fence); },
     });
-    await expect(managed.disable()).resolves.toMatchObject({ state: "unavailable" });
+    expect(await managed.disable()).toMatchObject({ state: "unavailable" });
     expect(fences).toEqual([expect.objectContaining({
       kind: "installation_epoch_reset",
       recoveryCause: "store_corrupt",
       grantGeneration: 0,
-    })]);
+    }) as unknown]);
     expect(await damaged.store.get()).toMatchObject({ ok: true, data: { receipt: null, grantGeneration: 0 } });
   });
 
@@ -315,8 +466,7 @@ describe("D516 Computer use setup controller", () => {
     await controller({ store: first.store }).enable("847291", "agent-1");
     const restarted = makeStore(memoryStorage(first.memory.bytes()));
     const nextLaunch = { ...runtime, desktopSessionId: "desktop-session-next-launch" };
-    await expect(controller({ store: restarted.store, getRuntime: () => nextLaunch }).status())
-      .resolves.toEqual({
+    expect(await controller({ store: restarted.store, getRuntime: () => nextLaunch }).status()).toEqual({
         state: "enabled",
         reason: null,
         agentId: "agent-1",
@@ -334,7 +484,7 @@ describe("D516 Computer use setup controller", () => {
       const { store } = makeStore();
       await controller({ store }).enable("847291", "agent-1");
       const status = await controller({ store, getRuntime: () => changed }).status();
-      expect(status).toMatchObject({ state: "not-enabled", reason: expect.stringContaining("binding changed") });
+      expect(status).toMatchObject({ state: "not-enabled", reason: expect.stringContaining("binding changed") as unknown });
       expect((await store.get()).data).toMatchObject({ receipt: null, grantGeneration: 2 });
     }
   });

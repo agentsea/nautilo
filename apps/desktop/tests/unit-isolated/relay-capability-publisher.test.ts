@@ -350,3 +350,35 @@ describe("RelayCapabilityPublisher", () => {
     expect(replacementClient.updates).toEqual([capabilities("replacement")]);
   });
 });
+
+test("acknowledged snapshot is isolated, current-revision fenced and never replaced by rejected publication", async () => {
+  let fail = false; let changes = 0;
+  const mock = createClient({ acknowledgedRevision: 1, onUpdate: async () => { if (fail) throw new Error("refused"); } });
+  const publisher = createRelayCapabilityPublisher({ client: mock.client, capabilityBuilder: async () => capabilities(fail ? "rejected" : "accepted"),
+    reportWarning() {}, onAcknowledged: () => { changes++; } });
+  expect(publisher.getAcknowledgedCapabilities()).toBeNull();
+  await publisher.refresh();
+  const snapshot = publisher.getAcknowledgedCapabilities()!; snapshot.profile = "restricted";
+  expect(publisher.getAcknowledgedCapabilities()).toEqual(capabilities("accepted"));
+  fail = true; expect(await publisher.refresh()).toBe(false);
+  expect(publisher.getAcknowledgedCapabilities()).toEqual(capabilities("accepted")); expect(changes).toBe(1);
+  mock.setAcknowledgedRevision(2); expect(publisher.getAcknowledgedCapabilities()).toBeNull();
+  mock.setAcknowledgedRevision(1); mock.setStatus("disconnected"); expect(publisher.getAcknowledgedCapabilities()).toBeNull();
+  mock.setStatus("connected"); publisher.close(); expect(publisher.getAcknowledgedCapabilities()).toBeNull();
+});
+
+test("a reconnect cannot reuse an old snapshot even if the server repeats its revision number", async () => {
+  const mock = createClient({ acknowledgedRevision: 1 }); let state = "before";
+  const publisher = createRelayCapabilityPublisher({ client: mock.client, capabilityBuilder: async () => capabilities(state) });
+  await publisher.refresh(); publisher.invalidateAcknowledgement();
+  expect(publisher.getAcknowledgedCapabilities()).toBeNull();
+  state = "reconnected"; await publisher.refresh();
+  expect(publisher.getAcknowledgedCapabilities()).toEqual(capabilities("reconnected"));
+});
+
+test("late acknowledgement from a disconnected transport cannot repopulate the current snapshot", async () => {
+  const update = deferred<void>(); const mock = createClient({ acknowledgedRevision: 1, onUpdate: () => update.promise });
+  const publisher = createRelayCapabilityPublisher({ client: mock.client, capabilityBuilder: async () => capabilities("old") });
+  const pending = publisher.refresh(); await flush(); publisher.invalidateAcknowledgement(); update.resolve();
+  expect(await pending).toBe(false); expect(publisher.getAcknowledgedCapabilities()).toBeNull();
+});

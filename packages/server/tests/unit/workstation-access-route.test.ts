@@ -1,5 +1,5 @@
 /**
- * D418 — unit tests for the Full Workstation access activation/disable
+ * unit tests for the Full Workstation access activation/disable
  * route. Mirrors the security-posture route test harness: a minimal
  * Fastify app, a bearer-session preHandler stub that stamps
  * `sessionUserId` / `sessionActorId` / `policyContext`, an in-memory
@@ -7,6 +7,7 @@
  * double, and a spy audit callback.
  */
 
+import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import type { ToolCall } from "@langchain/core/messages/tool";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -39,7 +40,7 @@ const OWNER_ACTOR_ID = "owner-actor";
 const OWNER_USER_ID = "owner-user";
 const NO_CAP_USER_ID = "nocap-user";
 const OWNER_PIN = "246810";
-const STARTUP_RECEIPT_SECRET = "startup-receipt-unit-secret-material-32";
+const STARTUP_RECEIPT_TEST_FIXTURE = randomBytes(32).toString("hex");
 
 const FIXED_TS = "2026-07-13T12:00:00.000Z";
 const clock = () => new Date(FIXED_TS);
@@ -139,14 +140,14 @@ let nocapToken: string;
 let pinProvider: FakeChallengeProvider;
 let registry: InMemoryWorkstationSessionRegistry;
 let auditCalls: WorkstationAccessAuditEvent[];
-// D418 task 3.1.2 — transient dispatch-plan store + live relay registry used
+// transient dispatch-plan store + live relay registry used
 // by the override resolver's plan-admission tests.
 let planRegistry: InMemoryWorkstationDispatchPlanRegistry;
 let relayRegistry: InMemoryRelayRegistry;
 const userCaps = new Map<string, readonly string[]>();
 // Mutable so the route's closure picks up per-test overrides.
 let relayBinding: FullWorkstationBinding | null;
-// D418 — mutable profile-selector activation binding test double. The
+// mutable profile-selector activation binding test double. The
 // /activate-profile route resolves this (or null) via the injected
 // `profileActivationProvider`; per-test overrides flip it.
 let profileActivationBinding: FullWorkstationBinding | null;
@@ -161,11 +162,11 @@ beforeAll(async () => {
     audit: (e) => auditCalls.push(e),
     now: clock,
   });
-  // D418 task 3.1.2 — fresh plan + relay registries for the resolver tests.
+  // fresh plan + relay registries for the resolver tests.
   planRegistry = new InMemoryWorkstationDispatchPlanRegistry({ now: clock });
   relayRegistry = new InMemoryRelayRegistry();
   relayBinding = binding();
-  // D418 — default the profile-selector activation binding to a valid
+  // default the profile-selector activation binding to a valid
   // binding matching the client selectors. Per-test overrides flip it.
   profileActivationBinding = binding();
 
@@ -194,7 +195,7 @@ beforeAll(async () => {
     auditEvent: async (event) => {
       auditCalls.push(event);
     },
-    startupReceiptSecret: () => STARTUP_RECEIPT_SECRET,
+    startupReceiptSecret: () => STARTUP_RECEIPT_TEST_FIXTURE,
     now: clock,
   });
   await app.ready();
@@ -217,7 +218,7 @@ beforeEach(() => {
   registry.disable(OWNER_USER_ID);
   registry.disable(NO_CAP_USER_ID);
   userCaps.clear();
-  // B3 (D418 Commit 1): activation requires ONLY `use_workstation`
+  // activation requires ONLY `use_workstation`
   // (control_desktop is no longer an activation gate); disable is
   // capability-independent. Owner holds use_workstation; the
   // no-cap user holds nothing. Per-test cap overrides drive the
@@ -227,7 +228,7 @@ beforeEach(() => {
   auditCalls = [];
   relayBinding = binding();
   profileActivationBinding = binding();
-  // D418 task 3.1.2 — reset the plan store + relay registry so each resolver
+  // reset the plan store + relay registry so each resolver
   // test starts from a clean binding fingerprint. The relay registry here is
   // read through the route dependency getter, so re-creating it is safe.
   planRegistry.clear();
@@ -324,7 +325,7 @@ describe("POST /api/workstation-access/activate", () => {
   });
 
   test("403 without use_workstation capability (no PIN burned)", async () => {
-    // B3 (D418 Commit 1): activation requires ONLY use_workstation.
+    // activation requires ONLY use_workstation.
     // The no-cap user holds nothing; the 403 must name
     // use_workstation (control_desktop is no longer checked) and
     // must NOT burn a PIN attempt.
@@ -344,7 +345,7 @@ describe("POST /api/workstation-access/activate", () => {
   });
 
   test("403 with control_desktop but missing use_workstation (B3)", async () => {
-    // B3 (D418 Commit 1): control_desktop alone no longer authorizes
+    // control_desktop alone no longer authorizes
     // activation. The 403 must name use_workstation, and must NOT
     // burn a PIN attempt.
     userCaps.set(OWNER_USER_ID, ["control_desktop"]);
@@ -366,7 +367,7 @@ describe("POST /api/workstation-access/activate", () => {
   });
 
   test("200 activation succeeds with use_workstation but WITHOUT control_desktop (B3)", async () => {
-    // B3 (D418 Commit 1): control_desktop is no longer required for
+    // control_desktop is no longer required for
     // activation. A user holding ONLY use_workstation activates.
     userCaps.set(OWNER_USER_ID, ["use_workstation"]);
     const res = await app.inject({
@@ -457,7 +458,7 @@ describe("POST /api/workstation-access/activate", () => {
     expect(auditCalls.at(-1)?.denialCode).toBe("foreign_binding");
   });
 
-  test("D418 Commit 2 — 409 when the payload pairingGeneration does not match the authoritative binding (foreign)", async () => {
+  test("409 when the payload pairingGeneration does not match the authoritative binding (foreign)", async () => {
     // The authoritative binding carries pairingGeneration "pairing-1"; the
     // client payload claims a different (client-authored) generation. The
     // exact-match check rejects it — a client flag alone cannot activate.
@@ -540,7 +541,7 @@ describe("POST /api/workstation-access/activate", () => {
     expect(typeof receipt).toBe("string");
     expect(receipt).not.toContain(OWNER_PIN);
     expect((receipt as string).length).toBeGreaterThan(0);
-    expect(verifyWorkstationStartupReceipt(STARTUP_RECEIPT_SECRET, receipt)).toEqual({
+    expect(verifyWorkstationStartupReceipt(STARTUP_RECEIPT_TEST_FIXTURE, receipt)).toEqual({
       userId: OWNER_USER_ID,
       instanceId: "instance-1",
       serverBindingId: "server-binding-1",
@@ -760,14 +761,14 @@ describe("POST /api/workstation-access/activate", () => {
   });
 
   // =========================================================================
-  // D418 default-instance — a canonical `instanceId: ""` (the default
+  // default-instance — a canonical `instanceId: ""` (the default
   // unnamed instance) is a valid activation identity. It must activate
   // exactly like a named instance, stay exact-match-only (a named
   // authoritative binding does not match a default-instance payload), and
   // reject whitespace / noncanonical instance ids at body parsing.
   // =========================================================================
 
-  test("D418 default-instance — 200 activation succeeds with instanceId: \"\"", async () => {
+  test("default-instance — 200 activation succeeds with instanceId: \"\"", async () => {
     relayBinding = binding({ instanceId: "" });
     const res = await app.inject({
       method: "POST",
@@ -785,7 +786,7 @@ describe("POST /api/workstation-access/activate", () => {
     expect(registry.get(OWNER_USER_ID)?.instanceId).toBe("");
   });
 
-  test("D418 default-instance — 400 when instanceId is whitespace-only (noncanonical)", async () => {
+  test("default-instance — 400 when instanceId is whitespace-only (noncanonical)", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/workstation-access/activate",
@@ -799,7 +800,7 @@ describe("POST /api/workstation-access/activate", () => {
     expect(registry.get(OWNER_USER_ID)).toBeNull();
   });
 
-  test("D418 default-instance — 400 when instanceId has surrounding whitespace (noncanonical)", async () => {
+  test("default-instance — 400 when instanceId has surrounding whitespace (noncanonical)", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/workstation-access/activate",
@@ -813,7 +814,7 @@ describe("POST /api/workstation-access/activate", () => {
     expect(registry.get(OWNER_USER_ID)).toBeNull();
   });
 
-  test("D418 default-instance — 400 when instanceId is a noncanonical pattern (uppercase)", async () => {
+  test("default-instance — 400 when instanceId is a noncanonical pattern (uppercase)", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/workstation-access/activate",
@@ -827,7 +828,7 @@ describe("POST /api/workstation-access/activate", () => {
     expect(registry.get(OWNER_USER_ID)).toBeNull();
   });
 
-  test("D418 default-instance — 409 when a default-instance payload hits a named authoritative binding (exact-match only)", async () => {
+  test("default-instance — 409 when a default-instance payload hits a named authoritative binding (exact-match only)", async () => {
     relayBinding = binding({ instanceId: "instance-1" });
     const res = await app.inject({
       method: "POST",
@@ -846,7 +847,7 @@ describe("POST /api/workstation-access/activate", () => {
 });
 
 // ===========================================================================
-// D418 — POST /api/workstation-access/activate-profile
+// POST /api/workstation-access/activate-profile
 // (profile-selector activation seam)
 // ===========================================================================
 
@@ -907,7 +908,7 @@ describe("POST /api/workstation-access/activate-profile", () => {
   });
 
   test("403 without use_workstation capability (no PIN burned)", async () => {
-    // B3 (D418 Commit 1): activation requires ONLY use_workstation.
+    // activation requires ONLY use_workstation.
     const res = await app.inject({
       method: "POST",
       url: "/api/workstation-access/activate-profile",
@@ -941,7 +942,7 @@ describe("POST /api/workstation-access/activate-profile", () => {
   });
 
   test("200 phase one succeeds with use_workstation but WITHOUT control_desktop (B3)", async () => {
-    // B3 (D418 Commit 1): control_desktop is no longer required for
+    // control_desktop is no longer required for
     // activation. A user holding ONLY use_workstation issues a
     // pending authorization.
     userCaps.set(OWNER_USER_ID, ["use_workstation"]);
@@ -1106,7 +1107,7 @@ describe("POST /api/workstation-access/activate-profile", () => {
     });
     expect(completed.statusCode).toBe(200);
     const receipt = responseBody(completed).startupReceipt;
-    expect(verifyWorkstationStartupReceipt(STARTUP_RECEIPT_SECRET, receipt)).toEqual({
+    expect(verifyWorkstationStartupReceipt(STARTUP_RECEIPT_TEST_FIXTURE, receipt)).toEqual({
       userId: OWNER_USER_ID,
       instanceId: "instance-1",
       serverBindingId: "server-binding-1",
@@ -1332,12 +1333,12 @@ describe("POST /api/workstation-access/activate-profile", () => {
   });
 
   // =========================================================================
-  // D418 default-instance — a canonical `instanceId: ""` (the default
+  // default-instance — a canonical `instanceId: ""` (the default
   // unnamed instance) is a valid profile-selector activation identity, and
   // whitespace / noncanonical instance ids are rejected at body parsing.
   // =========================================================================
 
-  test("D418 default-instance — 200 phase one succeeds with instanceId: \"\"", async () => {
+  test("default-instance — 200 phase one succeeds with instanceId: \"\"", async () => {
     profileActivationBinding = binding({ instanceId: "" });
     const res = await app.inject({
       method: "POST",
@@ -1355,7 +1356,7 @@ describe("POST /api/workstation-access/activate-profile", () => {
     expect(registry.get(OWNER_USER_ID)).toBeNull();
   });
 
-  test("D418 default-instance — 400 when instanceId is whitespace-only (noncanonical)", async () => {
+  test("default-instance — 400 when instanceId is whitespace-only (noncanonical)", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/workstation-access/activate-profile",
@@ -1369,7 +1370,7 @@ describe("POST /api/workstation-access/activate-profile", () => {
     expect(registry.get(OWNER_USER_ID)).toBeNull();
   });
 
-  test("D418 default-instance — 400 when instanceId has surrounding whitespace (noncanonical)", async () => {
+  test("default-instance — 400 when instanceId has surrounding whitespace (noncanonical)", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/workstation-access/activate-profile",
@@ -1396,7 +1397,7 @@ describe("POST /api/workstation-access/disable", () => {
   });
 
   test("B3: disable is capability-independent — 200 not_active with NO capabilities", async () => {
-    // B3 (D418 Commit 1): disable is authenticated + user-bound + idempotent
+    // disable is authenticated + user-bound + idempotent
     // + independent of all current capabilities. The no-cap user (who holds
     // neither control_desktop nor use_workstation) can still disable
     // their own session. With no active session it returns not_active.
@@ -1415,7 +1416,7 @@ describe("POST /api/workstation-access/disable", () => {
   });
 
   test("B3: disable succeeds even with control_desktop but missing use_workstation", async () => {
-    // B3 (D418 Commit 1): no capability gate on disable. A user holding only
+    // no capability gate on disable. A user holding only
     // control_desktop (no use_workstation) can still disable.
     userCaps.set(OWNER_USER_ID, ["control_desktop"]);
     const res = await app.inject({
@@ -1486,7 +1487,7 @@ describe("POST /api/workstation-access/disable", () => {
     });
     expect(registry.get(OWNER_USER_ID)).not.toBeNull();
     // Mid-session: revoke ALL capabilities (e.g. an admin dropped the user
-    // from every role). B3 (D418 Commit 1): disable is capability-independent,
+    // from every role). disable is capability-independent,
     // so the user can still tear down their own session.
     userCaps.set(OWNER_USER_ID, []);
     const res = await app.inject({
@@ -1506,7 +1507,7 @@ describe("POST /api/workstation-access/disable", () => {
 });
 
 // ===========================================================================
-// D418 Commit 3 — createWorkstationApprovalOverrideResolver
+// createWorkstationApprovalOverrideResolver
 // (post-model resolver factory wired by app.ts into defaultPostModelDeps).
 //
 // The factory binds the live `InMemoryWorkstationSessionRegistry` +
@@ -1552,7 +1553,7 @@ function activateLiveSession(overrides: Partial<FullWorkstationBinding> = {}): v
 }
 
 /**
- * D418 Commit 4 — build an override request for a `run_shell` tool call
+ * build an override request for a `run_shell` tool call
  * carrying a specific command string. The independent slim scan reads this
  * command only to refuse critical / elevation; benign + medium commands can
  * admit `auto` without asserting Electron-local containment.
@@ -1769,7 +1770,7 @@ describe("createWorkstationApprovalOverrideResolver — admission decision (Comm
 });
 
 // ===========================================================================
-// D418 task 3.1.2 / 3.2.5 — createWorkstationApprovalOverrideResolver
+// createWorkstationApprovalOverrideResolver
 // (post-model resolver factory wired by app.ts into defaultPostModelDeps).
 //
 // The factory binds the live `InMemoryWorkstationSessionRegistry` +
@@ -1824,7 +1825,7 @@ function overrideRequest(
 }
 
 /**
- * D418 task 3.1.2 — register a connected relay into the live
+ * register a connected relay into the live
  * `relayRegistry` with a binding fingerprint matching the default session
  * binding (relay-1 / desktop-session-1 / capabilityRevision 10 /
  * profile-1@1). Per-test overrides drift a field to exercise stale-binding
@@ -1891,7 +1892,7 @@ function registerBoundRelay(overrides: {
   );
 }
 
-describe("resolveActiveWorkstationDispatchBinding — D498 server admission boundary", () => {
+describe("resolveActiveWorkstationDispatchBinding — server admission boundary", () => {
   beforeEach(() => {
     registry.disable(OWNER_USER_ID);
   });
@@ -2042,7 +2043,7 @@ describe("createWorkstationApprovalOverrideResolver — admission decision by to
   });
 });
 
-describe("createWorkstationApprovalOverrideResolver — plan ADMISSION (D418 task 3.1.2)", () => {
+describe("createWorkstationApprovalOverrideResolver — plan ADMISSION", () => {
   beforeEach(() => {
     registry.disable(OWNER_USER_ID);
   });
@@ -2130,6 +2131,74 @@ describe("createWorkstationApprovalOverrideResolver — plan ADMISSION (D418 tas
     expect(plan?.currentFolder).toBe("/tmp");
   });
 
+  test("local_git admits its canonical typed_broker tool call against the exact live session", () => {
+    activateLiveSession();
+    registerBoundRelay();
+    const audit: WorkstationAdmissionAuditEvent[] = [];
+    const resolver = createWorkstationApprovalOverrideResolver({
+      registry,
+      relayRegistry,
+      planRegistry,
+      now: clock,
+      audit: (event) => audit.push(event),
+    });
+
+    const decision = resolver(overrideRequest("local_git", "tc-local-git", { operation: "status" }));
+
+    expect(decision).toEqual({ override: "auto", executionClass: "typed_broker" });
+    const plan = planRegistry.get("tc-local-git");
+    expect(plan).not.toBeNull();
+    expect(plan).toMatchObject({
+      toolCallId: "tc-local-git",
+      executionClass: "typed_broker",
+      relayId: "relay-1",
+      desktopSessionId: "desktop-session-1",
+      pairingGeneration: "pairing-1",
+      profileId: "profile-1",
+      profileRevision: 1,
+      currentFolder: "/tmp",
+    });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({
+      toolName: "local_git",
+      toolCallId: "tc-local-git",
+      executionClass: "typed_broker",
+      outcome: "auto",
+      reason: "auto_admitted",
+    });
+  });
+
+  for (const [drift, relayOverrides] of [
+    ["profile", { profileRevision: 2 }],
+    ["pairing", { pairingGeneration: "pairing-re-paired" }],
+  ] as const) {
+    test(`local_git denies an exact plan after ${drift} binding drift`, () => {
+      activateLiveSession();
+      registerBoundRelay(relayOverrides);
+      const audit: WorkstationAdmissionAuditEvent[] = [];
+      const resolver = createWorkstationApprovalOverrideResolver({
+        registry,
+        relayRegistry,
+        planRegistry,
+        now: clock,
+        audit: (event) => audit.push(event),
+      });
+
+      const decision = resolver(overrideRequest("local_git", `tc-local-git-stale-${drift}`, { operation: "status" }));
+
+      expect(decision).toMatchObject({ override: "none", executionClass: "typed_broker", reason: "no_admitted_plan" });
+      expect(planRegistry.get(`tc-local-git-stale-${drift}`)).toBeNull();
+      expect(audit).toHaveLength(1);
+      expect(audit[0]).toMatchObject({
+        toolName: "local_git",
+        toolCallId: `tc-local-git-stale-${drift}`,
+        executionClass: "typed_broker",
+        outcome: "none",
+        reason: "no_admitted_plan",
+      });
+    });
+  }
+
   test("forward capability refresh at admission stamps the current live revision", () => {
     activateLiveSession(); // session capabilityRevision = 10
     // A folder/capability refresh may advance the relay revision while the
@@ -2202,7 +2271,7 @@ describe("createWorkstationApprovalOverrideResolver — plan ADMISSION (D418 tas
     expect(planRegistry.get("tc-desktop-mismatch")).toBeNull();
   });
 
-  test("D418 Commit 2 — stale pairingGeneration at admission ⇒ NO plan admitted (re-pair, desktopSessionId reused)", () => {
+  test("stale pairingGeneration at admission ⇒ NO plan admitted (re-pair, desktopSessionId reused)", () => {
     activateLiveSession(); // session pairingGeneration = pairing-1
     // The relay re-paired: same relay/user/desktop session, but a NEW
     // server-derived pairing generation. The bound relay is no longer the
@@ -2233,7 +2302,7 @@ describe("createWorkstationApprovalOverrideResolver — plan ADMISSION (D418 tas
   });
 
   test("no client Auto-Approve bypass: tool-args flags cannot self-authorize a plan without a session", () => {
-    // No active session. The tool call carries D375-style client auto-approve
+    // No active session. The tool call carries client auto-approve
     // flags in its args — they must NOT create a plan. A plan is admitted
     // ONLY from the live server-side session (activation requires fresh PIN
     // proof + an authoritative relay binding), never from client args.
@@ -2503,10 +2572,10 @@ describe("createWorkstationApprovalOverrideResolver — redacted workstation_adm
     });
     resolver({
       ...runShellOverrideRequest("ls", "tc-audit-meta"),
-      clientMeta: { ip: "10.0.0.7", userAgent: "nautilo-test/1" },
+      clientMeta: { ip: "198.51.100.7", userAgent: "nautilo-test/1" },
     });
     const row = calls.find((e) => e.toolCallId === "tc-audit-meta");
-    expect(row?.ip).toBe("10.0.0.7");
+    expect(row?.ip).toBe("198.51.100.7");
     expect(row?.userAgent).toBe("nautilo-test/1");
   });
 

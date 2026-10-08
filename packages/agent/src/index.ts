@@ -1420,3 +1420,4 @@ export { listSpeechModels, getServerSpeechModel, estimateSpeechCostUsd, type Spe
 export { surplusCredentialFingerprint, fetchSurplusSettlement } from "./providers/surplus-reconciliation";
 
 export { normalizeGatewayBaseUrl } from "./providers/universal";
+export type { LocalExecutionHistoryPort, LocalExecutionHistoryReference } from "./tools/local-execution/history";

@@ -427,10 +427,47 @@ export function WorkbenchShell() {
     useState<string | null>(null);
   const [terminalControlConsentSessionId, setTerminalControlConsentSessionId] =
     useState<string | null>(null);
+  const [terminalControlConsentError, setTerminalControlConsentError] = useState<string | null>(null);
+  const terminalConsentAttemptRef = useRef(0);
   // Desktop session activation is owned by main. Default false in Electron so
   // a preserved background renderer cannot issue privileged IPC before the
   // preload receives its initial lifecycle replay.
   const [desktopSessionActive, setDesktopSessionActive] = useState(() => !isDesktop);
+  const [terminalGenieId, setTerminalGenieId] = useState<string | null>(null);
+  const terminalGenies = activeRoomMembers.flatMap(member => member.kind === "agent" && member.agentId
+    ? [{ id: member.agentId, name: member.displayName }] : []);
+  const terminalGenie = terminalGenies.find(member => member.id === terminalGenieId)
+    ?? (terminalGenies.length === 1 ? terminalGenies[0] : undefined);
+  const terminalSelectedGenieId = terminalGenie?.id;
+  const terminalConsentSessionContext = workSurface.kind === "terminal"
+    ? workSurface.sessionId ?? lastTerminalSessionIdRef.current
+    : null;
+  const terminalConsentContextKey = JSON.stringify([
+    roomNav.activeRoomId ?? null,
+    terminalSelectedGenieId ?? null,
+    terminalConsentSessionContext,
+    auth.viewer.isVerified,
+    desktopSessionActive,
+  ]);
+  const terminalConsentContextRef = useRef(terminalConsentContextKey);
+  terminalConsentContextRef.current = terminalConsentContextKey;
+  useEffect(() => {
+    terminalConsentAttemptRef.current += 1;
+    setTerminalControlConsentSessionId(null);
+    setTerminalControlConsentError(null);
+    return () => { terminalConsentAttemptRef.current += 1; };
+  }, [roomNav.activeRoomId, terminalSelectedGenieId, terminalConsentSessionContext,
+    auth.viewer.isVerified, desktopSessionActive]);
+  useEffect(() => {
+    const api = desktopAPI?.terminal;
+    if (!api?.setHandoffContext) return;
+    void api.setHandoffContext(auth.viewer.isVerified && desktopSessionActive && roomNav.activeRoomId && terminalSelectedGenieId
+      ? { roomId: roomNav.activeRoomId, agentId: terminalSelectedGenieId } : null).catch(() => {});
+  }, [auth.viewer.isVerified, desktopSessionActive, roomNav.activeRoomId, terminalSelectedGenieId]);
+  const registerBeforeActiveRoomChange = roomNav.registerBeforeActiveRoomChange;
+  useEffect(() => registerBeforeActiveRoomChange?.(() => {
+    void desktopAPI?.terminal?.setHandoffContext?.(null).catch(() => {});
+  }), [registerBeforeActiveRoomChange]);
   const [, setActiveMiniAppContext] = useState<ActiveMiniAppContext | null>(null);
   const readingFile =
     workSurface.kind === "file" && authenticatedHuman
@@ -1187,16 +1224,31 @@ export function WorkbenchShell() {
     const sid = terminalControlRequestSessionId;
     const api = desktopAPI?.terminal;
     if (!sid || !api) return;
+    const attempt = ++terminalConsentAttemptRef.current;
+    const contextKey = terminalConsentContextRef.current;
+    const stillCurrent = () => terminalConsentAttemptRef.current === attempt
+      && terminalConsentContextRef.current === contextKey;
     try {
       const session = (await api.list()).find((candidate) => candidate.id === sid);
-      if (!session) return;
-      if (session.sandboxed || session.agentControlConsented) {
+      if (!stillCurrent()) return;
+      if (!session) {
+        setTerminalControlConsentError("This terminal session is no longer available.");
+        setTerminalControlConsentSessionId(sid);
+        return;
+      }
+      if (session.sandboxed || (!api.grantHumanControl && session.agentControlConsented)) {
         await api.setController(sid, "agent");
         return;
       }
+      if (!stillCurrent()) return;
+      terminalConsentAttemptRef.current += 1;
+      setTerminalControlConsentError(null);
       setTerminalControlConsentSessionId(sid);
     } catch {
-      /* session may have closed */
+      if (stillCurrent()) {
+        setTerminalControlConsentError("The terminal could not be checked. Try again.");
+        setTerminalControlConsentSessionId(sid);
+      }
     }
   }, [terminalControlRequestSessionId]);
 
@@ -1221,18 +1273,36 @@ export function WorkbenchShell() {
     const sid = terminalControlConsentSessionId;
     const api = desktopAPI?.terminal;
     if (!sid || !api) return;
+    const attempt = ++terminalConsentAttemptRef.current;
+    const contextKey = terminalConsentContextRef.current;
+    const stillCurrent = () => terminalConsentAttemptRef.current === attempt
+      && terminalConsentContextRef.current === contextKey;
     try {
-      const granted = await api.grantAgentControl(sid);
-      if (granted) setTerminalControlConsentSessionId(null);
+      if (api.grantHumanControl && (!roomNav.activeRoomId || !terminalSelectedGenieId)) {
+        setTerminalControlConsentError("Choose a Genie in this chat before handing over the terminal.");
+        return;
+      }
+      const granted = api.grantHumanControl
+        ? await api.grantHumanControl(sid, { roomId: roomNav.activeRoomId!, agentId: terminalSelectedGenieId! })
+        : await api.grantAgentControl(sid);
+      if (!stillCurrent()) return;
+      if (granted) {
+        setTerminalControlConsentSessionId(null);
+        setTerminalControlConsentError(null);
+      } else {
+        setTerminalControlConsentError("The chat or terminal changed. Check the selected Genie and try again.");
+      }
     } catch {
-      /* session may have closed */
+      if (stillCurrent()) setTerminalControlConsentError("The terminal could not be handed over. Check your connection and try again.");
     }
-  }, [terminalControlConsentSessionId]);
+  }, [terminalControlConsentSessionId, roomNav.activeRoomId, terminalSelectedGenieId]);
 
   const cancelTerminalControlConsent = useCallback(async () => {
+    terminalConsentAttemptRef.current += 1;
     const sid = terminalControlConsentSessionId;
     const api = desktopAPI?.terminal;
     setTerminalControlConsentSessionId(null);
+    setTerminalControlConsentError(null);
     if (sid && api) {
       try {
         await api.clearRequest(sid);
@@ -1964,6 +2034,10 @@ export function WorkbenchShell() {
             ) : workSurface.kind === "terminal" ? (
               <TerminalSurface
                 activeSession={desktopSessionActive}
+                handoffGenies={terminalGenies}
+                handoffRoomId={roomNav.activeRoomId ?? undefined}
+                selectedHandoffGenieId={terminalSelectedGenieId}
+                onSelectHandoffGenie={setTerminalGenieId}
                 {...(workSurface.sessionId !== undefined
                   ? { sessionId: workSurface.sessionId }
                   : {})}
@@ -1980,7 +2054,7 @@ export function WorkbenchShell() {
                   lastTerminalSessionIdRef.current = id;
                   setWorkSurface({ kind: "terminal", sessionId: id });
                 }}
-                assistantName={assistantName}
+                assistantName={terminalGenie?.name ?? assistantName}
                 onClose={clearWorkSurface}
               />
             ) : workSurface.kind === "file" && workSurface.mode === "edit" ? (
@@ -2190,7 +2264,8 @@ export function WorkbenchShell() {
       ) : null}
       {terminalControlConsentSessionId && (
         <TerminalControlConsentDialog
-          assistantName={assistantName}
+          assistantName={terminalGenie?.name ?? assistantName}
+          error={terminalControlConsentError ?? undefined}
           onCancel={cancelTerminalControlConsent}
           onConfirm={confirmTerminalControlConsent}
         />

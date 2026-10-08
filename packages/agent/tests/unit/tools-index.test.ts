@@ -29,7 +29,7 @@ describe("tool catalog registration", () => {
 
   // Built-in tools are counted separately from the active signed Computer Use catalog.
   test("registers all built-in tools including transcription and Connections", () => {
-    expect(catalog.size).toBe(108 + activeComputerUseHostToolDefinitions().length);
+    expect(catalog.size).toBe(110 + activeComputerUseHostToolDefinitions().length);
   });
 
   test("registers mini_app with static destructive approval", () => {
@@ -261,10 +261,10 @@ describe("tool catalog registration", () => {
   test("stats reflect correct distribution", () => {
     const stats = catalog.getStats();
     // Built-in tools are counted separately from the active signed Computer Use catalog.
-    expect(stats.total).toBe(108 + activeComputerUseHostToolDefinitions().length);
-    expect(stats.bySource.builtin).toBe(108 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.total).toBe(110 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.bySource.builtin).toBe(110 + activeComputerUseHostToolDefinitions().length);
     expect(stats.bySource.mcp).toBe(0);
-    expect(stats.enabled).toBe(108 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.enabled).toBe(110 + activeComputerUseHostToolDefinitions().length);
     expect(stats.byTier.admin).toBeGreaterThan(0);
     expect(stats.byTier.standard).toBeGreaterThan(0);
     expect(stats.byTier.high).toBeGreaterThan(0);

@@ -1,5 +1,5 @@
 /**
- * D440 Phase 2 — the typed Git broker.
+ * the typed Git broker.
  *
  * Ties preflight (identity + threat rejection) -> per-operation
  * SBPL profile compilation -> bounded sandboxed execution ->
@@ -17,6 +17,7 @@ import {
   rmSync,
 } from "node:fs";
 import { basename, delimiter, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 
 import {
   auditLocalConfig,
@@ -27,15 +28,21 @@ import {
   rejectEscapingSymlinks,
   rejectSubmodules,
   validateWorktreeTarget,
+  validateCloneChild,
+  pinGitDirectory,
+  sameGitDirectory,
+  validateNetworkPathAncestors,
 } from "./preflight";
-import { compileGitBrokerProfile } from "./profile";
+import { compileGitBrokerProfile, compileGitNetworkObjectProfile, compileGitNetworkWorktreeProfile } from "./profile";
 import {
   gitBrokerConfigOverrides,
   runGitSandboxed,
+  transferGitObjectsSandboxed,
   type ExecResult,
 } from "./execute";
 import {
   allocateTransaction,
+  captureNetworkRepository,
   cleanupTransaction,
   createCallQuarantine,
   createCandidateIndex,
@@ -57,6 +64,9 @@ import {
   writeBlobAtomic,
   type Manifest,
   type ManifestEntry,
+  parseNetworkManifest,
+  validateNetworkLinks,
+  type NetworkManifest,
 } from "./materialize";
 import type {
   GitBrokerDisposition,
@@ -66,6 +76,10 @@ import type {
   GitRepositoryIdentity,
   BrokerRegisteredWorktree,
 } from "./types";
+
+import { fetchNetwork, prepareNetworkPush, pushNetwork, validNetworkBranch, validNetworkOid, validNetworkRepository,
+  type GitNetworkContext, type GitNetworkDependencies, type GitNetworkDisposition,
+  type GitNetworkLocalSnapshot, type GitNetworkPushPreparation, type GitNetworkTransport, type GitNetworkWorktreeInput } from "./network";
 
 export { GitPreflightError } from "./preflight";
 
@@ -82,6 +96,7 @@ export class GitBroker {
   private readonly gitExecutable: string;
   private readonly sandboxExecutable: string;
   private readonly timeoutMs: number;
+  private readonly networkExecution: GitBrokerOptions["networkExecution"];
   private readonly disableSandboxForTests: boolean;
   private readonly worktreeLimits: GitBrokerWorktreeLimits;
   private readonly registry = new Map<string, BrokerRegisteredWorktree>();
@@ -92,6 +107,9 @@ export class GitBroker {
     this.gitExecutable = opts.gitExecutable;
     this.sandboxExecutable = opts.sandboxExecutable ?? DEFAULT_SANDBOX_EXEC;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.networkExecution = opts.networkExecution;
+    if (this.networkExecution && !(Number.isSafeInteger(this.networkExecution.timeoutMs) && this.networkExecution.timeoutMs > 0 && this.networkExecution.timeoutMs <= 2_147_483_647
+      && Number.isSafeInteger(this.networkExecution.captureBytes) && this.networkExecution.captureBytes > 0)) throw new Error("Invalid network Git budgets");
     this.disableSandboxForTests = opts.disableSandboxForTests ?? false;
     this.worktreeLimits = opts.worktreeLimits ?? {
       fileCount: MAX_WORKTREE_FILE_COUNT,
@@ -103,6 +121,322 @@ export class GitBroker {
   /** Current registry snapshot (for tests + diagnostics). */
   registeredWorktrees(): readonly BrokerRegisteredWorktree[] {
     return [...this.registry.values()];
+  }
+
+  /** Authenticated operations use the existing repository owner. The supplied
+   * transport is Desktop-owned; no credentials enter this broker or its local
+   * Git subprocesses. Existing local Git operations are unaffected. */
+  async fetch(input: GitNetworkContext & { repository: string; branch: string }, transport: GitNetworkTransport): Promise<GitNetworkDisposition> {
+    return await fetchNetwork(input, this.networkDependencies(transport, input));
+  }
+
+  async preparePush(input: GitNetworkContext & { repository: string; sourceBranch: string; destinationBranch: string },
+    transport: GitNetworkTransport): Promise<GitNetworkPushPreparation | null> {
+    return await prepareNetworkPush(input, this.networkDependencies(transport, input));
+  }
+
+  async push(input: GitNetworkContext & { prepared: GitNetworkPushPreparation; approved: boolean; consume: () => boolean },
+    transport: GitNetworkTransport): Promise<GitNetworkDisposition> {
+    return await pushNetwork(input, this.networkDependencies(transport, input));
+  }
+
+  async clone(input: GitNetworkWorktreeInput & { readonly directory: string }, transport: GitNetworkTransport): Promise<GitNetworkDisposition> {
+    return this.applyNetworkWorktree("clone", input, transport, input.directory);
+  }
+
+  async pull(input: GitNetworkWorktreeInput, transport: GitNetworkTransport): Promise<GitNetworkDisposition> {
+    return this.applyNetworkWorktree("pull", input, transport);
+  }
+
+  /** Worktree application is deliberately not called atomic. Git checks clean
+   * tracked paths/collisions, then updates files, index and ref in separate
+   * stages. Once a stage can mutate, any interrupted result retains artifacts
+   * and old/new OIDs; no reset, rollback or automatic retry follows. */
+  private async applyNetworkWorktree(operation: "clone" | "pull", provided: GitNetworkWorktreeInput,
+    transport: GitNetworkTransport, directory?: string): Promise<GitNetworkDisposition> {
+    const input = { ...provided, limits: { ...provided.limits } };
+    let started = false; let applied = false; let target: string | undefined; let candidateRoot: string | undefined; let retainedLock: string | undefined;
+    let oldOid: string | null = null; let newOid: string | undefined;
+    const disposition = (reason: GitNetworkDisposition["reason"]): GitNetworkDisposition => ({
+      operation, ok: reason === "ok", reason, sideEffectStarted: started, retrySafe: !started,
+      ...(target === undefined ? {} : { targetPath: target }), oldOid,
+      ...(newOid === undefined ? {} : { newOid }),
+      ...(reason === "ok" || !started ? {} : { residualPaths: [...(candidateRoot === undefined ? [] : [candidateRoot]),
+        ...(retainedLock === undefined ? [] : [retainedLock]), ...(target === undefined ? [] : [target])] }),
+    });
+    try {
+      if (!validNetworkRepository(input.repository) || !validNetworkBranch(input.branch)
+        || ![input.limits.fileCount, input.limits.blobBytes, input.limits.totalBytes].every(value => Number.isSafeInteger(value) && value > 0)) return disposition("invalid_request");
+      const budgets = this.networkExecution;
+      if (!budgets) return disposition("invalid_request");
+      if (process.platform !== "darwin" && !this.disableSandboxForTests) return disposition("known_failure");
+      if (this.transaction !== undefined) return disposition("repository_changed");
+      const current = () => !input.signal?.aborted && input.isCurrent();
+      if (!current()) return disposition("authority_changed");
+      const cloneTarget = operation === "clone"
+        ? validateCloneChild(this.authority.repository, directory ?? "", this.authority.grantedRoots, this.authority.protectedPaths)
+        : undefined;
+      let identity = operation === "pull" ? this.preflight(true) : {
+        workTree: cloneTarget!.root.path, gitDir: resolve(cloneTarget!.target, ".git"),
+        commonDir: resolve(cloneTarget!.target, ".git"), isLinkedWorktree: false,
+      };
+      target = cloneTarget?.target ?? identity.workTree;
+      if (!this.authority.grantedRoots.some(root => isUnderRoot(target!, realpathSync(root)))) return disposition("authority_changed");
+      const rootPin = pinGitDirectory(cloneTarget?.root.path ?? target);
+      const metadataPins = operation === "pull" ? [pinGitDirectory(identity.gitDir), pinGitDirectory(identity.commonDir)] : [];
+      let targetPin: ReturnType<typeof pinGitDirectory> | undefined;
+      let captured = operation === "pull" ? captureNetworkRepository(identity, "") : undefined;
+      if (captured !== undefined) {
+        if (captured.headRef === null || !validNetworkBranch(captured.headRef.slice("refs/heads/".length))
+          || !validNetworkOid(captured.sourceOid)) return disposition("repository_changed");
+        oldOid = captured.sourceOid;
+      }
+      const sourceCurrent = () => {
+        if (!current() || !sameGitDirectory(rootPin) || !metadataPins.every(sameGitDirectory)
+          || (targetPin !== undefined && !sameGitDirectory(targetPin))) return false;
+        if (captured !== undefined) {
+          try { return captureNetworkRepository(identity, "").repositoryStamp === captured.repositoryStamp; } catch { return false; }
+        }
+        return true;
+      };
+      const remote = { ...await transport.inspect({ repository: input.repository, branch: input.branch, isCurrent: sourceCurrent,
+        ...(input.signal === undefined ? {} : { signal: input.signal }) }) };
+      if (!sourceCurrent()) return disposition("authority_changed");
+      if (remote.repository !== input.repository || remote.branch !== input.branch || !validNetworkOid(remote.oid)
+        || !Number.isSafeInteger(remote.repositoryId) || remote.repositoryId <= 0 || !Number.isSafeInteger(remote.accountId)
+        || remote.accountId <= 0 || !/^[A-Za-z0-9-]+$/.test(remote.accountLogin)) return disposition("remote_changed");
+      newOid = remote.oid;
+      if (oldOid !== null && oldOid.length !== newOid.length) return disposition("repository_changed");
+      return await transport.withFetchedObjects({ remote, isCurrent: current, ...(input.signal === undefined ? {} : { signal: input.signal }) }, async (objectsPath, metadata) => {
+        if (metadata === undefined || metadata.gitDir !== realpathSync(metadata.gitDir) || objectsPath !== realpathSync(objectsPath)
+          || metadata.objectFormat !== (newOid!.length === 64 ? "sha256" : "sha1")
+          || !validNetworkOid(metadata.emptyTreeOid) || metadata.emptyTreeOid.length !== newOid!.length || !sourceCurrent()) return disposition("authority_changed");
+        const cleanPin = pinGitDirectory(metadata.gitDir); const objectsPin = pinGitDirectory(objectsPath);
+        let candidatePin: ReturnType<typeof pinGitDirectory> | undefined;
+        let localObjects = objectsPath;
+        const fence = () => sourceCurrent() && sameGitDirectory(cleanPin) && sameGitDirectory(objectsPin)
+          && (candidatePin === undefined || sameGitDirectory(candidatePin));
+        let manifestPaths: readonly string[] = [];
+        const run = async (args: readonly string[], phase: Parameters<typeof compileGitNetworkWorktreeProfile>[0]["phase"] = "read",
+          env: Readonly<Record<string, string>> = {}, executable = this.gitExecutable, stdin?: Buffer, stampMayChange = false): Promise<Buffer> => {
+          if (!fence()) throw new Error("Authority or repository changed");
+          const profile = compileGitNetworkWorktreeProfile({ identity, gitExecutable: this.gitExecutable, target: target!, phase,
+            metadataPath: metadata.gitDir, objectsPath: localObjects, paths: manifestPaths,
+            ...(candidateRoot === undefined ? {} : { candidateRoot }),
+            ...(captured?.headRef == null ? {} : { refName: captured.headRef }),
+            ...(this.authority.protectedPaths === undefined ? {} : { protectedPaths: this.authority.protectedPaths }) });
+          const executed = await runGitSandboxed({ sandboxExecutable: this.sandboxExecutable, profile,
+            gitExecutable: executable, gitArgs: executable === this.gitExecutable ? [...gitBrokerConfigOverrides(), "-c", "core.bare=false", "-c", "core.autocrlf=false", "-c", "core.symlinks=true", ...args] : args,
+            cwd: operation === "clone" && targetPin === undefined ? rootPin.path : target!, homeDir: rootPin.path,
+            timeoutMs: budgets.timeoutMs, captureBudget: budgets.captureBytes, captureBinary: true,
+            env: { GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0",
+              GIT_ALTERNATE_OBJECT_DIRECTORIES: objectsPath, ...env },
+            ...(stdin === undefined ? {} : { stdin }), ...(input.signal === undefined ? {} : { signal: input.signal }),
+            ...(this.disableSandboxForTests ? { disableSandboxForTests: true } : {}) });
+          if (executed.exitCode !== 0 || executed.timedOut || executed.stdoutOverflow
+            || !(stampMayChange ? current() && sameGitDirectory(rootPin) && metadataPins.every(sameGitDirectory)
+              && (targetPin === undefined || sameGitDirectory(targetPin)) && sameGitDirectory(cleanPin) && sameGitDirectory(objectsPin)
+              && (candidatePin === undefined || sameGitDirectory(candidatePin)) : fence())) throw new Error("Git stage unconfirmed");
+          return executed.stdoutBinary ?? Buffer.alloc(0);
+        };
+        const cleanArgs = [`--git-dir=${metadata.gitDir}`, `--work-tree=${target}`, `--attr-source=${metadata.emptyTreeOid}`];
+        const tree = async (oid: string, objectDirectory: string): Promise<NetworkManifest> => {
+          const env = { GIT_OBJECT_DIRECTORY: objectDirectory };
+          const listing = await run([...cleanArgs, "ls-tree", "-r", "-l", "-z", "--full-tree", oid], "read", env);
+          const manifest = parseNetworkManifest(listing, target!, input.limits);
+          await validateNetworkLinks(manifest, target!, entry => run([...cleanArgs, "cat-file", "blob", entry.oid], "read", env));
+          return manifest;
+        };
+        const nextTree = await tree(newOid!, objectsPath);
+        if ((await run([...cleanArgs, "ls-tree", "-r", "-z", metadata.emptyTreeOid])).length !== 0) throw new Error("Attribute source is not empty");
+        let oldTree: NetworkManifest = { entries: [] };
+        let replacedFiles: ReadonlySet<string> = new Set();
+        if (operation === "pull") {
+          localObjects = resolve(identity.commonDir, "objects");
+          oldTree = await tree(oldOid!, localObjects);
+          const actualIndex = resolve(identity.gitDir, "index");
+          await run([...cleanArgs, "diff-index", "--cached", "--quiet", oldOid!, "--"], "read", { GIT_OBJECT_DIRECTORY: localObjects, GIT_INDEX_FILE: actualIndex });
+          await run([...cleanArgs, "diff-files", "--quiet", "--"], "read", { GIT_OBJECT_DIRECTORY: localObjects, GIT_INDEX_FILE: actualIndex });
+          const nextPaths = new Set(nextTree.entries.map(entry => entry.path));
+          replacedFiles = new Set(oldTree.entries.filter(entry => entry.mode !== "120000" && !nextPaths.has(entry.path)).map(entry => entry.path));
+          validateNetworkPathAncestors(target!, [...oldTree.entries, ...nextTree.entries].map(entry => entry.path), replacedFiles);
+          const tracked = new Set(oldTree.entries.map(entry => entry.path));
+          for (const entry of nextTree.entries) if (!tracked.has(entry.path)) {
+            try {
+              const info = lstatSync(resolve(target!, entry.path));
+              // Replacing a tracked directory is left to read-tree's native
+              // untracked-collision checks. Never recursively inspect or
+              // remove its untracked children with privileged filesystem code.
+              if (!info.isDirectory() || !oldTree.entries.some(old => old.path.startsWith(`${entry.path}/`))) return disposition("repository_changed");
+            }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT" && (error as NodeJS.ErrnoException).code !== "ENOTDIR") throw error; }
+          }
+          try {
+            await run([...cleanArgs, "merge-base", "--is-ancestor", oldOid!, newOid!], "read",
+              { GIT_OBJECT_DIRECTORY: localObjects, GIT_ALTERNATE_OBJECT_DIRECTORIES: objectsPath });
+          } catch { return disposition(fence() ? "not_fast_forward" : "authority_changed"); }
+        }
+        if ([...oldTree.entries, ...nextTree.entries].some(entry => this.authority.protectedPaths?.some(root =>
+          isUnderRoot(resolve(target!, entry.path), root) || isUnderRoot(root, resolve(target!, entry.path))))) {
+          return disposition("authority_changed");
+        }
+        manifestPaths = [...new Set([...oldTree.entries, ...nextTree.entries].map(entry => entry.path))];
+        if (!fence()) return disposition("authority_changed");
+        if (operation === "clone") {
+          // Exclusive mkdir under the pinned, already granted Folder. No
+          // privileged pre-mkdir or broad write authority is introduced.
+          validateCloneChild(rootPin.path, directory!, this.authority.grantedRoots, this.authority.protectedPaths);
+          started = true;
+          await run(["-m", "700", target!], "create", {}, "/bin/mkdir");
+          targetPin = pinGitDirectory(target!);
+          identity = { workTree: target!, gitDir: resolve(target!, ".git"), commonDir: resolve(target!, ".git"), isLinkedWorktree: false };
+          await run(["init", `--object-format=${metadata.objectFormat}`, "--template=", `--initial-branch=${input.branch}`, target!], "initialize");
+          metadataPins.push(pinGitDirectory(identity.gitDir));
+          captured = captureNetworkRepository(identity, "");
+        } else {
+          targetPin = pinGitDirectory(target!);
+        }
+        // Governance denies keep ordinary contained commands from editing the
+        // candidate index. Only this exact broker-owned metadata child is
+        // reopened in the operation profile; never the whole .git directory.
+        candidateRoot = resolve(identity.gitDir, `.nautilo-network-${randomUUID()}`);
+        started = true;
+        await run(["-m", "700", candidateRoot], "read", {}, "/bin/mkdir");
+        candidatePin = pinGitDirectory(candidateRoot);
+        const candidate = resolve(candidateRoot, "index");
+        const env = { GIT_INDEX_FILE: candidate, GIT_OBJECT_DIRECTORY: resolve(identity.commonDir, "objects") };
+        // Immutable object promotion precedes local application. Even a failed
+        // promotion is durable and cannot be classified retry-safe.
+        started = true;
+        const installed = await transferGitObjectsSandboxed({ gitExecutable: this.gitExecutable, sandboxExecutable: this.sandboxExecutable,
+          sourceObjectsPath: objectsPath, sourceOid: newOid!, metadataPath: metadata.gitDir, identity, timeoutMs: budgets.timeoutMs,
+          sourceProfile: compileGitNetworkObjectProfile({ identity, gitExecutable: this.gitExecutable, objectsPath, metadataReadPath: metadata.gitDir, write: false,
+            ...(this.authority.protectedPaths === undefined ? {} : { protectedPaths: this.authority.protectedPaths }) }),
+          destinationProfile: compileGitNetworkObjectProfile({ identity, gitExecutable: this.gitExecutable, objectsPath, metadataReadPath: metadata.gitDir, write: true,
+            ...(this.authority.protectedPaths === undefined ? {} : { protectedPaths: this.authority.protectedPaths }) }),
+          ...(input.signal === undefined ? {} : { signal: input.signal }), ...(this.disableSandboxForTests ? { disableSandboxForTests: true } : {}) });
+        if (!installed) throw new Error("Object promotion unconfirmed");
+        if (!fence()) throw new Error("Object promotion changed source");
+        await run([...cleanArgs, "read-tree", operation === "clone" ? "--empty" : oldOid!], "read", env);
+        if (operation === "pull") await run([...cleanArgs, "update-index", "--refresh"], "read", env);
+        const indexLock = resolve(identity.gitDir, "index.lock");
+        // A held conventional lock fences cooperating Git index writers. The
+        // original index stamp and attached ref are checked again before each
+        // stage; noncooperating edits are never repaired by a reset.
+        await run(["-c", 'set -C; : > "$1"', "index-lock", indexLock], "index", {}, "/bin/sh");
+        retainedLock = indexLock;
+        const lockInfo = lstatSync(indexLock);
+        const lockCurrent = () => { try { const info = lstatSync(indexLock); return info.isFile() && info.nlink === 1 && info.dev === lockInfo.dev && info.ino === lockInfo.ino; } catch { return false; } };
+        validateNetworkPathAncestors(target!, manifestPaths, replacedFiles);
+        if (!lockCurrent() || !fence()) throw new Error("Index lock changed");
+        applied = true;
+        await run([...cleanArgs, `--attr-source=${metadata.emptyTreeOid}`, "read-tree", "-m", "-u", ...(operation === "clone" ? [newOid!] : [oldOid!, newOid!])], "apply",
+          { ...env, GIT_ALTERNATE_OBJECT_DIRECTORIES: objectsPath });
+        await run([...cleanArgs, "diff-files", "--quiet", "--"], "read", env);
+        await run([...cleanArgs, "diff-index", "--cached", "--quiet", newOid!, "--"], "read", env);
+        if (!lockCurrent() || !fence()) throw new Error("Index publication changed");
+        await run([candidate, indexLock], "index", {}, "/bin/cp");
+        if (!lockCurrent() || !fence()) throw new Error("Index lock replaced");
+        await run([indexLock, resolve(identity.gitDir, "index")], "index", {}, "/bin/mv", undefined, true);
+        retainedLock = undefined;
+        // Publishing the index deliberately changes the metadata stamp; accept
+        // only this exact index while retaining original HEAD/ref/config.
+        const published = captureNetworkRepository(identity, "");
+        if (published.sourceOid !== captured!.sourceOid || published.headRef !== captured!.headRef
+          || published.configurationStamp !== captured!.configurationStamp || published.indexHash !== hashFile(candidate)) throw new Error("Index or HEAD changed");
+        captured = published;
+        const publishedEnv = { ...env, GIT_INDEX_FILE: resolve(identity.gitDir, "index") };
+        await run([...cleanArgs, "diff-index", "--cached", "--quiet", newOid!, "--"], "read", publishedEnv);
+        await run([...cleanArgs, "diff-files", "--quiet", "--"], "read", publishedEnv);
+        await run([`--git-dir=${identity.gitDir}`, "-c", "core.logAllRefUpdates=false", "update-ref", "--no-deref", captured.headRef!, newOid!, oldOid ?? "0".repeat(newOid!.length)], "ref", {}, this.gitExecutable, undefined, true);
+        const final = captureNetworkRepository(identity, "");
+        if (final.sourceOid !== newOid || final.headRef !== captured.headRef || final.indexHash !== published.indexHash
+          || final.configurationStamp !== captured.configurationStamp || !current()) throw new Error("Final state changed");
+        captured = final;
+        // The cleanup command consumes only the exact pinned candidate. Its
+        // disappearance is expected, so clear that pin only after launch.
+        if (!fence()) throw new Error("Candidate directory replaced");
+        candidatePin = undefined;
+        await run(["-rf", candidateRoot], "read", {}, "/bin/rm");
+        candidateRoot = undefined;
+        return { ...disposition("ok"), remote };
+      });
+    } catch {
+      return disposition(started || applied ? "outcome_unknown" : "known_failure");
+    }
+  }
+
+  private networkDependencies(transport: GitNetworkTransport, context: GitNetworkContext): GitNetworkDependencies {
+    const network = this.networkExecution;
+    if (!network) throw new Error("Explicit network Git budgets are required");
+    const current = (snapshot: GitNetworkLocalSnapshot): boolean => {
+      try {
+        const identity = this.preflight();
+        return this.sameIdentity(identity, snapshot.identity)
+          && captureNetworkRepository(identity, snapshot.sourceBranch).repositoryStamp === snapshot.repositoryStamp;
+      } catch { return false; }
+    };
+    return { transport, local: {
+      capture: async sourceBranch => {
+        if (sourceBranch !== "" && !validNetworkBranch(sourceBranch)) throw new Error("Invalid source branch");
+        const identity = this.preflight();
+        const captured = captureNetworkRepository(identity, sourceBranch);
+        const formatResult = await this.execInternal("diff", identity, ["rev-parse", "--show-object-format"], identity.workTree,
+          { sideEffectBegun: false, timeoutMs: network.timeoutMs, captureBudget: network.captureBytes, env: { GIT_NO_REPLACE_OBJECTS: "1" } });
+        const format = formatResult.stdout?.trim();
+        if (!formatResult.ok || (format !== "sha1" && format !== "sha256")) throw new Error("Unsupported object format");
+        const snapshot: GitNetworkLocalSnapshot = { identity, sourceBranch, indexHash: captured.indexHash,
+          repositoryStamp: captured.repositoryStamp, objectFormat: format,
+          sourceOid: /^0+$/.test(captured.sourceOid) ? "0".repeat(format === "sha256" ? 64 : 40) : captured.sourceOid };
+        if (!current(snapshot) || snapshot.sourceOid.length !== (format === "sha256" ? 64 : 40)) throw new Error("Object format changed");
+        if (sourceBranch !== "") {
+          if (!validNetworkOid(snapshot.sourceOid)) throw new Error("Source branch does not exist");
+          const type = await this.execInternal("diff", identity, ["cat-file", "-t", snapshot.sourceOid], identity.workTree, { sideEffectBegun: false, timeoutMs: network.timeoutMs, captureBudget: network.captureBytes, env: { GIT_NO_REPLACE_OBJECTS: "1" } });
+          if (!type.ok || type.stdout?.trim() !== "commit" || !current(snapshot)) throw new Error("Source commit changed");
+        }
+        return snapshot;
+      },
+      revalidate: snapshot => Promise.resolve(current(snapshot)),
+      isCurrentNow: current,
+      readTrackingRef: async (snapshot, ref) => {
+        const read = await this.execInternal("diff", snapshot.identity, ["rev-parse", "--verify", "--quiet", ref],
+          snapshot.identity.workTree, { sideEffectBegun: false, timeoutMs: network.timeoutMs, captureBudget: network.captureBytes, env: { GIT_NO_REPLACE_OBJECTS: "1" } });
+        if (read.exitCode === 1) return null;
+        const oid = read.stdout?.trim();
+        if (!read.ok || !validNetworkOid(oid)) throw new Error("Tracking ref unavailable");
+        return oid;
+      },
+      promote: async (snapshot, objectsPath, oid) => {
+        if (!current(snapshot)) throw new Error("Repository changed");
+        const installed = await transferGitObjectsSandboxed({
+          gitExecutable: this.gitExecutable, sandboxExecutable: this.sandboxExecutable,
+          sourceObjectsPath: objectsPath, sourceOid: oid, identity: snapshot.identity,
+          ...(context.signal === undefined ? {} : { signal: context.signal }),
+          sourceProfile: compileGitNetworkObjectProfile({ identity: snapshot.identity, gitExecutable: this.gitExecutable,
+            objectsPath, write: false, ...(this.authority.protectedPaths === undefined ? {} : { protectedPaths: this.authority.protectedPaths }) }),
+          destinationProfile: compileGitNetworkObjectProfile({ identity: snapshot.identity, gitExecutable: this.gitExecutable,
+            objectsPath, write: true, ...(this.authority.protectedPaths === undefined ? {} : { protectedPaths: this.authority.protectedPaths }) }),
+          timeoutMs: network.timeoutMs,
+          ...(this.disableSandboxForTests ? { disableSandboxForTests: true } : {}),
+        });
+        if (!installed) throw new Error("Object installation unconfirmed");
+      },
+      compareAndSwapTracking: async (snapshot, ref, oid, previous) => {
+        if (!current(snapshot)) return false;
+        const updated = await this.execInternal("commit", snapshot.identity,
+          ["-c", "core.logAllRefUpdates=false", "update-ref", "--no-deref", ref, oid, previous ?? "0".repeat(oid.length)], snapshot.identity.workTree,
+          { sideEffectBegun: true, refName: ref, networkRef: true, timeoutMs: network.timeoutMs, captureBudget: network.captureBytes, env: { GIT_NO_REPLACE_OBJECTS: "1" } });
+        return updated.ok;
+      },
+      isAncestor: async (snapshot, ancestor, objectsPath) => {
+        if (!current(snapshot)) return false;
+        const checked = await this.execInternal("diff", snapshot.identity,
+          ["merge-base", "--is-ancestor", ancestor, snapshot.sourceOid], snapshot.identity.workTree,
+          { sideEffectBegun: false, objectReadPath: objectsPath, timeoutMs: network.timeoutMs, captureBudget: network.captureBytes,
+            env: { GIT_NO_REPLACE_OBJECTS: "1", GIT_ALTERNATE_OBJECT_DIRECTORIES: objectsPath } });
+        return checked.ok && current(snapshot);
+      },
+    } };
   }
 
   // -------------------------------------------------------------------
@@ -146,6 +480,9 @@ export class GitBroker {
     options: {
       sideEffectBegun: boolean;
       knownNonzeroBeforeMutation?: boolean;
+      networkRef?: boolean;
+      timeoutMs?: number;
+      objectReadPath?: string;
       worktreeName?: string;
       target?: string;
       transactionRoot?: string;
@@ -183,6 +520,8 @@ export class GitBroker {
     const profile = compileGitBrokerProfile({
       operation,
       identity,
+      ...(options.networkRef ? { networkRef: true } : {}),
+      ...(options.objectReadPath === undefined ? {} : { objectReadPath: options.objectReadPath }),
       ...(options.target !== undefined ? { target: options.target } : {}),
       ...(options.worktreeName !== undefined ? { worktreeName: options.worktreeName } : {}),
       ...(options.transactionRoot !== undefined ? { transactionRoot: options.transactionRoot } : {}),
@@ -201,7 +540,7 @@ export class GitBroker {
         gitExecutable: this.gitExecutable,
         gitArgs: [...gitBrokerConfigOverrides(), ...gitArgs],
         cwd,
-        timeoutMs: this.timeoutMs,
+        timeoutMs: options.timeoutMs ?? this.timeoutMs,
         ...(this.disableSandboxForTests ? { disableSandboxForTests: true } : {}),
         homeDir,
         ...(options.env !== undefined ? { env: options.env } : {}),
@@ -305,7 +644,7 @@ export class GitBroker {
    * Pure filesystem — no Git subprocess. Returns the identity.
    * Throws `GitPreflightError` on any deny.
    */
-  private preflight(): GitRepositoryIdentity {
+  private preflight(networkWorktree = false): GitRepositoryIdentity {
     const identity = canonicalizeRepositoryIdentity(this.authority.repository);
     if (
       this.authority.protectedPaths?.some((root) => isUnderRoot(identity.commonDir, root))
@@ -317,7 +656,10 @@ export class GitBroker {
     }
     rejectAlternates(identity, this.authority.grantedRoots);
     rejectSubmodules(identity);
-    rejectEscapingSymlinks(identity.workTree, this.authority.grantedRoots);
+    // Network materialization validates tracked links as a complete internal
+    // graph and denies symlink ancestors at apply. Legacy operations retain
+    // their existing more conservative filesystem link rejection.
+    if (!networkWorktree) rejectEscapingSymlinks(identity.workTree, this.authority.grantedRoots);
     auditLocalConfig(identity);
     return identity;
   }

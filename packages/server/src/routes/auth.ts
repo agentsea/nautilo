@@ -1,3 +1,4 @@
+import { parseGitHubApprovalEcho } from "@nautilo/types";
 import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { fromRuntimeConfig, resolveInstance } from "@nautilo/config";
@@ -68,6 +69,7 @@ import {
   withLiveShadowCheckpointSaver,
   getCurrentLiveShadowTurnContext,
   resolveForegroundProtectedMemoryGraphDeps,
+  foregroundHumanTerminalAdmissionPort,
 } from "@nautilo/runtime";
 import { log, warn, runWithTurn } from "@nautilo/logger";
 import type { SecurityAuditEvent } from "../lib/security-audit-log";
@@ -131,7 +133,7 @@ async function auditResumeThreadDenied(
   }
 }
 
-/** D125 / audit F1 — first-time PIN enrollment forensic trail. */
+/** First-time PIN enrollment forensic trail. */
 async function auditPinEnrolled(
   audit: AuthRouteDeps["auditEvent"],
   row: {
@@ -160,7 +162,7 @@ async function auditPinEnrolled(
   }
 }
 
-// D082 PR B — Fastify request augmentation for the auth access log.
+// Fastify request augmentation for the auth access log.
 // When a resume route binds a turnId (via runWithTurn), we also
 // stash it on the request so the `/api/auth/*` `onResponse` hook in
 // `app.ts` can prepend `[turn=<id>]` to the single-line access log,
@@ -187,7 +189,7 @@ export interface AuthRouteDeps {
     sessionUserId: string,
   ) => Promise<boolean>;
   /**
-   * D426 — test-only authenticated Room resolution seam. Production resolves
+   * Test-only authenticated Room resolution seam. Production resolves
    * the normalized checkpoint thread through the membership query below, then
    * reads the stored Room kind. A boolean membership override intentionally
    * cannot fabricate a Subthread identity, so it fails closed for child-row
@@ -198,7 +200,7 @@ export interface AuthRouteDeps {
     sessionUserId: string,
   ) => Promise<{ roomId: string; kind: string } | null>;
   /**
-   * D476 test seam for the private checkpoint binding behind a pending
+   * Test seam for the private checkpoint binding behind a pending
    * projection approval. Production reads it from the LangGraph checkpoint.
    */
   projectionResumeBindingForThread?: (
@@ -220,7 +222,7 @@ export interface AuthRouteDeps {
    */
   defaultAgentId?: string;
   /**
-   * D041 — after a successful PIN proof, unwraps the Connection vault master key.
+   * After a successful PIN proof, unwraps the Connection vault master key.
    * Omitted in tests / until the server wires it.
    */
   unlockVaultWithPin?: (pinUtf8: string) => Promise<void>;
@@ -774,7 +776,13 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
     const context = getCurrentLiveShadowTurnContext();
     const policy = context?.enforcementPolicy
       ?? await (deps.strictShadowPolicyReader ?? currentStrictShadowPolicy)();
-    const fullOnly = { fullEncryptionOnlyForState: () => policy.mode === "encrypted_only" };
+    const fullOnly = { fullEncryptionOnlyForState: () => policy.mode === "encrypted_only",
+      humanTerminalAdmissionPortForState: (state: import("@nautilo/agent").NautiloState) => {
+        if (state.causalHumanUserId !== request.sessionUserId || state.agentId !== agentId || state.roomId !== roomId
+          || (state.currentThreadId || state.langgraphThreadId) !== graphThreadId) return undefined;
+        return foregroundHumanTerminalAdmissionPort(state, context?.session?.authorizationSignal ?? new AbortController().signal);
+      },
+    };
     if (!request.sessionActorId || !request.sessionUserId || !roomId
       || parentGraphThreadIdFromForkCheckpoint(graphThreadId) !== graphThreadId
       || isScopeMemoryEnvelope(request.memoryEnvelope)) return fullOnly;
@@ -787,12 +795,12 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
       || envelope.agentId !== agentId || envelope.roomId !== roomId) {
       throw new Error("Memory resume authority changed");
     }
-    return resolveForegroundProtectedMemoryGraphDeps({
+    return { ...fullOnly, ...await resolveForegroundProtectedMemoryGraphDeps({
       envelope, session: context.session, policy, normalForeground: true,
-    });
+    }) };
   }
 
-  // D500 — narrow, authenticated identity proof for local capability changes.
+  // Narrow, authenticated identity proof for local capability changes.
   // It returns no reusable proof or token: Electron consumes the response
   // immediately and remains the sole owner of the local SSH capability store.
   app.post<{ Body: { pin?: string } }>("/api/auth/verify-pin", async (request, reply) => {
@@ -1714,7 +1722,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
         return reply.status(403).send({ error: "Forbidden" });
       }
 
-      // D082 PR B — bind turnId from checkpoint before the handler's
+      // bind turnId from checkpoint before the handler's
       // entry + catch logs so they grep-correlate with the original
       // chat turn that raised the prove_it interrupt.
       const turnId = await readTurnIdForThread(threadId);
@@ -1786,7 +1794,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
           ...(causalHumanUserId ? { causalHumanUserId } : {}),
         });
 
-        // D353 follow-up — prove_it resumes run outside the original Job just
+        // Prove-it resumes run outside the original Job just
         // like approval.ask resumes. Wrap them so the workbench receives a
         // terminal job.status and clears its optimistic Stop/running state.
         void runResumeJobLifecycleWithCurrentPolicy({
@@ -1827,7 +1835,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
   );
 
   // -------------------------------------------------------------------------
-  // POST /api/auth/host-choice-reply — D458 paired-mobile exact-host resume.
+  // POST /api/auth/host-choice-reply — paired-mobile exact-host resume.
   // Foreground ordinary chat only. The opaque selector is consumed and the
   // chosen host is revalidated inside the server-owned resolver before the
   // graph can reach approvals or tool execution.
@@ -1933,7 +1941,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
   );
 
   // -------------------------------------------------------------------------
-  // POST /api/auth/approval-reply — D061 Phase 2 ask-verb reply
+  // POST /api/auth/approval-reply — ask-verb reply
   //   Body: { verb: "once" | "room" | "always" | "deny", threadId, laneKey? }
   //   Resumes the graph with { approved, verb } where approved = verb !== "deny".
   //
@@ -1950,6 +1958,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
     mediaGenerationDigest?: string;
     mediaGenerationQuoteDigest?: string;
     mediaGenerationRevision?: number;
+    githubDigest?: string;
     clientActionSessionId?: string;
     authorizationDeviceId?: string;
   } }>(
@@ -1964,7 +1973,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
       const {
         verb, threadId, laneKey, approvalId, localMcpInstallDigest,
         mediaGenerationDigest, mediaGenerationQuoteDigest, mediaGenerationRevision,
-        clientActionSessionId, authorizationDeviceId,
+        githubDigest, clientActionSessionId, authorizationDeviceId,
       } = request.body ?? {};
 
       if (!threadId || typeof threadId !== "string") {
@@ -1978,6 +1987,9 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
 
       const sessionUserId = request.sessionUserId;
 
+      const hasGitHubEcho = githubDigest !== undefined || (typeof approvalId === "string" && approvalId.startsWith("github-publish:"));
+      const githubEcho = hasGitHubEcho ? parseGitHubApprovalEcho({ approvalId, digest: githubDigest, laneKey, verb }) : undefined;
+      if (hasGitHubEcho && !githubEcho) return reply.status(409).send({ error: "approval_stale", code: "approval_stale" });
       const hasMediaEcho = mediaGenerationDigest !== undefined ||
         mediaGenerationQuoteDigest !== undefined || mediaGenerationRevision !== undefined;
       if (hasMediaEcho) {
@@ -2007,7 +2019,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
           }
         : undefined;
 
-      // D503: local MCP install authority is durable graph checkpoint state,
+      // Local MCP install authority is durable graph checkpoint state,
       // not a server-process cache. The route still fail-closes before resume:
       // both the exact receipt and digest are mandatory and the graph checks
       // them against its checkpoint-bound tool-call binding.
@@ -2016,7 +2028,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
           return reply.status(409).send({ error: "approval_stale", code: "approval_stale" });
         }
       }
-      // D500: Electron's post-prepare SSH summary is an exact one-shot review,
+      // Electron's post-prepare SSH summary is an exact one-shot review,
       // never a standing/room approval. The tools node binds this id again to
       // the preparation, digest, tool-call, and dynamic subject before launch.
       if (typeof approvalId === "string" && approvalId.startsWith("ssh-prepare-approval:")) {
@@ -2031,6 +2043,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
       // resume + finalize through the Task path.
       const taskApprovalLaneKey = laneKey ?? "";
       if (taskApprovalLaneKey.startsWith("task:")) {
+        if (githubEcho) return reply.status(409).send({ error: "approval_stale", code: "approval_stale" });
         const taskId = taskApprovalLaneKey.slice("task:".length);
         const auth = await authorizeTaskApprovalResume({
           taskId,
@@ -2197,7 +2210,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
 
       const effectiveLaneKey = laneKey ?? threadId;
 
-      // D082 PR B — bind turnId from checkpoint so both the entry
+      // bind turnId from checkpoint so both the entry
       // log and the access-log hook carry the same `[turn=<id>]`
       // prefix as the upstream post_model interrupt + downstream
       // resume stream.
@@ -2321,7 +2334,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
           ...(causalHumanUserId ? { causalHumanUserId } : {}),
         });
 
-        // D353 follow-up — wrap the resumed chain in a synthetic Job
+        // wrap the resumed chain in a synthetic Job
         // lifecycle so the workbench gets a terminal `job.status` when
         // the resumed stream settles. Without this, the resume runs
         // outside any Job (the original already emitted
@@ -2359,6 +2372,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
                 processor.liveShadowToolBoundaryForState,
                 await resumedMemoryDeps(request, threadId, resumeRoom.roomId ?? "", agentIdForResume, effectiveLaneKey),
                 approvalId,
+                githubEcho ?? undefined,
               )
                 .then(() => jobManager.reconcileForkAndResumePendingTurns(threadId))
                 .then(() => auditApprovalReply(deps.auditEvent, auditEvent))
@@ -2741,7 +2755,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
           humanTurnId: turnId,
           ...(causalHumanUserId ? { causalHumanUserId } : {}),
         });
-        // D353 follow-up — identity-verify resumes also run outside the
+        // identity-verify resumes also run outside the
         // original Job. Emit a synthetic terminal lifecycle so Stop does not
         // remain enabled after the resumed stream settles.
         void runResumeJobLifecycleWithCurrentPolicy({

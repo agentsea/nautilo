@@ -64,15 +64,15 @@ export type RetainedOutputArtifactDispatchResult =
   | { readonly ok: false; readonly reason: "invalid" | "unavailable" | "not_found" };
 
 export const RUN_SHELL_OUTPUT_ARTIFACT_MAX_BYTES = 1024 * 1024;
-const RUN_SHELL_OUTPUT_ARTIFACT_TOTAL_BYTES = 8 * 1024 * 1024;
-const RUN_SHELL_OUTPUT_ARTIFACT_TTL_MS = 10 * 60 * 1000;
+export const RUN_SHELL_OUTPUT_ARTIFACT_TOTAL_BYTES = 8 * 1024 * 1024;
+export const RUN_SHELL_OUTPUT_ARTIFACT_TTL_MS = 10 * 60 * 1000;
 export const RUN_SHELL_OUTPUT_ARTIFACT_PAGE_BYTES = 16 * 1024;
 const RUN_SHELL_OUTPUT_ARTIFACT_SEARCH_MAX_MATCHES = 20;
 const RUN_SHELL_OUTPUT_ARTIFACT_SEARCH_MAX_CONTEXT_BYTES = 1024;
 const RUN_SHELL_OUTPUT_ARTIFACT_SEARCH_CONTEXT_TOTAL_BYTES = 16 * 1024;
 const RUN_SHELL_OUTPUT_ARTIFACT_SEARCH_RESPONSE_BYTES = 16 * 1024;
 const RUN_SHELL_INLINE_CAPTURE_BYTES = 16 * 1024;
-const RUN_SHELL_OUTPUT_ARTIFACT_MAX_ENTRIES = 16;
+export const RUN_SHELL_OUTPUT_ARTIFACT_MAX_ENTRIES = 16;
 const RUN_SHELL_OUTPUT_ARTIFACT_BLOCK_BYTES = 64 * 1024;
 // A pending candidate is deliberately bounded.  Ordinary output is streamed as
 // soon as it cannot be the prefix of a secret, while malformed/unbounded
@@ -192,7 +192,7 @@ function pemTerminatorEnd(input: Buffer): number | null {
 }
 
 /** Stateful byte redactor that withholds a suffix so secrets cannot cross frames. */
-class RunShellStreamRedactor {
+export class RunShellStreamRedactor {
   private pending = Buffer.alloc(0);
   private openCandidate: "line" | "pem" | null = null;
 

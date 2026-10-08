@@ -1,12 +1,12 @@
 import { parseWriterCreatedArtifactReceipt, writerCreationRenderer } from "./writer-creation";
 /**
- * D083 Phase 2 — per-tool renderer registry.
+ * Per-tool renderer registry.
  *
  * Tools without an entry here fall through to the generic
  * JSON fallback in `tool-card.tsx`. Per-tool specializations
  * are opt-in; shipping a new tool doesn't require a renderer.
  *
- * M088B — the legacy `read_file` / `write_file` / `list_directory`
+ * The legacy `read_file` / `write_file` / `list_directory`
  * tools were removed; their per-command rendering lives in
  * `file-read.tsx` / `file-write.tsx` / `file-list.tsx` and is
  * consumed by `file-renderer.tsx` for the unified `file` tool's
@@ -17,6 +17,7 @@ import { parseWriterCreatedArtifactReceipt, writerCreationRenderer } from "./wri
 import { securityScanRenderer } from "./security-scan";
 import type { ToolRenderer } from "./types";
 import { runShellRenderer } from "./run-shell";
+import { execCommandRenderer } from "./exec-command";
 import { searchRenderer } from "./search";
 import { deleteRenderer } from "./delete";
 import { fileRenderer } from "./file-renderer";
@@ -53,16 +54,17 @@ const toolRenderers: Record<string, ToolRenderer> = {
   // External harnesses use the protocol-neutral activity name while retaining
   // the same command/result shape and rich terminal presentation.
   run_command: runShellRenderer,
+  exec_command: execCommandRenderer,
+  write_stdin: execCommandRenderer,
   structured_ssh_exec: structuredSshRenderer,
   structured_ssh_copy_upload: structuredSshRenderer,
   structured_ssh_copy_download: structuredSshRenderer,
 
-  // D079 — unified `file` tool. Routes internally by `args.command`
-  // and inspects the result envelope for staged-patch shape (D087
-  // §1.5). The only filesystem-tool entry here post-M088B.
+  // The unified `file` tool routes internally by `args.command`
+  // and inspects the result envelope for staged-patch shape.
   file: fileRenderer,
 
-  // D448 — first-party, top-level multi-file patch result projection.
+  // First-party, top-level multi-file patch result projection.
   apply_patch: applyPatchRenderer,
 
   // Search-shaped (memory search; `file({command:"grep"})` routes
@@ -74,22 +76,22 @@ const toolRenderers: Record<string, ToolRenderer> = {
   // paths; the unified `file` tool routes deletes via fileRenderer).
   delete_file: deleteRenderer,
 
-  // Media / generation (D113)
+  // Media / generation
   generate_image: generateImageRenderer,
   generate_video: videoGenerationRenderer,
   generate_music: generatedMediaRenderer,
   manage_avatar: manageAvatarRenderer,
 
-  // D261 P4 — voice audition slate + lock-in
+  // Voice audition slate + lock-in
   audition_voices: auditionVoicesRenderer,
 
-  // D416 P1.4 — local, metadata-only explainer search results.
+  // Local, metadata-only explainer search results.
   find_explainer: explainerVideoRenderer,
 
-  // D416 — consent-gated explainer playback with a server-resolved source.
+  // Consent-gated explainer playback with a server-resolved source.
   play_explainer: explainerPlaybackRenderer,
 
-  // D504 Wave 1 — whole rendered-page understanding in the visible Browser.
+  // Whole rendered-page understanding in the visible Browser.
   browser_read_page: browserReadPageRenderer,
   read_webpage: readWebpageRenderer,
   run_web_search: webSearchRenderer,
@@ -98,12 +100,12 @@ const toolRenderers: Record<string, ToolRenderer> = {
   read_connected_web_account: connectedWebAccountReadRenderer,
   act_connected_web_account: connectedWebAccountActionRenderer,
 
-  // D456 — file transfers stay expanded while the exact connected-app
+  // File transfers stay expanded while the exact connected-app
   // operation is moving bytes, then settle into the sealed receipt renderer.
   dropbox_upload_file: connectedAppTransferRenderer,
   dropbox_download_file: connectedAppTransferRenderer,
 
-  // D513 — durable semantic application guidance. It is Human-clicked only.
+  // Durable semantic application guidance. It is Human-clicked only.
   guide_user: guideUserRenderer,
 
 };

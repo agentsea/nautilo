@@ -31,7 +31,7 @@ import {
 import { normalizeSearchQuery } from "./search-query";
 
 /**
- * room-scoped full-text history search used as Conductor
+ * Room-scoped full-text history search used as Conductor
  * EVIDENCE (not as an answer). Two consumers:
  *   1. the deterministic history-owner route (D-B) in `routeRoomMessage`, and
  *   2. the Floor Manager's bounded `request_search` refinement (P5).
@@ -50,14 +50,15 @@ export interface RoomHistoryHit {
   ts: Date;
   /** Durable transcript role; present on production transcript reads. */
   role?: "user" | "assistant" | "tool" | "system";
+  /** Canonical tool identity; never inferred from narrated content. */
+  toolName?: string | null | undefined;
   authorDisplayName: string;
   /** `@`-handle of the author (human or bot), WITHOUT the leading `@`. */
   handle: string;
   /** Server-internal actor id. NEVER passed to the LLM. */
   authorActorId: string;
   snippet: string;
-  toolName?: string | null | undefined;
-  /** count-only reaction snapshot for woken-bot transcript lines. */
+  /** Count-only reaction snapshot for woken-bot transcript lines. */
   reactions?: { emoji: string; count: number }[];
 }
 
@@ -176,7 +177,7 @@ export const SUBTHREAD_HEAD = 5;
 export const SUBTHREAD_TAIL = 50;
 
 /**
- * attach the count-only reaction snapshot to each hit (woken-bot
+ * Attach the count-only reaction snapshot to each hit (woken-bot
  * transcript path). Mutates + returns `hits`. No-op when there are no hits or
  * no trust-context `userId`. Shared by `roomMessagesSince` + `allRoomMessages`.
  */
@@ -201,7 +202,7 @@ async function enrichWithReactions(
 }
 
 /**
- * exclude messages authored during a deaf window so bots never
+ * Exclude messages authored during a deaf window so bots never
  * ingest them, even on a later wake. When `botActorId` is set, room-wide deaf
  * windows AND that bot's per-bot deaf windows apply. When omitted (Conductor
  * evidence search), only room-wide deaf windows are excluded.
@@ -342,7 +343,7 @@ function mapHistoryRows(
 }
 
 /**
- * room messages across ALL member sessions, oldest-first, each
+ * Room messages across ALL member sessions, oldest-first, each
  * resolved to its author (display name + `@handle` + ts). Powers the composite
  * labelled-transcript block fed to a woken bot.
  *
@@ -361,7 +362,7 @@ export async function roomMessagesSince(
     /** Trust context for reaction snapshot (woken-bot path). */
     userId?: string;
     agentId?: string | null;
-    /** bot actor for deaf-window ingestion filter. */
+    /** Bot actor for deaf-window ingestion filter. */
     botActorId?: string;
   },
 ): Promise<RoomHistoryHit[]> {
@@ -387,7 +388,7 @@ export async function roomMessagesSince(
 }
 
 /**
- * The FULL labelled room transcript across ALL member sessions,
+ * The full labelled room transcript across ALL member sessions,
  * oldest→newest, with NO `since` window and NO 500 clamp (unlike
  * `roomMessagesSince`). Includes `user`/`assistant`/`tool` rows so the rebuilt
  * conversation history covers a bot's own prior tool activity as narration
@@ -430,7 +431,7 @@ export async function allRoomMessages(
 }
 
 /**
- * bounded fresh-turn Room history.
+ * Bounded fresh-turn Room history.
  *
  * Selects the configured newest conversational boundaries after collapsing only
  * non-null user fingerprints, then retains every assistant/tool evidence row
@@ -487,7 +488,8 @@ export async function recentBoundedRoomMessages(
       SELECT
         sm.id AS message_id,
         sm.created_at AS ts,
-        sm.role, sm.tool_name,
+        sm.role,
+        sm.tool_name,
         ${currentImageResult} AS current_image_result,
         sm.content,
         sm.fingerprint,
@@ -544,7 +546,8 @@ export async function recentBoundedRoomMessages(
     SELECT
       e.message_id,
       e.ts,
-      e.role, e.tool_name,
+      e.role,
+      e.tool_name,
       e.content,
       e.agent_handle,
       e.agent_display_name,
@@ -564,7 +567,7 @@ export async function recentBoundedRoomMessages(
 }
 
 /**
- * the most recent messages across ALL member sessions of the room
+ * The most recent messages across ALL member sessions of the room
  * (cold-start convenience = `roomMessagesSince(since: null)`).
  */
 export async function recentRoomMessages(
@@ -588,7 +591,7 @@ export async function recentRoomMessages(
 }
 
 /**
- * the timestamp of the bot's OWN most recent message in the room
+ * The timestamp of the bot's OWN most recent message in the room
  * (its last assistant turn across every member session), or null if the bot
  * has never spoken here. Anchors the "diff since I last spoke" context window
  * so an already-active bot, returning to a room where several humans talked in
@@ -638,7 +641,7 @@ function subthreadRowsQuery(
 }
 
 /**
- * parent-room messages up to AND INCLUDING the anchor message,
+ * Parent-room messages up to AND INCLUDING the anchor message,
  * oldest→newest (≤ `limit` rows; the anchor is the LAST element). A Subthread
  * is rooted at the anchor, so the anchor line is part of the seed context.
  * Returns `[]` if the anchor row is missing/deleted (graceful fallback — no
@@ -765,7 +768,7 @@ export async function subthreadContextWindow(
 }
 
 /**
- * id of the newest message across all member sessions of the room
+ * ID of the newest message across all member sessions of the room
  * (the turn immediately preceding a fresh inbound send). Drives
  * `messageNeedsHistory`'s "reply to old vs preceding turn" distinction.
  * Returns null for an empty room.

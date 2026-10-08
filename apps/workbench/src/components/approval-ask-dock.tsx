@@ -1,5 +1,7 @@
+import { parseGitHubPublishApproval } from "@nautilo/types";
+import { GitHubPublishApprovalDetail } from "./github-publish-approval-detail";
 /**
- * ApprovalAskDock — inline approval dock (D061 Phase 2-client / Chunk 5).
+ * ApprovalAskDock — inline approval dock for approval replies.
  *
  * Hermes / OpenCode / Claude Code all converged on an inline dock over a
  * centered modal for LIGHT approvals (graduated verbs, no PIN). Modals
@@ -438,16 +440,21 @@ export function ApprovalAskDock() {
     () => isMediaGenerationApproval(state.mediaGeneration) ? state.mediaGeneration : null,
     [state.mediaGeneration],
   );
+  const parsedGitHub = parseGitHubPublishApproval(state.github);
+  const github = parsedGitHub?.approvalId === state.approvalId ? parsedGitHub : null;
+  const requiresGitHubReview = state.github != null || state.tools.some(tool => tool.name === "local_github");
+  const missingExactReview = requiresGitHubReview ? !github
+    : state.requiresExplicitReview && !state.localMcpInstall && !mediaGeneration && !state.structuredSsh;
   const malformedMediaGeneration = state.mediaGeneration != null && mediaGeneration === null;
   const allowedVerbs = useMemo<ApprovalReplyVerb[]>(
     () => hasExpiredProjection
       ? state.allowedVerbs.includes("deny") ? ["deny"] : []
-      : malformedMediaGeneration
+      : malformedMediaGeneration || missingExactReview
       ? state.allowedVerbs.includes("deny") ? ["deny"] : []
-      : mediaGeneration
+      : mediaGeneration || github
         ? state.allowedVerbs.filter((verb) => verb === "once" || verb === "deny")
         : state.allowedVerbs,
-    [hasExpiredProjection, malformedMediaGeneration, mediaGeneration, state.allowedVerbs],
+    [hasExpiredProjection, malformedMediaGeneration, missingExactReview, mediaGeneration, github, state.allowedVerbs],
   );
 
   // Prefer "once" if offered, else the first allowed verb. The
@@ -534,7 +541,7 @@ export function ApprovalAskDock() {
       role="dialog"
       aria-live="polite"
       aria-label="Tool approval requested"
-      // D087 UX pass — lock the dock to the container's width and
+      // UX pass — lock the dock to the container's width and
       // clip any overflow at the outer boundary. Without this, a long
       // tool-preview line (e.g. `file.write(content: …)` with ~90
       // chars) was contributing an intrinsic min-width that expanded
@@ -554,7 +561,7 @@ export function ApprovalAskDock() {
             <span className="text-xs font-semibold text-foreground">
               Needs your approval
             </span>
-            {/* D087 UX pass — the uppercase reasonCode chip (e.g.
+            {/* UX pass — the uppercase reasonCode chip (e.g.
                 "DESTRUCTIVE-TOOL") felt alarmingly technical next to
                 the human-readable reason line. The internal code still
                 flows through for telemetry / keyboard-shortcut
@@ -574,6 +581,7 @@ export function ApprovalAskDock() {
             </div>
           ) : null}
 
+          {github ? <GitHubPublishApprovalDetail approval={github} /> : null}
           {state.localMcpInstall ? (
             <LocalMcpInstallApprovalDetail approval={state.localMcpInstall} />
           ) : null}
@@ -583,7 +591,7 @@ export function ApprovalAskDock() {
           {state.structuredSsh ? (
             <StructuredSshApprovalDetail approval={state.structuredSsh} />
           ) : null}
-          {state.requiresExplicitReview && !state.localMcpInstall && !mediaGeneration && !state.structuredSsh ? (
+          {missingExactReview ? (
             <p role="alert" className="mt-2 text-[11px] text-[var(--error)]">
               Exact review details are unavailable. This action cannot be approved from this client.
             </p>

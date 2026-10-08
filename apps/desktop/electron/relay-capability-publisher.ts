@@ -20,6 +20,8 @@ type CapabilityWarningReporter = (message: string) => void;
 export interface RelayCapabilityPublisher {
   refresh(reason?: string): Promise<boolean>;
   getAcknowledgedCapabilityRevision(): number | null;
+  getAcknowledgedCapabilities(): RelayCapabilities | null;
+  invalidateAcknowledgement(): void;
   close(): void;
 }
 
@@ -27,12 +29,15 @@ export interface RelayCapabilityPublisherOptions {
   client: CapabilityPublisherClient;
   capabilityBuilder: () => Promise<RelayCapabilities>;
   reportWarning?: CapabilityWarningReporter;
+  onAcknowledged?: (() => void) | undefined;
 }
 
 export function createRelayCapabilityPublisher(
   options: RelayCapabilityPublisherOptions,
 ): RelayCapabilityPublisher {
   let closed = false;
+  let acknowledgementEpoch = 0;
+  let acknowledged: { revision: number; capabilities: RelayCapabilities } | null = null;
   let activeDrain: Promise<boolean> | null = null;
   let trailingRefreshPending = false;
 
@@ -47,6 +52,7 @@ export function createRelayCapabilityPublisher(
   }
 
   async function performRefresh(reason?: string): Promise<boolean> {
+    const epoch = acknowledgementEpoch;
     if (closed) {
       return false;
     }
@@ -56,19 +62,23 @@ export function createRelayCapabilityPublisher(
 
     try {
       const capabilities = await options.capabilityBuilder();
-      if (closed) {
+      if (closed || epoch !== acknowledgementEpoch) {
         return false;
       }
 
+      const snapshot = structuredClone(capabilities);
       await options.client.updateCapabilities(capabilities);
-      if (closed) {
+      if (closed || epoch !== acknowledgementEpoch) {
         return false;
       }
 
-      if (options.client.getAcknowledgedCapabilityRevision() === null) {
+      const revision = options.client.getAcknowledgedCapabilityRevision();
+      if (revision === null || options.client.getStatus() !== "connected") {
         warning(reason, "relay did not acknowledge capability update");
         return false;
       }
+      acknowledged = { revision, capabilities: snapshot };
+      options.onAcknowledged?.();
       return true;
     } catch (error) {
       warning(
@@ -112,8 +122,17 @@ export function createRelayCapabilityPublisher(
       return closed ? null : options.client.getAcknowledgedCapabilityRevision();
     },
 
+    getAcknowledgedCapabilities(): RelayCapabilities | null {
+      if (closed || options.client.getStatus() !== "connected" || !acknowledged
+        || options.client.getAcknowledgedCapabilityRevision() !== acknowledged.revision) return null;
+      return structuredClone(acknowledged.capabilities);
+    },
+
+    invalidateAcknowledgement(): void { acknowledgementEpoch++; acknowledged = null; },
+
     close(): void {
       closed = true;
+      acknowledged = null;
       trailingRefreshPending = false;
     },
   };

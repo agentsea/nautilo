@@ -402,6 +402,9 @@ import {
   createRelayRegistryProfileActivationProvider,
   resolveActiveWorkstationDispatchBinding,
   createWorkstationApprovalOverrideResolver,
+  createWorkstationManagedExecutionRevoker,
+  createWorkstationAuthorityReconciler,
+  reconcileWorkstationEffectiveAuthority,
   workstationAccessRoutes,
 } from "./routes/workstation-access";
 import {
@@ -2245,7 +2248,9 @@ export async function createApp(options?: CreateAppOptions) {
         await connectionVault.unlock({ pinUtf8 });
       },
     });
-    accountRoutes(app, { pinProvider, auditEvent });
+    accountRoutes(app, { pinProvider, auditEvent,
+      onAuthorityRevoked: userId => { workstationSessionRegistry.disable(userId); },
+    });
     logtoInternalRoutes(app, { auditEvent });
     const uncontainedHostServerBindingId = getServerHostname();
     uncontainedHostCommands = new UncontainedHostCommandsController({
@@ -2363,12 +2368,22 @@ export async function createApp(options?: CreateAppOptions) {
     readonly groupId: string;
     readonly actorId: string;
   }): Promise<(() => Promise<boolean>) | null> => {
-    return await uncontainedHostCommands?.prepareMembershipRemoval(input) ?? null;
+    const revokeUncontained = await uncontainedHostCommands?.prepareMembershipRemoval(input) ?? null;
+    return async () => {
+      // These route hooks run only after a successful membership mutation.
+      // Recheck the initiating Human's effective permission, preserving work
+      // when an unrelated membership changed or another grant still applies.
+      const authority = await reconcileWorkstationEffectiveAuthority({
+        userId: input.userId, registry: workstationSessionRegistry, getCapabilities: getUserCapabilities,
+      });
+      if (authority === "unavailable") warn("[workstation-access] membership authority reconciliation unavailable");
+      return await revokeUncontained?.() ?? false;
+    };
   };
   groupMembersRoutes(app, {
     prepareMembershipRemoval: prepareUncontainedHostCommandsMembershipRemoval,
   });
-  adminUsersRoutes(app);
+  adminUsersRoutes(app, { onAuthorityRevoked: userId => { workstationSessionRegistry.disable(userId); } });
   // read-only access-control endpoints (self + admin
   // target/catalogue). Registered after the admin-users surface; relies on
   // the default `policy` bearer resolution depth (no depth-config edit).
@@ -2379,6 +2394,9 @@ export async function createApp(options?: CreateAppOptions) {
   // cap, and stale-preview enforcement).
   accessControlMutationRoutes(app, {
     prepareMembershipRemoval: prepareUncontainedHostCommandsMembershipRemoval,
+    onAuthorityChanged: createWorkstationAuthorityReconciler({
+      registry: () => workstationSessionRegistry, getCapabilities: getUserCapabilities,
+    }),
   });
   costsRoutes(app);
   memoryStatusRoutes(app, memoryReviewRuntime);
@@ -3142,8 +3160,9 @@ export async function createApp(options?: CreateAppOptions) {
       );
     }
   };
-  const workstationSessionRegistry = new InMemoryWorkstationSessionRegistry({
+  const workstationSessionRegistry: InMemoryWorkstationSessionRegistry = new InMemoryWorkstationSessionRegistry({
     audit: writeWorkstationAudit,
+    onAuthorityRevoked: createWorkstationManagedExecutionRevoker(() => relayRegistry),
   });
 
   //  task 3.1.2 — transient `WorkstationDispatchPlan` store. The

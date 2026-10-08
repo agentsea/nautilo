@@ -1,5 +1,7 @@
+import { parseRelayBasicExecutionCapability, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
+import type { VerifiedOrdinaryOrigin } from "@nautilo/types";
 /**
- * D418 — Full Workstation access activation / disable route.
+ * Full Workstation access activation / disable route.
  *
  * Narrow Fastify route module that wires the
  * `InMemoryWorkstationSessionRegistry` to the HTTP control plane.
@@ -7,7 +9,7 @@
  * profile execution, renderer UI, desktop profile IPC, sandbox roots, or
  * MCP execution.
  *
- * D418 Commit 3 — this module ALSO exports
+ * Commit 3 — this module ALSO exports
  * {@link createWorkstationApprovalOverrideResolver}: the server-side
  * approval decision seam that reads the LIVE active Full Workstation session
  * from the shared `InMemoryWorkstationSessionRegistry`, admits + revalidates
@@ -17,11 +19,12 @@
  * tool/operation identity`). It returns one
  * decision: `auto` (caller MAY suppress the normal `ask` / `prove_it`
  * prompt for this dispatch) or `none` (caller MUST leave the normal approval
- * logic intact). It is fail-closed: no active session ⇒ `none`, so ordinary
- * D375 Auto-Approve (`ask → auto` client-side) and the dock / PIN / block
+ * logic intact). It is fail-closed: Development requires its active session; Basic
+ * requires a separately validated exact foreground plan. Ordinary
+ * Auto-Approve (`ask → auto` client-side) and the dock / PIN / block
  * path run unchanged when Full Mode is off.
  *
- * D418 Commit 4 — the resolver admits an eligible `run_shell` attempt via a
+ * Commit 4 — the resolver admits an eligible `run_shell` attempt via a
  * STATIC `scanCommand` refusal of critical / elevation ONLY (no boundedness /
  * timeout / dynamic-path / network-intent / OS / MCP / caller-boolean
  * inspection). With an active session + an exact admitted+revalidated plan +
@@ -50,9 +53,9 @@
  * pattern in `routes/security.ts`):
  *
  *   1. Auth — `request.sessionUserId` (set by the trust preHandler).
- *   2. Capability — caller must hold `use_workstation` (the D418
+ *   2. Capability — caller must hold `use_workstation` (the
  *      profile-activation capability; default Owner / Admin / Superuser /
- *      Member, delegable by Owner / Admin via Group→Role). B3 (D418 Commit 1):
+ *      Member, delegable by Owner / Admin via Group→Role). B3 (Commit 1):
  *      `control_desktop` is NOT required for activation — the normal
  *      workstation tool capability is an orthogonal tool gate, not an
  *      activation gate. Probing without `use_workstation` 403s
@@ -71,7 +74,7 @@
  *      `registry.activate`, which enforces eligibility, monotonicity,
  *      narrowing/removal, and server-switch semantics.
  *
- * Disable contract (B3 — D418 Commit 1):
+ * Disable contract (B3 — Commit 1):
  *   - Auth ONLY. Disable is user-bound (keyed on `sessionUserId`) and
  *     idempotent by virtue of the registry, and it is INDEPENDENT of all
  *     current capabilities: no capability check runs here, so a user whose
@@ -97,6 +100,7 @@ import {
   LockoutError,
   resolveWorkstationAdmission,
   type ChallengeProvider,
+  type AccessControlOperation,
   type FullWorkstationSessionEvidence,
   type WorkstationAdmissionEvidence,
   type WorkstationAdmissionDecision,
@@ -134,7 +138,7 @@ const ACTIVATE_PROFILE_ROUTE = "POST /api/workstation-access/activate-profile";
 const COMPLETE_PROFILE_ROUTE = "POST /api/workstation-access/activate-profile/complete";
 
 /**
- * D498 — resolve the exact live session/profile/relay binding used by
+ * resolve the exact live session/profile/relay binding used by
  * same-authority plan re-admission. The canonical active session remains the
  * identity authority; relay snapshots contribute only their live
  * grant/policy revisions. This server boundary deliberately does not infer
@@ -215,7 +219,7 @@ export interface WorkstationBindingPayload {
   readonly grantIds: readonly string[];
   readonly capabilityRevision: number;
   /**
-   * D418 Commit 2 — the server-derived `pairingGeneration` (the validated
+   * Commit 2 — the server-derived `pairingGeneration` (the validated
    * relay-token row id). Carried in the client payload ONLY for an exact
    * field-by-field match against the authoritative resolver output; it is
    * never trusted to self-authorize. The authoritative binding is sourced
@@ -239,7 +243,7 @@ export interface WorkstationAccessRouteDeps {
   readonly relayBindingProvider: RelayBindingProvider;
   readonly relayRegistry: InMemoryRelayRegistry;
   /**
-   * D418 — resolves the authoritative Full Workstation binding for the
+   * resolves the authoritative Full Workstation binding for the
    * profile-SELECTOR activation path (`POST /activate-profile`). Unlike
    * `relayBindingProvider` (which derives profileId / profileRevision +
    * grantIds from an already-advertised profile snapshot), this provider
@@ -254,7 +258,7 @@ export interface WorkstationAccessRouteDeps {
   readonly registry: InMemoryWorkstationSessionRegistry;
   readonly auditEvent: WorkstationAccessAuditor;
   /**
-   * D557 — returns existing stable server HMAC material on demand. It is
+   * returns existing stable server HMAC material on demand. It is
    * deliberately lazy so servers that have not enabled remote pairing keep
    * their existing boot contract; startup receipt use then fails closed.
    */
@@ -263,7 +267,7 @@ export interface WorkstationAccessRouteDeps {
 }
 
 /**
- * D418 — authoritative binding resolver for the profile-selector activation
+ * authoritative binding resolver for the profile-selector activation
  * path. Returns the authoritative `FullWorkstationBinding` for a given
  * relay / desktop session / instance + a client-selected stored profile
  * (profileId + profileRevision), or `null` when no eligible binding exists
@@ -461,8 +465,8 @@ export function workstationAccessRoutes(
       userAgent: request.headers["user-agent"],
     };
 
-    // 2. Capability check — B3 (D418 Commit 1): activation requires ONLY
-    // `use_workstation` (the D418 profile-activation capability).
+    // 2. Capability check — B3 (Commit 1): activation requires ONLY
+    // `use_workstation` (the profile-activation capability).
     // `control_desktop` is no longer required here — it is an orthogonal
     // tool capability, not an activation gate. Rejected BEFORE the body
     // is read so a probing caller learns nothing about validation
@@ -700,7 +704,7 @@ export function workstationAccessRoutes(
         userAgent: request.headers["user-agent"],
       };
 
-      // 2. Capability check — B3 (D418 Commit 1): activation requires ONLY
+      // 2. Capability check — B3 (Commit 1): activation requires ONLY
       // `use_workstation`, identical gate to `/activate`.
       // `control_desktop` is no longer required here. Rejected BEFORE the
       // body is read so a probing caller learns nothing about validation
@@ -908,7 +912,7 @@ export function workstationAccessRoutes(
       async (request, reply) => {
         const userId = request.sessionUserId;
         if (!userId) return reply.status(401).send({ error: "Authentication required" });
-        // B3 (D418 Commit 1): completion requires ONLY `use_workstation`.
+        // B3 (Commit 1): completion requires ONLY `use_workstation`.
         const caps = await getCapabilities(userId);
         if (!caps.includes(CAP_USE_WORKSTATION)) {
           return reply.status(403).send({
@@ -977,7 +981,7 @@ export function workstationAccessRoutes(
   app.post<{
     Body: Record<string, never> | undefined;
   }>("/api/workstation-access/disable", async (request, reply) => {
-    // 1. Auth ONLY. B3 (D418 Commit 1): disable is authenticated, user-bound,
+    // 1. Auth ONLY. B3 (Commit 1): disable is authenticated, user-bound,
     //    idempotent, and INDEPENDENT of all current capabilities. No
     //    capability check runs here, so a user whose `use_workstation`
     //    (or any other capability) is revoked mid-session can still disable
@@ -1052,10 +1056,54 @@ export function createWorkstationAccessRegistry(
   return new InMemoryWorkstationSessionRegistry(options);
 }
 
+/** Shared production composition: fence exact owned work before sending Stop. */
+export function createWorkstationManagedExecutionRevoker(
+  registry: () => Pick<InMemoryRelayRegistry, "revokeLocalExecutionsForWorkstationBinding">,
+): NonNullable<FullWorkstationSessionRegistryOptions["onAuthorityRevoked"]> {
+  return ({ binding, revokedGrantIds }) => {
+    registry().revokeLocalExecutionsForWorkstationBinding(binding, revokedGrantIds);
+  };
+}
+
+/** Called only after committed RBAC changes; never broadens authority. */
+export async function reconcileWorkstationEffectiveAuthority(input: {
+  readonly userId: string;
+  readonly registry: InMemoryWorkstationSessionRegistry;
+  readonly getCapabilities: (userId: string) => Promise<readonly string[]>;
+}): Promise<"retained" | "revoked" | "unavailable"> {
+  let capabilities: readonly string[];
+  try { capabilities = await input.getCapabilities(input.userId); }
+  catch {
+    input.registry.disable(input.userId);
+    return "unavailable";
+  }
+  if (capabilities.includes("use_workstation")) return "retained";
+  input.registry.disable(input.userId);
+  return "revoked";
+}
+
+/** Shared post-commit RBAC hook; changed edges are never revocation authority. */
+export function createWorkstationAuthorityReconciler(input: {
+  readonly registry: () => InMemoryWorkstationSessionRegistry;
+  readonly getCapabilities: (userId: string) => Promise<readonly string[]>;
+}): (operation: AccessControlOperation) => Promise<void> {
+  return async operation => {
+    const registry = input.registry();
+    const userIds = operation.kind === "membership.add" || operation.kind === "membership.remove"
+      ? [operation.userId] : registry.activeUserIds();
+    for (const userId of userIds) {
+      const authority = await reconcileWorkstationEffectiveAuthority({
+        userId, registry, getCapabilities: input.getCapabilities,
+      });
+      if (authority === "unavailable") warn("[workstation-access] RBAC authority reconciliation unavailable");
+    }
+  };
+}
+
 export type { FullWorkstationSession };
 
 // ---------------------------------------------------------------------------
-// D418 Commit 3 — Workstation execution-admission DECISION SEAM.
+// Commit 3 — Workstation execution-admission DECISION SEAM.
 //
 // This is the server-side integration of the pure
 // `resolveWorkstationAdmission` policy (in `@nautilo/trust`) with the LIVE
@@ -1074,7 +1122,7 @@ export type { FullWorkstationSession };
 //     read (the plan admission is the one side effect, owned here).
 //   - Fail-closed: `registry.get(userId) === null` ⇒ `session: null` ⇒ the
 //     pure policy returns `none` (no_active_session). The caller leaves the
-//     normal approval logic intact, so ordinary D375 Auto-Approve
+//     normal approval logic intact, so ordinary Auto-Approve
 //     (`ask → auto`, client-side) and the dock / PIN / block path run
 //     unchanged when Full Mode is off.
 //   - `auto` is returned ONLY when the pure policy proves the dispatch is a
@@ -1117,7 +1165,7 @@ function sessionEvidence(
 }
 
 // ---------------------------------------------------------------------------
-// D418 production wiring — RelayBindingProvider backed by the
+// production wiring — RelayBindingProvider backed by the
 // authenticated InMemoryRelayRegistry. Lives in this owned route module
 // so the binding-derivation contract stays co-located with the route
 // that consumes it. app.ts constructs one and injects it as the route's
@@ -1125,7 +1173,7 @@ function sessionEvidence(
 // ---------------------------------------------------------------------------
 
 /**
- * D418 — production `RelayBindingProvider`. Derives the authoritative
+ * production `RelayBindingProvider`. Derives the authoritative
  * Full Workstation binding ONLY from the authenticated relay registry's
  * retained state for a connected relay:
  *
@@ -1137,7 +1185,7 @@ function sessionEvidence(
  *
  * `serverBindingId` is the ONE field not derivable from the registry:
  * it is the stable server-side server identity. It is sourced from
- * the existing `@nautilo/config::getServerHostname()` — the federated
+ * the existing `@nautilo/config::getServerHostname` — the federated
  * hostname of the resolved Nautilo instance — which is stable for the
  * lifetime of a server install and changes exactly on a server switch
  * (a different install / instance). It is NOT a per-pair nonce, so a
@@ -1185,7 +1233,7 @@ export interface RelayRegistryBindingProviderOptions {
   readonly relayRegistry: InMemoryRelayRegistry;
   /**
    * Stable server-side pairing identity. Defaults to
-   * `getServerHostname()`; injectable so tests can pin a deterministic
+   * `getServerHostname`; injectable so tests can pin a deterministic
    * value and assert exact-match behavior against the client payload.
    */
   readonly serverBindingId?: string;
@@ -1214,7 +1262,7 @@ export function createRelayRegistryBindingProvider(
       const capabilityRevision = relayRegistry.getCapabilityRevision(relayId);
       if (capabilityRevision === null) return Promise.resolve(null);
 
-      // D418 Commit 2 — the server-derived pairing generation (validated
+      // Commit 2 — the server-derived pairing generation (validated
       // relay-token row id). Missing/empty ⇒ ineligible: a Full Workstation
       // session never binds to a relay that never proved a pairing generation.
       const pairingGeneration = relayRegistry.getPairingGeneration(relayId);
@@ -1227,7 +1275,7 @@ export function createRelayRegistryBindingProvider(
 
       // instanceId is carried by the grant snapshot; the client input
       // must match the registry's retained grant snapshot instanceId.
-      // D418 default-instance: an empty snapshot instanceId ("") is the
+      // default-instance: an empty snapshot instanceId ("") is the
       // canonical default instance and is a valid exact-match target, so
       // only the exact-equality check below gates eligibility.
       if (grantSnapshot.instanceId !== instanceId) return Promise.resolve(null);
@@ -1262,7 +1310,7 @@ export function createRelayRegistryBindingProvider(
 }
 
 // ---------------------------------------------------------------------------
-// D418 — production `ProfileActivationProvider` for the profile-selector
+// production `ProfileActivationProvider` for the profile-selector
 // activation seam (`POST /api/workstation-access/activate-profile`).
 // Co-located with the route that consumes it. Unlike the binding provider
 // above, this derives the binding from the relay registry's GRANT snapshot
@@ -1276,7 +1324,7 @@ export function createRelayRegistryBindingProvider(
 export interface RelayRegistryProfileActivationProviderOptions {
   readonly relayRegistry: InMemoryRelayRegistry;
   /**
-   * Stable server-side pairing identity. Defaults to `getServerHostname()`;
+   * Stable server-side pairing identity. Defaults to `getServerHostname`;
    * injectable so tests can pin a deterministic value and assert
    * exact-match behavior against the client payload.
    */
@@ -1284,7 +1332,7 @@ export interface RelayRegistryProfileActivationProviderOptions {
 }
 
 /**
- * D418 — production `ProfileActivationProvider`. Derives the authoritative
+ * production `ProfileActivationProvider`. Derives the authoritative
  * Full Workstation binding for a profile-selector activation from the
  * relay registry's retained state for a connected relay:
  *
@@ -1295,7 +1343,7 @@ export interface RelayRegistryProfileActivationProviderOptions {
  *   - profileId             ← client selector (trusted desktop main)
  *   - profileRevision       ← client selector (trusted desktop main)
  *   - grantIds              ← grant snapshot's active grant ids
- *   - serverBindingId       ← `getServerHostname()` (stable server identity)
+ *   - serverBindingId       ← `getServerHostname` (stable server identity)
  *
  * Ineligibility (returns `null` — the route maps this to a truthful 404
  * `relay_binding_unavailable`, NEVER fabricating a binding):
@@ -1347,7 +1395,7 @@ export function createRelayRegistryProfileActivationProvider(
         return Promise.resolve(null);
       }
 
-      // D418 Commit 2 — the server-derived pairing generation (validated
+      // Commit 2 — the server-derived pairing generation (validated
       // relay-token row id). Missing/empty ⇒ ineligible.
       const pairingGeneration = relayRegistry.getPairingGeneration(relayId);
       if (pairingGeneration === null) return Promise.resolve(null);
@@ -1357,7 +1405,7 @@ export function createRelayRegistryProfileActivationProvider(
 
       // instanceId is carried by the grant snapshot; the client input
       // must match the registry's retained grant snapshot instanceId.
-      // D418 default-instance: an empty snapshot instanceId ("") is the
+      // default-instance: an empty snapshot instanceId ("") is the
       // canonical default instance and is a valid exact-match target, so
       // only the exact-equality check below gates eligibility.
       if (grantSnapshot.instanceId !== instanceId) return Promise.resolve(null);
@@ -1384,7 +1432,7 @@ export function createRelayRegistryProfileActivationProvider(
 }
 
 // ---------------------------------------------------------------------------
-// D418 Commit 3 — production Workstation execution-admission RESOLVER for
+// Commit 3 — production Workstation execution-admission RESOLVER for
 // the live post-model approval path.
 //
 // `app.ts` constructs one of these (bound to the shared
@@ -1400,7 +1448,7 @@ export function createRelayRegistryProfileActivationProvider(
 // class — then forwards the slim admission contract to the pure
 // {@link resolveWorkstationAdmission} policy.
 //
-// D418 task 3.1.2 — ADMISSION SLICE. Before the DECISION, when an active
+// task 3.1.2 — ADMISSION SLICE. Before the DECISION, when an active
 // Full Workstation session exists, the resolver selects the EXACT
 // active-session-bound relay (`live.relayId`), re-validates it against the
 // live relay registry's retained fingerprint, and admits ONE transient
@@ -1413,7 +1461,7 @@ export function createRelayRegistryProfileActivationProvider(
 // admission metadata only — it never replaces local Electron grant
 // authority and never widens `allowedRoots` (it carries no roots).
 //
-// D418 Commit 4 — DECISION. The factory admits an eligible `run_shell`
+// Commit 4 — DECISION. The factory admits an eligible `run_shell`
 // profile-bound-sandbox ATTEMPT when active session + exact plan +
 // `profile_bound_sandbox` + `run_shell` hold. A STATIC `scanCommand` refuses
 // only critical / elevation (no boundedness / timeout / dynamic-path /
@@ -1436,7 +1484,7 @@ export function createRelayRegistryProfileActivationProvider(
 // Contract guarantees preserved regardless of evidence completeness:
 //   - `none` ⇒ normal approval intact. The post-model treats `none` as
 //     "leave the prompt alone".
-//   - A bare D375-style client Auto-Approve flag never reaches this
+//   - A bare style client Auto-Approve flag never reaches this
 //     resolver: the post-model skips the consultation for anonymous turns
 //     (no `state.userId`), and a plan is admitted ONLY from the LIVE
 //     server-side session — a client flag alone cannot create a session
@@ -1478,18 +1526,21 @@ export interface WorkstationOverrideResolverRequest {
   readonly currentFolder: string;
   readonly workspacePath: string;
   readonly requiredRelayId?: string;
+  readonly verifiedOrdinaryOrigin?: VerifiedOrdinaryOrigin | null | undefined;
+  readonly agentId?: string;
+  readonly conversationId?: string;
   readonly clientMeta?: { readonly ip: string; readonly userAgent?: string | undefined } | null;
 }
 
 /**
- * D418/D486 — execution-class classification lives in the small pure module
- * below. D486 adds one exact opt-in: run_shell + execution=workstation maps
+ * execution-class classification lives in the small pure module
+ * below. adds one exact opt-in: run_shell + execution=workstation maps
  * to `real_workstation`. Routine calls may skip command-shape approval, but
  * Electron's exact local consent remains final authority. Everything else
  * remains `profile_bound_sandbox`.
  */
 /**
- * D418 task 3.1.2 — read the live relay-binding fingerprint for a relay id
+ * task 3.1.2 — read the live relay-binding fingerprint for a relay id
  * from the relay registry, for `WorkstationDispatchPlan` admission
  * re-validation. Each field is `null` when the relay is not connected or has
  * not advertised that piece of binding state. The profile id / revision come
@@ -1509,21 +1560,22 @@ function readRelayFingerprint(
     capabilityRevision: relayRegistry.getCapabilityRevision(relayId),
     profileId: profile?.profileId ?? null,
     profileRevision: profile?.profileRevision ?? null,
-    // D418 Commit 2 — the live relay's server-derived pairing generation. A
+    // Commit 2 — the live relay's server-derived pairing generation. A
     // null value (relay gone / never carried one) fails re-validation closed;
     // a non-null value that drifted from the plan's pairing generation fails
     // closed so a re-paired relay cannot consume a prior-generation plan.
     pairingGeneration: relayRegistry.getPairingGeneration(relayId),
-    // D440 Phase 1 — live grant-store + protected-policy revisions. Absent
+    // Phase 1 — live grant-store + protected-policy revisions. Absent
     // (null) when the relay did not advertise the corresponding snapshot;
     // revalidation skips the check when either side is absent.
     grantRevision: grant?.revision ?? null,
     protectedPolicyVersion: profile?.protectedPolicyVersion ?? null,
+    basicExecution: parseRelayBasicExecutionCapability(relayRegistry.getCapabilities(relayId)?.basicExecution),
   };
 }
 
 /**
- * D418 task 3.1.2 / Commit 3 — construct the live Workstation execution-
+ * task 3.1.2 / Commit 3 — construct the live Workstation execution-
  * admission resolver bound to `deps.registry` (active sessions),
  * `deps.relayRegistry` (live relay binding fingerprints for plan admission
  * re-validation), and `deps.planRegistry` (the transient
@@ -1538,7 +1590,7 @@ export function createWorkstationApprovalOverrideResolver(deps: {
   readonly relayRegistry: InMemoryRelayRegistry;
   readonly planRegistry: InMemoryWorkstationDispatchPlanRegistry;
   /**
-   * D418 Commit 4 — redacted `workstation_admission` audit sink. Invoked
+   * Commit 4 — redacted `workstation_admission` audit sink. Invoked
    * once per consultation with the admission decision (auto or none). Fire-
    * and-forget: a throw is swallowed + warned so a forensic row missing
    * never widens approval or blocks the turn. Production wires this to the
@@ -1552,7 +1604,7 @@ export function createWorkstationApprovalOverrideResolver(deps: {
   const now = deps.now ?? (() => new Date());
   return (request) => {
     const live = registry.get(request.userId);
-    const executionClass = classifyWorkstationExecutionClass(
+    let executionClass = classifyWorkstationExecutionClass(
       request.toolCall.name,
       request.toolCall.args,
     );
@@ -1560,7 +1612,7 @@ export function createWorkstationApprovalOverrideResolver(deps: {
     const toolCallId = request.toolCall.id ?? "";
 
     // -----------------------------------------------------------------
-    // D418 task 3.1.2 — ADMISSION. When an active Full Workstation session
+    // task 3.1.2 — ADMISSION. When an active Full Workstation session
     // exists, select the EXACT active-session-bound relay (`live.relayId`)
     // and admit ONE transient `WorkstationDispatchPlan` keyed by
     // `toolCall.id`. The plan pins the relay the tools node must dispatch
@@ -1602,7 +1654,7 @@ export function createWorkstationApprovalOverrideResolver(deps: {
             ...binding,
             executionClass,
             admittedAt: now().toISOString(),
-            // D440 Phase 1 — revision-coherent Current Folder / grant-store
+            // Phase 1 — revision-coherent Current Folder / grant-store
             // revision / protected-policy version. The Current Folder is pinned
             // from the per-dispatch request; the grant + protected-policy
             // revisions are sourced from the live relay's advisory snapshots
@@ -1615,7 +1667,7 @@ export function createWorkstationApprovalOverrideResolver(deps: {
           // Admit the plan ONLY when the bound relay is still the exact bound
           // relay. A stale/gone binding ⇒ NO plan admitted (Full Mode no-op for
           // this dispatch; the tools node then uses the normal first-eligible
-          // path, exactly as pre-D418). The plan never carries roots and never
+          // path, exactly as the legacy path). The plan never carries roots and never
           // widens `allowedRoots` — it is admission metadata only. `exactPlan`
           // is the binding proof the pure engine requires for `auto`.
           if (revalidation.ok) {
@@ -1627,8 +1679,41 @@ export function createWorkstationApprovalOverrideResolver(deps: {
       }
     }
 
+    // Basic has its own exact foreground plan; a Development session is never
+    // synthesized or borrowed. The selected Desktop remains local authority.
+    const origin = request.verifiedOrdinaryOrigin;
+    if (toolName === "exec_command" && toolCallId && origin?.kind === "local_electron"
+      && (live === null || live.relayId !== origin.relayId)
+      && origin.userId === request.userId && request.requiredRelayId === origin.relayId
+      && request.agentId && request.roomId && request.conversationId) {
+      const capabilities = relayRegistry.getCapabilities(origin.relayId);
+      const basic = parseRelayBasicExecutionCapability(capabilities?.basicExecution);
+      const grants = relayRegistry.getDesktopFilesystemGrantSnapshot(origin.relayId);
+      const revision = relayRegistry.getCapabilityRevision(origin.relayId);
+      if (basic && grants && revision !== null && capabilities?.profile === "desktop-agent" && capabilities.canExecuteLocal === true
+        && capabilities.workstationProfileSnapshot === undefined
+        && (relayRegistry.getProtocolVersion(origin.relayId) ?? 0) >= RELAY_BASIC_EXECUTION_PROTOCOL_VERSION
+        && relayRegistry.getUserId(origin.relayId) === origin.userId
+        && relayRegistry.getDesktopSessionId(origin.relayId) === origin.desktopSessionId
+        && relayRegistry.getPairingGeneration(origin.relayId) === origin.pairingGeneration
+        && (!request.currentFolder || request.currentFolder === basic.currentFolder)) {
+        const plan: WorkstationDispatchPlan = {
+          toolCallId, userId: request.userId, relayId: origin.relayId, instanceId: grants.instanceId,
+          desktopSessionId: origin.desktopSessionId, pairingGeneration: origin.pairingGeneration,
+          serverBindingId: basic.serverBindingId, profileId: null, profileRevision: null,
+          grantIds: [], grantRevision: null, capabilityRevision: revision,
+          executionClass: "basic_sandbox", admittedAt: now().toISOString(), currentFolder: basic.currentFolder,
+          protectedPolicyVersion: basic.protectedPolicyVersion, agentId: request.agentId,
+          roomId: request.roomId, conversationId: request.conversationId,
+        };
+        if (revalidatePlanAgainstRelay(plan, readRelayFingerprint(relayRegistry, origin.relayId)).ok) {
+          planRegistry.admit(plan); exactPlan = true; admittedPlan = plan; executionClass = "basic_sandbox";
+        }
+      }
+    }
+
     // -----------------------------------------------------------------
-    // D418 Commit 4 — INDEPENDENT STATIC SCAN REFUSAL. This is NOT
+    // Commit 4 — INDEPENDENT STATIC SCAN REFUSAL. This is NOT
     // containment evidence and does NOT assert that Electron created an
     // active sandbox. It refuses only critical destruction / elevation for
     // a run_shell attempt; it never inspects boundedness, timeout, dynamic
@@ -1645,7 +1730,7 @@ export function createWorkstationApprovalOverrideResolver(deps: {
     // prove or disprove local containment. Non-run_shell tools remain `none`
     // through the pure admission contract's `run_shell_required` gate.
     // -----------------------------------------------------------------
-    const isRunShell = toolName === "run_shell";
+    const isCommandTool = toolName === "run_shell" || toolName === "exec_command" || toolName === "write_stdin" || toolName === "local_git";
     const criticalOrElevationScanHit =
       requiresNormalWorkstationCommandApproval({
         toolName,
@@ -1654,7 +1739,7 @@ export function createWorkstationApprovalOverrideResolver(deps: {
       });
 
     // -----------------------------------------------------------------
-    // D418 Commit 4 — DECISION. The independent scan refusal returns `none`;
+    // Commit 4 — DECISION. The independent scan refusal returns `none`;
     // otherwise forward the slim admission contract to the pure
     // `resolveWorkstationAdmission` policy. The seam does NOT copy the active
     // session into a fake dispatch binding; `exactPlan` is the exact binding
@@ -1668,7 +1753,7 @@ export function createWorkstationApprovalOverrideResolver(deps: {
       executionClass,
       session: sessionEvidence(live),
       exactPlan,
-      tool: { name: toolName, operation: isRunShell ? "execute" : null },
+      tool: { name: toolName, operation: isCommandTool ? "execute" : null },
     };
     const decision: WorkstationAdmissionDecision = criticalOrElevationScanHit
       ? {
@@ -1680,7 +1765,7 @@ export function createWorkstationApprovalOverrideResolver(deps: {
       : resolveWorkstationAdmission(evidence);
 
     // -----------------------------------------------------------------
-    // D418 Commit 4 — emit the redacted runtime-owned `workstation_admission`
+    // Commit 4 — emit the redacted runtime-owned `workstation_admission`
     // audit row for EVERY consultation (auto or none). The row carries
     // execution class + outcome/reason + tool/tool-call id + OPAQUE
     // session/plan binding identifiers — NEVER command text, output, roots,
@@ -1703,10 +1788,10 @@ export function createWorkstationApprovalOverrideResolver(deps: {
         executionClass: decision.executionClass,
         outcome: decision.override,
         reason,
-        relayId: live?.relayId ?? "",
-        desktopSessionId: live?.desktopSessionId ?? "",
-        serverBindingId: live?.serverBindingId ?? "",
-        pairingGeneration: live?.pairingGeneration ?? "",
+        relayId: admittedPlan?.relayId ?? live?.relayId ?? "",
+        desktopSessionId: admittedPlan?.desktopSessionId ?? live?.desktopSessionId ?? "",
+        serverBindingId: admittedPlan?.serverBindingId ?? live?.serverBindingId ?? "",
+        pairingGeneration: admittedPlan?.pairingGeneration ?? live?.pairingGeneration ?? "",
         profileId: live?.profileId ?? "",
         profileRevision: live?.profileRevision ?? 0,
         capabilityRevision:

@@ -16,6 +16,8 @@ import {
   readReadyToWorkPresentationMode,
 } from "../../lib/ready-to-work-presentation";
 import { WorkstationSegment } from "./workstation-segment";
+import { supportsAgentAccess } from "../../hooks/use-agent-access";
+import { AgentAccessControl } from "../agent-access-control";
 
 const COMPONENT_LABELS: Record<ReadyToWorkComponentId, string> = {
   voice: "Voice",
@@ -35,6 +37,7 @@ const displayLabel = (component: ReadyDisplayStatus) =>
     : COMPONENT_LABELS[component.id as ReadyToWorkComponentId];
 
 const REASON_COPY: Record<ReadyToWorkReason, string> = {
+  saved_state_unavailable: "Saved startup settings are unavailable.",
   not_selected: "This choice is off.",
   restore_requested: "Not restored yet.",
   owner_unavailable: "Unavailable.",
@@ -97,6 +100,8 @@ function compactStatusLabel(loading: boolean, error: boolean): string {
 function conciseBlockerCopy(component: ReadyDisplayStatus): string {
   const componentLabel = displayLabel(component);
   switch (component.reason ?? "restore_requested") {
+    case "saved_state_unavailable":
+      return "Saved settings unavailable";
     case "not_selected":
     case "owner_rejected":
       return `${componentLabel} off`;
@@ -176,11 +181,20 @@ export function computeReadyToWorkPopoverPosition(
 }
 
 /**
- * D557 — the composer-adjacent presentation of the persisted Ready posture.
+ * Composer-adjacent presentation of the persisted Ready posture.
  * It deliberately reports aggregate state only; feature controls continue to
  * own their own authority and their own on/off actions.
  */
 export function ReadyToWorkSegment({
+  isDesktopShell = isDesktop,
+  readyToWork = desktopAPI?.readyToWork,
+  standardSegment,
+}: { isDesktopShell?: boolean; readyToWork?: DesktopReadyToWorkAPI; standardSegment?: ReactNode } = {}) {
+  if (isDesktopShell && supportsAgentAccess(readyToWork)) return <AgentAccessControl compact readyToWork={readyToWork} />;
+  return <LegacyReadyToWorkSegment isDesktopShell={isDesktopShell} readyToWork={readyToWork} standardSegment={standardSegment} />;
+}
+
+function LegacyReadyToWorkSegment({
   isDesktopShell = isDesktop,
   readyToWork = desktopAPI?.readyToWork,
   standardSegment,
@@ -255,7 +269,141 @@ export function ReadyToWorkSegment({
       </span>
     );
   }
+  if (status.mode === "needs_attention") {
+    return <ReadyToWorkPersistenceAttention status={status} readyToWork={readyToWork} onStatus={applyStatus} />;
+  }
   return <ReadyToWorkStatusSegment status={status} readyToWork={readyToWork} onStatus={applyStatus} />;
+}
+
+function ReadyToWorkPersistenceAttention({
+  status,
+  readyToWork,
+  onStatus,
+}: {
+  status: ReadyToWorkAggregateStatus;
+  readyToWork: DesktopReadyToWorkAPI;
+  onStatus: (status: ReadyToWorkAggregateStatus) => void;
+}) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const latestStatus = useRef(status);
+  const mounted = useRef(true);
+  const [open, setOpen] = useState(false);
+  const [popoverPosition, setPopoverPosition] = useState<ReadyToWorkPopoverPosition | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState(false);
+  const persistence = status.persistence;
+  latestStatus.current = status;
+  const primaryCopy = persistence?.liveAccess === "stopping"
+    ? "Stopping current access. Saved startup settings still need attention."
+    : "Saved settings need attention. Check the individual controls for current access.";
+  const reasonCopy = persistence?.reason === "unsupported"
+    ? "Use a compatible Desktop version to read these saved settings."
+    : persistence?.reason === "invalid"
+      ? "The saved settings could not be validated. Retry the status check or turn off Ready to work."
+      : "Retry the status check. You can also turn off Ready to work from Startup settings.";
+
+  const retry = async () => {
+    const requestedStatus = status;
+    setChecking(true);
+    setError(false);
+    try {
+      const next = await readyToWork.get();
+      if (mounted.current && latestStatus.current === requestedStatus) onStatus(next);
+    } catch {
+      if (mounted.current && latestStatus.current === requestedStatus) setError(true);
+    } finally {
+      if (mounted.current) setChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  const reposition = useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect) setPopoverPosition(computeReadyToWorkPopoverPosition(rect));
+  }, []);
+  const close = useCallback(() => {
+    setOpen(false);
+    setPopoverPosition(null);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (open) reposition();
+  }, [open, reposition]);
+
+  useEffect(() => {
+    if (open && popoverPosition) popoverRef.current?.focus();
+  }, [open, popoverPosition]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!popoverRef.current?.contains(event.target as Node) && !triggerRef.current?.contains(event.target as Node)) close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+        triggerRef.current?.focus();
+      }
+    };
+    const onScrollOrResize = () => reposition();
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", onScrollOrResize);
+    window.addEventListener("scroll", onScrollOrResize, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onScrollOrResize);
+      window.removeEventListener("scroll", onScrollOrResize, true);
+    };
+  }, [close, open, reposition]);
+
+  return (
+    <div className="relative min-w-0">
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label="Ready to work: Needs attention"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => { setOpen((current) => !current); setPopoverPosition(null); }}
+        className="inline-flex max-w-full min-w-0 items-center overflow-hidden whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] text-[var(--warning)] hover:bg-[var(--warning)]/10"
+      >Ready: Needs attention</button>
+      {open && popoverPosition ? createPortal(
+        <div
+          ref={popoverRef}
+          role="dialog"
+          aria-label="Ready to work details"
+          tabIndex={-1}
+          style={{
+            position: "fixed",
+            left: popoverPosition.left,
+            width: popoverPosition.width,
+            maxHeight: popoverPosition.maxHeight,
+            ...("top" in popoverPosition ? { top: popoverPosition.top } : { bottom: popoverPosition.bottom }),
+            zIndex: 60,
+          }}
+          className="overflow-y-auto rounded-md border border-border-strong bg-background-panel p-3 shadow-lg focus:outline-none"
+        >
+          <p className="text-sm font-medium text-foreground">Ready to work needs attention</p>
+          <p className="mt-2 text-xs text-foreground-muted">{primaryCopy}</p>
+          <p className="mt-1 text-xs text-foreground-muted">{reasonCopy}</p>
+          {error ? <p role="alert" className="mt-2 text-xs text-error">Status could not be refreshed. Current access may be unchanged.</p> : null}
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <button type="button" disabled={checking} onClick={() => { void retry(); }} className="rounded border border-border px-2 py-1 text-xs font-medium text-foreground disabled:opacity-60">{checking ? "Checking…" : "Retry status"}</button>
+            <Link to="/settings#startup" className="text-xs font-medium text-primary hover:underline">Startup settings</Link>
+          </div>
+        </div>,
+        document.body,
+      ) : null}
+    </div>
+  );
 }
 
 function ReadyToWorkSetupSegment() {

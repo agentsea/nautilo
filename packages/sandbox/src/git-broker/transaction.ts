@@ -1,5 +1,5 @@
 /**
- * D440 Phase 2 — broker-owned plumbing transaction filesystem helpers.
+ * broker-owned plumbing transaction filesystem helpers.
  *
  * Git subprocess orchestration stays in broker.ts. This module owns the
  * reversible filesystem artifacts: the temporary index, quarantined loose
@@ -371,4 +371,63 @@ export function installIndexAtomically(
       lockPath,
     });
   }
+}
+
+/** Read-only metadata stamp for network operations. Ref resolution never asks
+ * project Git config to resolve a remote or execute a helper. */
+export function captureNetworkRepository(identity: GitRepositoryIdentity, sourceBranch: string): {
+  readonly sourceOid: string; readonly indexHash: string; readonly repositoryStamp: string; readonly headRef: string | null;
+  readonly configurationStamp: string;
+} {
+  const read = (path: string): Buffer | null => {
+    try {
+      const info = lstatSync(path);
+      if (!info.isFile() || info.isSymbolicLink()) throw new Error("Unsafe repository metadata");
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const opened = fstatSync(fd);
+        if (opened.dev !== info.dev || opened.ino !== info.ino) throw new Error("Repository metadata changed");
+        return readFileSync(fd);
+      } finally { closeSync(fd); }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+  };
+  for (const name of ["objects/info/alternates", "objects/info/http-alternates", "info/grafts", "shallow"]) {
+    if (read(join(identity.commonDir, name)) !== null) throw new Error("Unsupported network object metadata");
+  }
+  const head = read(join(identity.gitDir, "HEAD"));
+  if (head === null) throw new Error("Missing repository HEAD");
+  const headText = head.toString("utf8").trim();
+  const ref = sourceBranch ? `refs/heads/${sourceBranch}` : headText.startsWith("ref: ") ? headText.slice(5) : null;
+  if (ref !== null && (!ref.startsWith("refs/heads/") || ref.split("/").some(part => !part || part === "." || part === ".."))) throw new Error("Invalid repository ref");
+  if (ref !== null) {
+    let current = identity.commonDir;
+    for (const part of ref.split("/").slice(0, -1)) {
+      current = join(current, part);
+      if (existsSync(current)) {
+        const info = lstatSync(current);
+        if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Unsafe ref parent");
+      }
+    }
+  }
+  const loose = ref === null ? null : read(join(identity.commonDir, ref));
+  const packed = read(join(identity.commonDir, "packed-refs"));
+  const oid = ref === null ? headText : loose?.toString("utf8").trim()
+    ?? packed?.toString("utf8").split("\n").find(line => line.split(" ")[1] === ref)?.split(" ")[0]
+    ?? "0".repeat(40);
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(oid)) throw new Error("Invalid repository OID");
+  const index = read(join(identity.gitDir, "index"));
+  const indexHash = index === null ? "<missing>" : createHash("sha256").update(index).digest("hex");
+  const directories = [identity.workTree, identity.gitDir, identity.commonDir].map(path => {
+    const info = lstatSync(path);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Repository identity changed");
+    return [path, info.dev, info.ino];
+  });
+  const configurationStamp = createHash("sha256").update(JSON.stringify([directories,
+    read(join(identity.commonDir, "config"))?.toString("hex"), read(join(identity.gitDir, "config.worktree"))?.toString("hex")])).digest("hex");
+  const repositoryStamp = createHash("sha256").update(JSON.stringify([directories, head.toString("hex"), loose?.toString("hex"),
+    packed?.toString("hex"), indexHash, configurationStamp])).digest("hex");
+  return { sourceOid: oid, indexHash, repositoryStamp, headRef: headText.startsWith("ref: ") ? headText.slice(5) : null, configurationStamp };
 }

@@ -56,6 +56,10 @@ export interface LocalDispatchPolicyState {
 }
 
 export interface WorkstationHandlers {
+  dispatchLocalGit(input: {
+    readonly request: RelayDispatchRequest;
+    readonly policy: LocalDispatchPolicyState;
+  }): Promise<DesktopDispatchDecision>;
   dispatchRealWorkstation(input: {
     readonly request: RelayDispatchRequest;
     readonly signal: AbortSignal | undefined;
@@ -335,13 +339,16 @@ export function createWorkstationHandlers(
   const executeGit = async (
     req: RelayDispatchRequest,
     policy: LocalDispatchPolicyState,
+    operationInput: unknown,
   ): Promise<RelayDispatchResult> => {
-    const parsed = parseRelayRunShellGitOperation(req.args["git"]);
+    const parsed = parseRelayRunShellGitOperation(operationInput);
+    const errorPrefix = req.toolName === "local_git" ? "LOCAL_GIT" : "RUN_SHELL_GIT";
+    const toolLabel = req.toolName === "local_git" ? "local_git" : "run_shell git";
     if (!parsed.ok)
       return {
         status: "error",
-        errorCode: "RUN_SHELL_GIT_INVALID",
-        error: `run_shell git operation rejected: ${parsed.error}`,
+        errorCode: `${errorPrefix}_INVALID`,
+        error: `${toolLabel} operation rejected: ${parsed.error}`,
       };
     if (
       policy.revalidatedShellBinding === undefined ||
@@ -349,9 +356,8 @@ export function createWorkstationHandlers(
     )
       return {
         status: "error",
-        errorCode: "RUN_SHELL_GIT_REQUIRES_BINDING",
-        error:
-          "run_shell git operation requires a locally revalidated profile-bound shell binding; an unbound structured git dispatch is refused",
+        errorCode: `${errorPrefix}_REQUIRES_BINDING`,
+        error: `${toolLabel} operation requires a locally revalidated profile-bound shell binding; an unbound structured git dispatch is refused`,
       };
     const grantedRoots = [
       ...new Set([
@@ -365,9 +371,8 @@ export function createWorkstationHandlers(
     if (grantedRoots.length === 0)
       return {
         status: "error",
-        errorCode: "RUN_SHELL_GIT_NO_WRITABLE_GRANT",
-        error:
-          "run_shell git operation requires at least one active writable grant (create_modify/delete); the worktree target parent must be granted explicitly",
+        errorCode: `${errorPrefix}_NO_WRITABLE_GRANT`,
+        error: `${toolLabel} operation requires at least one active writable grant (create_modify/delete); the worktree target parent must be granted explicitly`,
       };
     const operation = parsed.operation;
     const mutating =
@@ -378,9 +383,8 @@ export function createWorkstationHandlers(
     if (mutating && !req.approvalObtained)
       return {
         status: "error",
-        errorCode: "RUN_SHELL_GIT_APPROVAL_REQUIRED",
-        error:
-          "run_shell mutating git operation requires approval before execution; the broker never mutates durable state without approval",
+        errorCode: `${errorPrefix}_APPROVAL_REQUIRED`,
+        error: `${req.toolName} mutating git operation requires approval before execution; the broker never mutates durable state without approval`,
       };
     const broker = getGitBroker(policy.revalidatedShellBinding, {
       authority: {
@@ -420,6 +424,11 @@ export function createWorkstationHandlers(
     return { status: "ok", result: disposition };
   };
 
+  const dispatchLocalGit: WorkstationHandlers["dispatchLocalGit"] = async ({ request, policy }) => {
+    if (request.toolName !== "local_git") return { handled: false };
+    return { handled: true, result: await executeGit(request, policy, request.args) };
+  };
+
   const dispatchSandboxedRunShell: WorkstationHandlers["dispatchSandboxedRunShell"] =
     async ({ request: req, signal, guardRoots, policy, sandbox }) => {
       if (req.toolName !== "run_shell") return { handled: false };
@@ -447,7 +456,7 @@ export function createWorkstationHandlers(
           },
         };
       if (hasGit)
-        return { handled: true, result: await executeGit(req, policy) };
+        return { handled: true, result: await executeGit(req, policy, req.args["git"]) };
       if (!command)
         return {
           handled: true,
@@ -558,5 +567,5 @@ export function createWorkstationHandlers(
       }
     };
 
-  return { dispatchRealWorkstation, dispatchSandboxedRunShell };
+  return { dispatchLocalGit, dispatchRealWorkstation, dispatchSandboxedRunShell };
 }

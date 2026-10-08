@@ -1,5 +1,5 @@
 /**
- * D418 task 3.1.2 — unit tests for the transient `WorkstationDispatchPlan`
+ * task 3.1.2 — unit tests for the transient `WorkstationDispatchPlan`
  * admission store + the pure `revalidatePlanAgainstRelay` re-validation.
  *
  * These tests pin the admission-metadata contract:
@@ -28,7 +28,7 @@ import {
 const FIXED_TS = "2026-07-13T12:00:00.000Z";
 const clock = () => new Date(FIXED_TS);
 
-function plan(overrides: Partial<WorkstationDispatchPlan> = {}): WorkstationDispatchPlan {
+function plan(overrides: Partial<Extract<WorkstationDispatchPlan, { executionClass: "profile_bound_sandbox" | "typed_broker" | "real_workstation" }>> = {}): Extract<WorkstationDispatchPlan, { executionClass: "profile_bound_sandbox" | "typed_broker" | "real_workstation" }> {
   return {
     toolCallId: "tc-1",
     userId: "user-1",
@@ -43,7 +43,7 @@ function plan(overrides: Partial<WorkstationDispatchPlan> = {}): WorkstationDisp
     capabilityRevision: 10,
     executionClass: "profile_bound_sandbox",
     admittedAt: FIXED_TS,
-    currentFolder: "/Users/test/project",
+    currentFolder: "/tmp/test/project",
     grantRevision: 8,
     protectedPolicyVersion: 3,
     ...overrides,
@@ -66,7 +66,7 @@ function fingerprint(
   };
 }
 
-describe("InMemoryWorkstationDispatchPlanRegistry — admit / get (D418 task 3.1.2)", () => {
+describe("InMemoryWorkstationDispatchPlanRegistry — admit / get (task 3.1.2)", () => {
   it("admits a plan keyed by toolCallId and returns it from get", () => {
     const registry = new InMemoryWorkstationDispatchPlanRegistry({ now: clock });
     registry.admit(plan());
@@ -198,7 +198,7 @@ describe("InMemoryWorkstationDispatchPlanRegistry — TTL + invalidation", () =>
   });
 });
 
-describe("revalidatePlanAgainstRelay (D418 task 3.1.2)", () => {
+describe("revalidatePlanAgainstRelay (task 3.1.2)", () => {
   it("accepts an exact fingerprint match", () => {
     expect(revalidatePlanAgainstRelay(plan(), fingerprint())).toEqual({ ok: true });
   });
@@ -266,7 +266,7 @@ describe("revalidatePlanAgainstRelay (D418 task 3.1.2)", () => {
     expect(r.reason).toBe("profile_binding_mismatch");
   });
 
-  it("D418 Commit 2 — rejects a pairingGeneration mismatch (relay re-paired, desktopSessionId reused)", () => {
+  it("Commit 2 — rejects a pairingGeneration mismatch (relay re-paired, desktopSessionId reused)", () => {
     const r = revalidatePlanAgainstRelay(plan(), fingerprint({ pairingGeneration: "pairing-re-paired" }));
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");

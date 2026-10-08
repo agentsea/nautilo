@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 
 export interface PinDialogProps {
   onSubmit: (pin: string) => void;
@@ -6,6 +6,7 @@ export interface PinDialogProps {
   error?: string;
   title?: string;
   prompt?: string;
+  details?: ReactNode;
   submitting?: boolean;
   submittingLabel?: string;
 }
@@ -16,6 +17,7 @@ export function PinDialog({
   error,
   title = "Verify Identity",
   prompt = "Enter your PIN to confirm who you are",
+  details,
   submitting = false,
   submittingLabel = "Checking…",
 }: PinDialogProps) {
@@ -70,6 +72,8 @@ export function PinDialog({
         </div>
 
         <p className="mt-3 text-sm text-foreground-muted">{prompt}</p>
+
+        {details}
 
         <input
           ref={inputRef}

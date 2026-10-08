@@ -28,6 +28,10 @@ const desktopTypes = readFileSync(
 function handlerSlice(channel: string): string {
   const start = main.indexOf(`ipcMain.handle("workstationProfiles:${channel}"`);
   expect(start).toBeGreaterThan(-1);
+  if (channel === "prepareActivation") {
+    const helperStart = main.indexOf("async function prepareDevelopmentReviewForSender(");
+    return main.slice(helperStart, start);
+  }
   if (channel === "getServerSessionStatus") {
     const helperStart = main.indexOf("async function getWorkstationServerSessionStatus(");
     const helperEnd = main.indexOf('ipcMain.handle("workstationProfiles:getServerSessionStatus"', helperStart);
@@ -38,12 +42,8 @@ function handlerSlice(channel: string): string {
     return `${main.slice(start, main.indexOf("ipcMain.handle(", start + 1))} ${main.slice(helperStart, start)}`;
   }
   if (channel === "deactivateActiveProfile") {
-    const activationSection = main.indexOf(
-      "// ── Workstation Profile activation seam (selectActiveProfile)",
-      start,
-    );
-    expect(activationSection).toBeGreaterThan(start);
-    return main.slice(start, activationSection);
+    const helperStart = main.indexOf("async function disableDevelopmentForSender(");
+    return main.slice(helperStart, start);
   }
   const next = main.indexOf("ipcMain.handle(", start + 1);
   return main.slice(start, next === -1 ? undefined : next);
@@ -53,7 +53,8 @@ function uncontainedHandlerSlice(channel: "getStatus" | "activate" | "disable"):
   const start = main.indexOf(`ipcMain.handle("uncontainedHostCommands:${channel}"`);
   expect(start).toBeGreaterThan(-1);
   const next = main.indexOf("ipcMain.handle(", start + 1);
-  return main.slice(start, next === -1 ? undefined : next);
+  const handler = main.slice(start, next === -1 ? undefined : next);
+  return channel === "getStatus" ? `${handler} ${main.slice(main.indexOf("async function readUncontainedHostCommandsStatus("), start)}` : handler;
 }
 
 describe("uncontained-host-command IPC", () => {
@@ -158,12 +159,15 @@ describe("workstation profile review IPC — no renderer-supplied authority", ()
     }
   });
 
-  test("prepareActivation runs main-side seed + discovery and returns review facts + seed identity only", () => {
+  test("prepareActivation reviews the actual stored profile and returns configured scope without authority", () => {
     const slice = handlerSlice("prepareActivation");
     expect(slice).toContain("materializeSeedProfileForReview()");
-    expect(slice).toContain("runSeedDiscoveryReview(seed.profile)");
-    expect(slice).toContain("buildSeedDescriptor(seed.profile)");
+    expect(slice).toContain("runSeedDiscoveryReview(profile)");
+    expect(slice).toContain("buildSeedDescriptor(profile)");
     expect(slice).toContain("review: review.review");
+    expect(slice).toContain("stored.ok ? stored.data.profile : seed.profile");
+    expect(slice).toContain("developmentProfileScope(profile");
+    expect(slice).toContain("readyBindingIsCurrent(binding, generation)");
     // It must not return discovered facts or activate.
     expect(slice).not.toContain("result.facts");
     expect(slice).not.toContain("activate(");
@@ -350,7 +354,7 @@ describe("workstation profile management IPC — sender gating", () => {
   test("every management handler sender-gates before privileged work", () => {
     for (const channel of MANAGEMENT_CHANNELS) {
       const slice = handlerSlice(channel);
-      const senderGate = slice.indexOf("assertMainWindowSender(e)");
+      const senderGate = slice.indexOf(channel === "deactivateActiveProfile" ? "resolveSessionFromSender(e)" : "assertMainWindowSender(e)");
       expect(senderGate).toBeGreaterThan(-1);
       expect(senderGate).toBeLessThan(
         slice.indexOf(`workstationProfiles:${channel}`) + 160,
@@ -620,7 +624,7 @@ describe("workstation profile activation IPC — preload + workbench surface", (
   test("workbench desktop.ts declares selectActiveProfile with the redacted return shape", () => {
     const apiStart = desktopTypes.indexOf("export interface DesktopWorkstationProfilesAPI");
     expect(apiStart).toBeGreaterThan(-1);
-    const apiBlock = desktopTypes.slice(apiStart, apiStart + 3200);
+    const apiBlock = desktopTypes.slice(apiStart, desktopTypes.indexOf("export interface ", apiStart + 1));
     expect(apiBlock).toContain("selectActiveProfile:");
     const methodStart = apiBlock.indexOf("selectActiveProfile:");
     const methodBlock = apiBlock.slice(methodStart, methodStart + 900);

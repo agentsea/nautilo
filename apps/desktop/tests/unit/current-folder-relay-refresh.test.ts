@@ -37,7 +37,8 @@ describe("Current Folder relay root refresh wiring", () => {
     const eventIdx = fnSlice.indexOf(
       'sendToActiveRenderer("currentFolder:pathChanged", p)',
     );
-    const refreshIdx = fnSlice.indexOf('refreshRelayForCurrentFolder("current-folder commit")');
+    // Folder selection refreshes admission while preserving owned executions.
+    const refreshIdx = fnSlice.indexOf('refreshRelayForCurrentFolder("current-folder commit", true)');
     const refreshGuardIdx = fnSlice.indexOf("if (options.refreshRelay !== false)");
 
     expect(usabilityIdx).toBeGreaterThan(-1);

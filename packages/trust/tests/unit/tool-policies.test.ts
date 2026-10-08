@@ -2,34 +2,11 @@ import { describe, test, expect } from "bun:test";
 import { getToolPolicy, getRegisteredToolNames } from "../../src/tool-policies";
 
 describe("tool policy registry", () => {
-  test("all built-in tool policies are registered, including D066 transcribe_audio + M088A share_artifact", () => {
+  test("all built-in tool policies are registered, including transcribe_audio + M088A share_artifact", () => {
     const names = getRegisteredToolNames();
-    // M144 — task + 3 intent shortcuts (in_scope / in_background / in_private_namespace).
-    // M145 — schedule (+1).
-    // D263 — +2 skill_manage + view_skill.
-    // M148 — removed delegate_to_subagent + do_in_private_namespace (-2 → 38).
-    // M151 — added ask_peer (+1 → 39).
-    // M189 — +1 mini_app (→ 40).
-    // D336 — +1 snapshot (→ 49), +4 act/read (→ 53), +3 screenshot/mouse/get (→ 56), +1 scroll (→ 57).
-    // D138 — +1 google_workspace (→ 58).
-    // D363 — +1 generate_repo_docs (→ 59).
-    // D373 — +1 terminal (→ 60).
-    // D362 — +2 office + edit_doc (→ 62).
-    // D379 — +4 command_manage + view_command + discover_commands + eject_command (→ 66).
-    // D379 — +1 launch_customization (→ 67).
-    // D055 — +1 hue_lights (→ 68).
-    // D417 — +1 ingest_local_media +1 extract_audio_from_video (→ 70).
-    // D419 — +1 activate_tools + deactivate_tools (→ 72). D448 adds
-    // top-level apply_patch (→ 73). Browser hardening adds native navigation/actions (→ 84).
-    // D497 adds bounded Current Folder adoption (→ 85). D504 adds
-    // browser_read_page (→ 86). D516 Wave 1A adds the semantic
-    // computer_observe + computer_do policies (→ 88); D516 2.1.3b adds
-    // read-only computer_verify (→ 89). Removing eight legacy desktop_*
-    // policies and retaining D560 security_scan leaves 95 policies. D456 adds
-    // three exact Notion and four exact Slack policies (→ 102). D568 adds the
-    // connected website read policy (→ 103). D585 adds public browse_web (→ 104).
-    // General website task execution adds one action-capable policy (105).
-    expect(names).toHaveLength(105);
+    expect(names).toHaveLength(107);
+    expect(names).toContain("exec_command");
+    expect(names).toContain("write_stdin");
     expect(names).toContain("browse_web");
     expect(names).toContain("apply_patch");
     expect(names).toContain("select_current_folder");
@@ -73,7 +50,7 @@ describe("tool policy registry", () => {
     expect(policy.requiredCapability).toBe("use_project_content");
   });
 
-  test("D448 apply_patch is destructive and requires project-content authority", () => {
+  test("apply_patch is destructive and requires project-content authority", () => {
     const policy = getToolPolicy("apply_patch");
     expect(policy).toMatchObject({
       requiredCapability: "use_project_content",
@@ -83,7 +60,7 @@ describe("tool policy registry", () => {
     });
   });
 
-  test("D497 Current Folder adoption uses the local Electron relay capability", () => {
+  test("Current Folder adoption uses the local Electron relay capability", () => {
     expect(getToolPolicy("select_current_folder")).toMatchObject({
       requiredCapability: "control_desktop",
       impact: "high",
@@ -106,7 +83,7 @@ describe("tool policy registry", () => {
     expect(searchPolicy.impact).toBe("read-only");
   });
 
-  test("D419 activation controls are read-only, ungated cloud meta-tools", () => {
+  test("activation controls are read-only, ungated cloud meta-tools", () => {
     for (const name of ["activate_tools", "deactivate_tools"]) {
       const policy = getToolPolicy(name);
       expect(policy.requiredCapability).toBeNull();
@@ -116,7 +93,7 @@ describe("tool policy registry", () => {
     }
   });
 
-  test("D456 Notion reads are read-only while page creation remains approval-gated", () => {
+  test("Notion reads are read-only while page creation remains approval-gated", () => {
     for (const name of ["notion_search", "notion_retrieve_page"]) {
       expect(getToolPolicy(name)).toMatchObject({
         requiredCapability: null,
@@ -132,7 +109,7 @@ describe("tool policy registry", () => {
     });
   });
 
-  test("D456 Slack reads are read-only while posting remains approval-gated", () => {
+  test("Slack reads are read-only while posting remains approval-gated", () => {
     for (const name of ["slack_list_conversations", "slack_get_channel_messages", "slack_search_messages"]) {
       expect(getToolPolicy(name)).toMatchObject({
         requiredCapability: null,
@@ -156,7 +133,7 @@ describe("tool policy registry", () => {
   });
 
   test("workstation shell requires use_workstation with destructive impact", () => {
-    for (const name of ["run_shell"]) {
+    for (const name of ["run_shell", "exec_command", "write_stdin"]) {
       const policy = getToolPolicy(name);
       expect(policy.requiredCapability).toBe("use_workstation");
       expect(policy.impact).toBe("destructive");
@@ -268,7 +245,7 @@ describe("tool policy registry", () => {
     expect(policy.requiredCapability).toBeNull();
   });
 
-  test("generate_image is low-impact, gated by use_image_generation (D113 / M128)", () => {
+  test("generate_image is low-impact, gated by use_image_generation (M128)", () => {
     // M128 — generate_image now requires use_image_generation (was null)
     const policy = getToolPolicy("generate_image");
     expect(policy.requiredCapability).toBe("use_image_generation");
@@ -285,7 +262,7 @@ describe("tool policy registry", () => {
     }
   });
 
-  test("D516 semantic Computer use has a dedicated relay gate and no generic approval", () => {
+  test("semantic Computer use has a dedicated relay gate and no generic approval", () => {
     const observe = getToolPolicy("computer_observe");
     expect(observe).toMatchObject({
       requiredCapability: "control_desktop",
@@ -311,7 +288,7 @@ describe("tool policy registry", () => {
     });
   });
 
-  test("D336 browser_snapshot is a low-impact relay tool gated by control_browser, no approval", () => {
+  test("browser_snapshot is a low-impact relay tool gated by control_browser, no approval", () => {
     const policy = getToolPolicy("browser_snapshot");
     expect(policy.requiredCapability).toBe("control_browser");
     expect(policy.impact).toBe("low");
@@ -320,7 +297,7 @@ describe("tool policy registry", () => {
     expect(policy.requiresApproval).not.toBe(true);
   });
 
-  test("D504 browser_read_page is a read-only relay tool gated by control_browser", () => {
+  test("browser_read_page is a read-only relay tool gated by control_browser", () => {
     const policy = getToolPolicy("browser_read_page");
     expect(policy.requiredCapability).toBe("control_browser");
     expect(policy.impact).toBe("read-only");
@@ -347,7 +324,7 @@ describe("tool policy registry", () => {
     expect(policy.requiresApproval).not.toBe(true);
   });
 
-  test("D055 hue_lights is a low-impact relay tool gated by control_home", () => {
+  test("hue_lights is a low-impact relay tool gated by control_home", () => {
     const policy = getToolPolicy("hue_lights");
     expect(policy.requiredCapability).toBe("control_home");
     expect(policy.impact).toBe("low");

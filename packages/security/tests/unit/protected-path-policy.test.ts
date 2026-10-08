@@ -20,6 +20,20 @@ const DARWIN_HOME = POSIX_HOME;
 const LINUX_HOME = nodePath.posix.join(nodePath.posix.sep, "home", "alice");
 const WIN32_HOME = nodePath.win32.join("C:\\Users", "alice");
 
+describe("GitHub CLI credential protection", () => {
+  for (const platform of ["darwin", "linux"] as const) {
+    test(`${platform} denies the default account directory, files, and granting its ancestor`, () => {
+      const homeDir = "/tmp/test-user";
+      const policy = buildProtectedPathPolicy({ homeDir, platform });
+      for (const candidate of [".config/gh", ".config/gh/hosts.yml", ".config"]) {
+        expect(policy.check(`${homeDir}/${candidate}`).allowed).toBe(false);
+      }
+      expect(policy.check(`${homeDir}/.config/unrelated`).allowed).toBe(true);
+      expect(policy.descriptors.find(item => item.canonicalPath === `${homeDir}/.config/gh`)?.category).toBe("cloud");
+    });
+  }
+});
+
 function findDescriptor(
   descriptors: readonly ProtectedPathDescriptor[],
   canonicalPath: string,

@@ -90,6 +90,8 @@ const CANON: Record<string, CanonEntry> = {
   // The "standardVerb" here is the unscanned-allowed path (benign shell:
   // `echo hi`, `ls`). Scanner hits are asserted separately below.
   run_shell:          { impact: "destructive", standardVerb: "ask" },
+  exec_command:       { impact: "destructive", standardVerb: "prove_it" },
+  write_stdin:        { impact: "destructive", standardVerb: "prove_it" },
   // generic HIL is auto because invocation-service owns the sole exact
   // review after Electron resolves the remote user and host-trust evidence.
   structured_ssh_auth: { impact: "high", standardVerb: "auto" },
@@ -314,6 +316,8 @@ describe("tool impact canon", () => {
           name === "transcribe_audio" ||
           name === "convert" ||
           name === "apply_patch" ||
+          name === "exec_command" ||
+          name === "write_stdin" ||
           name === "select_current_folder" ||
           name === "structured_ssh_auth" ||
           name === "structured_ssh_exec" ||
