@@ -20,6 +20,11 @@ import {
   mergeDirectoryEntries,
   type DirectoryEntry,
 } from "@/features/new-conversation/directory";
+import {
+  canUseExternalRoomVisibility,
+  roomVisibilityFields,
+  type RoomVisibility,
+} from "@/features/new-conversation/room-visibility";
 import { getApiClient } from "@/lib/api";
 import { viewerCan } from "@/lib/viewer-capabilities";
 import { useAuth } from "@/providers/auth";
@@ -50,7 +55,7 @@ export default function NewChatScreen() {
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [selected, setSelected] = useState<Map<string, DirectoryEntry>>(new Map());
   const [name, setName] = useState("");
-  const [isPublic, setIsPublic] = useState(false);
+  const [visibility, setVisibility] = useState<RoomVisibility>("private");
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -69,6 +74,10 @@ export default function NewChatScreen() {
   const canCreateRooms =
     viewerCan(viewer, "create_rooms") || viewerCan(viewer, "manage_rooms");
   const canManageRooms = viewer?.capabilities.includes("manage_rooms") ?? false;
+  const externalRoomVisibilitySupported = canUseExternalRoomVisibility(
+    viewerState,
+    viewer?.roomDiscoverability,
+  );
   const directoryVisible = mode !== "chooser";
 
   const revealHeaderControl = useCallback((offset: number) => {
@@ -150,6 +159,11 @@ export default function NewChatScreen() {
   }, [canInvokeAgents]);
 
   useEffect(() => {
+    if (viewerState !== "verified" || viewer?.roomDiscoverability === true) return;
+    setVisibility((current) => current === "external" ? "private" : current);
+  }, [viewerState, viewer?.roomDiscoverability]);
+
+  useEffect(() => {
     if (!directoryVisible) return;
     const timer = setTimeout(() => void loadDirectory(true), 250);
     return () => clearTimeout(timer);
@@ -160,7 +174,7 @@ export default function NewChatScreen() {
     setQuery("");
     setSelected(new Map());
     setName("");
-    setIsPublic(false);
+    setVisibility("private");
     setError(null);
   }, []);
 
@@ -224,8 +238,15 @@ export default function NewChatScreen() {
       setError("Select at least two people or Genies for a group.");
       return;
     }
-    if (!canCreateRooms || (isPublic && !canManageRooms)) {
+    if (!canCreateRooms || (visibility !== "private" && !canManageRooms)) {
       setError("You do not have permission to create groups or rooms on this server.");
+      return;
+    }
+    const visibilityFields = mode === "room"
+      ? roomVisibilityFields(visibility, externalRoomVisibilitySupported)
+      : { kind: "group" as const };
+    if (!visibilityFields) {
+      setError("External rooms are unavailable on this server. Choose Private or Public.");
       return;
     }
     setCreating(true);
@@ -238,7 +259,7 @@ export default function NewChatScreen() {
       const created = await getApiClient(activeServer.serverUrl).createRoom({
         label,
         members,
-        kind: mode === "room" ? (isPublic ? "open" : "private") : "group",
+        ...visibilityFields,
         catalogueKind: mode === "room" ? "room" : "chat",
       });
       navigateToRoom(created);
@@ -247,7 +268,7 @@ export default function NewChatScreen() {
     } finally {
       setCreating(false);
     }
-  }, [activeServer, canCreateRooms, canManageRooms, isPublic, mode, name, navigateToRoom, selected, viewerUserId]);
+  }, [activeServer, canCreateRooms, canManageRooms, externalRoomVisibilitySupported, mode, name, navigateToRoom, selected, viewerUserId, visibility]);
 
   const visibleEntries = useMemo(
     () => entries.filter((entry) => entry.kind !== "user" || entry.id !== viewerUserId),
@@ -274,7 +295,8 @@ export default function NewChatScreen() {
   const canCreate =
     !creating &&
     canCreateRooms &&
-    (!isPublic || canManageRooms) &&
+    (visibility === "private" || canManageRooms) &&
+    (visibility !== "external" || externalRoomVisibilitySupported) &&
     name.trim().length > 0 &&
     (mode === "room" || (mode === "group" && selected.size >= 2));
 
@@ -348,7 +370,7 @@ export default function NewChatScreen() {
         <View style={styles.chooserList}>
           <ChoiceRow icon="person-outline" title="Direct message" detail={canInvokeAgents ? "Talk privately with one person or Genie" : "Talk privately with one person"} onPress={() => enterMode("direct")} styles={styles} theme={t} />
           <ChoiceRow icon="people-outline" title="New group" detail={canInvokeAgents ? "Bring people and Genies together" : "Bring people together"} onPress={() => enterMode("group")} styles={styles} theme={t} />
-          <ChoiceRow icon="chatbubbles-outline" title="New room" detail="Create a private or public space" onPress={() => enterMode("room")} styles={styles} theme={t} />
+          <ChoiceRow icon="chatbubbles-outline" title="New room" detail="Create a private, external, or public space" onPress={() => enterMode("room")} styles={styles} theme={t} />
         </View>
       </View>
     );
@@ -380,11 +402,19 @@ export default function NewChatScreen() {
 
       {mode === "room" ? (
         <View style={styles.visibilitySection}>
-          <Text style={styles.fieldLabel}>Who can find this room?</Text>
+          <Text style={styles.fieldLabel}>Room access</Text>
           <View style={styles.segmented}>
-            <VisibilityChoice selected={!isPublic} label="Private" icon="lock-closed-outline" onPress={() => setIsPublic(false)} styles={styles} theme={t} />
-            <VisibilityChoice selected={isPublic} label="Public" icon="globe-outline" onPress={() => setIsPublic(true)} styles={styles} theme={t} />
+            <VisibilityChoice selected={visibility === "private"} label="Private" icon="lock-closed-outline" onPress={() => setVisibility("private")} styles={styles} theme={t} />
+            {externalRoomVisibilitySupported || visibility === "external" ? (
+              <VisibilityChoice selected={visibility === "external"} label="External" icon="eye-off-outline" onPress={() => setVisibility("external")} styles={styles} theme={t} />
+            ) : null}
+            <VisibilityChoice selected={visibility === "public"} label="Public" icon="globe-outline" onPress={() => setVisibility("public")} styles={styles} theme={t} />
           </View>
+          {visibility === "external" ? (
+            <Text style={styles.visibilityHelp}>{externalRoomVisibilitySupported
+              ? "Public access, hidden from discovery"
+              : "Waiting to verify External room support. Check your connection."}</Text>
+          ) : null}
         </View>
       ) : null}
 
@@ -538,6 +568,7 @@ function createStyles(t: AppTheme) {
     visibilityChoiceSelected: { backgroundColor: t.color.action.primaryBg, borderColor: t.color.action.primaryBg },
     visibilityText: { color: t.color.text.foreground, ...t.typography.label },
     visibilityTextSelected: { color: t.color.text.onPrimary },
+    visibilityHelp: { color: t.color.text.muted, ...t.typography.caption },
     selectionHeader: { paddingBottom: t.spacing.sm },
     selectionTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: t.spacing.sm },
     sectionTitle: { flexShrink: 1, color: t.color.text.foreground, ...t.typography.subheading },

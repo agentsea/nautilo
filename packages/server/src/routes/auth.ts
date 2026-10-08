@@ -78,6 +78,7 @@ import {
   WHOAMI_VARY,
   whoamiIfNoneMatchEquals,
   whoamiWeakETagFromProjection,
+  WHOAMI_ROOM_DISCOVERABILITY_SUPPORTED,
 } from "../auth/whoami-conditional-http";
 import {
   createApprovalResolutionCoordinator,
@@ -2459,6 +2460,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
         office: {
           enabled: officeEnabled,
         },
+        roomDiscoverability: WHOAMI_ROOM_DISCOVERABILITY_SUPPORTED,
       },
       highestRole,
     };

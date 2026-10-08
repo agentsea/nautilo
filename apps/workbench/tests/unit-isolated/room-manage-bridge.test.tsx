@@ -10,6 +10,7 @@ mock.module("../../src/hooks/use-auth", () => ({
   useAuth: () => ({
     viewer: {
       sessionActorId: "viewer-actor",
+      features: { office: { enabled: false } },
     },
   }),
 }));
@@ -60,6 +61,7 @@ describe("RoomManageBridge", () => {
       initialMembers: [],
       open: true,
       viewerCanManageRooms: true,
+      viewerSupportsRoomDiscoverability: false,
     });
 
     view.unmount();

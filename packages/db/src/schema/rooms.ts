@@ -1,6 +1,7 @@
 import { sql, type SQL } from "drizzle-orm";
 import {
   bigint,
+  boolean,
   check,
   index,
   integer,
@@ -127,8 +128,8 @@ export const rooms = pgTable(
     humanActorIds: uuid("human_actor_ids").array().notNull().default([]),
     /**
      * D111 — Room kind: 'private' | 'group' | 'multi_agent' | 'subthread'.
-     * M124 adds 'open' — a discoverable, self-joinable public room
-     * (single-tenant: 'open' ⇔ listed in this Server's directory). Distinct
+     * 'open' is a self-joinable public room; `discoverable` controls listing
+     * in this Server's directory independently of public access. Distinct
      * from `type` (which is the legacy M042B 'private' | 'shared' | 'dm'
      * bucket; will be retired in a follow-up sweep). `kind` is the dispatch
      * surface for `selectRoomShape()` (D124 Phase 6) and the subthread
@@ -151,6 +152,8 @@ export const rooms = pgTable(
     })
       .notNull()
       .default("private"),
+    /** Directory and automatic landing eligibility for open rooms. */
+    discoverable: boolean("discoverable").notNull().default(true),
     /**
      * D111 / REL-RMS-RMS — parent-Room FK for Subthreads. Non-NULL iff
      * `kind = 'subthread'`. ON DELETE CASCADE so deleting a parent Room

@@ -3,6 +3,7 @@ import type { GroupChip, WhoamiResponse } from "@nautilo/types";
 
 export const WHOAMI_CACHE_CONTROL = "private, no-store";
 export const WHOAMI_VARY = "Authorization";
+export const WHOAMI_ROOM_DISCOVERABILITY_SUPPORTED = true;
 
 function compareGroupChips(a: GroupChip, b: GroupChip): number {
   const byId = a.id.localeCompare(b.id);
@@ -17,6 +18,7 @@ function compareGroupChips(a: GroupChip, b: GroupChip): number {
 /** Stable JSON input for hashing; does not mutate or reorder the live response body. */
 export function canonicalWhoamiProjectionForHash(body: WhoamiResponse): Record<string, unknown> {
   const officeEnabled = body.features?.office?.enabled ?? false;
+  const roomDiscoverability = body.features?.roomDiscoverability ?? false;
   return {
     sessionUserId: body.sessionUserId,
     sessionActorId: body.sessionActorId,
@@ -28,7 +30,10 @@ export function canonicalWhoamiProjectionForHash(body: WhoamiResponse): Record<s
     mustChangePassword: body.mustChangePassword,
     groups: [...body.groups].sort(compareGroupChips),
     capabilities: [...body.capabilities].sort((a, b) => a.localeCompare(b)),
-    features: { office: { enabled: officeEnabled } },
+    features: {
+      office: { enabled: officeEnabled },
+      roomDiscoverability,
+    },
     highestRole: body.highestRole ?? null,
   };
 }

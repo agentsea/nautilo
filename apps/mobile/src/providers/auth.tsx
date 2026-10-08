@@ -19,6 +19,7 @@ import { createAuthSessionEndCoordinator } from "@/lib/auth-session-end";
 import { decideAuthRecovery } from "@/lib/auth-state-decision";
 import type { SettingsReauthIdentity } from "@/lib/settings-reauth";
 import { shouldHandleAuthDead } from "@/lib/session-expiry";
+import { viewerFromWhoami } from "@/lib/viewer-identity";
 import {
   confirmVerifiedTokenOwner,
   loadTokenSnapshot,
@@ -32,7 +33,6 @@ import {
   type CachedViewer,
 } from "@/lib/viewer-cache";
 import { useServers } from "@/providers/server-registry";
-import type { WhoamiResponse } from "@nautilo/types";
 
 type AuthStatus = "loading" | "signed-in" | "signed-out";
 export type ViewerState = "loading" | "cached" | "verified" | "stale" | "none";
@@ -131,17 +131,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSignInNotice(decision.notice);
   }, []);
 
-  const toViewer = useCallback((whoami: WhoamiResponse): ViewerIdentity | null => {
-    if (!whoami.sessionUserId || !whoami.sessionActorId) return null;
-    const displayName = whoami.displayName?.trim() || whoami.handle?.trim();
-    return {
-      userId: whoami.sessionUserId,
-      actorId: whoami.sessionActorId,
-      ...(whoami.handle?.trim() ? { handle: whoami.handle.trim() } : {}),
-      ...(displayName ? { displayName } : {}),
-      capabilities: whoami.capabilities,
-    };
-  }, []);
+  const toViewer = useCallback(viewerFromWhoami, []);
 
   const recordVerifiedTokenOwner = useCallback(async (
     serverId: string,

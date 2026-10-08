@@ -20,6 +20,7 @@ const candidates: Candidate[] = [
 
 const createRoom = mock(async (_body: CreateRoomRequest) => roomDetail());
 let canInvokeAgents = true;
+let supportsRoomDiscoverability: boolean | undefined = true;
 
 function roomMember(member: CreateRoomMemberInput) {
   return member.kind === "user"
@@ -34,7 +35,13 @@ function roomDetail(members: CreateRoomMemberInput[] = [
 }
 
 mock.module("../../src/hooks/use-auth", () => ({
-  useAuth: () => ({ viewer: { sessionUserId: "u-me", label: "Me" } }),
+  useAuth: () => ({
+    viewer: {
+      sessionUserId: "u-me",
+      label: "Me",
+      features: { roomDiscoverability: supportsRoomDiscoverability },
+    },
+  }),
 }));
 
 mock.module("../../src/hooks/use-can", () => ({
@@ -76,6 +83,7 @@ beforeEach(() => {
   reapplyHappyDomGlobals();
   createRoom.mockClear();
   canInvokeAgents = true;
+  supportsRoomDiscoverability = true;
   onClose.mockClear();
   onCreated.mockClear();
   createRoom.mockImplementation(async (body) =>
@@ -138,6 +146,7 @@ describe("NewConversationDialog roster creation", () => {
       label: "Me",
       members: [{ kind: "user", id: "u-me" }],
       kind: "open",
+      discoverable: true,
     });
     expect(onCreated).toHaveBeenCalledWith("room-1");
     expect(onClose).toHaveBeenCalledTimes(1);
@@ -184,7 +193,7 @@ describe("NewConversationDialog roster creation", () => {
     fireEvent.click(view.getByRole("button", { name: "Pick Genie" }));
     fireEvent.click(view.getByLabelText("Public — anyone on this server can find and join"));
 
-    await submit(view, "Create chat with 1 person + 1 agent");
+    await submit(view, "Create public room");
 
     expect(createRoom).toHaveBeenCalledWith({
       label: "Alice, Me, Genie",
@@ -193,6 +202,41 @@ describe("NewConversationDialog roster creation", () => {
         { kind: "user", id: "u-alice" },
         { kind: "agent", id: "a-genie" },
       ],
+      kind: "open",
+      discoverable: true,
+    });
+  });
+
+  test("creates an external Room as open but hidden from discovery", async () => {
+    const view = renderDialog();
+
+    fireEvent.click(view.getByRole("button", { name: "Pick Alice" }));
+    fireEvent.click(view.getByLabelText("External — public access, hidden from discovery"));
+    expect(view.queryByRole("button", { name: "Open DM" })).toBeNull();
+    await submit(view, "Create external room");
+
+    expect(createRoom).toHaveBeenCalledWith({
+      label: "Alice",
+      members: [
+        { kind: "user", id: "u-me" },
+        { kind: "user", id: "u-alice" },
+      ],
+      kind: "open",
+      discoverable: false,
+    });
+  });
+
+  test("an older server hides External and keeps legacy Public creation", async () => {
+    supportsRoomDiscoverability = undefined;
+    const view = renderDialog();
+
+    expect(view.queryByLabelText("External — public access, hidden from discovery")).toBeNull();
+    fireEvent.click(view.getByLabelText("Public — anyone on this server can find and join"));
+    await submit(view, "Create public room");
+
+    expect(createRoom).toHaveBeenCalledWith({
+      label: "Me",
+      members: [{ kind: "user", id: "u-me" }],
       kind: "open",
     });
   });
@@ -207,7 +251,7 @@ describe("NewConversationDialog roster creation", () => {
       view.getByLabelText("Public — anyone on this server can find and join"),
     );
 
-    await submit(view, "Open DM");
+    await submit(view, "Create public room");
 
     expect(onCreated).toHaveBeenCalledWith("room-1");
     expect(onClose).toHaveBeenCalledTimes(1);

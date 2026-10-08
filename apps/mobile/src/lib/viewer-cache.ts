@@ -22,6 +22,8 @@ export interface CachedViewer {
   handle?: string;
   displayName?: string;
   capabilities: CapabilitySlug[];
+  /** Last whoami negotiation result; authoritative only while viewerState is verified. */
+  roomDiscoverability?: boolean;
 }
 
 interface StoredViewer extends CachedViewer {
@@ -46,6 +48,7 @@ function parseCachedViewer(raw: string | null): CachedViewer | null {
       candidate.actorId.length === 0 ||
       (candidate.handle !== undefined && typeof candidate.handle !== "string") ||
       (candidate.displayName !== undefined && typeof candidate.displayName !== "string") ||
+      (candidate.roomDiscoverability !== undefined && typeof candidate.roomDiscoverability !== "boolean") ||
       !Array.isArray(candidate.capabilities)
     ) {
       return null;
@@ -55,6 +58,7 @@ function parseCachedViewer(raw: string | null): CachedViewer | null {
       actorId: candidate.actorId,
       ...(candidate.handle ? { handle: candidate.handle } : {}),
       ...(candidate.displayName ? { displayName: candidate.displayName } : {}),
+      ...(candidate.roomDiscoverability === true ? { roomDiscoverability: true } : {}),
       capabilities: candidate.capabilities.filter(
         (capability): capability is CapabilitySlug =>
           typeof capability === "string" && isCapabilitySlug(capability),

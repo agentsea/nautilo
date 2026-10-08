@@ -180,6 +180,25 @@ describe("createOpenRoom (M124)", () => {
     expect(row.namespaceId).not.toBeNull();
   });
 
+  test("persists an open room that is excluded from server discovery", async () => {
+    const detail = await createOpenRoom({
+      creatorUserId: userId,
+      creatorActorId: actorId,
+      label: "#external",
+      discoverable: false,
+    });
+    await trackCreatedRoom(detail.id);
+
+    expect(detail.kind).toBe("open");
+    expect(detail.discoverable).toBe(false);
+    const [row] = await db
+      .select({ kind: rooms.kind, discoverable: rooms.discoverable })
+      .from(rooms)
+      .where(eq(rooms.id, detail.id))
+      .limit(1);
+    expect(row).toEqual({ kind: "open", discoverable: false });
+  });
+
   test("persists an exact supplied human + agent roster atomically", async () => {
     const detail = await createOpenRoom({
       creatorUserId: userId,
