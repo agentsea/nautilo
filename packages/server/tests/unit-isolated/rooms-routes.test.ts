@@ -843,7 +843,11 @@ const updateRoomMemberRoleMock = mock(
   async (_roomId: string, _actorId: string, _role: "admin" | "member") => {},
 );
 const updateRoomVisibilityMock = mock(
-  async (_roomId: string, _kind: "open" | "group") => true,
+  async (
+    _roomId: string,
+    _kind: "open" | "group",
+    _discoverable?: boolean,
+  ) => true,
 );
 
 mock.module("@nautilo/trust", () => {
@@ -2095,6 +2099,47 @@ describe("D194 — room visibility flip", () => {
       actorId: MANAGER_ACTOR,
       newKind: "open",
     });
+  });
+
+  test("POST visibility can change discoverability without changing public kind", async () => {
+    const app = makeApp("owner", MANAGER_ACTOR, MANAGER_USER);
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/rooms/${UUID_A}/visibility`,
+      headers: { "content-type": "application/json" },
+      payload: { public: true, discoverable: false },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(updateRoomVisibilityMock.mock.calls[0]).toEqual([
+      UUID_A,
+      "open",
+      false,
+    ]);
+    expect(writeSecurityAuditEventMock.mock.calls[0]?.[1]).toMatchObject({
+      kind: "room_visibility_changed",
+      roomId: UUID_A,
+      newKind: "open",
+      discoverable: false,
+    });
+  });
+
+  test("POST visibility rejects non-boolean discoverable before authorization", async () => {
+    const app = makeApp("owner", MANAGER_ACTOR, MANAGER_USER);
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/rooms/${UUID_A}/visibility`,
+      headers: { "content-type": "application/json" },
+      payload: { public: true, discoverable: "false" },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      error: "discoverable must be a boolean",
+    });
+    expect(userHasCapabilityMock.mock.calls.length).toBe(0);
+    expect(updateRoomVisibilityMock.mock.calls.length).toBe(0);
+    expect(writeSecurityAuditEventMock.mock.calls.length).toBe(0);
   });
 
   test("POST visibility by caller WITHOUT manage_rooms → 403, no mutation, no audit", async () => {

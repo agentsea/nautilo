@@ -198,7 +198,12 @@ const joinOpenRoomSpy = mock(
     }),
 );
 const createOpenRoomSpy = mock(
-  (_p: { creatorUserId: string; creatorActorId: string; label: string }) =>
+  (_p: {
+    creatorUserId: string;
+    creatorActorId: string;
+    label: string;
+    discoverable?: boolean;
+  }) =>
     Promise.resolve({} as RoomDetailPayload),
 );
 const findOtherAdminMembersSpy = mock(
@@ -348,7 +353,12 @@ describe("GET /api/rooms/discoverable (M124 MR5)", () => {
   });
 
   test("authenticated → 200 list (does not consult actorRole)", async () => {
-    listDiscoverableSpy.mockResolvedValueOnce([summaryRow(UUID_ROOM)]);
+    const externallyShared = summaryRow(UUID_CHILD);
+    externallyShared.discoverable = false;
+    listDiscoverableSpy.mockResolvedValueOnce([
+      summaryRow(UUID_ROOM),
+      externallyShared,
+    ]);
     // actorRole is 'guest' in makeApp; discoverable must still return the list.
     const app = makeApp(SELF_ACTOR, USER_ID);
     const res = await app.inject({
@@ -357,8 +367,10 @@ describe("GET /api/rooms/discoverable (M124 MR5)", () => {
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body) as { rooms: RoomSummaryRow[] };
-    expect(body.rooms).toHaveLength(1);
+    expect(body.rooms).toHaveLength(2);
     expect(body.rooms[0]?.kind).toBe("open");
+    expect(body.rooms[0]?.discoverable).toBe(true);
+    expect(body.rooms[1]?.discoverable).toBe(false);
     expect(listDiscoverableSpy.mock.calls[0]?.[0]).toBe(USER_ID);
   });
 });
@@ -784,6 +796,42 @@ describe("POST /api/rooms { kind: 'open' } (M124 MR7)", () => {
       isAdmin: false,
     });
     expect(refreshRoomSubscriptionsMock.mock.calls.length).toBe(1);
+  });
+
+  test("server admin can create an open room excluded from discovery", async () => {
+    userHasCapabilityMock.mockImplementationOnce(async () => true);
+    const app = makeApp(SELF_ACTOR, USER_ID);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/rooms",
+      headers: { "content-type": "application/json" },
+      payload: { label: "#external", kind: "open", discoverable: false },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(createOpenRoomSpy.mock.calls[0]?.[0]).toMatchObject({
+      creatorUserId: USER_ID,
+      creatorActorId: SELF_ACTOR,
+      label: "#external",
+      discoverable: false,
+    });
+  });
+
+  test("rejects a non-boolean discoverable value before authorization or minting", async () => {
+    const app = makeApp(SELF_ACTOR, USER_ID);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/rooms",
+      headers: { "content-type": "application/json" },
+      payload: { label: "#external", kind: "open", discoverable: "false" },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      error: "discoverable must be a boolean",
+    });
+    expect(userHasCapabilityMock.mock.calls.length).toBe(0);
+    expect(createOpenRoomSpy.mock.calls.length).toBe(0);
   });
 
   test("empty open members[] preserves the creator-only legacy path", async () => {

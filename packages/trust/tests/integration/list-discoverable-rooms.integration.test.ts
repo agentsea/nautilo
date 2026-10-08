@@ -18,12 +18,15 @@ import {
   roomMembers,
   sessions,
   sessionMessages,
+  eq,
   inArray,
 } from "@nautilo/db";
 import {
   createOpenRoom,
+  getRoomDetailForMember,
   joinOpenRoom,
   listDiscoverableRoomsForUser,
+  resolveInviteLandingRoomInTx,
 } from "../../src/queries";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 
@@ -34,8 +37,11 @@ let viewerUserId: string;
 let viewerActorId: string;
 let remoteUserId: string;
 let remoteActorId: string;
+let landingUserId: string;
+let landingActorId: string;
 let openRoom1Id: string;
 let openRoom2Id: string;
+let hiddenOpenRoomId: string;
 let privateRoomId: string;
 let remoteOpenRoomId: string;
 const namespaceIds: string[] = [];
@@ -85,6 +91,15 @@ beforeAll(async () => {
   });
   openRoom2Id = open2.id;
   roomIds.push(openRoom2Id);
+
+  const hiddenOpen = await createOpenRoom({
+    creatorUserId,
+    creatorActorId,
+    label: "#external",
+    discoverable: false,
+  });
+  hiddenOpenRoomId = hiddenOpen.id;
+  roomIds.push(hiddenOpenRoomId);
 
   const [viewer] = await db
     .insert(users)
@@ -158,6 +173,29 @@ beforeAll(async () => {
   if (!remoteActor) throw new Error("remote actor");
   remoteActorId = remoteActor.id;
 
+  const [landingUser] = await db
+    .insert(users)
+    .values({
+      name: "discovery-landing-viewer",
+      email: `discovery-landing-${ts}@test.local`,
+      handle: `discoverylanding${ts.slice(-6)}`,
+    })
+    .returning({ id: users.id });
+  if (!landingUser) throw new Error("landing user");
+  landingUserId = landingUser.id;
+
+  const [landingActor] = await db
+    .insert(actors)
+    .values({
+      ownerId: landingUserId,
+      displayName: "Landing viewer",
+      trustState: "verified",
+      kind: "user",
+    })
+    .returning({ id: actors.id });
+  if (!landingActor) throw new Error("landing actor");
+  landingActorId = landingActor.id;
+
   const remoteOpen = await createOpenRoom({
     creatorUserId: remoteUserId,
     creatorActorId: remoteActorId,
@@ -196,13 +234,21 @@ afterAll(async () => {
     if (namespaceIds.length > 0) {
       await db.delete(namespaces).where(inArray(namespaces.id, namespaceIds));
     }
-    const actorIds = [creatorActorId, viewerActorId, remoteActorId].filter(
-      Boolean,
-    );
+    const actorIds = [
+      creatorActorId,
+      viewerActorId,
+      remoteActorId,
+      landingActorId,
+    ].filter(Boolean);
     if (actorIds.length > 0) {
       await db.delete(actors).where(inArray(actors.id, actorIds));
     }
-    const userIds = [creatorUserId, viewerUserId, remoteUserId].filter(Boolean);
+    const userIds = [
+      creatorUserId,
+      viewerUserId,
+      remoteUserId,
+      landingUserId,
+    ].filter(Boolean);
     if (userIds.length > 0) {
       await db.delete(users).where(inArray(users.id, userIds));
     }
@@ -218,9 +264,22 @@ describe("listDiscoverableRoomsForUser (M124)", () => {
 
     expect(ids).toContain(openRoom1Id);
     expect(ids).toContain(openRoom2Id);
+    expect(ids).not.toContain(hiddenOpenRoomId);
     expect(ids).not.toContain(privateRoomId);
     expect(ids).not.toContain(remoteOpenRoomId);
     expect(got.every((r) => r.kind === "open")).toBe(true);
+
+    await joinOpenRoom({
+      userId: viewerUserId,
+      actorId: viewerActorId,
+      roomId: hiddenOpenRoomId,
+    });
+    const memberDetail = await getRoomDetailForMember(
+      hiddenOpenRoomId,
+      viewerActorId,
+    );
+    expect(memberDetail?.id).toBe(hiddenOpenRoomId);
+    expect(memberDetail?.discoverable).toBe(false);
   });
 
   test("excludes rooms after the viewer joins them", async () => {
@@ -235,5 +294,41 @@ describe("listDiscoverableRoomsForUser (M124)", () => {
 
     expect(ids).not.toContain(openRoom1Id);
     expect(ids).toContain(openRoom2Id);
+  });
+
+  test("automatic invite landing skips non-discoverable open rooms", async () => {
+    await joinOpenRoom({
+      userId: remoteUserId,
+      actorId: remoteActorId,
+      roomId: hiddenOpenRoomId,
+    });
+
+    const landing = await db.transaction((tx) =>
+      resolveInviteLandingRoomInTx(tx, {
+        inviteeUserId: landingUserId,
+        inviteeActorId: landingActorId,
+        targetRoomId: null,
+      }),
+    );
+    expect(landing).not.toBeNull();
+    expect(landing?.roomId).not.toBe(hiddenOpenRoomId);
+    const [selected] = await db
+      .select({ discoverable: rooms.discoverable })
+      .from(rooms)
+      .where(eq(rooms.id, landing?.roomId ?? ""))
+      .limit(1);
+    expect(selected?.discoverable).toBe(true);
+
+    const explicitLanding = await db.transaction((tx) =>
+      resolveInviteLandingRoomInTx(tx, {
+        inviteeUserId: landingUserId,
+        inviteeActorId: landingActorId,
+        targetRoomId: hiddenOpenRoomId,
+      }),
+    );
+    expect(explicitLanding).toEqual({
+      roomId: hiddenOpenRoomId,
+      joinedExistingRoom: true,
+    });
   });
 });

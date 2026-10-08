@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Rooms can be marked External to keep public-room behavior while hiding them
+  from discovery and automatic onboarding. Existing members and explicit
+  invitations continue to work normally.
+
 - Server native image checks recognize the patched Sharp and libvips packages.
 
 - Update the MCP transport and image-processing libraries to their supported

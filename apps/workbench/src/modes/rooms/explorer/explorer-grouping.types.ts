@@ -74,6 +74,8 @@ export interface ExplorerRow {
   agentAvatar?: AvatarRef | null;
   /** M124 / D189 — server room kind; drives the public-room marker when `"open"`. */
   roomKind?: RoomKind;
+  /** Open rooms are discoverable by default for compatibility with legacy summaries. */
+  roomDiscoverable?: boolean;
 }
 
 export interface ExplorerSection {
