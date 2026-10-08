@@ -97,6 +97,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Delegated commands stop when their Desktop connection is lost; interrupted
   commands are not automatically replayed.
 
+- Desktop advertises the exact contracts supported by its running Computer Use
+  Host, allowing compatible servers to select current controls without guessing
+  from the Desktop version. Stopping a request preserves the Host's checked
+  completion receipt rather than replacing it with a generic cancellation.
+
 - Rooms can be marked External to keep public-room behavior while hiding them
   from discovery and automatic onboarding. Existing members and explicit
   invitations continue to work normally.

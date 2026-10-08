@@ -1,4 +1,7 @@
 import { beforeAll, describe, expect, mock, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { projectRelayCapabilitiesForProtocol } from "@nautilo/relay";
+import type { ComputerUseHostContract } from "@nautilo/computer-use-host-protocol";
 
 mock.module("electron", () => ({ app: { getPath: () => "/tmp/nautilo-computer-use-capability-test" } }));
 
@@ -23,14 +26,33 @@ const snapshot = {
   grantGeneration: 1,
   provider: "cua" as const,
   providerGeneration: "provider-generation-1",
-  supportedActions: ["focus", "click"] as const,
-  supportsTargetedObservation: true,
-  supportsVerification: true,
-  supportsWindowCreation: false,
-  supportsElementTargeting: true,
 };
 
 describe("Cua-only relay capability projection", () => {
+  test("main reads supported contracts from the active broker", () => {
+    const source = readFileSync(new URL("../../electron/main.ts", import.meta.url), "utf8");
+    expect(source).toContain("hostContracts: await computerUseHostBroker.supportedContracts()");
+  });
+
+  test("preserves exact descriptors for compatible peers and omits them for legacy peers", () => {
+    const contract: ComputerUseHostContract = {
+      contractNamespace: "test.native", contractId: "observe", contractVersion: 1,
+      schemaDigest: `sha256:${"a".repeat(64)}`, effectClass: "read", replayClass: "safe",
+      authorityClass: "standing_computer_use", attachmentClass: "none", disclosureClass: "semantic",
+    };
+    const capabilities = { profile: "desktop-agent" as const,
+      ...projectComputerUseRelayCapabilities({ ...snapshot, hostContracts: [contract] }) };
+    expect(capabilities.desktopAutomation).toEqual(snapshot);
+    expect(projectRelayCapabilitiesForProtocol(capabilities, 17).computerUseHostContracts).toEqual([contract]);
+    expect(projectRelayCapabilitiesForProtocol(capabilities, 16).computerUseHostContracts).toBeUndefined();
+    expect(capabilities.computerUseHostContracts).toEqual([contract]);
+  });
+
+  test("keeps Host descriptors separate from the unchanged legacy grant tuple", () => {
+    expect(projectComputerUseRelayCapabilities({ ...snapshot, hostContracts: [] })).toEqual({
+      canControlDesktop: true, desktopAutomation: snapshot, computerUseHostContracts: [],
+    });
+  });
   test("does not advertise desktop control while Computer Use is Off or Cua is unavailable", () => {
     expect(projectComputerUseRelayCapabilities(undefined)).toEqual({ canControlDesktop: false });
   });
