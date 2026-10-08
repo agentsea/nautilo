@@ -14,6 +14,9 @@ import {
   SUPERSEDED_ROOM_EVERYONE_MENTION_DTO_LOCATORS,
 } from "./reviewed-room-everyone-mention-dto";
 import {
+  REVIEWED_PUBLIC_JOIN_AVAILABILITY_DTO_DECLARATIONS,
+} from "./reviewed-public-join-availability";
+import {
   REVIEWED_M322_DTO_DECLARATIONS,
   REVIEWED_M322_DTO_REPLACEMENTS,
   reviewedM322DtoReplacements,
@@ -6188,5 +6191,9 @@ const PRE_IMAGE_ASSISTANCE_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
   ),
 ];
 
-export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] =
-  reviewedImageAssistanceDtoReplacements(PRE_IMAGE_ASSISTANCE_DTO_DECLARATIONS);
+export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
+  ...reviewedImageAssistanceDtoReplacements(
+    PRE_IMAGE_ASSISTANCE_DTO_DECLARATIONS,
+  ),
+  ...REVIEWED_PUBLIC_JOIN_AVAILABILITY_DTO_DECLARATIONS,
+];

@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- The sign-in screen offers Join when the server has an active selected public
+  invitation and enrollment is open. Join follows the server's existing `/join`
+  address; personal invitation links remain available through I have an invite.
+
 - Genies no longer discover or activate the legacy `run_shell` tool, including
   in background Tasks and on older clients. Managed command tools remain
   available where supported; existing command history remains readable.

@@ -23,6 +23,11 @@ for (const [surface, source] of [
     expect(source).toContain("rememberMobileInterfaceChoice");
     expect(source).not.toContain("preventDefault");
     expect(source).not.toMatch(/href="\/mobile\/"[^>]*\btarget=/);
-    expect(source).not.toMatch(/(?:localStorage|sessionStorage|matchMedia|navigator\.userAgent|window\.open|location\.(?:assign|replace))/);
+    // Join reaches the server resolver; Mobile Web keeps its native same-tab link.
+    const sourceWithoutJoinNavigation = source.replace(
+      'window.location.assign("/join");',
+      "",
+    );
+    expect(sourceWithoutJoinNavigation).not.toMatch(/(?:localStorage|sessionStorage|matchMedia|navigator\.userAgent|window\.open|location\.(?:assign|replace))/);
   });
 }

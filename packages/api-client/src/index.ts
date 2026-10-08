@@ -136,6 +136,7 @@ export type {
   InvitePage,
   InviteListOptions,
   InviteListResult,
+  PublicJoinAvailability,
   RevokeInviteResult,
   AdminUserRow,
   AdminUsersPage,
