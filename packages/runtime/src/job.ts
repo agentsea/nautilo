@@ -3,6 +3,8 @@ import type {
   JobPublicationPolicy,
   PersistJobPayload,
   ProtectedTaskJobStartResult,
+  ProtectedTaskJobTerminalRequest,
+  ProtectedTaskJobTerminalResult,
 } from "@nautilo/db";
 import { runWithTurn, log } from "@nautilo/logger";
 import { StrictShadowEnforcementError } from "@nautilo/lattice-bridge";
@@ -127,6 +129,12 @@ export interface JobConfig {
     expectedReference: ProtectedTaskJobReferenceV1,
     publicationPolicy: JobPublicationPolicy,
   ) => Promise<ProtectedTaskJobStartResult>;
+  settleProtectedTaskJobTerminal?: (
+    jobId: string,
+    expectedReference: ProtectedTaskJobReferenceV1,
+    requested: ProtectedTaskJobTerminalRequest,
+    publicationPolicy: JobPublicationPolicy,
+  ) => Promise<ProtectedTaskJobTerminalResult>;
 }
 
 export class Job {
@@ -137,6 +145,8 @@ export class Job {
   private cancellationMessage = "Cancelled by user";
   private cancellationCause: "cancelled" | "process_lost" = "cancelled";
   private config: JobConfig;
+  /** Serializes competing local terminal observations onto one durable truth. */
+  private protectedTaskTerminalSettlement: Promise<void> = Promise.resolve();
 
   constructor(config: JobConfig) {
     this.config = config;
@@ -506,13 +516,13 @@ export class Job {
       // tools→pre_model seam; this is the single runtime catch site that
       // maps it.
     const noProgressOutcome = toNoProgressOutcomeFromError(err);
-    log(this.hasFullSinkDisposition()
+    const logFailure = (): void => log(this.hasFullSinkDisposition()
       ? `[nautilo/job] ${this.id} failed (code=${friendly.code} category=${friendly.category})`
       : `[nautilo/job] ${this.id} failed ` +
         `(code=${friendly.code} category=${friendly.category}` +
         `${budgetOutcome ? ` outcome=${budgetOutcome.kind} recursionLimit=${budgetOutcome.recursionLimit}` : ""}` +
         `${noProgressOutcome ? ` outcome=${noProgressOutcome.kind} ${formatNoProgressLogToken(noProgressOutcome)}` : ""}): ${friendly.detailsForLog}`);
-    await this.setStatus("failed", {
+    const fields = {
       message: this.hasFullSinkDisposition()
         ? err instanceof StrictShadowEnforcementError
             && err.decision.reason === "missing_protected_sibling"
@@ -520,7 +530,14 @@ export class Job {
           : `${FULL_JOB_FAILED_MESSAGE} [${friendly.code}]`
         : friendlyMessageWithCode(friendly),
       errorCategory: friendly.category,
-    });
+    };
+    if (this.isProtectedTaskJob()) {
+      if (await this.setStatus("failed", fields) === "failed") logFailure();
+      return;
+    }
+    // Preserve the existing ordinary/full-foreground logging order.
+    logFailure();
+    await this.setStatus("failed", fields);
   }
 
   /** Adopt a cancellation already proved by the protected unstarted-Job CAS. */
@@ -549,6 +566,18 @@ export class Job {
       ? FULL_JOB_CANCELLED_MESSAGE
       : message;
     this.cancellationMessage = visibleMessage;
+
+    if (this.isProtectedTaskJob()) {
+      // Abort is intentionally synchronous. Durable settlement still decides
+      // which terminal outcome this process is allowed to report.
+      this.abortController?.abort();
+      try {
+        await this.setStatus("cancelled", { message: visibleMessage });
+      } finally {
+        this.cancellationPersistencePending = false;
+      }
+      return;
+    }
 
     if (!this.abortController) {
       await this.setStatus("cancelled", {
@@ -591,7 +620,17 @@ export class Job {
        */
       errorCategory?: FriendlyErrorCategory;
     }
-  ): Promise<void> {
+  ): Promise<JobStatus> {
+    if (this.isProtectedTaskJob()) {
+      if (
+        status !== "completed"
+        && status !== "failed"
+        && status !== "cancelled"
+      ) {
+        throw new TypeError("Protected Task Job terminal status is invalid");
+      }
+      return this.settleProtectedTaskTerminal(status, fields);
+    }
     this._status = status;
     // Persistence keeps the existing two-field shape (message + result).
     // `errorCategory` is WS-event-only so the DB schema does not change
@@ -623,6 +662,86 @@ export class Job {
         : {}),
       ...(this.config.laneKey ? { laneKey: this.config.laneKey } : {}),
     });
+    return status;
+  }
+
+  private isProtectedTaskJob(): boolean {
+    return this.config.durableInputReference?.kind === "protected_task_run_v1";
+  }
+
+  private settleProtectedTaskTerminal(
+    requested: ProtectedTaskJobTerminalRequest,
+    fields?: {
+      message?: string;
+      result?: Record<string, unknown>;
+      errorCategory?: FriendlyErrorCategory;
+    },
+  ): Promise<JobStatus> {
+    const settle = async (): Promise<JobStatus> => {
+      if (this.isTerminal()) return this._status;
+      const reference = this.config.durableInputReference;
+      if (reference?.kind !== "protected_task_run_v1") {
+        throw new TypeError("Protected Task Job terminal reference is missing");
+      }
+      const sink = this.config.settleProtectedTaskJobTerminal;
+      if (sink === undefined) {
+        throw new TypeError("Protected Task Job terminal sink is missing");
+      }
+      const policy = this.publicationPolicy();
+      if (policy === undefined) {
+        throw new TypeError("Protected Task Job terminal policy is missing");
+      }
+
+      let result: ProtectedTaskJobTerminalResult | undefined;
+      let failure: unknown;
+      // The first response can be lost after commit. One exact replay asks the
+      // durable owner to return the already-terminal outcome without rewriting it.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          result = await sink(this.id, reference, requested, policy);
+          break;
+        } catch (error) {
+          failure = error;
+        }
+      }
+      if (result === undefined) throw failure;
+      if (result.kind === "rejected") {
+        throw new Error("Protected Task Job terminal settlement was rejected");
+      }
+      if (result.kind === "transitioned" && result.status !== requested) {
+        throw new TypeError("Protected Task Job terminal result is invalid");
+      }
+      const effective = result.status;
+      if (
+        effective !== "completed"
+        && effective !== "failed"
+        && effective !== "cancelled"
+        && effective !== "timed_out"
+      ) {
+        throw new TypeError("Protected Task Job terminal result is invalid");
+      }
+
+      this._status = effective;
+      const matchingFields = effective === requested ? fields : undefined;
+      eventBus.emit({
+        type: "job.status",
+        jobId: this.id,
+        status: effective,
+        message: matchingFields?.message,
+        ...this.lifecycleIdentity(),
+        ...(matchingFields?.errorCategory !== undefined
+          ? { errorCategory: matchingFields.errorCategory }
+          : {}),
+        ...(this.config.laneKey ? { laneKey: this.config.laneKey } : {}),
+      });
+      return effective;
+    };
+    const result = this.protectedTaskTerminalSettlement.then(settle, settle);
+    this.protectedTaskTerminalSettlement = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
   }
 
   private publicationPolicy(): JobPublicationPolicy | undefined {

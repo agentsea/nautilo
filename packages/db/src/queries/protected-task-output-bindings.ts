@@ -335,9 +335,8 @@ export async function recordProtectedTaskRunResultAttached(
     }
     const [updated] = await tx.update(protectedTaskRunOutputBindings).set({
       resultAttachedAt: run.completedAt,
-      ...(binding.deliveryMode === "none"
-        ? { completedAt: run.completedAt }
-        : {}),
+      // Final Job/authorization settlement owns completion, even with no
+      // delivery. Keep split publication failures discoverable until then.
     }).where(and(
       eq(protectedTaskRunOutputBindings.taskRunId, binding.taskRunId),
       isNull(protectedTaskRunOutputBindings.resultAttachedAt),

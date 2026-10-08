@@ -30,6 +30,7 @@ import type { TaskScopeMemoryBinding } from "@nautilo/lattice-bridge/server";
 
 import type { JobExecutor } from "../../src/job";
 import {
+  completeBackgroundAuthorizationRequest,
   createBackgroundAuthorizationTaskRuntimeRequestV3,
 } from "../../src/protected-execution/background-authorization/lifecycle";
 import {
@@ -312,6 +313,13 @@ function scopePlan(
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+type CasInput = Parameters<
+  BackgroundAuthorizationTaskRuntimeReplacementRepository["compareAndSwap"]
+>[0];
+type CompletionCas = (
+  input: CasInput,
+  repository: InMemoryBackgroundAuthorizationRepository,
+) => Promise<BackgroundAuthorizationCasResult>;
 
 async function fixture() {
   const crypto = new LatticeCrypto();
@@ -358,6 +366,7 @@ async function fixture() {
     BackgroundAuthorizationRecord) | null = null;
   let substitutePlan: ((plan: TaskRuntimeGrantClaimPlan) =>
     TaskRuntimeGrantClaimPlan) | null = null;
+  let completionCas: CompletionCas | null = null;
   const startInputs: StartProtectedTaskRunInput[] = [];
   const publishedResults: string[] = [];
   const openedOccurrences: ProtectedTaskRunningOccurrence[] = [];
@@ -387,6 +396,9 @@ async function fixture() {
         recipientCasArrivals += 1;
         if (recipientCasArrivals === 2) recipientCasBarrier.resolve();
         await recipientCasBarrier.promise;
+      }
+      if (input.next.snapshot.state === "completed" && completionCas !== null) {
+        return completionCas(input, repository);
       }
       return repository.compareAndSwap(input);
     },
@@ -650,6 +662,7 @@ async function fixture() {
       substitutePlan = value;
     },
     setSubstituteGet: (value: typeof substituteGet) => { substituteGet = value; },
+    setCompletionCas: (value: CompletionCas | null) => { completionCas = value; },
   };
 }
 
@@ -1559,6 +1572,176 @@ describe("Task Runtime grant claim", () => {
     expect(completed?.snapshot.claimExpiresAt).toBeNull();
     expect(completed?.finishedAt).toBe(NOW + 10);
     expect(JSON.stringify(completed)).not.toContain(SENTINEL);
+  });
+
+  test("adopts an exact completed successor written by recovery", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-recovery-win"))
+      .toEqual({ status: "started" });
+    value.setCompletionCas(async (input, repository) => {
+      const running = requiredTaskRuntimeRecord(await repository.get(REQUEST));
+      const completedAt = running.snapshot.updatedAt + 1;
+      const recovered = {
+        ...running,
+        snapshot: completeBackgroundAuthorizationRequest(
+          running.snapshot,
+          completedAt,
+        ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+        finishedAt: completedAt,
+      };
+      expect(await repository.compareAndSwap({
+        expectedRequestRevision: running.snapshot.requestRevision,
+        next: recovered,
+      })).toMatchObject({ status: "updated" });
+      return repository.compareAndSwap(input);
+    });
+    let workCalls = 0;
+
+    expect(await claimed.dispatch.candidate.run(async (_input, _signal, publication) => {
+      workCalls += 1;
+      await publication.publish({
+        formatVersion: 1,
+        resultText: "recovery winner result",
+        lastError: null,
+      });
+      return "done";
+    })).toBe("done");
+    expect(workCalls).toBe(1);
+    expect(value.publishedResults).toEqual(["recovery winner result"]);
+    expect(value.openedOccurrences).toHaveLength(1);
+    expect(value.recipients.size).toBe(0);
+    expect((await value.repository.get(REQUEST))?.snapshot.state)
+      .toBe("completed");
+  });
+
+  test("adopts an exact completion after the CAS response is lost", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-lost-completion"))
+      .toEqual({ status: "started" });
+    value.setCompletionCas(async (input, repository) => {
+      expect(await repository.compareAndSwap(input))
+        .toMatchObject({ status: "updated" });
+      throw new Error("completion response lost");
+    });
+    let workCalls = 0;
+
+    expect(await claimed.dispatch.candidate.run(async (_input, _signal, publication) => {
+      workCalls += 1;
+      await publication.publish({
+        formatVersion: 1,
+        resultText: "lost response result",
+        lastError: null,
+      });
+      return "done";
+    })).toBe("done");
+    expect(workCalls).toBe(1);
+    expect(value.publishedResults).toEqual(["lost response result"]);
+    expect(value.openedOccurrences).toHaveLength(1);
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("rejects every noncanonical completion race after one publication", async () => {
+    const substitutions = [
+      {
+        name: "identity",
+        change: (record: BackgroundAuthorizationTaskRuntimeRecordV3) => ({
+          ...record,
+          workIdentityHash: bytes(99),
+        }),
+      },
+      {
+        name: "revision",
+        change: (record: BackgroundAuthorizationTaskRuntimeRecordV3) => ({
+          ...record,
+          snapshot: {
+            ...record.snapshot,
+            requestRevision: record.snapshot.requestRevision + 1,
+          },
+        }),
+      },
+      {
+        name: "generation",
+        change: (record: BackgroundAuthorizationTaskRuntimeRecordV3) => ({
+          ...record,
+          snapshot: {
+            ...record.snapshot,
+            recipientGeneration: record.snapshot.recipientGeneration + 1,
+          },
+        }),
+      },
+      {
+        name: "malformed",
+        change: (record: BackgroundAuthorizationTaskRuntimeRecordV3) => ({
+          ...record,
+          snapshot: {
+            ...record.snapshot,
+            credentialSubject: {
+              kind: "runtime" as const,
+              runtimeKind: "task" as const,
+              runtimeVersion: 2 as const,
+            },
+          },
+        }) as unknown as BackgroundAuthorizationTaskRuntimeRecordV3,
+      },
+      {
+        name: "failed",
+        change: (record: BackgroundAuthorizationTaskRuntimeRecordV3) => ({
+          ...record,
+          snapshot: {
+            ...record.snapshot,
+            state: "terminal_failure" as const,
+            terminalReason: "provider_outcome_unknown" as const,
+          },
+        }),
+      },
+    ] as const;
+
+    for (const substitution of substitutions) {
+      const value = await fixture();
+      await prepareAndBind(value);
+      await acceptGrant(value);
+      const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+      if (claimed.status !== "claimed") throw new Error("grant not claimed");
+      expect(await claimed.dispatch.candidate.start(
+        `protected-noncanonical-${substitution.name}`,
+      )).toEqual({ status: "started" });
+      value.setCompletionCas(async (input) => ({
+        status: "stale",
+        current: substitution.change(
+          input.next as BackgroundAuthorizationTaskRuntimeRecordV3,
+        ),
+      }));
+      let workCalls = 0;
+
+      const error = await claimed.dispatch.candidate.run(
+        async (_input, _signal, publication) => {
+          workCalls += 1;
+          await publication.publish({
+            formatVersion: 1,
+            resultText: `noncanonical ${substitution.name}`,
+            lastError: null,
+          });
+        },
+      ).catch((value: unknown) => value);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toMatchObject({
+        message: "Task Runtime execution completion could not be recorded",
+      });
+      expect(workCalls).toBe(1);
+      expect(value.publishedResults).toEqual([
+        `noncanonical ${substitution.name}`,
+      ]);
+      expect(value.openedOccurrences).toHaveLength(1);
+      expect(value.recipients.size).toBe(0);
+    }
   });
 
   test("a restarted coordinator rotates an expired claim that never began work", async () => {

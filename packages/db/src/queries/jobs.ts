@@ -1,4 +1,4 @@
-import { and, eq, isNull, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, isNotNull, or } from "drizzle-orm";
 import { jobs } from "../schema/jobs";
 import type { JobStatus } from "@nautilo/types";
 import { getSharedDirectDb } from "../config/direct-database";
@@ -17,10 +17,30 @@ export type JobPublicationPolicy = Readonly<{
 
 export type ProtectedTaskJobStartResult = "started" | "rejected";
 
+export type ProtectedTaskJobTerminalRequest =
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type ProtectedTaskJobTerminalResult =
+  | Readonly<{
+      kind: "transitioned";
+      status: ProtectedTaskJobTerminalRequest;
+    }>
+  | Readonly<{
+      kind: "existing_terminal";
+      status: "completed" | "failed" | "cancelled" | "timed_out";
+    }>
+  | Readonly<{ kind: "rejected" }>;
+
 function db() {
   return getSharedDirectDb();
 }
 type JobMutationDb = Pick<ReturnType<typeof db>, "insert" | "update">;
+type ProtectedTaskJobTerminalDb = Pick<
+  ReturnType<typeof db>,
+  "select" | "update"
+>;
 
 export interface PersistJobPayload {
   ownerId: string;
@@ -112,6 +132,118 @@ export async function startProtectedTaskJob(
   return startProtectedTaskJobWithDatabase(
     db(), jobId, expectedReference, publicationPolicy,
   );
+}
+
+export async function settleProtectedTaskJobTerminal(
+  jobId: string,
+  expectedReference: ProtectedTaskDurableJobReference,
+  requested: ProtectedTaskJobTerminalRequest,
+  publicationPolicy: JobPublicationPolicy,
+): Promise<ProtectedTaskJobTerminalResult> {
+  return settleProtectedTaskJobTerminalWithDatabase(
+    db(), jobId, expectedReference, requested, publicationPolicy,
+  );
+}
+
+function protectedTaskJobTerminalPredecessor(
+  requested: ProtectedTaskJobTerminalRequest,
+) {
+  const running = and(
+    eq(jobs.status, "running"),
+    isNotNull(jobs.startedAt),
+  );
+  return requested === "completed"
+    ? running
+    : or(
+        and(eq(jobs.status, "queued"), isNull(jobs.startedAt)),
+        running,
+      );
+}
+
+function existingProtectedTaskJobTerminal(
+  row: Readonly<{
+    status: string;
+    startedAt: Date | null;
+    completedAt: Date | null;
+  }> | undefined,
+): ProtectedTaskJobTerminalResult | null {
+  if (row?.completedAt === null || row === undefined) return null;
+  if (row.status === "completed") {
+    return row.startedAt === null
+      ? null
+      : { kind: "existing_terminal", status: "completed" };
+  }
+  if (
+    row.status === "failed"
+    || row.status === "cancelled"
+    || row.status === "timed_out"
+  ) {
+    return { kind: "existing_terminal", status: row.status };
+  }
+  return null;
+}
+
+async function settleProtectedTaskJobTerminalInTransaction(
+  tx: ProtectedTaskJobTerminalDb,
+  jobId: string,
+  expectedReference: ProtectedTaskDurableJobReference,
+  requested: ProtectedTaskJobTerminalRequest,
+): Promise<ProtectedTaskJobTerminalResult> {
+  const exactIdentity = and(
+    eq(jobs.id, jobId),
+    eq(jobs.input, { ...expectedReference }),
+    eq(jobs.laneKey, `task:${expectedReference.taskId}`),
+    eq(jobs.type, "foreground"),
+    isNull(jobs.result),
+    isNull(jobs.message),
+  );
+  const transitioned = await tx.update(jobs).set({
+    status: requested,
+    completedAt: new Date(),
+  }).where(and(
+    exactIdentity,
+    isNull(jobs.completedAt),
+    protectedTaskJobTerminalPredecessor(requested),
+  )).returning({ id: jobs.id });
+  if (transitioned.length === 1) {
+    return { kind: "transitioned", status: requested };
+  }
+
+  const [existing] = await tx.select({
+    status: jobs.status,
+    startedAt: jobs.startedAt,
+    completedAt: jobs.completedAt,
+  }).from(jobs).where(and(
+    exactIdentity,
+    inArray(jobs.status, ["completed", "failed", "cancelled", "timed_out"]),
+    isNotNull(jobs.completedAt),
+  )).limit(1);
+  return existingProtectedTaskJobTerminal(existing) ?? { kind: "rejected" };
+}
+
+/** @internal Transaction seam for exact unit verification. */
+export async function settleProtectedTaskJobTerminalWithDatabase(
+  database: ReturnType<typeof db>,
+  jobId: string,
+  expectedReference: ProtectedTaskDurableJobReference,
+  requested: ProtectedTaskJobTerminalRequest,
+  publicationPolicy: JobPublicationPolicy,
+): Promise<ProtectedTaskJobTerminalResult> {
+  if (
+    jobId.length === 0
+    || expectedReference.kind !== "protected_task_run_v1"
+    || expectedReference.policyRevision !== publicationPolicy.expectedRevision
+    || publicationPolicy.representation !== "protected_only"
+    || !["completed", "failed", "cancelled"].includes(requested)
+  ) {
+    throw new TypeError("Protected Task Job terminal authority is invalid");
+  }
+  return database.transaction(async (tx) => {
+    await acquireEncryptionPublicationFence(tx, publicationPolicy);
+    return settleProtectedTaskJobTerminalInTransaction(
+      tx, jobId, expectedReference, requested,
+    );
+  });
 }
 
 /** @internal Transaction seam for exact unit verification. */

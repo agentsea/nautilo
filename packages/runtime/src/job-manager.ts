@@ -21,6 +21,7 @@ import { deepResearchExecutor } from "./executors/deep-research-executor";
 import {
   getJobById,
   persistJob,
+  settleProtectedTaskJobTerminal,
   startProtectedTaskJob,
   updateJobStatus,
 } from "@nautilo/db";
@@ -37,6 +38,8 @@ import type {
   JobPublicationPolicy,
   PersistJobPayload,
   ProtectedTaskJobStartResult,
+  ProtectedTaskJobTerminalRequest,
+  ProtectedTaskJobTerminalResult,
 } from "@nautilo/db";
 import type { InitiatingClientSurfaceV1, JobStatus } from "@nautilo/types";
 import {
@@ -559,6 +562,12 @@ export class JobManager {
     expectedReference: ProtectedTaskJobReferenceV1,
     publicationPolicy: JobPublicationPolicy,
   ) => Promise<ProtectedTaskJobStartResult>;
+  private readonly settleProtectedTaskJobTerminalFn: (
+    jobId: string,
+    expectedReference: ProtectedTaskJobReferenceV1,
+    requested: ProtectedTaskJobTerminalRequest,
+    publicationPolicy: JobPublicationPolicy,
+  ) => Promise<ProtectedTaskJobTerminalResult>;
   /**
    * D420 — payload-free work-acceptance ledger sinks. Defaults are
    * DB-free stubs so existing unit tests stay hermetic; the production
@@ -654,6 +663,12 @@ export class JobManager {
       expectedReference: ProtectedTaskJobReferenceV1,
       publicationPolicy: JobPublicationPolicy,
     ) => Promise<ProtectedTaskJobStartResult>;
+    settleProtectedTaskJobTerminal?: (
+      jobId: string,
+      expectedReference: ProtectedTaskJobReferenceV1,
+      requested: ProtectedTaskJobTerminalRequest,
+      publicationPolicy: JobPublicationPolicy,
+    ) => Promise<ProtectedTaskJobTerminalResult>;
     /**
      * D420 — payload-free work-acceptance ledger sinks. Defaults are
      * DB-free stubs; the production singleton wires the real sinks.
@@ -686,6 +701,8 @@ export class JobManager {
     this.updateJobStatusFn = opts?.updateStatus ?? updateJobStatus;
     this.startProtectedTaskJobFn = opts?.startProtectedTaskJob
       ?? startProtectedTaskJob;
+    this.settleProtectedTaskJobTerminalFn = opts?.settleProtectedTaskJobTerminal
+      ?? settleProtectedTaskJobTerminal;
     this.acceptanceSinks = opts?.acceptanceSinks ?? defaultAcceptanceSinks;
     this.taskStopSink = opts?.taskStopSink ?? null;
     this.checkInvocationAccess = opts?.checkInvocationAccess ?? (() => Promise.resolve(true));
@@ -1302,7 +1319,10 @@ export class JobManager {
       updateStatus: this.updateJobStatusFn,
       ...(protectedTaskExecution === undefined
         ? {}
-        : { startProtectedTaskJob: this.startProtectedTaskJobFn }),
+        : {
+          startProtectedTaskJob: this.startProtectedTaskJobFn,
+          settleProtectedTaskJobTerminal: this.settleProtectedTaskJobTerminalFn,
+        }),
     });
 
     try {

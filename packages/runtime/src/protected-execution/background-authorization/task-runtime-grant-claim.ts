@@ -65,10 +65,13 @@ import {
 import {
   TASK_RUNTIME_STABLE_IDEMPOTENCY_PREFIX,
   parseBackgroundAuthorizationRecord,
+  sameBackgroundAuthorizationRecord,
   type BackgroundAuthorizationRecord,
   type BackgroundAuthorizationTaskRuntimeReplacementRepository,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
 } from "./repository";
+import { isExactCompletedTaskRuntimeSuccessor } from
+  "./task-runtime-completion";
 
 type HeldTaskRuntimeAuthority = Readonly<{
   foreground: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
@@ -1634,13 +1637,33 @@ function createCandidate(input: Readonly<{
                         ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
                         finishedAt: completedAt,
                       };
-                    const completed = await input.dependencies.repository
-                      .compareAndSwap({
-                        expectedRequestRevision:
-                          storedRunning.snapshot.requestRevision,
-                        next: completedRecord,
-                      });
-                    if (completed.status !== "updated") {
+                    let completionRecorded = false;
+                    try {
+                      const completed = await input.dependencies.repository
+                        .compareAndSwap({
+                          expectedRequestRevision:
+                            storedRunning.snapshot.requestRevision,
+                          next: completedRecord,
+                        });
+                      completionRecorded = completed.status === "updated"
+                        ? sameBackgroundAuthorizationRecord(
+                            completed.record,
+                            completedRecord,
+                          )
+                        : isExactCompletedTaskRuntimeSuccessor(
+                            completed.current,
+                            storedRunning,
+                          );
+                    } catch {
+                      const current = await input.dependencies.repository.get(
+                        storedRunning.snapshot.requestId,
+                      );
+                      completionRecorded = isExactCompletedTaskRuntimeSuccessor(
+                        current,
+                        storedRunning,
+                      );
+                    }
+                    if (!completionRecorded) {
                       throw new Error(
                         "Task Runtime execution completion could not be recorded",
                       );

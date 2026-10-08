@@ -1,10 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { describe, expect, test } from "bun:test";
+import { resolveModelRole } from "@nautilo/agent";
 import {
-  __resetSharedDirectCryptoDbForTests,
-  __resetSharedDirectAgentDbForTests,
-  __resetSharedDirectDbForTests,
   actors,
   agentCryptoRuntimeChallenges,
   agentCryptoRuntimeConfigObjects,
@@ -55,6 +53,7 @@ import {
   objectCryptoAccessHeads,
   objectCryptoAccessManifests,
   objectCryptoNamespaceEnvelopes,
+  protectedTaskRunOutputBindings,
   resolveAppDatabaseConnectionString,
   roomMembers,
   rooms,
@@ -76,8 +75,11 @@ import {
 import {
   persistJobWithDatabase,
   startProtectedTaskJobWithDatabase,
+  settleProtectedTaskJobTerminalWithDatabase,
   updateJobStatusWithDatabase,
 } from "../../../db/src/queries/jobs.ts";
+import { createProtectedTaskNativeResultPublication } from
+  "../../src/routes/protected-task-native-result-publication";
 import {
   DeviceProviderStateVault,
   HumanDeviceOpenMlsGroup,
@@ -737,11 +739,6 @@ async function createBaseFixture(
         recovery.privateKey.fill(0);
         managerVault.destroy();
         await admin.end();
-        await Promise.all([
-          __resetSharedDirectCryptoDbForTests(),
-          __resetSharedDirectAgentDbForTests(),
-          __resetSharedDirectDbForTests(),
-        ]);
       }
     }
   };
@@ -2042,7 +2039,10 @@ async function objectRowCounts(
   });
 }
 
-async function createConnectedProtectedTask(base: BaseFixture) {
+async function createConnectedProtectedTask(
+  base: BaseFixture,
+  options: Readonly<{ noDelivery?: boolean }> = {},
+) {
   const taskId = randomUUID();
   const taskRunId = randomUUID();
   const graphThreadId = `subagent:task:${taskId}:${taskRunId}`;
@@ -2123,6 +2123,11 @@ async function createConnectedProtectedTask(base: BaseFixture) {
         Promise.resolve(base.currentDevice.signingPublicKey.slice()),
     }),
   });
+  // This fixture exercises protected execution and publication, not the
+  // process-global server default. Persist one exact, currently runnable
+  // selection so an asynchronous server-config cache refresh from an earlier
+  // case cannot change this Task's model between admission and execution.
+  const requestedModelId = resolveModelRole("chat");
   base.taskIds.add(taskId);
   base.objectIds.add(cryptoObjectId);
   base.requestIds.add(`task-run-authorization:${taskRunId}`);
@@ -2145,13 +2150,14 @@ async function createConnectedProtectedTask(base: BaseFixture) {
     prompt: "",
     preset: "in_background",
     scheduleKind: "now",
-    callingRoomId: base.roomId,
+    callingRoomId: options.noDelivery === true ? null : base.roomId,
     targetChat: "last_in_namespace",
     targetRoomId: base.roomId,
     targetUserIds: [base.userId],
     useScope: false,
     toolsMode: "none",
     fundingMode: "legacy_server",
+    requestedModelId,
     status: "pending",
     metadata: classified.operational,
   });
@@ -2181,6 +2187,7 @@ async function createConnectedProtectedTask(base: BaseFixture) {
       taskRunId,
       contentRevision: 1,
     }),
+    requestedModelId,
   });
 }
 
@@ -2294,7 +2301,91 @@ function destroyConnectedDomainSecrets(
 }
 
 describePostgres("sealed protected Task Memory object writer", () => {
-  test.each(["result", "pre-execution recovery", "cancellation recovery", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
+  test("serializes protected Job terminal writers and start against cancellation", async () => {
+    const base = await createBaseFixture({ connectedExecution: true });
+    try {
+      const connected = await createConnectedProtectedTask(base);
+      const reference = {
+        kind: "protected_task_run_v1" as const,
+        taskId: connected.taskId,
+        taskRunId: connected.taskRunId,
+        inputObjectId: connected.inputObjectId,
+        resultObjectId: connected.resultObjectId,
+        authorizationRequestId: `task-run-authorization:${connected.taskRunId}`,
+        policyRevision: base.policyRevision,
+        executionSegment: 1,
+      };
+      const publicationPolicy = {
+        expectedRevision: base.policyRevision,
+        representation: "protected_only" as const,
+      };
+      const persist = async () => {
+        const jobId = await persistJobWithDatabase(base.productDb, {
+          ownerId: base.userId,
+          requestorId: base.userId,
+          laneKey: `task:${connected.taskId}`,
+          type: "foreground",
+          input: reference,
+          publicationPolicy,
+        });
+        base.jobIds.add(jobId);
+        return jobId;
+      };
+      const runningId = await persist();
+      expect(await startProtectedTaskJobWithDatabase(
+        base.productDb, runningId, reference, publicationPolicy,
+      )).toBe("started");
+      const outcomes = await Promise.all(
+        (["completed", "failed", "cancelled"] as const).map(requested =>
+          settleProtectedTaskJobTerminalWithDatabase(
+            base.productDb, runningId, reference, requested, publicationPolicy,
+          )),
+      );
+      const winners = outcomes.filter(outcome => outcome.kind === "transitioned");
+      expect(winners).toHaveLength(1);
+      const winner = winners[0]!;
+      if (winner.kind !== "transitioned") throw new Error("Missing terminal winner");
+      expect(outcomes.filter(outcome => outcome.kind === "existing_terminal"))
+        .toEqual([
+          { kind: "existing_terminal", status: winner.status },
+          { kind: "existing_terminal", status: winner.status },
+        ]);
+      const [durable] = await base.admin.select({
+        status: jobs.status, result: jobs.result, message: jobs.message,
+        startedAt: jobs.startedAt, completedAt: jobs.completedAt,
+      }).from(jobs).where(eq(jobs.id, runningId));
+      expect(durable).toMatchObject({ status: winner.status, result: null, message: null });
+      expect(durable?.startedAt).toBeInstanceOf(Date);
+      expect(durable?.completedAt).toBeInstanceOf(Date);
+
+      const queuedId = await persist();
+      const [start, cancel] = await Promise.all([
+        startProtectedTaskJobWithDatabase(
+          base.productDb, queuedId, reference, publicationPolicy,
+        ),
+        settleProtectedTaskJobTerminalWithDatabase(
+          base.productDb, queuedId, reference, "cancelled", publicationPolicy,
+        ),
+      ]);
+      expect(["started", "rejected"]).toContain(start);
+      expect(cancel).toEqual({ kind: "transitioned", status: "cancelled" });
+      expect(await startProtectedTaskJobWithDatabase(
+        base.productDb, queuedId, reference, publicationPolicy,
+      )).toBe("rejected");
+      const [cancelled] = await base.admin.select({
+        status: jobs.status, startedAt: jobs.startedAt,
+        completedAt: jobs.completedAt, result: jobs.result, message: jobs.message,
+      }).from(jobs).where(eq(jobs.id, queuedId));
+      expect(cancelled).toMatchObject({ status: "cancelled", result: null, message: null });
+      expect(cancelled?.completedAt).toBeInstanceOf(Date);
+      if (start === "started") expect(cancelled?.startedAt).toBeInstanceOf(Date);
+      else expect(cancelled?.startedAt).toBeNull();
+    } finally {
+      await base.cleanup();
+    }
+  }, 60_000);
+
+  test.each(["result", "attachment recovery", "publication recovery", "pre-execution recovery", "cancellation recovery", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
     const base = await createBaseFixture({ connectedExecution: true });
     const recipients = new TaskRuntimeRecipientRegistry(base.crypto, {
       now: () => NOW,
@@ -2307,7 +2398,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
     let connectedJobId: string | null = null;
     let jobManager: JobManager | null = null;
     try {
-      connected = await createConnectedProtectedTask(base);
+      connected = await createConnectedProtectedTask(base, {
+        noDelivery: scenario === "publication recovery",
+      });
       const segmentCalls: Array<Readonly<{
         taskId: string;
         taskRunId: string;
@@ -2393,14 +2486,16 @@ describePostgres("sealed protected Task Memory object writer", () => {
             base.productDb, jobId, expectedReference, publicationPolicy,
           );
         },
-        updateStatus: async (jobId, status, fields, publicationPolicy) => {
-          await updateJobStatusWithDatabase(
+        updateStatus: (jobId, status, fields, publicationPolicy) =>
+          updateJobStatusWithDatabase(
             base.productDb, jobId, status, fields, publicationPolicy,
+          ),
+        settleProtectedTaskJobTerminal: async (jobId, reference, requested, policy) => {
+          const result = await settleProtectedTaskJobTerminalWithDatabase(
+            base.productDb, jobId, reference, requested, policy,
           );
-          if (jobId === connectedJobId
-            && ["completed", "failed", "cancelled", "timed_out"].includes(status)) {
-            notifyTerminal();
-          }
+          if (jobId === connectedJobId && result.kind !== "rejected") notifyTerminal();
+          return result;
         },
       });
       const owner = bindEncryptionDataOperationOwner({
@@ -2441,6 +2536,14 @@ describePostgres("sealed protected Task Memory object writer", () => {
       }, {
         nativeExecution: input => {
           const native = createProductionProtectedTaskNativeExecution(input, {
+            result: resultInput => createProtectedTaskNativeResultPublication(
+              resultInput,
+              scenario === "attachment recovery" ? {
+                recordAttached: async () => {
+                  throw new Error("synthetic loss before result attachment");
+                },
+              } : {},
+            ),
             segment: segmentInput => createProtectedTaskNativeFixedMemorySegment({
               ...segmentInput,
               resolveExecutionContext: context => traceNative(
@@ -2519,6 +2622,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
             publishResult: async publication => {
               try {
                 await native.publishResult(publication);
+                if (scenario === "publication recovery") {
+                  throw new Error("synthetic loss after result attachment");
+                }
               } catch (error) {
                 recordNativeError("publish_result", error);
                 throw error;
@@ -2801,11 +2907,28 @@ describePostgres("sealed protected Task Memory object writer", () => {
         }
         expect(freshGeneration).toBe(1);
       } else {
-      const terminal = await waitForConnectedCompletion(
+      let terminal = await waitForConnectedCompletion(
         base,
         connected.taskRunId,
         terminalStatus,
       );
+      if (scenario === "attachment recovery" || scenario === "publication recovery") {
+        expect(terminal.job.status).toBe("failed");
+        expect(terminal.run.resultCryptoMappingState).toBe("verified");
+        const [before] = await base.admin.select({
+          attachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
+          completedAt: protectedTaskRunOutputBindings.completedAt,
+        }).from(protectedTaskRunOutputBindings).where(eq(
+          protectedTaskRunOutputBindings.taskRunId, connected.taskRunId,
+        ));
+        expect(before?.completedAt).toBeNull();
+        if (scenario === "attachment recovery") expect(before?.attachedAt).toBeNull();
+        else expect(before?.attachedAt).toBeInstanceOf(Date);
+      }
+      // The existing observer repairs final publication without invoking the
+      // model or allocating another TaskRun/Job.
+      await composition.coordinator.recoverBeforeObservation(100);
+      terminal = await waitForConnectedCompletion(base, connected.taskRunId, terminalStatus);
       if (terminal.job.status !== "completed") {
         const [authorization] = await base.admin.select({
           state: backgroundCryptoAuthorizationRequests.state,
@@ -2826,6 +2949,21 @@ describePostgres("sealed protected Task Memory object writer", () => {
         `task-run-authorization:${connected.taskRunId}`,
         recipients,
       );
+      const [settledBinding] = await base.admin.select({
+        deliveryMode: protectedTaskRunOutputBindings.deliveryMode,
+        attachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
+        completedAt: protectedTaskRunOutputBindings.completedAt,
+      }).from(protectedTaskRunOutputBindings).where(eq(
+        protectedTaskRunOutputBindings.taskRunId, connected.taskRunId,
+      ));
+      expect(settledBinding?.attachedAt).toEqual(terminal.run.completedAt);
+      if (scenario === "publication recovery") {
+        expect(settledBinding?.deliveryMode).toBe("none");
+        expect(settledBinding?.completedAt).toEqual(terminal.run.completedAt);
+      } else {
+        // Message/wake delivery is a separate unfinished owner.
+        expect(settledBinding?.completedAt).toBeNull();
+      }
       expect(terminal.job.input).toEqual({
         kind: "protected_task_run_v1",
         taskId: connected.taskId,
@@ -2839,6 +2977,30 @@ describePostgres("sealed protected Task Memory object writer", () => {
       });
       expect(terminal.job.message).toBeNull();
       expect(terminal.job.result).toBeNull();
+      // A delayed process cannot overwrite the completed durable result.
+      const expectedReference = {
+        kind: "protected_task_run_v1" as const,
+        taskId: connected.taskId,
+        taskRunId: connected.taskRunId,
+        inputObjectId: connected.inputObjectId,
+        resultObjectId: connected.resultObjectId,
+        authorizationRequestId: `task-run-authorization:${connected.taskRunId}`,
+        policyRevision: base.policyRevision,
+        executionSegment: 1,
+      };
+      for (const requested of ["failed", "cancelled"] as const) {
+        expect(await settleProtectedTaskJobTerminalWithDatabase(
+          base.productDb, terminal.job.id, expectedReference, requested,
+          { expectedRevision: base.policyRevision, representation: "protected_only" },
+        )).toEqual({ kind: "existing_terminal", status: "completed" });
+      }
+      expect((await base.admin.select({ status: jobs.status }).from(jobs)
+        .where(eq(jobs.id, terminal.job.id)))[0]?.status).toBe("completed");
+      if (terminal.run.status !== "completed") {
+        throw new Error(`Connected Task execution did not succeed: ${JSON.stringify({
+          scenario, segmentCalls, nativeErrors,
+        })}`);
+      }
       expect(terminal.run).toMatchObject({
         id: connected.taskRunId,
         taskId: connected.taskId,
@@ -2852,6 +3014,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
         resultCryptoMappingState: "verified",
         resultText: null,
         lastError: null,
+        modelId: connected.requestedModelId,
       });
       const exactRuns = await base.admin.select({ id: taskRuns.id })
         .from(taskRuns).where(eq(taskRuns.taskId, connected.taskId));

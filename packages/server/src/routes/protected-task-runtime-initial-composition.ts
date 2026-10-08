@@ -1,4 +1,6 @@
 import { log } from "@nautilo/logger";
+import { createProtectedTaskPublishedResultRecovery } from
+  "./protected-task-published-result-recovery";
 import {
   createProtectedTaskCancellationRecovery,
   type ProtectedTaskCancellationRecoveryCursor,
@@ -19,6 +21,7 @@ import {
   tasks,
   type DirectDatabase,
   type PostgresJsBridgeConnection,
+  type ProtectedTaskRunOutputRecoveryCursor,
 } from "@nautilo/db";
 import {
   LatticeCrypto,
@@ -274,6 +277,10 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     db: input.db, repository, recipients: input.recipients, now,
   });
   let cancellationCursor: ProtectedTaskCancellationRecoveryCursor | undefined;
+  const published = createProtectedTaskPublishedResultRecovery({
+    db: input.db, repository, recipients: input.recipients, now,
+  });
+  let publishedCursor: ProtectedTaskRunOutputRecoveryCursor | undefined;
   const predispatch = createProductionProtectedTaskPredispatch({
     db: input.db,
     resolver: input.resolver,
@@ -415,6 +422,14 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
       cancellationCursor = cancelled.next;
       if (cancelled.failures > 0) {
         log("[task-observer] protected cancellation recovery deferred code=PROTECTED_STOP_RECOVERY_RETRY");
+      }
+      const publications = await published.recoverPage({
+        limit,
+        ...(publishedCursor === undefined ? {} : { after: publishedCursor }),
+      });
+      publishedCursor = publications.next;
+      if (publications.failures > 0) {
+        log("[task-observer] protected result settlement deferred code=PROTECTED_RESULT_SETTLEMENT_RETRY");
       }
       const page = await recovery.recoverPage({
         limit, ...(recoveryCursor === undefined ? {} : { after: recoveryCursor }),

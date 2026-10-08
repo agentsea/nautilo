@@ -159,3 +159,7 @@ export {
   type TaskRuntimeRecipientDeviceBinding,
   type TaskRuntimeRecipientRequestPlan,
 } from "./task-runtime-grant-claim";
+
+export {
+  isExactCompletedTaskRuntimeSuccessor,
+} from "./task-runtime-completion";

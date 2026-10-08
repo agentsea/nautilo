@@ -26,6 +26,11 @@ const publication = Object.freeze({
   awaitPublished: async () => false,
 });
 const startProtectedTaskJob = async () => "started" as const;
+const settleProtectedTaskJobTerminal = async (
+  _jobId: string,
+  _reference: unknown,
+  requested: "completed" | "failed" | "cancelled",
+) => ({ kind: "transitioned", status: requested } as const);
 
 function reference(): ProtectedTaskJobReferenceV1 {
   return {
@@ -126,6 +131,7 @@ describe("JobManager protected Task worker settlement", () => {
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks(),
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => persistCalls++ === 0
         ? JOB_ID
         : "protected-after-start-race",
@@ -196,6 +202,7 @@ describe("JobManager protected Task worker settlement", () => {
       laneLock,
       acceptanceSinks: acceptanceSinks(),
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => JOB_ID,
       updateStatus: async () => {},
     });
@@ -253,6 +260,7 @@ describe("JobManager protected Task worker settlement", () => {
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks(),
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => JOB_ID,
       updateStatus: async () => {},
     });
@@ -297,13 +305,17 @@ describe("JobManager protected Task worker settlement", () => {
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks(),
       startProtectedTaskJob,
-      persist: async () => JOB_ID,
-      updateStatus: async (_jobId, status) => {
-        if (status === "cancelled") {
+      settleProtectedTaskJobTerminal: async (
+        _jobId, _reference, requested,
+      ) => {
+        if (requested === "cancelled") {
           cancelPersistStarted.resolve();
           await allowCancelPersist.promise;
         }
+        return { kind: "transitioned", status: requested };
       },
+      persist: async () => JOB_ID,
+      updateStatus: async () => {},
     });
     await dispatchProtected(
       manager,
@@ -330,11 +342,12 @@ describe("JobManager protected Task worker settlement", () => {
       return value;
     });
     await cancelPersistStarted.promise;
-    await waitFor(() => manager.getJob(JOB_ID) === undefined);
     expect(resolved).toBe(false);
+    expect(manager.getJob(JOB_ID)).toBeDefined();
 
     allowCancelPersist.resolve();
     expect(await stopped).toEqual({ status: "stopped" });
+    expect(manager.getJob(JOB_ID)).toBeUndefined();
   });
 
   test("Plain foreground cleanup does not wait for lane release", async () => {

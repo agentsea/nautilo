@@ -27,6 +27,11 @@ const publication = Object.freeze({
   awaitPublished: async () => true,
 });
 const startProtectedTaskJob = async () => "started" as const;
+const settleProtectedTaskJobTerminal = async (
+  _jobId: string,
+  _reference: unknown,
+  requested: "completed" | "failed" | "cancelled",
+) => ({ kind: "transitioned", status: requested } as const);
 
 function reference(
   taskId = TASK_ID,
@@ -125,6 +130,7 @@ describe("JobManager protected Task execution", () => {
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks(order),
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async (payload) => {
         order.push("persist");
         persisted.push(payload);
@@ -188,6 +194,7 @@ describe("JobManager protected Task execution", () => {
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks([]),
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async (payload) => {
         persisted.push(payload);
         return `protected-job-${persisted.length}`;
@@ -233,6 +240,7 @@ describe("JobManager protected Task execution", () => {
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks([], () => 0),
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => "protected-job-link-race",
       updateStatus: async () => {},
     });
@@ -269,6 +277,7 @@ describe("JobManager protected Task execution", () => {
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks(order),
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => {
         order.push("persist");
         return "protected-job-stale";
@@ -319,6 +328,7 @@ describe("JobManager protected Task execution", () => {
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks([]),
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => "protected-job-start-stop-race",
       updateStatus: async () => {},
     });
@@ -370,6 +380,7 @@ describe("JobManager protected Task execution", () => {
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks([]),
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => "protected-job-start-failure",
       updateStatus: async () => { writes += 1; },
     });
@@ -419,6 +430,7 @@ describe("JobManager protected Task execution", () => {
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks([]),
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => "protected-job-event",
       updateStatus: async () => {},
     });
@@ -465,6 +477,7 @@ describe("JobManager protected Task execution", () => {
       laneLock,
       acceptanceSinks: sinks,
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       taskStopSink: async (taskId) => {
         stoppedTasks.push(taskId);
       },
@@ -511,6 +524,7 @@ describe("JobManager protected Task execution", () => {
       laneLock,
       acceptanceSinks: acceptanceSinks([]),
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => "must-not-persist",
       updateStatus: async () => {},
     });
@@ -594,6 +608,7 @@ describe("JobManager protected Task execution", () => {
       persist: async () => "protected-before-work",
       updateStatus: async () => { writes += 1; },
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
     });
     await jm.createProtectedTaskJob({
       scheduling: scheduling("subagent:protected-before-work"), reference: reference(),
@@ -620,8 +635,14 @@ describe("JobManager protected Task execution", () => {
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks([]),
       persist: async () => "protected-job-post-start-failure",
-      updateStatus: async (_jobId, status) => { updates.push(status); },
+      updateStatus: async () => {},
       startProtectedTaskJob,
+      settleProtectedTaskJobTerminal: async (
+        _jobId, _reference, requested,
+      ) => {
+        updates.push(requested);
+        return { kind: "transitioned", status: requested };
+      },
     });
 
     await jm.createProtectedTaskJob({

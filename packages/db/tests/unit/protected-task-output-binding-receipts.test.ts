@@ -186,7 +186,7 @@ describe("protected TaskRun output receipts", () => {
       .rejects.toThrow("recovery batch is malformed");
   });
 
-  test("attaches only the verified mapped result and completes no-delivery", async () => {
+  test("attaches only the verified mapped result and leaves final settlement discoverable", async () => {
     const fixture = harness({ task: task(), run: run(), binding: binding() });
     const result = await recordProtectedTaskRunResultAttached(fixture.db, {
       taskId: ids.task,
@@ -195,7 +195,6 @@ describe("protected TaskRun output receipts", () => {
     expect(result.status).toBe("recorded");
     expect(fixture.writes).toEqual([{
       resultAttachedAt: terminalAt,
-      completedAt: terminalAt,
     }]);
 
     const stale = harness({

@@ -346,6 +346,7 @@ export {
 export {
   persistJob,
   startProtectedTaskJob,
+  settleProtectedTaskJobTerminal,
   cancelUnstartedProtectedTaskJobWithDatabase,
   updateJobStatus,
   getJobById,
@@ -353,6 +354,8 @@ export {
   type PersistedJobRecord,
   type JobPublicationPolicy,
   type ProtectedTaskJobStartResult,
+  type ProtectedTaskJobTerminalRequest,
+  type ProtectedTaskJobTerminalResult,
 } from "./queries/jobs";
 export {
   hasClaimedOwner,
@@ -609,6 +612,7 @@ export {
   transitionTaskLifecyclePaused,
   transitionTaskLifecycleTerminal,
   settleCancelledProtectedTaskRunAuthorization,
+  settlePublishedProtectedTaskRunAuthorization,
   countActiveTaskWorkWith,
   getLatestResumableTaskRun,
   repairTaskContentAccessRecovery,
