@@ -1,6 +1,6 @@
 import { reapplyHappyDomGlobals } from "../../../tests/bun-dom-preload";
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 const seed = mock(async () => ({
@@ -213,6 +213,29 @@ describe("WorkstationSegment", () => {
     });
     fireEvent.click(view.getByRole("button", { name: /enable developer workstation with your pin/i }));
     expect(view.getByRole("heading", { name: "Enable Developer Workstation" })).toBeTruthy();
+  });
+
+  test("keeps one PIN activation pending and permits retry after failure", async () => {
+    acknowledgeReview();
+    let rejectActivation: (error: Error) => void = () => { throw new Error("Activation not started"); };
+    selectActiveProfile.mockImplementationOnce(() => new Promise((_, reject) => { rejectActivation = reject; }));
+    const view = renderSegment();
+    fireEvent.click(await view.findByRole("button", { name: /enable developer workstation with your pin/i }));
+    const input = view.getByPlaceholderText("••••••") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "123456" } });
+    act(() => {
+      fireEvent.keyDown(input, { key: "Enter" });
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+    expect(selectActiveProfile).toHaveBeenCalledTimes(1);
+    expect(input.disabled).toBe(true);
+    expect((view.getByRole("button", { name: "Checking and enabling…" }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { rejectActivation(new Error("Activation interrupted")); });
+    expect(input.disabled).toBe(false);
+    expect(view.getAllByText("Developer Workstation could not be enabled.").length).toBeGreaterThan(0);
+    fireEvent.click(view.getByRole("button", { name: "Verify" }));
+    await waitFor(() => expect(view.queryByRole("heading", { name: "Enable Developer Workstation" }) === null).toBe(true));
+    expect(selectActiveProfile).toHaveBeenCalledTimes(2);
   });
 
   test("routes a revision-mismatched profile to Workstation Settings for an update", async () => {

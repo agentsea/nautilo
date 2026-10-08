@@ -249,6 +249,8 @@ export async function visibleTextRefreshAfterAgent(
 }
 
 export interface NautiloGraphDeps extends PostModelDeps {
+  readonly humanTerminalAdmissionPortForState?: (state: NautiloState) => import("../tools/terminal/admission").HumanTerminalAdmissionPort | undefined;
+  readonly localExecutionHistoryPortForState?: (state: NautiloState) => import("../tools/local-execution/history").LocalExecutionHistoryPort | undefined;
   /** Request-local foreground funding authority; never persisted in graph state. */
   readonly foregroundChatFundingSession?: ForegroundChatFundingSession;
   readonly researchNoteDraft?: ResearchNoteDraft;
@@ -311,6 +313,8 @@ export function createNautiloGraph(
     ),
   });
   const graphToolsNode = createToolsNode({
+    ...(deps?.localExecutionHistoryPortForState === undefined ? {} : { localExecutionHistoryPortForState: deps.localExecutionHistoryPortForState }),
+    ...(deps?.humanTerminalAdmissionPortForState === undefined ? {} : { humanTerminalAdmissionPortForState: deps.humanTerminalAdmissionPortForState }),
     personalFunding: deps?.foregroundChatFundingSession?.kind === "personal",
     personalTaskControls: deps?.foregroundChatFundingSession?.personalTaskControls === true,
     ...(deps?.foregroundChatFundingSession?.runnableModelIds === undefined

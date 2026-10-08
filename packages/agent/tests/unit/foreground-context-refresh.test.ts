@@ -81,6 +81,10 @@ describe("streamForegroundGraph", () => {
       preparedMessages: [],
       approvedToolCalls: [],
       pendingApproval: [],
+      computerUseInvocationBindings: {},
+      fullMacInvocationBindings: {},
+      githubInvocationBindings: {},
+      humanTerminalInvocationBindings: {},
       foregroundContextRefresh: null,
     });
     expect((inputs[1] as Partial<NautiloState>).foregroundContextRefreshLastProjection)

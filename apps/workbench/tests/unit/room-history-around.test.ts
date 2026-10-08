@@ -40,6 +40,7 @@ function aroundPage(targetId: string, options?: Partial<RoomMessagesAroundPage>)
         content: "result",
         toolCalls: null,
         toolName: "lookup",
+        toolCallId: "call-1",
         createdAt: "2026-01-01T00:00:06.000Z",
       },
     ],
@@ -55,7 +56,7 @@ function text(id: string, label: string): ThreadMessageLike {
   return { id, role: "assistant", content: [{ type: "text", text: label }] };
 }
 
-describe("D430 around-message history controller", () => {
+describe("around-message history controller", () => {
   test("refreshes a mounted child Message through its active parent Room", () => {
     expect(mountedRoomHistoryRefreshRequest(
       "parent-room",

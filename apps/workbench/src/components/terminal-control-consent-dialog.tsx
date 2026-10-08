@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from "react";
 
 export interface TerminalControlConsentDialogProps {
   assistantName: string;
+  error?: string | undefined;
   onCancel: () => void | Promise<void>;
   onConfirm: () => void | Promise<void>;
 }
 
 export function TerminalControlConsentDialog({
   assistantName,
+  error,
   onCancel,
   onConfirm,
 }: TerminalControlConsentDialogProps) {
@@ -56,6 +58,7 @@ export function TerminalControlConsentDialog({
           {assistantName} can type and run commands in this terminal using your macOS account.
           {" "}You can take control at any time.
         </p>
+        {error ? <p role="alert" className="mt-2 text-sm text-destructive">{error}</p> : null}
         <div className="mt-5 flex justify-end gap-2">
           <button
             ref={cancelRef}

@@ -387,7 +387,7 @@ export async function appendTranscriptMessages(
   );
 }
 
-export interface SessionMessage {
+export interface SessionMessage extends TranscriptToolPresentation {
   imageAssistance?: ImageAssistanceSummary | undefined;
   id: string;
   logicalMessageKey?: string;
@@ -857,6 +857,7 @@ export async function getSessionMessages(
     content: r.content,
     toolCalls: sanitizeSerializedTranscriptToolCalls(r.toolCalls),
     toolName: r.toolName ?? null,
+    ...(r.role === "tool" ? readTranscriptToolPresentation(r.metadata) : {}),
     createdAt: r.createdAt,
     editedAt: r.editedAt,
     editRevision: r.editRevision,
@@ -896,6 +897,7 @@ export async function getLatestSessionMessages(
     content: r.content,
     toolCalls: sanitizeSerializedTranscriptToolCalls(r.toolCalls),
     toolName: r.toolName ?? null,
+    ...(r.role === "tool" ? readTranscriptToolPresentation(r.metadata) : {}),
     createdAt: r.createdAt,
     editedAt: r.editedAt,
     editRevision: r.editRevision,
@@ -955,6 +957,7 @@ export async function getRoomMessagesBeforeCursor(args: {
         content: r.content,
         toolCalls: sanitizeSerializedTranscriptToolCalls(r.toolCalls),
         toolName: r.toolName ?? null,
+        ...(r.role === "tool" ? readTranscriptToolPresentation(r.metadata) : {}),
         createdAt: r.createdAt,
         editedAt: r.editedAt,
         editRevision: r.editRevision,
@@ -1151,6 +1154,8 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
         ? null
         : sanitizeSerializedTranscriptToolCalls(r.toolCalls ?? null),
       toolName: args.contentRepresentation === "structural" ? null : (r.toolName ?? null),
+      ...(args.contentRepresentation !== "structural" && r.role === "tool"
+        ? readTranscriptToolPresentation(r.metadata) : {}),
       createdAt: r.createdAt,
       editedAt: r.editedAt,
       editRevision: r.editRevision,

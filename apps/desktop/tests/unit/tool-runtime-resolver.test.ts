@@ -1,10 +1,10 @@
 /**
- * M206 Phase 3 — desktop bundled-runtime path resolver.
+ * Desktop bundled-runtime path resolver.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   detectDesktopPlatformKey,
@@ -20,6 +20,14 @@ function makeTempRoot(prefix: string): string {
 }
 
 describe("detectDesktopPlatformKey", () => {
+  test("GitHub CLI uses the explicit platform-key resource layout", () => {
+    const root = makeTempRoot("github-resolver");
+    try {
+      const path = join(root, "resources", "tools-github-cli", "darwin-arm64", "gh");
+      mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, "fixture");
+      expect(resolveDesktopRuntimePath({ runtime: "github-cli", resourcesPath: join(root, "resources"), devVendorRoot: join(root, "vendor"), platformKey: "darwin-arm64" })).toEqual({ ok: true, result: { path, source: "bundled" } });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   test("maps darwin hosts to darwin-* keys", () => {
     expect(detectDesktopPlatformKey("darwin", "arm64")).toBe("darwin-arm64");
     expect(detectDesktopPlatformKey("darwin", "x64")).toBe("darwin-x64");

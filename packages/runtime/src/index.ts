@@ -1,4 +1,4 @@
-// D421 Phase 4.2/4.3 — re-export the per-agent turnContextId helper so the
+// Re-export the per-agent turnContextId helper so the
 // server can compute the same composite key the executor / tools use, without
 // taking a direct dependency on the agent package's internal module path.
 export {
@@ -71,7 +71,7 @@ export {
   type DurableToolResultLifecycleObserver,
 } from "./durable-tool-result-lifecycle";
 export { InMemoryLaneLock, laneLock } from "./lane-lock";
-// D421 Phase 4.2 — runtime-internal one-hop redirect completion seam.
+// Runtime-internal one-hop redirect completion seam.
 export {
   setRedirectCompletionHook,
   getRedirectCompletionHook,
@@ -300,7 +300,7 @@ export {
   type InMemoryRelayRegistryRemotePresenceChangedInput,
   type InMemoryRelayRegistryOptions,
 } from "./relay-registry";
-// D418 — server-side Full Workstation session registry (policy-state foundation).
+// Server-side Full Workstation session registry (policy-state foundation).
 export {
   FULL_WORKSTATION_AGENT_SCOPE,
   InMemoryWorkstationSessionRegistry,
@@ -322,7 +322,7 @@ export {
   type DisableDenialCode,
   type InvalidateResult,
 } from "./workstation-session-registry";
-// D418 task 3.1.2 — transient WorkstationDispatchPlan admission store.
+// Transient WorkstationDispatchPlan admission store.
 export {
   InMemoryWorkstationDispatchPlanRegistry,
   revalidatePlanAgainstRelay,
@@ -715,3 +715,5 @@ export { memoryReviewAdmission, finishMemoryReviewTurn } from "./memory-review/a
 export { recoverMemoryReviewTurnsAtStartup, readOrdinaryMemoryReviewCheckpoint } from "./memory-review/startup-recovery";
 
 export { canResumeSecurityResearchContextFailure } from "./tasks/security-report-recovery";
+
+export { foregroundHumanTerminalAdmissionPort } from "./conversation/human-terminal-admission";

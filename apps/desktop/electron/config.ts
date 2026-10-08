@@ -1,5 +1,5 @@
 /**
- * Persistent desktop configuration (D057 2a.2).
+ * Persistent desktop configuration.
  *
  * Stores the user's first-run choice: which deployment mode to use and,
  * for connect mode, which server URL. Lives alongside workspace.json in
@@ -138,7 +138,7 @@ export function clearDesktopConfig(filePath = configFilePath()): void {
 }
 
 /**
- * D557 — non-secret, Electron-owned desired startup posture. It is adjacent
+ * Non-secret, Electron-owned desired startup posture. It is adjacent
  * to config.json so it shares the installation/profile boundary without
  * overloading connection configuration or creating a renderer store.
  */
@@ -148,4 +148,12 @@ export function readyToWorkStateFilePath(): string {
 
 export function readyToWorkProtectedReceiptFilePath(): string {
   return join(dirname(configFilePath()), "ready-to-work-workstation-receipt.bin");
+}
+
+/** Opt-in paths for coordinated keyed-intent migration. Legacy callers remain unchanged. */
+export function readyToWorkRememberedStateFilePath(): string {
+  return join(dirname(configFilePath()), "ready-to-work-v2.json");
+}
+export function readyToWorkRememberedReceiptFilePath(): string {
+  return join(dirname(configFilePath()), "ready-to-work-workstation-receipt-v2.bin");
 }

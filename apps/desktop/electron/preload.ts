@@ -2,6 +2,10 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import type { CompanionOwnerAPI, CompanionAction } from "./companion-contract";
 import type { ConnectionPresentation } from "./connection-presentation";
 import type {
+  AgentAccessStatus,
+  AgentDevelopmentScope,
+  AgentAccessChoiceInput,
+  ReadyToWorkComponentSelection,
   ReadyToWorkAggregateStatus,
   ReadyToWorkSelection,
 } from "./ready-to-work-contract";
@@ -849,6 +853,7 @@ const workstationProfilesAPI = {
       WorkstationProfileIpcResult<{
         seed: WorkstationProfileSeedDescriptor;
         review: WorkstationDiscoveryReview;
+        scope: AgentDevelopmentScope;
       }>
     >,
   materializeSeedProfile: () =>
@@ -1719,13 +1724,16 @@ type TerminalSessionInfo = {
   sandboxed: boolean;
   controller: Controller;
   requested: boolean;
-  /** main-owned per-PTY consent; true once the user has handed this
-   * one PTY to Genie (survives retake for the PTY's lifetime). */
+  /** Main-owned per-PTY consent, revoked when the Human takes control. */
   agentControlConsented: boolean;
 };
 type WriteResult =
   { ok: true } | { ok: false; reason: "no-session" | "locked" };
 const terminalAPI = {
+  setHandoffContext: (selection: { roomId: string; agentId: string } | null) =>
+    ipcRenderer.invoke("terminal:set-handoff-context", selection) as Promise<void>,
+  grantHumanControl: (sessionId: string, selection: { roomId: string; agentId: string }) =>
+    ipcRenderer.invoke("terminal:grant-human-control", { sessionId, roomId: selection.roomId, agentId: selection.agentId }) as Promise<boolean>,
   create: (opts?: {
     cwd?: string;
     cols?: number;
@@ -1948,6 +1956,17 @@ const hermesConnectionAPI = {
  * startup receipts, credentials, roots, and owner authority stay in main.
  */
 const readyToWorkAPI = {
+  getAgentAccess: () => ipcRenderer.invoke("readyToWork:getAgentAccess") as Promise<AgentAccessStatus>,
+  chooseAgentAccess: (input: AgentAccessChoiceInput) => ipcRenderer.invoke("readyToWork:chooseAgentAccess", input) as Promise<AgentAccessStatus>,
+  restoreComponents: () => ipcRenderer.invoke("readyToWork:restoreComponents") as Promise<ReadyToWorkAggregateStatus>,
+  disableComponents: () => ipcRenderer.invoke("readyToWork:disableComponents") as Promise<ReadyToWorkAggregateStatus>,
+  restoreDevelopment: () => ipcRenderer.invoke("readyToWork:restoreDevelopment") as Promise<AgentAccessStatus>,
+  enrollComponents: (input: { selection: ReadyToWorkComponentSelection; pin: string }) => ipcRenderer.invoke("readyToWork:enrollComponents", input) as Promise<ReadyToWorkAggregateStatus>,
+  onAgentAccessChanged: (handler: () => void) => {
+    const listener = () => handler();
+    ipcRenderer.on("readyToWork:agentAccessChanged", listener);
+    return () => ipcRenderer.removeListener("readyToWork:agentAccessChanged", listener);
+  },
   get: () => ipcRenderer.invoke("readyToWork:get") as Promise<ReadyToWorkAggregateStatus>,
   enroll: (input: { selection: ReadyToWorkSelection; pin: string }) =>
     ipcRenderer.invoke("readyToWork:enroll", input) as Promise<ReadyToWorkAggregateStatus>,
@@ -2295,6 +2314,25 @@ contextBridge.exposeInMainWorld("nautiloDesktop", {
 
   /** terminal (PTY) work surface bridge. */
   terminal: terminalAPI,
+  localExecution: {
+    historyForRoom: (request: { roomId: string; references: import("./local-execution-history-projection").LocalExecutionHistoryReference[] }) =>
+      ipcRenderer.invoke("localExecution:historyForRoom", request) as Promise<import("./local-execution-history-projection").LocalExecutionHistoryOverlay[]>,
+    onChanged: (listener: (event: { generation: string | null }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) return;
+        const generation = (value as Record<string, unknown>)["generation"];
+        if (generation === null || typeof generation === "string") listener({ generation });
+      };
+      ipcRenderer.on("localExecution:changed", handler);
+      return () => { ipcRenderer.removeListener("localExecution:changed", handler); };
+    },
+    read: (request: import("./relay-dispatch/local-execution").LocalExecutionViewRequest) =>
+      ipcRenderer.invoke("localExecution:read", request) as Promise<import("./relay-dispatch/local-execution").LocalExecutionView>,
+    cancel: (request: import("./relay-dispatch/local-execution").LocalExecutionViewRequest) =>
+      ipcRenderer.invoke("localExecution:cancel", request) as Promise<import("./relay-dispatch/local-execution").LocalExecutionView>,
+    openPreview: (request: { generation: string; executionId: string; url: string }) =>
+      ipcRenderer.invoke("localExecution:openPreview", request) as Promise<void>,
+  },
 
   /** local Desktop Filesystem Grant administration (human renderer only). */
   desktopFilesystemGrants: desktopFilesystemGrantsAPI,

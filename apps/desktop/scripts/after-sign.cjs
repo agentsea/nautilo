@@ -27,6 +27,21 @@ function parseCodesignIdentity(details) {
   return { identifier, teamIdentifier, authorities };
 }
 
+/** Decide from the completed signature, not from release environment variables.
+ * Only explicitly ad-hoc apps may omit credential-runtime attestation. */
+function requiresGitHubRuntimeAttestation(details) {
+  const identity = parseCodesignIdentity(details);
+  if (identity.identifier !== EXPECTED_NAUTILO_IDENTIFIER) throw new Error("[github-cli] unexpected app identity");
+  if (identity.teamIdentifier !== null) {
+    if (!/^[A-Z0-9]{10}$/.test(identity.teamIdentifier) || !identity.authorities[0]?.startsWith("Developer ID Application:")) {
+      throw new Error("[github-cli] unsupported app signing identity");
+    }
+    return true;
+  }
+  if (!/^Signature=adhoc$/m.test(details) || identity.authorities.length !== 0) throw new Error("[github-cli] app signature is unconfirmed");
+  return false;
+}
+
 function inspectCodesignIdentity(path) {
   const detailsResult = spawnSync("codesign", ["-d", "--verbose=4", path], { encoding: "utf8" });
   if (detailsResult.error || detailsResult.status !== 0) {
@@ -313,6 +328,7 @@ function assertPackagedWindowPresenceSignature(bundlePath) {
 
 
 exports.parseCodesignIdentity = parseCodesignIdentity;
+exports.requiresGitHubRuntimeAttestation = requiresGitHubRuntimeAttestation;
 exports.assertCuaDriverMatchesNautiloIdentity = assertCuaDriverMatchesNautiloIdentity;
 exports.assertExactCuaDriverEntitlements = assertExactCuaDriverEntitlements;
 exports.assertScreenRecordingPermissionMatchesNautiloIdentity = assertScreenRecordingPermissionMatchesNautiloIdentity;
@@ -339,6 +355,15 @@ exports.default = async function afterSign(context) {
   // audits the actual nested executable without executing it, and intentionally
   // rejects any package that omitted it or changed its signing identity.
   execFileSync("bun", ["run", join(__dirname, "verify-ffmpeg.ts"), join(bundlePath, "Contents", "Resources", "tools-ffmpeg"), "--signed"], { stdio: "inherit", cwd: join(__dirname, "..") });
+  const githubAppDetails = spawnSync("/usr/bin/codesign", ["-d", "--verbose=4", bundlePath], {
+    encoding: "utf8", env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C" },
+  });
+  if (githubAppDetails.error || githubAppDetails.status !== 0) throw new Error("[github-cli] app signature is unconfirmed");
+  if (requiresGitHubRuntimeAttestation(`${githubAppDetails.stdout}\n${githubAppDetails.stderr}`)) {
+    execFileSync("bun", ["run", join(__dirname, "verify-github-cli.ts"), join(bundlePath, "Contents", "Resources", "tools-github-cli"), "--signed", bundlePath], { stdio: "inherit", cwd: join(__dirname, "..") });
+  } else {
+    console.log("[github-cli] ad-hoc package: GitHub credential custody is unavailable");
+  }
   assertPackagedCuaDriverSignature(bundlePath);
   assertPackagedScreenRecordingPermissionSignature(bundlePath);
   assertPackagedComputerUseHostSignature(bundlePath);

@@ -1,5 +1,5 @@
 /**
- * Bubblewrap arg builder for `@nautilo/sandbox`. D060 Phase 1 task 1.5.
+ * Bubblewrap arg builder for `@nautilo/sandbox`. Phase 1 task 1.5.
  *
  * Port: Spacebot `src/sandbox.rs:478-636` (`wrap_bubblewrap`). The
  * implementation is a 1:1 translation with TS adaptations. Every
@@ -19,9 +19,9 @@
  *   6a. --ro-bind each readOnlyPaths entry (canonicalized, if present)
  *   6b. --bind each writable path (canonicalized)  ← wins over 6a if overlap
  *   7.  --tmpfs dataDir (mask agent data dir even if workspace-overlapping)
- *   7a. --tmpfs each protectedPaths entry (D418 3.2.1 deny-overrides) ← wins over 1/5/6
+ *   7a. --tmpfs each protectedPaths entry (3.2.1 deny-overrides) ← wins over 1/5/6
  *   8.  --unshare-pid --new-session --die-with-parent  (isolation + no orphans)
- *   8a. --unshare-net iff networkPolicy.mode is not "host" (D103 Linux fail-closed)
+ *   8a. --unshare-net iff networkPolicy.mode is not "host" (Linux fail-closed)
  *   9.  --clearenv      (default-deny env)
  *   10. --chdir cwd     (working directory inside sandbox)
  *   11. --setenv PATH + HOME + TMPDIR + CI + DEBIAN_FRONTEND  (hardened defaults)
@@ -47,6 +47,7 @@ import type { SandboxConfig, SpawnArgs } from "./types";
 
 export interface BubblewrapBuildOptions {
   readonly workspace: string;
+  readonly managedHome?: string;
   readonly dataDir: string;
   readonly toolsBin: string;
   readonly procSupported: boolean;
@@ -108,7 +109,7 @@ export function buildBubblewrap(opts: BubblewrapBuildOptions): SpawnArgs {
   // Port: src/sandbox.rs:521.
   bwrapArgs.push("--bind", opts.workspace, opts.workspace);
 
-  // Step 6a: --ro-bind each readOnlyPaths entry (D060 Sprint 1 G5.1).
+  // Step 6a: --ro-bind each readOnlyPaths entry.
   // Canonicalized; missing paths skipped with a debug log — a
   // non-existent readOnly path shouldn't abort bootstrap (fresh
   // project without ~/Downloads, etc.). Deployment profiles
@@ -146,7 +147,7 @@ export function buildBubblewrap(opts: BubblewrapBuildOptions): SpawnArgs {
   // Port: src/sandbox.rs:541.
   bwrapArgs.push("--tmpfs", opts.dataDir);
 
-  // Step 7a: D418 task 3.2.1 — mask each canonical protected path with an
+  // Step 7a: task 3.2.1 — mask each canonical protected path with an
   // empty tmpfs, AFTER every bind (system ro-binds, readOnlyPaths,
   // workspace, writable/projectPaths, dataDir) so bwrap's later-mount-wins
   // makes the deny override any granted root that overlaps it. A protected
@@ -202,7 +203,7 @@ export function buildBubblewrap(opts: BubblewrapBuildOptions): SpawnArgs {
   bwrapArgs.push("--new-session");
   bwrapArgs.push("--die-with-parent");
 
-  // Step 8a: D103 Linux network isolation. bwrap has no proxy route yet,
+  // Step 8a: Linux network isolation. bwrap has no proxy route yet,
   // so proxy-allowlist must fail closed instead of silently sharing host net.
   if (opts.config.networkPolicy?.mode !== undefined && opts.config.networkPolicy.mode !== "host") {
     bwrapArgs.push("--unshare-net");
@@ -225,7 +226,7 @@ export function buildBubblewrap(opts: BubblewrapBuildOptions): SpawnArgs {
       ? `${opts.toolsBin}${pathDelimiter}${parentPath}`
       : opts.toolsBin;
   bwrapArgs.push("--setenv", "PATH", path);
-  bwrapArgs.push("--setenv", "HOME", opts.workspace);
+  bwrapArgs.push("--setenv", "HOME", opts.managedHome ?? opts.workspace);
   bwrapArgs.push("--setenv", "TMPDIR", "/tmp");
   bwrapArgs.push("--setenv", "CI", "true");
   bwrapArgs.push("--setenv", "DEBIAN_FRONTEND", "noninteractive");

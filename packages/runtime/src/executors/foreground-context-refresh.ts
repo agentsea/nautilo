@@ -6,6 +6,7 @@ import type { ForegroundRecordContextPort } from "@nautilo/reflection/foreground
 import { buildForegroundHistoryMessages } from "../context/foreground-history";
 import { buildProtectedRoomHybridContext } from "../context/build-transcript-context";
 import type { ProtectedConversationExecutorTurnScope } from "../conversation/conversation-execution-services";
+import type { RoomHistoryHit } from "../conductor/history-search";
 import { imageAssistanceHistory } from "./image-assistance";
 
 /** Only committed row receipts advance this execution's history read fence. */
@@ -106,6 +107,7 @@ export function createForegroundContextRebuilder(input: Readonly<{
   receipts: ForegroundContextReceipts;
   protectedTurn?: ProtectedConversationExecutorTurnScope;
   recordContext?: ForegroundRecordContextPort;
+  onAuthorizedHistory?: (hits: readonly RoomHistoryHit[]) => void;
 }>, deps: Readonly<{ readHistory: typeof buildForegroundHistoryMessages }> = { readHistory: buildForegroundHistoryMessages }): RebuildForegroundContext {
   return async ({ state, request, signal }) => {
     signal?.throwIfAborted();
@@ -150,16 +152,20 @@ export function createForegroundContextRebuilder(input: Readonly<{
         ...(source.executionId === undefined
           ? {}
           : { foregroundExecutionId: source.executionId }),
-        execute: (hits) => buildProtectedRoomHybridContext({
-          hits: imageAssistanceHistory(hits),
-          journal: input.protectedTurn?.journal ?? { rollup: null, events: [] },
-          currentHumanText,
-          modelId: request.modelId,
-          maximumContextCharacters: narrativeMaximumCharacters,
-          activeTurnAfterMessageId: trigger,
-          ...(input.recordContext === undefined ? {} : { recordContext: input.recordContext }),
-          ...(signal === undefined ? {} : { signal }),
-        }),
+        execute: async (hits) => {
+          const rebuilt = await buildProtectedRoomHybridContext({
+            hits: imageAssistanceHistory(hits),
+            journal: input.protectedTurn?.journal ?? { rollup: null, events: [] },
+            currentHumanText,
+            modelId: request.modelId,
+            maximumContextCharacters: narrativeMaximumCharacters,
+            activeTurnAfterMessageId: trigger,
+            ...(input.recordContext === undefined ? {} : { recordContext: input.recordContext }),
+            ...(signal === undefined ? {} : { signal }),
+          });
+          input.onAuthorizedHistory?.(hits);
+          return rebuilt;
+        },
       });
       if (result.status !== "executed") throw new Error("Authorized foreground history refresh is unavailable");
       history = result.value;
@@ -177,6 +183,9 @@ export function createForegroundContextRebuilder(input: Readonly<{
           ? {}
           : { foregroundExecutionId: source.executionId }),
         maximumContextCharacters: narrativeMaximumCharacters,
+        ...(input.onAuthorizedHistory === undefined
+          ? {}
+          : { onAuthorizedHistory: input.onAuthorizedHistory }),
         ...(source.subthreadParentRoomId ? { subthreadParentRoomId: source.subthreadParentRoomId } : {}),
         ...(source.subthreadAnchorMessageId === undefined ? {} : { subthreadAnchorMessageId: source.subthreadAnchorMessageId }),
         ...(input.recordContext === undefined ? {} : { recordContext: input.recordContext }),

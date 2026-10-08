@@ -1,3 +1,4 @@
+import { causalHumanForExecution } from "../runtime/causal-human-context";
 import { deepResearchReturnContextForState } from "../runtime/deep-research-return-context";
 import { assertResearchDesktopAvailable } from "../tools/invocation-service";
 import { projectSecurityResearchConsolidationTools } from "../tools/security/security-scan";
@@ -614,7 +615,23 @@ export async function preModelNode(
         state.relayCapabilities,
         buildRuntimeCapabilityTokens(relayRegistry, state.userId, state.agentId),
       );
-  const relayCapabilities = capabilitiesAtModelStep;
+  const executionHuman = causalHumanForExecution(state.causalHumanUserId) || state.verifiedOrdinaryOrigin?.userId || "";
+  const exactExecutionCapabilities = buildRuntimeCapabilityTokens(relayRegistry, executionHuman, state.agentId,
+    state.verifiedOrdinaryOrigin?.kind === "local_electron" && state.verifiedOrdinaryOrigin.userId === executionHuman
+      ? state.verifiedOrdinaryOrigin.relayId : undefined);
+  const relayCapabilities: Readonly<Record<string, boolean>> = { ...capabilitiesAtModelStep, canExecuteLocal: exactExecutionCapabilities?.["canExecuteLocal"] === true,
+    canReplaceLegacyShellTools: exactExecutionCapabilities?.["canReplaceLegacyShellTools"] === true
+      && state.verifiedOrdinaryOrigin?.kind === "local_electron"
+      && relayRegistry?.getDesktopSessionId?.(state.verifiedOrdinaryOrigin.relayId) === state.verifiedOrdinaryOrigin.desktopSessionId
+      && relayRegistry?.getPairingGeneration?.(state.verifiedOrdinaryOrigin.relayId) === state.verifiedOrdinaryOrigin.pairingGeneration,
+    canUseGitHub: exactExecutionCapabilities?.["canUseGitHub"] === true,
+    canUseLocalGit: exactExecutionCapabilities?.["canUseLocalGit"] === true,
+    canUseHumanTerminal: exactExecutionCapabilities?.["canUseHumanTerminal"] === true
+      && relayRegistry?.getCapabilities(state.verifiedOrdinaryOrigin?.kind === "local_electron" ? state.verifiedOrdinaryOrigin.relayId : "")?.humanTerminal?.owner.roomId === state.roomId,
+    canReadShellOutput: exactExecutionCapabilities?.["canReadShellOutput"] === true,
+    canSearchLocalExecutionOutput: exactExecutionCapabilities?.["canSearchLocalExecutionOutput"] === true,
+    canReadLocalExecutionHistory: exactExecutionCapabilities?.["canReadLocalExecutionHistory"] === true,
+    canObserveLocalExecution: exactExecutionCapabilities?.["canObserveLocalExecution"] === true };
   // refresh from the connected-app runtime at every model step. The
   // checkpointed snapshot feeds every later resolver in this graph step; a
   // concurrent disconnect is still rejected by the execution-time profile
@@ -679,6 +696,7 @@ export async function preModelNode(
             readableNamespaces: envelopeReadableNamespaces(state.memoryAccessEnvelope),
             context: {
               turnId: state.turnId,
+              relayCapabilities,
               fullEncryptionOnly,
               connectedAppProviderIds,
               deepResearchForegroundAvailable: deepResearchReturnContextForState(state) !== null,
@@ -756,6 +774,8 @@ export async function preModelNode(
   // Normal catalog eligibility still enforces actor policy + live PTY relay.
   const activatedToolNames = personalFunding
     ? personalTaskControls ? [...PERSONAL_TASK_CONTROL_TOOL_NAMES] : []
+    : !isGuest && relayCapabilities?.["canUseHumanTerminal"] === true
+      ? mergeEligibleActivatedToolNames(ordinaryActivatedToolNames, ["human_terminal"], eligibleToolNameSet)
     : !isGuest && relayCapabilities?.["hasPendingTerminalHandoff"] === true
       ? mergeEligibleActivatedToolNames(
           ordinaryActivatedToolNames,
@@ -868,12 +888,19 @@ export async function preModelNode(
   // separately so we can cache it (see systemMessage construction below).
   // Everything appended after this point is per-turn-volatile to varying
   // degrees (time, memory, notifications) and stays OUT of the cached span.
+  const localExecutionGuidance = relayCapabilities["canExecuteLocal"] === true
+    ? "\n\nFor contained build, diagnostics, and dev-server commands on the initiating Desktop, use exec_command and write_stdin; discover them when needed. A yielded running receipt refers to the same process: retrieve output with its session_id and cursor, and stop it with write_stdin cancel:true. Never relaunch after an unknown delivery outcome or report stopped without confirmed cleanup. "
+      + (relayCapabilities["canReplaceLegacyShellTools"] === true
+        ? "Use local_git for supported typed local Git, read_shell_output for earlier retained shell output, and human_terminal for an exact Human terminal handoff when available. Authenticated GitHub operations remain unavailable until their admitted account capability is enabled; do not bypass this with shell credentials."
+        : "Existing typed Git, log, and Human terminal handoff operations retain run_shell and terminal.")
+    : "";
   const stableSystemPrefix = buildSystemPrompt({
     assistantName: state.assistantName || "Genie",
     tools,
     isGuest,
     explicitlySelected: state.explicitlySelected,
-  }) + activeComputerUseModelGuidanceForBoundTools(tools);
+    useManagedLocalExecution: relayCapabilities["canReplaceLegacyShellTools"] === true,
+  }) + activeComputerUseModelGuidanceForBoundTools(tools) + localExecutionGuidance;
   let systemPrompt = stableSystemPrefix;
 
   if (
@@ -1292,7 +1319,7 @@ export async function preModelNode(
   if (researchContext && consolidating !== nextConsolidating) {
     finalTools = projectSecurityResearchConsolidationTools(availableTools, nextConsolidating === true);
     finalStableSystemPrefix = buildSystemPrompt({ assistantName: state.assistantName || "Genie", tools: finalTools, isGuest, explicitlySelected: state.explicitlySelected })
-      + activeComputerUseModelGuidanceForBoundTools(finalTools);
+      + activeComputerUseModelGuidanceForBoundTools(finalTools) + localExecutionGuidance;
     finalMessageTokens = await resolvePreparedMessageBudget(requestedModelId, finalTools);
     // Rebuild only the stable tool prefix without repeating preparation or
     // external reads. Resolved authority, protected volatile context (including
@@ -1413,6 +1440,7 @@ export async function preModelNode(
     preparedStableSystemPrefixLength: finalStableSystemPrefix.length,
     promptTimeReference,
     toolNames: finalTools.map((t) => t.name),
+    relayCapabilities,
     connectedAppProviderIds: [...connectedAppProviderIds],
     ...foregroundContextRefreshUpdate,
     // consume the pending correction flag so the corrective

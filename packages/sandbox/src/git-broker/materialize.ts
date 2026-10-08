@@ -1,5 +1,5 @@
 /**
- * D440 Phase 3 — broker-controlled worktree target materialization.
+ * Broker-controlled worktree target materialization.
  *
  * Pure parsing, validation, and broker-owned filesystem code. No Git
  * subprocess lives here — `broker.ts` orchestrates `rev-parse`,
@@ -20,6 +20,7 @@ import {
   linkSync,
   openSync,
   readdirSync,
+  readlinkSync,
   rmdirSync,
   unlinkSync,
   writeFileSync,
@@ -27,6 +28,16 @@ import {
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 import { GitPreflightError, isUnderRoot, rejectLiveEnvPath } from "./preflight";
+import { SECRET_FILES, PUBLIC_TEMPLATE_TERMINAL_SUFFIXES } from "../seatbelt-profile";
+
+function rejectNetworkSecrets(path: string): void {
+  for (const part of path.toLowerCase().split("/")) {
+    const publicTemplate = PUBLIC_TEMPLATE_TERMINAL_SUFFIXES.some(suffix => part.endsWith(`.${suffix}`));
+    if (SECRET_FILES.some(({ pattern }) => pattern.endsWith("*") ? part.startsWith(pattern.slice(0, -1)) && !publicTemplate : part === pattern)) {
+      throw new Error("Secret manifest path or symlink target");
+    }
+  }
+}
 
 /** Bounded limits for materialization. Exposed for tests + callers. */
 export const MAX_WORKTREE_FILE_COUNT = 4096;
@@ -46,6 +57,89 @@ export interface ManifestEntry {
 
 export interface Manifest {
   readonly entries: readonly ManifestEntry[];
+}
+
+export interface NetworkManifestEntry extends Omit<ManifestEntry, "mode"> {
+  readonly mode: WorktreeBlobMode | "120000";
+}
+export interface NetworkManifest { readonly entries: readonly NetworkManifestEntry[] }
+
+/** Network worktrees use the same path/size rules, with explicit caller
+ * budgets and a separately validated internal symlink graph. Legacy worktree
+ * materialization continues to reject all links. */
+export function parseNetworkManifest(output: Buffer, targetRoot: string,
+  limits: { readonly fileCount: number; readonly blobBytes: number; readonly totalBytes: number }): NetworkManifest {
+  if (![limits.fileCount, limits.blobBytes, limits.totalBytes].every(value => Number.isSafeInteger(value) && value > 0)) throw new Error("Explicit materialization budgets required");
+  const records: Buffer[] = []; const modes: NetworkManifestEntry["mode"][] = [];
+  let offset = 0;
+  while (offset < output.length) {
+    const end = output.indexOf(0, offset);
+    if (end < 0) throw new Error("Incomplete manifest");
+    const record = output.subarray(offset, end);
+    const tab = record.indexOf(9);
+    if (tab < 0) throw new Error("Invalid manifest");
+    if (record.subarray(0, tab).some(byte => byte > 127)) throw new Error("Invalid manifest metadata encoding");
+    const fields = record.subarray(0, tab).toString("ascii").trim().split(/\s+/);
+    const mode = fields[0]; const size = fields[3]; const pathBytes = record.subarray(tab + 1);
+    if (fields.length !== 4 || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(fields[2] ?? "") || !/^(?:0|[1-9][0-9]*)$/.test(size ?? "")
+      || !Number.isSafeInteger(Number(size)) || !Buffer.from(pathBytes.toString("utf8")).equals(pathBytes)) throw new Error("Invalid manifest encoding");
+    if (mode !== "100644" && mode !== "100755" && mode !== "120000") throw new Error("Unsupported manifest mode");
+    modes.push(mode);
+    records.push(Buffer.concat([Buffer.from(`${mode === "120000" ? "100644" : mode} ${fields[1]} ${fields[2]} ${size}\t`), pathBytes, Buffer.from([0])]));
+    offset = end + 1;
+  }
+  const parsed = parseLsTreeZ(Buffer.concat(records), targetRoot, limits.fileCount, limits.blobBytes, limits.totalBytes);
+  const folded = new Set<string>(); const leaves = new Set<string>();
+  for (const entry of parsed.entries) {
+    const key = entry.path.normalize("NFC").toLowerCase();
+    if (folded.has(key) || key.split("/").some(part => part === ".git" || part === ".gitmodules")) throw new Error("Case-colliding or governance manifest path");
+    folded.add(key); leaves.add(key);
+    rejectNetworkSecrets(key);
+    rejectLiveEnvPath(resolve(targetRoot, key));
+  }
+  for (const key of leaves) {
+    const parts = key.split("/");
+    for (let count = 1; count < parts.length; count++) if (leaves.has(parts.slice(0, count).join("/"))) throw new Error("Manifest leaf used as ancestor");
+  }
+  return { entries: parsed.entries.map((entry, index) => ({ ...entry, mode: modes[index]! })) };
+}
+
+/** Relative links may remain dangling inside this tree, but may never escape,
+ * form a cycle, enter governance/secrets, or use another link to do so. */
+export async function validateNetworkLinks(manifest: NetworkManifest, targetRoot: string,
+  readBlob: (entry: NetworkManifestEntry) => Promise<Buffer>): Promise<void> {
+  const unsafe = (value: string) => [...value].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 || char === "\\");
+  const links = new Map<string, string>();
+  const leaves = new Set(manifest.entries.map(entry => entry.path));
+  for (const entry of manifest.entries) if (entry.mode === "120000") {
+    const bytes = await readBlob(entry); const value = bytes.toString("utf8");
+    if (bytes.length !== entry.size || !Buffer.from(value).equals(bytes) || !value || isAbsolute(value) || unsafe(value)) throw new Error("Invalid relative symlink");
+    links.set(entry.path, value);
+  }
+  const follow = (path: string, visited: Set<string>): string => {
+    let normalized = relative(targetRoot, resolve(targetRoot, path));
+    if (!normalized || normalized === ".." || normalized.startsWith(`..${sep}`) || isAbsolute(normalized)) throw new Error("Escaping symlink");
+    const parts = normalized.split(sep);
+    for (let index = 1; index <= parts.length; index++) {
+      const prefix = parts.slice(0, index).join("/"); let link = links.get(prefix);
+      if (link === undefined && !leaves.has(prefix)) {
+        try { if (lstatSync(resolve(targetRoot, prefix)).isSymbolicLink()) link = readlinkSync(resolve(targetRoot, prefix)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+      if (link !== undefined) {
+        if (!link || isAbsolute(link) || unsafe(link)) throw new Error("Unsafe existing symlink target");
+        if (visited.has(prefix)) throw new Error("Cyclic symlink graph");
+        const next = new Set(visited); next.add(prefix);
+        normalized = follow(resolve(targetRoot, dirname(prefix), link, ...parts.slice(index)), next);
+        return normalized;
+      }
+    }
+    if (parts.some(part => [".git", ".gitmodules"].includes(part.toLowerCase()))) throw new Error("Governance symlink target");
+    rejectNetworkSecrets(normalized);
+    rejectLiveEnvPath(resolve(targetRoot, normalized.toLowerCase()));
+    return normalized;
+  };
+  for (const path of links.keys()) follow(path, new Set());
 }
 
 /**

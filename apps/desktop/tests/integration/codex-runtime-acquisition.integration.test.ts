@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as filesystem from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -379,6 +380,59 @@ describe("Codex managed runtime acquisition", () => {
     expect((await manager.install()).state).toBe("ready");
     await writeFile(join(managedRoot, ".nautilo-managed-root"), "forged\n");
     expect((await manager.resolveActive()).code).toBe("CODEX_RUNTIME_INSTALL_FAILED");
+  }));
+  test("never adopts a partial marker or an unmarked populated root", async () => {
+    for (const name of [".nautilo-managed-root", "foreign-file"]) {
+      await withRoot(async (root) => {
+        const { archive, manifest } = fixture();
+        await writeFile(join(root, name), "", { mode: 0o600 });
+        let fetched = false;
+        const fixtureHost = host(root, archive);
+        const manager = new CodexManagedRuntimeManager({ ...fixtureHost, async fetch(url) {
+          fetched = true;
+          return fixtureHost.fetch(url);
+        } }, manifest);
+        expect((await manager.install()).code).toBe("CODEX_RUNTIME_INSTALL_FAILED");
+        expect(fetched).toBeFalse();
+        expect(await readFile(join(root, name), "utf8")).toBe("");
+      });
+    }
+  });
+  test("publishes a complete root claim before another manager can observe it", async () => withRoot(async (root) => {
+    const { archive, manifest } = fixture();
+    const canonicalRoot = await realpath(root);
+    const originalWriteFile = filesystem.writeFile;
+    let announceCreated!: () => void;
+    const created = new Promise<void>((resolveCreated) => { announceCreated = resolveCreated; });
+    let finishWrite!: () => void;
+    const finish = new Promise<void>((resolveFinish) => { finishWrite = resolveFinish; });
+    let paused = false;
+    const writer = spyOn(filesystem, "writeFile").mockImplementation(async (...args: Parameters<typeof filesystem.writeFile>) => {
+      const [file, data] = args;
+      if (!paused && typeof file === "string" &&
+          (file === join(canonicalRoot, ".nautilo-managed-root") || file.startsWith(`${canonicalRoot}.claim-`))) {
+        paused = true;
+        const handle = await filesystem.open(file, "wx", 0o600);
+        announceCreated();
+        try { await finish; await handle.writeFile(data); }
+        finally { await handle.close(); }
+        return;
+      }
+      return originalWriteFile(...args);
+    });
+    const first = new CodexManagedRuntimeManager(host(root, archive), manifest).install();
+    try {
+      await created;
+      const second = await new CodexManagedRuntimeManager(host(root, archive), manifest).install();
+      expect(second.state).toBe("ready");
+      finishWrite();
+      expect((await first).state).toBe("ready");
+      expect(await readFile(join(root, ".nautilo-managed-root"), "utf8")).toBe("nautilo-codex-managed-root-v1\n");
+    } finally {
+      finishWrite();
+      await first;
+      writer.mockRestore();
+    }
   }));
   test("serializes mutations from separate managers through the root lock", async () => withRoot(async (root) => {
     const { archive, manifest } = fixture();

@@ -1,14 +1,22 @@
 /**
  * Capability-scoped standing approval grain + verb-hint tests for ApprovalAskDock.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Window } from "happy-dom";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { ApprovalReplyVerb } from "@nautilo/types";
 import type { ApprovalAskState } from "../adapters/runtime-contexts";
 
 let happyWindow: Window;
 const priorGlobals: Record<string, unknown> = {};
+const mountedRoots = new Set<Root>();
+
+function createDockRoot(host: HTMLElement): Root {
+  const root = createRoot(host);
+  mountedRoots.add(root);
+  return root;
+}
 
 const submitted: ApprovalReplyVerb[] = [];
 let askState: ApprovalAskState;
@@ -45,7 +53,7 @@ let ApprovalAskDock: (typeof import("./approval-ask-dock"))["ApprovalAskDock"];
 
 beforeAll(async () => {
   happyWindow = new Window({ url: "http://127.0.0.1:3001/" });
-  for (const k of ["window", "document", "navigator", "HTMLElement"] as const) {
+  for (const k of ["window", "document", "navigator", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"] as const) {
     priorGlobals[k] = (globalThis as Record<string, unknown>)[k];
   }
   Object.assign(globalThis, {
@@ -53,6 +61,7 @@ beforeAll(async () => {
     document: happyWindow.document,
     navigator: happyWindow.navigator,
     HTMLElement: happyWindow.HTMLElement,
+    IS_REACT_ACT_ENVIRONMENT: true,
   });
 
   mock.module("../adapters/runtime-contexts", () => ({
@@ -72,6 +81,13 @@ beforeEach(() => {
   askState = makeState();
 });
 
+afterEach(() => {
+  // Even a failed assertion must release its window-level keyboard listener.
+  act(() => { for (const root of mountedRoots) root.unmount(); });
+  mountedRoots.clear();
+  happyWindow.document.body.replaceChildren();
+});
+
 afterAll(async () => {
   await new Promise<void>((r) => setTimeout(r, 50));
   mock.restore();
@@ -83,7 +99,7 @@ afterAll(async () => {
 });
 
 async function flush(): Promise<void> {
-  await new Promise<void>((r) => setTimeout(r, 0));
+  await act(async () => { await new Promise<void>((r) => setTimeout(r, 0)); });
 }
 
 describe("ApprovalAskDock (capability scope)", () => {
@@ -99,11 +115,11 @@ describe("ApprovalAskDock (capability scope)", () => {
       }],
       scopeInfo: [],
     });
-    const original = structuredClone(askState.tools[0]!.args);
+    const original = structuredClone(askState.tools[0].args);
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
 
     expect(host.textContent).toContain("operation: connector-update");
@@ -111,9 +127,9 @@ describe("ApprovalAskDock (capability scope)", () => {
     expect(host.innerHTML).not.toContain("dock-session-secret");
     expect(host.innerHTML).not.toContain("dock-secret");
     expect(host.querySelector("[title]")?.getAttribute("title")).not.toContain("dock-session-secret");
-    expect(askState.tools[0]!.args).toEqual(original);
+    expect(askState.tools[0].args).toEqual(original);
 
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
     await flush();
   });
@@ -121,15 +137,15 @@ describe("ApprovalAskDock (capability scope)", () => {
   test("renders capability grain instead of exact-command copy", async () => {
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root: Root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root: Root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
 
     const grain = host.querySelector('[data-testid="approval-grain"]');
     expect(grain?.textContent).toContain("capability: control_desktop");
     expect(grain?.textContent).not.toContain("exactly this command");
 
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
     await flush();
   });
@@ -142,15 +158,15 @@ describe("ApprovalAskDock (capability scope)", () => {
     });
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
 
     expect(host.textContent).toContain("Shell execution — needs approval");
     expect(host.textContent).not.toContain("destructive-tool");
     expect(host.textContent).not.toContain("destructive-low");
 
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
     await flush();
   });
@@ -167,8 +183,8 @@ describe("ApprovalAskDock (capability scope)", () => {
     });
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
 
     const detail = host.querySelector('[data-testid="run-shell-timeout-approval"]');
@@ -176,7 +192,7 @@ describe("ApprovalAskDock (capability scope)", () => {
     expect(detail?.textContent).toContain(reason);
     expect(detail?.className).not.toContain("truncate");
 
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
     await flush();
   });
@@ -184,8 +200,8 @@ describe("ApprovalAskDock (capability scope)", () => {
   test("capability-scoped room/always buttons use capability-aware tooltips", async () => {
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
 
     const room = host.querySelector('[data-verb="room"]') as HTMLButtonElement | null;
@@ -194,7 +210,7 @@ describe("ApprovalAskDock (capability scope)", () => {
     expect(always?.title).toContain("capability");
     expect(room?.title).not.toContain("matching calls");
 
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
     await flush();
   });
@@ -226,8 +242,8 @@ describe("ApprovalAskDock (capability scope)", () => {
     });
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
     expect(host.querySelector('[data-testid="local-mcp-install-approval"]')?.textContent).toContain("Exact argv");
     expect(host.querySelector('[data-testid="local-mcp-install-approval"]')?.textContent).toContain("Relay ID: relay-1");
@@ -237,7 +253,7 @@ describe("ApprovalAskDock (capability scope)", () => {
     expect(host.textContent).toContain('argv[2]="@scope/github@1.2.3"');
     expect(host.textContent).toContain("Approval digest: digest-123");
     expect(host.textContent).toContain("not sandboxed");
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
   });
 
@@ -268,12 +284,12 @@ describe("ApprovalAskDock (capability scope)", () => {
     });
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
     expect(host.textContent).toContain("No local subprocess is launched for this HTTP MCP.");
     expect(host.textContent).not.toContain("subprocess is not sandboxed");
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
   });
 
@@ -300,8 +316,8 @@ describe("ApprovalAskDock (capability scope)", () => {
     });
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root: Root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root: Root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
     const detail = host.querySelector('[data-testid="structured-ssh-approval"]');
     expect(detail?.textContent).toContain("build.example.test:22");
@@ -312,7 +328,7 @@ describe("ApprovalAskDock (capability scope)", () => {
     expect(detail?.textContent).toContain("Host trust: Already trusted");
     expect(host.querySelector('[data-verb="room"]')).toBeNull();
     expect(host.querySelector('[data-verb="always"]')).toBeNull();
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
   });
 
@@ -355,8 +371,8 @@ describe("ApprovalAskDock (capability scope)", () => {
     });
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
 
@@ -379,7 +395,7 @@ describe("ApprovalAskDock (capability scope)", () => {
     happyWindow.dispatchEvent(new happyWindow.KeyboardEvent("keydown", { key: "Enter" }));
     await flush();
     expect(submitted).toEqual(["once"]);
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
   });
 
@@ -398,20 +414,20 @@ describe("ApprovalAskDock (capability scope)", () => {
         remoteUser: "deploy",
         hostKeyFingerprint: "SHA256:host-key-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         hostTrust: "unknown",
-        localPath: "/Users/developer/Nautilo Workspace/release.tar",
+        localPath: "/tmp/test workspace/release.tar",
         remotePath: "/tmp/release.tar",
       },
     });
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root: Root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root: Root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
     const detail = host.querySelector('[data-testid="structured-ssh-approval"]');
-    expect(detail?.textContent).toContain('localPath="/Users/developer/Nautilo Workspace/release.tar"');
+    expect(detail?.textContent).toContain('localPath="/tmp/test workspace/release.tar"');
     expect(detail?.textContent).toContain('remotePath="/tmp/release.tar"');
     expect(detail?.textContent).not.toContain("Authentication only");
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
   });
 
@@ -442,8 +458,8 @@ describe("ApprovalAskDock (capability scope)", () => {
     });
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
     expect(host.textContent).toContain("Seedance 2.5 · Advanced reference");
     expect(host.textContent).toContain("<Image 1>jeannie-noir.png");
@@ -452,7 +468,7 @@ describe("ApprovalAskDock (capability scope)", () => {
     expect(host.textContent).toContain("<Audio 1> voice-guide.wav · 2.75s");
     expect(host.textContent).toContain("may reject references containing people");
     expect(host.querySelectorAll('[data-testid="media-generation-reference-list"] li')).toHaveLength(3);
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
   });
 
@@ -465,12 +481,12 @@ describe("ApprovalAskDock (capability scope)", () => {
     });
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root: Root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root: Root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
     expect(host.textContent).toContain("Exact review details are unavailable");
     expect(host.querySelector("button")).toBeNull();
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
   });
 
@@ -486,8 +502,8 @@ describe("ApprovalAskDock (capability scope)", () => {
     });
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
     expect(host.textContent).toContain("Exact review details are unavailable");
     expect(host.querySelector('[data-verb="once"]')).toBeNull();
@@ -495,7 +511,7 @@ describe("ApprovalAskDock (capability scope)", () => {
     expect(host.querySelector('[data-verb="always"]')).toBeNull();
     expect(host.querySelector('[data-verb="deny"]')).not.toBeNull();
     expect(host.textContent).not.toContain("provider.example");
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
   });
 
@@ -527,10 +543,10 @@ describe("ApprovalAskDock (capability scope)", () => {
     });
     const host = happyWindow.document.createElement("div");
     happyWindow.document.body.appendChild(host);
-    const root = createRoot(host as unknown as HTMLElement);
-    root.render(<ApprovalAskDock />);
+    const root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
-    await new Promise<void>((resolve) => setTimeout(resolve, 35));
+    await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 35)); });
     expect(host.textContent).toContain("This sharing preview has expired. Deny it and ask for a fresh preview.");
     expect(host.querySelector('[data-verb="once"]')).toBeNull();
     expect(host.querySelector('[data-verb="deny"]')).not.toBeNull();
@@ -548,11 +564,62 @@ describe("ApprovalAskDock (capability scope)", () => {
         shareMemoryPreview: { ...preview, projection: legacyProjection },
       }],
     });
-    root.render(<ApprovalAskDock />);
+    act(() => root.render(<ApprovalAskDock />));
     await flush();
     expect(host.textContent).not.toContain("This sharing preview has expired");
     expect(host.querySelector('[data-verb="once"]')).not.toBeNull();
-    root.unmount();
+    act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
   });
+});
+
+test("missing GitHub exact review exposes only Deny, including Enter", async () => {
+  askState = makeState({ requiresExplicitReview: true, tools: [{ name: "local_github", args: {} }], allowedVerbs: ["once", "room", "always", "deny"] });
+  const host = happyWindow.document.createElement("div"); happyWindow.document.body.appendChild(host);
+  const root = createDockRoot(host as unknown as HTMLElement); act(() => root.render(<ApprovalAskDock />)); await flush();
+  expect(host.querySelector('[data-verb="once"]')).toBeNull(); expect(host.querySelector('[data-verb="always"]')).toBeNull();
+  expect(host.querySelector('[data-verb="deny"]')).not.toBeNull();
+  happyWindow.dispatchEvent(new happyWindow.KeyboardEvent("keydown", { key: "Enter" })); expect(submitted).toEqual(["deny"]);
+  act(() => root.unmount()); mountedRoots.delete(root); host.remove();
+});
+
+test("valid GitHub review exposes only Once/Deny and keyboard submits exact Once", async () => {
+  const digest = "a".repeat(64), approvalId = `github-publish:preparation:${digest}`;
+  askState = makeState({ approvalId, requiresExplicitReview: true, tools: [{ name: "local_github", args: {} }], github: {
+    version: 1, approvalId, digest, prepared: { version: 1, preparationId: "preparation", generation: "generation", toolCallId: "call", digest,
+      request: { operation: "comment_create", repository: "fixture/project", number: 12, body: "Exact complete body" },
+      account: { id: 1, login: "fixture" }, repository: { id: 2, fullName: "fixture/project", htmlUrl: "https://github.com/fixture/project" },
+      resource: { id: 3, number: 12, kind: "issue", htmlUrl: "https://github.com/fixture/project/issues/12", title: "Target", body: "Original", state: "open" } } } });
+  const host = happyWindow.document.createElement("div"); happyWindow.document.body.appendChild(host);
+  const root = createDockRoot(host as unknown as HTMLElement); act(() => root.render(<ApprovalAskDock />)); await flush();
+  expect(host.textContent).toContain("Exact complete body"); expect(host.textContent).toContain("fixture/project");
+  expect(host.querySelector('[data-verb="once"]')).not.toBeNull(); expect(host.querySelector('[data-verb="room"]')).toBeNull(); expect(host.querySelector('[data-verb="always"]')).toBeNull();
+  happyWindow.dispatchEvent(new happyWindow.KeyboardEvent("keydown", { key: "Enter" })); expect(submitted).toEqual(["once"]);
+  act(() => root.unmount()); mountedRoots.delete(root); host.remove();
+});
+
+test("keyboard approval follows the current review and releases its listener on hide and unmount", async () => {
+  const host = happyWindow.document.createElement("div");
+  happyWindow.document.body.appendChild(host);
+  const root = createDockRoot(host as unknown as HTMLElement);
+  act(() => root.render(<ApprovalAskDock />));
+  happyWindow.dispatchEvent(new happyWindow.KeyboardEvent("keydown", { key: "Enter" }));
+  expect(submitted).toEqual(["once"]);
+
+  askState = makeState({ requiresExplicitReview: true, tools: [{ name: "local_github", args: {} }] });
+  act(() => root.render(<ApprovalAskDock />));
+  expect(host.querySelector('[data-verb="once"]')).toBeNull();
+  happyWindow.dispatchEvent(new happyWindow.KeyboardEvent("keydown", { key: "Enter" }));
+  expect(submitted).toEqual(["once", "deny"]);
+
+  askState = makeState({ show: false });
+  act(() => root.render(<ApprovalAskDock />));
+  happyWindow.dispatchEvent(new happyWindow.KeyboardEvent("keydown", { key: "Enter" }));
+  expect(submitted).toEqual(["once", "deny"]);
+
+  askState = makeState();
+  act(() => root.render(<ApprovalAskDock />));
+  act(() => root.unmount()); mountedRoots.delete(root);
+  happyWindow.dispatchEvent(new happyWindow.KeyboardEvent("keydown", { key: "Enter" }));
+  expect(submitted).toEqual(["once", "deny"]);
 });

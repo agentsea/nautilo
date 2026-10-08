@@ -1,5 +1,7 @@
 import { createForegroundContextRebuilder, ForegroundContextReceipts } from "./foreground-context-refresh";
 import { retainedImageAssistance, imageAssistanceHistory, imageAssistanceObservationMessages, attributeImageAssistance, failImageAssistance } from "./image-assistance";
+import { foregroundHumanTerminalAdmissionPort } from "../conversation/human-terminal-admission";
+import { foregroundLocalExecutionHistoryPort } from "../conversation/local-execution-history";
 import { finishMemoryReviewTurn, memoryReviewAdmission, memoryReviewSourceIds, memoryReviewCompletionState } from "../memory-review/admission";
 import type { ServerEvent, VerifiedOrdinaryOrigin } from "@nautilo/types";
 import {
@@ -666,7 +668,10 @@ export async function* langgraphExecutor(
       policy: liveShadowContext?.enforcementPolicy,
       normalForeground: protectedTurn === undefined,
     });
+  let localExecutionHistoryRows: readonly import("../conductor/history-search").RoomHistoryHit[] = protectedTurn?.history ?? [];
   const postModelDeps: NautiloGraphDeps = {
+    localExecutionHistoryPortForState: (state) => foregroundLocalExecutionHistoryPort(state, signal, localExecutionHistoryRows),
+    humanTerminalAdmissionPortForState: (state) => foregroundHumanTerminalAdmissionPort(state, signal),
     ...defaultPostModelDeps,
     recallRecordsPortForState: (state) => {
       const ordinary = foregroundRecordRecallPortForState(state);
@@ -872,6 +877,7 @@ export async function* langgraphExecutor(
         currentHumanText: message,
         ...(multimodalImages.length > 0 && turnId ? { imageAssistanceTurnId: turnId } : {}),
         onAuthorizedHistory: (hits) => {
+          localExecutionHistoryRows = hits;
           retainedImageResults.push(...retainedImageAssistance(hits));
           imageReplyContext = hits.find((hit) => hit.messageId === input["replyToMessageId"])?.snippet ?? "";
         },
@@ -1335,6 +1341,7 @@ export async function* langgraphExecutor(
           roomId, ownerId: transcriptOwnerId, agentId, receipts: foregroundContextReceipts,
           ...(protectedTurn === undefined ? {} : { protectedTurn }),
           ...(initialRecordContext === undefined ? {} : { recordContext: initialRecordContext }),
+          onAuthorizedHistory: (hits) => { localExecutionHistoryRows = hits; },
         }),
       } : {}),
     });
@@ -1551,6 +1558,7 @@ export async function* langgraphExecutor(
     }
   }
 }
+
 
 // `interruptValueToServerEvent` lives in `@nautilo/agent` ( —
 // packages/agent/src/graph/interrupt-mapping.ts). See the top-of-file

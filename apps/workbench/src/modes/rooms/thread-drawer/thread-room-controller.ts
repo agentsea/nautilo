@@ -13,8 +13,7 @@ import {
   projectToolArgsForCardDisplay,
   projectToolResultTextForDisplay,
 } from "../../../components/tool-argument-preview";
-import { preserveComputerUseResultForCard } from "../../../components/tool-card/renderers/computer-use";
-import { preserveConnectedAppResultForCard } from "../../../components/tool-card/renderers/connected-app-receipt";
+import { projectToolResultForCard } from "../../../adapters/local-execution-result-projection";
 import { mergeHydratedRoomMessages } from "../../../adapters/room-hydration-reconciliation";
 import { MESSAGE_ATTACHMENTS_METADATA_KEY } from "../../../adapters/session-rehydrate";
 import {
@@ -614,9 +613,7 @@ function applyThreadEvent(
       if (event.toolName === "react") return state;
       const prior = state.tools[event.toolCallId];
       const toolId = `tool-${event.toolCallId}`;
-      const displayResult = preserveComputerUseResultForCard(event.toolName, event.result)
-        ?? preserveConnectedAppResultForCard(event.toolName, event.result)
-        ?? projectToolResultTextForDisplay(event.result);
+      const displayResult = projectToolResultForCard(event.toolName, event.result);
       const displayError = projectToolResultTextForDisplay(event.error);
       const runtimeMessages = state.runtimeMessages.map((message) => {
         if (String(message.id) !== toolId) return message;
