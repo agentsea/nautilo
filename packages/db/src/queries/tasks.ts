@@ -794,6 +794,9 @@ export interface TransitionTaskLifecycleTerminalInput {
   runPatch?: { resultText?: string; lastError?: string | null; completedAt?: Date };
   /** A completed export must not win over a Pause committed before this transaction. */
   requireRunningPair?: boolean;
+  /** An approval-resumed cron occurrence owns a running Task until it settles.
+   * Return only that latest exact pair to the already-advanced schedule. */
+  returnRecurringTaskToPending?: boolean;
   /** Stop-only durable fence for a Writer Artifact mutation already reserved. */
   blockPendingWriterWorkspaceAcceptance?: boolean;
 }
@@ -810,6 +813,10 @@ export async function transitionTaskLifecycleTerminal(
   db: DirectDatabase,
   input: TransitionTaskLifecycleTerminalInput,
 ): Promise<TerminalTaskLifecycleTransition> {
+  if (input.returnRecurringTaskToPending && (!input.requireRunningPair || !input.runId
+    || (input.runStatus !== "completed" && input.runStatus !== "errored") || input.taskStatus)) {
+    throw new TypeError("Recurring completion requires an exact running pair");
+  }
   return db.transaction(async (tx) => {
     const [task] = await tx
       .select()
@@ -896,6 +903,18 @@ export async function transitionTaskLifecycleTerminal(
         transitioned: false, outcome: "authority_changed" };
     }
 
+    if (input.returnRecurringTaskToPending) {
+      const [latest] = await tx.select({ id: taskRuns.id }).from(taskRuns)
+        .where(eq(taskRuns.taskId, task.id)).orderBy(desc(taskRuns.startedAt), desc(taskRuns.id)).limit(1).for("update");
+      if (task.scheduleKind !== "cron" || latest?.id !== run?.id) {
+        return { task, run, transitioned: false, outcome: "not_running" };
+      }
+      // A failed report-back may retry its already committed outcome. This
+      // returns evidence only, without rearming a paused or newer occurrence.
+      if (task.status === "pending" && run?.status === input.runStatus) {
+        return { task, run, transitioned: false, outcome: "same_terminal" };
+      }
+    }
     if (input.requireRunningPair && (task.status !== "running" || run?.status !== "running")) {
       return { task, run, transitioned: false, outcome: "not_running" };
     }
@@ -931,10 +950,13 @@ export async function transitionTaskLifecycleTerminal(
     }
 
     let nextTask = task;
-    if (input.taskStatus) {
+    if (input.taskStatus || input.returnRecurringTaskToPending) {
       const [updatedTask] = await tx
         .update(tasks)
-        .set({ status: input.taskStatus, ...input.taskPatch, updatedAt: new Date() })
+        .set({ ...input.taskPatch,
+          ...(input.returnRecurringTaskToPending
+            ? { status: "pending" as const, fireLockId: null, fireLockedAt: null }
+            : { status: input.taskStatus! }), updatedAt: new Date() })
         .where(eq(tasks.id, task.id))
         .returning();
       nextTask = updatedTask ?? task;

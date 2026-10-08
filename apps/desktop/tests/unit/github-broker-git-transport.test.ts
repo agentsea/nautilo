@@ -378,14 +378,33 @@ for (const termination of ["abort", "timeout", "leader-exit"] as const)
                 absent = (error as NodeJS.ErrnoException).code === "ESRCH";
             }
             let zombie = false;
+            let processStat: string | undefined;
             if (!absent && process.platform === "linux") {
-                try { zombie = isFixtureZombie(childPid, readFileSync(`/proc/${childPid}/stat`, "utf8")); }
+                try {
+                    processStat = readFileSync(`/proc/${childPid}/stat`, "utf8");
+                    zombie = isFixtureZombie(childPid, processStat);
+                }
                 catch {
                     // The child may be reaped between the two observations.
                     // Require ESRCH rather than treating a failed read as proof.
                     try { process.kill(childPid, 0); }
                     catch (error) { absent = (error as NodeJS.ErrnoException).code === "ESRCH"; }
                 }
+            }
+            if (!absent && !zombie) {
+                // Report only this synthetic child's numeric kernel coordinates,
+                // never its command line, environment, or fixture filesystem path.
+                const fields = /^([1-9][0-9]*) \([^\n]*\) ([A-Za-z]) ([0-9]+) ([0-9]+) ([0-9]+) /.exec(processStat ?? "");
+                const scratchCount = readdirSync(f.storage).length;
+                console.error("Fixture child cleanup observation", {
+                    platform: process.platform, termination, childPid,
+                    observedPid: fields?.[1] ?? null, state: fields?.[2] ?? null,
+                    parentPid: fields?.[3] ?? null, processGroup: fields?.[4] ?? null,
+                    sessionId: fields?.[5] ?? null, absent, zombie, credentials, scratchCount,
+                    // The private executor result is not exposed here. Removal
+                    // is observable only after its cleanupConfirmed guard wins.
+                    cleanupConfirmedByScratchRemoval: scratchCount === 0,
+                });
             }
             expect({ absent, zombie }).not.toEqual({ absent: false, zombie: false });
             // A zombie proves no executable child remains, but is deliberately

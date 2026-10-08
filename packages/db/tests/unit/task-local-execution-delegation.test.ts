@@ -302,6 +302,53 @@ test("old running finalizers cannot overwrite edited Task repair state but Stop 
   expect(taskRequiresLocalExecutionRecapture({ localExecutionDelegation: null, lastError: null })).toBe(false);
 });
 
+test("resumed recurring completion returns only its latest running pair to the saved schedule", async () => {
+  for (const status of ["completed", "errored"] as const) {
+    const f = offlineFixture(); const nextFireAt = new Date("2026-10-08T14:32:00Z");
+    f.setTask({ scheduleKind: "cron", cron: "*/2 * * * *", nextFireAt, lastFiredAt: new Date("2026-10-08T14:28:00Z") });
+    const original = f.task();
+    expect(await transitionTaskLifecycleTerminal(f.db, { taskId: "task", runId: "run", runStatus: status,
+      runPatch: { resultText: "fixture result" }, requireRunningPair: true, returnRecurringTaskToPending: true }))
+      .toMatchObject({ transitioned: true, task: { status: "pending" }, run: { status, resultText: "fixture result" } });
+    expect(f.task().nextFireAt).toEqual(nextFireAt);
+    expect(f.task().lastFiredAt).toEqual(original.lastFiredAt);
+    expect(f.task().localExecutionDelegation).toEqual(original.localExecutionDelegation);
+    expect(f.writes.at(-1)).not.toHaveProperty("nextFireAt");
+    expect(f.task().fireLockId).toBeNull();
+  }
+});
+
+test("resumed recurring finalizers cannot rearm Pause, Stop, edited consent, or a later occurrence", async () => {
+  for (const change of ["pause", "stop", "edit", "new_run", "noncron", "paused_run"] as const) {
+    const f = offlineFixture(); f.setTask({ scheduleKind: "cron", nextFireAt: new Date("2026-10-08T14:32:00Z") });
+    if (change === "pause") f.setTask({ status: "paused" });
+    else if (change === "stop") f.setTask({ status: "cancelled" });
+    else if (change === "edit") f.setTask({ status: "paused", localExecutionDelegation: null, lastError: TASK_LOCAL_EXECUTION_RECREATE_TEXT });
+    else if (change === "new_run") f.replaceLatest();
+    else if (change === "noncron") f.setTask({ scheduleKind: "now" });
+    else f.setRun({ status: "paused" });
+    const original = f.task();
+    expect((await transitionTaskLifecycleTerminal(f.db, { taskId: "task", runId: "run", runStatus: "completed",
+      runPatch: { resultText: "stale result" }, requireRunningPair: true, returnRecurringTaskToPending: true })).transitioned).toBe(false);
+    expect(f.task()).toEqual(original);
+    expect(f.writes.every(patch => patch["status"] !== "pending" && !("resultText" in patch))).toBe(true);
+  }
+});
+
+test("latest recurring terminal evidence supports delivery retry without another lifecycle write", async () => {
+  for (const status of ["completed", "errored"] as const) {
+    const f = offlineFixture(); f.setTask({ scheduleKind: "cron", nextFireAt: new Date("2026-10-08T14:32:00Z") });
+    const input = { taskId: "task", runId: "run", runStatus: status, requireRunningPair: true, returnRecurringTaskToPending: true } as const;
+    expect((await transitionTaskLifecycleTerminal(f.db, input)).transitioned).toBe(true);
+    const count = f.writes.length;
+    expect(await transitionTaskLifecycleTerminal(f.db, input)).toMatchObject({ transitioned: false, outcome: "same_terminal" });
+    expect(f.writes).toHaveLength(count);
+    f.replaceLatest();
+    expect((await transitionTaskLifecycleTerminal(f.db, input)).outcome).toBe("not_running");
+    expect(f.writes).toHaveLength(count);
+  }
+});
+
 
 test("interrupted old workers settle only their Run after a definition edit, never reopen approval", async () => {
   const f = offlineFixture(); f.setTask({ status: "paused", localExecutionDelegation: null, lastError: TASK_LOCAL_EXECUTION_RECREATE_TEXT });
