@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { Command, MemorySaver } from "@langchain/langgraph";
@@ -13,10 +13,20 @@ import type { RebuildForegroundContext } from "../../src/graph/foreground-contex
 // replaced; this fixture has no database, network, or external service.
 const previousToolCallLogging = process.env["NAUTILO_LOG_TOOL_CALLS"];
 process.env["NAUTILO_LOG_TOOL_CALLS"] = "false";
+const unexpectedIo: string[] = [];
+function rejectExternalIo(operation: string): never {
+  unexpectedIo.push(operation);
+  throw new Error(`External I/O is forbidden in the graph fixture: ${operation}`);
+}
+const previousFetch = globalThis.fetch;
+globalThis.fetch = mock(async () => rejectExternalIo("fetch")) as unknown as typeof fetch;
 const actualDb = await import("@nautilo/db");
 const actualTrust = await import("@nautilo/trust");
 mock.module("@nautilo/db", () => ({
   ...actualDb,
+  agentDb: new Proxy({}, {
+    get: (_target, property) => rejectExternalIo(`agentDb.${String(property)}`),
+  }),
   getRoomAgentModelControlSelection: async () => null,
   getProfileDefaultModelControlSelection: async () => null,
   getCachedServerModelConfigRow: () => null,
@@ -26,6 +36,16 @@ mock.module("@nautilo/trust", () => ({
   ...actualTrust,
   assertCanUseServerProviderCredentials: async () => {},
 }));
+
+// A stub provider does not bypass fallback preference reads. Leaving this
+// reader live silently waits for unavailable Postgres before EVERY model call.
+mock.module("../../src/utils/resolve-fallback-policy", () => ({
+  resolveFallbackPolicy: async () => ({ enabled: false, chain: [] }),
+}));
+const { configureRuntimeModelCatalog, resetRuntimeModelCatalog } = await import(
+  "../../src/config/model-catalog/runtime-catalog"
+);
+configureRuntimeModelCatalog({ catalogPointerUrl: null });
 
 const { createNautiloGraph } = await import("../../src/agent/graph");
 const { streamForegroundGraph } = await import("../../src/graph/foreground-context-refresh");
@@ -96,14 +116,48 @@ function installStepTool(execute: (sequence: number) => Promise<string> | string
   initToolCatalog(catalog);
 }
 
+const activeRuns: Array<{ controller: AbortController; settled: Promise<void> }> = [];
+
+function drainGraph(...[graph, input, config, options]: Parameters<typeof streamForegroundGraph>): Promise<void> {
+  const controller = new AbortController();
+  const run = (async () => {
+    for await (const _event of streamForegroundGraph(graph, input, {
+      ...config,
+      signal: controller.signal,
+    }, options)) {
+      // Exercise every production graph event, including checkpoint completion.
+    }
+  })();
+  // Handle rejection immediately, even if the runner times out before the test
+  // can await it. Teardown drains this same run before replacing global stubs.
+  activeRuns.push({ controller, settled: run.then(() => {}, () => {}) });
+  return run;
+}
+
+async function abortAndDrainGraphRuns(): Promise<void> {
+  for (const { controller } of activeRuns) controller.abort();
+  await Promise.all(activeRuns.map(({ settled }) => settled));
+  activeRuns.length = 0;
+}
+
 beforeEach(() => {
+  unexpectedIo.length = 0;
   process.env["NAUTILO_TEST_MODE"] = "stub";
   setStubModel(null);
   clearToolCatalog();
   _resetAgentTurnContextsForTests();
 });
 
+afterEach(async () => {
+  await abortAndDrainGraphRuns();
+  // Detect accidental I/O even when a production best-effort reader swallowed
+  // the guard's exception and returned an apparently successful fallback.
+  expect(unexpectedIo).toEqual([]);
+});
+
 afterAll(() => {
+  globalThis.fetch = previousFetch;
+  resetRuntimeModelCatalog();
   setStubModel(null);
   clearToolCatalog();
   _resetAgentTurnContextsForTests();
@@ -153,7 +207,7 @@ test("compiled graph keeps more than one hundred visible text/tool segments boun
     version: "v2",
   };
   let refreshes = 0;
-  for await (const _event of streamForegroundGraph(graph, graphInput(request), config, {
+  await drainGraph(graph, graphInput(request), config, {
     rebuildForegroundContext: async ({ state, request: refresh }) => {
       refreshes += 1;
       expect(refresh.reason).toBe("visible_assistant_text");
@@ -168,9 +222,7 @@ test("compiled graph keeps more than one hundred visible text/tool segments boun
       }
       return [request];
     },
-  })) {
-    // Drain every real graph event; completion is asserted from checkpoint.
-  }
+  });
 
   expect(refreshes).toBe(cycleCount);
   expect(modelCalls).toBe(cycleCount + 1);
@@ -218,14 +270,12 @@ test("compiled graph refreshes tool-only pressure before a doomed provider call"
     version: "v2",
   };
   const reasons: string[] = [];
-  for await (const _event of streamForegroundGraph(graph, graphInput(request), config, {
+  await drainGraph(graph, graphInput(request), config, {
     rebuildForegroundContext: async ({ request: refresh }) => {
       reasons.push(refresh.reason);
       return [request];
     },
-  })) {
-    // Drain.
-  }
+  });
 
   expect(reasons).toEqual(["context_pressure"]);
   expect(executions).toBe(1);
@@ -258,15 +308,13 @@ test("compiled graph rejects an unchanged oversized rebuild without refreshing a
     version: "v2",
   };
   const run = async () => {
-    for await (const _event of streamForegroundGraph(graph, graphInput(request), config, {
+    await drainGraph(graph, graphInput(request), config, {
       rebuildForegroundContext: async ({ state, request: refresh }) => {
         rebuilds += 1;
         expect(refresh.reason).toBe("context_pressure");
         return state.messages;
       },
-    })) {
-      // Drain.
-    }
+    });
   };
 
   expect(run()).rejects.toMatchObject({ code: "NAUTILO_PREPARED_CONTEXT_EXCEEDED" });
@@ -316,26 +364,71 @@ test("compiled graph parks a visible question and refreshes only after the resum
     return humans;
   };
 
-  for await (const _event of streamForegroundGraph(graph, input, config, {
+  await drainGraph(graph, input, config, {
     rebuildForegroundContext: rebuild,
-  })) {
-    // First segment parks with a pending, non-ready refresh.
-  }
+  });
   expect(rebuilds).toBe(0);
   expect(modelCalls).toBe(1);
 
-  for await (const _event of streamForegroundGraph(
+  await drainGraph(
     graph,
     new Command({ resume: { reply: "Use the first option.", fromUserId: "refresh-owner" } }),
     config,
     { rebuildForegroundContext: rebuild },
-  )) {
-    // The resumed reply is checkpointed before the ready refresh segment ends.
-  }
+  );
   expect(rebuilds).toBe(1);
   expect(modelCalls).toBe(2);
   expect(providerHumanMessages[1]).toEqual([
     "Choose an option with me.",
     "Use the first option.",
   ]);
+});
+
+test("fixture teardown aborts and drains a pending graph before replacing its model stub", async () => {
+  let enteredProvider!: () => void;
+  const providerEntered = new Promise<void>((resolve) => { enteredProvider = resolve; });
+  let providerAborted = false;
+  const blockedModel: ChatModel = {
+    bindTools: () => blockedModel,
+    invoke: async (_messages, options) => {
+      const signal = options?.["signal"];
+      if (!(signal instanceof AbortSignal)) throw new Error("Fixture graph did not forward its abort signal");
+      return new Promise<AIMessage>((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          providerAborted = true;
+          reject(signal.reason instanceof Error ? signal.reason : new Error("Fixture graph aborted"));
+        }, { once: true });
+        enteredProvider();
+      });
+    },
+  };
+  installStepTool(() => "unused");
+  setStubModel(blockedModel);
+  const graph = createNautiloGraph(new MemorySaver(), policy);
+  const request = new HumanMessage({ id: "accepted-abort", content: "Wait for cancellation." });
+  const run = drainGraph(graph, graphInput(request), {
+    configurable: { thread_id: "foreground-refresh-aborted-fixture" },
+    recursionLimit: 200,
+    version: "v2",
+  });
+  await providerEntered;
+  await abortAndDrainGraphRuns();
+  expect(run).rejects.toBeDefined();
+  expect(providerAborted).toBe(true);
+
+  let replacementCalls = 0;
+  const replacementModel: ChatModel = {
+    bindTools: () => replacementModel,
+    invoke: async () => {
+      replacementCalls += 1;
+      return new AIMessage("Only the new graph uses this stub.");
+    },
+  };
+  setStubModel(replacementModel);
+  await drainGraph(createNautiloGraph(new MemorySaver(), policy), graphInput(request), {
+    configurable: { thread_id: "foreground-refresh-after-aborted-fixture" },
+    recursionLimit: 200,
+    version: "v2",
+  });
+  expect(replacementCalls).toBe(1);
 });
