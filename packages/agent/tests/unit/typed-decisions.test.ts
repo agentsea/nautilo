@@ -147,13 +147,13 @@ describe("catalog and admitted tool", () => {
     const record = spyOn(usageRecorder, "recordLlmUsage").mockImplementation(() => {});
     const fetch = spyOn(globalThis, "fetch").mockImplementation(mockFetch(payload()));
     try {
-      const tool = createEvaluateDecisionsTool({ turnId: "synthetic-turn", userId: "agent-owner", causalHumanUserId: "synthetic-user", roomId: "synthetic-room", agentId: "synthetic-agent", fullEncryptionOnly: false }, {
+      const tool = createEvaluateDecisionsTool({ turnId: "synthetic-turn", userId: "agent-owner", causalHumanUserId: "synthetic-user", roomId: "synthetic-room", agentId: "synthetic-agent", currentTaskId: "synthetic-task", currentTaskRunId: "synthetic-run", jobId: "synthetic-job", fullEncryptionOnly: false }, {
         assertCanUseServerProviderCredentials: async () => {},
       });
       const result: unknown = JSON.parse(await tool.invoke({ model_id: routes[0][1], state: "Synthetic", questions }, { signal: new AbortController().signal }));
       expect(result).toMatchObject({ answers });
       expect(record).toHaveBeenCalledTimes(1);
-      expect(record.mock.calls[0]?.[0]).toMatchObject({ userId: "synthetic-user", roomId: "synthetic-room", metadata: { turnId: "synthetic-turn", agentId: "synthetic-agent", tool: "evaluate_decisions" } });
+      expect(record.mock.calls[0]?.[0]).toMatchObject({ userId: "synthetic-user", roomId: "synthetic-room", taskId: "synthetic-task", metadata: { turnId: "synthetic-turn", agentId: "synthetic-agent", taskId: "synthetic-task", taskRunId: "synthetic-run", jobId: "synthetic-job", tool: "evaluate_decisions" } });
     } finally {
       record.mockRestore(); fetch.mockRestore();
       if (previousKey === undefined) delete process.env["TYPESAFE_API_KEY"]; else process.env["TYPESAFE_API_KEY"] = previousKey;

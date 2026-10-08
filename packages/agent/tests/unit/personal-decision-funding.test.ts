@@ -173,6 +173,7 @@ describe("personal decision funding", () => {
         runPersonalAttempt: async (attempt) => {
           const current = getUsageContext();
           if (!current) throw new Error("missing usage context");
+          expect(current.callType).toBe("decision");
           return runWithUsageContext({
             ...current,
             trackedAttemptId: "attempt-1",

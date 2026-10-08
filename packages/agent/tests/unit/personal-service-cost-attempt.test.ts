@@ -6,6 +6,7 @@ import {
   createToolProviderCostRecorder,
 } from "../../src/usage/provider-cost-recorder";
 import type { UsageFundingProvenance } from "../../src/usage/usage-context";
+import { runWithUsageContext } from "../../src/usage/usage-context";
 
 const PERSONAL_FUNDING: UsageFundingProvenance = {
   kind: "personal",
@@ -43,6 +44,7 @@ describe("personal service cost attempts", () => {
       provider: "tavily",
       operation: "search",
       evidenceState: "unknown",
+      attemptOutcome: "unknown",
     });
     expect(inserted[0]?.estimatedCostUsd).toBeUndefined();
     expect(inserted[0]?.actualCostUsd).toBeUndefined();
@@ -79,6 +81,11 @@ describe("personal service cost attempts", () => {
       evidenceState: "actual",
       estimatedCostUsd: null,
       actualCostUsd: "0.0042",
+      attemptOutcome: "unknown",
+      failureCode: null,
+      pricingVersion: null,
+      measuredUnits: null,
+      unitType: null,
     });
     expect(settled[0]).toMatchObject({
       fundingKind: "personal",
@@ -89,6 +96,108 @@ describe("personal service cost attempts", () => {
       credentialRevision: 4,
       roomId: "room-a",
       agentId: "agent-a",
+    });
+  });
+
+  test("freezes trusted Task and workload attribution before settlement loses ambient context", async () => {
+    const inserted: InsertProviderCostEventInput[] = [];
+    const settled: InsertProviderCostEventInput[] = [];
+    const recorder = await runWithUsageContext({
+      callType: "web_search",
+      userId: "ambient-human",
+      roomId: "ambient-room",
+      metadata: {
+        agentId: "ambient-agent",
+        taskId: "ambient-task",
+        taskRunId: "ambient-run",
+        jobId: "ambient-job",
+      },
+    }, () => beginToolProviderCostAttempt({
+      userId: "tool-human",
+      roomId: "tool-room",
+      agentId: "tool-agent",
+      currentTaskId: "tool-task",
+      currentTaskRunId: "tool-run",
+    }, {
+      provider: "tavily",
+      operation: "search",
+      usageFunding: PERSONAL_FUNDING,
+    }, {
+      insert: async (input) => { inserted.push(input); },
+      settle: async (input) => { settled.push(input); },
+    }));
+
+    await recorder({
+      provider: "tavily",
+      operation: "search",
+      estimatedCostUsd: "0.004",
+      evidenceState: "estimated",
+      attemptOutcome: "succeeded",
+      pricingVersion: "test-pricing-v1",
+      measuredUnits: 0.5,
+      unitType: "credit",
+    });
+
+    expect(inserted[0]).toMatchObject({
+      userId: "tool-human",
+      roomId: "tool-room",
+      agentId: "tool-agent",
+      taskId: "tool-task",
+      runId: "tool-run",
+      jobId: "ambient-job",
+      workload: "web_search",
+      attemptOutcome: "unknown",
+    });
+    expect(settled[0]).toMatchObject({
+      taskId: "tool-task",
+      runId: "tool-run",
+      jobId: "ambient-job",
+      workload: "web_search",
+      attemptOutcome: "succeeded",
+      pricingVersion: "test-pricing-v1",
+      measuredUnits: 0.5,
+      unitType: "credit",
+    });
+  });
+
+  test("a generic recorder carries its creation scope into an attempt opened after ALS exits", async () => {
+    const inserted: InsertProviderCostEventInput[] = [];
+    const settled: InsertProviderCostEventInput[] = [];
+    const recorder = runWithUsageContext({
+      callType: "subagent",
+      userId: "captured-human",
+      roomId: "captured-room",
+      metadata: { taskId: "captured-task", taskRunId: "captured-run" },
+      funding: PERSONAL_FUNDING,
+    }, () => createToolProviderCostRecorder(undefined,
+      async (input) => { inserted.push(input); },
+      async (input) => { settled.push(input); }));
+
+    const attempt = await recorder.beginAttempt?.({ provider: "tavily", operation: "search" });
+    if (!attempt) throw new Error("recorder did not expose attempt lifecycle");
+    await attempt({
+      provider: "tavily",
+      operation: "search",
+      evidenceState: "unknown",
+      attemptOutcome: "cancelled",
+      failureCode: "request_cancelled",
+    });
+
+    expect(inserted[0]).toMatchObject({
+      userId: "captured-human",
+      roomId: "captured-room",
+      taskId: "captured-task",
+      runId: "captured-run",
+      workload: "subagent",
+      fundingKind: "personal",
+      providerRoute: "tavily",
+    });
+    expect(settled[0]).toMatchObject({
+      userId: "captured-human",
+      taskId: "captured-task",
+      runId: "captured-run",
+      attemptOutcome: "cancelled",
+      failureCode: "request_cancelled",
     });
   });
 

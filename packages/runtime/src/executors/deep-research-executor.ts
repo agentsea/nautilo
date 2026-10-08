@@ -332,7 +332,7 @@ export function streamDeepResearchReport(
   const humanUserId = initiatingHumanUserId?.trim() ?? "";
   return (async function* (): DeepResearchReportStream {
     const usageContext = {
-      callType: "subagent" as const,
+      callType: "deep_research" as const,
       userId: humanUserId,
       ...(attribution
         ? { roomId: attribution.roomId }

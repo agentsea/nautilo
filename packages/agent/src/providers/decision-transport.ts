@@ -4,7 +4,7 @@ import { VENICE_DECISIONS_URL } from "./venice-api";
 import { resolveCatalogModel } from "../config/resolved-catalog";
 import { resolveProviderKey } from "../resolve-provider-key";
 import { recordLlmUsage } from "../usage/record-usage";
-import { getUsageContext } from "../usage/usage-context";
+import { getUsageContext, runWithUsageContext } from "../usage/usage-context";
 import {
   PersonalAttemptInvocationError,
   runPersonalLlmAttempt,
@@ -116,6 +116,17 @@ function contextCapacityExceeded(payload: unknown): boolean {
 
 /** One provider evaluation. Retry, deadline, and supervision belong to the caller. */
 export async function requestDecisions<T>(
+  input: DecisionInput,
+  deps: DecisionDependencies,
+  finalize: (response: DecisionTransportResponse) => T,
+): Promise<T> {
+  return runWithUsageContext({
+    ...getUsageContext(),
+    callType: "decision",
+  }, () => requestDecisionsWithUsage(input, deps, finalize));
+}
+
+async function requestDecisionsWithUsage<T>(
   input: DecisionInput,
   deps: DecisionDependencies,
   finalize: (response: DecisionTransportResponse) => T,
@@ -377,9 +388,13 @@ export async function requestDecisions<T>(
     } else {
       (deps.recordUsage ?? recordLlmUsage)({
         model: row.id,
-        callType: current?.callType ?? "other",
+        callType: "decision",
         userId: current?.userId ?? null,
         roomId: current?.roomId ?? null,
+        ...(typeof current?.metadata?.["taskId"] === "string"
+          && current.metadata["taskId"].trim().length > 0
+          ? { taskId: current.metadata["taskId"].trim() }
+          : {}),
         inputTokens: parsed.inputTokens,
         outputTokens: parsed.outputTokens,
         totalTokens: parsed.inputTokens + parsed.outputTokens,

@@ -825,12 +825,16 @@ export {
   insertProviderCostEvent,
   insertProviderCostEventWith,
   settleProviderCostEvent,
+  settleProviderCostEventWith,
   buildProviderCostsSummaryQueries,
+  buildPersonalProviderCostsByTaskQuery,
+  buildProviderCostRecoveryAttemptsQuery,
   providerCostIdempotencyKey,
   estimateProviderToolCostUsd,
   PROVIDER_TOOL_PRICING_VERSION,
   type InsertProviderCostEventInput,
   type ProviderCostEvidenceState,
+  type ProviderCostAttemptOutcome,
   type ProviderToolPriceKey,
 } from "./queries/provider-costs";
 export {

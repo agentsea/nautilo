@@ -2,7 +2,7 @@ import { DynamicStructuredTool } from "@langchain/core/tools";
 import { HumanMessage } from "@langchain/core/messages";
 import { z } from "zod";
 import { createUniversalModel } from "../../providers/universal";
-import { runWithUsageContext } from "../../usage/usage-context";
+import { getUsageContext, runWithUsageContext, type UsageContext } from "../../usage/usage-context";
 import { fromRuntimeConfig } from "@nautilo/config";
 import { log, warn } from "@nautilo/logger";
 import { scanContent } from "@nautilo/security";
@@ -14,11 +14,13 @@ import { getOrCreateAgentTurnContextByKey } from "../../runtime/turn-context";
 import {
   beginToolProviderCostAttempt,
   createToolProviderCostRecorder,
+  openProviderCostAttempt,
+  providerToolEstimateReceipt,
+  type ProviderCostReceipt,
   type ProviderCostRecorder,
 } from "../../usage/provider-cost-recorder";
 import { getCapabilityFundingSession, type CapabilityFundingSession } from "../../runtime/capability-funding";
 import { invokeChatModelWithFallback } from "../../utils/chat-model-invocation";
-import { estimateProviderToolCostUsd } from "@nautilo/db";
 import {
   assertCanUseServerProviderCredentials,
   ServerProviderCredentialsDeniedError,
@@ -538,9 +540,23 @@ export function buildTavilySearchFetcher(options: {
         failure: "tavily_unconfigured",
       };
     }
+    let costAttempt: ProviderCostRecorder | undefined;
+    let costAttemptSettled = false;
+    const settleCostAttempt = async (receipt: Omit<ProviderCostReceipt, "provider" | "operation">) => {
+      if (!costAttempt || costAttemptSettled) return;
+      costAttemptSettled = true;
+      await costAttempt({ provider: "tavily", operation: "search", ...receipt });
+    };
+    let responseReceived = false;
     try {
       await requireProviderAdmission();
+      costAttempt = await openProviderCostAttempt(recordProviderCost, {
+        provider: "tavily",
+        operation: "search",
+      });
       if (executionOptions.signal?.aborted) {
+        await settleCostAttempt({ evidenceState: "unknown", attemptOutcome: "cancelled",
+          failureCode: "request_cancelled" });
         return { provider: "tavily", query, items: [], outcome: "unavailable", failure: "tavily_failed" };
       }
       const response = await fetchImpl("https://api.tavily.com/search", {
@@ -562,7 +578,10 @@ export function buildTavilySearchFetcher(options: {
         }),
         ...(executionOptions.signal ? { signal: executionOptions.signal } : {}),
       });
+      responseReceived = true;
       if (!response.ok) {
+        await settleCostAttempt({ evidenceState: "unknown", attemptOutcome: "failed",
+          failureCode: "provider_http_error" });
         return {
           provider: "tavily",
           query,
@@ -573,19 +592,16 @@ export function buildTavilySearchFetcher(options: {
       }
       const rawResults = await response.json();
       const receipt = parseTavilyReceipt(rawResults);
-      const credits = receipt.credits ?? (searchDepth === "advanced" ? 2 : 1);
-      const estimatedCostUsd = estimateProviderToolCostUsd("tavily:credit", credits);
-      if (recordProviderCost && estimatedCostUsd) {
-        await recordProviderCost({
-          provider: "tavily",
-          operation: "search",
-          receiptId: receipt.requestId,
-          estimatedCostUsd,
-          evidenceState: "estimated",
-        });
-      }
+      const costEvidence = providerToolEstimateReceipt(
+        "tavily:credit",
+        receipt.credits,
+        searchDepth === "advanced" ? 2 : 1,
+        "credit",
+      );
       const parsedItems = parseTavilyResults(rawResults);
       if (parsedItems === null || parsedItems.malformed) {
+        await settleCostAttempt({ receiptId: receipt.requestId, ...costEvidence,
+          attemptOutcome: "failed", failureCode: "invalid_provider_response" });
         return {
           provider: "tavily",
           query,
@@ -594,6 +610,8 @@ export function buildTavilySearchFetcher(options: {
           failure: "tavily_failed",
         };
       }
+      await settleCostAttempt({ receiptId: receipt.requestId, ...costEvidence,
+        attemptOutcome: "succeeded" });
       const policy = createSearchResultUrlPolicy({ includeDomains, excludeDomains });
       const items = policy.filter(parsedItems.items).slice(0, maxResults);
       return {
@@ -604,6 +622,14 @@ export function buildTavilySearchFetcher(options: {
       };
     } catch (error) {
       if (error instanceof ServerProviderCredentialsDeniedError) throw error;
+      const cancelled = executionOptions.signal?.aborted === true;
+      await settleCostAttempt({
+        evidenceState: "unknown",
+        attemptOutcome: cancelled ? "cancelled" : responseReceived ? "failed" : "unknown",
+        failureCode: cancelled
+          ? "request_cancelled"
+          : responseReceived ? "invalid_provider_response" : "provider_transport_unknown",
+      });
       warn("[web_search] Tavily search failed");
       return {
         provider: "tavily",
@@ -837,6 +863,8 @@ export interface RunWebSearchToolDependencies {
   readonly turnTimeoutMs?: number;
   readonly now?: () => number;
   readonly assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+  /** Test seam for observing the admitted personal synthesis boundary without provider I/O. */
+  readonly invokeChatModelWithFallback?: typeof invokeChatModelWithFallback;
 }
 
 function capabilityServiceAttemptRunner(
@@ -857,6 +885,39 @@ function capabilityServiceAttemptRunner(
 function webSearchHumanUserId(context?: ToolContext): string {
   const causalHumanUserId: unknown = context?.["causalHumanUserId"];
   return typeof causalHumanUserId === "string" ? causalHumanUserId.trim() : "";
+}
+
+function nonEmptyContextId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** Project trusted tool identity into the helper model's usage scope. */
+export function webSearchSynthesisUsageContext(
+  context: ToolContext | undefined,
+  humanUserId: string,
+): UsageContext {
+  const ambient = getUsageContext();
+  const turnId = nonEmptyContextId(context?.["turnId"]);
+  const agentId = nonEmptyContextId(context?.["agentId"]);
+  const taskId = nonEmptyContextId(context?.["currentTaskId"]);
+  const taskRunId = nonEmptyContextId(context?.["currentTaskRunId"]);
+  const jobId = nonEmptyContextId(context?.["jobId"]);
+  return {
+    callType: "web_search",
+    userId: humanUserId || ambient?.userId || null,
+    roomId: nonEmptyContextId(context?.["roomId"]) ?? ambient?.roomId ?? null,
+    metadata: {
+      ...(ambient?.metadata ?? {}),
+      ...(turnId ? { turnId } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(taskId ? { taskId } : {}),
+      ...(taskRunId ? { taskRunId } : {}),
+      ...(jobId ? { jobId } : {}),
+      tool: "run_web_search",
+    },
+  };
 }
 
 export function createRunWebSearchTool(
@@ -1126,8 +1187,8 @@ Returns: A concise synthesis, cited sources, and bounded source-reading coverage
             && !admitted.fundingSession.capabilityFunding) {
             throw new Error("Web search synthesis funding session has the wrong workload.");
           }
-          const result = await runWithUsageContext({ callType: "web_search", userId: humanUserId }, () =>
-            invokeChatModelWithFallback(messages, [], selection.modelId,
+          const result = await runWithUsageContext(webSearchSynthesisUsageContext(context, humanUserId), () =>
+            (dependencies.invokeChatModelWithFallback ?? invokeChatModelWithFallback)(messages, [], selection.modelId,
               capabilityFunding.humanUserId,
               typeof context?.["agentId"] === "string" ? context["agentId"] : null,
               null,
@@ -1142,7 +1203,7 @@ Returns: A concise synthesis, cited sources, and bounded source-reading coverage
           ...(config.nautilo_web_search_model ? { configuredId: config.nautilo_web_search_model } : {}),
         });
         const synthesisModel = await createUniversalModel(synthesisModelId, { reasoningOutput: false });
-        return runWithUsageContext({ callType: "web_search", userId: humanUserId },
+        return runWithUsageContext(webSearchSynthesisUsageContext(context, humanUserId),
           () => synthesisModel.invoke(messages, { callbacks: [], signal: controller.signal }));
       });
 

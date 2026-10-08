@@ -2383,7 +2383,31 @@ const deleteProviderCredentialResponseSchema = z.object({
 
 const personalCostsMoneySchema = z.number().finite().nonnegative();
 const personalCostsCountSchema = z.number().int().nonnegative();
+const personalServiceOperationsSchema = z.object({
+  operations: personalCostsCountSchema,
+  succeeded: personalCostsCountSchema,
+  failed: personalCostsCountSchema,
+  cancelled: personalCostsCountSchema,
+  interrupted: personalCostsCountSchema,
+  unknown: personalCostsCountSchema,
+  legacy: personalCostsCountSchema,
+}).strict();
+const personalServiceRecoverySchema = z.object({
+  attempts: z.array(z.object({
+    provider: z.string().min(1),
+    operation: z.string().min(1),
+    workload: z.string().min(1).nullable(),
+    attemptOutcome: z.enum(["succeeded", "failed", "cancelled", "interrupted", "unknown"]).nullable(),
+    failureCode: z.string().regex(/^[a-z0-9_]+$/).nullable(),
+    taskId: z.uuid().nullable(),
+    runId: z.uuid().nullable(),
+    jobId: z.uuid().nullable(),
+    occurredAt: z.string().min(1),
+  }).strict()),
+}).strict();
 const personalCostsSummarySchema: z.ZodType<PersonalCostsSummary> = z.object({
+  serviceOperations: personalServiceOperationsSchema.optional(),
+  serviceRecovery: personalServiceRecoverySchema.optional(),
   currency: z.literal("USD"),
   range: z.object({
     key: z.enum(["7d", "30d", "90d"]),
@@ -2445,6 +2469,8 @@ const personalCostsSummarySchema: z.ZodType<PersonalCostsSummary> = z.object({
   byTask: z.array(z.object({
     taskId: z.uuid(),
     calls: personalCostsCountSchema,
+    providerOperations: personalCostsCountSchema.optional().default(0),
+    unknownProviderOperations: personalCostsCountSchema.optional().default(0),
     estimatedCostUsd: personalCostsMoneySchema,
     actualCostUsd: personalCostsMoneySchema,
     totalCostUsd: personalCostsMoneySchema,

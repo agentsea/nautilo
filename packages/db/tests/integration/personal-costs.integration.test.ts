@@ -21,6 +21,7 @@ import {
   requeueBlockedPersonalSurplusAttempts,
   reconcileSurplusLlmAttemptCost,
   settlePersonalLlmAttempt,
+  settleProviderCostEventWith,
   settleSurplusLlmAttempt,
   tasks,
   users,
@@ -105,6 +106,228 @@ afterAll(async () => {
 });
 
 describe("personal cost attempts and account isolation", () => {
+  test("merges model and service costs for one Task after payer isolation", async () => {
+    const payerHumanId = await createUser("cross-ledger-task-owner");
+    const otherPayerHumanId = await createUser("cross-ledger-task-other");
+    const taskId = await createTask(payerHumanId);
+    const modelAttemptId = attemptId();
+    await beginPersonalLlmAttempt({
+      id: modelAttemptId,
+      userId: payerHumanId,
+      taskId,
+      callType: "decision",
+      provider: "openai",
+      model: "openai:gpt-5.5",
+      providerRoute: "openai",
+      credentialId: randomUUID(),
+      credentialRevision: 1,
+      endpoint: "/v1/responses",
+    });
+    await settlePersonalLlmAttempt({
+      attemptId: modelAttemptId,
+      outcome: "succeeded",
+      costState: "actual",
+      estimatedCostUsd: 0.9,
+      actualCostUsd: 0.4,
+    });
+
+    const insertService = async (input: {
+      label: string;
+      payerHumanId: string;
+      evidenceState: "actual" | "estimated" | "unknown";
+      actualCostUsd?: string;
+      estimatedCostUsd?: string;
+      attemptOutcome: "succeeded" | "failed";
+    }) => {
+      const idempotencyKey = providerCostIdempotencyKey(
+        `${FIXTURE_PREFIX}:cross-ledger-task:${input.label}:${randomUUID()}`,
+      );
+      providerCostKeys.push(idempotencyKey);
+      await insertProviderCostEventWith(db, {
+        userId: input.payerHumanId,
+        taskId,
+        provider: "tavily",
+        operation: "search",
+        workload: "deep_research",
+        fundingKind: "personal",
+        payerHumanId: input.payerHumanId,
+        providerRoute: "tavily",
+        credentialId: randomUUID(),
+        credentialRevision: 1,
+        evidenceState: input.evidenceState,
+        estimatedCostUsd: input.estimatedCostUsd ?? null,
+        actualCostUsd: input.actualCostUsd ?? null,
+        attemptOutcome: input.attemptOutcome,
+        idempotencyKey,
+      });
+    };
+    await insertService({
+      label: "estimated",
+      payerHumanId,
+      evidenceState: "estimated",
+      estimatedCostUsd: "0.125",
+      attemptOutcome: "succeeded",
+    });
+    await insertService({
+      label: "unknown",
+      payerHumanId,
+      evidenceState: "unknown",
+      attemptOutcome: "failed",
+    });
+    await insertService({
+      label: "other-payer",
+      payerHumanId: otherPayerHumanId,
+      evidenceState: "actual",
+      actualCostUsd: "9",
+      attemptOutcome: "succeeded",
+    });
+
+    const summary = await getPersonalCostsSummary({
+      payerHumanId,
+      range: {
+        sinceIso: new Date(Date.now() - 60_000).toISOString(),
+        untilIso: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+    expect(summary.byTask).toHaveLength(1);
+    expect(summary.byTask[0]).toEqual({
+      taskId,
+      calls: 1,
+      providerOperations: 2,
+      unknownProviderOperations: 1,
+      estimatedCostUsd: 0.125,
+      actualCostUsd: 0.4,
+      totalCostUsd: 0.525,
+      pendingAttempts: 0,
+      unknownAttempts: 0,
+    });
+  });
+
+  test("settles service lifecycle and monetary evidence independently on one fenced row", async () => {
+    const payerHumanId = await createUser("service-lifecycle-owner");
+    const otherPayerHumanId = await createUser("service-lifecycle-other");
+    const taskId = await createTask(payerHumanId);
+    const credentialId = randomUUID();
+    const idempotencyKey = providerCostIdempotencyKey(
+      `${FIXTURE_PREFIX}:service-lifecycle:${randomUUID()}`,
+    );
+    providerCostKeys.push(idempotencyKey);
+    const attempt = {
+      userId: payerHumanId,
+      taskId,
+      provider: "tavily",
+      operation: "search",
+      workload: "deep_research",
+      fundingKind: "personal" as const,
+      payerHumanId,
+      providerRoute: "tavily",
+      credentialId,
+      credentialRevision: 1,
+      attemptOutcome: "unknown" as const,
+      evidenceState: "unknown" as const,
+      idempotencyKey,
+    };
+    await insertProviderCostEventWith(db, attempt);
+    await settleProviderCostEventWith(db, {
+      ...attempt,
+      attemptOutcome: "failed",
+      failureCode: "provider_request_failed",
+    });
+    await settleProviderCostEventWith(db, {
+      ...attempt,
+      attemptOutcome: "failed",
+      failureCode: "provider_request_failed",
+      evidenceState: "estimated",
+      estimatedCostUsd: "0.008",
+      pricingVersion: "test-price-v1",
+      measuredUnits: 1,
+      unitType: "credit",
+    });
+    const actualSettlement = {
+      ...attempt,
+      attemptOutcome: "failed" as const,
+      failureCode: "provider_request_failed",
+      evidenceState: "actual" as const,
+      estimatedCostUsd: "0.999",
+      actualCostUsd: "0",
+      pricingVersion: "test-price-v2",
+      measuredUnits: 2,
+      unitType: "credit",
+    };
+    await settleProviderCostEventWith(db, actualSettlement);
+    await settleProviderCostEventWith(db, actualSettlement);
+
+    const [stored] = await db.select().from(providerCostEvents).where(
+      eq(providerCostEvents.idempotencyKey, idempotencyKey),
+    );
+    expect(stored).toMatchObject({
+      taskId,
+      workload: "deep_research",
+      attemptOutcome: "failed",
+      failureCode: "provider_request_failed",
+      evidenceState: "actual",
+      estimatedCostUsd: "0.00800000",
+      actualCostUsd: "0.00000000",
+      pricingVersion: "test-price-v1",
+      measuredUnits: "1.00000000",
+      unitType: "credit",
+    });
+
+    const otherKey = providerCostIdempotencyKey(
+      `${FIXTURE_PREFIX}:service-lifecycle-other:${randomUUID()}`,
+    );
+    providerCostKeys.push(otherKey);
+    await insertProviderCostEventWith(db, {
+      userId: otherPayerHumanId,
+      taskId,
+      provider: "tavily",
+      operation: "search",
+      workload: "deep_research",
+      fundingKind: "personal",
+      payerHumanId: otherPayerHumanId,
+      providerRoute: "tavily",
+      credentialId: randomUUID(),
+      credentialRevision: 1,
+      attemptOutcome: "succeeded",
+      evidenceState: "actual",
+      actualCostUsd: "9",
+      idempotencyKey: otherKey,
+    });
+
+    const summary = await getPersonalCostsSummary({
+      payerHumanId,
+      range: {
+        sinceIso: new Date(Date.now() - 60_000).toISOString(),
+        untilIso: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+    expect(summary.totals).toMatchObject({
+      providerOperations: 1,
+      unknownProviderOperations: 0,
+      totalCostUsd: 0,
+    });
+    expect(summary.byTask).toHaveLength(1);
+    expect(summary.byTask[0]).toMatchObject({
+      taskId,
+      calls: 0,
+      providerOperations: 1,
+      unknownProviderOperations: 0,
+      estimatedCostUsd: 0,
+      actualCostUsd: 0,
+      totalCostUsd: 0,
+    });
+    expect(summary.serviceOperations).toEqual({
+      operations: 1,
+      succeeded: 0,
+      failed: 1,
+      cancelled: 0,
+      interrupted: 0,
+      unknown: 0,
+      legacy: 0,
+    });
+    expect(summary.serviceRecovery).toEqual({ attempts: [] });
+  });
+
   test("prewires and settles one direct personal attempt in place", async () => {
     const payerHumanId = await createUser("direct");
     const id = attemptId();
@@ -563,6 +786,8 @@ describe("personal cost attempts and account isolation", () => {
     expect(summary.byTask).toEqual([{
       taskId,
       calls: 1,
+      providerOperations: 0,
+      unknownProviderOperations: 0,
       estimatedCostUsd: 0,
       actualCostUsd: 0,
       totalCostUsd: 0,
@@ -580,6 +805,23 @@ describe("personal cost attempts and account isolation", () => {
     });
     expect(summary.recovery.attempts[0]?.requestReference).toMatch(/^req_[0-9a-f]{12}$/);
     expect(summary.recovery.attempts[0]?.requestReference).not.toContain("req-");
+    expect(summary.serviceOperations).toEqual({
+      operations: 4,
+      succeeded: 0,
+      failed: 0,
+      cancelled: 0,
+      interrupted: 0,
+      unknown: 0,
+      legacy: 4,
+    });
+    expect(summary.serviceRecovery?.attempts).toEqual([expect.objectContaining({
+      provider: "tavily",
+      operation: "search",
+      workload: null,
+      attemptOutcome: null,
+      failureCode: null,
+      taskId: null,
+    })]);
     expect(summary.timeSeries).toHaveLength(1);
     expect(summary.timeSeries[0]?.estimatedCostUsd).toBeCloseTo(0.0032, 8);
     expect(summary.timeSeries[0]?.actualCostUsd).toBeCloseTo(0.004529, 8);

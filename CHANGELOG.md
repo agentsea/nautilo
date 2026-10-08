@@ -18,6 +18,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   own costs; cancellation and delivered text or tool calls stop fallback.
   Surplus streaming accepts usage-metering adjustments while preserving provider
   and inference-setting checks.
+  Task cost totals include attributable paid-service calls. Costs distinguish
+  decision and Deep Research workloads, provider actual charges and estimates,
+  and service outcomes independently of unresolved charges; service estimates
+  retain their pricing version and reported usage basis.
 - Reflection allows up to ten minutes per poll, preserves completed batch results
   when repair runs out of time, and gives other eligible records a turn after
   timed-out work yields.

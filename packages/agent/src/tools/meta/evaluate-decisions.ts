@@ -20,9 +20,18 @@ interface DecisionToolContext {
   readonly roomId?: string | undefined;
   readonly agentId?: string | undefined;
   readonly causalHumanUserId?: string | undefined;
+  readonly currentTaskId?: string | undefined;
+  readonly currentTaskRunId?: string | undefined;
+  readonly jobId?: string | undefined;
 }
 interface DecisionToolDependencies {
   readonly assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+}
+
+function nonEmptyContextId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 export function decisionToolUnavailable(context?: DecisionToolContext): string | null {
   return context?.turnId && context.fullEncryptionOnly === false ? null
@@ -53,11 +62,22 @@ export function createEvaluateDecisionsTool(
       try {
         const ambient = getUsageContext();
         const fundingHumanUserId = causalHumanForExecution(context?.causalHumanUserId);
+        const taskId = nonEmptyContextId(context?.currentTaskId);
+        const taskRunId = nonEmptyContextId(context?.currentTaskRunId);
+        const jobId = nonEmptyContextId(context?.jobId);
         return JSON.stringify(await runWithUsageContext({
-          callType: ambient?.callType ?? "other",
+          callType: "decision",
           userId: fundingHumanUserId || null,
           roomId: context?.roomId ?? ambient?.roomId ?? null,
-          metadata: { ...ambient?.metadata, turnId: context?.turnId, agentId: context?.agentId, tool: "evaluate_decisions" },
+          metadata: {
+            ...ambient?.metadata,
+            ...(taskId ? { taskId } : {}),
+            ...(taskRunId ? { taskRunId } : {}),
+            ...(jobId ? { jobId } : {}),
+            turnId: context?.turnId,
+            agentId: context?.agentId,
+            tool: "evaluate_decisions",
+          },
         }, async () => {
           const prepared = await prepareDecisionFunding(input.model_id);
           const invoke = (funding: Parameters<typeof invokeDecision>[1] = {}) => invokeDecision({

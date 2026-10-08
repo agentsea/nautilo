@@ -242,7 +242,7 @@ describe("invokeOpenRouterChoice", () => {
     expect(usage.records).toHaveLength(1);
     expect(usage.records[0]).toMatchObject({
       model: JEV_ID,
-      callType: "subagent",
+      callType: "decision",
       userId: "user-safe",
       roomId: ROOM_ID,
       inputTokens: 324,
@@ -283,7 +283,7 @@ describe("invokeOpenRouterChoice", () => {
     expect(usage.records).toHaveLength(1);
     expect(usage.records[0]).toMatchObject({
       model: JEV_ID,
-      callType: "other",
+      callType: "decision",
       inputTokens: 8,
       outputTokens: 2,
       totalTokens: 10,

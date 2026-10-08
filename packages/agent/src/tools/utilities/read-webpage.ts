@@ -24,10 +24,12 @@ import type { BrowserResearchExecutionPort, BrowserResearchSnapshotInspectionExe
 import {
   beginToolProviderCostAttempt,
   createToolProviderCostRecorder,
+  openProviderCostAttempt,
+  providerToolEstimateReceipt,
+  type ProviderCostReceipt,
   type ProviderCostRecorder,
 } from "../../usage/provider-cost-recorder";
 import { getCapabilityFundingSession } from "../../runtime/capability-funding";
-import { estimateProviderToolCostUsd } from "@nautilo/db";
 
 export interface ReadWebpageOptions {
   maxContentLength?: number;
@@ -318,10 +320,23 @@ export function buildReadWebpageFetcher(
 
     if (apiKey) await beforeTavilyDispatch?.();
 
+    let costAttempt: ProviderCostRecorder | undefined;
+    let costAttemptSettled = false;
+    const settleCostAttempt = async (receipt: Omit<ProviderCostReceipt, "provider" | "operation">) => {
+      if (!costAttempt || costAttemptSettled) return;
+      costAttemptSettled = true;
+      await costAttempt({ provider: "tavily", operation: "extract", ...receipt });
+    };
+    let responseReceived = false;
+    let timedOut = false;
     try {
       if (!apiKey) {
         throw new Error("TAVILY_API_KEY environment variable is required");
       }
+      costAttempt = await openProviderCostAttempt(recordProviderCost, {
+        provider: "tavily",
+        operation: "extract",
+      });
 
       let response: TavilyExtractResponse;
       let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -346,15 +361,24 @@ export function buildReadWebpageFetcher(
           new Promise<never>((_, reject) => {
             timeout = setTimeout(
               () => {
+                timedOut = true;
                 controller.abort();
                 reject(new Error(`Tavily extract timed out after ${timeoutMs}ms`));
               },
               timeoutMs,
             );
           }),
-        ]);
+          ]);
+        responseReceived = true;
         if (!upstream.ok) {
-          throw new Error(`Tavily extract failed: HTTP ${upstream.status}`);
+          await settleCostAttempt({ evidenceState: "unknown", attemptOutcome: "failed",
+            failureCode: "provider_http_error" });
+          warn(`[read_webpage] Tavily extract failed: HTTP ${upstream.status}`);
+          return {
+            url, status: 0, content: "", preview: "", contentLength: 0,
+            error: "This page could not be read. Try again or choose another source.",
+            errorCode: "read_failed",
+          };
         }
         response = (await upstream.json()) as TavilyExtractResponse;
       } finally {
@@ -362,7 +386,16 @@ export function buildReadWebpageFetcher(
         requestOptions.signal?.removeEventListener("abort", abortFromParent);
       }
 
+      const costEvidence = providerToolEstimateReceipt(
+        "tavily:credit",
+        response.usage?.credits,
+        1,
+        "credit",
+      );
+
       if (Array.isArray(response.failedResults) && response.failedResults.some((f) => f.url === url)) {
+        await settleCostAttempt({ receiptId: response.request_id ?? null, ...costEvidence,
+          attemptOutcome: "failed", failureCode: "provider_result_failed" });
         warn("[read_webpage] Tavily extract reported a per-URL failure");
         return {
           url, status: 0, content: "", preview: "", contentLength: 0,
@@ -378,6 +411,8 @@ export function buildReadWebpageFetcher(
           ? result.rawContent
           : undefined;
       if (!rawContent) {
+        await settleCostAttempt({ receiptId: response.request_id ?? null, ...costEvidence,
+          attemptOutcome: "failed", failureCode: "empty_provider_result" });
         return {
           url, status: 404, content: "", preview: "", contentLength: 0,
           error: "This page returned no readable content. Try another URL or source.",
@@ -385,16 +420,8 @@ export function buildReadWebpageFetcher(
         };
       }
 
-      const estimatedCostUsd = estimateProviderToolCostUsd("tavily:credit", response.usage?.credits ?? 1);
-      if (recordProviderCost && estimatedCostUsd) {
-        await recordProviderCost({
-          provider: "tavily",
-          operation: "extract",
-          receiptId: response.request_id ?? null,
-          estimatedCostUsd,
-          evidenceState: "estimated",
-        });
-      }
+      await settleCostAttempt({ receiptId: response.request_id ?? null, ...costEvidence,
+        attemptOutcome: "succeeded" });
 
       const totalContentLength = rawContent.length;
       const truncated = totalContentLength > maxContentLength;
@@ -409,7 +436,16 @@ export function buildReadWebpageFetcher(
         truncated,
       };
     } catch (error) {
-      if (requestOptions.signal?.aborted) {
+      const cancelled = requestOptions.signal?.aborted === true;
+      await settleCostAttempt({
+        evidenceState: "unknown",
+        attemptOutcome: cancelled ? "cancelled" : timedOut ? "interrupted" : responseReceived ? "failed" : "unknown",
+        failureCode: cancelled
+          ? "request_cancelled"
+          : timedOut ? "provider_timeout"
+            : responseReceived ? "invalid_provider_response" : "provider_transport_unknown",
+      });
+      if (cancelled) {
         return {
           url, status: 0, content: "", preview: "", contentLength: 0,
           error: "Reading this page was cancelled. Try again when ready.",

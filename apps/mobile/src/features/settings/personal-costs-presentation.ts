@@ -1,4 +1,8 @@
 import type { PersonalCostsRangeKey, PersonalCostsSummary } from "@nautilo/api-client/browser";
+import type {
+  ServiceCostOperationsSummary,
+  ServiceCostRecoveryAttempt,
+} from "@nautilo/types";
 
 export interface PersonalCostDayRow {
   key: string;
@@ -11,6 +15,23 @@ export interface PersonalCostCallTypeRow {
   calls: number;
   knownCostUsd: number;
 }
+export interface PersonalCostProviderEvidence {
+  knownCostUsd: number;
+  actualCostUsd: number;
+  currentEstimateUsd: number;
+  unresolvedOperations: number;
+  costPending: boolean;
+  detail: string;
+}
+export interface PersonalCostTaskRow {
+  taskId: string;
+  modelAttempts: number;
+  paidOperations: number;
+  actualCostUsd: number;
+  currentEstimateUsd: number;
+  knownCostUsd: number;
+  unresolved: number;
+}
 
 const USD = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -21,6 +42,8 @@ const USD = new Intl.NumberFormat("en-US", {
 
 const CALL_TYPE_LABELS: Record<string, string> = {
   chat: "Chat",
+  decision: "Decision",
+  deep_research: "Deep research",
   subagent: "Subagents",
   conductor: "Conductor",
   room_stenographer: "Room stenographer",
@@ -81,6 +104,76 @@ export function personalUnknownProviderOperations(
       }
     ).unknownProviderOperations ?? 0
   );
+}
+
+export function personalCostProviderEvidence(
+  row: PersonalCostsSummary["byProvider"][number],
+): PersonalCostProviderEvidence {
+  const legacy = row as typeof row & {
+    actualCostUsd?: number;
+    estimatedCostUsd?: number;
+    unknownOperations?: number;
+  };
+  const actualCostUsd = legacy.actualCostUsd ?? 0;
+  const currentEstimateUsd = legacy.estimatedCostUsd ?? 0;
+  const unresolvedOperations = legacy.unknownOperations ?? 0;
+  return {
+    knownCostUsd: row.totalCostUsd,
+    actualCostUsd,
+    currentEstimateUsd,
+    unresolvedOperations,
+    costPending: row.totalCostUsd === 0 && unresolvedOperations > 0,
+    detail: `${formatPersonalCostUsd(actualCostUsd)} actual · ${formatPersonalCostUsd(currentEstimateUsd)} current estimate${unresolvedOperations > 0 ? " · unresolved charges excluded" : ""}`,
+  };
+}
+
+export function personalCostTaskRows(
+  summary: Pick<PersonalCostsSummary, "byTask">,
+): PersonalCostTaskRow[] {
+  return (summary.byTask ?? []).map((row) => {
+    const service = row as typeof row & {
+      providerOperations?: number;
+      unknownProviderOperations?: number;
+    };
+    return {
+      taskId: row.taskId,
+      modelAttempts: row.calls,
+      paidOperations: service.providerOperations ?? 0,
+      actualCostUsd: row.actualCostUsd,
+      currentEstimateUsd: row.estimatedCostUsd,
+      knownCostUsd: row.totalCostUsd,
+      unresolved:
+        row.pendingAttempts +
+        row.unknownAttempts +
+        (service.unknownProviderOperations ?? 0),
+    };
+  });
+}
+
+export function personalServiceOperations(
+  summary: PersonalCostsSummary,
+): ServiceCostOperationsSummary | null {
+  return (
+    summary as PersonalCostsSummary & {
+      serviceOperations?: ServiceCostOperationsSummary;
+    }
+  ).serviceOperations ?? null;
+}
+
+export function personalServiceOutcomeText(
+  summary: ServiceCostOperationsSummary,
+): string {
+  return `${summary.operations} operations · ${summary.succeeded} succeeded · ${summary.failed} failed · ${summary.cancelled} cancelled · ${summary.interrupted} interrupted · ${summary.unknown} unknown${summary.legacy > 0 ? ` · ${summary.legacy} older unclassified` : ""}`;
+}
+
+export function personalServiceRecoveryAttempts(
+  summary: PersonalCostsSummary,
+): readonly ServiceCostRecoveryAttempt[] {
+  return (
+    summary as PersonalCostsSummary & {
+      serviceRecovery?: { attempts?: ServiceCostRecoveryAttempt[] };
+    }
+  ).serviceRecovery?.attempts ?? [];
 }
 
 function formatDay(day: string): string {

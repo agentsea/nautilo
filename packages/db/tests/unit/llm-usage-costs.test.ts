@@ -11,6 +11,7 @@ import {
   buildPersonalCostsByRouteQuery,
   buildPersonalCostsByTaskQuery,
   getCostsSummary,
+  insertLlmUsageEvent,
 } from "../../src/queries/llm-usage";
 
 const RANGE = {
@@ -63,6 +64,30 @@ function mockDb(responses: unknown[][]) {
 describe("getCostsSummary fallback disclosure (ISSUE-M217)", () => {
   afterEach(() => {
     __setLlmUsageDbForTests(null);
+  });
+
+  test("ordinary usage inserts preserve explicit Task attribution and default omission to null", async () => {
+    const inserted: Array<Record<string, unknown>> = [];
+    const builder = {
+      async values(value: Record<string, unknown>) {
+        inserted.push(value);
+      },
+    };
+    __setLlmUsageDbForTests({ insert: () => builder });
+    const common = {
+      callType: "decision",
+      provider: "openai",
+      model: "openai:gpt-5.5",
+      estimatedCostUsd: 0.01,
+    };
+    await insertLlmUsageEvent({
+      ...common,
+      taskId: "11111111-1111-4111-8111-111111111111",
+    });
+    await insertLlmUsageEvent(common);
+
+    expect(inserted[0]?.["taskId"]).toBe("11111111-1111-4111-8111-111111111111");
+    expect(inserted[1]?.["taskId"]).toBeNull();
   });
 
   test("explicit stored rows do not set hasFallbackEstimate", async () => {

@@ -20,7 +20,11 @@ import { llmUsageEvents } from "../schema/llm-usage";
 import { users } from "../schema/users";
 import { getSharedDirectDb } from "../config/direct-database";
 import type { DirectDatabase } from "../config/direct-database";
-import { buildProviderCostsSummaryQueries } from "./provider-costs";
+import {
+  buildPersonalProviderCostsByTaskQuery,
+  buildProviderCostRecoveryAttemptsQuery,
+  buildProviderCostsSummaryQueries,
+} from "./provider-costs";
 import { personalProviderCredentials } from "../schema/personal-provider-credentials";
 import { providerCostEvents } from "../schema/provider-costs";
 import type {
@@ -32,6 +36,8 @@ import type {
   PersonalCostsRecoverySummary,
   PersonalCostsSummary,
   PersonalCostsTimeSeriesPoint,
+  ServiceCostOperationsSummary,
+  ServiceCostRecoveryAttempt,
 } from "@nautilo/types";
 
 let _dbOverride: DirectDatabase | null = null;
@@ -49,6 +55,7 @@ export interface InsertLlmUsageInput {
   occurredAt?: Date;
   userId?: string | null;
   roomId?: string | null;
+  taskId?: string | null;
   callType: string;
   provider: string;
   model: string;
@@ -216,6 +223,7 @@ export async function insertLlmUsageEvent(input: InsertLlmUsageInput): Promise<v
       ...(input.occurredAt ? { occurredAt: input.occurredAt } : {}),
       userId: input.userId ?? null,
       roomId: input.roomId ?? null,
+      taskId: input.taskId ?? null,
       callType: input.callType,
       provider: input.provider,
       model: input.model,
@@ -874,11 +882,40 @@ export interface CostsSummary {
   byUser: CostsByUserRow[];
   timeSeries: CostsTimeSeriesPoint[];
   recovery: PersonalCostsRecoverySummary;
+  serviceOperations: ServiceCostOperationsSummary;
+  serviceRecovery: { attempts: ServiceCostRecoveryAttempt[] };
 }
 
 function n(v: unknown): number {
   const parsed = typeof v === "number" ? v : Number(v ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function serviceOperations(row: Record<string, unknown> | undefined): ServiceCostOperationsSummary {
+  return {
+    operations: n(row?.["operations"]),
+    succeeded: n(row?.["succeeded_operations"]),
+    failed: n(row?.["failed_operations"]),
+    cancelled: n(row?.["cancelled_operations"]),
+    interrupted: n(row?.["interrupted_operations"]),
+    unknown: n(row?.["unknown_outcome_operations"]),
+    legacy: n(row?.["legacy_operations"]),
+  };
+}
+
+function serviceRecoveryAttempt(row: Record<string, unknown>): ServiceCostRecoveryAttempt {
+  const occurredAt = row["occurredAt"];
+  return {
+    provider: String(row["provider"]),
+    operation: String(row["operation"]),
+    workload: s(row["workload"]),
+    attemptOutcome: row["attemptOutcome"] as ServiceCostRecoveryAttempt["attemptOutcome"],
+    failureCode: s(row["failureCode"]),
+    taskId: s(row["taskId"]),
+    runId: s(row["runId"]),
+    jobId: s(row["jobId"]),
+    occurredAt: occurredAt instanceof Date ? occurredAt.toISOString() : String(occurredAt),
+  };
 }
 
 /** Text column → string | null (guards eslint no-base-to-string on unknown). */
@@ -1268,6 +1305,11 @@ export async function getCostsSummary(range: CostsRange): Promise<CostsSummary> 
   const providerByUser = await providerQueries.byUser;
   const providerTimeSeries = await providerQueries.timeSeries;
   const recoveryRows = await buildCostsRecoveryAttemptsQuery(range, db());
+  const serviceRecoveryRows = await buildProviderCostRecoveryAttemptsQuery(
+    range,
+    db(),
+    DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT,
+  );
 
   const providerOperations = n(providerTotalsRow?.["operations"]);
   const providerEstimatedCostUsd = n(providerTotalsRow?.["estimated_cost"]);
@@ -1381,6 +1423,8 @@ export async function getCostsSummary(range: CostsRange): Promise<CostsSummary> 
       unknownAttempts: n(totalsRow?.["unknown_model_attempts"]),
       attempts: recoveryRows.map(personalRecoveryAttempt),
     },
+    serviceOperations: serviceOperations(providerTotalsRow),
+    serviceRecovery: { attempts: serviceRecoveryRows.map(serviceRecoveryAttempt) },
   };
 }
 
@@ -1399,10 +1443,16 @@ export async function getPersonalCostsSummary(input: {
   const providerQueries = buildProviderCostsSummaryQueries(input.range, db(), payerHumanId);
   const modelByRouteQuery = buildPersonalCostsByRouteQuery(input.range, db(), payerHumanId);
   const modelByTaskQuery = buildPersonalCostsByTaskQuery(input.range, db(), payerHumanId);
+  const providerByTaskQuery = buildPersonalProviderCostsByTaskQuery(
+    input.range,
+    db(),
+    payerHumanId,
+  );
   const [
     [totalsRow], byModelRows, byCallTypeRows, modelTimeSeriesRows,
     [providerTotalsRow], byProviderRows, providerTimeSeriesRows, modelByRouteRows,
-    modelByTaskRows, recoveryRows, credentialRows, llmHistoryRows, providerHistoryRows,
+    modelByTaskRows, providerByTaskRows, recoveryRows, serviceRecoveryRows,
+    credentialRows, llmHistoryRows, providerHistoryRows,
   ] = await Promise.all([
     queries.totals,
     queries.byModel,
@@ -1413,7 +1463,14 @@ export async function getPersonalCostsSummary(input: {
     providerQueries.timeSeries,
     modelByRouteQuery,
     modelByTaskQuery,
+    providerByTaskQuery,
     buildCostsRecoveryAttemptsQuery(input.range, db(), payerHumanId),
+    buildProviderCostRecoveryAttemptsQuery(
+      input.range,
+      db(),
+      DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT,
+      payerHumanId,
+    ),
     db().select({ id: personalProviderCredentials.id })
       .from(personalProviderCredentials)
       .where(eq(personalProviderCredentials.userId, payerHumanId))
@@ -1483,15 +1540,39 @@ export async function getPersonalCostsSummary(input: {
     totalCostUsd: n(row["total_cost"]),
   })));
   byProvider.sort((left, right) => right.totalCostUsd - left.totalCostUsd);
-  const byTask: PersonalCostsByTaskRow[] = modelByTaskRows.map((row) => ({
-    taskId: String(row["task_id"]),
-    calls: n(row["calls"]),
-    estimatedCostUsd: n(row["estimated_cost"]),
-    actualCostUsd: n(row["actual_cost"]),
-    totalCostUsd: n(row["total_cost"]),
-    pendingAttempts: n(row["pending_attempts"]),
-    unknownAttempts: n(row["unknown_attempts"]),
-  }));
+  const tasksById = new Map<string, PersonalCostsByTaskRow>();
+  for (const row of modelByTaskRows) {
+    const taskId = String(row["task_id"]);
+    tasksById.set(taskId, {
+      taskId,
+      calls: n(row["calls"]),
+      providerOperations: 0,
+      unknownProviderOperations: 0,
+      estimatedCostUsd: n(row["estimated_cost"]),
+      actualCostUsd: n(row["actual_cost"]),
+      totalCostUsd: n(row["total_cost"]),
+      pendingAttempts: n(row["pending_attempts"]),
+      unknownAttempts: n(row["unknown_attempts"]),
+    });
+  }
+  for (const row of providerByTaskRows) {
+    const taskId = String(row["task_id"]);
+    const current = tasksById.get(taskId);
+    tasksById.set(taskId, {
+      taskId,
+      calls: current?.calls ?? 0,
+      providerOperations: n(row["operations"]),
+      unknownProviderOperations: n(row["unknown_operations"]),
+      estimatedCostUsd: (current?.estimatedCostUsd ?? 0) + n(row["estimated_cost"]),
+      actualCostUsd: (current?.actualCostUsd ?? 0) + n(row["actual_cost"]),
+      totalCostUsd: (current?.totalCostUsd ?? 0) + n(row["total_cost"]),
+      pendingAttempts: current?.pendingAttempts ?? 0,
+      unknownAttempts: current?.unknownAttempts ?? 0,
+    });
+  }
+  const byTask = [...tasksById.values()].sort(
+    (left, right) => right.totalCostUsd - left.totalCostUsd,
+  );
   const days = new Map<string, PersonalCostsTimeSeriesPoint>();
   for (const row of modelTimeSeriesRows) {
     const day = String(row["day"]);
@@ -1548,5 +1629,7 @@ export async function getPersonalCostsSummary(input: {
       unknownAttempts,
       attempts: recoveryRows.map(personalRecoveryAttempt),
     },
+    serviceOperations: serviceOperations(providerTotalsRow),
+    serviceRecovery: { attempts: serviceRecoveryRows.map(serviceRecoveryAttempt) },
   };
 }

@@ -263,7 +263,7 @@ async function researcherTools(
         }, config);
       } catch { /* ignore */ }
 
-      const res = await tools.search(query);
+      const res = await tools.search(query, config?.signal ? { signal: config.signal } : {});
       const items = Array.isArray(res.items) ? res.items : [];
       searchCallCount += 1;
 

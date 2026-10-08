@@ -23,6 +23,8 @@ type CostsApiResponse = {
   totals: CostsSummary["totals"];
   byProvider: CostsSummary["byProvider"];
   byUser: Array<{ label: string }>;
+  serviceOperations: CostsSummary["serviceOperations"];
+  serviceRecovery: CostsSummary["serviceRecovery"];
 };
 
 function fakeSummary(): CostsSummary {
@@ -58,6 +60,8 @@ function fakeSummary(): CostsSummary {
         unknownAttempts: 1,
       },
     ],
+    serviceOperations: { operations: 1, succeeded: 0, failed: 0, cancelled: 1, interrupted: 0, unknown: 0, legacy: 0 },
+    serviceRecovery: { attempts: [{ provider: "tavily", operation: "search", workload: "deep_research", attemptOutcome: "cancelled", failureCode: "cancelled", taskId: null, runId: null, jobId: null, occurredAt: "2026-07-08T00:00:00.000Z" }] },
     byCallType: [{ callType: "chat", calls: 3, totalCostUsd: 0.021 }],
     byProvider: [{
       provider: "browser_use",
@@ -182,6 +186,9 @@ describe("/api/costs auth gating (D405)", () => {
       headers: { "x-test-user": OWNER },
     });
     expect(res.statusCode).toBe(200);
+    const servicePayload = res.json<CostsApiResponse>();
+    expect(servicePayload.serviceOperations).toEqual(fakeSummary().serviceOperations);
+    expect(servicePayload.serviceRecovery).toEqual(fakeSummary().serviceRecovery);
     const body: CostsApiResponse = res.json();
     expect(body.pricingVersion).toBeTruthy();
     expect(body.providerPricingVersion).toBe("2026-09-02.1");

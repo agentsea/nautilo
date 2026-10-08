@@ -9,7 +9,11 @@ import {
 } from "../../lib/costs-api";
 import { GuestPlaceholder, PermissionPlaceholder } from "../settings/ui";
 import { CostsDashboard, CostsDashboardPage, Panel } from "./costs-dashboard";
-import { CostsRecoveryPanel } from "./costs-recovery-panel";
+import {
+  CostsRecoveryPanel,
+  CostsServiceOperations,
+  CostsServiceRecoveryPanel,
+} from "./costs-recovery-panel";
 import {
   formatCompact,
   formatInt,
@@ -109,6 +113,8 @@ export function CostsPage() {
           emptyMessage="No model or accounted paid-tool usage recorded in this window yet."
           afterBreakdowns={<>
             <AdminUsers data={data} />
+            <CostsServiceOperations summary={data.serviceOperations ?? null} />
+            <CostsServiceRecoveryPanel attempts={data.serviceRecovery?.attempts ?? []} />
             <CostsRecoveryPanel attempts={data.recovery?.attempts ?? []} keysPath="/admin#provider-credentials" />
           </>}
         />

@@ -80,7 +80,7 @@ async function runTransport<T>(
       personalApiKey,
     );
     return runWithUsageContext({
-      callType: ambient?.callType ?? "other",
+      callType: "decision",
       userId: attempt.usageFunding.humanUserId ?? ambient?.userId ?? null,
       roomId: ambient?.roomId ?? null,
       ...(ambient?.metadata === undefined ? {} : { metadata: ambient.metadata }),

@@ -22,10 +22,19 @@ describe("server provider cost provenance", () => {
       userId: "human-a",
       roomId: "room-a",
       agentId: "agent-a",
+      taskId: null,
+      runId: null,
+      jobId: null,
+      workload: null,
       provider: "cloudconvert",
       operation: "convert",
       actualCostUsd: "0.021",
       evidenceState: "actual",
+      attemptOutcome: null,
+      failureCode: null,
+      pricingVersion: null,
+      measuredUnits: null,
+      unitType: null,
     }, async (input) => { rows.push(input); });
 
     expect(rows).toEqual([{
@@ -37,11 +46,20 @@ describe("server provider cost provenance", () => {
       userId: "human-a",
       roomId: "room-a",
       agentId: "agent-a",
+      taskId: null,
+      runId: null,
+      jobId: null,
+      workload: null,
       provider: "cloudconvert",
       operation: "convert",
       estimatedCostUsd: null,
       actualCostUsd: "0.021",
       evidenceState: "actual",
+      attemptOutcome: null,
+      failureCode: null,
+      pricingVersion: null,
+      measuredUnits: null,
+      unitType: null,
       idempotencyKey: providerCostIdempotencyKey(
         "personal:human-a:credential-a:9:provider-operation-1",
       ),
@@ -72,6 +90,42 @@ describe("server provider cost provenance", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]?.idempotencyKey).not.toBe(rows[1]?.idempotencyKey);
     expect(rows.map((row) => row.payerHumanId)).toEqual(["human-a", "human-b"]);
+  });
+
+  test("forwards trusted execution and lifecycle fields without deriving them from provider data", async () => {
+    const rows: InsertProviderCostEventInput[] = [];
+    await safelyRecordProviderCost({
+      identity: "tavily-request-1",
+      userId: "human-a",
+      roomId: "room-a",
+      agentId: "agent-a",
+      taskId: "task-a",
+      runId: "run-a",
+      jobId: "job-a",
+      workload: "web_search",
+      provider: "tavily",
+      operation: "search",
+      estimatedCostUsd: "0.004",
+      evidenceState: "estimated",
+      attemptOutcome: "succeeded",
+      pricingVersion: "pricing-v1",
+      measuredUnits: 0.5,
+      unitType: "credit",
+    }, async (input) => { rows.push(input); });
+
+    expect(rows[0]).toMatchObject({
+      userId: "human-a",
+      roomId: "room-a",
+      agentId: "agent-a",
+      taskId: "task-a",
+      runId: "run-a",
+      jobId: "job-a",
+      workload: "web_search",
+      attemptOutcome: "succeeded",
+      pricingVersion: "pricing-v1",
+      measuredUnits: 0.5,
+      unitType: "credit",
+    });
   });
 
   test("unknown evidence carries no invented fee", async () => {

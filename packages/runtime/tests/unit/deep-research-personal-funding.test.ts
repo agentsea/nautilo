@@ -133,7 +133,7 @@ describe("Deep Research personal funding recovery", () => {
     ]);
     expect(observedUsage).toEqual([
       {
-        callType: "subagent",
+        callType: "deep_research",
         userId: session.humanUserId,
         roomId: "room-funded-research",
         metadata: {
@@ -145,7 +145,7 @@ describe("Deep Research personal funding recovery", () => {
         },
       },
       {
-        callType: "subagent",
+        callType: "deep_research",
         userId: session.humanUserId,
         roomId: "room-funded-research",
         metadata: {

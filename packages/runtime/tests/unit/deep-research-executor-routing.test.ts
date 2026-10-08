@@ -114,7 +114,7 @@ describe("M293 background Deep Research admission", () => {
 
     expect(observedContexts).toEqual([
       {
-        callType: "subagent",
+        callType: "deep_research",
         userId: "human-deep-research",
         roomId: "room-existing",
         metadata: {
@@ -125,7 +125,7 @@ describe("M293 background Deep Research admission", () => {
         },
       },
       {
-        callType: "subagent",
+        callType: "deep_research",
         userId: "human-deep-research",
         roomId: "room-existing",
         metadata: {

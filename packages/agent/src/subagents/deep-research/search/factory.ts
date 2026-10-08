@@ -1,19 +1,62 @@
-import { randomUUID } from "node:crypto";
 import type { Configuration } from "../shared/config";
 import type { SearchResultItem, SearchResults } from "./types";
 import { getUsageContext } from "../../../usage/usage-context";
 import {
   beginToolProviderCostAttempt,
   createToolProviderCostRecorder,
+  openProviderCostAttempt,
+  providerToolEstimateReceipt,
+  type ProviderCostReceipt,
+  type ProviderCostRecorder,
 } from "../../../usage/provider-cost-recorder";
-import { estimateProviderToolCostUsd } from "@nautilo/db";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
 import { assertDeepResearchServerFunding, getDeepResearchFunding } from "../shared/funding";
 
 export type SearchProvider = "tavily" | "openai" | "anthropic" | "duckduckgo" | "exa" | "none";
 
-export type SearchTool = (query: string) => Promise<SearchResults>;
+export type SearchTool = (
+  query: string,
+  options?: Readonly<{ signal?: AbortSignal }>,
+) => Promise<SearchResults>;
+
+export async function runRecordedDeepResearchTavilySearch(
+  invoke: () => Promise<unknown>,
+  recordProviderCost: ProviderCostRecorder,
+  searchDepth: "basic" | "advanced",
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const costAttempt = await openProviderCostAttempt(recordProviderCost, {
+    provider: "tavily",
+    operation: "deep_research_search",
+  });
+  let settled = false;
+  const settle = async (receipt: ProviderCostReceipt) => {
+    if (!costAttempt || settled) return;
+    settled = true;
+    await costAttempt(receipt);
+  };
+  try {
+    signal?.throwIfAborted();
+    const rawResults = await invoke();
+    signal?.throwIfAborted();
+    await settle({
+      provider: "tavily", operation: "deep_research_search",
+      ...providerToolEstimateReceipt("tavily:credit", null,
+        searchDepth === "advanced" ? 2 : 1, "credit"),
+      attemptOutcome: "succeeded",
+    });
+    return rawResults;
+  } catch (error) {
+    const cancelled = signal?.aborted === true;
+    await settle({
+      provider: "tavily", operation: "deep_research_search",
+      evidenceState: "unknown", attemptOutcome: cancelled ? "cancelled" : "unknown",
+      failureCode: cancelled ? "request_cancelled" : "provider_transport_unknown",
+    });
+    throw error;
+  }
+}
 
 export function buildSearchTool(cfg: Configuration, _callbacks?: unknown[]): SearchTool {
   const provider: SearchProvider = cfg.search_api;
@@ -37,18 +80,19 @@ export function buildSearchTool(cfg: Configuration, _callbacks?: unknown[]): Sea
 }
 
 function buildTavilySearch(cfg: Configuration): SearchTool {
-  return async (query: string): Promise<SearchResults> => {
+  return async (query: string, options = {}): Promise<SearchResults> => {
     const funding = getDeepResearchFunding();
     try {
       const tavilyModule = await import("@langchain/tavily");
       const TavilySearchCtor = (tavilyModule as Record<string, unknown>)["TavilySearch"] as
-        | (new (c: Record<string, unknown>) => { invoke: (input: unknown) => Promise<unknown> })
+        | (new (c: Record<string, unknown>) => {
+          invoke: (input: unknown, config?: { signal?: AbortSignal }) => Promise<unknown>;
+        })
         | undefined;
       if (typeof TavilySearchCtor !== "function") {
         return { provider: "tavily", query, items: [] };
       }
       const usage = getUsageContext();
-      const estimatedCostUsd = estimateProviderToolCostUsd("tavily:credit", cfg.search_depth === "advanced" ? 2 : 1);
       const invoke = async (apiKey: string, recordProviderCost: ReturnType<typeof createToolProviderCostRecorder>) => {
         const tool = new TavilySearchCtor({
           apiKey,
@@ -58,12 +102,12 @@ function buildTavilySearch(cfg: Configuration): SearchTool {
           includeAnswer: false,
           includeRawContent: false,
         });
-        const rawResults = await tool.invoke({ query });
-        if (estimatedCostUsd) await recordProviderCost({
-          provider: "tavily", operation: "deep_research_search",
-          receiptId: randomUUID(), estimatedCostUsd, evidenceState: "estimated",
-        });
-        return rawResults;
+        return runRecordedDeepResearchTavilySearch(
+          () => tool.invoke({ query }, options.signal ? { signal: options.signal } : undefined),
+          recordProviderCost,
+          cfg.search_depth,
+          options.signal,
+        );
       };
       let rawResults: unknown;
       if (funding) {
@@ -89,7 +133,7 @@ function buildTavilySearch(cfg: Configuration): SearchTool {
       }
       return { provider: "tavily", query, items: parseTavilyResults(rawResults) };
     } catch (error) {
-      if (funding || error instanceof ServerProviderCredentialsDeniedError) throw error;
+      if (options.signal?.aborted || funding || error instanceof ServerProviderCredentialsDeniedError) throw error;
       return { provider: "tavily", query, items: [] };
     }
   };

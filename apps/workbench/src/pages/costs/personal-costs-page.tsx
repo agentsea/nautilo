@@ -8,7 +8,12 @@ import { apiClient } from "../../lib/api";
 import { useAuth } from "../../hooks/use-auth";
 import { CostsDashboard, CostsDashboardPage } from "./costs-dashboard";
 import { formatInt, normalizePersonalCosts } from "./costs-view-model";
-import { CostsRecoveryPanel, CostsTaskAttribution } from "./costs-recovery-panel";
+import {
+  CostsRecoveryPanel,
+  CostsServiceOperations,
+  CostsServiceRecoveryPanel,
+  CostsTaskAttribution,
+} from "./costs-recovery-panel";
 
 export const PERSONAL_COSTS_RETURN_PATH = "/settings#personal-costs";
 
@@ -104,6 +109,8 @@ export function PersonalCostsPage() {
           beforeBreakdowns={<PersonalRecovery data={data} />}
           afterBreakdowns={<>
             <CostsTaskAttribution rows={data.byTask ?? []} />
+            <CostsServiceOperations summary={data.serviceOperations ?? null} />
+            <CostsServiceRecoveryPanel attempts={data.serviceRecovery?.attempts ?? []} />
             <CostsRecoveryPanel attempts={data.recovery.attempts ?? []} keysPath="/settings#personal-provider-keys" />
           </>}
         />

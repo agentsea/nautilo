@@ -3,8 +3,11 @@ import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { LLMResult } from "@langchain/core/outputs";
 import { recordLlmUsage, type RecordUsageInput } from "./record-usage";
 import { getUsageContext, normalizeUsageRoomId } from "./usage-context";
-import { createToolProviderCostRecorder } from "./provider-cost-recorder";
-import { estimateProviderToolCostUsd } from "@nautilo/db";
+import {
+  createToolProviderCostRecorder,
+  providerToolEstimateReceipt,
+  type ProviderCostRecorder,
+} from "./provider-cost-recorder";
 
 export interface ExtractedUsage {
   inputTokens: number;
@@ -180,6 +183,8 @@ export function extractUsageFromLLMResult(output: LLMResult): ExtractedUsage | n
 type RecordUsageFn = (input: RecordUsageInput) => void;
 
 let recordUsageImpl: RecordUsageFn = recordLlmUsage;
+let createProviderCostRecorderImpl: (context?: Record<string, unknown>) => ProviderCostRecorder =
+  createToolProviderCostRecorder;
 
 /**
  * Test-only seam to assert exactly-once persistence without touching the DB.
@@ -190,6 +195,16 @@ export function __setUsageRecorderForTests(fn: RecordUsageFn | null): void {
     throw new Error("Usage recorder test seam requires NAUTILO_TEST_MODE=stub");
   }
   recordUsageImpl = fn ?? recordLlmUsage;
+}
+
+/** Test-only seam for native provider-tool surcharge receipts. */
+export function __setProviderCostRecorderForTests(
+  fn: ((context?: Record<string, unknown>) => ProviderCostRecorder) | null,
+): void {
+  if (process.env["NAUTILO_TEST_MODE"] !== "stub") {
+    throw new Error("Provider cost recorder test seam requires NAUTILO_TEST_MODE=stub");
+  }
+  createProviderCostRecorderImpl = fn ?? createToolProviderCostRecorder;
 }
 
 /**
@@ -220,23 +235,25 @@ class UsageCallbackHandler extends BaseCallbackHandler {
       : this.modelId.startsWith("anthropic:") ? "anthropic" : null;
     if (nativeSearchRequests > 0 && nativeSearchProvider
       && usage?.actualCostUsd == null && ctx?.funding?.providerRoute !== "surplus") {
-      const recordProviderCost = createToolProviderCostRecorder({
+      const recordProviderCost = createProviderCostRecorderImpl({
         userId: ctx?.userId,
         roomId: ctx?.roomId,
         agentId: ctx?.metadata?.["agentId"],
         turnId: ctx?.metadata?.["turnId"],
       });
-      const estimatedCostUsd = estimateProviderToolCostUsd(
+      const costEvidence = providerToolEstimateReceipt(
         `${nativeSearchProvider}:web_search_call`,
         nativeSearchRequests,
+        nativeSearchRequests,
+        "request",
       );
-      if (estimatedCostUsd) void recordProviderCost({
+      if (costEvidence.estimatedCostUsd) void recordProviderCost({
         provider: nativeSearchProvider,
         operation: "native_web_search",
         ...(ctx?.funding ? { usageFunding: ctx.funding } : {}),
         receiptId: `${runId ?? randomUUID()}:native-web-search`,
-        estimatedCostUsd,
-        evidenceState: "estimated",
+        ...costEvidence,
+        attemptOutcome: "succeeded",
       });
     }
     if (!usage) return;
@@ -246,6 +263,10 @@ class UsageCallbackHandler extends BaseCallbackHandler {
         callType: ctx?.callType ?? "other",
         userId: ctx?.userId ?? ctx?.funding?.humanUserId ?? null,
         roomId: normalizeUsageRoomId(ctx?.roomId),
+        ...(typeof ctx?.metadata?.["taskId"] === "string"
+          && ctx.metadata["taskId"].trim().length > 0
+          ? { taskId: ctx.metadata["taskId"].trim() }
+          : {}),
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
         ...(usage.totalTokens !== undefined ? { totalTokens: usage.totalTokens } : {}),
