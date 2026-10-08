@@ -1,3 +1,4 @@
+import { createFullMacExecutionEnvironment } from "./local-execution-environment";
 import { dispatchAdmittedGitHub, type DesktopGitHubRuntime } from "./relay-dispatch/github";
 import { projectRelayCapabilitiesForProtocol } from "@nautilo/relay";
 import { parseRelayHumanTerminalBinding } from "@nautilo/relay";
@@ -3045,7 +3046,7 @@ export function makeDispatchHandler(
               // Full Mac grants account filesystem access, but never injects
               // application or account tokens from Electron's environment.
               return { program: "/bin/sh", args: ["-c", req.args["cmd"] as string], cwd: cwd.cwd,
-                env: { HOME: os.homedir(), PATH: (process.env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(path.delimiter).filter(entry => path.isAbsolute(entry)).join(path.delimiter), LANG: "en_US.UTF-8" }, dispose: () => undefined };
+                env: createFullMacExecutionEnvironment(), dispose: () => undefined };
             }
             let owned: Sandbox | null = null;
             let pinnedDirectory: number | null = null;

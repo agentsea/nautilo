@@ -69,7 +69,7 @@ async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
   throw new Error("Expected promise to reject");
 }
 
-describe("M246 dormant action-Capability admission", () => {
+describe("action-Capability admission", () => {
   test("preserves the complete bounded Agent invocation origin vocabulary", () => {
     expect(AGENT_INVOCATION_ORIGINS).toEqual([
       "room_message",
@@ -503,7 +503,7 @@ describe("server-funded own-Soul setup admission", () => {
   });
 });
 
-describe("M254 accepted invocation authority", () => {
+describe("accepted invocation authority", () => {
   test("binds opaque in-process authority to the canonical Human", () => {
     const authority = createAcceptedInvocationAuthority("human-1");
 
@@ -608,8 +608,9 @@ function productionFilesMatching(pattern: RegExp): string[] {
     .sort();
 }
 
-test("M254 invocation admission and authority mint sites stay mechanically inventoried", () => {
+test("invocation admission and authority mint sites stay mechanically inventoried", () => {
   expect(productionFilesMatching(INVOCATION_ADMISSION_PATTERN)).toEqual([
+    "packages/runtime/src/conversation/human-terminal-admission.ts",
     "packages/runtime/src/tasks/report-back.ts",
     "packages/server/src/lib/foreground-chat-funding.ts",
     "packages/server/src/lib/native-task-funding.ts",
@@ -660,7 +661,7 @@ test("M254 invocation admission and authority mint sites stay mechanically inven
   ]);
 });
 
-test("M259 Artifact-write admission sites stay mechanically inventoried", () => {
+test("Artifact-write admission sites stay mechanically inventoried", () => {
   expect(productionFilesMatching(ARTIFACT_WRITE_ADMISSION_PATTERN)).toEqual([
     "packages/agent/src/tools/file/artifact-store.ts",
     "packages/agent/src/tools/file/share-artifact.ts",
@@ -960,7 +961,7 @@ function productionOccurrenceCounts(sources: readonly { file: string; source: st
     .sort((a, b) => a.file.localeCompare(b.file));
 }
 
-test("M254 execution primitive callsites stay positively classified", () => {
+test("execution primitive callsites stay positively classified", () => {
   // Every primitive inspects the same source snapshot. Read it once instead of
   // walking and rereading the entire production tree for every inventory entry.
   const sources = PRODUCTION_ROOTS.flatMap((root) =>
