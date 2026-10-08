@@ -356,6 +356,8 @@ export interface RelayDesktopAutomationSnapshot {
  */
 export type RelayCapabilities = {
   profile: "device-relay" | "desktop-agent";
+  /** Exact descriptors from the running attested Host; schemas remain server-owned. */
+  computerUseHostContracts?: readonly import("@nautilo/computer-use-host-protocol").ComputerUseHostContract[] | undefined;
   /** semantic Computer protocol is installed, regardless of On/Off grant state. */
   computerUseSemanticVersion?: typeof COMPUTER_USE_SEMANTIC_VERSION | undefined;
   canDiscoverHue?: boolean | undefined;

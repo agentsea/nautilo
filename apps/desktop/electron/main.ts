@@ -3253,6 +3253,7 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
                 grantGeneration: current.data.receipt.grantGeneration,
                 provider: route.provider,
                 providerGeneration: route.providerGeneration,
+                hostContracts: await computerUseHostBroker.supportedContracts(),
               };
         },
       });

@@ -109,12 +109,24 @@ export class ComputerUseHostBroker {
     private readonly createRequestId: () => string = () => `cuhr:${randomUUID()}`,
   ) {}
 
+  /** Readiness only: starts the attested Host, never dispatches a GUI operation. */
+  async supportedContracts(): Promise<readonly ComputerUseHostContract[]> {
+    const state = await this.runtime.bootstrap().catch(() => ({ state: "unavailable" as const }));
+    if (state.state !== "ready") return [];
+    const active = await this.ensureSession();
+    if (active === null) return [];
+    const ready = parseComputerUseHostControlMessage(active.session.ready);
+    return ready.kind === "ready" && ready.protocol.major === COMPUTER_USE_HOST_PROTOCOL_MAJOR
+      && ready.protocol.minor === COMPUTER_USE_HOST_PROTOCOL_MINOR ? ready.contracts : [];
+  }
+
   async dispatch(input: ComputerUseHostBrokerRequest): Promise<ComputerUseHostBrokerResult> {
     if (input.signal?.aborted) return { ok: false, code: "host_cancelled" };
     const state = await this.runtime.bootstrap(input.signal).catch(() => ({ state: "unavailable" as const }));
     if (state.state !== "ready") return { ok: false, code: "host_unavailable" };
     const active = await this.ensureSession(input.signal);
     if (active === null) return { ok: false, code: "host_unavailable" };
+    if (input.signal?.aborted) return { ok: false, code: "host_cancelled" };
     const { session } = active;
     try {
       const ready = parseComputerUseHostControlMessage(session.ready);
@@ -165,9 +177,14 @@ export class ComputerUseHostBroker {
       try {
         const response = await session.request(request, input.signal);
         const result = gate.accept(response.result);
-        return input.signal?.aborted === true || result.settlement === "cancelled"
-          ? { ok: false, code: "host_cancelled" }
-          : { ok: true, result, ...(response.attachment === undefined ? {} : { attachment: response.attachment }) };
+        if (this.active?.session !== session) {
+          response.attachment?.bytes.fill(0);
+          return { ok: false, code: "host_protocol_rejected" };
+        }
+        // An abort requests cleanup, not a replacement for the executor's
+        // checked receipt. Preserve cancelled/partial/completed settlement and
+        // delivery evidence; only transport or generation loss discards it.
+        return { ok: true, result, ...(response.attachment === undefined ? {} : { attachment: response.attachment }) };
       } catch {
         await this.retireActive(session);
         return input.signal?.aborted === true ? { ok: false, code: "host_cancelled" } : { ok: false, code: "host_protocol_rejected" };

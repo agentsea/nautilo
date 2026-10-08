@@ -270,6 +270,7 @@ export function projectRelayCapabilitiesForProtocol(
     delete compatible.computerUseSemanticVersion;
     delete compatible.desktopAutomation;
     delete compatible.canControlDesktop;
+    delete compatible.computerUseHostContracts;
   }
   if (protocolVersion < 13) {
     delete compatible.acp;

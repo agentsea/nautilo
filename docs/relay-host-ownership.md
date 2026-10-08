@@ -265,6 +265,14 @@ protocol-major gate. A server label cannot downgrade the Host-attested effect.
 Raw CUA responses, native identifiers, provider paths/prose, and undeclared
 attachments do not enter Relay or model context.
 
+Desktop publishes the exact supported contract descriptors from the running,
+attested Computer Use Host alongside its existing grant snapshot. This is
+readiness information, not a schema download or a grant: compatible servers
+select their signed schemas by exact descriptor, and every dispatch still
+passes the unchanged authority and Host admission checks. A missing or
+unavailable Host cannot manufacture supported contracts. Legacy peers receive
+only capabilities their negotiated protocol supports.
+
 ### Computer Use execution lifetime
 
 An admitted, signal-owned `computer_use` dispatch has no generic Relay RPC
