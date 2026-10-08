@@ -376,6 +376,7 @@ describe("production protected Task predispatch composition", () => {
       assertCanInvokeAgent: async () => {}, assertCanUseServerProviderCredentials: async () => {},
       resolveTargetRoom: async () => ({ roomId: ids.room, graphThreadId: "unused" }),
       resolveTaskMemoryEnvelope: async input => {
+        if (canonical === undefined) throw new Error("Target memoization must finish before Scope setup");
         expect(input.task).toBe(canonical);
         expect(input.task.targetRoomId).toBe(ids.room);
         expect(input.task.localExecutionDelegation).toEqual(delegation);

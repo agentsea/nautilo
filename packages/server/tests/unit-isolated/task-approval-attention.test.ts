@@ -47,23 +47,23 @@ async function read(user: string) {
 test("requester-private checkpoint attention freshly admits source before and after replay", async () => {
   const response = await read("requestor");
   expect(response.statusCode).toBe(200); expect(response.headers["cache-control"]).toBe("private, no-store");
-  expect(response.json()).toMatchObject([{ userId: "requestor", taskId: "task", taskRunId: "run", origin: "task" }]);
+  expect(response.json<ServerEvent[]>()).toMatchObject([{ userId: "requestor", taskId: "task", taskRunId: "run", origin: "task" }]);
   expect(query).toHaveBeenCalledWith({}, "requestor", { approvalRecipient: true });
   expect(authorize).toHaveBeenCalledTimes(2);
   expect(replayed).toBe(1);
 });
 test("management owner, malformed descriptor and lost source receive no requesting-Human prompt", async () => {
-  expect((await read("management-owner")).json()).toEqual([]); expect(replayed).toBe(0);
+  expect((await read("management-owner")).json<ServerEvent[]>()).toEqual([]); expect(replayed).toBe(0);
   rows = [row({ ...delegation, humanUserId: "management-owner" })];
-  expect((await read("requestor")).json()).toEqual([]); expect(replayed).toBe(0);
+  expect((await read("requestor")).json<ServerEvent[]>()).toEqual([]); expect(replayed).toBe(0);
   rows = [row()]; allowed = false;
-  expect((await read("requestor")).json()).toEqual([]); expect(replayed).toBe(0);
+  expect((await read("requestor")).json<ServerEvent[]>()).toEqual([]); expect(replayed).toBe(0);
   allowed = true; revokeDuringReplay = true;
-  expect((await read("requestor")).json()).toEqual([]); expect(replayed).toBe(1);
+  expect((await read("requestor")).json<ServerEvent[]>()).toEqual([]); expect(replayed).toBe(1);
 });
 test("ordinary Task approval projection remains management-owner scoped", async () => {
   rows = [row(null)];
-  expect((await read("management-owner")).json()).toMatchObject([{ userId: "management-owner" }]);
+  expect((await read("management-owner")).json<ServerEvent[]>()).toMatchObject([{ userId: "management-owner" }]);
   expect(authorize).not.toHaveBeenCalled();
-  expect((await read("requestor")).json()).toEqual([]);
+  expect((await read("requestor")).json<ServerEvent[]>()).toEqual([]);
 });
