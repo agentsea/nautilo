@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { RELAY_PROTOCOL_VERSION } from "@nautilo/relay";
+import { RELAY_MIN_SUPPORTED_PROTOCOL_VERSION, RELAY_PROTOCOL_VERSION } from "@nautilo/relay";
 import type { VerifiedLocalElectronOrigin, VerifiedPairedMobileOrigin } from "@nautilo/types";
 import { createOrdinaryHostResolver } from "../../src/remote-control/ordinary-host-resolver";
 
@@ -57,7 +57,7 @@ function live(relayId: string, pairingGeneration: string) {
   };
 }
 
-describe("D458 verified ordinary-origin host resolution", () => {
+describe("verified ordinary-origin host resolution", () => {
   test("pins local Electron authority to its exact live launch without a mobile binding", async () => {
     const localOrigin: VerifiedLocalElectronOrigin = {
       kind: "local_electron",
@@ -94,6 +94,37 @@ describe("D458 verified ordinary-origin host resolution", () => {
     })).toEqual({ status: "unavailable" });
   });
 
+  for (const source of ["local_electron", "paired_mobile"] as const) {
+    for (const scenario of [
+      { name: "supported managed peer", version: 26, capable: true, expected: "selected" },
+      { name: "old shell compatibility peer", version: RELAY_MIN_SUPPORTED_PROTOCOL_VERSION, capable: true, expected: "selected" },
+      { name: "below compatibility floor", version: RELAY_MIN_SUPPORTED_PROTOCOL_VERSION - 1, capable: true, expected: "unavailable" },
+      { name: "missing negotiated capability", version: 26, capable: false, expected: "unavailable" },
+    ] as const) {
+      test(`${source} preserves ${scenario.name} independently of the newest protocol`, async () => {
+        const requestOrigin: VerifiedLocalElectronOrigin | VerifiedPairedMobileOrigin = source === "paired_mobile"
+          ? origin
+          : { kind: "local_electron", userId: origin.userId, actorId: origin.actorId,
+              relayId: "relay-a", desktopSessionId: "session-relay-a",
+              pairingGeneration: "generation-a", requestId: "request-local" };
+        const oldShell = scenario.name === "old shell compatibility peer";
+        const capability = oldShell ? "canRunShell" : "canExecuteLocal";
+        const resolver = harness({
+          bindings: [{ bindingId: "binding-a", pairingGeneration: "generation-a", label: "A" }],
+          live: [{ ...live("relay-a", "generation-a"), protocolVersion: scenario.version }],
+          capabilities: { "relay-a": { [capability]: scenario.capable } },
+        });
+        const result = await resolver.resolve({ origin: requestOrigin,
+          toolCallId: "tool-managed", toolName: oldShell ? "run_shell" : "exec_command", relayCapability: capability });
+        expect(result.status).toBe(scenario.expected);
+        if (scenario.expected === "selected") {
+          expect(result).toMatchObject({ host: { relayId: "relay-a", desktopSessionId: "session-relay-a",
+            pairingGeneration: "generation-a", capabilityRevision: 7 } });
+        }
+      });
+    }
+  }
+
   test("returns stable unavailable for no exact capability-bearing live binding", async () => {
     const resolver = harness({
       bindings: [{ bindingId: "binding-a", pairingGeneration: "generation-a", label: "A" }],
@@ -111,8 +142,8 @@ describe("D458 verified ordinary-origin host resolution", () => {
   test("selects the only exact eligible paired host", async () => {
     const capabilities = {
       canRunShell: true,
-      workspaceRoot: "/Users/alice/Documents/Nautilo",
-      currentFolderRoot: "/Users/alice/Projects/current-app",
+      workspaceRoot: "/path/to/workspace",
+      currentFolderRoot: "/path/to/current-project",
     };
     const resolver = harness({
       bindings: [{ bindingId: "binding-a", pairingGeneration: "generation-a", label: "A" }],
@@ -132,12 +163,12 @@ describe("D458 verified ordinary-origin host resolution", () => {
         pairingGeneration: "generation-a",
         desktopSessionId: "session-relay-a",
         capabilityRevision: 7,
-        workspaceRoot: "/Users/alice/Documents/Nautilo",
-        currentFolderRoot: "/Users/alice/Projects/current-app",
+        workspaceRoot: "/path/to/workspace",
+        currentFolderRoot: "/path/to/current-project",
       },
     });
 
-    capabilities.currentFolderRoot = "/Users/alice/Projects/other-app";
+    capabilities.currentFolderRoot = "/path/to/other-project";
     expect(await resolver.resolve({
       origin,
       toolCallId: "tool-1",
