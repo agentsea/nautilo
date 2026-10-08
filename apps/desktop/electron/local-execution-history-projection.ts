@@ -1,6 +1,6 @@
 type VaultRoomHistoryShadowReadResultV1 = Awaited<ReturnType<import("./foreground-shadow-controller").ElectronForegroundShadowController["reconcileHistory"]>>;
-import type { LocalExecutionView } from "./relay-dispatch/local-execution";
-import type { LocalExecutionHistoryScope, LocalExecutionHistoryStore } from "./local-execution-history";
+import type { LocalExecutionView, LocalExecutionViewRequest } from "./relay-dispatch/local-execution";
+import { parseLocalExecutionHistoryRecord, type LocalExecutionHistoryScope, type LocalExecutionHistoryStore } from "./local-execution-history";
 import type { RelayLocalExecutionHistoryBindingV1 } from "@nautilo/relay";
 import { searchLocalExecutionOutput, type LocalExecutionSearchProgress } from "./local-execution-search";
 
@@ -12,6 +12,47 @@ export interface VerifiedLocalExecutionHistoryOverlay extends LocalExecutionHist
   sessionId: string;
   messageId: string;
   editRevision: number;
+}
+
+/** A Human read must first pass the live owner's exact receipt lookup. Only
+ * expiry permits a read-only archive fallback; it cannot revive an execution. */
+export async function readLocalExecutionWithExpiredHistory(input: {
+  request: LocalExecutionViewRequest;
+  cancel: boolean;
+  readLive(): Promise<LocalExecutionView>;
+  isCurrent(): boolean;
+  openHistory(): Promise<{
+    scope: LocalExecutionHistoryScope;
+    store: Pick<LocalExecutionHistoryStore, "read">;
+    isCurrent(): boolean;
+  }>;
+}): Promise<LocalExecutionView | (LocalExecutionView & { archived: true })> {
+  if (!input.isCurrent()) throw new Error("LOCAL_EXECUTION_HISTORY_OWNER_CHANGED");
+  try {
+    const snapshot = await input.readLive();
+    if (!input.isCurrent()) throw new Error("LOCAL_EXECUTION_HISTORY_OWNER_CHANGED");
+    return snapshot;
+  } catch (error) {
+    if (input.cancel || !(error instanceof Error) || error.message !== "LOCAL_EXECUTION_RECEIPT_EXPIRED") throw error;
+    if (!input.isCurrent()) throw new Error("LOCAL_EXECUTION_HISTORY_OWNER_CHANGED");
+    const history = await input.openHistory();
+    if (!input.isCurrent() || !history.isCurrent()) throw new Error("LOCAL_EXECUTION_HISTORY_OWNER_CHANGED");
+    const record = parseLocalExecutionHistoryRecord(await history.store.read(history.scope,
+      input.request.generation, input.request.executionId));
+    if (!input.isCurrent() || !history.isCurrent()) throw new Error("LOCAL_EXECUTION_HISTORY_OWNER_CHANGED");
+    if (!record || record.generation !== input.request.generation || record.snapshot.executionId !== input.request.executionId
+      || (Object.keys(history.scope) as (keyof LocalExecutionHistoryScope)[]).some(key => record.scope[key] !== history.scope[key])) {
+      throw new Error("LOCAL_EXECUTION_HISTORY_UNAVAILABLE");
+    }
+    const output = record.snapshot.output;
+    const cursor = Math.max(input.request.cursor, output.availableFrom);
+    if (cursor > output.produced || (cursor < output.produced
+      && (Buffer.from(output.data, "utf8")[cursor - output.availableFrom]! & 0xc0) === 0x80)) {
+      throw new Error("LOCAL_EXECUTION_CURSOR_INVALID");
+    }
+    return { ...record.snapshot, generation: record.generation,
+      session_id: record.snapshot.executionId, archived: true };
+  }
 }
 
 /** Model recovery uses the same sealed capture, with repeatable UTF-8 paging.

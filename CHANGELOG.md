@@ -40,6 +40,15 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   recent excerpt alongside available Journal context; Stop and approvals keep
   their existing lifecycle.
 
+- Immediate and scheduled background Tasks and nested subtasks can retain their initiating Human's
+  Basic or Development access to the original paired Mac and project. Each
+  command rechecks current Task, chat, account, and Desktop permissions;
+  temporary Full Mac access is never inherited. Offline Tasks wait for their
+  original Mac and resume the same run when it reconnects. Changing a Task
+  definition clears its saved local authority and pauses it for repair.
+  Delegated commands stop when their Desktop connection is lost; interrupted
+  commands are not automatically replayed.
+
 - Rooms can be marked External to keep public-room behavior while hiding them
   from discovery and automatic onboarding. Existing members and explicit
   invitations continue to work normally.

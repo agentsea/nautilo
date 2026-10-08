@@ -1,3 +1,4 @@
+import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseGitHubCapability } from "@nautilo/types";
 import { RELAY_GITHUB_PROTOCOL_VERSION } from "@nautilo/relay";
 import { RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION } from "@nautilo/relay";
@@ -127,6 +128,8 @@ export function buildRuntimeCapabilityTokens(
           && parseRelayBasicExecutionCapability(selected.basicExecution) !== null))
       && localExecution !== null && localExecution.capacity <= LOCAL_EXECUTION_MAX_IDENTITIES) {
       tokens["canExecuteLocal"] = true;
+      tokens["canDelegateLocalExecution"] = selected.canDelegateLocalExecution === true
+        && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION;
       // Exposure only: older or incomplete replacement peers retain their tools.
       tokens["canReplaceLegacyShellTools"] = localExecution.pty === true
         && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION

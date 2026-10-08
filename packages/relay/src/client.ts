@@ -1,3 +1,4 @@
+import { parseRelayLocalExecutionDelegationCapture } from "./protocol";
 import { isRelayGitHubDispatch } from "./protocol";
 import { parseGitHubInvocationBinding } from "../../types/src/github-invocation";
 import { isRelayLocalExecutionSearchAllowed } from "./protocol";
@@ -5,7 +6,7 @@ import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "./protocol";
 import { parseHumanTerminalOperation, sameHumanTerminalConsentOwner } from "../../types/src/human-terminal";
 import { parseRelayHumanTerminalBinding, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION } from "./protocol";
 import { parseRelayHumanTerminalCapability } from "./types";
-import { RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "./protocol";
+import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "./protocol";
 import { parseRelayBasicExecutionCapability } from "./types";
 import { RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION, isRelayLocalGitCapability } from "./protocol";
 import { parseRelayLocalExecutionCapability } from "./types";
@@ -1390,7 +1391,10 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       if (binding === null || capability === null || msg.hostedBy !== undefined
         || (msg.toolName !== "exec_command" && msg.toolName !== "write_stdin")
         || registeredCapabilities.profile !== "desktop-agent"
-        || registeredCapabilities.canExecuteLocal !== true || negotiatedProtocolVersion < RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION
+        || (registeredCapabilities.canExecuteLocal !== true && !(binding.version === 4 && binding.operation === "cancel"))
+        || negotiatedProtocolVersion < RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION
+        || (binding.version === 4 && (negotiatedProtocolVersion < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION
+          || (registeredCapabilities.canDelegateLocalExecution !== true && binding.operation !== "cancel")))
         || (binding.version === 3 && (negotiatedProtocolVersion < RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION
           || registeredCapabilities.canExecuteFullMacOneShot !== true || msg.args["tty"] === true || binding.operation === "input"))
         || (binding.version === 2 && (negotiatedProtocolVersion < RELAY_BASIC_EXECUTION_PROTOCOL_VERSION
@@ -1410,6 +1414,20 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         return;
       }
       validatedManagedExecution = true;
+    }
+    if (msg.toolName === "__local_execution_delegate" || msg.localExecutionDelegationCapture !== undefined) {
+      const capture = parseRelayLocalExecutionDelegationCapture(msg.localExecutionDelegationCapture);
+      if (!capture || msg.toolName !== "__local_execution_delegate" || Object.keys(msg.args).length !== 0
+        || msg.localExecutionBinding !== undefined || msg.localExecutionHistoryBinding !== undefined || msg.hostedBy !== undefined
+        || msg.workstationShellBinding !== undefined || msg.uncontainedHostCommandsSession === true
+        || registeredCapabilities.profile !== "desktop-agent" || registeredCapabilities.canDelegateLocalExecution !== true
+        || negotiatedProtocolVersion < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION
+        || capture.desktopSessionId !== desktopSessionId || capture.pairingGeneration !== desktopTopology?.pairingGeneration
+        || capture.source.humanUserId !== options.userId || capture.source.target.relayId !== relayId
+        || capture.source.target.instanceId !== options.runShellOwnerInstanceId) {
+        send({ type: "relay:result", correlationId: msg.correlationId, status: "error", errorCode: "LOCAL_EXECUTION_DELEGATION_UNAVAILABLE", error: "Task project capture is unavailable" });
+        return;
+      }
     }
     const request: RelayDispatchRequest = {
       correlationId: msg.correlationId,
@@ -1433,6 +1451,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
           relayId, desktopSessionId: desktopSessionId ?? null },
       } : {}),
       workstationShellBinding: msg.workstationShellBinding,
+      localExecutionDelegationCapture: msg.localExecutionDelegationCapture,
       localExecutionBinding: msg.localExecutionBinding,
       localExecutionHistoryBinding: msg.localExecutionHistoryBinding,
       githubBinding: msg.githubBinding,
@@ -1448,7 +1467,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       // this is intentionally a run_shell-only local callback, not a
       // generic streaming hook. The Electron child supervisor remains free to
       // drain pipes while this best-effort websocket observation is coalesced.
-      ...((msg.toolName === "run_shell" || msg.localExecutionBinding !== undefined) && negotiatedProtocolVersion >= RELAY_RUN_SHELL_PROGRESS_PROTOCOL_VERSION
+      ...((msg.toolName === "run_shell" || msg.localExecutionBinding !== undefined || msg.localExecutionDelegationCapture !== undefined) && negotiatedProtocolVersion >= RELAY_RUN_SHELL_PROGRESS_PROTOCOL_VERSION
         ? {
             runShellOwnerBinding: {
               instanceId: options.runShellOwnerInstanceId ?? "",

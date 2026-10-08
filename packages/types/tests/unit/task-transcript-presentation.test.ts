@@ -6,9 +6,16 @@ import {
 } from "../../src/task-transcript-presentation";
 import type { TaskRunTranscriptMessage } from "../../src/task-api";
 
+// Unsigned, generated material exercises redaction without a credential fixture.
+const syntheticJwt = () => [
+  Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url"),
+  Buffer.from(JSON.stringify({ fixture: true })).toString("base64url"),
+  crypto.randomUUID().replaceAll("-", ""),
+].join(".");
+
 const row = (partial: Partial<TaskRunTranscriptMessage> & Pick<TaskRunTranscriptMessage, "role">): TaskRunTranscriptMessage => ({ content: "", toolName: null, toolCalls: null, createdAt: "2026-08-21T00:00:00.000Z", ...partial });
 
-describe("D547 task transcript projection", () => {
+describe("task transcript projection", () => {
   test("pairs durable results and gives identified/null calls stable distinct keys", () => {
     const projected = taskRunTranscriptToPresentation([
       row({ role: "assistant", content: "before", toolCalls: [{ name: "read", id: "read-call", args: { token: "no" } }, { name: "write", id: "write-call", args: {} }, { name: "none", id: null, args: {} }] }),
@@ -26,7 +33,7 @@ describe("D547 task transcript projection", () => {
   });
 
   test("redacts credentials/capabilities and fails closed for hostile or malformed values", () => {
-    const source: Record<string, unknown> = { nested: { Authorization: "Bearer abcdefghijklmnopqrstuvwxyz", cursor: "opaque", finite: 1, nan: Number.NaN }, text: "eyJabcdefgh.eyJabcdefgh.abcdefgh" };
+    const source: Record<string, unknown> = { nested: { Authorization: "Bearer abcdefghijklmnopqrstuvwxyz", cursor: "opaque", finite: 1, nan: Number.NaN }, text: syntheticJwt() };
     const safe = projectTaskTranscriptToolArgs(source);
     expect(safe).toEqual({ nested: { finite: 1, nan: "[omitted]" }, text: "[redacted]" });
     expect(source["nested"]).not.toEqual(safe["nested"]);
@@ -118,5 +125,68 @@ test("duplicate conflicting receipts keep the attempted operation and both outco
       [{}, "first receipt"], [{}, "conflicting receipt"],
     ]);
     expect(source.slice(1).map((item) => item.toolStatus)).toEqual([...statuses]);
+  }
+});
+
+
+function executionReceipt(data: string, state = "completed") {
+  const end = new TextEncoder().encode(data).byteLength;
+  return { executionId: "task-execution", session_id: "task-execution", generation: "task-generation", state,
+    tty: false, pid: 123, exitCode: state === "completed" ? 7 : null, signal: null,
+    terminationScope: "owned_process_group", failureCode: null, expiresAt: null,
+    resources: state === "running" ? "owned" : "released",
+    output: { data, cursor: 0, nextCursor: end, availableFrom: 0, produced: end, gap: false, hasMore: false } };
+}
+test("typed Task receipts retain exact lifecycle and UTF8 page coordinates before generic preview", () => {
+  for (const name of ["exec_command", "write_stdin"]) {
+    const source = JSON.stringify(executionReceipt("BACKGROUND_LOCAL_OK 多字节😀\n".repeat(300)));
+    const projected = taskRunTranscriptToPresentation([
+      row({ role: "assistant", toolCalls: [{ id: "call", name, args: name === "exec_command" ? { cmd: "fixture" } : { session_id: "task-execution" } }] }),
+      row({ role: "tool", toolName: name, toolCallId: "call", toolStatus: "success", content: source }),
+    ]);
+    expect(projected[0]?.resultText).toBe(source);
+    expect(projected[0]?.toolCallId).toBe("call");
+    expect(projectTaskTranscriptToolResult(source, "file")).not.toBe(source);
+    expect(projectTaskTranscriptToolResult(source)).not.toBe(source);
+    const orphan = taskRunTranscriptToPresentation([row({ role: "tool", toolName: name, toolCallId: "orphan", content: source })]);
+    expect(orphan[0]?.resultText).toBe(source);
+  }
+});
+test("invalid or oversized Task receipts cannot bypass generic redaction", () => {
+  const valid = executionReceipt("done");
+  for (const source of [JSON.stringify({ ...valid, extra: { token: "private" } }),
+    JSON.stringify({ ...valid, output: { ...valid.output, nextCursor: 1 } }),
+    JSON.stringify({ ...valid, session_id: "foreign" }), JSON.stringify(executionReceipt("x".repeat(262_145)))]) {
+    expect(projectTaskTranscriptToolResult(source, "exec_command")).not.toBe(source);
+  }
+});
+
+test("valid Task receipt output retains the existing Bearer and JWT redaction boundary", () => {
+  for (const data of ["Bearer abcdefghijklmnopqrstuvwxyz", "Bearer\tabcdefghijklmnopqrstuvwxyz",
+    "Bearer\nabcdefghijklmnopqrstuvwxyz", syntheticJwt()]) {
+    for (const name of ["exec_command", "write_stdin"]) {
+      const source = JSON.stringify(executionReceipt(data));
+      const projected = projectTaskTranscriptToolResult(source, name);
+      expect(projected).not.toBe(source);
+      expect(projected).not.toContain(data);
+      expect(projected).toContain("[redacted]");
+    }
+  }
+});
+
+
+test("unpaired calls preserve unique identity without fabricating a receipt or outcome", () => {
+  const projected = taskRunTranscriptToPresentation([
+    row({ role: "assistant", toolCalls: [
+      { id: "pending-call", name: "exec_command", args: { cmd: "python3 fixture.py" } },
+      { id: "duplicate", name: "exec_command", args: {} },
+      { id: "duplicate", name: "exec_command", args: {} },
+      { id: null, name: "write_stdin", args: {} },
+    ] }),
+  ]);
+  expect(projected.map(item => item.toolCallId)).toEqual(["pending-call", undefined, undefined, undefined]);
+  for (const item of projected) {
+    expect(item.resultText).toBeUndefined();
+    expect(item.toolStatus).toBeUndefined();
   }
 });

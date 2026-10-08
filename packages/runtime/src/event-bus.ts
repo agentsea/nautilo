@@ -14,6 +14,19 @@ class NautiloEventBus {
     this.emitter.setMaxListeners(100);
   }
 
+  /** Internal invalidation hint; current owners re-read authority themselves. */
+  invalidateTaskLocalExecutionSources() {
+    this.emitter.emit("task-local-execution-source-changed");
+  }
+
+  onTaskLocalExecutionSourceChanged(handler: () => void) {
+    this.emitter.on("task-local-execution-source-changed", handler);
+  }
+
+  offTaskLocalExecutionSourceChanged(handler: () => void) {
+    this.emitter.off("task-local-execution-source-changed", handler);
+  }
+
   emit(event: ServerEvent) {
     this.emitter.emit("event", event);
   }

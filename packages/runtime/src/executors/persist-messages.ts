@@ -61,6 +61,10 @@ function persistDebugRole(msg: BaseMessage): string {
 export interface PersistMessagesOptions {
   /** Durable rows for an invocation-owned narrative read fence. */
   onCommittedRows?: (rows: readonly { id: string; role: string }[]) => void;
+  /** Same ordinary Task resume boundary for newly inserted assistant calls. */
+  onToolCallsPersisted?: (message: AIMessage) => void;
+  /** Internal Task resume observer, called only for this append's inserted tool rows. */
+  onToolResultPersisted?: (message: ToolMessage) => void;
   /** Stop before main inference if a required auxiliary result was not retained. */
   requireDurable?: boolean | "foreground-context";
   memoryReview?: MemoryReviewAdmission;
@@ -282,7 +286,10 @@ export async function persistMessages(
       result.insertedRows.flatMap((row) => row.fingerprint ? [row.fingerprint] : []),
     );
     for (const pair of newPairs) {
-      if (!(pair.msg instanceof ToolMessage) || !insertedFingerprints.has(pair.fp)) continue;
+      if (!insertedFingerprints.has(pair.fp)) continue;
+      if (AIMessage.isInstance(pair.msg)) options.onToolCallsPersisted?.(pair.msg as AIMessage);
+      if (!(pair.msg instanceof ToolMessage)) continue;
+      options.onToolResultPersisted?.(pair.msg as ToolMessage);
       if (typeof pair.msg.name !== "string" || typeof pair.msg.content !== "string") continue;
       notifyDurableToolResultLifecycle({
         kind: "tool_result_persisted",

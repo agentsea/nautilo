@@ -3,6 +3,7 @@ import { log } from "@nautilo/logger";
 import { z } from "zod";
 import {
   getTaskToolRuntime,
+  resolveTaskToolCreateLineage,
   type TaskToolCreateInput,
 } from "../task-tool-runtime";
 import {
@@ -14,8 +15,7 @@ import {
 import { validateTaskModelSelectionForCreate } from "../selection-validation";
 
 /**
- * M144 — `in_private_namespace` intent shortcut (M137 `do_in_private_namespace`
- * parity, async). A thin `TaskCreateInput` builder for a wide-envelope
+ * `in_private_namespace` intent shortcut. A thin `TaskCreateInput` builder for a wide-envelope
  * excursion into the speaker's OWN private namespace with their FULL tool set.
  *
  * The wide envelope + `returnRoomNamespaceId` are built at the dispatch seam;
@@ -65,6 +65,11 @@ export function createInPrivateNamespaceTool(context?: unknown) {
       // decide whether to thread `returnRoomNamespaceId` into the wide envelope.
       const bringBack = args.bring_back ?? true;
       const rt = getTaskToolRuntime();
+      const lineage = await resolveTaskToolCreateLineage({
+        ownerId: ctx.ownerId, db: rt.db,
+        ...(ctx.currentTaskId ? { currentTaskId: ctx.currentTaskId } : {}),
+      });
+      if (!lineage.ok) return lineage.message;
       const input: TaskToolCreateInput = {
         ownerId: ctx.ownerId,
         requestorId: ctx.causalHumanUserId,
@@ -79,7 +84,8 @@ export function createInPrivateNamespaceTool(context?: unknown) {
         callingRoomId: ctx.roomId || null,
         targetUserIds: [ctx.causalHumanUserId],
         metadata: { bringBack },
-        depth: 0,
+        ...(lineage.parentTaskId ? { parentTaskId: lineage.parentTaskId } : {}),
+        depth: lineage.depth,
         ...(args.model_selection !== undefined
           ? { selectionProfile: args.model_selection }
           : {}),

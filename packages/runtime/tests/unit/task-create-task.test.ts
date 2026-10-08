@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import type { DirectDatabase } from "@nautilo/db";
+import type { DirectDatabase, Task } from "@nautilo/db";
+import type { LocalExecutionDelegation } from "@nautilo/types";
 import { createTask, type TaskCreateInput } from "../../src/tasks/create-task";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
 import {
@@ -10,12 +11,16 @@ import {
 
 /**
  * Fake `db` satisfying only the chain `db.insert(tasks).values(input).returning()`
- * that the M141 `createTask` store helper uses. Echoes the inserted row so we
+ * that the `createTask` store helper uses. Echoes the inserted row so we
  * can assert the computed `nextFireAt` / `status`.
  */
-function fakeDb(): { db: DirectDatabase; lastValues: () => Record<string, unknown> } {
+function fakeDb(readParent?: () => Task | undefined): { db: DirectDatabase; lastValues: () => Record<string, unknown> } {
   let captured: Record<string, unknown> = {};
   const db = {
+    select: () => ({ from: () => ({ where: () => ({ limit: async () => {
+      const parent = readParent?.();
+      return parent ? [parent] : [];
+    } }) }) }),
     insert: () => ({
       values: (v: Record<string, unknown>) => {
         captured = v;
@@ -30,6 +35,7 @@ function fakeDb(): { db: DirectDatabase; lastValues: () => Record<string, unknow
 
 const baseInput = (over: Partial<TaskCreateInput> = {}): TaskCreateInput =>
   ({
+    id: "task-1",
     ownerId: "11111111-1111-1111-1111-111111111111",
     requestorId: "11111111-1111-1111-1111-111111111111",
     agentId: "22222222-2222-2222-2222-222222222222",
@@ -55,7 +61,7 @@ const taskDeps = (db: DirectDatabase, observer: { kick(): void }) => ({
   assertServerFunding: async () => {},
 });
 
-describe("M142 — createTask wrapper", () => {
+describe("Task creation wrapper", () => {
   test("now-task: nextFireAt ≈ now and observer.kick() called", async () => {
     const { db } = fakeDb();
     let kicks = 0;
@@ -212,4 +218,75 @@ describe("M142 — createTask wrapper", () => {
     expect(checkedAgentId).toBe("22222222-2222-2222-2222-222222222222");
     expect(lastValues()).toEqual({});
   });
+});
+
+const delegatedSource = {
+  version: 1,
+  humanUserId: "11111111-1111-1111-1111-111111111111",
+  agentId: "22222222-2222-2222-2222-222222222222",
+  sourceRoomId: "original-room", sourceConversationId: "original-thread",
+  rootTaskId: "parent-task", projectGrantId: "task-project-grant",
+  target: { instanceId: "", relayId: "relay", pairingGeneration: "pairing",
+    serverOrigin: "https://server.example", serverFingerprint: "fingerprint" },
+  ceiling: "basic", profile: null,
+} satisfies LocalExecutionDelegation;
+function parentTask(patch: Partial<Task> = {}): Task {
+  return { ...baseInput(), id: "parent-task", parentTaskId: null, status: "completed",
+    callingRoomId: "original-room", targetRoomId: "task-room", contentRevision: 0,
+    localExecutionDelegation: delegatedSource, ...patch } as Task;
+}
+test("nested creation preserves the original source through its canonical parent Task Room", async () => {
+  const { db, lastValues } = fakeDb(() => parentTask());
+  await createTask({ ...taskDeps(db, { kick() {} }), captureLocalExecution: async () => delegatedSource },
+    baseInput({ parentTaskId: "parent-task", callingRoomId: "task-room", depth: 1 }));
+  expect(lastValues()["localExecutionDelegation"]).toEqual(delegatedSource);
+});
+test("resumed orphan parent accepts its original calling Room with persisted descriptor key order", async () => {
+  // PostgreSQL JSONB returns a different key order from the initial capture.
+  // The source port inherits that same persisted descriptor when resuming.
+  const persisted: LocalExecutionDelegation = {
+    profile: delegatedSource.profile,
+    ceiling: delegatedSource.ceiling,
+    projectGrantId: delegatedSource.projectGrantId,
+    target: {
+      serverFingerprint: delegatedSource.target.serverFingerprint,
+      serverOrigin: delegatedSource.target.serverOrigin,
+      pairingGeneration: delegatedSource.target.pairingGeneration,
+      relayId: delegatedSource.target.relayId,
+      instanceId: delegatedSource.target.instanceId,
+    },
+    rootTaskId: delegatedSource.rootTaskId,
+    sourceConversationId: delegatedSource.sourceConversationId,
+    sourceRoomId: delegatedSource.sourceRoomId,
+    agentId: delegatedSource.agentId,
+    humanUserId: delegatedSource.humanUserId,
+    version: delegatedSource.version,
+  };
+  const inherited: LocalExecutionDelegation = { ...persisted, agentId: delegatedSource.agentId };
+  const { db, lastValues } = fakeDb(() => parentTask({ status: "running", targetChat: "orphan",
+    localExecutionDelegation: persisted }));
+  await createTask({ ...taskDeps(db, { kick() {} }), captureLocalExecution: async () => inherited },
+    baseInput({ parentTaskId: "parent-task", callingRoomId: "original-room", depth: 1 }));
+  expect(lastValues()["localExecutionDelegation"]).toEqual(delegatedSource);
+  expect(lastValues()["callingRoomId"]).toBe("original-room");
+});
+test("nested capture refuses missing, changed, cancelled or wrong-subject parents before insert", async () => {
+  const { rejects } = await import("node:assert/strict");
+  for (const parent of [undefined, parentTask({ status: "cancelled" }),
+    parentTask({ targetRoomId: "other-room" }),
+    parentTask({ agentId: "other-agent" }),
+    parentTask({ localExecutionDelegation: null })]) {
+    const { db, lastValues } = fakeDb(() => parent);
+    await rejects(createTask({ ...taskDeps(db, { kick() {} }), captureLocalExecution: async () => delegatedSource },
+      baseInput({ parentTaskId: "parent-task", callingRoomId: "task-room", depth: 1 })), /parent lineage/);
+    expect(lastValues()).toEqual({});
+  }
+});
+test("nested capture closes a definition change while parent reads were awaiting", async () => {
+  const { rejects } = await import("node:assert/strict");
+  let reads = 0;
+  const { db, lastValues } = fakeDb(() => ++reads === 1 ? parentTask() : parentTask({ localExecutionDelegation: null }));
+  await rejects(createTask({ ...taskDeps(db, { kick() {} }), captureLocalExecution: async () => delegatedSource },
+    baseInput({ parentTaskId: "parent-task", callingRoomId: "task-room", depth: 1 })), /parent lineage/);
+  expect(lastValues()).toEqual({});
 });

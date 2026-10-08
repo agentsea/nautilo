@@ -118,7 +118,7 @@ import {
 import { ReadyToWorkPersistenceError, ReadyToWorkStore } from "./ready-to-work-store";
 import { openLocalExecutionPreview } from "./local-execution-preview";
 import { LocalExecutionHistoryStore, type LocalExecutionHistoryScope } from "./local-execution-history";
-import { hasVerifiedLocalExecutionReference, projectLocalExecutionHistory, projectVerifiedLocalExecutionHistory, readLocalExecutionHistoryPage, executionBelongsToConversation, type LocalExecutionHistoryReference } from "./local-execution-history-projection";
+import { hasVerifiedLocalExecutionReference, projectLocalExecutionHistory, projectVerifiedLocalExecutionHistory, readLocalExecutionHistoryPage, readLocalExecutionWithExpiredHistory, executionBelongsToConversation, type LocalExecutionHistoryReference } from "./local-execution-history-projection";
 import { RUN_SHELL_OUTPUT_ARTIFACT_PAGE_BYTES } from "./run-shell-output-continuity";
 import { migrateRememberedReadyToWork } from "./ready-to-work-persistence";
 import { ReadyToWorkRemembered, settleReadyCleanup } from "./ready-to-work-remembered";
@@ -3374,6 +3374,23 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
     // prerequisite — share the single main-process authority with the
     // relay so the resolver and snapshot builder see overlay grants.
     desktopFilesystemGrantAuthority: desktopFilesystemGrantStore,
+    localExecutionDelegation: {
+      grants: desktopFilesystemGrantStore,
+      readConnection: () => {
+        const current = currentReadyBinding();
+        const runtime = getActiveComputerUseRuntime();
+        if (!current || !runtime || getRelayStatus() !== "connected" || current.humanId !== runtime.humanUserId) return null;
+        const profile = activeWorkstationProfileController.getActiveSession();
+        return {
+          humanUserId: runtime.humanUserId, instanceId: runtime.instanceId, relayId: runtime.relayId,
+          desktopSessionId: runtime.desktopSessionId, pairingGeneration: runtime.pairingGeneration,
+          serverOrigin: current.authority.scope, serverFingerprint: current.authority.serverFingerprint,
+          profile: profile ? { id: profile.profileId, revision: profile.profileRevision } : null,
+          epoch: JSON.stringify([miniAppRecoveryAuthGeneration, current.authority.revision,
+            current.authority.connectionAttemptId, profile?.compiledAt ?? null]),
+        };
+      },
+    },
     // share the single main-process active-profile controller so the
     // relay advertises the controller's redacted profile snapshot from the
     // SAME store the main process owns (no duplicate profile stores).
@@ -10071,12 +10088,15 @@ async function readLocalExecutionForSender(event: Electron.IpcMainInvokeEvent, r
   const session = resolveSessionFromSender(event);
   const renderer = event.sender;
   const request = parseLocalExecutionViewRequest(raw);
-  const snapshot = await readActiveLocalExecution(request, cancel);
-  if (renderer.isDestroyed() || serverSessions.active !== session || activeRenderer() !== renderer ||
-    getActiveLocalExecutionGeneration() !== request.generation || resolveSessionFromSender(event) !== session) {
-    throw new Error("Local execution observation session changed");
-  }
-  return snapshot;
+  const isCurrent = () => !renderer.isDestroyed() && serverSessions.active === session && activeRenderer() === renderer
+    && getActiveLocalExecutionGeneration() === request.generation && resolveSessionFromSender(event) === session;
+  return readLocalExecutionWithExpiredHistory({ request, cancel, isCurrent,
+    readLive: () => readActiveLocalExecution(request, cancel),
+    openHistory: async () => {
+      const context = await localExecutionHistoryContext(event);
+      return { scope: context.scope, store: localExecutionHistoryStore(), isCurrent: context.isCurrent };
+    },
+  });
 }
 ipcMain.handle("localExecution:read", async (event, request: unknown) =>
   await readLocalExecutionForSender(event, request));

@@ -5,6 +5,7 @@ import { envelopeReadableNamespaces } from "@nautilo/trust";
 import { z } from "zod";
 import {
   getTaskToolRuntime,
+  resolveTaskToolCreateLineage,
   type TaskToolCreateInput,
 } from "../task-tool-runtime";
 import {
@@ -17,7 +18,7 @@ import { validateTaskModelSelectionForCreate } from "../selection-validation";
 import { grantArtifactExactUserAccess } from "../../file/share-artifact";
 
 /**
- * M151 (Phase 7b) — `ask_peer` intent shortcut. Sends the agent to DM another
+ * `ask_peer` intent shortcut. Sends the agent to DM another
  * person, parks the run awaiting their human reply, and reports the answer back
  * to the calling room. A thin `TaskCreateInput` builder: the DM room resolution
  * + await/resume substrate live at the dispatch seam (`resolveDm`) and the
@@ -136,6 +137,12 @@ export function createAskPeerTool(context?: unknown) {
         toolsWhitelist: args.tools ?? [],
       });
       if (selectionError) return selectionError;
+      const rt = getTaskToolRuntime();
+      const lineage = await resolveTaskToolCreateLineage({
+        ownerId: ctx.ownerId, db: rt.db,
+        ...(ctx.currentTaskId ? { currentTaskId: ctx.currentTaskId } : {}),
+      });
+      if (!lineage.ok) return lineage.message;
       const handle = args.peer_handle.trim().replace(/^@/, "");
       const requestedArtifactIds = Array.from(new Set([
         ...(args.artifact_ids ?? []).map((id) => id.trim()).filter(Boolean),
@@ -211,7 +218,6 @@ export function createAskPeerTool(context?: unknown) {
           }
         }
       }
-      const rt = getTaskToolRuntime();
       const metadata: Record<string, unknown> = {
         ...(expectedArtifactPeerActorId === undefined ? {} : {
           ordinaryArtifactPeer: true, expectedArtifactPeerActorId,
@@ -251,7 +257,8 @@ export function createAskPeerTool(context?: unknown) {
         // is appended at the dispatch seam (`resolveDm`) once the handle is
         // resolved, so `findAwaitingTaskForRoom` matches the peer's reply.
         targetUserIds: [ctx.causalHumanUserId],
-        depth: 0,
+        ...(lineage.parentTaskId ? { parentTaskId: lineage.parentTaskId } : {}),
+        depth: lineage.depth,
         ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
         ...(args.model_selection !== undefined
           ? { selectionProfile: args.model_selection }

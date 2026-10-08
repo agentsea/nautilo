@@ -27,8 +27,8 @@ export type {
   Observer,
   RelayRegistry,
 } from "./types";
-// M042A: canonical RuntimePolicyContext re-exported from @nautilo/trust
-// for consumers that previously imported it from @nautilo/runtime.
+// Compatibility re-export for callers that import RuntimePolicyContext from
+// the runtime package.
 export type { RuntimePolicyContext } from "@nautilo/trust";
 export {
   createForegroundDomainMemoryCryptoSession,
@@ -334,7 +334,7 @@ export {
   type WorkstationPlanRevalidationResult,
 } from "./workstation-dispatch-plan";
 export { botThreadId } from "./conductor/thread-id";
-// M142 — Task primitive async engine (Phase 2a).
+// Durable Task observer and dispatch engine.
 export {
   TaskObserver,
   type TaskObserverDeps,
@@ -507,12 +507,13 @@ export {
   type DelegatedTaskFailureReceipt,
   type ReportBackDeps,
 } from "./tasks/report-back";
-// M164 — Task/subagent approval interrupt surfacing + owner-only resume.
+// Task and subagent approval events and owner-authorized resume.
 export {
   emitTaskInterruptEvent,
   replayTaskInterruptEvents,
   buildTaskInterruptEvent,
   patchTaskApprovalEvent,
+  taskApprovalRecipient,
   type TaskInterruptContext,
   type TaskApprovalPatchContext,
 } from "./tasks/emit-task-interrupt";
@@ -717,3 +718,7 @@ export { recoverMemoryReviewTurnsAtStartup, readOrdinaryMemoryReviewCheckpoint }
 export { canResumeSecurityResearchContextFailure } from "./tasks/security-report-recovery";
 
 export { foregroundHumanTerminalAdmissionPort } from "./conversation/human-terminal-admission";
+
+export { createDelegatedLocalExecutionPort, readTaskLocalExecutionLineage, type TaskLocalExecutionSource, type DelegatedTaskIdentity } from "./tasks/local-execution-delegation";
+
+export { setTaskLocalExecutionSourceComposition, resolveTaskLocalExecutionPort, isTaskLocalExecutionTargetAvailable, isTaskLocalExecutionOfflineSourceReady } from "./tasks/local-execution-delegation";

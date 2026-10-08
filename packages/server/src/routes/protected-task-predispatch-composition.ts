@@ -9,7 +9,7 @@ import {
   privateNamespaceBoundarySql,
   roomMembers,
   rooms,
-  updateTask,
+  memoizeTaskExecutionCoordinates,
   type DirectDatabase,
   type Task,
   type TaskRun,
@@ -55,7 +55,7 @@ export type ProductionProtectedTaskPredispatchDependencies = Readonly<{
   ): Promise<void>;
   getTaskById?: ReadTask;
   getTaskRunForTask?: ReadTaskRun;
-  updateTask?: typeof updateTask;
+  memoizeTaskExecutionCoordinates?: typeof memoizeTaskExecutionCoordinates;
   validateMemoizedNamespaceTarget?: ValidateMemoizedNamespaceTarget;
   resolveTargetRoom?: ResolveTarget;
   resolveTaskMemoryEnvelope?: ResolveMemory;
@@ -194,6 +194,7 @@ function sameTargetAndMemoryInputs(
       before.cryptoRequiredNamespaceFingerprint!,
     )
     && after.cryptoMappingState === before.cryptoMappingState
+    && JSON.stringify(after.localExecutionDelegation) === JSON.stringify(before.localExecutionDelegation)
     && persistedTargetIsExact
     && (before.targetRoomId === null
       || before.targetRoomId === resolvedRoomId
@@ -212,7 +213,7 @@ export function createProductionProtectedTaskPredispatch(
   const readTask = dependencies.getTaskById ?? getTaskById;
   const readRun = dependencies.getTaskRunForTask ?? getTaskRunForTask;
   const targetResolver = dependencies.resolveTargetRoom ?? resolveTargetRoom;
-  const persistTask = dependencies.updateTask ?? updateTask;
+  const memoizeTask = dependencies.memoizeTaskExecutionCoordinates ?? memoizeTaskExecutionCoordinates;
   const validatePinnedNamespace = dependencies.validateMemoizedNamespaceTarget
     ?? validateMemoizedNamespaceTarget;
   const memoryResolver = dependencies.resolveTaskMemoryEnvelope
@@ -283,7 +284,7 @@ export function createProductionProtectedTaskPredispatch(
           }
           let memoizedTask = refreshedTask;
           if (refreshedTask.targetRoomId === null) {
-            await persistTask(dependencies.db, refreshedTask.id, {
+            const memoized = await memoizeTask(dependencies.db, refreshedTask, {
               targetRoomId: resolved.roomId,
             });
             const [persistedTask, persistedRun] = await Promise.all([
@@ -304,7 +305,9 @@ export function createProductionProtectedTaskPredispatch(
               || persistedTask.targetRoomId !== resolved.roomId) {
               throw new TypeError("Protected Task target memoization drifted");
             }
-            memoizedTask = persistedTask;
+            // The CAS result is the canonical row passed into subsequent Scope
+            // setup. The fresh read above still fences occurrence/source drift.
+            memoizedTask = memoized;
           }
           if (memoizedTask.targetRoomId !== resolved.roomId) {
             throw new TypeError("Protected Task target is not memoized");

@@ -1,34 +1,21 @@
-import type { ServerEvent } from "@nautilo/types";
+import { parseLocalExecutionDelegation, type ServerEvent } from "@nautilo/types";
+import type { Task } from "@nautilo/db";
 import {
   interruptValueToServerEvent,
   readPendingInterruptEventsForThread,
 } from "@nautilo/agent";
 import { eventBus } from "../event-bus";
 
-/**
- * M164 — surface Task/subagent approval interrupts to the Task owner.
- *
- * A tool call inside a Task run goes through the SAME approval pipeline as a
- * main chat turn, so it can park on `approval_ask`, `prove_it_challenge`, or the
- * `identity_challenge` (enrollPin) pre-step. The Task runner detects the
- * interrupt and marks the run `awaiting`, but — unlike `langgraph-executor` —
- * it never translated the interrupt to a public WS event, so the owner's
- * approval dock / PIN modal never opened and the Task parked forever.
- *
- * This module bridges that gap. It reuses the canonical
- * `interruptValueToServerEvent` mapping and then PATCHES the produced event for
- * Task context so:
- *   - `ws-publisher` routes it user-scoped (we force `userId = ownerId`);
- *   - the workbench bypasses active-room filtering (`origin: "task"`);
- *   - the resume route can find the run (`taskId`, `taskRunId` ride along);
- *   - an orphan Task (no room) cannot offer the `room` standing-approval verb
- *     (post-model could not persist it without a room — R13 / §4.7).
- *
- * SCOPE (M164): only the approval trio (`approval.ask` / `prove_it.challenge` /
- * `identity.challenge`) is surfaced here. Any other interrupt value (including
- * `await_human_reply`, which has its own M151 owner-scoped lifecycle path) is
- * left alone — the run simply stays `awaiting`.
- */
+/** Task approval events use the same checkpoint pipeline as foreground turns.
+ * Delegated Tasks ask their verified requesting Human; ordinary Tasks retain
+ * the management owner's approval contract. Routing is presentation only and
+ * never substitutes for fresh source authorization on reply. */
+export function taskApprovalRecipient(task: Pick<Task, "ownerId" | "requestorId" | "agentId" | "localExecutionDelegation">): string | null {
+  if (task.localExecutionDelegation == null) return task.ownerId;
+  const delegation = parseLocalExecutionDelegation(task.localExecutionDelegation);
+  return delegation && delegation.humanUserId === task.requestorId
+    && delegation.agentId === task.agentId ? delegation.humanUserId : null;
+}
 
 const TASK_APPROVAL_EVENT_TYPES: ReadonlySet<ServerEvent["type"]> = new Set([
   "approval.ask",
@@ -40,6 +27,8 @@ export interface TaskApprovalPatchContext {
   taskId: string;
   taskRunId: string;
   ownerId: string;
+  /** Canonical recipient selected from the Task, never model input. */
+  approvalRecipientId?: string | null;
   /** Whether the Task run has a room (`state.roomId`). When false, the orphan
    *  `approval.ask` drops the unpersistable `room` verb. */
   hasRoom: boolean;
@@ -54,10 +43,13 @@ export function patchTaskApprovalEvent(
   event: ServerEvent,
   ctx: TaskApprovalPatchContext,
 ): ServerEvent {
+  if (TASK_APPROVAL_EVENT_TYPES.has(event.type) && ctx.approvalRecipientId === null) {
+    throw new Error("Canonical Task approval recipient unavailable");
+  }
   if (event.type === "approval.ask") {
     return {
       ...event,
-      userId: ctx.ownerId,
+      userId: ctx.approvalRecipientId ?? ctx.ownerId,
       taskId: ctx.taskId,
       taskRunId: ctx.taskRunId,
       origin: "task",
@@ -69,7 +61,7 @@ export function patchTaskApprovalEvent(
   if (event.type === "prove_it.challenge" || event.type === "identity.challenge") {
     return {
       ...event,
-      userId: ctx.ownerId,
+      userId: ctx.approvalRecipientId ?? ctx.ownerId,
       taskId: ctx.taskId,
       taskRunId: ctx.taskRunId,
       origin: "task",
@@ -92,6 +84,7 @@ export interface TaskInterruptContext extends TaskApprovalPatchContext {
 export function buildTaskInterruptEvent(
   ctx: TaskInterruptContext,
 ): ServerEvent | null {
+  if (ctx.approvalRecipientId === null) return null;
   const mapped = interruptValueToServerEvent(
     ctx.interrupt,
     ctx.graphThreadId,
@@ -128,6 +121,7 @@ export async function replayTaskInterruptEvents(
   read: (threadId: string, laneKey: string) => Promise<ServerEvent[]> =
     readPendingInterruptEventsForThread,
 ): Promise<ServerEvent[]> {
+  if (ctx.approvalRecipientId === null) return [];
   const events = await read(ctx.graphThreadId, ctx.laneKey);
   return events
     .filter((event) => TASK_APPROVAL_EVENT_TYPES.has(event.type))

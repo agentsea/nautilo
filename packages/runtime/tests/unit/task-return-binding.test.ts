@@ -89,7 +89,7 @@ function relay(overrides: Partial<{
 
 beforeEach(() => taskReturnBindingRegistryForTests.clear());
 
-describe("M286 live Task return binding", () => {
+describe("live Task return binding", () => {
   test("captures and resolves the exact same live relay, roots, and Browser", () => {
     const live = relay();
     const capturedAt = Date.now();
@@ -735,4 +735,12 @@ describe("M286 live Task return binding", () => {
     registerTaskLiveMiniAppBinding("task-writer", liveWriterContext, () => liveWriterContext.liveMiniAppSession);
     expect(resolveTaskLiveMiniAppBinding("task-writer", "owner-2")).toEqual({ status: "session_unavailable" });
   });
+});
+
+
+test("Workspace source-only context never registers a filesystem report-back binding", () => {
+  const workspace = { ...context, currentFolder: "" };
+  const target = relay({ capabilities: { ...relay().getCapabilities()!, currentFolderRoot: "", workspaceRoot: "/workspace" } });
+  expect(registerTaskReturnBinding("workspace-source-only", workspace, target)).toBe(false);
+  expect(resolveTaskReturnBinding("workspace-source-only", "owner-1", target)).toEqual({ status: "not_captured" });
 });

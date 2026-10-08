@@ -1044,10 +1044,11 @@ function projectComputerResultForEvent(result: string): ToolResultEventProjectio
   return eventResultFits(projected) ? { result: projected, truncated: true } : null;
 }
 
-/** Keep managed execution control fields intact while paging only retained output. */
-function projectLocalExecutionResultForEvent(result: string): ToolResultEventProjection | null {
+/** Validate the closed managed receipt before a presentation surface preserves
+ * its byte cursors. This grants no native execution or observation authority. */
+export function isLocalExecutionResultForPresentation(result: string): boolean {
   let parsed: unknown;
-  try { parsed = JSON.parse(result); } catch { return null; }
+  try { parsed = JSON.parse(result); } catch { return false; }
   const root = record(parsed);
   const output = record(root?.["output"]);
   const keys = ["executionId", "session_id", "generation", "state", "tty", "pid", "exitCode", "signal",
@@ -1074,10 +1075,10 @@ function projectLocalExecutionResultForEvent(result: string): ToolResultEventPro
     || !cursorValue(output["availableFrom"]) || !cursorValue(output["produced"])
     || output["availableFrom"] > output["cursor"] || output["cursor"] > output["nextCursor"] || output["nextCursor"] > output["produced"]
     || resultByteLength(output["data"]) !== output["nextCursor"] - output["cursor"]
-    || typeof output["gap"] !== "boolean" || output["hasMore"] !== (output["nextCursor"] < output["produced"])) return null;
+    || typeof output["gap"] !== "boolean" || output["hasMore"] !== (output["nextCursor"] < output["produced"])) return false;
   if (root["historical"] === true && (!["completed", "cancelled", "failed", "unknown"].includes(root["state"])
     || !["released", "release_failed"].includes(root["resources"]) || root["expiresAt"] !== null
-    || (root["resources"] === "release_failed" && root["state"] !== "unknown"))) return null;
+    || (root["resources"] === "release_failed" && root["state"] !== "unknown"))) return false;
   if (root["search"] !== undefined) {
     const search = record(root["search"]);
     const searchKeys = ["matchedAt", "nextSearchCursor", "complete", "gap", "availableFrom", "produced"];
@@ -1089,8 +1090,18 @@ function projectLocalExecutionResultForEvent(result: string): ToolResultEventPro
         && search["matchedAt"] < search["nextSearchCursor"] && search["complete"] === false))
       || (search["matchedAt"] === null && (output["cursor"] !== output["produced"] || output["data"] !== ""))
       || (search["complete"] === true && (!["completed", "cancelled", "failed", "unknown"].includes(root["state"])
-        || !["released", "release_failed"].includes(root["resources"]) || search["nextSearchCursor"] !== output["produced"]))) return null;
+        || !["released", "release_failed"].includes(root["resources"]) || search["nextSearchCursor"] !== output["produced"]))) return false;
   }
+  return true;
+}
+
+/** Keep managed execution control fields intact while paging only retained output. */
+function projectLocalExecutionResultForEvent(result: string): ToolResultEventProjection | null {
+  if (!isLocalExecutionResultForPresentation(result)) return null;
+  const root = JSON.parse(result) as Record<string, unknown> & {
+    output: Record<string, unknown> & { data: string; cursor: number; produced: number };
+  };
+  const output = root.output;
   if (eventResultFits(result)) return { result, truncated: false };
 
   const data = output["data"];

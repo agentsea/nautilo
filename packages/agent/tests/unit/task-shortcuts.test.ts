@@ -20,7 +20,7 @@ const ROOM_ID = "30000000-0000-4000-8000-000000000003";
 
 const CTX = { ownerId: OWNER_ID, causalHumanUserId: OWNER_ID, agentId: AGENT_ID, roomId: ROOM_ID };
 
-describe("task intent shortcuts (M144)", () => {
+describe("task intent shortcuts", () => {
   let capturedCreate: TaskToolCreateInput | null = null;
   let capturedHarnessCreate: TaskToolHarnessCreateInput | null = null;
   const restores: Array<() => void> = [];
@@ -216,6 +216,123 @@ describe("task intent shortcuts (M144)", () => {
     expect(capturedCreate).toMatchObject({ parentTaskId: "parent-task", depth: 3 });
   });
 
+  test.each([
+    {
+      name: "in_background",
+      invoke: (context: unknown) => createInBackgroundTool(context).invoke({ brief: "nested work", tools: ["exec_command"] }),
+    },
+    {
+      name: "in_scope",
+      invoke: (context: unknown) => createInScopeTool(context).invoke({ brief: "nested work", tools: ["exec_command"] }),
+    },
+  ] as const)("$name keeps the original calling Room in an orphan Task after resume", async ({ invoke }) => {
+    stubRuntime();
+    const parentSp = spyOn(db, "getTaskById").mockResolvedValue({
+      id: "parent-task", ownerId: OWNER_ID, depth: 1,
+    } as never);
+    restores.push(() => parentSp.mockRestore());
+    await invoke({ ...CTX, roomId: "", callingRoomId: ROOM_ID,
+      currentTaskId: "parent-task", currentTaskRunId: "parent-run" });
+    expect(capturedCreate).toMatchObject({
+      callingRoomId: ROOM_ID, parentTaskId: "parent-task", depth: 2,
+    });
+  });
+
+  test("shortcut calling Room fallback neither replaces a current Room nor applies outside a Task", async () => {
+    stubRuntime();
+    const parentSp = spyOn(db, "getTaskById").mockResolvedValue({
+      id: "parent-task", ownerId: OWNER_ID, depth: 1,
+    } as never);
+    restores.push(() => parentSp.mockRestore());
+    await createInBackgroundTool({ ...CTX, callingRoomId: "original-room",
+      currentTaskId: "parent-task" }).invoke({ brief: "nested work" });
+    expect(capturedCreate?.callingRoomId).toBe(ROOM_ID);
+    await createInBackgroundTool({ ...CTX, roomId: "", callingRoomId: ROOM_ID })
+      .invoke({ brief: "root work" });
+    expect(capturedCreate?.callingRoomId).toBeNull();
+    expect(capturedCreate?.parentTaskId).toBeUndefined();
+  });
+
+  test.each([
+    {
+      name: "in_background",
+      invoke: (context: unknown) => createInBackgroundTool(context).invoke({ brief: "nested work", tools: ["exec_command"] }),
+    },
+    {
+      name: "in_scope",
+      invoke: (context: unknown) => createInScopeTool(context).invoke({ brief: "nested work", tools: ["exec_command"] }),
+    },
+  ] as const)("$name cannot create nested work from a missing or foreign parent", async ({ invoke }) => {
+    stubRuntime();
+    const parentSp = spyOn(db, "getTaskById").mockResolvedValue(undefined);
+    restores.push(() => parentSp.mockRestore());
+    const context = { ...CTX, roomId: "", callingRoomId: ROOM_ID, currentTaskId: "parent-task" };
+    await invoke(context);
+    expect(capturedCreate).toBeNull();
+    parentSp.mockResolvedValue({ id: "parent-task", ownerId: "other-owner", depth: 1 } as never);
+    await invoke(context);
+    expect(capturedCreate).toBeNull();
+  });
+
+  const nestedShortcutCases = [
+    { name: "schedule once", invoke: (context: unknown) => createScheduleTool(context).invoke({
+      message: "nested work", when: { kind: "once", at: "2099-01-01T00:00:00Z" },
+    }) },
+    { name: "schedule recurring", invoke: (context: unknown) => createScheduleTool(context).invoke({
+      message: "nested work", when: { kind: "recurring", cron: "0 9 * * *" },
+    }) },
+    { name: "in_private_namespace", invoke: (context: unknown) => createInPrivateNamespaceTool(context).invoke({
+      brief: "nested work",
+    }) },
+    { name: "ask_peer", invoke: (context: unknown) => createAskPeerTool(context).invoke({
+      peer_handle: "peer", message_to_peer: "Question", tools: ["exec_command"],
+    }) },
+  ];
+  test.each(nestedShortcutCases)("$name preserves canonical nested lineage and orphan calling Room", async ({ invoke }) => {
+    stubRuntime();
+    const parentSp = spyOn(db, "getTaskById").mockResolvedValue({
+      id: "parent-task", ownerId: OWNER_ID, depth: 1,
+    } as never);
+    restores.push(() => parentSp.mockRestore());
+    await invoke({ ...CTX, roomId: "", callingRoomId: ROOM_ID,
+      currentTaskId: "parent-task", currentTaskRunId: "parent-run" });
+    expect(capturedCreate).toMatchObject({ callingRoomId: ROOM_ID,
+      parentTaskId: "parent-task", depth: 2, ownerId: OWNER_ID, requestorId: OWNER_ID });
+  });
+  test.each(nestedShortcutCases)("$name refuses missing or foreign canonical parents", async ({ invoke }) => {
+    stubRuntime();
+    const parentSp = spyOn(db, "getTaskById").mockResolvedValue(undefined);
+    restores.push(() => parentSp.mockRestore());
+    const context = { ...CTX, currentTaskId: "parent-task" };
+    await invoke(context);
+    expect(capturedCreate).toBeNull();
+    parentSp.mockResolvedValue({ id: "parent-task", ownerId: "other-owner", depth: 1 } as never);
+    await invoke(context);
+    expect(capturedCreate).toBeNull();
+  });
+  test("personal schedules remain foreground-only without consulting a parent", async () => {
+    stubRuntime();
+    const parentSp = spyOn(db, "getTaskById");
+    restores.push(() => parentSp.mockRestore());
+    const result = await createScheduleTool({ ...CTX, currentTaskId: "parent-task", personalTaskControls: true })
+      .invoke({ message: "nested work", when: { kind: "recurring", cron: "0 9 * * *" } });
+    expect(result).toContain("foreground parent chat");
+    expect(parentSp).not.toHaveBeenCalled();
+    expect(capturedCreate).toBeNull();
+  });
+
+  test("ask_peer refuses invalid nested lineage before granting artifact access", async () => {
+    stubRuntime();
+    const parentSp = spyOn(db, "getTaskById").mockResolvedValue(undefined);
+    const shareSp = spyOn(shareArtifact, "grantArtifactExactUserAccess");
+    restores.push(() => parentSp.mockRestore(), () => shareSp.mockRestore());
+    await createAskPeerTool({ ...CTX, currentTaskId: "parent-task" }).invoke({
+      peer_handle: "peer", message_to_peer: "Question", artifact_ids: ["artifact"],
+    });
+    expect(shareSp).not.toHaveBeenCalled();
+    expect(capturedCreate).toBeNull();
+  });
+
   test("in_background routes exact Codex selection through server-owned harness admission", async () => {
     stubRuntime();
     const raw = await createInBackgroundTool(CTX).invoke({
@@ -348,7 +465,7 @@ describe("task intent shortcuts (M144)", () => {
     expect(createAskPeerTool().name).toBe("ask_peer");
   });
 
-  test("ask_peer input shape (M151) — await_response, last_dm, handle normalized, no tools → none", async () => {
+  test("ask_peer input shape — await_response, last_dm, handle normalized, no tools → none", async () => {
     stubRuntime();
     await createAskPeerTool(CTX).invoke({
       peer_handle: "@alex",
@@ -675,8 +792,8 @@ describe("task intent shortcuts (M144)", () => {
     expect(capturedCreate).toBeNull();
   });
 
-  // M152 — model_selection threads into selectionProfile on every shortcut.
-  describe("M152 model_selection", () => {
+  // model_selection threads into selectionProfile on every shortcut.
+  describe("model_selection", () => {
     const SEL_KEYS = ["ANTHROPIC_API_KEY", "FIREWORKS_API_KEY", "OPENROUTER_API_KEY", "VENICE_API_KEY"];
     const savedSel: Record<string, string | undefined> = {};
     function withAnthropicOnly() {
@@ -739,9 +856,9 @@ describe("task intent shortcuts (M144)", () => {
     });
   });
 
-  // D429 Phase 3 — exact model_id pin threads into requestedModelId on every
+  // exact model_id pin threads into requestedModelId on every
   // shortcut, and the mutual-exclusion + capability guards fire.
-  describe("D429 Phase 3 — exact model_id", () => {
+  describe("exact model_id", () => {
     const KEYS = ["ANTHROPIC_API_KEY", "GOOGLE_API_KEY"];
     const saved: Record<string, string | undefined> = {};
     function withKeys(present: string[]) {

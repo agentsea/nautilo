@@ -663,10 +663,10 @@ describe("local Current Folder shell authority", () => {
       store: makeStore(records), expectedSubject: subject,
       protectedPathPolicy: buildProtectedPathPolicy({ homeDir: mkTmp("relay-replaced-home-"), platform: process.platform }),
     };
-    expect(await createLocalShellWorkspaceAuthorityResolver(options)(root)).toEqual({ ok: true, workspace: root });
+    expect(await createLocalShellWorkspaceAuthorityResolver(options)(root)).toEqual({ ok: true, workspace: root, access: ["read", "create_modify", "execute"] });
     // Reconstructing the resolver models a fresh relay session: recovery must
     // come from durable authority, not process-local cached permission.
-    expect(await createLocalShellWorkspaceAuthorityResolver(options)(root)).toEqual({ ok: true, workspace: root });
+    expect(await createLocalShellWorkspaceAuthorityResolver(options)(root)).toEqual({ ok: true, workspace: root, access: ["read", "create_modify", "execute"] });
   });
 
   test.each(["revoked", "expired"] as const)("an independent active grant survives %s of a duplicate at the same scope", async (status) => {
@@ -684,9 +684,9 @@ describe("local Current Folder shell authority", () => {
       store: makeStore(records), expectedSubject: subject,
       protectedPathPolicy: buildProtectedPathPolicy({ homeDir: mkTmp("relay-history-home-"), platform: process.platform }),
     });
-    expect(await resolver(root)).toEqual({ ok: true, workspace: root });
+    expect(await resolver(root)).toEqual({ ok: true, workspace: root, access: ["read", "create_modify", "execute"] });
     records[1] = { ...active, grant: { ...active.grant, createdAt: "2026-07-12T13:00:00.000Z" } };
-    expect(await resolver(root)).toEqual({ ok: true, workspace: root });
+    expect(await resolver(root)).toEqual({ ok: true, workspace: root, access: ["read", "create_modify", "execute"] });
     records.splice(1);
     expect(await resolver(root)).toEqual({ ok: false, code: "WORKSTATION_SHELL_WORKSPACE_UNAUTHORIZED" });
   });
@@ -741,6 +741,7 @@ describe("local Current Folder shell authority", () => {
     expect(await resolver(currentFolder)).toEqual({
       ok: true,
       workspace: currentFolder,
+      access: ["read", "create_modify", "execute"],
     });
   });
 
@@ -782,7 +783,7 @@ describe("local Current Folder shell authority", () => {
       }),
     });
 
-    expect(await resolver(currentFolder)).toEqual({ ok: true, workspace: currentFolder });
+    expect(await resolver(currentFolder)).toEqual({ ok: true, workspace: currentFolder, access: ["read", "create_modify", "delete", "execute"] });
   });
 
   test("a most-specific durable read-only grant constrains and denies the baseline", async () => {
@@ -842,7 +843,7 @@ describe("local Current Folder shell authority", () => {
         platform: process.platform,
       }),
     });
-    expect(await resolver(currentFolder)).toEqual({ ok: true, workspace: currentFolder });
+    expect(await resolver(currentFolder)).toEqual({ ok: true, workspace: currentFolder, access: ["read", "create_modify", "delete", "execute"] });
     rmSync(currentFolder, { recursive: true });
     mkdirSync(currentFolder);
     expect(await resolver(currentFolder)).toEqual({

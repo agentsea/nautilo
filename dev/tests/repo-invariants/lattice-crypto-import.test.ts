@@ -1114,6 +1114,8 @@ const reviewedCryptoProductConsumerInventory = [
   "packages/server/src/routes/human-memory-request-services.ts -> @nautilo/lattice-crypto",
   "packages/server/tests/helpers/protected-memory-foreground-conformance.ts -> @nautilo/lattice-crypto",
   "packages/server/tests/unit-isolated/memory-routes.test.ts -> @nautilo/lattice-crypto",
+  // The task-source fixture constructs the typed initial authority proof.
+  "packages/server/tests/unit/local-execution-task-source.test.ts -> @nautilo/lattice-crypto",
   // Invocation-scoped repair adapters and server composition consume
   // public crypto types; publication/verification remains in lattice-bridge.
   // Exact test consumers exercise real signing, envelopes, and checkpoints.
@@ -1411,7 +1413,10 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/server/src/routes/task-protected-publication.ts -> @nautilo/lattice-bridge",
   "packages/server/src/routes/task-protected-composition.ts -> @nautilo/lattice-bridge",
   "packages/server/src/routes/task-protected-composition.ts -> @nautilo/lattice-bridge/server",
+  // Delegated Task source checks use the canonical protected-recipient owner.
+  "packages/server/src/local-execution-task-source.ts -> @nautilo/lattice-bridge/server",
   "packages/server/src/routes/tasks.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/local-execution-task-source.test.ts -> @nautilo/lattice-bridge/server",
   "packages/server/tests/integration/tasks-api.integration.test.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/unit-isolated/task-protected-publication.test.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/unit-isolated/task-protected-publication.test.ts -> @nautilo/lattice-bridge/server",

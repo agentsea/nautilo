@@ -3,14 +3,19 @@ name: shell-execution
 description: Managed local command execution through exec_command and write_stdin on the initiating Nautilo Desktop — contained Basic and Development access, temporary Full Mac, repeatable output, interactive contained PTYs, cancellation, and truthful fallback when execution is unavailable.
 requiresTools: [exec_command, write_stdin]
 source: official
-version: 7
+version: 8
 ---
 # Shell Execution — Skill
 
 Use `exec_command` to launch one complete command on the authorized computer.
-The command runs only from the exact initiating Human's Nautilo Desktop in the
-main foreground conversation (`foreground.main`). It is unavailable to
-background tasks, subagents, remote-only conversations, and standalone relays.
+The main foreground conversation (`foreground.main`) uses the exact initiating
+Human's Nautilo Desktop. Authorized background tasks, schedules, and nested
+agents can also use contained execution when they inherit a verified delegation
+to that original Human, Mac, and project. Every run rechecks the saved source,
+pairing, project grant, and Basic or Development ceiling. A Task creation receipt
+or a filesystem path alone is not delegation. Delegated work never inherits
+Full Mac or a Human terminal handoff, and cannot switch to another computer.
+Remote-only conversations and standalone relays do not supply this authority.
 If the tools are absent or Desktop admission fails, say that local execution is
 unavailable in this context. Do not claim that another relay is equivalent, do
 not invent a shell result, and do not ask the Human to weaken the boundary.

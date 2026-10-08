@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { TASK_LOCAL_EXECUTION_RECREATE_TEXT } from "@nautilo/db";
 import { classifyProtectedTaskMetadataV1 } from "@nautilo/types";
 
 import {
@@ -451,6 +452,82 @@ describe("PostgresTaskContentProductStore", () => {
       expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
       expectedRepresentation: "protected", leaseToken: null,
     })).toBe("applied");
+    expect(connection.steps).toHaveLength(0);
+  });
+
+  test("initial protected mapping preserves captured consent but a new definition removes it atomically", async () => {
+    for (const revision of [1, 2]) {
+      const coordinate = definition(revision);
+      const complete = lifecycleRow(coordinate, {
+        completion: "complete", crypto_completed_at: NOW, lease_is_live: true,
+      });
+      const captured = { projectGrantId: "synthetic-project-grant" };
+      let savedConsent: typeof captured | null = captured;
+      const { store, connection } = await setup([
+        { contains: "for update", rows: [complete] },
+        requesterOwner,
+        { contains: 'from "tasks"', rows: [{
+          task_id: TASK_ID, owner_id: OWNER_ID, content_revision: revision - 1,
+          task_status: "paused", prompt: "", expected_output: null, last_error: null,
+          metadata_json: '{}', content_namespace_id: revision === 1 ? null : NAMESPACE_ID,
+          content_representation: revision === 1 ? "ordinary" : "protected",
+          crypto_object_id: revision === 1 ? null : deriveTaskContentCryptoObjectIdV1(definition(1)),
+          crypto_access_revision: 0,
+          crypto_required_namespace_fingerprint: revision === 1 ? null : fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
+          crypto_mapping_state: revision === 1 ? "unmapped" : "verified",
+        }] },
+        protectedPublicationPolicy,
+        { contains: 'update "tasks"', rows: [{ task_id: TASK_ID }], inspect(parameters, statement) {
+          const assignment = statement.split(" where ")[0]!.match(/"local_execution_delegation" = \$(\d+)/u);
+          if (revision === 1) expect(assignment).toBeNull();
+          else {
+            expect(assignment).not.toBeNull();
+            expect(parameters[Number(assignment![1]) - 1]).toBeNull();
+            savedConsent = null;
+            const assignments = statement.split(" where ")[0]!;
+            expect(assignments).toContain('"status" = CASE WHEN');
+            expect(assignments).toContain('"tasks"."local_execution_delegation" IS NOT NULL');
+            expect(assignments).toContain("THEN 'paused'");
+            expect(assignments).toContain('"last_error" = CASE WHEN');
+            expect(parameters).toContain(TASK_LOCAL_EXECUTION_RECREATE_TEXT);
+            expect(assignments).toContain('"fire_lock_id" = CASE WHEN');
+          }
+          // The definition transition and consent removal share this exact CAS.
+          expect(statement).toContain('"tasks"."content_revision" =');
+          expect(statement).toContain('"tasks"."owner_id" =');
+        } },
+        { contains: 'update "task_definition_crypto_revisions"', rows: [{ ...complete, disposition: "mapped" }] },
+      ]);
+      expect(await store.compareAndSwapCryptoMapping({
+        coordinate, cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
+        expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
+        expectedRepresentation: "protected", leaseToken: null,
+      })).toBe("applied");
+      if (revision === 1) expect(savedConsent).toBe(captured);
+      else expect(savedConsent).toBeNull();
+      expect(connection.steps).toHaveLength(0);
+    }
+  });
+
+  test("replaying a mapped protected definition preserves its content-free project repair state", async () => {
+    const coordinate = definition(2);
+    const complete = lifecycleRow(coordinate, { completion: "complete", crypto_completed_at: NOW, lease_is_live: true });
+    const { store, connection } = await setup([
+      { contains: "for update", rows: [complete] }, requesterOwner,
+      { contains: 'from "tasks"', rows: [{ task_id: TASK_ID, owner_id: OWNER_ID,
+        task_status: "paused", content_revision: 2, content_namespace_id: NAMESPACE_ID,
+        content_representation: "protected", crypto_object_id: deriveTaskContentCryptoObjectIdV1(coordinate),
+        crypto_mapping_state: "verified", crypto_required_namespace_fingerprint: fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
+        prompt: "", expected_output: null, last_error: TASK_LOCAL_EXECUTION_RECREATE_TEXT,
+        metadata_json: '{"mode":"update","publish":"branch"}',
+      }] },
+      { contains: 'update "task_definition_crypto_revisions"', rows: [{ ...complete, disposition: "mapped" }] },
+    ]);
+    expect(await store.compareAndSwapCryptoMapping({ coordinate,
+      cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
+      expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
+      expectedRepresentation: "protected", leaseToken: null })).toBe("duplicate");
+    // No Task write or automatic re-enrollment occurs on replay.
     expect(connection.steps).toHaveLength(0);
   });
 

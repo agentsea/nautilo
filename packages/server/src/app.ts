@@ -1,3 +1,9 @@
+import { resolveTaskLocalExecutionCaptureTarget } from "./local-execution-task-capture";
+import { createTaskLocalExecutionSourceAssertion } from "./local-execution-task-source";
+import { setTaskLocalExecutionSourceComposition } from "@nautilo/runtime";
+import { parseLocalExecutionDelegation } from "@nautilo/types";
+import { getCurrentLocalExecutionDelegation } from "@nautilo/agent";
+import { type RelayLocalExecutionDelegationCapture } from "@nautilo/relay";
 import { createModerationAuditSink, createModerationEffectRecovery, createPostgresModerationRecoveryStore,
   installModerationEffectRecoveryLifecycle } from "./lib/moderation-recovery";
 import { deleteBannedCommunityMessages } from "./messaging/moderation-message-cleanup";
@@ -2249,7 +2255,7 @@ export async function createApp(options?: CreateAppOptions) {
       },
     });
     accountRoutes(app, { pinProvider, auditEvent,
-      onAuthorityRevoked: userId => { workstationSessionRegistry.disable(userId); },
+      onAuthorityRevoked: userId => { workstationSessionRegistry.disable(userId); eventBus.invalidateTaskLocalExecutionSources(); },
     });
     logtoInternalRoutes(app, { auditEvent });
     const uncontainedHostServerBindingId = getServerHostname();
@@ -2370,6 +2376,7 @@ export async function createApp(options?: CreateAppOptions) {
   }): Promise<(() => Promise<boolean>) | null> => {
     const revokeUncontained = await uncontainedHostCommands?.prepareMembershipRemoval(input) ?? null;
     return async () => {
+      eventBus.invalidateTaskLocalExecutionSources();
       // These route hooks run only after a successful membership mutation.
       // Recheck the initiating Human's effective permission, preserving work
       // when an unrelated membership changed or another grant still applies.
@@ -2383,7 +2390,7 @@ export async function createApp(options?: CreateAppOptions) {
   groupMembersRoutes(app, {
     prepareMembershipRemoval: prepareUncontainedHostCommandsMembershipRemoval,
   });
-  adminUsersRoutes(app, { onAuthorityRevoked: userId => { workstationSessionRegistry.disable(userId); } });
+  adminUsersRoutes(app, { onAuthorityRevoked: userId => { workstationSessionRegistry.disable(userId); eventBus.invalidateTaskLocalExecutionSources(); } });
   // read-only access-control endpoints (self + admin
   // target/catalogue). Registered after the admin-users surface; relies on
   // the default `policy` bearer resolution depth (no depth-config edit).
@@ -2394,9 +2401,12 @@ export async function createApp(options?: CreateAppOptions) {
   // cap, and stale-preview enforcement).
   accessControlMutationRoutes(app, {
     prepareMembershipRemoval: prepareUncontainedHostCommandsMembershipRemoval,
-    onAuthorityChanged: createWorkstationAuthorityReconciler({
-      registry: () => workstationSessionRegistry, getCapabilities: getUserCapabilities,
-    }),
+    onAuthorityChanged: async operation => {
+      eventBus.invalidateTaskLocalExecutionSources();
+      await createWorkstationAuthorityReconciler({
+        registry: () => workstationSessionRegistry, getCapabilities: getUserCapabilities,
+      })(operation);
+    },
   });
   costsRoutes(app);
   memoryStatusRoutes(app, memoryReviewRuntime);
@@ -3961,6 +3971,18 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   setTaskObserver(taskObserver);
+  setTaskLocalExecutionSourceComposition({
+    assertSource: createTaskLocalExecutionSourceAssertion(),
+    subscribeChanges: (check) => {
+      const listener = (event: ServerEvent) => {
+        if (event.type === "task.status" || event.type === "policy.changed"
+          || event.type === "encryption.policy.changed" || event.type === "room_members_changed") check();
+      };
+      eventBus.on(listener);
+      eventBus.onTaskLocalExecutionSourceChanged(check);
+      return () => { eventBus.off(listener); eventBus.offTaskLocalExecutionSourceChanged(check); };
+    },
+  });
   function taskLifecycleDeps() {
     return {
       db: getServerDirectDb(),
@@ -4091,6 +4113,51 @@ export async function createApp(options?: CreateAppOptions) {
               invocation: invocationProvenance,
             }),
             admission: getPlaintextTaskCreationAdmission(),
+            captureLocalExecution: async (candidate) => {
+              if (candidate.toolsMode === "none" || (candidate.toolsMode === "whitelist"
+                && !candidate.toolsWhitelist?.some(name => name === "exec_command" || name === "write_stdin"))) return null;
+              const inherited = getCurrentLocalExecutionDelegation();
+              if (candidate.parentTaskId) {
+                if (!inherited || inherited.taskId !== candidate.parentTaskId) return null;
+                return inherited.withAdmission("start", ({ delegation }) => {
+                  if (delegation.humanUserId !== candidate.requestorId) throw new Error("Task project authority belongs to another Human");
+                  return Promise.resolve({ ...delegation, agentId: candidate.agentId });
+                });
+              }
+              const context = getTaskCreationReturnContext();
+              if (!context?.localExecutionSource) return null;
+              const source = context.localExecutionSource;
+              if (context.ownerId !== candidate.requestorId || candidate.callingRoomId !== source.roomId) {
+                throw new Error("Task project source changed. Create the Task again from the intended Room.");
+              }
+              return source.withAdmission(async (signal) => {
+                const target = resolveTaskLocalExecutionCaptureTarget(context, candidate.requestorId, relayRegistry);
+                if (!target) {
+                  throw new Error("This Mac cannot capture Task project access. Reconnect the original Desktop and create the Task again.");
+                }
+                const profile = relayRegistry.getWorkstationProfileSnapshot(context.relayId);
+                const capture: RelayLocalExecutionDelegationCapture = {
+                  version: 1, invocationId: `task-project:${candidate.id}`, ...target.captureBinding,
+                  source: { version: 1, humanUserId: candidate.requestorId, agentId: candidate.agentId,
+                    sourceRoomId: source.roomId, sourceConversationId: source.conversationId, rootTaskId: candidate.id,
+                    target: { instanceId: parseNautiloInstanceId(process.env), relayId: context.relayId, pairingGeneration: target.rawPairingGeneration },
+                    ceiling: profile ? "development" : "basic", profile: profile ? { id: profile.profileId, revision: profile.profileRevision } : null },
+                };
+                const result = await relayRegistry.dispatch(context.relayId, {
+                  toolName: "__local_execution_delegate", args: {}, impact: "read-only", approvalObtained: false,
+                  localExecutionDelegationCapture: capture, signal,
+                });
+                signal.throwIfAborted();
+                const descriptor = result.status === "ok" ? parseLocalExecutionDelegation(result.result) : null;
+                if (!descriptor || !target.isCurrent()) throw new Error("Task project capture failed. Reconnect the original Desktop and create the Task again.");
+                const { projectGrantId: _grant, target: returnedTarget, ...returned } = descriptor;
+                const { target: requestedTarget, ...requested } = capture.source;
+                if (JSON.stringify(returned) !== JSON.stringify(requested)
+                  || returnedTarget.instanceId !== requestedTarget.instanceId || returnedTarget.relayId !== requestedTarget.relayId
+                  || returnedTarget.pairingGeneration !== requestedTarget.pairingGeneration) throw new Error("Task project capture identity changed");
+                return descriptor;
+              });
+            },
           },
           taskForCreate,
         );
@@ -4197,6 +4264,7 @@ export async function createApp(options?: CreateAppOptions) {
     return runtimeStopTask(taskLifecycleDeps(), taskId);
   };
   setTaskToolRuntime({
+    onDefinitionChanged: (task) => eventBus.emit({ type: "task.status", taskId: task.id, ownerId: task.ownerId, status: task.status }),
     db: getServerDirectDb(),
     isPersonalOnlyTaskSelection: isPersonalOnlyNativeTaskSelection,
     canUseLegacyTaskContent: () => dormantTaskContentOwner.runMutation({
@@ -4416,6 +4484,7 @@ export async function createApp(options?: CreateAppOptions) {
     notify: createModerationEventProducer({ feed: eventFeed }),
     deleteCommunityMessages: deleteBannedCommunityMessages,
     converge: async (operationId: string): Promise<"pending"> => {
+      eventBus.invalidateTaskLocalExecutionSources();
       await convergeModerationRealtime(operationId, { relayRegistry, relaySockets: relaySocketLifecycle, work: jobManager });
       // Local completion cannot acknowledge another process or a parked Task.
       return "pending";
@@ -4702,6 +4771,7 @@ export async function createApp(options?: CreateAppOptions) {
     setOrdinaryHostResolver(null);
     await taskObserver.stop();
     setTaskObserver(null);
+    setTaskLocalExecutionSourceComposition(undefined);
     setTaskRunJobManager(null);
     setTaskToolRuntime(null);
     setMiniAppToolRuntime(null);

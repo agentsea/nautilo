@@ -1,5 +1,5 @@
 /**
- * D547 — runtime-free projection of one Task run's agent transcript.
+ * Runtime-free projection of one Task run's agent transcript.
  *
  * The Task detail API is authoritative for ordering and redaction.  This
  * module deliberately makes no request, reads no clock, and does not infer a
@@ -7,6 +7,7 @@
  * recorded.  Both Desktop and Mobile render this same projection.
  */
 
+import { isLocalExecutionResultForPresentation } from "./realtime";
 import type { TaskDetail, TaskRunTranscriptMessage } from "./task-api";
 import { localToolControlReceiptSchema, localToolControlDisplaySchema } from "./local-tool-control";
 import { projectSecurityScanCardResult } from "./security-scan-card";
@@ -144,8 +145,19 @@ export function projectTaskTranscriptToolArgs(args: Record<string, unknown>): Re
 }
 
 /** Safe, bounded result text for a durable transcript card. */
-export function projectTaskTranscriptToolResult(result: string | undefined): string | undefined {
+export function projectTaskTranscriptToolResult(result: string | undefined, toolName?: string): string | undefined {
   if (result === undefined) return undefined;
+  // These sealed renderers need numeric byte coordinates and execution identity.
+  // Generic preview redaction is still the fallback for every invalid receipt
+  // and every other tool. The existing Task preview budget remains unchanged.
+  if ((toolName === "exec_command" || toolName === "write_stdin")
+    && result.length <= MAX_SERIALIZED_RESULT_CHARS && isLocalExecutionResultForPresentation(result)
+    && (() => {
+      const receipt = JSON.parse(result) as Record<string, unknown> & { output: { data: string } };
+      // Check decoded strings: JSON escapes may hide credential separators.
+      return [...Object.values(receipt), receipt.output.data].every((value) =>
+        typeof value !== "string" || redactToolTranscriptCredentialMaterial(value) === value);
+    })()) return result;
   if (result.includes('"local_tool_control"')) {
     try {
       const value: unknown = JSON.parse(result);
@@ -255,7 +267,7 @@ export function taskRunTranscriptToPresentation(messages: readonly TaskRunTransc
       for (const [callIndex, call] of (row.toolCalls ?? []).entries()) {
         const pairedIndex = findPairedToolIndex(index, callIndex, call.name, call.id);
         const paired = pairedIndex === null ? undefined : messages[pairedIndex];
-        const resultText = paired ? projectTaskTranscriptToolResult(paired.content) : undefined;
+        const resultText = paired ? projectTaskTranscriptToolResult(paired.content, call.name) : undefined;
         if (pairedIndex !== null) consumedToolIndices.add(pairedIndex);
         const toolName = boundedToolName(call.name);
         rows.push({
@@ -265,7 +277,8 @@ export function taskRunTranscriptToPresentation(messages: readonly TaskRunTransc
           toolName,
           args: projectTaskTranscriptToolArgs(call.args),
           ...(resultText === undefined ? {} : { resultText }),
-          ...(paired?.toolCallId ? { toolCallId: paired.toolCallId, ...(paired.toolStatus ? { toolStatus: paired.toolStatus } : {}) } : {}),
+          ...(call.id && callIdCounts.get(call.id) === 1 ? { toolCallId: call.id } : {}),
+          ...(paired?.toolCallId && paired.toolStatus ? { toolStatus: paired.toolStatus } : {}),
           createdAt: row.createdAt,
         });
       }
@@ -273,7 +286,7 @@ export function taskRunTranscriptToPresentation(messages: readonly TaskRunTransc
     }
     if (row.role === "tool") {
       if (consumedToolIndices.has(index)) continue;
-      const resultText = projectTaskTranscriptToolResult(row.content);
+      const resultText = projectTaskTranscriptToolResult(row.content, row.toolName ?? undefined);
       rows.push({
         key: `${runId}:source:${index}:orphan-tool`,
         role: "tool",

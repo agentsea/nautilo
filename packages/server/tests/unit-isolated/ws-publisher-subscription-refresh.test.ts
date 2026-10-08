@@ -9,6 +9,11 @@ const ROOM_A = "11111111-1111-4111-8111-111111111111";
 const ROOM_B = "22222222-2222-4222-8222-222222222222";
 const NAMESPACE_B = "33333333-3333-4333-8333-333333333333";
 
+const invalidateSourcesSpy = mock(() => {});
+mock.module("@nautilo/runtime", () => ({
+  eventBus: { invalidateTaskLocalExecutionSources: invalidateSourcesSpy },
+}));
+
 const listRoomsSpy = mock(async (
   _actorId: string,
   options?: { includeRoster?: boolean; includeSubthreads?: boolean },
@@ -78,6 +83,7 @@ function eventType(payload: string): string | undefined {
 describe("refreshRoomSubscriptionsForUser (skip-roster reload)", () => {
   test("requests room IDs with includeRoster: false and updates every tab", async () => {
     listRoomsSpy.mockClear();
+    invalidateSourcesSpy.mockClear();
 
     const tabA = makeClient();
     const tabB = makeClient();
@@ -117,6 +123,7 @@ describe("refreshRoomSubscriptionsForUser (skip-roster reload)", () => {
       actorKind: "user",
       displayName: "New Member",
     }, NAMESPACE_B);
+    expect(invalidateSourcesSpy).toHaveBeenCalledTimes(1);
     await waitForSent(tabA);
 
     expect(tabA.sent.length).toBe(1);
