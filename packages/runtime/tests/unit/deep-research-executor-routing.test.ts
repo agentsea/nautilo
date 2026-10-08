@@ -5,6 +5,7 @@ import {
   getUsageContext,
   hydrateRuntimeModelCatalog,
   resetRuntimeModelCatalog,
+  runWithUsageContext,
 } from "@nautilo/agent";
 import { ModelCatalogSchema } from "@nautilo/types";
 import type { ServerEvent } from "@nautilo/types";
@@ -86,24 +87,55 @@ describe("M293 background Deep Research admission", () => {
   });
 
   test("runs every report stream step as the exact initiating Human", async () => {
-    const observedUserIds: Array<string | null | undefined> = [];
+    const observedContexts: Array<ReturnType<typeof getUsageContext>> = [];
     _setDeepResearchReportStreamForTests(async function* () {
-      observedUserIds.push(getUsageContext()?.userId);
+      observedContexts.push(getUsageContext());
       yield { phase: "researching" };
-      observedUserIds.push(getUsageContext()?.userId);
+      observedContexts.push(getUsageContext());
       return "report";
     });
 
-    const stream = streamDeepResearchReport(
-      {},
-      "job-deep-research",
-      new AbortController().signal,
-      "human-deep-research",
+    const stream = runWithUsageContext(
+      {
+        callType: "chat",
+        userId: "ambient-human",
+        roomId: "room-existing",
+        metadata: { turnId: "turn-existing", agentId: "agent-existing" },
+      },
+      () => streamDeepResearchReport(
+        {},
+        "job-deep-research",
+        new AbortController().signal,
+        "human-deep-research",
+      ),
     );
     expect(await stream.next()).toEqual({ done: false, value: { phase: "researching" } });
     expect(await stream.next()).toEqual({ done: true, value: "report" });
 
-    expect(observedUserIds).toEqual(["human-deep-research", "human-deep-research"]);
+    expect(observedContexts).toEqual([
+      {
+        callType: "subagent",
+        userId: "human-deep-research",
+        roomId: "room-existing",
+        metadata: {
+          turnId: "turn-existing",
+          agentId: "agent-existing",
+          executionId: "job-deep-research",
+          operation: "deep_research",
+        },
+      },
+      {
+        callType: "subagent",
+        userId: "human-deep-research",
+        roomId: "room-existing",
+        metadata: {
+          turnId: "turn-existing",
+          agentId: "agent-existing",
+          executionId: "job-deep-research",
+          operation: "deep_research",
+        },
+      },
+    ]);
   });
 
   test("closes an abandoned report stream as the exact initiating Human", async () => {

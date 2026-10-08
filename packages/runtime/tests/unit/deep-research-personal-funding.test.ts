@@ -1,11 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
+  getUsageContext,
   runWithCapabilityFundingSession,
   type CapabilityFundingSession,
 } from "@nautilo/agent";
+import { getDeepResearchFunding } from "../../../agent/src/subagents/deep-research/shared/funding";
 import {
   DeepResearchFundingUnavailableError,
+  _setDeepResearchEventStreamForTests,
   resolveDeepResearchExecutorConfiguration,
+  streamDeepResearchReport,
 } from "../../src/executors/deep-research-executor";
 
 const modelPlan = {
@@ -42,6 +46,10 @@ const session: CapabilityFundingSession = {
 };
 
 describe("Deep Research personal funding recovery", () => {
+  afterEach(() => {
+    _setDeepResearchEventStreamForTests(null);
+  });
+
   test("fails closed when v2 funding metadata has no live capability scope", () => {
     expect(() => resolveDeepResearchExecutorConfiguration({
       deep_research_model_plan: modelPlan,
@@ -70,5 +78,84 @@ describe("Deep Research personal funding recovery", () => {
         deep_research_model_plan: { ...modelPlan, researchModel: "openrouter:changed" },
         deep_research_funding: funding,
       }, {}))).toThrow(DeepResearchFundingUnavailableError);
+  });
+
+  test("starts an eager graph stream inside the admitted funding scope", async () => {
+    const observedFunding: Array<ReturnType<typeof getDeepResearchFunding>> = [];
+    const observedUsage: Array<ReturnType<typeof getUsageContext>> = [];
+    _setDeepResearchEventStreamForTests((_graph, _input, _config) => {
+      observedFunding.push(getDeepResearchFunding());
+      observedUsage.push(getUsageContext());
+      return {
+        [Symbol.asyncIterator]() {
+          observedFunding.push(getDeepResearchFunding());
+          observedUsage.push(getUsageContext());
+          let complete = false;
+          return {
+            async next() {
+              if (complete) return { done: true as const, value: undefined };
+              complete = true;
+              return {
+                done: false as const,
+                value: {
+                  event: "on_chain_end",
+                  data: { output: { final_report: "funded report" } },
+                },
+              };
+            },
+          };
+        },
+      };
+    });
+
+    const stream = streamDeepResearchReport({
+      research_brief: "bounded test research",
+      deep_research_model_plan: modelPlan,
+      deep_research_funding: funding,
+    }, "run-funded-eager-stream", new AbortController().signal, session.humanUserId, {
+      roomId: "room-funded-research",
+      taskId: "task-funded-research",
+      taskRunId: "run-funded-research",
+      agentId: "agent-funded-research",
+    });
+
+    expect(await runWithCapabilityFundingSession(session, () => stream.next())).toEqual({
+      done: false,
+      value: { phase: "Starting deep research..." },
+    });
+    expect(await runWithCapabilityFundingSession(session, () => stream.next())).toEqual({
+      done: true,
+      value: "funded report",
+    });
+    expect(observedFunding).toEqual([
+      { modelFunding: funding.modelFunding, tavilyFunding: funding.tavilyFunding },
+      { modelFunding: funding.modelFunding, tavilyFunding: funding.tavilyFunding },
+    ]);
+    expect(observedUsage).toEqual([
+      {
+        callType: "subagent",
+        userId: session.humanUserId,
+        roomId: "room-funded-research",
+        metadata: {
+          taskId: "task-funded-research",
+          taskRunId: "run-funded-research",
+          agentId: "agent-funded-research",
+          executionId: "run-funded-eager-stream",
+          operation: "deep_research",
+        },
+      },
+      {
+        callType: "subagent",
+        userId: session.humanUserId,
+        roomId: "room-funded-research",
+        metadata: {
+          taskId: "task-funded-research",
+          taskRunId: "run-funded-research",
+          agentId: "agent-funded-research",
+          executionId: "run-funded-eager-stream",
+          operation: "deep_research",
+        },
+      },
+    ]);
   });
 });

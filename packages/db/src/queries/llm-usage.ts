@@ -730,6 +730,25 @@ export async function requeueBlockedServerSurplusAttempts(): Promise<number> {
   return rows.length;
 }
 
+/**
+ * Wake decision receipts that were blocked only because an older runtime did
+ * not yet admit the vendor's decision endpoint to exact-receipt recovery.
+ */
+export async function requeueBlockedSurplusDecisionAttempts(): Promise<number> {
+  const rows = await db().update(llmUsageEvents).set({
+    recoveryState: "retryable",
+    failureCode: null,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(llmUsageEvents.providerRoute, "surplus"),
+    eq(llmUsageEvents.endpoint, "/v1/decisions"),
+    eq(llmUsageEvents.recoveryState, "blocked_repair"),
+    eq(llmUsageEvents.failureCode, "receipt_endpoint_unsupported"),
+    inArray(llmUsageEvents.costState, ["pending", "unknown"]),
+  )).returning({ id: llmUsageEvents.id });
+  return rows.length;
+}
+
 /** Conditional late financial settlement: never replace a newer local outcome or known cost. */
 export async function reconcileSurplusLlmAttemptCost(input: {
   attemptId: string;

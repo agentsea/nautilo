@@ -7,6 +7,7 @@ import {
   fromAdmittedDeepResearchModelPlan,
   fromDeepResearchConfig,
   getCapabilityFundingSession,
+  getUsageContext,
   parseDeepResearchTaskMetadataValue,
   runWithDeepResearchFunding,
   type AdmittedDeepResearchTaskMetadata,
@@ -163,19 +164,40 @@ export type DeepResearchReportStream = AsyncGenerator<
   string
 >;
 
+export interface DeepResearchUsageAttribution {
+  readonly roomId: string | null;
+  readonly taskId: string;
+  readonly taskRunId: string;
+  readonly agentId: string;
+}
+
 type DeepResearchReportStreamFactory = (
   input: Record<string, unknown>,
   executionId: string,
   signal: AbortSignal,
 ) => DeepResearchReportStream;
 
+type DeepResearchEventStreamFactory = (
+  graph: ReturnType<typeof createDeepResearchGraph>,
+  input: Record<string, unknown>,
+  config: Record<string, unknown>,
+) => AsyncIterable<unknown>;
+
 let reportStreamOverrideForTests: DeepResearchReportStreamFactory | null = null;
+let eventStreamOverrideForTests: DeepResearchEventStreamFactory | null = null;
 
 /** Test-only seam shared by Task integration tests; production always runs the real graph. */
 export function _setDeepResearchReportStreamForTests(
   factory: DeepResearchReportStreamFactory | null,
 ): void {
   reportStreamOverrideForTests = factory;
+}
+
+/** Test-only seam for proving eager LangGraph stream construction retains funding scope. */
+export function _setDeepResearchEventStreamForTests(
+  factory: DeepResearchEventStreamFactory | null,
+): void {
+  eventStreamOverrideForTests = factory;
 }
 
 async function* runDeepResearchReportStream(
@@ -222,20 +244,23 @@ async function* runDeepResearchReportStream(
       version: "v2",
     };
 
-    const eventStream = graph.streamEvents(
-      {
-        messages: [new HumanMessage(researchBrief)],
-        research_brief: researchBrief,
-        report_language: reportLanguage,
-      },
-      streamConfig,
-    );
-
-    const eventIterator = eventStream[Symbol.asyncIterator]();
     const researchFunding = admittedFunding ? {
       modelFunding: admittedFunding.modelFunding,
       tavilyFunding: admittedFunding.tavilyFunding,
     } : undefined;
+    const eventIterator = runWithDeepResearchFunding(researchFunding, () => {
+      const eventStream = (eventStreamOverrideForTests
+        ?? ((targetGraph, graphInput, graphConfig) => targetGraph.streamEvents(graphInput, graphConfig)))(
+        graph,
+        {
+          messages: [new HumanMessage(researchBrief)],
+          research_brief: researchBrief,
+          report_language: reportLanguage,
+        },
+        streamConfig,
+      );
+      return eventStream[Symbol.asyncIterator]();
+    });
     let eventStreamComplete = false;
     try {
       for (;;) {
@@ -296,7 +321,9 @@ export function streamDeepResearchReport(
   executionId: string,
   signal: AbortSignal,
   initiatingHumanUserId?: string,
+  attribution?: DeepResearchUsageAttribution,
 ): DeepResearchReportStream {
+  const originatingUsageContext = getUsageContext();
   const source = (reportStreamOverrideForTests ?? runDeepResearchReportStream)(
     input,
     executionId,
@@ -307,7 +334,21 @@ export function streamDeepResearchReport(
     const usageContext = {
       callType: "subagent" as const,
       userId: humanUserId,
-      metadata: { executionId, operation: "deep_research" },
+      ...(attribution
+        ? { roomId: attribution.roomId }
+        : originatingUsageContext?.roomId === undefined
+          ? {}
+          : { roomId: originatingUsageContext.roomId }),
+      metadata: {
+        ...(originatingUsageContext?.metadata ?? {}),
+        ...(attribution ? {
+          taskId: attribution.taskId,
+          taskRunId: attribution.taskRunId,
+          agentId: attribution.agentId,
+        } : {}),
+        executionId,
+        operation: "deep_research",
+      },
     };
     let sourceComplete = false;
     try {

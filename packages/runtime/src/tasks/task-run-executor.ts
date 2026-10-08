@@ -8,7 +8,7 @@ import {
   type NautiloState,
   type RunScopeSubagentOpts,
 } from "@nautilo/agent";
-import { markTaskAwaiting, markTaskRunStatus, getTaskById, getTaskRunForTask, pauseTaskRunForFundingDenial, claimCallerTaskRunJob, type Task } from "@nautilo/db";
+import { markTaskAwaiting, markTaskRunStatus, getTaskById, getTaskRunForTask, pauseTaskRunForFundingDenial, claimCallerTaskRunJob, type Task, type TaskRun } from "@nautilo/db";
 import {
   buildRuntimeCapabilityTokens,
   createCheckpointSaver,
@@ -42,7 +42,10 @@ import {
 import { replayTaskInterruptEvents } from "./emit-task-interrupt";
 import { prepareRepoDocsWorkspace, type RepoDocsWorkspace } from "./repo-docs-task";
 import { settleTaskWriterReviewAfterModel } from "./writer-review-task-lifecycle";
-import { streamDeepResearchReport } from "../executors/deep-research-executor";
+import {
+  streamDeepResearchReport,
+  type DeepResearchUsageAttribution,
+} from "../executors/deep-research-executor";
 import {
   finalizeSecurityReportDelivery,
   assertSecurityReportTaskActive,
@@ -117,6 +120,19 @@ export function callerTaskToolIntentMatches(
     default:
       return false;
   }
+}
+
+/** Attribute orphan Deep Research work to its canonical initiating/return Room. */
+export function deepResearchTaskUsageAttribution(
+  task: Pick<Task, "id" | "agentId" | "callingRoomId">,
+  run: Pick<TaskRun, "id">,
+): DeepResearchUsageAttribution {
+  return {
+    roomId: task.callingRoomId,
+    taskId: task.id,
+    taskRunId: run.id,
+    agentId: task.agentId,
+  };
 }
 
 /**
@@ -266,7 +282,8 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
         },
         taskRunId,
         signal,
-        str(input, "requestorId"),
+        task.requestorId,
+        deepResearchTaskUsageAttribution(task, run),
       );
       let resultText = "";
       let streamComplete = false;
