@@ -59,8 +59,10 @@ function persistDebugRole(msg: BaseMessage): string {
 }
 
 export interface PersistMessagesOptions {
+  /** Durable rows for an invocation-owned narrative read fence. */
+  onCommittedRows?: (rows: readonly { id: string; role: string }[]) => void;
   /** Stop before main inference if a required auxiliary result was not retained. */
-  requireDurable?: boolean;
+  requireDurable?: boolean | "foreground-context";
   memoryReview?: MemoryReviewAdmission;
   agentId?: string;
   roomId?: string;
@@ -90,6 +92,8 @@ export interface PersistMessagesOptions {
   metadata?: Record<string, unknown>;
   /** Internal supervision tags tool plumbing only; a deliberate answer stays visible. */
   internalToolMetadata?: Record<string, unknown>;
+  /** Server-owned identity for one active foreground execution. */
+  foregroundExecutionId?: string;
   /**
    * when true, do NOT emit `message.new` for `user` rows inserted by
    * this call. The Task report-back synthetic input row is hidden from chat
@@ -217,6 +221,9 @@ export async function persistMessages(
         : {}),
       ...(options.metadata ? { metadata: options.metadata } : {}),
       ...(options.internalToolMetadata ? { internalToolMetadata: options.internalToolMetadata } : {}),
+      ...(options.foregroundExecutionId
+        ? { foregroundExecutionId: options.foregroundExecutionId }
+        : {}),
     });
 
     // the store recomputed this snapshot in the append transaction.
@@ -239,6 +246,7 @@ export async function persistMessages(
     // in-memory set. Rows that errored stay outside the set so the
     // next persist call in this turn gets a fresh attempt.
     const failed = new Set(result.failedIndices);
+    if (failed.size === 0) options.onCommittedRows?.(result.insertedRows);
     for (let i = 0; i < newPairs.length; i++) {
       if (!failed.has(i)) savedFingerprints.add(newPairs[i]!.fp);
     }
@@ -479,6 +487,7 @@ export async function persistMessages(
     }
 
     if (failed.size > 0) {
+      if (options.requireDurable === "foreground-context") throw new Error("Unable to save conversation before refreshing context");
       if (options.requireDurable) throw new ImageAssistanceError("save");
       warn(
         `[nautilo/executor] partial persist failure thread=${threadId} failed=${failed.size}/${newMessages.length}`,
@@ -506,6 +515,7 @@ export async function persistMessages(
       errorCode: classifyDbError(error),
       droppedCount: newMessages.length,
     });
+    if (options.requireDurable === "foreground-context") throw new Error("Unable to save conversation before refreshing context", { cause: error });
     if (options.requireDurable) throw new ImageAssistanceError("save");
   }
 }

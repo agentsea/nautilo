@@ -90,8 +90,8 @@ export function foregroundLocalExecutionHistoryPort(state: NautiloState, signal:
       return room && member ? { graphThreadId: room.graphThreadId, agentActorId: member.actorId } : null;
     },
     async readTranscript(policy) {
-      // Protected selection uses only coordinates from the already-admitted
-      // initial transcript. Fresh verified bytes are opened below, never read
+      // Protected selection uses only coordinates from the latest authorized
+      // transcript projection. Fresh verified bytes are opened below, never read
       // from the ordinary SQL body as a protected-history fallback.
       if (policy.mode !== "plaintext_only") return admittedHistory.map(row => ({ ...row, snippet: "" }));
       const reader = defaultBuildTranscriptContextDeps();

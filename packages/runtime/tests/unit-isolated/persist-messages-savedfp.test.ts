@@ -171,6 +171,23 @@ describe("persistMessages — D391 turn_id stamp", () => {
     expect(emitted.some(e => e.type === "message.new")).toBe(false);
   });
 
+  test("forwards the server-owned foreground execution identity to transcript storage", async () => {
+    const { bus } = makeBus();
+    await persistMessages(
+      "t1",
+      "owner-1",
+      [new AIMessage("completed")],
+      new Set(),
+      {
+        eventBus: bus,
+        laneKey: "room:r1",
+        foregroundExecutionId: "turn-owned",
+      },
+    );
+    expect(appendCalls).toHaveLength(1);
+    expect(appendCalls[0]![4]["foregroundExecutionId"]).toBe("turn-owned");
+  });
+
   test("tool-only supervision metadata reaches storage without becoming whole-batch metadata", async () => {
     const { bus, emitted } = makeBus();
     const internalToolMetadata = { originatedBy: "connected_web_operation", operationId: "op-1", controlEpoch: 1 };

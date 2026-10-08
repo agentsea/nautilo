@@ -55,6 +55,20 @@ export {
   type NautiloGraphDeps,
 } from "./agent/graph";
 export {
+  acceptedForegroundMessages,
+  foregroundContextProjectionFingerprint,
+  foregroundContextNarrativeAllowanceCharacters,
+  foregroundContextReservedMessageTokens,
+  foregroundContextRefreshInput,
+  streamForegroundGraph,
+  type ForegroundContextRebuild,
+  type ForegroundContextRefreshTransition,
+  type ForegroundGraph,
+  type ForegroundGraphOutcome,
+  type RebuildForegroundContext,
+  type StreamForegroundGraphOptions,
+} from "./graph/foreground-context-refresh";
+export {
   createEncryptedCheckpointSaver,
   ENCRYPTED_CHECKPOINT_LIST_DEFAULT_LIMIT,
   ENCRYPTED_CHECKPOINT_LIST_MAX_LIMIT,
@@ -153,7 +167,13 @@ export {
   type NoProgressAction,
   type NoProgressOutcome,
 } from "./graph/no-progress";
-export { NautiloStateAnnotation, MAX_SUBAGENT_DEPTH, type NautiloState } from "./agent/state";
+export {
+  NautiloStateAnnotation,
+  MAX_SUBAGENT_DEPTH,
+  type ForegroundContextRefreshRequest,
+  type ForegroundContextRefreshSource,
+  type NautiloState,
+} from "./agent/state";
 export {
   decodeTransientAgentRuntimeConfiguration,
   runNautiloTransientProtectedModelDispatch,

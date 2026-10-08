@@ -8,6 +8,8 @@ import type { EncryptedCheckpointSaver } from "../checkpoints/encrypted-checkpoi
 import { getPolicyResolver } from "@nautilo/trust";
 import type { ConnectedWebAccountAuthenticationIntervention } from "../tools/connected-web-accounts/runtime";
 import { emitChainedInterrupts, type StreamEventProcessor } from "./resume-approval";
+import { streamForegroundGraph } from "./foreground-context-refresh";
+import { resolveGraphExecutionPolicy } from "./execution-policy";
 
 /** Resume the same parked action tool invocation; the tool owns Done/Cancel. */
 export async function resumeGraphWithConnectedWebAction(
@@ -32,19 +34,30 @@ export async function resumeGraphWithConnectedWebAction(
   );
   try {
     await processor.beginResume?.(threadId, await readTurnIdFromCheckpoint(graph, threadId));
-    for await (const event of graph.streamEvents(new Command({ resume: reply }), {
-      configurable: {
-        thread_id: threadId,
-        connectedWebActionResumeContext: {
-          version: "connected-web-action-resume-v1",
-          toolCallId: reply.toolCallId,
-          userId,
-          intervention,
+    for await (const event of streamForegroundGraph(
+      graph,
+      new Command({ resume: reply }),
+      {
+        configurable: {
+          thread_id: threadId,
+          connectedWebActionResumeContext: {
+            version: "connected-web-action-resume-v1",
+            toolCallId: reply.toolCallId,
+            userId,
+            intervention,
+          },
         },
+        version: "v2" as const,
+        recursionLimit: resolveGraphExecutionPolicy().recursionLimit,
+        ...(signal ? { signal } : {}),
       },
-      version: "v2" as const,
-      ...(signal ? { signal } : {}),
-    })) await Promise.resolve(processor.process(event));
+      {
+        ...(processor.rebuildForegroundContext === undefined
+          ? {}
+          : { rebuildForegroundContext: processor.rebuildForegroundContext }),
+        ...(signal === undefined ? {} : { signal }),
+      },
+    )) await Promise.resolve(processor.process(event));
     await emitChainedInterrupts(graph, threadId, laneKey, processor, "resume-connected-web-action");
   } catch (error) {
     await processor.failResume?.();

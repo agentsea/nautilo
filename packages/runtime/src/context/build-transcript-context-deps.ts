@@ -153,13 +153,47 @@ export function defaultBuildTranscriptContextDeps(
       .limit(1);
     return actor?.id;
   };
+  const readBoundedRoomPage = async (
+    scope: Extract<TranscriptContextScope, { kind: "room" }>,
+    mode: "ordinary" | "authorized-source",
+    before?: Readonly<{ orderTimestamp: string; messageId: number }>,
+  ): Promise<RoomHistoryHit[]> => {
+    const botActorId = await resolveBotActorId(scope.agentId);
+    return recentBoundedRoomMessages(db, {
+      roomId: scope.roomId,
+      conversationalLimit: await recentConversationLimit(),
+      userId: scope.ownerId,
+      ...(scope.imageAssistanceTurnId
+        ? { imageAssistanceTurnId: scope.imageAssistanceTurnId }
+        : {}),
+      ...(scope.agentId ? { agentId: scope.agentId } : {}),
+      ...(botActorId ? { botActorId } : {}),
+      ...(scope.excludeMessageId != null
+        ? { excludeMessageId: scope.excludeMessageId }
+        : {}),
+      ...(scope.excludeMessageIds === undefined
+        ? {}
+        : { excludeMessageIds: scope.excludeMessageIds }),
+      ...(scope.throughMessageIdInclusive != null
+        ? { throughMessageIdInclusive: scope.throughMessageIdInclusive }
+        : {}),
+      ...(mode === "ordinary" && scope.foregroundExecutionId !== undefined
+        ? { foregroundExecutionId: scope.foregroundExecutionId }
+        : {}),
+      ...(mode === "authorized-source"
+        ? {
+            authorizedConversationWindow: true,
+            ...(before === undefined ? {} : { before }),
+          }
+        : {}),
+    });
+  };
   return {
     emitForegroundContextDiagnostic(diagnostic) {
       log(`[reflection-foreground-context] ${JSON.stringify(diagnostic)}`);
     },
     readRoomContextPolicy: serverContextPolicy,
     async readRoomTranscript(scope) {
-      const botActorId = await resolveBotActorId(scope.agentId);
       if (scope.subthread) {
         const parent =
           scope.subthread.anchorMessageId != null
@@ -169,28 +203,42 @@ export function defaultBuildTranscriptContextDeps(
                 limit: SUBTHREAD_PARENT_WINDOW,
               })
             : [];
-        const sub = await recentBoundedRoomMessages(db, {
-          roomId: scope.roomId,
-          conversationalLimit: await recentConversationLimit(),
-          userId: scope.ownerId,
-          ...(scope.imageAssistanceTurnId ? { imageAssistanceTurnId: scope.imageAssistanceTurnId } : {}),
-          ...(scope.agentId ? { agentId: scope.agentId } : {}),
-          ...(botActorId ? { botActorId } : {}),
-          ...(scope.excludeMessageId != null
-            ? { excludeMessageId: scope.excludeMessageId }
-            : {}),
-        });
+        const sub = await readBoundedRoomPage(scope, "ordinary");
         return [...parent, ...sub];
       }
-      return recentBoundedRoomMessages(db, {
-        roomId: scope.roomId,
-        conversationalLimit: await recentConversationLimit(),
-        userId: scope.ownerId,
-        ...(scope.imageAssistanceTurnId ? { imageAssistanceTurnId: scope.imageAssistanceTurnId } : {}),
-        ...(scope.agentId ? { agentId: scope.agentId } : {}),
-        ...(botActorId ? { botActorId } : {}),
-        ...(scope.excludeMessageId != null ? { excludeMessageId: scope.excludeMessageId } : {}),
-      });
+      return readBoundedRoomPage(scope, "ordinary");
+    },
+    async readRoomTranscriptSourcePage(scope, before) {
+      const fixedPrefix = before === undefined && scope.subthread
+        ? scope.subthread.anchorMessageId != null
+          ? await parentMessagesUpToAnchor(db, {
+              parentRoomId: scope.subthread.parentRoomId,
+              anchorMessageId: scope.subthread.anchorMessageId,
+              limit: SUBTHREAD_PARENT_WINDOW,
+            })
+          : []
+        : [];
+      const page = await readBoundedRoomPage(
+        scope,
+        "authorized-source",
+        before,
+      );
+      const first = page[0];
+      if (first !== undefined && first.sourceOrderTimestamp === undefined) {
+        throw new Error("Room transcript source page is missing its exact cursor");
+      }
+      return {
+        fixedPrefix,
+        page,
+        ...(first === undefined
+          ? {}
+          : {
+              nextBefore: {
+                orderTimestamp: first.sourceOrderTimestamp!,
+                messageId: first.messageId,
+              },
+            }),
+      };
     },
     async readRoomJournal(scope) {
       const [state] = await db

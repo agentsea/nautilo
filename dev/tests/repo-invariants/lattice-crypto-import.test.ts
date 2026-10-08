@@ -1748,6 +1748,12 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/runtime/tests/unit/live-shadow-agent-runtime.test.ts -> @nautilo/lattice-bridge/server",
   "packages/runtime/tests/unit/live-shadow-turn-context.test.ts -> @nautilo/lattice-bridge",
   "packages/runtime/tests/unit/live-shadow-turn-context.test.ts -> @nautilo/lattice-bridge/server",
+  // Foreground refresh regressions use the typed session and enforcement error
+  // to prove resumed Record protection and authorized history paging. They do
+  // not receive crypto-table access or device-private key material.
+  "packages/runtime/tests/unit/persisting-processor.test.ts -> @nautilo/lattice-bridge",
+  "packages/runtime/tests/unit/persisting-processor.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/runtime/tests/unit/resolve-foreground-history.test.ts -> @nautilo/lattice-bridge/server",
   "packages/server/src/messaging/agent-mediated.ts -> @nautilo/lattice-bridge/server",
   "packages/server/src/routes/live-shadow-message-composition.ts -> @nautilo/lattice-bridge",
   "packages/server/src/routes/live-shadow-message-composition.ts -> @nautilo/lattice-bridge/server",
