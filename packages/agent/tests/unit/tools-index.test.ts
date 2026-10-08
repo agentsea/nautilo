@@ -162,12 +162,12 @@ describe("tool catalog registration", () => {
     }
   });
 
-  test("admin tier tools include run_shell, update_config, verify_identity (with relay)", () => {
+  test("admin tools retain configuration and identity but hide the legacy shell even with relay access", () => {
     const snap = catalog.getFiltered(undefined, {
       canReadWorkspace: true, canWriteWorkspace: true, canRunShell: true,
     });
     const names = snap.entries.map((e) => e.name);
-    expect(names).toContain("run_shell");
+    expect(names).not.toContain("run_shell");
     expect(names).toContain("update_config");
     expect(names).toContain("verify_identity");
   });
@@ -179,7 +179,7 @@ describe("tool catalog registration", () => {
     expect(names).toContain("find_explainer");
     expect(names).toContain("play_explainer");
     expect(names).toContain("search_memory");
-    // run_shell is relay-gated separately — see admin snapshot test with relay tokens
+    // The legacy shell stays hidden regardless of relay availability.
     expect(names).not.toContain("run_shell");
     expect(names).not.toContain("desktop_click");
   });
@@ -206,11 +206,11 @@ describe("tool catalog registration", () => {
     expect(names).not.toContain("search_memory");
   });
 
-  test("filesystem and shell tools include unified `file` + run_shell", () => {
+  test("filesystem tools stay available while the legacy shell is hidden", () => {
     const snap = catalog.getFiltered(undefined, { canRunShell: true });
     const names = snap.entries.map((e) => e.name);
     expect(names).toContain("file");
-    expect(names).toContain("run_shell");
+    expect(names).not.toContain("run_shell");
     expect(names).toContain("apply_patch");
   });
 

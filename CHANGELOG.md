@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Genies no longer discover or activate the legacy `run_shell` tool, including
+  in background Tasks and on older clients. Managed command tools remain
+  available where supported; existing command history remains readable.
+
 - Long foreground agent turns refresh their context from Room history at settled
   tool boundaries while keeping the same running job. Oversized turns retain a
   recent excerpt alongside available Journal context; Stop and approvals keep

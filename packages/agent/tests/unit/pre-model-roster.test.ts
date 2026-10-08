@@ -349,7 +349,7 @@ describe("preModelNode — roster injection", () => {
     expect(prompt).toContain("**file**:");
   });
 
-  test("projects an already-authorized shell for an explicit GitHub request without filesystem access", async () => {
+  test("does not revive the legacy shell for an explicit GitHub request", async () => {
     const state = makeState({
       messages: [new HumanMessage("List open GitHub issues for this repo.")],
       relayCapabilities: { use_high_impact_tools: true, canRunShell: true },
@@ -357,11 +357,10 @@ describe("preModelNode — roster injection", () => {
     const patch = await preModelNode(state);
     const prompt = await systemPromptOf(state);
 
-    expect(patch.activatedToolNames).toContain("run_shell");
-    expect(patch.toolNames).toContain("run_shell");
-    expect(prompt).toContain("**run_shell**:");
-    // Shell selection only reuses the existing catalog entry. It never
-    // projects the filesystem family or grants Current Folder authority.
+    expect(patch.activatedToolNames).not.toContain("run_shell");
+    expect(patch.toolNames).not.toContain("run_shell");
+    expect(prompt).not.toContain("run_shell");
+    // The request also cannot project filesystem tools or grant folder authority.
     expect(patch.toolNames).not.toContain("file");
     expect(patch.activatedToolNames).not.toContain("file");
   });

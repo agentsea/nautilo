@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { HumanMessage } from "@langchain/core/messages";
 import { ToolCatalog, clearToolCatalog, initToolCatalog, getToolCatalog } from "@nautilo/catalog";
 import { MAX_SUBAGENT_DEPTH, type NautiloState } from "../../src/agent/state";
-import { preModelNode } from "../../src/nodes/pre-model";
+import { preModelNode, resolveToolsForExposure } from "../../src/nodes/pre-model";
 import { toolsNode } from "../../src/nodes/tools";
 import { registerAllTools } from "../../src/tools/register-all";
 import { setRelayRegistry, type ToolRelayRegistry } from "../../src/tools/invocation-service";
@@ -151,7 +151,7 @@ test("retirement requires the supported contract rather than active Human termin
   expect(next.toolNames).not.toContain("terminal"); expect(next.toolNames).not.toContain("run_shell");
 });
 for (const loss of ["old protocol", "replacement protocol 20", "replacement protocol 23", "replacement protocol 25", "no typed Git", "no retained reader", "pipe only", "headless", "no managed execution", "history only", "foreign Human", "foreign Relay owner", "other Desktop", "stale Desktop session", "stale pairing", "no origin"] as const) {
-  test(`${loss} keeps compatible legacy exposure and clears stale replacement preference`, async () => {
+  test(`${loss} keeps terminal compatibility but never exposes the retired shell`, async () => {
     const { live, state } = fixture();
     if (loss === "old protocol") live.protocol = 19;
     else if (loss === "replacement protocol 20") live.protocol = 20;
@@ -171,9 +171,58 @@ for (const loss of ["old protocol", "replacement protocol 20", "replacement prot
     else state.verifiedOrdinaryOrigin = null;
     const next = await project(state);
     expect(next.relayCapabilities?.["canReplaceLegacyShellTools"]).toBeFalse();
-    expect(await discover(next)).toContain("run_shell"); expect(await discover(next)).toContain("terminal");
-    expect(await activateLegacy(next)).toEqual(loss === "no origin" ? [] : ["run_shell", "terminal"]);
-    expect(next.toolNames).toContain("run_shell"); expect(next.toolNames).toContain("terminal");
-    expect(prompt(next)).toContain("focused `run_shell` verification");
+    expect(await discover(next)).not.toContain("run_shell"); expect(await discover(next)).toContain("terminal");
+    expect(await activateLegacy(next)).toEqual(loss === "no origin" ? [] : ["terminal"]);
+    expect(next.toolNames).not.toContain("run_shell"); expect(next.toolNames).toContain("terminal");
+    expect(next.activatedToolNames).not.toContain("run_shell");
+    expect(prompt(next)).not.toContain("run_shell");
   });
 }
+
+for (const mode of ["progressive", "eager"] as const) {
+  test(`${mode} cannot restore run_shell through policy, whitelist, intent or activation`, () => {
+    const { state } = fixture();
+    const catalog = getToolCatalog()!;
+    const resolution = resolveToolsForExposure(catalog, mode, {
+      context: { relayCapabilities: { canRunShell: true } },
+      relayCapabilities: { canRunShell: true },
+      toolPolicy: { run_shell: "allow" },
+      toolNameWhitelist: ["run_shell"],
+      activatedToolNames: ["run_shell"],
+      intentPackToolNames: ["run_shell"],
+      skipRelayLiveCheck: true,
+    });
+    expect(resolution.eligible.entries.map(entry => entry.name)).not.toContain("run_shell");
+    expect(resolution.tools).toEqual([]);
+    expect(catalog.has("run_shell")).toBeTrue();
+    expect(catalog.getToolsForActor({}, undefined, state.relayCapabilities).map(tool => tool.name)).not.toContain("run_shell");
+  });
+}
+
+test("background Task continuation and persisted leases cannot restore run_shell", async () => {
+  const { state } = fixture();
+  const next = await project({ ...state, verifiedOrdinaryOrigin: null, taskRun: true,
+    trustedExecutionEntrypoint: null,
+    taskReportBackContinuation: { status: "available", relayId: origin.relayId,
+      relaySessionId: "fixture-socket", desktopSessionId: origin.desktopSessionId,
+      pairingGeneration: origin.pairingGeneration, currentFolder: "/fixture", workspacePath: "/fixture" },
+    activatedToolNames: ["run_shell", "terminal"],
+    activatedToolLeases: [{ name: "run_shell", idleTurns: 0 }],
+    activationLeasesInitialized: true,
+  });
+  expect(next.toolNames).not.toContain("run_shell");
+  expect(next.activatedToolNames).not.toContain("run_shell");
+  expect(await discover(next)).not.toContain("run_shell");
+  expect(await activateLegacy(next)).toEqual(["terminal"]);
+  const family = await receipt(next, "activate_tools", { families: ["shell"] }) as { accepted: string[] };
+  expect(family.accepted).not.toContain("run_shell");
+  expect(prompt(next)).not.toContain("run_shell");
+});
+
+test("a stale approved shell call reports unavailability without invoking the retained executor", async () => {
+  const { state } = fixture();
+  const result = await toolsNode({ ...state,
+    approvedToolCalls: [{ id: "stale-shell", type: "tool_call", name: "run_shell", args: { command: "printf fixture" } }],
+  });
+  expect(result.messages?.at(-1)?.content).toContain("legacy command tool is unavailable");
+});

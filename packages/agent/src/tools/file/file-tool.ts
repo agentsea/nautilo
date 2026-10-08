@@ -221,7 +221,7 @@ Anti-patterns to avoid:
 - Don't use 'write' to change a single line — use 'str_replace'.
 - Don't paste long rendered content into chat after a write. The tool card above your reply has an Open affordance the user can tap.
 - Don't str_replace without having read the file in this session — the staleness guard will reject you.
-- Don't use 'run_shell' for file operations. That's for shell commands (builds, tests); this tool is for files.
+- Use this tool for file operations. Reserve available command tools for builds and tests.
 - Don't use write to hand-author PDF bytes or ask the model to restate a document for conversion. Use the dedicated convert tool; conversion is programmatic and deterministic.
 - If a str_replace needs more than ~200 chars of oldString to be unique, switch to bookend mode or narrow with lineRange.
 - Don't ask permission before editing — just make the change and briefly describe it.
