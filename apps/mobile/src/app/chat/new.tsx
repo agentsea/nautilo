@@ -159,9 +159,9 @@ export default function NewChatScreen() {
   }, [canInvokeAgents]);
 
   useEffect(() => {
-    if (externalRoomVisibilitySupported) return;
+    if (viewerState !== "verified" || viewer?.roomDiscoverability === true) return;
     setVisibility((current) => current === "external" ? "private" : current);
-  }, [externalRoomVisibilitySupported]);
+  }, [viewerState, viewer?.roomDiscoverability]);
 
   useEffect(() => {
     if (!directoryVisible) return;
@@ -405,13 +405,15 @@ export default function NewChatScreen() {
           <Text style={styles.fieldLabel}>Room access</Text>
           <View style={styles.segmented}>
             <VisibilityChoice selected={visibility === "private"} label="Private" icon="lock-closed-outline" onPress={() => setVisibility("private")} styles={styles} theme={t} />
-            {externalRoomVisibilitySupported ? (
+            {externalRoomVisibilitySupported || visibility === "external" ? (
               <VisibilityChoice selected={visibility === "external"} label="External" icon="eye-off-outline" onPress={() => setVisibility("external")} styles={styles} theme={t} />
             ) : null}
             <VisibilityChoice selected={visibility === "public"} label="Public" icon="globe-outline" onPress={() => setVisibility("public")} styles={styles} theme={t} />
           </View>
-          {visibility === "external" && externalRoomVisibilitySupported ? (
-            <Text style={styles.visibilityHelp}>Public access, hidden from discovery</Text>
+          {visibility === "external" ? (
+            <Text style={styles.visibilityHelp}>{externalRoomVisibilitySupported
+              ? "Public access, hidden from discovery"
+              : "Waiting to verify External room support. Check your connection."}</Text>
           ) : null}
         </View>
       ) : null}

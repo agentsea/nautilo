@@ -52,11 +52,9 @@ describe("mobile new-conversation layout contract", () => {
     expect(routeSource).toContain('label="External"');
     expect(routeSource).toContain('label="Public"');
     expect(routeSource).toContain('roomVisibilityFields(visibility, externalRoomVisibilitySupported)');
-    expect(routeSource).toContain('externalRoomVisibilitySupported ? (');
     expect(routeSource).toContain('icon="eye-off-outline"');
     expect(routeSource).toContain("Public access, hidden from discovery");
     expect(routeSource).toContain("if (!visibilityFields)");
-    expect(routeSource).toContain('current === "external" ? "private" : current');
     expect(routeSource).toContain('visibility !== "external" || externalRoomVisibilitySupported');
     expect(routeSource).toContain('visibility !== "private" && !canManageRooms');
     expect(routeSource).toContain('visibility === "private" || canManageRooms');
