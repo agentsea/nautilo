@@ -64,12 +64,12 @@ describe("Workbench-owned companion", () => {
     const f = fixture();
     f.setRead(async () => ({ ...page, messages: [
       { id: "call-row", role: "assistant", content: "", createdAt: "2026-01-01", toolCalls: JSON.stringify([{ id: "call-a", name: "read_file", args: { path: "example.txt" } }]) },
-      { id: "result-row", role: "tool", content: "Example content", createdAt: "2026-01-01", toolName: "read_file" },
+      { id: "result-row", role: "tool", content: "Example content", createdAt: "2026-01-01", toolName: "read_file", toolCallId: "call-a" },
       { id: "reply-row", role: "assistant", content: "**Done**", createdAt: "2026-01-01" },
     ] }));
     await f.controller.enable(binding);
     expect(f.snapshot()?.messages.map(message => message.id)).toEqual(["result-row", "reply-row"]);
-    expect(f.snapshot()?.messages[0]?.content).toMatchObject([{ type: "tool-call", toolName: "read_file", result: "Example content" }]);
+    expect(f.snapshot()?.messages[0]?.content).toMatchObject([{ type: "tool-call", toolCallId: "call-a", toolName: "read_file", args: { path: "example.txt" }, result: "Example content" }]);
     expect(f.snapshot()?.messages[1]?.content).toEqual([{ type: "text", text: "**Done**" }]);
   });
   test("pins exact Room/Genie and uses canonical history, including completeness", async () => {
@@ -377,10 +377,45 @@ describe("companion shared Room live projection", () => {
     f.setRead(async () => ({ ...page, messages: [
       ...page.messages,
       { id: "call-row", role: "assistant", content: "", createdAt: "2026-01-02", toolCalls: JSON.stringify([{ id: "call-1", name: "read_file", args: {} }]) },
-      { id: "result-row", role: "tool", content: "Result", createdAt: "2026-01-02", toolName: "read_file" },
+      { id: "result-row", role: "tool", content: "Result", createdAt: "2026-01-02", toolName: "read_file", toolCallId: "call-1" },
     ] }));
     await f.controller.refresh();
     expect(f.snapshot()?.messages.filter(message => Array.isArray(message.content) && message.content.some(part => part.type === "tool-call"))).toHaveLength(1);
+    expect(f.snapshot()?.messages.at(-1)?.content).toMatchObject([{ type: "tool-call", toolCallId: "call-1", result: "Result" }]);
+  });
+  test("a legacy result without a persisted call ID cannot replace a live same-name call", async () => {
+    const f = fixture(); await f.controller.enable(binding);
+    f.controller.ingestEvent("room-a", { type: "tool.start", laneKey: "room:room-a", toolCallId: "call-1", toolName: "read_file" });
+    f.setRead(async () => ({ ...page, messages: [
+      ...page.messages,
+      { id: "call-row", role: "assistant", content: "", createdAt: "2026-01-02", toolCalls: JSON.stringify([{ id: "call-1", name: "read_file", args: { path: "private.txt" } }]) },
+      { id: "legacy-result", role: "tool", content: "Legacy result", createdAt: "2026-01-02", toolName: "read_file" },
+    ] }));
+    await f.controller.refresh();
+    const messages = f.snapshot()?.messages ?? [];
+    expect(messages.some(message => message.id === "tool-call-1")).toBe(true);
+    expect(messages.find(message => message.id === "legacy-result")?.content).toMatchObject([
+      { type: "tool-call", toolCallId: "restored-legacy-result", args: {}, result: "Legacy result" },
+    ]);
+  });
+  test("parallel same-name results replace only their exact live calls in completion order", async () => {
+    const f = fixture(); await f.controller.enable(binding);
+    for (const toolCallId of ["call-first", "call-second"]) {
+      f.controller.ingestEvent("room-a", { type: "tool.start", laneKey: "room:room-a", toolCallId, toolName: "read_file" });
+    }
+    const calls = [{ id: "call-first", name: "read_file", args: { path: "first.txt" } },
+      { id: "call-second", name: "read_file", args: { path: "second.txt" } }];
+    f.setRead(async () => ({ ...page, messages: [
+      ...page.messages,
+      { id: "calls", role: "assistant", content: "", createdAt: "2026-01-02", toolCalls: JSON.stringify(calls) },
+      { id: "second-result", role: "tool", content: "Second", createdAt: "2026-01-02", toolName: "read_file", toolCallId: "call-second" },
+      { id: "first-result", role: "tool", content: "First", createdAt: "2026-01-02", toolName: "read_file", toolCallId: "call-first" },
+    ] }));
+    await f.controller.refresh();
+    const messages = f.snapshot()?.messages ?? [];
+    expect(messages.map(message => message.id)).toEqual(["message", "second-result", "first-result"]);
+    expect(messages[1]?.content).toMatchObject([{ type: "tool-call", toolCallId: "call-second", args: { path: "second.txt" }, result: "Second" }]);
+    expect(messages[2]?.content).toMatchObject([{ type: "tool-call", toolCallId: "call-first", args: { path: "first.txt" }, result: "First" }]);
   });
 });
 

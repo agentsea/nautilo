@@ -101,7 +101,7 @@ export function validNetworkRepository(value: unknown): value is string {
 export function validNetworkOid(value: unknown): value is string {
   return typeof value === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value) && !/^0+$/.test(value);
 }
-export function sameNetworkRemote(left: GitNetworkRemote, right: GitNetworkRemote): boolean {
+function sameNetworkRemote(left: GitNetworkRemote, right: GitNetworkRemote): boolean {
   return left.repository === right.repository && left.repositoryId === right.repositoryId
     && left.accountId === right.accountId && left.accountLogin === right.accountLogin
     && left.branch === right.branch && left.oid === right.oid;

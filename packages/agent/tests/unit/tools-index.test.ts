@@ -29,7 +29,10 @@ describe("tool catalog registration", () => {
 
   // Built-in tools are counted separately from the active signed Computer Use catalog.
   test("registers all built-in tools including transcription and Connections", () => {
-    expect(catalog.size).toBe(110 + activeComputerUseHostToolDefinitions().length);
+    expect(catalog.size).toBe(114 + activeComputerUseHostToolDefinitions().length);
+    for (const name of ["exec_command", "write_stdin", "local_git", "read_shell_output"]) {
+      expect(catalog.get(name)).toBeDefined();
+    }
   });
 
   test("registers mini_app with static destructive approval", () => {
@@ -100,7 +103,7 @@ describe("tool catalog registration", () => {
     ).not.toThrow();
   });
 
-  test("M203 officecli is omitted when no usable OfficeCLI binary is available", () => {
+  test("officecli is omitted when no usable binary is available", () => {
     const gatedCatalog = new ToolCatalog();
     registerAllTools(gatedCatalog, { officeCliAvailable: () => false, publicBrowserUseAvailable: () => true });
     expect(gatedCatalog.get("officecli")).toBeUndefined();
@@ -261,10 +264,10 @@ describe("tool catalog registration", () => {
   test("stats reflect correct distribution", () => {
     const stats = catalog.getStats();
     // Built-in tools are counted separately from the active signed Computer Use catalog.
-    expect(stats.total).toBe(110 + activeComputerUseHostToolDefinitions().length);
-    expect(stats.bySource.builtin).toBe(110 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.total).toBe(114 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.bySource.builtin).toBe(114 + activeComputerUseHostToolDefinitions().length);
     expect(stats.bySource.mcp).toBe(0);
-    expect(stats.enabled).toBe(110 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.enabled).toBe(114 + activeComputerUseHostToolDefinitions().length);
     expect(stats.byTier.admin).toBeGreaterThan(0);
     expect(stats.byTier.standard).toBeGreaterThan(0);
     expect(stats.byTier.high).toBeGreaterThan(0);

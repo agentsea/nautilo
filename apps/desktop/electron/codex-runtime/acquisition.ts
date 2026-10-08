@@ -1,5 +1,5 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -726,10 +726,17 @@ export class CodexManagedRuntimeManager {
       // claim; everything else remains foreign and fails closed.
       if (entries.length !== 0 && !(await readExactRegularFile(marker, ROOT_MARKER)))
         throw new Error("unowned_runtime_root");
-      try { await writeFile(marker, ROOT_MARKER, { mode: 0o600, flag: "wx" }); }
-      catch (error) {
-        if (!missing(error) && !(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "EEXIST")) throw error;
-      }
+      // Prepare outside the still-empty root, on the same filesystem. Linking
+      // publishes complete bytes exclusively: contenders cannot observe the
+      // empty file that writeFile("wx") exposes before its write completes.
+      const claim = await mkdtemp(`${root}.claim-`);
+      try {
+        const preparedMarker = join(claim, ROOT_MARKER_FILE);
+        await writeFile(preparedMarker, ROOT_MARKER, { mode: 0o600, flag: "wx" });
+        await fsyncFile(preparedMarker);
+        try { await link(preparedMarker, marker); }
+        catch (error) { if (!alreadyExists(error)) throw error; }
+      } finally { await rm(claim, { recursive: true, force: false }); }
       if (!(await readExactRegularFile(marker, ROOT_MARKER))) throw new Error("unowned_runtime_root");
     }
     return root;
