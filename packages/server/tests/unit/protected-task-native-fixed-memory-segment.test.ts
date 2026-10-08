@@ -349,11 +349,6 @@ function compositionInput(
     },
     owner: Object.freeze({}) as ProtectedTaskNativeFixedMemorySegmentInput["owner"],
     embedding: Object.freeze({}) as ProtectedTaskNativeFixedMemorySegmentInput["embedding"],
-    repairExactCandidate: async () => ({
-      status: "unavailable",
-      reason: "authorization_required",
-    }),
-    fallbackOrdinary: Object.freeze({}) as ProtectedTaskNativeFixedMemorySegmentInput["fallbackOrdinary"],
     createDedicatedPool: () => Object.freeze({}) as ReturnType<
       ProtectedTaskNativeFixedMemorySegmentInput["createDedicatedPool"]
     >,

@@ -6,7 +6,9 @@ import {
   fingerprintRequiredMemoryNamespaces,
 } from "../../src/memory/memory-repository";
 import {
+  attachPostgresTaskNamespaceMemoryRepair,
   attachPostgresTaskScopeMemoryRepair,
+  reservePostgresTaskNamespaceMemoryRepairSource,
   reservePostgresTaskScopeMemoryRepairSource,
 } from "../../src/server/memory/postgres-foreground-memory-repair";
 import { isForegroundProductChangedError } from
@@ -68,6 +70,16 @@ function ordinaryRow(embeddingRevision = 0): Readonly<Record<string, unknown>> {
     crypto_required_namespace_fingerprint: null,
     embedding_revision: embeddingRevision,
     scope_origin_namespace_id: ORIGIN_NAMESPACE_ID,
+  };
+}
+
+function namespaceOrdinaryRow(
+  contentRevision = 0,
+): Readonly<Record<string, unknown>> {
+  return {
+    ...ordinaryRow(),
+    content_revision: contentRevision,
+    scope_origin_namespace_id: null,
   };
 }
 
@@ -439,6 +451,207 @@ describe("Postgres Task Scope Memory repair", () => {
 
     expect(isForegroundProductChangedError(thrown)).toBe(true);
     expect(transaction.queries[0]!.toLowerCase()).toContain("for update");
+    expect(transaction.queries.some(query => query.startsWith("update ")))
+      .toBe(false);
+  });
+});
+
+describe("Postgres Task Namespace Memory repair", () => {
+  test("reserves the complete Wide audience and rejects a stale revision", async () => {
+    const transaction = new ScriptedTransaction([
+      [namespaceOrdinaryRow()],
+      [
+        { namespace_id: FOREIGN_NAMESPACE_ID },
+        { namespace_id: ORIGIN_NAMESPACE_ID },
+      ],
+      [],
+      [],
+      [],
+    ]);
+    const source = await reservePostgresTaskNamespaceMemoryRepairSource({
+      transaction,
+      crypto: crypto(),
+      selection: Object.freeze({
+        representation: "structural" as const,
+        id: MEMORY_ID,
+        type: null,
+        importance: 0.8,
+        tier: 1,
+        createdAt: CREATED_AT,
+      }),
+      expectedContentRevision: 0,
+    });
+    expect(source.accessNamespaceIds).toEqual([
+      ORIGIN_NAMESPACE_ID,
+      FOREIGN_NAMESPACE_ID,
+    ]);
+    expect(source.targetContentRevision).toBe(1);
+
+    const stale = new ScriptedTransaction([
+      [namespaceOrdinaryRow(1)],
+      [{ namespace_id: ORIGIN_NAMESPACE_ID }],
+      [],
+      [],
+      [],
+    ]);
+    let thrown: unknown;
+    try {
+      await reservePostgresTaskNamespaceMemoryRepairSource({
+        transaction: stale,
+        crypto: crypto(),
+        selection: Object.freeze({
+          representation: "structural" as const,
+          id: MEMORY_ID,
+          type: null,
+          importance: 0.8,
+          tier: 1,
+          createdAt: CREATED_AT,
+        }),
+        expectedContentRevision: 0,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(isForegroundProductChangedError(thrown)).toBe(true);
+    const insertIndex = stale.queries.findIndex(query =>
+      query.includes('insert into "memory_crypto_revisions"'));
+    expect(insertIndex).toBeGreaterThan(-1);
+    const byteParameters = stale.parameters[insertIndex]!.filter(
+      (value): value is Uint8Array => value instanceof Uint8Array,
+    );
+    expect(byteParameters.some(bytes => bytes.every(byte => byte === 0)))
+      .toBe(true);
+  });
+
+  test("locks lifecycle before Memory and rechecks the Wide audience before mutation", async () => {
+    const priorObjectId = deriveMemoryCryptoObjectIdV1({
+      memoryId: MEMORY_ID,
+      contentRevision: 1,
+    });
+    const reserveTransaction = new ScriptedTransaction([
+      [namespaceOrdinaryRow()],
+      [
+        { namespace_id: FOREIGN_NAMESPACE_ID },
+        { namespace_id: ORIGIN_NAMESPACE_ID },
+      ],
+      [],
+      [{
+        content_revision: 1,
+        crypto_object_id: priorObjectId,
+        allocation_request_digest: new Uint8Array(32).fill(91),
+        required_namespace_fingerprint:
+          fingerprintRequiredMemoryNamespaces([ORIGIN_NAMESPACE_ID]),
+        completion: "complete",
+        disposition: "quarantined",
+      }],
+      [],
+    ]);
+    const source = await reservePostgresTaskNamespaceMemoryRepairSource({
+      transaction: reserveTransaction,
+      crypto: crypto(),
+      selection: Object.freeze({
+        representation: "structural" as const,
+        id: MEMORY_ID,
+        type: null,
+        importance: 0.8,
+        tier: 1,
+        createdAt: CREATED_AT,
+      }),
+      expectedContentRevision: 0,
+    });
+    expect(source.targetContentRevision).toBe(2);
+    const objectId = deriveMemoryCryptoObjectIdV1({
+      memoryId: MEMORY_ID,
+      contentRevision: source.targetContentRevision,
+    });
+    const transaction = new ScriptedTransaction([
+      [{
+        crypto_object_id: objectId,
+        allocation_request_digest: source.requestCommitment,
+        required_namespace_fingerprint:
+          fingerprintRequiredMemoryNamespaces(source.accessNamespaceIds),
+        completion: "pending",
+        disposition: "active",
+      }],
+      [namespaceOrdinaryRow()],
+      [
+        { namespace_id: FOREIGN_NAMESPACE_ID },
+        { namespace_id: ORIGIN_NAMESPACE_ID },
+      ],
+      [],
+      [{ sequence: 1 }],
+      [{ id: MEMORY_ID }],
+    ]);
+
+    expect(await attachPostgresTaskNamespaceMemoryRepair({
+      transaction,
+      source,
+      objectId,
+      requestCommitment: source.requestCommitment,
+    })).toBe("attached");
+    expect(transaction.queries[0]).toContain('from "memory_crypto_revisions"');
+    expect(transaction.queries[1]).toContain('from "memories"');
+    expect(transaction.queries[0]!.toLowerCase()).toContain("for update");
+    expect(transaction.queries[1]!.toLowerCase()).toContain("for update");
+    const lifecycleUpdate = transaction.queries.findIndex(query =>
+      query.startsWith('update "memory_crypto_revisions"'));
+    const memoryUpdate = transaction.queries.findIndex(query =>
+      query.startsWith('update "memories"'));
+    expect(lifecycleUpdate).toBeGreaterThan(-1);
+    expect(memoryUpdate).toBeGreaterThan(lifecycleUpdate);
+    expect(transaction.queries[memoryUpdate]).toContain(
+      '"embedding_revision"',
+    );
+    expect(transaction.parameters[memoryUpdate]).toContain(
+      source.targetContentRevision,
+    );
+  });
+
+  test("rejects embedding drift before attaching a Namespace repair", async () => {
+    const reserveTransaction = new ScriptedTransaction([
+      [namespaceOrdinaryRow()],
+      [{ namespace_id: ORIGIN_NAMESPACE_ID }],
+      [],
+      [],
+      [],
+    ]);
+    const source = await reservePostgresTaskNamespaceMemoryRepairSource({
+      transaction: reserveTransaction,
+      crypto: crypto(),
+      selection: Object.freeze({
+        representation: "structural" as const,
+        id: MEMORY_ID,
+        type: null,
+        importance: 0.8,
+        tier: 1,
+        createdAt: CREATED_AT,
+      }),
+      expectedContentRevision: 0,
+    });
+    const objectId = deriveMemoryCryptoObjectIdV1({
+      memoryId: MEMORY_ID,
+      contentRevision: source.targetContentRevision,
+    });
+    const transaction = new ScriptedTransaction([
+      [{
+        crypto_object_id: objectId,
+        allocation_request_digest: source.requestCommitment,
+        required_namespace_fingerprint:
+          fingerprintRequiredMemoryNamespaces(source.accessNamespaceIds),
+        completion: "pending",
+        disposition: "active",
+      }],
+      [{ ...namespaceOrdinaryRow(), embedding_revision: 1 }],
+      [{ namespace_id: ORIGIN_NAMESPACE_ID }],
+      [],
+    ]);
+
+    expect(await attachPostgresTaskNamespaceMemoryRepair({
+      transaction,
+      source,
+      objectId,
+      requestCommitment: source.requestCommitment,
+    })).toBe("conflict");
     expect(transaction.queries.some(query => query.startsWith("update ")))
       .toBe(false);
   });

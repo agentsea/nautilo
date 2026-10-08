@@ -39,6 +39,7 @@ import {
   humanCryptoDeviceKeyPackages,
   humanCryptoDevices,
   humanCryptoRecoveryKeys,
+  and,
   inArray,
   jobs,
   memories,
@@ -115,6 +116,8 @@ import {
   fingerprintRequiredMemoryNamespaces,
   MEMORY_OBJECT_TYPE,
   prepareTaskRuntimeAgentObject,
+  type ProtectedAgentMemoryRepository,
+  type ProtectedMemoryAuthority,
   type TaskRuntimeAgentObjectNamespaceMaterial,
 } from "@nautilo/lattice-bridge";
 import {
@@ -134,6 +137,9 @@ import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
   ProtectedTaskJobReferenceV1,
   ProtectedTaskRunningOccurrence,
+} from "@nautilo/runtime";
+import {
+  createTaskRuntimeDomainMemoryCryptoSession,
 } from "@nautilo/runtime";
 import {
   withTaskRuntimeExecutionEvidenceV1,
@@ -1205,6 +1211,7 @@ async function createBaseFixture() {
 
 type ScenarioOptions = Readonly<{
   contentRepresentation?: "protected" | "dual";
+  namespaceIds?: readonly string[];
   scopeMemory?: Readonly<{
     binding: TaskScopeMemoryBinding;
     targetRoomId: string;
@@ -1217,6 +1224,9 @@ async function createScenario(
   options: ScenarioOptions = {},
 ) {
   const scopeMemory = options.scopeMemory;
+  if (scopeMemory !== undefined && options.namespaceIds !== undefined) {
+    throw new TypeError("Task Memory scenario authority is ambiguous");
+  }
   const contentRepresentation = options.contentRepresentation ?? "protected";
   const targetRoomId = scopeMemory?.targetRoomId ?? base.roomId;
   const targetNamespace = scopeMemory?.targetNamespace ?? base.namespace;
@@ -1360,7 +1370,7 @@ async function createScenario(
     [base.seedNamespace.namespaceId, base.seedNamespace],
   ]);
   const requiredNamespaceIds = scopeMemory === undefined
-    ? [base.namespaceValue]
+    ? [...(options.namespaceIds ?? [base.namespaceValue])]
     : [...scopeMemory.binding.readableNamespaceIds];
   const namespaceRequirements = Object.freeze(requiredNamespaceIds
     .sort()
@@ -1373,7 +1383,8 @@ async function createScenario(
         ordinal,
         namespaceId: requiredNamespaceId,
         domainId: namespace.domainId,
-        operations: requiredNamespaceId === base.namespaceValue
+        operations: scopeMemory === undefined
+            || requiredNamespaceId === base.namespaceValue
             || requiredNamespaceId === targetNamespace.namespaceId
           ? Object.freeze(["decrypt", "encrypt"] as const)
           : Object.freeze(["decrypt"] as const),
@@ -1382,6 +1393,8 @@ async function createScenario(
       });
     }));
   const scenarioDomainAuthority = scopeMemory === undefined
+      && requiredNamespaceIds.length === 1
+      && requiredNamespaceIds[0] === base.namespaceValue
     ? base.domainAuthority
     : await new PostgresDomainKeyAuthorityRepository(
       base.restricted,
@@ -1795,6 +1808,93 @@ async function createScenario(
   }
 }
 
+type FallbackPrepareRequest = Parameters<
+  ReturnType<typeof createTaskRuntimeDomainMemoryCryptoSession>["session"]["prepare"]
+>[0];
+
+function createUnavailableMemorySession(
+  onPrepare: (request: FallbackPrepareRequest) => Promise<void> =
+    () => Promise.resolve(),
+): typeof createTaskRuntimeDomainMemoryCryptoSession {
+  return input => {
+    const current = createTaskRuntimeDomainMemoryCryptoSession(input);
+    return Object.freeze({
+      ...current,
+      session: Object.freeze({
+        ...current.session,
+        prepare: async (request: FallbackPrepareRequest) => {
+          await onPrepare(request);
+          return Object.freeze({
+            status: "unavailable" as const,
+            reason: "encryption_pending" as const,
+          });
+        },
+      }),
+    });
+  };
+}
+
+function withShadowFallbackRepository<Value>(input: Readonly<{
+  base: BaseFixture;
+  scenario: Awaited<ReturnType<typeof createScenario>>;
+  writer: ProtectedTaskMemoryObjectWriterInput;
+  authority: ProtectedMemoryAuthority;
+  vector: readonly number[];
+  execute(repository: ProtectedAgentMemoryRepository): Promise<Value>;
+  onPrepare?: (request: FallbackPrepareRequest) => Promise<void>;
+}>): Promise<Value> {
+  return withProtectedTaskNativeMemoryRepository({
+    authority: input.authority,
+    policy: Object.freeze({
+      mode: "shadow_encryption" as const,
+      shadowBehavior: "fallback" as const,
+      revision: input.base.policyRevision,
+    }),
+    current: input.writer,
+    domains: Object.freeze([input.scenario.domainSecret]),
+    signer: Object.freeze({
+      agentAuthorizationRevision: 7,
+      runtime: input.base.runtime.runtime,
+      signerPublication: input.base.runtime.signerPublication,
+    }),
+    resolveHistoricalSignerPublicationManager: () =>
+      input.base.currentDevice.signingPublicKey,
+    product: input.base.product,
+    agentProduct: input.base.agentProduct,
+    owner: bindEncryptionDataOperationOwner({
+      policy: {
+        resolve: async () => Object.freeze({
+          policy: Object.freeze({
+            mode: "shadow_encryption" as const,
+            shadowBehavior: "fallback" as const,
+          }),
+          revalidationToken: input.base.policyRevision,
+        }),
+        revalidate: async token => {
+          if (token !== input.base.policyRevision) {
+            throw new TypeError("Task Memory policy token changed");
+          }
+        },
+      },
+    }),
+    embedding: Object.freeze({
+      embed: async () => Object.freeze({
+        status: "success" as const,
+        value: Object.freeze({
+          vector: Object.freeze([...input.vector]),
+          provider: "openai" as const,
+          canonicalModel: "text-embedding-3-small",
+          dimensions: 1536 as const,
+          contractVersion: 1,
+        }),
+      }),
+    }),
+    execute: input.execute,
+  }, {
+    createSession: createUnavailableMemorySession(input.onPrepare),
+  });
+}
+
 async function objectRowCounts(
   base: BaseFixture,
   objectId: string,
@@ -2190,12 +2290,6 @@ describePostgres("sealed protected Task Memory object writer", () => {
               }),
             }),
           }),
-          repairExactCandidate: async () => {
-            throw new Error("Full native Memory must not repair ordinary data");
-          },
-          fallbackOrdinary: async () => {
-            throw new Error("Full native Memory must not load ordinary data");
-          },
           execute: async repository => {
             const saved = await repository.save({
               operationId: `native-task-memory-save:${randomUUID()}`,
@@ -2541,6 +2635,282 @@ describePostgres("sealed protected Task Memory object writer", () => {
         : new Error("Task Memory writer cleanup threw a non-Error value", {
           cause: cleanupError,
         });
+    }
+  });
+
+  test("publishes genuine Shadow ordinary fallback with exact Namespace and Scope audiences", async () => {
+    const base = await createBaseFixture();
+    let testError: unknown;
+    try {
+      await base.admin.update(encryptionTransitionPolicy).set({
+        mode: "shadow_encryption",
+        shadowBehavior: "fallback",
+        revision: base.policyRevision,
+        shadowEncryptionStartedAt: new Date(NOW),
+        updatedAt: new Date(NOW + 1),
+      }).where(eq(encryptionTransitionPolicy.id, "server"));
+
+      const vector = Object.freeze(new Array<number>(1536).fill(0.35));
+      const namespaceIds = Object.freeze([
+        base.namespaceValue,
+        base.seedNamespaceValue,
+      ].sort());
+      const namespaceAuthority: ProtectedMemoryAuthority = Object.freeze({
+        mode: "namespace",
+        subjectUserId: base.userId,
+        agentId: base.productAgentId,
+        readableNamespaceIds: namespaceIds,
+        mutableNamespaceIds: namespaceIds,
+        writableNamespaceId: base.namespaceValue,
+      });
+      const namespaceScenario = await createScenario(base, {
+        contentRepresentation: "dual",
+        namespaceIds,
+      });
+      const saveNamespace = (
+        content: string,
+        onPrepare?: (request: FallbackPrepareRequest) => Promise<void>,
+      ) => namespaceScenario.withAuthority(
+        () => NOW + 5,
+        ({ writer }) => withShadowFallbackRepository({
+          base,
+          scenario: namespaceScenario,
+          writer,
+          authority: namespaceAuthority,
+          vector,
+          ...(onPrepare === undefined ? {} : { onPrepare }),
+          execute: repository => repository.save({
+            operationId: `native-task-memory-fallback:${randomUUID()}`,
+            authority: namespaceAuthority,
+            type: "fact",
+            content,
+            importance: 0.8,
+          }),
+        }),
+      );
+
+      const initialContent = `Namespace fallback ${randomUUID()}`;
+      const initial = await saveNamespace(initialContent);
+      if (initial.status !== "success") {
+        throw new Error(`Namespace fallback create failed: ${initial.reason}`);
+      }
+      base.memoryIds.add(initial.value.id);
+      expect(initial).toMatchObject({
+        value: { action: "created" },
+        fallbackReason: "encryption_pending",
+      });
+      expect(await base.admin.select({
+        content: memories.content,
+        contentRevision: memories.contentRevision,
+        cryptoObjectId: memories.cryptoObjectId,
+        cryptoMappingState: memories.cryptoMappingState,
+      }).from(memories).where(eq(memories.id, initial.value.id))).toEqual([{
+        content: initialContent,
+        contentRevision: 1,
+        cryptoObjectId: null,
+        cryptoMappingState: "unmapped",
+      }]);
+      expect(await base.admin.select({
+        namespaceId: memoryNamespaces.namespaceId,
+      }).from(memoryNamespaces).where(eq(
+        memoryNamespaces.memoryId,
+        initial.value.id,
+      )).orderBy(memoryNamespaces.namespaceId)).toEqual([
+        { namespaceId: base.namespaceValue },
+      ]);
+
+      await base.admin.insert(memoryNamespaces).values({
+        memoryId: initial.value.id,
+        namespaceId: base.seedNamespaceValue,
+      });
+      const wideContent = `${initialContent} Wide`;
+      const wide = await saveNamespace(wideContent);
+      if (wide.status !== "success") {
+        throw new Error(`Wide fallback update failed: ${wide.reason}`);
+      }
+      expect(wide).toMatchObject({
+        value: { id: initial.value.id, action: "updated" },
+        fallbackReason: "encryption_pending",
+      });
+      const [wideBeforeRace] = await base.admin.select({
+        content: memories.content,
+        contentRevision: memories.contentRevision,
+        cryptoObjectId: memories.cryptoObjectId,
+        cryptoMappingState: memories.cryptoMappingState,
+      }).from(memories).where(eq(memories.id, initial.value.id));
+      expect(wideBeforeRace).toMatchObject({
+        content: wideContent,
+        cryptoObjectId: null,
+        cryptoMappingState: "unmapped",
+      });
+      expect(await base.admin.select({
+        namespaceId: memoryNamespaces.namespaceId,
+      }).from(memoryNamespaces).where(eq(
+        memoryNamespaces.memoryId,
+        initial.value.id,
+      )).orderBy(memoryNamespaces.namespaceId)).toEqual(
+        namespaceIds.map(namespaceIdValue => ({
+          namespaceId: namespaceIdValue,
+        })),
+      );
+
+      let raced = false;
+      const stale = await saveNamespace(
+        `${wideContent} stale`,
+        async request => {
+          if (raced) return;
+          raced = true;
+          expect(request.plan.memoryId).toBe(initial.value.id);
+          await base.admin.delete(memoryNamespaces).where(and(
+            eq(memoryNamespaces.memoryId, initial.value.id),
+            eq(memoryNamespaces.namespaceId, base.seedNamespaceValue),
+          ));
+        },
+      );
+      expect(raced).toBe(true);
+      expect(stale).toEqual({
+        status: "unavailable",
+        reason: "stale_revision",
+      });
+      const [wideAfterRace] = await base.admin.select({
+        content: memories.content,
+        contentRevision: memories.contentRevision,
+        cryptoObjectId: memories.cryptoObjectId,
+        cryptoMappingState: memories.cryptoMappingState,
+      }).from(memories).where(eq(memories.id, initial.value.id));
+      expect(wideAfterRace).toMatchObject({
+        content: wideContent,
+        cryptoMappingState: "stale",
+      });
+      expect(wideAfterRace!.contentRevision).toBeGreaterThan(
+        wideBeforeRace!.contentRevision,
+      );
+      expect(wideAfterRace?.cryptoObjectId).not.toBeNull();
+      const activeRepair = await base.admin.select({
+        completion: memoryCryptoRevisions.completion,
+        disposition: memoryCryptoRevisions.disposition,
+      }).from(memoryCryptoRevisions).where(and(
+        eq(memoryCryptoRevisions.memoryId, initial.value.id),
+        eq(memoryCryptoRevisions.disposition, "active"),
+      ));
+      expect(activeRepair).toContainEqual({
+        completion: "pending",
+        disposition: "active",
+      });
+
+      const scopeId = randomUUID();
+      base.scopeIds.add(scopeId);
+      await base.admin.insert(agentScopes).values({
+        id: scopeId,
+        parentAgentId: base.productAgentId,
+        speakerUserId: base.userId,
+        name: `task-memory-fallback-${scopeId}`,
+      });
+      const scopeAuthority: ProtectedMemoryAuthority = Object.freeze({
+        mode: "scope",
+        subjectUserId: base.userId,
+        agentId: base.productAgentId,
+        scopeId,
+        originWritableNamespaceId: base.namespaceValue,
+      });
+      const scopeScenario = await createScenario(base, {
+        contentRepresentation: "dual",
+        scopeMemory: {
+          binding: Object.freeze({
+            scopeId,
+            memoryRoomId: base.roomId,
+            originWritableNamespaceId: base.namespaceValue,
+            readableNamespaceIds: Object.freeze([base.namespaceValue]),
+          }),
+          targetRoomId: base.roomId,
+          targetNamespace: base.namespace,
+        },
+      });
+      const saveScope = (content: string) => scopeScenario.withAuthority(
+        () => NOW + 5,
+        ({ writer }) => withShadowFallbackRepository({
+          base,
+          scenario: scopeScenario,
+          writer,
+          authority: scopeAuthority,
+          vector,
+          execute: repository => repository.save({
+            operationId: `native-task-scope-memory-fallback:${randomUUID()}`,
+            authority: scopeAuthority,
+            type: "fact",
+            content,
+            importance: 0.7,
+          }),
+        }),
+      );
+      const scopeInitialContent = `Scope fallback ${randomUUID()}`;
+      const scopeInitial = await saveScope(scopeInitialContent);
+      if (scopeInitial.status !== "success") {
+        throw new Error(`Scope fallback create failed: ${scopeInitial.reason}`);
+      }
+      base.memoryIds.add(scopeInitial.value.id);
+      expect(scopeInitial).toMatchObject({
+        value: { action: "created" },
+        fallbackReason: "encryption_pending",
+      });
+      const scopeUpdatedContent = `${scopeInitialContent} updated`;
+      const scopeUpdated = await saveScope(scopeUpdatedContent);
+      if (scopeUpdated.status !== "success") {
+        throw new Error(`Scope fallback update failed: ${scopeUpdated.reason}`);
+      }
+      expect(scopeUpdated).toMatchObject({
+        value: { id: scopeInitial.value.id, action: "updated" },
+        fallbackReason: "encryption_pending",
+      });
+      expect(await base.admin.select({
+        content: memories.content,
+        contentRevision: memories.contentRevision,
+        cryptoObjectId: memories.cryptoObjectId,
+        cryptoMappingState: memories.cryptoMappingState,
+        scopeOriginNamespaceId: memories.scopeOriginNamespaceId,
+      }).from(memories).where(eq(
+        memories.id,
+        scopeInitial.value.id,
+      ))).toEqual([{
+        content: scopeUpdatedContent,
+        contentRevision: 3,
+        cryptoObjectId: null,
+        cryptoMappingState: "unmapped",
+        scopeOriginNamespaceId: base.namespaceValue,
+      }]);
+      expect(await base.admin.select({
+        scopeId: memoryScopes.scopeId,
+        origin: memoryScopes.origin,
+      }).from(memoryScopes).where(eq(
+        memoryScopes.memoryId,
+        scopeInitial.value.id,
+      ))).toEqual([{ scopeId, origin: "scope" }]);
+      expect(await base.admin.select({
+        namespaceId: memoryNamespaces.namespaceId,
+      }).from(memoryNamespaces).where(eq(
+        memoryNamespaces.memoryId,
+        scopeInitial.value.id,
+      ))).toEqual([]);
+    } catch (error) {
+      testError = error;
+    }
+    let cleanupError: unknown;
+    try {
+      await base.cleanup();
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (testError !== undefined && cleanupError !== undefined) {
+      throw new AggregateError(
+        [testError, cleanupError],
+        "Task Memory fallback test and cleanup both failed",
+      );
+    }
+    if (testError !== undefined) {
+      throw testError instanceof Error ? testError : new Error("Task Memory fallback test failed", { cause: testError });
+    }
+    if (cleanupError !== undefined) {
+      throw cleanupError instanceof Error ? cleanupError : new Error("Task Memory fallback cleanup failed", { cause: cleanupError });
     }
   });
 
@@ -3087,13 +3457,6 @@ describePostgres("sealed protected Task Memory object writer", () => {
               }),
             }),
           }),
-          repairExactCandidate: async () => {
-            throw new Error("Scope repair must use the native Task owner");
-          },
-          fallbackOrdinary: async () => {
-            fallbackCalls += 1;
-            throw new Error("Strict Shadow must not publish ordinary-only");
-          },
           execute: repository => repository.save({
             operationId: `native-task-memory-shadow-save:${randomUUID()}`,
             authority,
@@ -3101,6 +3464,11 @@ describePostgres("sealed protected Task Memory object writer", () => {
             content: savedContent,
             importance: 0.8,
           }),
+        }, {
+          createFallback: () => {
+            fallbackCalls += 1;
+            throw new Error("Strict Shadow must not construct ordinary-only fallback");
+          },
         }),
       );
       if (result.status !== "success") {

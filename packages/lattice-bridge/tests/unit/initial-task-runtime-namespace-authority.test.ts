@@ -1083,9 +1083,14 @@ describe("initial Task Runtime recipient authority", () => {
         events.push("admission"); const current = device(); devices.push(current); return current;
       });
     let borrowed: Uint8Array[] = [];
+    let borrowedRestricted: PostgresJsBridgeConnection | null = null;
     try {
-      const result = await withInitialTaskRuntimeRecipientAuthority({ ...recipientInput(input), use: async (current) => {
+      const result = await withInitialTaskRuntimeRecipientAuthority({ ...recipientInput(input), validateBeforeCommit: () => {
+        events.push("commit-check");
+      }, use: async (current, restricted) => {
         events.push("callback");
+        borrowedRestricted = restricted;
+        expect(restricted).not.toBe(input.restricted);
         expect(current.sourceRoomId).toBe(ROOMS[0]); expect(current.policyRevision).toBe(7);
         expect(current.namespaceRequirements).toEqual(recipientInput(input).namespaceRequirements);
         expect(current.domains.map((entry) => entry.domainId)).toEqual([...DOMAINS]);
@@ -1099,7 +1104,12 @@ describe("initial Task Runtime recipient authority", () => {
       expect(events.indexOf("device-lock")).toBeLessThan(events.indexOf("namespace-locks"));
       expect(events.indexOf("namespace-locks")).toBeLessThan(events.indexOf("domain-locks"));
       expect(events.lastIndexOf("admission")).toBeLessThan(events.indexOf("callback"));
+      expect(events.indexOf("callback")).toBeLessThan(events.indexOf("commit-check"));
+      expect(events.indexOf("commit-check")).toBeLessThan(events.indexOf("restricted-released"));
       expect(events.slice(-2)).toEqual(["restricted-released", "product-released"]);
+      expect(borrowedRestricted).not.toBeNull();
+      expect(() => borrowedRestricted!.query("select 1"))
+        .toThrow("Parked Task Runtime authority is not active");
       for (const bytes of [...borrowed, ...devices.flatMap((entry) => [entry.signingPublicKey, entry.headDigest])]) {
         expect(bytes.every((byte) => byte === 0)).toBe(true);
       }

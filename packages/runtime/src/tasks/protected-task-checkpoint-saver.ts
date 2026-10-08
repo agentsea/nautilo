@@ -18,6 +18,37 @@ type TaskCellInput = Parameters<
 type CheckpointCell = ReturnType<typeof createTaskRuntimeCheckpointCellCrypto>;
 const ownedPools = new WeakSet<object>();
 
+function freshOwnedPool(createDedicatedPool: () => DedicatedPool): DedicatedPool {
+  const pool = createDedicatedPool();
+  if (
+    typeof pool !== "object"
+    || pool === null
+    || typeof pool.connect !== "function"
+    || typeof pool.end !== "function"
+    || ownedPools.has(pool)
+  ) {
+    throw new TypeError(
+      "Protected Task checkpoint segment requires a fresh dedicated pool",
+    );
+  }
+  ownedPools.add(pool);
+  return pool;
+}
+
+function copyPhysicalManifest(
+  manifest: EncryptedCheckpointPhysicalManifest,
+): EncryptedCheckpointPhysicalManifest {
+  return Object.freeze({
+    contract: manifest.contract,
+    expectedCheckpointCount: manifest.expectedCheckpointCount,
+    checkpointOrderedDigest: manifest.checkpointOrderedDigest.slice(),
+    expectedBlobCount: manifest.expectedBlobCount,
+    blobOrderedDigest: manifest.blobOrderedDigest.slice(),
+    expectedPendingWriteCount: manifest.expectedPendingWriteCount,
+    pendingWriteOrderedDigest: manifest.pendingWriteOrderedDigest.slice(),
+  });
+}
+
 async function withOwnedTaskCheckpointSaver<Value>(
   input: Readonly<{
     cell: CheckpointCell;
@@ -25,19 +56,7 @@ async function withOwnedTaskCheckpointSaver<Value>(
     execute(saver: EncryptedCheckpointSaver): Promise<Value>;
   }>,
 ): Promise<Value> {
-  const pool = input.createDedicatedPool();
-  if (
-    typeof pool !== "object" ||
-    pool === null ||
-    typeof pool.connect !== "function" ||
-    typeof pool.end !== "function" ||
-    ownedPools.has(pool)
-  ) {
-    throw new TypeError(
-      "Protected Task checkpoint segment requires a fresh dedicated pool",
-    );
-  }
-  ownedPools.add(pool);
+  const pool = freshOwnedPool(() => input.createDedicatedPool());
   let saver: EncryptedCheckpointSaver;
   try {
     saver = createEncryptedCheckpointSaver({
@@ -122,19 +141,7 @@ export async function withNativeProtectedTaskCheckpointManifest<Value>(
   const assertCurrentTaskAuthority = input.assertCurrentTaskAuthority;
   const logicalThreadId = input.identity.graphThreadId;
   const signal = input.signal;
-  const pool = createDedicatedPool();
-  if (
-    typeof pool !== "object"
-    || pool === null
-    || typeof pool.connect !== "function"
-    || typeof pool.end !== "function"
-    || ownedPools.has(pool)
-  ) {
-    throw new TypeError(
-      "Protected Task checkpoint segment requires a fresh dedicated pool",
-    );
-  }
-  ownedPools.add(pool);
+  const pool = freshOwnedPool(createDedicatedPool);
   let saver: EncryptedCheckpointSaver;
   try {
     const cell = createNativeTaskRuntimeCheckpointCellCrypto(input);
@@ -188,4 +195,49 @@ export async function withNativeProtectedTaskCheckpointManifest<Value>(
   if (outcome.status === "rejected") throw outcome.error;
   if (close.status !== "closed") throw close.error;
   return outcome.value;
+}
+
+/**
+ * Read one parked Task's encrypted checkpoint manifest without constructing a
+ * saver or opening checkpoint crypto. The fresh physical pool is always closed
+ * before the detached manifest becomes observable to the caller.
+ */
+export async function readProtectedTaskCheckpointPhysicalManifest(
+  input: Readonly<{
+    logicalThreadId: string;
+    createDedicatedPool(): DedicatedPool;
+  }>,
+): Promise<EncryptedCheckpointPhysicalManifest> {
+  const pool = freshOwnedPool(() => input.createDedicatedPool());
+  let outcome:
+    | Readonly<{
+        status: "fulfilled";
+        manifest: EncryptedCheckpointPhysicalManifest;
+      }>
+    | Readonly<{ status: "rejected"; error: unknown }>;
+  try {
+    outcome = {
+      status: "fulfilled",
+      manifest: copyPhysicalManifest(
+        await readEncryptedCheckpointPhysicalManifest(pool, {
+          logicalThreadId: input.logicalThreadId,
+          checkpointNamespace: "",
+        }),
+      ),
+    };
+  } catch (error) {
+    outcome = { status: "rejected", error };
+  }
+  try {
+    await pool.end();
+  } catch (error) {
+    if (outcome.status === "rejected") throw outcome.error;
+    throw error instanceof Error
+      ? error
+      : new Error("Protected Task checkpoint pool could not close", {
+        cause: error,
+      });
+  }
+  if (outcome.status === "rejected") throw outcome.error;
+  return outcome.manifest;
 }

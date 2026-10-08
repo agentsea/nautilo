@@ -605,7 +605,7 @@ async function fixture() {
     binding: currentBinding,
     withCurrentAuthority: async ({ scopeMemory, targetRoomId, use }) => {
       expect(targetRoomId).toBe(ROOM);
-      return use(recipientAuthority(currentScopeMemory ?? scopeMemory));
+      return use(recipientAuthority(currentScopeMemory ?? scopeMemory), trackedRepository);
     },
   });
   return {
@@ -1948,4 +1948,61 @@ describe("Task Runtime grant claim", () => {
       expect(value.recipients.size).toBe(0);
     }
   });
+  test("recipient binding uses only the repository lent by its authority owner", async () => {
+    const value = await fixture();
+    await value.coordinator.prepareOrClaimExact(occurrence());
+    let scopedReads = 0;
+    let scopedWrites = 0;
+    const result = await value.coordinator.bindAwaitingRecipientForDevice({
+      occurrence: occurrence(), binding: value.binding,
+      withCurrentAuthority: async ({ use }) => use(value.recipientAuthority(), {
+        get: async id => { scopedReads += 1; return value.repository.get(id); },
+        compareAndSwap: async () => { scopedWrites += 1; throw new Error("held CAS rejected"); },
+      }),
+    }).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect(result).toMatchObject({ message: "held CAS rejected" });
+    expect(scopedReads).toBe(1);
+    expect(scopedWrites).toBe(1);
+    expect(value.recipients.size).toBe(0);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("awaiting_recipient");
+    value.recipients.close();
+  });
+
+  test("recipient binding destroys in-memory custody when authority fails after the callback", async () => {
+    const value = await fixture();
+    await value.coordinator.prepareOrClaimExact(occurrence());
+    const result = await value.coordinator.bindAwaitingRecipientForDevice({
+      occurrence: occurrence(), binding: value.binding,
+      withCurrentAuthority: async ({ use }) => {
+        await use(value.recipientAuthority(), value.trackedRepository);
+        throw new Error("authority expired at commit");
+      },
+    }).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect(result).toMatchObject({ message: "authority expired at commit" });
+    expect(value.recipients.size).toBe(0);
+    value.recipients.close();
+  });
+
+  test("rejects expiry during the held recipient attachment CAS", async () => {
+    const value = await fixture();
+    await value.coordinator.prepareOrClaimExact(occurrence());
+    const result = await value.coordinator.bindAwaitingRecipientForDevice({
+      occurrence: occurrence(), binding: value.binding,
+      withCurrentAuthority: async ({ use }) => use(value.recipientAuthority(), {
+        get: id => value.repository.get(id),
+        compareAndSwap: async request => {
+          const result = await value.repository.compareAndSwap(request);
+          value.setClock(NOW + 60_000);
+          return result;
+        },
+      }),
+    }).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect(result instanceof Error ? result.message : null).toContain("recipient expired before commit");
+    expect(value.recipients.size).toBe(0);
+    value.recipients.close();
+  });
+
 });

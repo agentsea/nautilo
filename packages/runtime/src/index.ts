@@ -405,10 +405,12 @@ export {
   withProtectedTaskCheckpointSaver,
   withNativeProtectedTaskCheckpointSaver,
   withNativeProtectedTaskCheckpointManifest,
+  readProtectedTaskCheckpointPhysicalManifest,
   type NativeProtectedTaskCheckpointManifestResult,
 } from "./tasks/protected-task-checkpoint-saver";
 export {
   dispatchTaskRun,
+  resolveToolWhitelist,
   type DispatchTaskRunDeps,
   type TaskExecutionRouteFacts,
   type TaskExecutionRouteSelector,
@@ -498,7 +500,10 @@ export {
   getTaskRunJobManager,
   type TaskRunJobManager,
 } from "./tasks/task-runtime-context";
-export { taskRunExecutor } from "./tasks/task-run-executor";
+export {
+  computeTaskRelayCapabilities,
+  taskRunExecutor,
+} from "./tasks/task-run-executor";
 export {
   finalizeTaskExternalReviewAcceptedReceipt,
   settleTaskWriterReviewAfterModel,

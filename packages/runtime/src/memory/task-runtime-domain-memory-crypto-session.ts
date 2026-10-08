@@ -88,6 +88,29 @@ function repairFailed(reason: string): AgentObjectProtectionResult<never> {
   return Object.freeze({ status: "failed" as const, reason });
 }
 
+function canonicalIds(ids: readonly string[]): readonly string[] | null {
+  const sorted = [...new Set(ids)].sort();
+  return sorted.length === ids.length
+      && sorted.every((id, index) => id === ids[index])
+    ? Object.freeze(sorted)
+    : null;
+}
+
+function exactIds(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length
+    && left.every((id, index) => id === right[index]);
+}
+
+function namespaceAuthority(
+  authority: ProtectedMemoryAuthority,
+  subjectUserId: string,
+  agentId: string,
+): authority is Extract<ProtectedMemoryAuthority, { mode: "namespace" }> {
+  return authority.mode === "namespace"
+    && authority.subjectUserId === subjectUserId
+    && authority.agentId === agentId;
+}
+
 /** Native protected Task wrapper for one fixed Memory authority. */
 export function createTaskRuntimeDomainMemoryCryptoSession(
   input: Readonly<TaskRuntimeDomainMemoryCryptoSessionInput>,
@@ -99,6 +122,7 @@ export function createTaskRuntimeDomainMemoryCryptoSession(
   /** Protect one product-authorized ordinary Scope source for exact repair. */
   protectExactRepair(request: Readonly<{
     operationId: string;
+    authority: ProtectedMemoryAuthority;
     source: ForegroundMemoryRepairSource;
     signal?: AbortSignal;
   }>): Promise<AgentObjectProtectionResult<MemoryPayloadV1>>;
@@ -124,7 +148,7 @@ export function createTaskRuntimeDomainMemoryCryptoSession(
     persist: input.persist,
     read: input.read,
   });
-  const scopeOriginNamespaceId = input.scopeBinding?.originWritableNamespaceId;
+  const scopeBinding = input.scopeBinding ?? null;
   const domain = createDomainMemoryCryptoSession({
     subjectUserId: input.subjectUserId,
     agentId: input.agentId,
@@ -206,16 +230,38 @@ export function createTaskRuntimeDomainMemoryCryptoSession(
         || request.signal?.aborted === true;
       if (!active(input.evidence) || cancelled()) return repairUnavailable();
       const source = request.source;
-      if (scopeOriginNamespaceId === undefined
-        || source.representationMode !== "ordinary-and-protected"
+      const namespaceIds = canonicalIds(source.accessNamespaceIds);
+      if (namespaceIds === null) {
+        return repairFailed("entity_namespace_set_invalid");
+      }
+      let exactRepairAuthority: boolean;
+      if (scopeBinding === null) {
+        if (!namespaceAuthority(
+          request.authority,
+          input.subjectUserId,
+          input.agentId,
+        )) return repairUnavailable();
+        const repairAuthority = request.authority;
+        exactRepairAuthority = namespaceIds.every(namespaceId =>
+          repairAuthority.mutableNamespaceIds.includes(namespaceId)
+          && input.evidence.namespaceRequirements.some(requirement =>
+            requirement.namespaceId === namespaceId
+            && requirement.operations.includes("encrypt")));
+      } else {
+        exactRepairAuthority = request.authority.mode === "scope"
+          && request.authority.subjectUserId === input.subjectUserId
+          && request.authority.agentId === input.agentId
+          && request.authority.scopeId === scopeBinding.scopeId
+          && request.authority.originWritableNamespaceId
+            === scopeBinding.originWritableNamespaceId
+          && exactIds(namespaceIds, [scopeBinding.originWritableNamespaceId]);
+      }
+      if (!exactRepairAuthority) return repairUnavailable();
+      if (source.representationMode !== "ordinary-and-protected"
         || typeof source.memory.type !== "string"
         || typeof source.memory.content !== "string"
         || source.plaintextBytes === null) {
         return repairFailed("protected_representation_missing");
-      }
-      if (source.accessNamespaceIds.length !== 1
-        || source.accessNamespaceIds[0] !== scopeOriginNamespaceId) {
-        return repairFailed("entity_namespace_set_invalid");
       }
       const memoryId = source.memory.id;
       const contentRevision = source.targetContentRevision;
@@ -237,7 +283,7 @@ export function createTaskRuntimeDomainMemoryCryptoSession(
           existingObjectId: source.existingObjectId,
           expectedAccessRevision: source.expectedAccessRevision,
           createdAt: source.createdAt,
-          namespaceIds: Object.freeze([...source.accessNamespaceIds]),
+          namespaceIds,
           plaintextBytes: source.plaintextBytes,
         },
         decode: decodeMemoryPayloadV1,

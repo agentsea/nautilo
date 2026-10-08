@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { expect, test } from "bun:test";
 
 import type {
@@ -5,7 +6,15 @@ import type {
   PostgresJsBridgeConnection,
   PostgresJsBridgeRow,
 } from "@nautilo/db";
-import { LatticeCrypto } from "@nautilo/lattice-crypto";
+import {
+  LatticeCrypto,
+  authorizationRevision,
+  domainForegroundNamespaceBindingSetDigest,
+} from "@nautilo/lattice-crypto";
+import {
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+} from "@nautilo/lattice-crypto/background";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import type {
   InitialTaskRuntimeRecipientAuthority,
@@ -20,6 +29,8 @@ import {
   createProtectedTaskRuntimeRecipientAuthorityPort,
   type ProtectedTaskRuntimeRecipientAuthorityDependencies,
 } from "../../src/routes/protected-task-runtime-recipient-authority";
+import { createProtectedTaskRuntimeRecipientRequestPlan } from
+  "../../src/routes/protected-task-runtime-recipient-request-plan";
 
 const OWNER = "10000000-0000-4000-8000-000000000001";
 const REQUESTER = "20000000-0000-4000-8000-000000000002";
@@ -196,8 +207,14 @@ function dependencies(
         ProtectedTaskRuntimeRecipientAuthorityDependencies["withAuthority"]
       >[0],
     ) => void;
+    inspectRepositoryConnection?: (
+      restricted: PostgresJsBridgeConnection,
+    ) => void;
+    scopedRestricted?: PostgresJsBridgeConnection;
   }> = {},
 ): Partial<ProtectedTaskRuntimeRecipientAuthorityDependencies> {
+  const scopedRestricted = input.scopedRestricted
+    ?? ({ query: async () => [] } as never);
   return {
     db: {} as DirectDatabase,
     crypto: new LatticeCrypto(),
@@ -227,8 +244,18 @@ function dependencies(
       }
       const borrowed =
         input.borrowed === undefined ? authority() : input.borrowed;
-      return borrowed === null ? null : current.use(borrowed);
+      if (borrowed === null) return null;
+      const value = await current.use(borrowed, scopedRestricted);
+      await current.validateBeforeCommit?.();
+      return value;
     }) as ProtectedTaskRuntimeRecipientAuthorityDependencies["withAuthority"],
+    repository: async restricted => {
+      input.inspectRepositoryConnection?.(restricted);
+      return {
+        get: async () => null,
+        compareAndSwap: async () => ({ status: "stale", current: null }),
+      } as never;
+    },
   };
 }
 
@@ -602,5 +629,158 @@ test("rejects substituted device, policy, Namespace, or Domain authority", async
       ).resolves.toBeNull(),
     );
     expect(used).toBe(false);
+  }
+});
+
+test("lends exact bound authority without manufacturing an awaiting record", async () => {
+  const crypto = new LatticeCrypto();
+  const keyPair = await crypto.generateEncryptionKeyPair();
+  const value = occurrence();
+  const initial = record(value);
+  const current = authority(initial);
+  const boundAuthority: InitialTaskRuntimeRecipientAuthority = {
+    ...current,
+    domains: [{
+      domainId: DOMAIN_A,
+      sourceNamespaceId: CONTENT,
+      participantDigest: bytes(10),
+      participantCount: 1,
+      keyClass: "ai",
+      domainKeyGeneration: 5,
+      authorizationRevision: authorizationRevision(9),
+      headDigest: bytes(11),
+      activeNamespaceBindingSetDigest:
+        domainForegroundNamespaceBindingSetDigest(crypto, [{
+          namespaceId: CONTENT,
+          bindingDigest: bytes(12),
+        }]),
+      activeNamespaceBindingCount: 1,
+    }, {
+      domainId: DOMAIN_B,
+      sourceNamespaceId: READABLE,
+      participantDigest: bytes(13),
+      participantCount: 1,
+      keyClass: "ai",
+      domainKeyGeneration: 6,
+      authorizationRevision: authorizationRevision(10),
+      headDigest: bytes(14),
+      activeNamespaceBindingSetDigest:
+        domainForegroundNamespaceBindingSetDigest(crypto, [{
+          namespaceId: READABLE,
+          bindingDigest: bytes(15),
+        }]),
+      activeNamespaceBindingCount: 1,
+    }],
+  };
+  const expiresAt = 2_000_000_060_000;
+  const recipientKeyId = `task-runtime:${RUN}:0`;
+  const requestPlan = createProtectedTaskRuntimeRecipientRequestPlan({
+    crypto,
+    occurrence: value,
+    initialRecord: initial,
+    sourceRoomId: SOURCE_ROOM,
+    authority: {
+      policyRevision: 7,
+      namespaces: initial.authoritySet.namespaceRequirements,
+      domains: initial.authoritySet.domainRequirements,
+    },
+    createdAt: initial.snapshot.createdAt,
+    recipientTtlMs: 60_000,
+  });
+  const request = requestPlan.buildRequest({
+    record: initial,
+    attempt: {
+      requestId: initial.snapshot.requestId,
+      workId: RUN,
+      recipientGeneration: 0,
+      recipientKeyId,
+      recipientPublicKey: keyPair.publicKey,
+      expiresAt,
+    },
+    binding,
+    authority: boundAuthority,
+  });
+  const descriptorBytes =
+    encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+  const bound = {
+    ...initial,
+    snapshot: {
+      ...initial.snapshot,
+      state: "awaiting_device" as const,
+      requestRevision: 1,
+      updatedAt: 2_000_000_000_001,
+      descriptorDigest: createHash("sha256")
+        .update(descriptorBytes).digest("hex"),
+      recipient: {
+        recipientKeyId,
+        recipientPublicKey: Buffer.from(keyPair.publicKey).toString("base64url"),
+        expiresAt,
+      },
+    },
+    descriptorBytes,
+  } as BackgroundAuthorizationTaskRuntimeRecordV3;
+  const heldRestricted = { query: async () => [] } as never;
+  const scopedRestricted = { query: async () => [] } as never;
+  let repositoryConnection: PostgresJsBridgeConnection | null = null;
+  try {
+    const port = createProtectedTaskRuntimeRecipientAuthorityPort(
+      dependencies({
+        borrowed: boundAuthority,
+        scopedRestricted,
+        inspectRepositoryConnection: connection => {
+          repositoryConnection = connection;
+        },
+      }),
+    );
+    const result = await port({
+      occurrence: value,
+      record: bound,
+      binding,
+      targetRoomId: MEMORY_ROOM,
+      phase: "bound",
+      restricted: heldRestricted,
+      validateBeforeCommit: held => held.device.deviceId === DEVICE,
+      use: (held, repository) => {
+        expect(held.restricted).toBe(scopedRestricted);
+        expect(held.restricted).not.toBe(heldRestricted);
+        expect(repository).toBeDefined();
+        expect(held.device.deviceId).toBe(DEVICE);
+        return "bound";
+      },
+    });
+    expect(result).toBe("bound");
+    expect(repositoryConnection).toBe(scopedRestricted);
+
+    let clock = expiresAt - 1;
+    let scopedOperationsDrained = false;
+    const expiring = createProtectedTaskRuntimeRecipientAuthorityPort({
+      ...dependencies({ borrowed: boundAuthority, scopedRestricted }),
+      now: () => clock,
+      withAuthority: (async input => {
+        const value = await input.use(boundAuthority, scopedRestricted);
+        await Promise.resolve();
+        scopedOperationsDrained = true;
+        clock = expiresAt;
+        await input.validateBeforeCommit?.();
+        return value;
+      }) as ProtectedTaskRuntimeRecipientAuthorityDependencies["withAuthority"],
+    });
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(expiring({
+      occurrence: value,
+      record: bound,
+      binding,
+      targetRoomId: MEMORY_ROOM,
+      phase: "bound",
+      restricted: heldRestricted,
+      validateBeforeCommit: () => true,
+      use: () => "unsafe",
+    })).rejects.toThrow("expired before commit");
+    expect(scopedOperationsDrained).toBe(true);
+  } finally {
+    destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    descriptorBytes.fill(0);
+    keyPair.privateKey.fill(0);
+    keyPair.publicKey.fill(0);
   }
 });

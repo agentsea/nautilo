@@ -100,8 +100,6 @@ export type ProtectedTaskNativeFixedMemorySegmentInput = Readonly<{
   agentProduct: MemoryRepositoryInput["agentProduct"];
   owner: EncryptionDataOperationOwner;
   embedding: ProtectedAgentMemoryEmbeddingPort;
-  repairExactCandidate: MemoryRepositoryInput["repairExactCandidate"];
-  fallbackOrdinary: MemoryRepositoryInput["fallbackOrdinary"];
   createDedicatedPool: DedicatedPoolFactory;
   resolveExecutionContext(input: Readonly<{
     occurrence: ProtectedTaskRunningOccurrence;
@@ -841,8 +839,6 @@ export function createProtectedTaskNativeFixedMemorySegment(
                       agentProduct: input.agentProduct,
                       owner: input.owner,
                       embedding: input.embedding,
-                      repairExactCandidate: input.repairExactCandidate,
-                      fallbackOrdinary: input.fallbackOrdinary,
                       execute: repository => dependencies.withCheckpointSaver({
                         restricted: input.restricted,
                         crypto: input.crypto,

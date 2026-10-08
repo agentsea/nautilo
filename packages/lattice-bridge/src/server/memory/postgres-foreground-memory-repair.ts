@@ -52,6 +52,8 @@ export type ForegroundMemoryRepairSource = Readonly<{
   targetContentRevision: number;
   existingObjectId: string | null;
   expectedAccessRevision: number;
+  /** Held Task repairs require proof that the selected vector is current. */
+  expectedEmbeddingRevision?: number | null;
   accessNamespaceIds: readonly string[];
   createdAt: number;
   plaintextBytes: Uint8Array | null;
@@ -65,6 +67,9 @@ export type TaskScopeMemoryRepairSource = Readonly<{
   expectedScopeOriginNamespaceId: string;
   expectedEmbeddingRevision: number;
 }>;
+
+export type TaskNamespaceMemoryRepairSource = ForegroundMemoryRepairSource &
+  Readonly<{ expectedEmbeddingRevision: number }>;
 
 type TaskScopeMemoryRepairExpectation = Readonly<{
   scopeId: string;
@@ -383,6 +388,7 @@ async function loadPostgresMemoryRepairSourcesInTransaction(input: Readonly<{
         targetContentRevision,
         existingObjectId: row.crypto_object_id,
         expectedAccessRevision: row.crypto_access_revision,
+        expectedEmbeddingRevision: row.embedding_revision,
         accessNamespaceIds,
         createdAt: createdAt.getTime(),
         plaintextBytes,
@@ -454,6 +460,38 @@ export async function reservePostgresTaskScopeMemoryRepairSource(
     expectedScopeOriginNamespaceId: input.expectedScopeOriginNamespaceId,
     expectedEmbeddingRevision: input.expectedContentRevision,
   });
+}
+
+/** Reserve one exact ordinary Task Namespace/Wide source on its caller-owned tx. */
+export async function reservePostgresTaskNamespaceMemoryRepairSource(
+  input: Readonly<{
+    transaction: ConversationProductPostgresTransaction;
+    crypto: LatticeCrypto;
+    selection: ForegroundMemoryRepairSelection;
+    expectedContentRevision: number;
+  }>,
+): Promise<TaskNamespaceMemoryRepairSource> {
+  if (!Number.isSafeInteger(input.expectedContentRevision)
+    || input.expectedContentRevision < 0) {
+    throw new TypeError("Task Namespace Memory repair coordinates are invalid");
+  }
+  const [source] = await loadPostgresMemoryRepairSourcesInTransaction({
+    transaction: input.transaction,
+    crypto: input.crypto,
+    memories: [input.selection],
+    representationMode: "ordinary-and-protected",
+  });
+  if (source === undefined
+    || source.expectedContentRevision !== input.expectedContentRevision
+    || source.expectedEmbeddingRevision !== input.expectedContentRevision
+    || source.accessNamespaceIds.length < 1) {
+    source?.plaintextBytes?.fill(0);
+    source?.requestCommitment.fill(0);
+    throw new ForegroundProductChangedError(
+      "Selected Task Namespace Memory changed",
+    );
+  }
+  return source as TaskNamespaceMemoryRepairSource;
 }
 
 function equalBytes(left: unknown, right: Uint8Array): boolean {
@@ -722,6 +760,7 @@ async function attachPostgresMemoryRepairInTransaction(input: Readonly<{
   transaction: ConversationProductPostgresTransaction;
   attachment: ForegroundMemoryRepairAttachment;
   taskScope?: TaskScopeMemoryRepairAttachment;
+  taskNamespace?: true;
 }>): Promise<"attached" | "replayed" | "conflict"> {
   const { source, objectId, requestCommitment } = input.attachment;
   if (
@@ -762,7 +801,9 @@ async function attachPostgresMemoryRepairInTransaction(input: Readonly<{
   // while reading its audience. Besides fencing metadata changes, the strong
   // parent lock blocks child-FK inserts whose stale-mapping trigger could have
   // observed the still-unmapped row before this attachment.
-  const lockedTaskLifecycleRows = input.taskScope === undefined
+  const heldTaskRepair = input.taskScope !== undefined
+    || input.taskNamespace === true;
+  const lockedTaskLifecycleRows = !heldTaskRepair
     ? null
     : await executeTypedConversationProductQuery(
       input.transaction,
@@ -786,7 +827,7 @@ async function attachPostgresMemoryRepairInTransaction(input: Readonly<{
     source.memory.id,
   )).limit(2);
   const rows = await executeTypedConversationProductQuery(input.transaction,
-    input.taskScope === undefined
+    !heldTaskRepair
       ? memoryQuery
       : memoryQuery.for("update"));
   const row = rows[0];
@@ -887,6 +928,17 @@ async function attachPostgresMemoryRepairInTransaction(input: Readonly<{
     scopeRows,
     accessNamespaceIds: currentNamespaceIds,
   })) return "conflict";
+  if (input.taskNamespace === true && (
+    !Number.isSafeInteger(source.expectedEmbeddingRevision)
+    || row.embedding_revision !== (replay
+      ? source.targetContentRevision
+      : source.expectedEmbeddingRevision)
+  )) return "conflict";
+  const expectedTaskEmbeddingRevision = input.taskScope?.expectedEmbeddingRevision
+    ?? (input.taskNamespace === true
+      && typeof source.expectedEmbeddingRevision === "number"
+      ? source.expectedEmbeddingRevision
+      : null);
 
   const lifecycleRows = lockedTaskLifecycleRows
     ?? await executeTypedConversationProductQuery(
@@ -952,9 +1004,9 @@ async function attachPostgresMemoryRepairInTransaction(input: Readonly<{
   const updated = await executeTypedConversationProductQuery(input.transaction,
     conversationProductTypedDb.update(memories).set({
       contentRevision: source.targetContentRevision,
-      ...(input.taskScope === undefined ? {} : {
-        embeddingRevision: source.targetContentRevision,
-      }),
+      ...(heldTaskRepair
+        ? { embeddingRevision: source.targetContentRevision }
+        : {}),
       cryptoObjectId: objectId,
       cryptoAccessRevision: 0,
       cryptoRequiredNamespaceFingerprint: fingerprint,
@@ -969,12 +1021,10 @@ async function attachPostgresMemoryRepairInTransaction(input: Readonly<{
       input.taskScope === undefined
         ? undefined
         : eq(memories.cryptoAccessRevision, source.expectedAccessRevision),
-      input.taskScope === undefined
+      expectedTaskEmbeddingRevision === null
         ? undefined
-        : eq(
-          memories.embeddingRevision,
-          input.taskScope.expectedEmbeddingRevision,
-        ),
+        : eq(memories.embeddingRevision,
+          expectedTaskEmbeddingRevision),
       input.taskScope === undefined
         ? undefined
         : eq(
@@ -1107,5 +1157,31 @@ export function attachPostgresTaskScopeMemoryRepair(input: Readonly<{
         input.source.expectedScopeOriginNamespaceId,
       expectedEmbeddingRevision: input.source.expectedEmbeddingRevision,
     },
+  });
+}
+
+/** Attach one exact Task Namespace/Wide repair on its caller-owned transaction. */
+export function attachPostgresTaskNamespaceMemoryRepair(input: Readonly<{
+  transaction: ConversationProductPostgresTransaction;
+  source: TaskNamespaceMemoryRepairSource;
+  objectId: string;
+  requestCommitment: Uint8Array;
+}>): Promise<"attached" | "replayed" | "conflict"> {
+  if (input.source.representationMode !== "ordinary-and-protected"
+    || input.source.accessNamespaceIds.length < 1
+    || !Number.isSafeInteger(input.source.expectedEmbeddingRevision)
+    || input.source.expectedEmbeddingRevision < 0
+    || input.source.expectedEmbeddingRevision
+      !== input.source.expectedContentRevision) {
+    return Promise.resolve("conflict");
+  }
+  return attachPostgresMemoryRepairInTransaction({
+    transaction: input.transaction,
+    attachment: {
+      source: input.source,
+      objectId: input.objectId,
+      requestCommitment: input.requestCommitment,
+    },
+    taskNamespace: true,
   });
 }

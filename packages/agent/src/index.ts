@@ -1063,6 +1063,7 @@ export { interpolate } from "./prompts/interpolate";
 // Memory stores
 export {
   commitForegroundMemoryOrdinaryFallback,
+  type ForegroundMemoryOrdinaryFallbackInput,
   saveMemory,
   searchMemory,
   replaceMemory,

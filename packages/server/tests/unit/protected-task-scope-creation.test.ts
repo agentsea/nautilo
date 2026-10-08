@@ -27,11 +27,35 @@ describe("protected Task Scope creation", () => {
     }]);
   });
 
-  test("a colliding Scope name cannot be silently adopted", async () => {
+  test("reuses only an exact open structural Scope after a creation race", async () => {
+    const locks: string[] = [];
     const transaction = {
-      insert: () => ({ values: () => ({ onConflictDoNothing: () => ({ returning: async () => [] }) }) }),
+      insert: () => ({ values: () => ({
+        onConflictDoNothing: () => ({ returning: async () => [] }),
+      }) }),
+      select: () => ({ from: () => ({ where: () => ({ limit: () => ({
+        for: async (lock: string) => {
+          locks.push(lock);
+          return [{ id: "existing-scope" }];
+        },
+      }) }) }) }),
     } as unknown as Transaction;
-    expect(await prepareProtectedTaskScope(transaction, input).catch((error: unknown) => error))
+    expect(await prepareProtectedTaskScope(transaction, input))
+      .toBe("existing-scope");
+    expect(locks).toEqual(["share"]);
+  });
+
+  test("rejects a conflicting Scope that is not the exact open owner", async () => {
+    const transaction = {
+      insert: () => ({ values: () => ({
+        onConflictDoNothing: () => ({ returning: async () => [] }),
+      }) }),
+      select: () => ({ from: () => ({ where: () => ({ limit: () => ({
+        for: async () => [],
+      }) }) }) }),
+    } as unknown as Transaction;
+    expect(await prepareProtectedTaskScope(transaction, input)
+      .catch((error: unknown) => error))
       .toEqual(new TypeError("Protected Task Scope identity conflicts"));
   });
 

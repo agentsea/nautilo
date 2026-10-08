@@ -778,15 +778,30 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(
     validateCurrentTaskRun(
       product: PostgresJsBridgeConnection,
     ): Promise<boolean>;
-    use(authority: InitialTaskRuntimeRecipientAuthority): Value | Promise<Value>;
+    use(
+      authority: InitialTaskRuntimeRecipientAuthority,
+      restricted: PostgresJsBridgeConnection,
+    ): Value | Promise<Value>;
+    /** Runs after scoped restricted operations drain, before the owner commits. */
+    validateBeforeCommit?(): void | Promise<void>;
   }>,
 ): Promise<Value | null> {
   const validateCurrentTaskRun = input.validateCurrentTaskRun;
   const use = input.use;
+  const validateBeforeCommit = input.validateBeforeCommit;
+  if (validateBeforeCommit !== undefined
+    && typeof validateBeforeCommit !== "function") return null;
   return withTaskRuntimeRecipientAuthority(
     input,
     product => validateCurrentTaskRun(product),
-    (authority, _restricted, request) => Reflect.apply(use, request, [authority]),
+    async (authority, restricted, request) => {
+      const value = await withParkedTaskRuntimeRestrictedAuthority(
+        restricted,
+        scoped => Promise.resolve(Reflect.apply(use, request, [authority, scoped])),
+      );
+      await validateBeforeCommit?.();
+      return value;
+    },
   );
 }
 

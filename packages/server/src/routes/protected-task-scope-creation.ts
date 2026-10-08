@@ -32,6 +32,18 @@ export async function prepareProtectedTaskScope(
     name: `task:${input.taskId}`,
     purpose: null,
   }).onConflictDoNothing().returning({ id: agentScopes.id });
-  if (scope === undefined) throw new TypeError("Protected Task Scope identity conflicts");
-  return scope.id;
+  if (scope !== undefined) return scope.id;
+  // A prior transaction may have committed the deterministic Task Scope
+  // before failing to attach it. Reuse only that exact still-open owner/name.
+  const [existing] = await transaction.select({ id: agentScopes.id })
+    .from(agentScopes).where(and(
+      eq(agentScopes.parentAgentId, input.agentId),
+      eq(agentScopes.speakerUserId, input.requesterUserId),
+      eq(agentScopes.name, `task:${input.taskId}`),
+      eq(agentScopes.lifecycleState, "open"),
+    )).limit(2).for("share");
+  if (existing === undefined) {
+    throw new TypeError("Protected Task Scope identity conflicts");
+  }
+  return existing.id;
 }

@@ -482,6 +482,21 @@ describe("Task Runtime Domain Memory crypto session", () => {
           readableNamespaceIds: [origin.namespaceId],
         },
       });
+      const scopeProductAuthority = Object.freeze({
+        mode: "scope" as const,
+        subjectUserId: SUBJECT_ID,
+        agentId: evidence.result.signerAgentId,
+        scopeId: SCOPE_ID,
+        originWritableNamespaceId: origin.namespaceId,
+      });
+      const namespaceProductAuthority = Object.freeze({
+        mode: "namespace" as const,
+        subjectUserId: SUBJECT_ID,
+        agentId: evidence.result.signerAgentId,
+        readableNamespaceIds: Object.freeze([origin.namespaceId]),
+        mutableNamespaceIds: Object.freeze([origin.namespaceId]),
+        writableNamespaceId: origin.namespaceId,
+      });
       const payload = Object.freeze({
         formatVersion: 1 as const,
         type: "preference",
@@ -513,6 +528,7 @@ describe("Task Runtime Domain Memory crypto session", () => {
 
       const repaired = await factory.protectExactRepair({
         operationId: "task-scope-memory-repair",
+        authority: scopeProductAuthority,
         source,
       });
       expect(repaired).toMatchObject({
@@ -538,6 +554,7 @@ describe("Task Runtime Domain Memory crypto session", () => {
       });
       expect(await factory.protectExactRepair({
         operationId: "task-scope-memory-existing",
+        authority: scopeProductAuthority,
         source: existingSource,
       })).toMatchObject({
         status: "verified",
@@ -550,10 +567,12 @@ describe("Task Runtime Domain Memory crypto session", () => {
       const beforeRejectedReads = readCount;
       expect((await factory.protectExactRepair({
         operationId: "task-scope-memory-foreign",
+        authority: scopeProductAuthority,
         source: { ...source, accessNamespaceIds: [OTHER_SCOPE_ID] },
-      })).status).toBe("failed");
+      })).status).toBe("waiting_for_authority");
       expect((await factory.protectExactRepair({
         operationId: "task-scope-memory-forged-object",
+        authority: scopeProductAuthority,
         source: { ...source, existingObjectId: OTHER_SCOPE_ID },
       })).status).toBe("failed");
       expect(readCount).toBe(beforeRejectedReads);
@@ -561,30 +580,43 @@ describe("Task Runtime Domain Memory crypto session", () => {
       const namespaceFactory = createTaskRuntimeDomainMemoryCryptoSession(
         sessionInput,
       );
-      expect((await namespaceFactory.protectExactRepair({
+      expect(await namespaceFactory.protectExactRepair({
         operationId: "task-namespace-memory-repair",
-        source,
-      })).status).toBe("failed");
-      expect(readCount).toBe(beforeRejectedReads);
+        authority: namespaceProductAuthority,
+        source: existingSource,
+      })).toMatchObject({
+        status: "verified",
+        provenance: "existing",
+      });
+      expect(readCount).toBe(beforeRejectedReads + 1);
+
+      expect((await namespaceFactory.protectExactRepair({
+        operationId: "task-namespace-memory-foreign",
+        authority: namespaceProductAuthority,
+        source: { ...source, accessNamespaceIds: [OTHER_SCOPE_ID] },
+      })).status).toBe("waiting_for_authority");
+      expect(readCount).toBe(beforeRejectedReads + 1);
 
       const preCancelled = new AbortController();
       preCancelled.abort();
       expect(await factory.protectExactRepair({
         operationId: "task-scope-memory-cancelled-before",
+        authority: scopeProductAuthority,
         source: existingSource,
         signal: preCancelled.signal,
       })).toMatchObject({ status: "waiting_for_authority" });
-      expect(readCount).toBe(beforeRejectedReads);
+      expect(readCount).toBe(beforeRejectedReads + 1);
 
       const afterRead = new AbortController();
       abortOnRead = afterRead;
       expect(await factory.protectExactRepair({
         operationId: "task-scope-memory-cancelled-after",
+        authority: scopeProductAuthority,
         source: existingSource,
         signal: afterRead.signal,
       })).toMatchObject({ status: "waiting_for_authority" });
       abortOnRead = null;
-      expect(readCount).toBe(beforeRejectedReads + 1);
+      expect(readCount).toBe(beforeRejectedReads + 2);
       expect(plaintextBytes).toEqual(originalPlaintext);
       expect(requestCommitment).toEqual(originalCommitment);
       },

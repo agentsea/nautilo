@@ -1016,6 +1016,8 @@ export {
 
 export {
   prepareNativeTaskRuntimeRunResult,
+  withNativeTaskNamespaceSource,
+  type NativeTaskNamespaceSourceInput,
   type PrepareNativeTaskRuntimeRunResultInput,
 } from "./task/native-task-run-result-preparation.ts";
 
@@ -1035,6 +1037,7 @@ export {
   type NativeTaskMessageAuthority,
   type NativeTaskMessageCoordinates,
   type NativeTaskMessageSnapshot,
+  type NativeTaskNamespaceSource,
   type PrepareNativeTaskMessageInput,
   type PreparedNativeTaskMessage,
 } from "./task/native-task-message-preparation.ts";
@@ -1062,7 +1065,10 @@ export {
 } from "./task/task-scope-memory-origin-adoption.ts";
 
 export {
+  reservePostgresTaskNamespaceMemoryRepairSource,
+  attachPostgresTaskNamespaceMemoryRepair,
   reservePostgresTaskScopeMemoryRepairSource,
   attachPostgresTaskScopeMemoryRepair,
+  type TaskNamespaceMemoryRepairSource,
   type TaskScopeMemoryRepairSource,
 } from "./memory/postgres-foreground-memory-repair.ts";

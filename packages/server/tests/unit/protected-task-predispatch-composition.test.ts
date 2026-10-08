@@ -1,12 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import type { DirectDatabase, Task, TaskRun } from "@nautilo/db";
+import {
+  agentScopes,
+  taskRuns,
+  tasks,
+  type DirectDatabase,
+  type Task,
+  type TaskRun,
+} from "@nautilo/db";
 import type {
   MemoryAccessEnvelope,
   PolicyResolver,
 } from "@nautilo/trust";
 import type { ProtectedTaskOccurrence } from "@nautilo/runtime";
 
-import { createProductionProtectedTaskPredispatch } from
+import {
+  createProductionProtectedTaskPredispatch,
+  ensureProtectedTaskPredispatchScope,
+} from
   "../../src/routes/protected-task-predispatch-composition";
 
 const ids = {
@@ -153,6 +163,269 @@ const db = {} as DirectDatabase;
 const resolver = {} as PolicyResolver;
 
 describe("production protected Task predispatch composition", () => {
+  test("creates a missing structural Scope before protected planning", async () => {
+    const missing = task({
+      preset: "task",
+      targetChat: "orphan",
+      targetChatHandle: null,
+      targetRoomId: ids.room,
+      useScope: true,
+      scopeId: null,
+    });
+    const scoped = task({ ...missing, scopeId: ids.scope });
+    let taskReads = 0;
+    let scopeCreations = 0;
+    const plan = await createProductionProtectedTaskPredispatch({
+      db,
+      resolver,
+      convergeCreatedRoomCatalog: async () => {},
+      getTaskById: async () => ++taskReads === 1 ? missing : scoped,
+      getTaskRunForTask: async () => run(),
+      ensureInitialScope: async (database, inputOccurrence) => {
+        scopeCreations += 1;
+        expect(database).toBe(db);
+        expect(inputOccurrence.task.id).toBe(ids.task);
+        return ids.scope;
+      },
+      assertCanInvokeAgent: async () => {},
+      assertCanUseServerProviderCredentials: async () => {},
+      resolveTargetRoom: async () => ({
+        roomId: ids.room,
+        graphThreadId: "ignored-target-thread",
+      }),
+      findAgentOwnerPrivateRoom: async () => ({
+        roomId: ids.privateRoom,
+        namespaceId: ids.namespace,
+      }),
+      resolveTaskMemoryEnvelope: async input => {
+        expect(input.task.scopeId).toBe(ids.scope);
+        return {
+          envelope: {
+            memoryMode: "scope",
+            ownerId: ids.requestor,
+            actorId: ids.actor,
+            agentId: ids.agent,
+            roomId: ids.privateRoom,
+            scopeId: ids.scope,
+            originWritableNamespaceId: ids.namespace,
+            toolPolicy: {},
+          },
+          mode: "scope",
+          authorityStatus: "exact",
+          provenance: "scope_existing",
+        };
+      },
+    })(occurrence({
+      preset: "task",
+      targetChat: "orphan",
+      targetChatHandle: null,
+      targetRoomId: ids.room,
+      useScope: true,
+      scopeId: null,
+    }));
+    expect(scopeCreations).toBe(1);
+    expect(plan.memory.envelope).toMatchObject({ scopeId: ids.scope });
+  });
+
+  test("does not create a replacement for an existing Scope", async () => {
+    const current = task({
+      preset: "task",
+      targetChat: "orphan",
+      targetChatHandle: null,
+      targetRoomId: ids.room,
+      useScope: true,
+      scopeId: ids.scope,
+    });
+    let scopeCreations = 0;
+    await createProductionProtectedTaskPredispatch({
+      db,
+      resolver,
+      convergeCreatedRoomCatalog: async () => {},
+      getTaskById: async () => current,
+      getTaskRunForTask: async () => run(),
+      ensureInitialScope: async () => {
+        scopeCreations += 1;
+        return ids.scope;
+      },
+      assertCanInvokeAgent: async () => {},
+      assertCanUseServerProviderCredentials: async () => {},
+      resolveTargetRoom: async () => ({
+        roomId: ids.room,
+        graphThreadId: "ignored-target-thread",
+      }),
+      findAgentOwnerPrivateRoom: async () => ({
+        roomId: ids.privateRoom,
+        namespaceId: ids.namespace,
+      }),
+      resolveTaskMemoryEnvelope: async () => ({
+        envelope: {
+          memoryMode: "scope",
+          ownerId: ids.requestor,
+          actorId: ids.actor,
+          agentId: ids.agent,
+          roomId: ids.privateRoom,
+          scopeId: ids.scope,
+          originWritableNamespaceId: ids.namespace,
+          toolPolicy: {},
+        },
+        mode: "scope",
+        authorityStatus: "exact",
+        provenance: "scope_existing",
+      }),
+    })(occurrence({
+      preset: "task",
+      targetChat: "orphan",
+      targetChatHandle: null,
+      targetRoomId: ids.room,
+      useScope: true,
+      scopeId: ids.scope,
+    }));
+    expect(scopeCreations).toBe(0);
+  });
+
+  test("does not create a missing Scope before invocation and funding admission", async () => {
+    const missing = task({
+      preset: "task",
+      targetChat: "orphan",
+      targetChatHandle: null,
+      targetRoomId: ids.room,
+      useScope: true,
+      scopeId: null,
+    });
+    for (const denied of ["invocation", "funding"] as const) {
+      let scopeCreations = 0;
+      let fundingChecks = 0;
+      const predispatch = createProductionProtectedTaskPredispatch({
+        db,
+        resolver,
+        convergeCreatedRoomCatalog: async () => {},
+        getTaskById: async () => missing,
+        getTaskRunForTask: async () => run(),
+        ensureInitialScope: async () => {
+          scopeCreations += 1;
+          return ids.scope;
+        },
+        assertCanInvokeAgent: async () => {
+          if (denied === "invocation") throw new Error("invocation_denied");
+        },
+        assertCanUseServerProviderCredentials: async () => {
+          fundingChecks += 1;
+          if (denied === "funding") throw new Error("funding_denied");
+        },
+      });
+
+      await Promise.resolve(expect(predispatch(occurrence({
+        preset: "task",
+        targetChat: "orphan",
+        targetChatHandle: null,
+        targetRoomId: ids.room,
+        useScope: true,
+        scopeId: null,
+      }))).rejects.toThrow(`${denied}_denied`));
+      expect(scopeCreations).toBe(0);
+      expect(fundingChecks).toBe(denied === "funding" ? 1 : 0);
+    }
+  });
+
+  test("locks Task then Run and CAS-attaches a content-free Scope", async () => {
+    const missing = task({ useScope: true, scopeId: null });
+    const locks: string[] = [];
+    const projections: unknown[] = [];
+    const writes: unknown[] = [];
+    const transaction = {
+      select: (projection: unknown) => {
+        projections.push(projection);
+        return {
+          from: (table: unknown) => ({
+            where: () => ({
+              limit: () => ({
+                for: async (lock: string) => {
+                  locks.push(lock);
+                  if (table === tasks) return [missing];
+                  if (table === taskRuns) return [run()];
+                  if (table === agentScopes) return [{ id: ids.scope }];
+                  return [];
+                },
+              }),
+            }),
+          }),
+        };
+      },
+      insert: () => ({
+        values: (value: unknown) => {
+          writes.push(value);
+          return {
+            onConflictDoNothing: () => ({
+              returning: async () => [{ id: ids.scope }],
+            }),
+          };
+        },
+      }),
+      update: () => ({
+        set: (value: unknown) => {
+          writes.push(value);
+          return {
+            where: () => ({
+              returning: async () => [{ ...missing, scopeId: ids.scope }],
+            }),
+          };
+        },
+      }),
+    };
+    const transactionalDb = {
+      transaction: async (use: (tx: unknown) => Promise<string>) =>
+        use(transaction),
+    } as unknown as DirectDatabase;
+    const result = await ensureProtectedTaskPredispatchScope(
+      transactionalDb,
+      occurrence({ useScope: true, scopeId: null }),
+    );
+    expect(result).toBe(ids.scope);
+    expect(locks).toEqual(["update", "update", "share"]);
+    expect(projections.map(projection => Object.keys(
+      projection as Record<string, unknown>,
+    ))).toEqual([
+      ["id", "requestorId", "agentId", "scopeId"],
+      ["id"],
+      ["id"],
+    ]);
+    expect(writes).toEqual([{
+      parentAgentId: ids.agent,
+      speakerUserId: ids.requestor,
+      name: `task:${ids.task}`,
+      purpose: null,
+    }, { scopeId: ids.scope }]);
+  });
+
+  test("rejects Task drift under the Scope creation lock before insertion", async () => {
+    const locks: string[] = [];
+    let inserts = 0;
+    const transaction = {
+      select: () => ({ from: (table: unknown) => ({ where: () => ({
+        limit: () => ({ for: async (lock: string) => {
+          locks.push(lock);
+          return table === tasks
+            ? []
+            : [run()];
+        } }),
+      }) }) }),
+      insert: () => {
+        inserts += 1;
+        throw new Error("must not insert");
+      },
+    };
+    const transactionalDb = {
+      transaction: async (use: (tx: unknown) => Promise<string>) =>
+        use(transaction),
+    } as unknown as DirectDatabase;
+    await Promise.resolve(expect(ensureProtectedTaskPredispatchScope(
+      transactionalDb,
+      occurrence({ useScope: true, scopeId: null }),
+    )).rejects.toThrow("Scope creation is no longer current"));
+    expect(locks).toEqual(["update", "update"]);
+    expect(inserts).toBe(0);
+  });
+
   test("uses a peer persisted during one target resolution and converges its created Room", async () => {
     const before = task();
     const after = task({

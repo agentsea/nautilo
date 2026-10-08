@@ -133,6 +133,7 @@ export {
 
 export {
   attachExactTaskRuntimeRecipient,
+  createTaskRuntimeGrantClaim,
   prepareUnclaimedParkedTaskRuntimeAuthority,
   rotateExpiredTaskRuntimeRecipient,
   sameTaskRuntimeAuthorityPlan,

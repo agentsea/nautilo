@@ -14,7 +14,10 @@ import {
   type PostgresJsBridgeExecutor,
   type PostgresJsBridgeRow,
 } from "@nautilo/db";
-import type { ProtectedMemorySaveCandidateSelection } from "@nautilo/lattice-bridge";
+import type {
+  ProtectedMemoryAuthority,
+  ProtectedMemorySaveCandidateSelection,
+} from "@nautilo/lattice-bridge";
 import {
   assertAuthenticTaskRuntimeExecutionEvidence,
   type LatticeCrypto,
@@ -26,11 +29,14 @@ import {
 } from "@nautilo/lattice-crypto/background";
 import {
   adoptLegacyTaskScopeMemoryOrigin,
+  reservePostgresTaskNamespaceMemoryRepairSource,
   reservePostgresTaskScopeMemoryRepairSource,
+  attachPostgresTaskNamespaceMemoryRepair,
   attachPostgresTaskScopeMemoryRepair,
   conversationProductTypedDb,
   executeTypedConversationProductQuery,
   isForegroundProductChangedError,
+  type TaskNamespaceMemoryRepairSource,
   type TaskScopeMemoryRepairSource,
   type TaskScopeMemoryOriginAdoptionResult,
   bindConversationProductCanonicalTransactionRunner,
@@ -44,6 +50,7 @@ import {
   type CurrentTaskRuntimeAuthority,
   type TaskRuntimeAuthoritySubject,
 } from "@nautilo/lattice-bridge/server";
+import type { CanonicalTranscriptTx } from "@nautilo/trust";
 import {
   assertProtectedTaskJobReferenceV1,
   isCurrentProtectedTaskRunForGrant,
@@ -115,6 +122,7 @@ type HeldState = {
   restricted: PostgresJsBridgeConnection | null;
   restrictedHandle: CryptoPostgresHandle | null;
   product: PostgresJsBridgeConnection;
+  transaction: CanonicalTranscriptTx;
 };
 
 const heldStates = new WeakMap<HeldProtectedTaskMemoryAuthority, HeldState>();
@@ -447,9 +455,10 @@ function scopeWorkIdentityMatches(input: ProtectedTaskMemoryAuthorityInput): boo
  * authority. The callback must do only bounded database/crypto publication
  * work with an already-prepared payload.
  */
-export async function withCurrentProtectedTaskMemoryAuthority<Value>(
+async function withCurrentProtectedTaskMemoryAuthorityTransaction<Value>(
   input: ProtectedTaskMemoryAuthorityInput,
   use: (held: HeldProtectedTaskMemoryAuthority) => Promise<Value>,
+  isolationLevel: "read committed" | "serializable",
 ): Promise<Value | null> {
   if (input.runner.role !== "nautilo") {
     throw new TypeError(
@@ -635,6 +644,7 @@ export async function withCurrentProtectedTaskMemoryAuthority<Value>(
               restricted: null,
               restrictedHandle: null,
               product,
+              transaction: tx,
             };
             heldStates.set(held, state);
             try {
@@ -657,7 +667,7 @@ export async function withCurrentProtectedTaskMemoryAuthority<Value>(
             }
           },
         });
-      }, { isolationLevel: "read committed" });
+      }, { isolationLevel });
     } catch (error) {
       if (error instanceof TaskMemoryAuthorityUnavailable) return null;
       throw error;
@@ -665,6 +675,17 @@ export async function withCurrentProtectedTaskMemoryAuthority<Value>(
   } finally {
     destroyAcceptedTaskRuntimeRecord(accepted);
   }
+}
+
+export function withCurrentProtectedTaskMemoryAuthority<Value>(
+  input: ProtectedTaskMemoryAuthorityInput,
+  use: (held: HeldProtectedTaskMemoryAuthority) => Promise<Value>,
+): Promise<Value | null> {
+  return withCurrentProtectedTaskMemoryAuthorityTransaction(
+    input,
+    use,
+    "read committed",
+  );
 }
 
 /** Resolve legacy provenance for the exact repair candidate under the live Task
@@ -729,6 +750,190 @@ async function withCurrentTaskScopeRepair<Value>(
     await held.assertCurrent();
     return value;
   });
+}
+
+function canonicalIds(ids: readonly string[]): readonly string[] | null {
+  const sorted = [...new Set(ids)].sort();
+  return sorted.length === ids.length
+      && sorted.every((id, index) => id === ids[index])
+    ? sorted
+    : null;
+}
+
+function currentTaskOrdinaryFallbackAuthority(
+  state: HeldState,
+  authority: ProtectedMemoryAuthority,
+): boolean {
+  if (authority.subjectUserId !== state.input.subject.userId
+    || authority.agentId !== state.input.occurrence.task.agentId) return false;
+  const requirements = new Map<string, readonly ("decrypt" | "encrypt")[]>();
+  for (const requirement of state.input.evidence.namespaceRequirements) {
+    if (requirements.has(requirement.namespaceId)) return false;
+    requirements.set(requirement.namespaceId, requirement.operations);
+  }
+  const has = (namespaceId: string, operation: "decrypt" | "encrypt") =>
+    requirements.get(namespaceId)?.includes(operation) === true;
+  if (authority.mode === "scope") {
+    const scope = state.input.scopeMemory?.binding;
+    return scope !== undefined
+      && scope.scopeId === authority.scopeId
+      && scope.originWritableNamespaceId
+        === authority.originWritableNamespaceId
+      && scope.readableNamespaceIds.every(id => has(id, "decrypt"))
+      && has(authority.originWritableNamespaceId, "encrypt");
+  }
+  return state.input.scopeMemory === undefined
+    && canonicalIds(authority.readableNamespaceIds) !== null
+    && canonicalIds(authority.mutableNamespaceIds) !== null
+    && authority.mutableNamespaceIds.every(id =>
+      authority.readableNamespaceIds.includes(id)
+      && has(id, "decrypt")
+      && has(id, "encrypt"))
+    && authority.readableNamespaceIds.every(id => has(id, "decrypt"))
+    && (authority.writableNamespaceId === null
+      || (authority.mutableNamespaceIds.includes(authority.writableNamespaceId)
+        && has(authority.writableNamespaceId, "encrypt")));
+}
+
+/**
+ * Run the exact ordinary Shadow fallback on the already-held product
+ * transaction. This role owns both the semantic Memory rows and the crypto
+ * lifecycle receipt, so the two outcomes commit or roll back together.
+ */
+export async function withCurrentProtectedTaskMemoryOrdinaryFallback<Value>(
+  input: ProtectedTaskMemoryAuthorityInput,
+  authority: ProtectedMemoryAuthority,
+  use: (transaction: CanonicalTranscriptTx) => Promise<Value>,
+): Promise<Value | null> {
+  return withCurrentProtectedTaskMemoryAuthorityTransaction(input, async held => {
+    const state = stateFor(held);
+    if (held.policy.mode !== "shadow_encryption"
+      || held.policy.shadowBehavior !== "fallback"
+      || !currentTaskOrdinaryFallbackAuthority(state, authority)) return null;
+    await held.assertCurrent();
+    const value = await use(state.transaction);
+    await held.assertCurrent();
+    return value;
+  }, "serializable");
+}
+
+function currentTaskNamespaceRepairAuthority(
+  state: HeldState,
+  authority: ProtectedMemoryAuthority,
+  sourceNamespaceIds?: readonly string[],
+): authority is Extract<ProtectedMemoryAuthority, { mode: "namespace" }> {
+  if (state.input.scopeMemory !== undefined
+    || authority.mode !== "namespace"
+    || authority.subjectUserId !== state.input.subject.userId
+    || authority.agentId !== state.input.occurrence.task.agentId
+    || canonicalIds(authority.readableNamespaceIds) === null
+    || canonicalIds(authority.mutableNamespaceIds) === null
+    || (authority.writableNamespaceId !== null
+      && (!authority.readableNamespaceIds.includes(authority.writableNamespaceId)
+        || !authority.mutableNamespaceIds.includes(
+          authority.writableNamespaceId,
+        )))) {
+    return false;
+  }
+  if (sourceNamespaceIds === undefined) return true;
+  const sourceIds = canonicalIds(sourceNamespaceIds);
+  return sourceIds !== null
+    && sourceIds.length > 0
+    && sourceIds.every(namespaceId =>
+      authority.mutableNamespaceIds.includes(namespaceId)
+      && state.authority.namespaceRequirements.some(requirement =>
+        requirement.namespaceId === namespaceId
+        && requirement.operations.includes("encrypt")));
+}
+
+/** Hold live Namespace/Wide authority around one bounded repair database step. */
+async function withCurrentTaskNamespaceRepair<Value>(
+  input: ProtectedTaskMemoryAuthorityInput,
+  authority: ProtectedMemoryAuthority,
+  use: (state: HeldState) => Promise<Value>,
+): Promise<Value | null> {
+  if (input.scopeMemory !== undefined) return null;
+  return withCurrentProtectedTaskMemoryAuthority(input, async held => {
+    const state = stateFor(held);
+    if (held.policy.mode !== "shadow_encryption"
+      || !currentTaskNamespaceRepairAuthority(state, authority)) return null;
+    await held.assertCurrent();
+    const value = await use(state);
+    await held.assertCurrent();
+    return value;
+  });
+}
+
+export async function reserveProtectedTaskNamespaceMemoryRepair(
+  input: ProtectedTaskMemoryAuthorityInput,
+  authority: ProtectedMemoryAuthority,
+  selection: ProtectedMemorySaveCandidateSelection,
+): Promise<TaskNamespaceMemoryRepairSource | null> {
+  if (selection.memoryId !== selection.repair.id) return null;
+  const selected = Object.freeze({ ...selection, repair: Object.freeze({
+    ...selection.repair, createdAt: new Date(selection.repair.createdAt),
+  }) });
+  let reserved: TaskNamespaceMemoryRepairSource | null = null;
+  let delivered = false;
+  try {
+    const result = await withCurrentTaskNamespaceRepair(
+      input,
+      authority,
+      async state => {
+        reserved = await reservePostgresTaskNamespaceMemoryRepairSource({
+          transaction: state.product,
+          crypto: state.input.crypto,
+          selection: selected.repair,
+          expectedContentRevision: selected.contentRevision,
+        });
+        if (!currentTaskNamespaceRepairAuthority(
+          state,
+          authority,
+          reserved.accessNamespaceIds,
+        )) throw new TaskMemoryAuthorityUnavailable();
+        return reserved;
+      },
+    );
+    delivered = result !== null;
+    return result;
+  } catch (error) {
+    if (isForegroundProductChangedError(error)
+      || error instanceof TaskMemoryAuthorityUnavailable) return null;
+    throw error;
+  } finally {
+    if (!delivered) {
+      const retained = reserved as TaskNamespaceMemoryRepairSource | null;
+      retained?.plaintextBytes?.fill(0);
+      retained?.requestCommitment.fill(0);
+    }
+  }
+}
+
+export async function attachProtectedTaskNamespaceMemoryRepair(
+  input: ProtectedTaskMemoryAuthorityInput,
+  authority: ProtectedMemoryAuthority,
+  source: TaskNamespaceMemoryRepairSource,
+  objectId: string,
+): Promise<"attached" | "replayed" | "conflict" | null> {
+  try {
+    return await withCurrentTaskNamespaceRepair(input, authority, state => {
+      if (!currentTaskNamespaceRepairAuthority(
+        state,
+        authority,
+        source.accessNamespaceIds,
+      )) return Promise.resolve("conflict" as const);
+      return attachPostgresTaskNamespaceMemoryRepair({
+        transaction: state.product,
+        source,
+        objectId,
+        requestCommitment: source.requestCommitment,
+      });
+    });
+  } catch (error) {
+    if (isForegroundProductChangedError(error)) return "conflict";
+    if (error instanceof TaskMemoryAuthorityUnavailable) return null;
+    throw error;
+  }
 }
 
 export async function reserveProtectedTaskScopeMemoryRepair(

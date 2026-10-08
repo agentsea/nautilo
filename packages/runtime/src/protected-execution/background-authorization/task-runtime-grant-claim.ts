@@ -122,6 +122,8 @@ export type TaskRuntimeRecipientAuthorityPort = <Value>(input: Readonly<{
   scopeMemory?: TaskScopeMemoryBinding;
   use(
     current: TaskRuntimeRecipientCurrentAuthority,
+    repository: Pick<BackgroundAuthorizationTaskRuntimeReplacementRepository,
+      "get" | "compareAndSwap">,
   ): Value | Promise<Value>;
 }>) => Promise<Value | null>;
 
@@ -1079,6 +1081,11 @@ export async function attachExactTaskRuntimeRecipient(
       || storedRecipient.expiresAt !== attempt.attempt.expiresAt) {
       throw new TypeError("Task Runtime recipient binding was substituted");
     }
+    const finishedAt = nowClock();
+    if (!Number.isSafeInteger(finishedAt) || finishedAt < now
+      || finishedAt >= storedRecipient.expiresAt) {
+      throw new TypeError("Task Runtime recipient expired before commit");
+    }
     retain = true;
     return Object.freeze({
       record: stored.record,
@@ -1745,28 +1752,49 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       return null;
     }
     let used = false;
-    const bound = await input.withCurrentAuthority({
-      occurrence: input.occurrence,
-      record: durable,
-      binding: input.binding,
-      targetRoomId,
-      ...(scopeMemory === undefined ? {} : { scopeMemory }),
-      use: async (authority) => {
-        if (used) throw new TypeError("Task Runtime recipient binder is one-use");
-        used = true;
-        return attachExactTaskRuntimeRecipient({
-          occurrence: input.occurrence,
-          selected: durable,
-          plan,
-          binding: input.binding,
-          authority,
-          repository: this.dependencies.repository,
-          recipients: this.dependencies.recipients,
-          now: this.#now,
-        });
-      },
-    });
-    return bound;
+    let attached: BindTaskRuntimeRecipientResult = null;
+    const clearAttempt = () => {
+      if (attached === null) return;
+      this.dependencies.recipients.delete(
+        attached.record.snapshot.requestId,
+        attached.record.snapshot.recipientGeneration,
+      );
+      attached.requestBytes.fill(0);
+    };
+    try {
+      const bound = await input.withCurrentAuthority({
+        occurrence: input.occurrence,
+        record: durable,
+        binding: input.binding,
+        targetRoomId,
+        ...(scopeMemory === undefined ? {} : { scopeMemory }),
+        use: async (authority, repository) => {
+          if (used) throw new TypeError("Task Runtime recipient binder is one-use");
+          used = true;
+          attached = await attachExactTaskRuntimeRecipient({
+            occurrence: input.occurrence,
+            selected: durable,
+            plan,
+            binding: input.binding,
+            authority,
+            repository,
+            recipients: this.dependencies.recipients,
+            now: this.#now,
+          });
+          return attached;
+        },
+      });
+      if (bound !== attached) {
+        clearAttempt();
+        if (bound !== null) {
+          throw new TypeError("Task Runtime recipient owner changed its receipt");
+        }
+      }
+      return bound;
+    } catch (error) {
+      clearAttempt();
+      throw error;
+    }
   }
 
   async prepareOrClaimExact(
