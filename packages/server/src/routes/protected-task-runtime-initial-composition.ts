@@ -91,10 +91,12 @@ export type ProductionProtectedTaskRuntimeInitialComposition = Readonly<
 
 type Dependencies = Readonly<{
   productContext: typeof createHumanProductTransactionContext;
+  nativeExecution: typeof createProductionProtectedTaskNativeExecution;
 }>;
 
 const productionDependencies: Dependencies = Object.freeze({
   productContext: createHumanProductTransactionContext,
+  nativeExecution: createProductionProtectedTaskNativeExecution,
 });
 
 function projectOccurrence(
@@ -260,7 +262,7 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     resolver: input.resolver,
     convergeCreatedRoomCatalog: input.convergeCreatedRoomCatalog,
   });
-  const nativeExecution = createProductionProtectedTaskNativeExecution({
+  const nativeExecution = dependencies.nativeExecution({
     db: input.db,
     restricted,
     crypto,

@@ -52,6 +52,7 @@ const RUN = "60000000-0000-4000-8000-000000000006";
 const JOB = "70000000-0000-4000-8000-000000000007";
 const ROOM = "80000000-0000-4000-8000-000000000008";
 const NAMESPACE = "90000000-0000-4000-8000-000000000009";
+const OTHER_NAMESPACE = "a1000000-0000-4000-8000-00000000000a";
 const DOMAIN = "a0000000-0000-4000-8000-00000000000a";
 const SCOPE = "b0000000-0000-4000-8000-00000000000b";
 const MEMORY_ROOM = "c0000000-0000-4000-8000-00000000000c";
@@ -617,6 +618,76 @@ async function withScenario<Value>(
 }
 
 describe("protected Task native fixed Memory segment", () => {
+  test("canonicalizes multi-Namespace Memory authority before opening the repository", async () => {
+    const value = await fixture();
+    const calls: string[] = [];
+    const published: unknown[] = [];
+    const base = overrides(calls);
+    if (base === undefined) throw new TypeError("Test overrides are unavailable");
+    const baseWithMemoryRepository = base.withMemoryRepository!;
+    const envelope = value.predispatch.memory.envelope;
+    if (envelope.memoryMode !== "namespace") {
+      throw new Error("expected Namespace Memory envelope");
+    }
+    const predispatch: ProtectedTaskPredispatchPlan = Object.freeze({
+      ...value.predispatch,
+      memory: Object.freeze({
+        ...value.predispatch.memory,
+        envelope: Object.freeze({
+          ...envelope,
+          readableNamespaces: [OTHER_NAMESPACE, NAMESPACE],
+          mutableNamespaces: [OTHER_NAMESPACE, NAMESPACE],
+        }),
+      }),
+    });
+    const prepare = createProtectedTaskNativeFixedMemorySegment(
+      compositionInput(value.crypto, runner()),
+      {
+        ...base,
+        withMemoryRepository: async input => {
+          expect(input.authority).toEqual({
+            mode: "namespace",
+            subjectUserId: USER,
+            agentId: AGENT,
+            readableNamespaceIds: [NAMESPACE, OTHER_NAMESPACE],
+            mutableNamespaceIds: [NAMESPACE, OTHER_NAMESPACE],
+            writableNamespaceId: NAMESPACE,
+          });
+          return baseWithMemoryRepository(input);
+        },
+      },
+    );
+    await withTaskRuntimeExecutionEvidenceV1({
+      evidence: value.evidenceInput,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      execute: async evidence => {
+        const prepared = await prepare({
+          occurrence: value.occurrence,
+          predispatch,
+          policy: value.policy,
+          reference: value.reference,
+          stableRoutingDigest: value.stableRoutingDigest,
+        });
+        const transient = await prepared.openTransientInput({
+          occurrence: value.runningOccurrence,
+          record: value.record,
+          domains: value.domains,
+          evidence,
+          signal: new AbortController().signal,
+        });
+        await consume(prepared.executor(
+          executorInput(value.occurrence, transient, published, calls),
+          JOB,
+          `task:${TASK}`,
+          new AbortController().signal,
+        ));
+      },
+    });
+    expect(calls).toContain("runner");
+    expect(published).toHaveLength(1);
+  });
+
   test("keeps Namespace and Scope repositories and checkpoint saver around the runner", async () => {
     for (const mode of ["namespace", "scope"] as const) {
       await withScenario(mode, "complete", async scenario => {

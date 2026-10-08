@@ -16,7 +16,6 @@ import {
   buildWideEnvelopeForSpeaker,
   createScopeMemoryEnvelopeWithOrigin,
   findActorByOwnerId,
-  findAgentOwnerPrivateRoom,
   getPolicyResolver,
   isNamespaceMemoryEnvelope,
   type MemoryAccessEnvelope,
@@ -29,6 +28,10 @@ import {
   createProtectedTaskScopeMemoryInventoryResolver,
   type ProtectedTaskScopeMemoryInventoryResolverInput,
 } from "./protected-task-scope-memory-inventory";
+import {
+  createProtectedTaskRequesterPrivateRoomResolver,
+  type ProtectedTaskRequesterPrivateRoomResolver,
+} from "./protected-task-requester-private-room";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -103,7 +106,7 @@ export type ProtectedTaskRuntimeParkedMemoryPlanResolverDependencies =
     resolveRequesterHuman(userId: string): Promise<Readonly<{
       id: string;
     }> | null>;
-    resolveRequesterPrivateRoom: typeof findAgentOwnerPrivateRoom;
+    resolveRequesterPrivateRoom: ProtectedTaskRequesterPrivateRoomResolver;
     buildTargetUsersEnvelope: typeof buildEnvelopeForTargetUsers;
     buildWideEnvelope: typeof buildWideEnvelopeForSpeaker;
     createScopeEnvelope: typeof createScopeMemoryEnvelopeWithOrigin;
@@ -274,7 +277,7 @@ export function createProtectedTaskRuntimeParkedMemoryPlanResolver(
   const resolveRequesterHuman = overrides.resolveRequesterHuman
     ?? findActorByOwnerId;
   const resolveRequesterPrivateRoom = overrides.resolveRequesterPrivateRoom
-    ?? findAgentOwnerPrivateRoom;
+    ?? createProtectedTaskRequesterPrivateRoomResolver(db);
   const buildTargetUsersEnvelope = overrides.buildTargetUsersEnvelope
     ?? buildEnvelopeForTargetUsers;
   const buildWideEnvelope = overrides.buildWideEnvelope
@@ -320,7 +323,11 @@ export function createProtectedTaskRuntimeParkedMemoryPlanResolver(
 
     const [requesterHumanValue, sourceRoomValue] = await Promise.all([
       resolveRequesterHuman(pinned.requesterUserId),
-      resolveRequesterPrivateRoom(pinned.requesterUserId, pinned.agentId),
+      resolveRequesterPrivateRoom(
+        pinned.requesterUserId,
+        pinned.agentId,
+        pinned.contentNamespaceId,
+      ),
     ]);
     if (requesterHumanValue === null || sourceRoomValue === null) return null;
     const requesterHuman = Object.freeze({ ...requesterHumanValue });

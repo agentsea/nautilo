@@ -345,11 +345,13 @@ export {
 } from "./utils/profile-migration-artifact-primitives";
 export {
   persistJob,
+  startProtectedTaskJob,
   updateJobStatus,
   getJobById,
   type PersistJobPayload,
   type PersistedJobRecord,
   type JobPublicationPolicy,
+  type ProtectedTaskJobStartResult,
 } from "./queries/jobs";
 export {
   hasClaimedOwner,

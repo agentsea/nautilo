@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
@@ -26,6 +28,7 @@ import {
 } from "../../src/schema/task-run-result-crypto-revisions";
 import { taskRuns, type TaskRun } from "../../src/schema/task-runs";
 import { tasks, type Task } from "../../src/schema/tasks";
+import { actors, type Actor } from "../../src/schema/trust";
 
 const ids = {
   task: "10000000-0000-4000-8000-000000000001",
@@ -34,6 +37,8 @@ const ids = {
   owner: "40000000-0000-4000-8000-000000000004",
   agent: "50000000-0000-4000-8000-000000000005",
   namespace: "60000000-0000-4000-8000-000000000006",
+  requestorUser: "70000000-0000-4000-8000-000000000007",
+  requesterHuman: "80000000-0000-4000-8000-000000000008",
 };
 const definitionObjectId = `task-definition:v1:${"a".repeat(64)}`;
 const resultObjectId = `task-run-result:v1:${"b".repeat(64)}`;
@@ -89,7 +94,7 @@ function task(overrides: Partial<Task> = {}): Task {
   return {
     id: ids.task,
     ownerId: ids.owner,
-    requestorId: ids.owner,
+    requestorId: ids.requestorUser,
     agentId: ids.agent,
     prompt: "",
     expectedOutput: null,
@@ -150,8 +155,8 @@ function jobReference() {
 function job(overrides: Partial<Job> = {}): Job {
   return {
     id: ids.job,
-    ownerId: ids.owner,
-    requestorId: ids.owner,
+    ownerId: ids.requestorUser,
+    requestorId: ids.requestorUser,
     laneKey: `task:${ids.task}`,
     roomId: null,
     type: "foreground",
@@ -196,7 +201,7 @@ function resultRevision(
     resultRevision: 1,
     operationId: `task-run-result:${ids.run}`,
     requestDigest: digest,
-    requesterHumanId: ids.owner,
+    requesterHumanId: ids.requesterHuman,
     anchorNamespaceId: ids.namespace,
     cryptoObjectId: resultObjectId,
     representation: "protected",
@@ -208,6 +213,20 @@ function resultRevision(
     failureCode: null,
     ...overrides,
   } as TaskRunResultCryptoRevision;
+}
+
+function requesterHuman(overrides: Partial<Actor> = {}): Actor {
+  return {
+    id: ids.requesterHuman,
+    ownerId: ids.requestorUser,
+    displayName: "Requester",
+    trustState: "verified",
+    kind: "user",
+    agentId: null,
+    createdAt: new Date("2026-09-25T11:00:00.000Z"),
+    updatedAt: new Date("2026-09-25T11:00:00.000Z"),
+    ...overrides,
+  };
 }
 
 function policy(
@@ -273,6 +292,7 @@ type FixtureOptions = Readonly<{
   job?: Job | undefined;
   definitionRevision?: TaskDefinitionCryptoRevision | undefined;
   resultRevision?: TaskRunResultCryptoRevision | undefined;
+  requesterHuman?: Actor | undefined;
   policy?: EncryptionTransitionPolicyRow | undefined;
   outputBinding?: ProtectedTaskRunOutputBinding | undefined;
   loseJobUpdate?: boolean;
@@ -298,6 +318,12 @@ function harness(options: FixtureOptions = {}) {
   const resultRow = Object.prototype.hasOwnProperty.call(options, "resultRevision")
     ? options.resultRevision
     : resultRevision();
+  const requesterHumanRow = Object.prototype.hasOwnProperty.call(
+    options,
+    "requesterHuman",
+  )
+    ? options.requesterHuman
+    : requesterHuman();
   const policyRow = Object.prototype.hasOwnProperty.call(options, "policy")
     ? options.policy
     : policy();
@@ -308,6 +334,7 @@ function harness(options: FixtureOptions = {}) {
     resultTerminalAt: runRow?.completedAt ?? null,
   });
   const locks: Array<{ table: unknown; kind: string }> = [];
+  const predicates = new Map<unknown, SQL>();
   const writes: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
 
   const rows = (table: unknown): unknown[] => {
@@ -318,6 +345,14 @@ function harness(options: FixtureOptions = {}) {
       return definitionRow ? [definitionRow] : [];
     }
     if (table === taskRunResultCryptoRevisions) return resultRow ? [resultRow] : [];
+    if (table === actors) {
+      return requesterHumanRow !== undefined
+          && requesterHumanRow.id === resultRow?.requesterHumanId
+          && requesterHumanRow.kind === "user"
+          && requesterHumanRow.ownerId === taskRow?.requestorId
+        ? [requesterHumanRow]
+        : [];
+    }
     if (table === encryptionTransitionPolicy) return policyRow ? [policyRow] : [];
     if (table === protectedTaskRunOutputBindings) {
       return outputBindingRow ? [outputBindingRow] : [];
@@ -328,7 +363,10 @@ function harness(options: FixtureOptions = {}) {
     select: () => ({
       from: (table: unknown) => {
         const query = {
-          where: (_condition: unknown) => query,
+          where: (condition: SQL) => {
+            predicates.set(table, condition);
+            return query;
+          },
           limit: (_limit: number) => query,
           for: async (kind: string) => {
             locks.push({ table, kind });
@@ -376,7 +414,7 @@ function harness(options: FixtureOptions = {}) {
     transaction: async <T>(operation: (value: typeof tx) => Promise<T>) =>
       operation(tx),
   } as unknown as DirectDatabase;
-  return { db, locks, writes };
+  return { db, locks, predicates, writes };
 }
 
 describe("protected TaskRun result terminal CAS", () => {
@@ -391,8 +429,21 @@ describe("protected TaskRun result terminal CAS", () => {
       { table: jobs, kind: "update" },
       { table: taskDefinitionCryptoRevisions, kind: "share" },
       { table: taskRunResultCryptoRevisions, kind: "share" },
+      { table: actors, kind: "share" },
       { table: encryptionTransitionPolicy, kind: "share" },
       { table: protectedTaskRunOutputBindings, kind: "update" },
+    ]);
+    const requesterPredicate = new PgDialect().sqlToQuery(
+      fixture.predicates.get(actors)!,
+    );
+    expect(requesterPredicate.sql).toBe(
+      "(\"actors\".\"id\" = $1 and \"actors\".\"kind\" = $2 and "
+      + "\"actors\".\"owner_id\" = $3)",
+    );
+    expect(requesterPredicate.params).toEqual([
+      ids.requesterHuman,
+      "user",
+      ids.requestorUser,
     ]);
     expect(fixture.writes).toHaveLength(4);
     expect(fixture.writes[0]?.table).toBe(jobs);
@@ -553,6 +604,19 @@ describe("protected TaskRun result terminal CAS", () => {
       const fixture = harness(options);
       const result = await terminalizeProtectedTaskRunResult(fixture.db, input());
       expect(result.status).toBe("rejected");
+      expect(fixture.writes).toEqual([]);
+    }
+  });
+
+  test("requires the reserved Human actor to belong to the Task requestor User", async () => {
+    for (const requester of [
+      undefined,
+      requesterHuman({ kind: "agent", agentId: ids.agent }),
+      requesterHuman({ ownerId: ids.owner }),
+    ]) {
+      const fixture = harness({ requesterHuman: requester });
+      expect(await terminalizeProtectedTaskRunResult(fixture.db, input()))
+        .toEqual({ status: "rejected", reason: "conflict" });
       expect(fixture.writes).toEqual([]);
     }
   });

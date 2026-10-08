@@ -112,10 +112,13 @@ function dependencies(
       revision: 7,
     }),
     resolveRequesterHuman: async () => ({ id: HUMAN }),
-    resolveRequesterPrivateRoom: async () => ({
-      roomId: SOURCE_ROOM,
-      namespaceId: CONTENT,
-    }),
+    resolveRequesterPrivateRoom: async (_userId, _agentId, namespaceId) => {
+      expect(namespaceId).toBe(CONTENT);
+      return {
+        roomId: SOURCE_ROOM,
+        namespaceId: CONTENT,
+      };
+    },
     createProductContext: async () => ({
       canonicalRunner: { marker: "runner" },
     } as never),

@@ -30,11 +30,14 @@ import {
 import {
   assertCanInvokeAgent,
   assertCanUseServerProviderCredentials,
-  findAgentOwnerPrivateRoom,
   type PolicyResolver,
 } from "@nautilo/trust";
 
 import { prepareProtectedTaskScope } from "./protected-task-scope-creation";
+import {
+  createProtectedTaskRequesterPrivateRoomResolver,
+  type ProtectedTaskRequesterPrivateRoomResolver,
+} from "./protected-task-requester-private-room";
 
 type ReadTask = (db: DirectDatabase, taskId: string) => Promise<Task | undefined>;
 type ReadTaskRun = (
@@ -65,7 +68,7 @@ export type ProductionProtectedTaskPredispatchDependencies = Readonly<{
   validateMemoizedNamespaceTarget?: ValidateMemoizedNamespaceTarget;
   resolveTargetRoom?: ResolveTarget;
   resolveTaskMemoryEnvelope?: ResolveMemory;
-  findAgentOwnerPrivateRoom?: typeof findAgentOwnerPrivateRoom;
+  findAgentOwnerPrivateRoom?: ProtectedTaskRequesterPrivateRoomResolver;
   assertCanInvokeAgent?: typeof assertCanInvokeAgent;
   assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
   ensureInitialScope?: typeof ensureProtectedTaskPredispatchScope;
@@ -322,7 +325,7 @@ export function createProductionProtectedTaskPredispatch(
   const memoryResolver = dependencies.resolveTaskMemoryEnvelope
     ?? resolveTaskMemoryEnvelope;
   const resolveRequesterPrivateRoom = dependencies.findAgentOwnerPrivateRoom
-    ?? findAgentOwnerPrivateRoom;
+    ?? createProtectedTaskRequesterPrivateRoomResolver(dependencies.db);
   const assertInvocation = dependencies.assertCanInvokeAgent
     ?? assertCanInvokeAgent;
   const assertFunding = dependencies.assertCanUseServerProviderCredentials
@@ -465,9 +468,15 @@ export function createProductionProtectedTaskPredispatch(
           if (currentTask.useScope
             && currentTask.targetChat === "orphan"
             && sessionRoomId.length === 0) {
+            if (currentTask.contentNamespaceId === null) {
+              throw new TypeError(
+                "Protected Task Scope Memory origin is unavailable",
+              );
+            }
             scopeOrigin = await resolveRequesterPrivateRoom(
               currentTask.requestorId,
               currentTask.agentId,
+              currentTask.contentNamespaceId,
             );
             if (scopeOrigin === null
               || scopeOrigin.namespaceId !== currentTask.contentNamespaceId) {

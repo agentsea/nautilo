@@ -25,6 +25,7 @@ const publication = Object.freeze({
   publish: async () => {},
   awaitPublished: async () => false,
 });
+const startProtectedTaskJob = async () => "started" as const;
 
 function reference(): ProtectedTaskJobReferenceV1 {
   return {
@@ -124,6 +125,7 @@ describe("JobManager protected Task worker settlement", () => {
     const manager = new JobManager({
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks(),
+      startProtectedTaskJob,
       persist: async () => persistCalls++ === 0
         ? JOB_ID
         : "protected-after-start-race",
@@ -193,6 +195,7 @@ describe("JobManager protected Task worker settlement", () => {
     const manager = new JobManager({
       laneLock,
       acceptanceSinks: acceptanceSinks(),
+      startProtectedTaskJob,
       persist: async () => JOB_ID,
       updateStatus: async () => {},
     });
@@ -249,6 +252,7 @@ describe("JobManager protected Task worker settlement", () => {
     const manager = new JobManager({
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks(),
+      startProtectedTaskJob,
       persist: async () => JOB_ID,
       updateStatus: async () => {},
     });
@@ -292,6 +296,7 @@ describe("JobManager protected Task worker settlement", () => {
     const manager = new JobManager({
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks(),
+      startProtectedTaskJob,
       persist: async () => JOB_ID,
       updateStatus: async (_jobId, status) => {
         if (status === "cancelled") {

@@ -1,6 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { Job, type JobExecutor } from "./job";
+import {
+  Job,
+  ProtectedTaskJobStartNotOwnedError,
+  type JobExecutor,
+} from "./job";
 import type { LaneLock, TryAcquireResult } from "./types";
 import { laneLock as defaultLaneLock } from "./lane-lock";
 import {
@@ -14,7 +18,12 @@ import { langgraphExecutor } from "./executors/langgraph-executor";
 import { forkLanggraphExecutor } from "./executors/fork-langgraph-executor";
 import { slowTaskExecutor } from "./executors/slow-task-executor";
 import { deepResearchExecutor } from "./executors/deep-research-executor";
-import { getJobById, persistJob, updateJobStatus } from "@nautilo/db";
+import {
+  getJobById,
+  persistJob,
+  startProtectedTaskJob,
+  updateJobStatus,
+} from "@nautilo/db";
 import {
   insertAcceptance as defaultInsertAcceptance,
   linkAcceptancesToJob as defaultLinkAcceptances,
@@ -24,7 +33,11 @@ import {
   type WorkAcceptanceKind,
   type WorkAcceptanceReason,
 } from "@nautilo/db";
-import type { JobPublicationPolicy, PersistJobPayload } from "@nautilo/db";
+import type {
+  JobPublicationPolicy,
+  PersistJobPayload,
+  ProtectedTaskJobStartResult,
+} from "@nautilo/db";
 import type { InitiatingClientSurfaceV1, JobStatus } from "@nautilo/types";
 import {
   runWithInitiatingClientSurface,
@@ -542,6 +555,11 @@ export class JobManager {
     fields?: { message?: string; result?: Record<string, unknown> },
     publicationPolicy?: JobPublicationPolicy,
   ) => Promise<void>;
+  private readonly startProtectedTaskJobFn: (
+    jobId: string,
+    expectedReference: ProtectedTaskJobReferenceV1,
+    publicationPolicy: JobPublicationPolicy,
+  ) => Promise<ProtectedTaskJobStartResult>;
   /**
    * D420 — payload-free work-acceptance ledger sinks. Defaults are
    * DB-free stubs so existing unit tests stay hermetic; the production
@@ -632,6 +650,11 @@ export class JobManager {
       fields?: { message?: string; result?: Record<string, unknown> },
       publicationPolicy?: JobPublicationPolicy,
     ) => Promise<void>;
+    startProtectedTaskJob?: (
+      jobId: string,
+      expectedReference: ProtectedTaskJobReferenceV1,
+      publicationPolicy: JobPublicationPolicy,
+    ) => Promise<ProtectedTaskJobStartResult>;
     /**
      * D420 — payload-free work-acceptance ledger sinks. Defaults are
      * DB-free stubs; the production singleton wires the real sinks.
@@ -662,6 +685,8 @@ export class JobManager {
     this.readRecoveryJob = opts?.readRecoveryJob ?? getJobById;
     this.persistJobFn = opts?.persist ?? persistJob;
     this.updateJobStatusFn = opts?.updateStatus ?? updateJobStatus;
+    this.startProtectedTaskJobFn = opts?.startProtectedTaskJob
+      ?? startProtectedTaskJob;
     this.acceptanceSinks = opts?.acceptanceSinks ?? defaultAcceptanceSinks;
     this.taskStopSink = opts?.taskStopSink ?? null;
     this.checkInvocationAccess = opts?.checkInvocationAccess ?? (() => Promise.resolve(true));
@@ -1275,6 +1300,9 @@ export class JobManager {
       executor,
       persist: this.persistJobFn,
       updateStatus: this.updateJobStatusFn,
+      ...(protectedTaskExecution === undefined
+        ? {}
+        : { startProtectedTaskJob: this.startProtectedTaskJobFn }),
     });
 
     try {
@@ -1523,17 +1551,26 @@ export class JobManager {
           }
         }
       : null;
+    let protectedStartNotOwned = false;
     const execution = (protectedExecute
       ? protectedExecute()
       : foregroundCandidate?.runMainTurn
       ? foregroundCandidate.runMainTurn(merged.turnId, execute)
       : execute())
       .catch(async (error: unknown) => {
+        if (
+          armedProtectedTaskExecution !== undefined
+          && error instanceof ProtectedTaskJobStartNotOwnedError
+          && job.status === "queued"
+        ) {
+          protectedStartNotOwned = true;
+          return;
+        }
         await job.fail(error);
       });
     const finishMainTurnAfterRelease = (): void => {
       forkCoordinator.markMainCompleted(threadId, job.id);
-      if (job.isTerminal()) {
+      if (job.isTerminal() || protectedStartNotOwned) {
         this.active.delete(job.id);
         this.abortReasons.delete(job.id);
         this.jobToAuthority.delete(job.id);
@@ -1588,7 +1625,7 @@ export class JobManager {
         // Exact protected cancellation makes the Job terminal before this
         // point. Repeat the content-free registry cleanup in the finally path
         // so an unrelated coordinator diagnostic cannot strand authority.
-        if (job.isTerminal()) {
+        if (job.isTerminal() || protectedStartNotOwned) {
           this.active.delete(job.id);
           this.abortReasons.delete(job.id);
           this.jobToAuthority.delete(job.id);

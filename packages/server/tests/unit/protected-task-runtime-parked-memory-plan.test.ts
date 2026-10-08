@@ -177,10 +177,13 @@ function build(overrides: Readonly<{
       : userId === PEER_USER && !overrides.missingPeer
         ? { id: PEER_HUMAN }
         : null,
-    resolveRequesterPrivateRoom: async () => ({
-      roomId: SOURCE_ROOM,
-      namespaceId: CONTENT,
-    }),
+    resolveRequesterPrivateRoom: async (_userId, _agentId, namespaceId) => {
+      expect(namespaceId).toBe(CONTENT);
+      return {
+        roomId: SOURCE_ROOM,
+        namespaceId: CONTENT,
+      };
+    },
     buildTargetUsersEnvelope: (overrides.buildTargetUsersEnvelope
       ?? (async () => ({
         ok: true,

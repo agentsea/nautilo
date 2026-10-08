@@ -27,9 +27,12 @@ import {
   domainKeyRecipientRequests,
   encryptionTransitionPolicy,
   eq,
+  getEncryptionTransitionPolicy,
   getSharedDirectCryptoDb,
   getSharedDirectAgentDb,
   getSharedDirectDb,
+  groupMembers,
+  groups,
   humanCryptoCustodies,
   humanCryptoDeviceGroupAcknowledgements,
   humanCryptoDeviceGroupCommits,
@@ -55,9 +58,12 @@ import {
   resolveAppDatabaseConnectionString,
   roomMembers,
   rooms,
+  sessionMessages,
+  sessions,
   serverAdmission,
   sql,
   taskDefinitionCryptoRevisions,
+  taskRunResultCryptoRevisions,
   taskRuns,
   tasks,
   transitionTaskLifecycleTerminal,
@@ -67,6 +73,11 @@ import {
   type PostgresJsBridgeRow,
   type PostgresJsBridgeScalar,
 } from "@nautilo/db";
+import {
+  persistJobWithDatabase,
+  startProtectedTaskJobWithDatabase,
+  updateJobStatusWithDatabase,
+} from "../../../db/src/queries/jobs.ts";
 import {
   DeviceProviderStateVault,
   HumanDeviceOpenMlsGroup,
@@ -78,24 +89,34 @@ import {
   createDomainForegroundAuthorizationPlan,
   cryptoDeviceId,
   cryptoDomainId,
+  domainEpoch,
   domainNamespaceGenerationHeadDigest,
   domainNamespaceRetainedAuthoritySetDigest,
   encodeHumanDeviceGroupHead,
+  encryptedObjectWriteRecord,
+  encryptObjectPayload,
   generateDomainKey,
   humanId,
   mintDomainForegroundAuthorization,
   namespaceGeneration,
   namespaceId,
+  objectId,
   persistAgentRuntimeInitialization,
   prepareAgentRuntimeInitialization,
   prepareDomainKeyHead,
   prepareDomainKeyRecipientAuthorization,
   prepareDomainKeyRecipientEnvelope,
   prepareDomainNamespaceBundle,
+  prepareHumanObjectAccessManifestGenesisSet,
+  TaskRuntimeRecipientRegistry,
+  unixTimestamp,
+  wrapObjectDekForNamespace,
   type DomainForegroundSecretEntry,
   type TaskRuntimeExecutionEvidence,
 } from "@nautilo/lattice-crypto";
 import {
+  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   createTaskRuntimeBackgroundAuthorizationRequestV1,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
@@ -105,17 +126,24 @@ import {
   destroyDomainKeyHeadV2,
   destroyDomainKeyRecipientAuthorizationV2,
   destroyDomainKeyRecipientEnvelopeV2,
+  encodeEncryptedPayloadV2,
+  encodeNamespaceObjectEnvelopeV2,
+  parseDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
   verifyDomainForegroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/wire";
 import {
   bindEncryptionDataOperationOwner,
+  createDormantTaskContentShadowRepository,
+  createPreparedHumanTaskContentCryptoRevisionV1,
   deriveMemoryCryptoObjectIdV1,
   deriveTaskContentCryptoObjectIdV1,
   encodeMemoryPayloadV1,
+  encodeTaskPayloadV1,
   fingerprintRequiredMemoryNamespaces,
   MEMORY_OBJECT_TYPE,
   prepareTaskRuntimeAgentObject,
+  taskContentObjectTypeV1,
   type ProtectedAgentMemoryRepository,
   type ProtectedMemoryAuthority,
   type TaskRuntimeAgentObjectNamespaceMaterial,
@@ -125,10 +153,13 @@ import {
   PostgresDomainKeyAuthorityRepository,
   PostgresHumanDeviceGroupRepository,
   PostgresLatticeStorage,
+  PostgresTaskContentProductStore,
+  createPostgresTaskContentCryptoCompletion,
   PostgresNamespaceProductAuthority,
   inspectInitialTaskRuntimeNamespaceAuthority,
   inspectTaskContentNamespaceAuthority,
   verifyCryptoPostgresHandle,
+  withNativeProtectedTaskDefinitionV1,
   type ConversationProductCanonicalTransactionRunner,
   type CryptoPostgresHandle,
   type TaskScopeMemoryBinding,
@@ -139,8 +170,16 @@ import type {
   ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 import {
+  InMemoryLaneLock,
+  JobManager,
   createTaskRuntimeDomainMemoryCryptoSession,
+  withNativeProtectedTaskCheckpointSaver,
 } from "@nautilo/runtime";
+import {
+  PersonalPolicyResolver,
+  findActorByOwnerId,
+} from "@nautilo/trust";
+import { classifyProtectedTaskMetadataV1 } from "@nautilo/types";
 import {
   withTaskRuntimeExecutionEvidenceV1,
   type TaskRuntimeExecutionEvidenceInputV1,
@@ -175,6 +214,22 @@ import {
   type ProtectedTaskMemoryObjectWrite,
   type ProtectedTaskMemoryObjectWriterInput,
 } from "../../src/routes/protected-task-memory-object-writer.ts";
+import {
+  createProductionBackgroundAuthorizationComposition,
+} from "../../src/routes/background-authorization-composition.ts";
+import {
+  createProtectedTaskNativeFixedMemorySegment,
+} from "../../src/routes/protected-task-native-fixed-memory-segment.ts";
+import {
+  createProductionProtectedTaskNativeExecution,
+} from "../../src/routes/protected-task-native-execution-composition.ts";
+import {
+  createProductionProtectedTaskRuntimeInitialComposition,
+  loadInitialProtectedTaskOccurrence,
+} from "../../src/routes/protected-task-runtime-initial-composition.ts";
+import {
+  createProtectedTaskRequesterPrivateRoomResolver,
+} from "../../src/routes/protected-task-requester-private-room.ts";
 
 const ENABLE_ENV = "NAUTILO_PROTECTED_TASK_MEMORY_WRITER_INTEGRATION";
 const EXPECTED_INSTANCE_ID = "qa-task-completion-e7ada3c6";
@@ -427,7 +482,9 @@ async function waitForBlockedContender(
   throw new Error(failure);
 }
 
-async function createBaseFixture() {
+async function createBaseFixture(
+  options: Readonly<{ connectedExecution?: boolean }> = {},
+) {
   const admin = createDirectDb(5);
   const productDb = getSharedDirectDb();
   const cryptoDb = getSharedDirectCryptoDb();
@@ -462,6 +519,7 @@ async function createBaseFixture() {
   const taskIds = new Set<string>();
   const jobIds = new Set<string>();
   const scopeIds = new Set<string>();
+  const sessionThreadIds = new Set<string>();
 
   const [originalPolicy] = await admin.select().from(encryptionTransitionPolicy)
     .where(eq(encryptionTransitionPolicy.id, "server"));
@@ -490,9 +548,33 @@ async function createBaseFixture() {
       ...attachedMemories.map(row => row.memoryId),
     ])];
     const createdTaskIds = [...taskIds];
-    const createdJobIds = [...jobIds];
+    const taskJobRows = createdTaskIds.length === 0 ? [] : await admin.select({
+      jobId: taskRuns.jobId,
+    }).from(taskRuns).where(inArray(taskRuns.taskId, createdTaskIds));
+    const createdJobIds = [...new Set([
+      ...jobIds,
+      ...taskJobRows.flatMap(row => row.jobId === null ? [] : [row.jobId]),
+    ])];
     const createdRequestIds = [...requestIds];
     try {
+      if (sessionThreadIds.size > 0) {
+        const createdSessions = await admin.select({ id: sessions.id })
+          .from(sessions).where(inArray(
+            sessions.threadId,
+            [...sessionThreadIds],
+          ));
+        const createdSessionIds = createdSessions.map(row => row.id);
+        if (createdSessionIds.length > 0) {
+          await admin.delete(sessionMessages).where(inArray(
+            sessionMessages.sessionId,
+            createdSessionIds,
+          ));
+          await admin.delete(sessions).where(inArray(
+            sessions.id,
+            createdSessionIds,
+          ));
+        }
+      }
       if (writtenObjectIds.length > 0) {
         await admin.delete(objectCryptoAccessHeads).where(
           inArray(objectCryptoAccessHeads.objectId, writtenObjectIds),
@@ -589,6 +671,10 @@ async function createBaseFixture() {
       );
       if (createdTaskIds.length > 0) {
         await admin.delete(tasks).where(inArray(tasks.id, createdTaskIds));
+        await admin.delete(taskRunResultCryptoRevisions).where(inArray(
+          taskRunResultCryptoRevisions.taskId,
+          createdTaskIds,
+        ));
         await admin.delete(taskDefinitionCryptoRevisions).where(
           inArray(taskDefinitionCryptoRevisions.taskId, createdTaskIds),
         );
@@ -627,6 +713,7 @@ async function createBaseFixture() {
         namespaces.id,
         [namespaceValue, seedNamespaceValue],
       ));
+      await admin.delete(groupMembers).where(eq(groupMembers.userId, userId));
       await admin.delete(actors).where(eq(actors.ownerId, userId));
       await admin.delete(agents).where(eq(agents.id, productAgentId));
       await admin.delete(serverAdmission).where(eq(serverAdmission.userId, userId));
@@ -684,6 +771,18 @@ async function createBaseFixture() {
           agentId: productAgentId,
         },
       ]);
+      if (options.connectedExecution === true) {
+        const [ownersGroup] = await tx.select({ id: groups.id }).from(groups)
+          .where(eq(groups.type, "owners")).limit(2);
+        if (ownersGroup === undefined) {
+          throw new Error("Missing canonical owners Group");
+        }
+        await tx.insert(groupMembers).values({
+          groupId: ownersGroup.id,
+          userId,
+          grantedBy: humanActorId,
+        });
+      }
       await tx.insert(namespaces).values([
         {
           id: namespaceValue,
@@ -1096,8 +1195,18 @@ async function createBaseFixture() {
         configRevision: authorizationRevision(1),
         plaintextDek: digest("task-memory-config-dek"),
       }],
-      domains: [],
-      resolveCurrentDomainCommitterAuthority: () => null,
+      domains: options.connectedExecution === true ? [{
+          domainId: cryptoDomainId(domainAuthority.domains[0]!.domainId),
+          domainEpoch: domainEpoch(
+            domainAuthority.domains[0]!.domainKeyGeneration,
+          ),
+          agentAuthorizationRevision: authorizationRevision(7),
+          committerDeviceId: cryptoDeviceId(deviceId),
+          domainRoot: domainKey,
+          committerSigningPrivateKey: signing.privateKey,
+        }] : [],
+      resolveCurrentDomainCommitterAuthority: () =>
+        options.connectedExecution === true ? signing.publicKey : null,
       manager: {
         managerHumanId: humanId(humanActorId),
         managerAuthorizationRevision: authorizationRevision(
@@ -1126,10 +1235,17 @@ async function createBaseFixture() {
           managerDeviceId: cryptoDeviceId(deviceId),
         },
         currentManagerSigningPublicKey: signing.publicKey,
-        domains: [],
+        domains: options.connectedExecution === true ? [{
+            domainId: cryptoDomainId(domainAuthority.domains[0]!.domainId),
+            domainEpoch: domainEpoch(
+              domainAuthority.domains[0]!.domainKeyGeneration,
+            ),
+            agentAuthorizationRevision: authorizationRevision(7),
+            committerDeviceId: cryptoDeviceId(deviceId),
+            committerSigningPublicKey: signing.publicKey,
+          }] : [],
       }),
     })).toBe("inserted");
-
     destroyDomainKeyRecipientAuthorizationV2(recoveryAuthorization.authorization);
     destroyDomainKeyRecipientAuthorizationV2(deviceAuthorization.authorization);
     destroyDomainKeyRecipientEnvelopeV2(recoveryEnvelope.envelope);
@@ -1194,6 +1310,7 @@ async function createBaseFixture() {
       taskIds,
       jobIds,
       scopeIds,
+      sessionThreadIds,
       cleanup,
     };
   } catch (error) {
@@ -1925,7 +2042,742 @@ async function objectRowCounts(
   });
 }
 
+async function createConnectedProtectedTask(base: BaseFixture) {
+  const taskId = randomUUID();
+  const taskRunId = randomUUID();
+  const graphThreadId = `subagent:task:${taskId}:${taskRunId}`;
+  const coordinate = Object.freeze({
+    kind: "definition" as const,
+    taskId,
+    contentRevision: 1,
+  });
+  const cryptoObjectId = deriveTaskContentCryptoObjectIdV1(coordinate);
+  const authority = Object.freeze({
+    authorityVersion: 1 as const,
+    kind: "requester_private_namespace" as const,
+    keyClass: "ai" as const,
+    requesterHumanId: base.humanActorId,
+    namespaceId: base.namespaceValue,
+    domainId: base.domainSecret.domainId,
+    expectedAccessRevision: base.namespace.accessRevision,
+    expectedPolicyRevision: base.policyRevision,
+  });
+  const encrypted = encryptObjectPayload(base.crypto, {
+    objectId: objectId(cryptoObjectId),
+    keyClass: "ai",
+    objectType: taskContentObjectTypeV1(coordinate),
+    createdAt: unixTimestamp(NOW + 10),
+  }, encodeTaskPayloadV1({
+    formatVersion: 1,
+    prompt: "Complete the connected protected Task",
+    expectedOutput: null,
+    protectedMetadata: {},
+  }));
+  const payloadBytes = encodeEncryptedPayloadV2(encrypted.payload);
+  const envelopeBytes = encodeNamespaceObjectEnvelopeV2(
+    wrapObjectDekForNamespace(base.crypto, base.namespace.key, {
+      objectId: objectId(cryptoObjectId),
+      namespaceId: namespaceId(base.namespaceValue),
+      keyClass: "ai",
+      keyGeneration: base.namespace.keyGeneration,
+      bindingRevisionAtWrap: base.namespace.accessRevision,
+    }, encrypted.dek),
+  );
+  encrypted.dek.fill(0);
+  const access = prepareHumanObjectAccessManifestGenesisSet(base.crypto, {
+    objectId: cryptoObjectId,
+    payloadHash: base.crypto.hash(payloadBytes),
+    envelopeBytes: [envelopeBytes],
+    sourceAuthorized: true,
+    targetAuthorized: true,
+    subjectHumanId: humanId(base.humanActorId),
+    committerDeviceId: cryptoDeviceId(base.deviceId),
+    hostAuthorizationRevision: authorizationRevision(
+      base.currentDevice.securityRevision,
+    ),
+    committerSigningPublicKey: base.currentDevice.signingPublicKey,
+    committerSigningPrivateKey: base.signingPrivateKey,
+  });
+  const prepared = createPreparedHumanTaskContentCryptoRevisionV1({
+    signerKind: "human_device",
+    coordinate,
+    authority,
+    object: encryptedObjectWriteRecord(payloadBytes),
+    access,
+  });
+  const classified = classifyProtectedTaskMetadataV1({});
+  if (classified.status !== "supported") {
+    throw new Error("Empty protected Task metadata was not supported");
+  }
+  const repository = createDormantTaskContentShadowRepository({
+    product: new PostgresTaskContentProductStore(
+      base.product.handle,
+      () => authority,
+    ),
+    crypto: createPostgresTaskContentCryptoCompletion({
+      handle: base.cryptoHandle,
+      crypto: base.crypto,
+      resolveCurrentAuthority: () => Promise.resolve(authority),
+      resolveHistoricalAgentSignerAuthority: () => null,
+      resolveHistoricalHumanDeviceSigningPublicKey: () =>
+        Promise.resolve(base.currentDevice.signingPublicKey.slice()),
+    }),
+  });
+  base.taskIds.add(taskId);
+  base.objectIds.add(cryptoObjectId);
+  base.requestIds.add(`task-run-authorization:${taskRunId}`);
+  base.sessionThreadIds.add(graphThreadId);
+  expect(await repository.reserveRevision({
+    operationId: `connected-task-definition:${taskId}`,
+    requestDigest: base.crypto.hash(new TextEncoder().encode(
+      `connected-task-definition:${taskId}`,
+    )),
+    representation: "protected",
+    authority,
+    prepared,
+    operationalMetadata: classified.operational,
+  })).toMatchObject({ status: "reserved" });
+  await base.admin.insert(tasks).values({
+    id: taskId,
+    ownerId: base.userId,
+    requestorId: base.userId,
+    agentId: base.productAgentId,
+    prompt: "",
+    preset: "in_background",
+    scheduleKind: "now",
+    callingRoomId: base.roomId,
+    targetChat: "last_in_namespace",
+    targetRoomId: base.roomId,
+    targetUserIds: [base.userId],
+    useScope: false,
+    toolsMode: "none",
+    fundingMode: "legacy_server",
+    status: "pending",
+    metadata: classified.operational,
+  });
+  expect(await repository.completeRevision({ coordinate, prepared }))
+    .toMatchObject({ status: "mapped" });
+  const startedAt = new Date(NOW);
+  await base.admin.transaction(async tx => {
+    await tx.update(tasks).set({ status: "awaiting" })
+      .where(eq(tasks.id, taskId));
+    await tx.insert(taskRuns).values({
+      id: taskRunId,
+      taskId,
+      graphThreadId,
+      status: "awaiting",
+      startedAt,
+    });
+  });
+  return Object.freeze({
+    taskId,
+    taskRunId,
+    graphThreadId,
+    startedAt,
+    inputObjectId: cryptoObjectId,
+    resultObjectId: deriveTaskContentCryptoObjectIdV1({
+      kind: "run_result",
+      taskId,
+      taskRunId,
+      contentRevision: 1,
+    }),
+  });
+}
+
+async function waitForConnectedCompletion(
+  base: BaseFixture,
+  taskRunId: string,
+): Promise<Readonly<{
+  run: typeof taskRuns.$inferSelect;
+  job: typeof jobs.$inferSelect;
+}>> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const [run] = await base.admin.select().from(taskRuns)
+      .where(eq(taskRuns.id, taskRunId));
+    if (run?.jobId !== null && run?.jobId !== undefined) {
+      const [job] = await base.admin.select().from(jobs)
+        .where(eq(jobs.id, run.jobId));
+      if (job !== undefined
+        && ["completed", "failed", "cancelled", "timed_out"]
+          .includes(job.status)) {
+        return Object.freeze({ run, job });
+      }
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error("Connected protected Task did not settle");
+}
+
+async function waitForConnectedRelease(
+  base: BaseFixture,
+  requestId: string,
+  recipients: TaskRuntimeRecipientRegistry,
+): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const [request] = await base.admin.select({
+      state: backgroundCryptoAuthorizationRequests.state,
+    }).from(backgroundCryptoAuthorizationRequests).where(eq(
+      backgroundCryptoAuthorizationRequests.requestId,
+      requestId,
+    ));
+    if (request?.state === "completed" && recipients.size === 0) return;
+    await new Promise<void>(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error("Connected protected Task did not release grant custody");
+}
+
+async function loadConnectedDomainSecrets(
+  base: BaseFixture,
+  requestId: string,
+): Promise<readonly DomainForegroundSecretEntry[]> {
+  const requirements = await base.admin.select({
+    ordinal: backgroundCryptoAuthorizationNamespaceRequirements.ordinal,
+    namespaceId:
+      backgroundCryptoAuthorizationNamespaceRequirements.namespaceId,
+  }).from(backgroundCryptoAuthorizationNamespaceRequirements).where(eq(
+    backgroundCryptoAuthorizationNamespaceRequirements.requestId,
+    requestId,
+  ));
+  requirements.sort((left, right) => left.ordinal - right.ordinal);
+  const authority = await new PostgresDomainKeyAuthorityRepository(
+    base.restricted,
+    base.crypto,
+    SERVER_SCOPE,
+  ).inspectForegroundAuthority({
+    namespaceIds: requirements.map(requirement => requirement.namespaceId),
+    keyClass: "ai",
+    subjectHumanId: base.humanActorId,
+    deviceId: base.deviceId,
+  });
+  if (authority.status !== "ready") {
+    throw new Error(
+      `Connected protected Task Domain authority unavailable: ${authority.reason}`,
+    );
+  }
+  return Object.freeze(authority.domains.map(domain => {
+    if (domain.domainId !== base.domainSecret.domainId) {
+      throw new Error("Connected protected Task Domain key is unavailable");
+    }
+    return Object.freeze({
+      domainId: domain.domainId,
+      sourceNamespaceId: domain.sourceNamespaceId,
+      participantDigest: domain.participantDigest.slice(),
+      participantCount: domain.participantCount,
+      keyClass: domain.keyClass,
+      domainKeyGeneration: domain.domainKeyGeneration,
+      authorizationRevision: domain.authorizationRevision,
+      headDigest: domain.headDigest.slice(),
+      domainKey: base.domainSecret.domainKey.slice(),
+    });
+  }));
+}
+
+function destroyConnectedDomainSecrets(
+  domains: readonly DomainForegroundSecretEntry[],
+): void {
+  for (const domain of domains) {
+    domain.participantDigest.fill(0);
+    domain.headDigest.fill(0);
+    domain.domainKey.fill(0);
+  }
+}
+
 describePostgres("sealed protected Task Memory object writer", () => {
+  test("executes one genuine-role protected Task from device grant through protected result", async () => {
+    const base = await createBaseFixture({ connectedExecution: true });
+    const recipients = new TaskRuntimeRecipientRegistry(base.crypto, {
+      now: () => NOW,
+    });
+    let testError: unknown;
+    let cleanupError: unknown;
+    let connected: Awaited<ReturnType<
+      typeof createConnectedProtectedTask
+    >> | null = null;
+    let connectedJobId: string | null = null;
+    let jobManager: JobManager | null = null;
+    try {
+      connected = await createConnectedProtectedTask(base);
+      const segmentCalls: Array<Readonly<{
+        taskId: string;
+        taskRunId: string;
+        graphThreadId: string;
+      }>> = [];
+      const nativeErrors: Array<Readonly<{
+        stage:
+          | "prepare"
+          | "open"
+          | "definition"
+          | "context"
+          | "transcript"
+          | "memory"
+          | "checkpoint"
+          | "execute"
+          | "publish_result";
+        name: string;
+        message: string;
+      }>> = [];
+      const recordNativeError = (
+        stage:
+          | "prepare"
+          | "open"
+          | "definition"
+          | "context"
+          | "transcript"
+          | "memory"
+          | "checkpoint"
+          | "execute"
+          | "publish_result",
+        error: unknown,
+      ): void => {
+        nativeErrors.push(Object.freeze({
+          stage,
+          name: error instanceof Error ? error.name : typeof error,
+          message: error instanceof Error
+            ? error.message
+            : "Non-Error failure",
+        }));
+      };
+      const traceNative = async <Value>(
+        stage:
+          | "definition"
+          | "context"
+          | "transcript"
+          | "memory"
+          | "checkpoint",
+        operation: () => Value | Promise<Value>,
+      ): Promise<Value> => {
+        try {
+          return await operation();
+        } catch (error) {
+          recordNativeError(stage, error);
+          throw error;
+        }
+      };
+      jobManager = new JobManager({
+        laneLock: new InMemoryLaneLock(),
+        persist: async payload => {
+          const jobId = await persistJobWithDatabase(base.productDb, payload);
+          connectedJobId = jobId;
+          base.jobIds.add(jobId);
+          return jobId;
+        },
+        startProtectedTaskJob: (
+          jobId,
+          expectedReference,
+          publicationPolicy,
+        ) => startProtectedTaskJobWithDatabase(
+          base.productDb,
+          jobId,
+          expectedReference,
+          publicationPolicy,
+        ),
+        updateStatus: (jobId, status, fields, publicationPolicy) =>
+          updateJobStatusWithDatabase(
+            base.productDb,
+            jobId,
+            status,
+            fields,
+            publicationPolicy,
+          ),
+      });
+      const owner = bindEncryptionDataOperationOwner({
+        policy: {
+          resolve: () => Promise.resolve({
+            policy: {
+              mode: "encrypted_only" as const,
+              shadowBehavior: "strict" as const,
+            },
+            revalidationToken: base.policyRevision,
+          }),
+          revalidate: token => {
+            if (token !== base.policyRevision) {
+              throw new Error("Protected Task policy changed");
+            }
+            return Promise.resolve();
+          },
+        },
+      });
+      let kicks = 0;
+      const composition = await createProductionProtectedTaskRuntimeInitialComposition({
+        db: base.productDb,
+        resolver: new PersonalPolicyResolver(
+          base.userId,
+          base.productAgentId,
+        ),
+        convergeCreatedRoomCatalog: async () => undefined,
+        owner,
+        recipients,
+        jobManager,
+        kick: () => {
+          kicks += 1;
+        },
+        restricted: base.restricted,
+        crypto: base.crypto,
+        serverScope: SERVER_SCOPE,
+        now: () => NOW,
+      }, {
+        nativeExecution: input => {
+          const native = createProductionProtectedTaskNativeExecution(input, {
+            segment: segmentInput => createProtectedTaskNativeFixedMemorySegment({
+              ...segmentInput,
+              resolveExecutionContext: context => traceNative(
+                "context",
+                () => segmentInput.resolveExecutionContext(context),
+              ),
+              createTranscriptPublisher: publisher => traceNative(
+                "transcript",
+                () => segmentInput.createTranscriptPublisher(publisher),
+              ),
+            },
+              {
+                openDefinition: definition => traceNative(
+                  "definition",
+                  () => withNativeProtectedTaskDefinitionV1(definition),
+                ),
+                withMemoryRepository: memory => traceNative(
+                  "memory",
+                  () => withProtectedTaskNativeMemoryRepository(memory),
+                ),
+                withCheckpointSaver: checkpoint => traceNative(
+                  "checkpoint",
+                  () => withNativeProtectedTaskCheckpointSaver(checkpoint),
+                ),
+                runSegment: async segment => {
+                  segment.signal.throwIfAborted();
+                  expect(segment.execution.brief)
+                    .toBe("Complete the connected protected Task");
+                  segmentCalls.push(Object.freeze({
+                    taskId: segment.taskId,
+                    taskRunId: segment.taskRunId,
+                    graphThreadId: segment.graphThreadId,
+                  }));
+                  return Object.freeze({
+                    formatVersion: 1 as const,
+                    resultText: "Connected protected result",
+                    lastError: null,
+                  });
+                },
+              },
+            ),
+          });
+          return Object.freeze({
+            prepareExecution: async preparation => {
+              let prepared: Awaited<ReturnType<typeof native.prepareExecution>>;
+              try {
+                prepared = await native.prepareExecution(preparation);
+              } catch (error) {
+                recordNativeError("prepare", error);
+                throw error;
+              }
+              const executor: typeof prepared.executor = async function* (
+                ...args: Parameters<typeof prepared.executor>
+              ) {
+                try {
+                  yield* prepared.executor(...args);
+                } catch (error) {
+                  recordNativeError("execute", error);
+                  throw error;
+                }
+              };
+              const openTransientInput: typeof prepared.openTransientInput =
+                async grant => {
+                  try {
+                    return await prepared.openTransientInput(grant);
+                  } catch (error) {
+                    recordNativeError("open", error);
+                    throw error;
+                  }
+                };
+              return Object.freeze({ executor, openTransientInput });
+            },
+            publishResult: async publication => {
+              try {
+                await native.publishResult(publication);
+              } catch (error) {
+                recordNativeError("publish_result", error);
+                throw error;
+              }
+            },
+          });
+        },
+      });
+      const occurrence = await loadInitialProtectedTaskOccurrence(
+        base.productDb,
+        {
+          taskRunId: connected.taskRunId,
+          authorizationRequestId:
+            `task-run-authorization:${connected.taskRunId}`,
+        },
+      );
+      if (occurrence === null) {
+        throw new Error("Connected protected Task occurrence was unavailable");
+      }
+      const [currentPolicy, requesterHuman, requesterPrivateRoom] =
+        await Promise.all([
+          getEncryptionTransitionPolicy(base.productDb),
+          findActorByOwnerId(base.userId),
+          createProtectedTaskRequesterPrivateRoomResolver(base.productDb)(
+            base.userId,
+            base.productAgentId,
+            base.namespaceValue,
+          ),
+        ]);
+      expect(currentPolicy).toMatchObject({
+        mode: "encrypted_only",
+        shadowBehavior: "strict",
+        revision: base.policyRevision,
+      });
+      expect(requesterHuman?.id).toBe(base.humanActorId);
+      expect(requesterPrivateRoom).toEqual({
+        roomId: base.roomId,
+        namespaceId: base.namespaceValue,
+      });
+      await composition.coordinator.observeProtectedTaskOccurrence(occurrence);
+      expect(recipients.size).toBe(0);
+
+      const deviceService = createProductionBackgroundAuthorizationComposition({
+        crypto: base.crypto,
+        serverScope: SERVER_SCOPE,
+        now: () => NOW,
+        restricted: () => base.restricted,
+        bindTaskRecipient: composition.bindTaskRecipient,
+        withTaskAuthority: composition.withTaskAuthority,
+        isTaskRecipientActive: composition.isTaskRecipientActive,
+        wakeProtectedTask: composition.wakeProtectedTask,
+      });
+      const subject = Object.freeze({
+        ...base.subject,
+        admission: Object.freeze({
+          deviceId: base.currentDevice.deviceId,
+          deviceGeneration: base.currentDevice.deviceGeneration,
+          serverInstanceId: base.currentDevice.serverInstanceId,
+          lineageGeneration: base.currentDevice.lineageGeneration,
+          epoch: base.currentDevice.epoch,
+          securityRevision: base.currentDevice.securityRevision,
+          headDigest: base.currentDevice.headDigest.slice(),
+          expiresAt: NOW + 60_000,
+        }),
+      });
+      const page = await deviceService.list(subject, {});
+      expect(recipients.size).toBe(1);
+      let selected: ReturnType<
+        typeof decodeTaskRuntimeBackgroundAuthorizationRequestV1
+      > = null;
+      let selectedBytes: Uint8Array | null = null;
+      for (const candidate of page.requests) {
+        const decoded = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+          candidate.requestBytes,
+        );
+        if (decoded?.workId === connected.taskRunId) {
+          selected = decoded;
+          selectedBytes = candidate.requestBytes;
+          break;
+        }
+        if (decoded !== null) {
+          destroyTaskRuntimeBackgroundAuthorizationRequestV1(decoded);
+        }
+      }
+      if (selected === null || selectedBytes === null) {
+        throw new Error("Connected protected Task device request was unavailable");
+      }
+      const plan = parseDomainForegroundAuthorizationPlanV2(
+        selected.authorizationPlanBytes,
+      );
+      if (plan === null) {
+        destroyTaskRuntimeBackgroundAuthorizationRequestV1(selected);
+        throw new Error("Connected protected Task authorization plan was invalid");
+      }
+      let responseBytes: Uint8Array | null = null;
+      const domains = await loadConnectedDomainSecrets(
+        base,
+        selected.requestId,
+      );
+      try {
+        const authorization = await mintDomainForegroundAuthorization(
+          base.crypto,
+          {
+            plan,
+            domains,
+            committerDeviceSigningPrivateKey: base.signingPrivateKey,
+            recipientEncryptionPublicKey: selected.recipientPublicKey,
+          },
+        );
+        try {
+          responseBytes = serializeDomainForegroundAuthorizationV2(
+            authorization,
+          );
+          expect(await deviceService.respond(subject, { responseBytes }))
+            .toEqual({ status: "accepted" });
+        } finally {
+          destroyDomainForegroundAuthorizationV2(authorization);
+        }
+      } finally {
+        responseBytes?.fill(0);
+        selectedBytes.fill(0);
+        destroyConnectedDomainSecrets(domains);
+        destroyDomainForegroundAuthorizationPlanV2(plan);
+        destroyTaskRuntimeBackgroundAuthorizationRequestV1(selected);
+      }
+      expect(kicks).toBe(1);
+
+      const claimable = await loadInitialProtectedTaskOccurrence(
+        base.productDb,
+        {
+          taskRunId: connected.taskRunId,
+          authorizationRequestId:
+            `task-run-authorization:${connected.taskRunId}`,
+        },
+      );
+      if (claimable === null) {
+        throw new Error("Accepted protected Task occurrence was unavailable");
+      }
+      await composition.coordinator.observeProtectedTaskOccurrence(claimable);
+      const terminal = await waitForConnectedCompletion(
+        base,
+        connected.taskRunId,
+      );
+      if (terminal.job.status !== "completed") {
+        const [authorization] = await base.admin.select({
+          state: backgroundCryptoAuthorizationRequests.state,
+        }).from(backgroundCryptoAuthorizationRequests).where(eq(
+          backgroundCryptoAuthorizationRequests.requestId,
+          `task-run-authorization:${connected.taskRunId}`,
+        ));
+        throw new Error(`Connected protected Task Job failed: ${JSON.stringify({
+          jobStatus: terminal.job.status,
+          runStatus: terminal.run.status,
+          authorizationState: authorization?.state ?? "missing",
+          segmentCalls,
+          nativeErrors,
+        })}`);
+      }
+      await waitForConnectedRelease(
+        base,
+        `task-run-authorization:${connected.taskRunId}`,
+        recipients,
+      );
+      expect(terminal.job.input).toEqual({
+        kind: "protected_task_run_v1",
+        taskId: connected.taskId,
+        taskRunId: connected.taskRunId,
+        inputObjectId: connected.inputObjectId,
+        resultObjectId: connected.resultObjectId,
+        authorizationRequestId:
+          `task-run-authorization:${connected.taskRunId}`,
+        policyRevision: base.policyRevision,
+        executionSegment: 1,
+      });
+      expect(terminal.job.message).toBeNull();
+      expect(terminal.job.result).toBeNull();
+      expect(terminal.run).toMatchObject({
+        id: connected.taskRunId,
+        taskId: connected.taskId,
+        jobId: terminal.job.id,
+        status: "completed",
+        resultRepresentation: "protected",
+        resultContentNamespaceId: base.namespaceValue,
+        resultRevision: 1,
+        resultCryptoObjectId: connected.resultObjectId,
+        resultCryptoAccessRevision: 0,
+        resultCryptoMappingState: "verified",
+        resultText: null,
+        lastError: null,
+      });
+      const exactRuns = await base.admin.select({ id: taskRuns.id })
+        .from(taskRuns).where(eq(taskRuns.taskId, connected.taskId));
+      const exactJobs = await base.admin.select({ id: jobs.id })
+        .from(jobs).where(eq(jobs.laneKey, `task:${connected.taskId}`));
+      expect(exactRuns).toEqual([{ id: connected.taskRunId }]);
+      expect(exactJobs).toEqual([{ id: terminal.job.id }]);
+      const [terminalTask] = await base.admin.select({
+        status: tasks.status,
+        prompt: tasks.prompt,
+        expectedOutput: tasks.expectedOutput,
+        lastError: tasks.lastError,
+      }).from(tasks).where(eq(tasks.id, connected.taskId));
+      expect(terminalTask).toEqual({
+        status: "completed",
+        prompt: "",
+        expectedOutput: null,
+        lastError: null,
+      });
+      expect(segmentCalls).toEqual([{
+        taskId: connected.taskId,
+        taskRunId: connected.taskRunId,
+        graphThreadId: connected.graphThreadId,
+      }]);
+      expect(await objectRowCounts(base, connected.resultObjectId)).toEqual({
+        payload: 1,
+        head: 1,
+        manifest: 1,
+        envelope: 1,
+      });
+      const sessionRows = await base.admin.select({
+        id: sessions.id,
+        ownerId: sessions.ownerId,
+        agentId: sessions.agentId,
+        roomId: sessions.roomId,
+      }).from(sessions).where(eq(
+        sessions.threadId,
+        connected.graphThreadId,
+      ));
+      expect(sessionRows).toHaveLength(1);
+      expect(sessionRows[0]).toMatchObject({
+        ownerId: base.userId,
+        agentId: base.productAgentId,
+        roomId: base.roomId,
+      });
+      expect(await base.admin.select({ id: sessionMessages.id })
+        .from(sessionMessages).where(eq(
+          sessionMessages.sessionId,
+          sessionRows[0]!.id,
+        ))).toEqual([]);
+      expect(recipients.size).toBe(0);
+    } catch (error) {
+      testError = error;
+    }
+    if (connected !== null && connectedJobId !== null && jobManager !== null) {
+      try {
+        await jobManager.abortProtectedTaskRunAndWait({
+          taskId: connected.taskId,
+          taskRunId: connected.taskRunId,
+          jobId: connectedJobId,
+        });
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
+    try {
+      recipients.close();
+      await base.cleanup();
+    } catch (error) {
+      cleanupError ??= error;
+    }
+    if (testError !== undefined && cleanupError !== undefined) {
+      throw new AggregateError(
+        [testError, cleanupError],
+        "Connected protected Task test and cleanup both failed",
+      );
+    }
+    if (testError !== undefined) {
+      throw testError instanceof Error
+        ? testError
+        : new Error("Connected protected Task test threw a non-Error value", {
+          cause: testError,
+        });
+    }
+    if (cleanupError !== undefined) {
+      throw cleanupError instanceof Error
+        ? cleanupError
+        : new Error(
+          "Connected protected Task cleanup threw a non-Error value",
+          { cause: cleanupError },
+        );
+    }
+  }, 30_000);
+
   test("commits under genuine authority and serializes cancellation and expiry", async () => {
     const base = await createBaseFixture();
     let testError: unknown;

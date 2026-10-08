@@ -309,6 +309,61 @@ describe("protected Task result signer history", () => {
     }
   });
 
+  for (const revision of ["2", 2n] as const) {
+    test(`accepts raw Postgres ${typeof revision} device revision counters`, async () => {
+      const value = await fixture((stage, rows) =>
+        stage === "devices"
+          ? rows.map((row) => row["device_id"] === COMMITTER
+            ? { ...row, revision }
+            : row)
+          : rows,
+      );
+      try {
+        expect(
+          await withProtectedTaskResultSignerHistory({
+            ...value.input,
+            use: () => "raw-counter",
+          }),
+        ).toBe("raw-counter");
+      } finally {
+        value.publication.mockRestore();
+      }
+    });
+  }
+
+  for (const revision of [
+    "",
+    " 3",
+    "03",
+    "3.0",
+    "3e0",
+    "-1",
+    "9007199254740992",
+    -1n,
+    9007199254740992n,
+    3.5,
+  ] as const) {
+    test(`rejects malformed raw device revision ${String(revision)}`, async () => {
+      const value = await fixture((stage, rows) =>
+        stage === "devices"
+          ? rows.map((row) => ({ ...row, revision }))
+          : rows,
+      );
+      let used = false;
+      try {
+        await fails(withProtectedTaskResultSignerHistory({
+          ...value.input,
+          use: () => {
+            used = true;
+          },
+        }));
+        expect(used).toBe(false);
+      } finally {
+        value.publication.mockRestore();
+      }
+    });
+  }
+
   for (const failure of [
     "missing",
     "duplicate",

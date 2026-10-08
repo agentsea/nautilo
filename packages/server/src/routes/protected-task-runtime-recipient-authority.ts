@@ -32,10 +32,14 @@ import {
   type BackgroundAuthorizationTaskRuntimeReplacementRepository,
   type ProtectedTaskOccurrence,
 } from "@nautilo/runtime";
-import { findActorByOwnerId, findAgentOwnerPrivateRoom } from "@nautilo/trust";
+import { findActorByOwnerId } from "@nautilo/trust";
 
 import { getServerDirectDb } from "../lib/server-direct-db";
 import { createHumanProductTransactionContext } from "./human-message-product-store";
+import {
+  createProtectedTaskRequesterPrivateRoomResolver,
+  type ProtectedTaskRequesterPrivateRoomResolver,
+} from "./protected-task-requester-private-room";
 
 type CurrentTask = Pick<
   Task,
@@ -124,13 +128,7 @@ export type ProtectedTaskRuntimeRecipientAuthorityDependencies = Readonly<{
   resolveRequesterHuman(userId: string): Promise<Readonly<{
     id: string;
   }> | null>;
-  resolveRequesterPrivateRoom(
-    userId: string,
-    agentId: string,
-  ): Promise<Readonly<{
-    roomId: string;
-    namespaceId: string;
-  }> | null>;
+  resolveRequesterPrivateRoom: ProtectedTaskRequesterPrivateRoomResolver;
   createProductContext(
     userId: string,
     database: DirectDatabase,
@@ -500,7 +498,8 @@ export function createProtectedTaskRuntimeRecipientAuthorityPort(
   const resolveRequesterHuman =
     overrides.resolveRequesterHuman ?? findActorByOwnerId;
   const resolveRequesterPrivateRoom =
-    overrides.resolveRequesterPrivateRoom ?? findAgentOwnerPrivateRoom;
+    overrides.resolveRequesterPrivateRoom
+      ?? createProtectedTaskRequesterPrivateRoomResolver(db);
   const createProductContext =
     overrides.createProductContext ?? createHumanProductTransactionContext;
   const validateCurrentTaskRun =
@@ -535,6 +534,7 @@ export function createProtectedTaskRuntimeRecipientAuthorityPort(
       resolveRequesterPrivateRoom(
         input.binding.userId,
         input.occurrence.task.agentId,
+        input.occurrence.task.contentNamespaceId,
       ),
     ]);
     if (

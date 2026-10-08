@@ -95,10 +95,13 @@ function dependencies(input: Readonly<{
     loadTask: async () => input.task === undefined ? task() : input.task,
     loadRun: async () => input.run === undefined ? run() : input.run,
     resolveRequesterHuman: async () => ({ id: HUMAN }),
-    resolveRequesterPrivateRoom: async () => ({
-      roomId: ROOM,
-      namespaceId: CONTENT,
-    }),
+    resolveRequesterPrivateRoom: async (_userId, _agentId, namespaceId) => {
+      expect(namespaceId).toBe(CONTENT);
+      return {
+        roomId: ROOM,
+        namespaceId: CONTENT,
+      };
+    },
     createProductContext: async () => ({
       canonicalRunner: { marker: "runner" },
     } as never),

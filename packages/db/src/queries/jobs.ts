@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { jobs } from "../schema/jobs";
 import type { JobStatus } from "@nautilo/types";
 import { getSharedDirectDb } from "../config/direct-database";
@@ -7,11 +7,14 @@ import {
   acquireOrdinaryEncryptionPublicationFence,
 } from
   "../utils/encryption-transition-queries";
+import type { ProtectedTaskDurableJobReference } from "./tasks";
 
 export type JobPublicationPolicy = Readonly<{
   expectedRevision: number;
   representation: "protected_only";
 }>;
+
+export type ProtectedTaskJobStartResult = "started" | "rejected";
 
 function db() {
   return getSharedDirectDb();
@@ -98,6 +101,49 @@ export async function updateJobStatus(
   return updateJobStatusWithDatabase(
     db(), jobId, status, fields, publicationPolicy,
   );
+}
+
+export async function startProtectedTaskJob(
+  jobId: string,
+  expectedReference: ProtectedTaskDurableJobReference,
+  publicationPolicy: JobPublicationPolicy,
+): Promise<ProtectedTaskJobStartResult> {
+  return startProtectedTaskJobWithDatabase(
+    db(), jobId, expectedReference, publicationPolicy,
+  );
+}
+
+/** @internal Transaction seam for exact unit verification. */
+export async function startProtectedTaskJobWithDatabase(
+  database: ReturnType<typeof db>,
+  jobId: string,
+  expectedReference: ProtectedTaskDurableJobReference,
+  publicationPolicy: JobPublicationPolicy,
+): Promise<ProtectedTaskJobStartResult> {
+  if (
+    jobId.length === 0
+    || expectedReference.kind !== "protected_task_run_v1"
+    || expectedReference.policyRevision !== publicationPolicy.expectedRevision
+    || publicationPolicy.representation !== "protected_only"
+  ) {
+    throw new TypeError("Protected Task Job start authority is invalid");
+  }
+  const durableInput = { ...expectedReference };
+  return database.transaction(async (tx) => {
+    await acquireEncryptionPublicationFence(tx, publicationPolicy);
+    const rows = await tx
+      .update(jobs)
+      .set({ status: "running", startedAt: new Date() })
+      .where(and(
+        eq(jobs.id, jobId),
+        eq(jobs.status, "queued"),
+        isNull(jobs.startedAt),
+        isNull(jobs.completedAt),
+        eq(jobs.input, durableInput),
+      ))
+      .returning({ id: jobs.id });
+    return rows.length === 1 ? "started" : "rejected";
+  });
 }
 
 /** @internal Transaction seam for exact unit verification. */

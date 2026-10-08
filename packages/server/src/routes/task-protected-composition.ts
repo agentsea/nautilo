@@ -77,12 +77,15 @@ import {
   AgentInvocationDeniedError,
   ServerProviderCredentialsDeniedError,
   createAcceptedInvocationAuthority,
-  findAgentOwnerPrivateRoom,
 } from "@nautilo/trust";
 
 import { createHumanProductTransactionContext } from "./human-message-product-store";
 import { importProtectedTaskPublicationV1 } from "./task-protected-publication";
 import { prepareProtectedTaskScope } from "./protected-task-scope-creation";
+import {
+  createProtectedTaskRequesterPrivateRoomResolver,
+  type ProtectedTaskRequesterPrivateRoomResolver,
+} from "./protected-task-requester-private-room";
 import { listProtectedTaskContentV1, toTaskContentSummaryV1 } from "./tasks";
 
 export type ProtectedTaskRouteAuthority = Readonly<{
@@ -244,6 +247,7 @@ type ProductionDependencies = Readonly<{
   owner: EncryptionDataOperationOwner;
   observer: { kick(): void };
   now?: () => number;
+  resolveRequesterPrivateRoom?: ProtectedTaskRequesterPrivateRoomResolver;
 }>;
 
 function canonicalJson(value: unknown): string {
@@ -531,6 +535,8 @@ export function createProductionProtectedTaskComposition(
   const cryptoHandle = () =>
     cryptoHandlePromise ??= verifyCryptoPostgresHandle(dependencies.restricted);
   const productConnection = createPostgresJsBridgeConnection(dependencies.db);
+  const resolveRequesterPrivateRoom = dependencies.resolveRequesterPrivateRoom
+    ?? createProtectedTaskRequesterPrivateRoomResolver(dependencies.db);
 
   const readPolicyRevision = async (): Promise<number> => {
     const rows = await dependencies.db.select({
@@ -559,9 +565,10 @@ export function createProductionProtectedTaskComposition(
     bindingHash: Uint8Array;
     keyGeneration: number;
   }> | null> => {
-    const privateRoom = await findAgentOwnerPrivateRoom(
+    const privateRoom = await resolveRequesterPrivateRoom(
       authority.userId,
       authority.agentId,
+      expectedNamespaceId,
     );
     if (privateRoom === null || (expectedNamespaceId !== undefined
       && privateRoom.namespaceId !== expectedNamespaceId)) return null;

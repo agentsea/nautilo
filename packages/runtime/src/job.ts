@@ -1,5 +1,9 @@
 import type { ServerEvent, JobStatus } from "@nautilo/types";
-import type { JobPublicationPolicy, PersistJobPayload } from "@nautilo/db";
+import type {
+  JobPublicationPolicy,
+  PersistJobPayload,
+  ProtectedTaskJobStartResult,
+} from "@nautilo/db";
 import { runWithTurn, log } from "@nautilo/logger";
 import { StrictShadowEnforcementError } from "@nautilo/lattice-bridge";
 import {
@@ -81,6 +85,19 @@ export type ProtectedTaskResultBarrier = Readonly<{
   awaitPublished(): Promise<boolean>;
 }>;
 
+export class ProtectedTaskJobStartNotOwnedError extends Error {
+  readonly disposition: "rejected" | "unknown";
+
+  constructor(
+    disposition: "rejected" | "unknown",
+    options?: ErrorOptions,
+  ) {
+    super("Protected Task Job start was not acquired", options);
+    this.name = "ProtectedTaskJobStartNotOwnedError";
+    this.disposition = disposition;
+  }
+}
+
 export interface JobConfig {
   ownerId: string;
   requestorId: string;
@@ -105,6 +122,11 @@ export interface JobConfig {
     fields?: { message?: string; result?: Record<string, unknown> },
     publicationPolicy?: JobPublicationPolicy,
   ) => Promise<void>;
+  startProtectedTaskJob?: (
+    jobId: string,
+    expectedReference: ProtectedTaskJobReferenceV1,
+    publicationPolicy: JobPublicationPolicy,
+  ) => Promise<ProtectedTaskJobStartResult>;
 }
 
 export class Job {
@@ -252,7 +274,18 @@ export class Job {
     if (authorizationSignal?.aborted === true) cancelForAuthorization();
 
     try {
-      await this.setStatus("running");
+      if (this.config.durableInputReference?.kind === "protected_task_run_v1") {
+        await this.startProtectedTaskJob(this.config.durableInputReference);
+        if (this.abortController.signal.aborted || this.isTerminal()) {
+          if (!this.isTerminal()) {
+            await this.cancel(this.cancellationMessage, this.cancellationCause);
+          }
+          return;
+        }
+        this.recordProtectedTaskJobStarted();
+      } else {
+        await this.setStatus("running");
+      }
 
       // D082 PR B — safety-net AsyncLocalStorage rebind for any job
       // whose input carries a `turnId`. Today the only such caller is
@@ -283,6 +316,40 @@ export class Job {
         cancelForAuthorization,
       );
     }
+  }
+
+  private async startProtectedTaskJob(
+    expectedReference: ProtectedTaskJobReferenceV1,
+  ): Promise<void> {
+    assertProtectedTaskJobReferenceV1(expectedReference);
+    const start = this.config.startProtectedTaskJob;
+    if (start === undefined) {
+      throw new TypeError("Protected Task Job start sink is missing");
+    }
+    let result: ProtectedTaskJobStartResult;
+    try {
+      result = await start(
+        this.id,
+        expectedReference,
+        this.publicationPolicy()!,
+      );
+    } catch (cause) {
+      throw new ProtectedTaskJobStartNotOwnedError("unknown", { cause });
+    }
+    if (result !== "started") {
+      throw new ProtectedTaskJobStartNotOwnedError("rejected");
+    }
+  }
+
+  private recordProtectedTaskJobStarted(): void {
+    this._status = "running";
+    eventBus.emit({
+      type: "job.status",
+      jobId: this.id,
+      status: "running",
+      ...this.lifecycleIdentity(),
+      ...(this.config.laneKey ? { laneKey: this.config.laneKey } : {}),
+    });
   }
 
   /**

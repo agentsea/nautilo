@@ -1,5 +1,5 @@
 import { describe, test, expect, spyOn } from "bun:test";
-import { Job } from "../../src/job";
+import { Job, ProtectedTaskJobStartNotOwnedError } from "../../src/job";
 import { assertProtectedTaskJobReferenceV1 } from "../../src/tasks/protected-task-job-reference";
 import type { ServerEvent, JobStatus } from "@nautilo/types";
 import type { JobPublicationPolicy, PersistJobPayload } from "@nautilo/db";
@@ -24,6 +24,8 @@ function trackStatus() {
 async function* yieldNothing(): AsyncGenerator<ServerEvent> {
   // completes immediately
 }
+
+const startProtectedTaskJob = async () => "started" as const;
 
 async function* yieldTokens(n: number, laneKey: string): AsyncGenerator<ServerEvent> {
   for (let i = 1; i <= n; i++) {
@@ -166,6 +168,7 @@ describe("Job", () => {
         return "job-protected-task";
       },
       updateStatus: async () => {},
+      startProtectedTaskJob,
     });
 
     await job.persist();
@@ -206,6 +209,7 @@ describe("Job", () => {
         executor: yieldNothing,
         persist: async () => `protected-result-${published}`,
         updateStatus: async (_id, status) => { updates.push(status); },
+        startProtectedTaskJob,
       });
       await job.persist();
       await job.executeProtectedTask({}, undefined, {
@@ -213,8 +217,8 @@ describe("Job", () => {
       });
       expect(job.status).toBe(published ? "completed" : "running");
       expect(updates).toEqual(published
-        ? ["running", "completed"]
-        : ["running"]);
+        ? ["completed"]
+        : []);
     }
   });
 
@@ -257,6 +261,7 @@ describe("Job", () => {
           return "unexpected";
         },
         updateStatus: async () => {},
+        startProtectedTaskJob,
       });
       expect(job.persist()).rejects.toThrow(
         "Protected Task durable Job reference is invalid",
@@ -421,6 +426,7 @@ describe("Job", () => {
         updateStatus: async (...args) => {
           updates.push(args);
         },
+        startProtectedTaskJob,
       });
       await job.persist();
       await job.executeProtectedTask(
@@ -438,6 +444,96 @@ describe("Job", () => {
     } finally {
       eventBus.off(listener);
       errorSpy.mockRestore();
+    }
+  });
+
+  test("protected Task start rejection and unknown response never execute or persist failure", async () => {
+    const reference = {
+      kind: "protected_task_run_v1" as const,
+      taskId: "10000000-0000-4000-8000-000000000001",
+      taskRunId: "20000000-0000-4000-8000-000000000002",
+      inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+      resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+      authorizationRequestId: "task-run-authorization:start-rejection",
+      policyRevision: 9,
+      executionSegment: 1,
+    };
+    for (const disposition of ["rejected", "unknown"] as const) {
+      let executed = 0;
+      const updates: JobStatus[] = [];
+      const job = new Job({
+        ownerId: "o1", requestorId: "r1", laneKey: `task:${reference.taskId}`,
+        type: "foreground", input: {}, durableInputDisposition: "full",
+        durableInputReference: reference,
+        executor: async function* () { executed += 1; yield* []; },
+        persist: async () => `protected-start-${disposition}`,
+        updateStatus: async (_id, status) => { updates.push(status); },
+        startProtectedTaskJob: async () => {
+          if (disposition === "unknown") throw new Error("response lost");
+          return "rejected";
+        },
+      });
+      await job.persist();
+      const error = await job.executeProtectedTask({}).then(
+        () => undefined,
+        (value: unknown) => value,
+      );
+      expect(error).toBeInstanceOf(ProtectedTaskJobStartNotOwnedError);
+      expect((error as ProtectedTaskJobStartNotOwnedError).disposition)
+        .toBe(disposition);
+      expect(executed).toBe(0);
+      expect(updates).toEqual([]);
+      expect(job.status).toBe("queued");
+    }
+  });
+
+  test("protected Task start cannot revive either side of a local cancellation race", async () => {
+    const reference = {
+      kind: "protected_task_run_v1" as const,
+      taskId: "10000000-0000-4000-8000-000000000001",
+      taskRunId: "20000000-0000-4000-8000-000000000002",
+      inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+      resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+      authorizationRequestId: "task-run-authorization:start-cancel",
+      policyRevision: 9,
+      executionSegment: 1,
+    };
+
+    for (const startResult of ["rejected", "started"] as const) {
+      const startEntered = Promise.withResolvers<void>();
+      const releaseStart = Promise.withResolvers<void>();
+      let executed = 0;
+      const updates: JobStatus[] = [];
+      const job = new Job({
+        ownerId: "o1", requestorId: "r1", laneKey: `task:${reference.taskId}`,
+        type: "foreground", input: {}, durableInputDisposition: "full",
+        durableInputReference: reference,
+        executor: async function* () { executed += 1; yield* []; },
+        persist: async () => `protected-cancel-${startResult}`,
+        updateStatus: async (_id, status) => { updates.push(status); },
+        startProtectedTaskJob: async () => {
+          startEntered.resolve();
+          await releaseStart.promise;
+          return startResult;
+        },
+      });
+      await job.persist();
+      const execution = job.executeProtectedTask({});
+      await startEntered.promise;
+      await job.cancel();
+      releaseStart.resolve();
+      if (startResult === "rejected") {
+        const error = await execution.then(
+          () => undefined,
+          (value: unknown) => value,
+        );
+        expect(error).toBeInstanceOf(ProtectedTaskJobStartNotOwnedError);
+      } else {
+        await execution;
+      }
+      expect(executed).toBe(0);
+      expect(updates).toEqual(["cancelled"]);
+      expect(job.status).toBe("cancelled");
     }
   });
 

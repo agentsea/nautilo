@@ -226,10 +226,12 @@ function dependencies(
         : input.humanId === null
           ? null
           : { id: input.humanId },
-    resolveRequesterPrivateRoom: async () =>
-      input.room === undefined
+    resolveRequesterPrivateRoom: async (_userId, _agentId, namespaceId) => {
+      expect(namespaceId).toBe(CONTENT);
+      return input.room === undefined
         ? { roomId: SOURCE_ROOM, namespaceId: CONTENT }
-        : input.room,
+        : input.room;
+    },
     createProductContext: async () =>
       ({
         canonicalRunner: { marker: "runner" },

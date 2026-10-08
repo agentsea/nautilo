@@ -37,6 +37,7 @@ import {
   type TaskRunResultCryptoRevision,
 } from "../schema/task-run-result-crypto-revisions";
 import { encryptionTransitionPolicy } from "../schema/encryption-transition";
+import { actors } from "../schema/trust";
 import {
   protectedTaskRunOutputBindings,
   type ProtectedTaskRunOutputBinding,
@@ -5286,7 +5287,6 @@ function exactResultReservation(
     && revision.resultRevision === input.resultRevision
     && revision.operationId === input.operationId
     && sameBytes(revision.requestDigest, input.requestDigest)
-    && revision.requesterHumanId === task.requestorId
     && revision.anchorNamespaceId === task.contentNamespaceId
     && revision.cryptoObjectId === input.resultObjectId
     && revision.representation === input.resultRepresentation
@@ -5447,7 +5447,17 @@ async function terminalizeTaskRunResult(
         eq(taskRunResultCryptoRevisions.taskRunId, input.taskRunId),
         eq(taskRunResultCryptoRevisions.resultRevision, input.resultRevision),
       )).limit(1).for("share");
-    if (!exactResultReservation(task, resultRevision, input)) {
+    const [requesterHuman] = resultRevision === undefined
+      ? []
+      : await tx.select({ id: actors.id }).from(actors).where(and(
+        eq(actors.id, resultRevision.requesterHumanId),
+        eq(actors.kind, "user"),
+        eq(actors.ownerId, task.requestorId),
+      )).limit(1).for("share");
+    if (
+      requesterHuman === undefined
+      || !exactResultReservation(task, resultRevision, input)
+    ) {
       return terminalRejected("conflict");
     }
 

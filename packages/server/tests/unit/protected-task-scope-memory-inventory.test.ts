@@ -101,10 +101,13 @@ function resolver(overrides: Readonly<{
   return createProtectedTaskScopeMemoryInventoryResolver({
     db: {} as DirectDatabase,
     resolveRequesterHuman: async () => ({ id: HUMAN }),
-    resolveRequesterPrivateRoom: async () => ({
-      roomId: SOURCE_ROOM,
-      namespaceId: overrides.sourceNamespaceId ?? CONTENT,
-    }),
+    resolveRequesterPrivateRoom: async (_userId, _agentId, namespaceId) => {
+      expect(namespaceId).toBe(CONTENT);
+      return {
+        roomId: SOURCE_ROOM,
+        namespaceId: overrides.sourceNamespaceId ?? CONTENT,
+      };
+    },
     createProductContext: async () => ({
       canonicalRunner: {
         role: "nautilo",

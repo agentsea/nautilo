@@ -19,12 +19,15 @@ import {
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import {
   findActorByOwnerId,
-  findAgentOwnerPrivateRoom,
 } from "@nautilo/trust";
 
 import { getServerDirectDb } from "../lib/server-direct-db";
 import { createHumanProductTransactionContext } from
   "./human-message-product-store";
+import {
+  createProtectedTaskRequesterPrivateRoomResolver,
+  type ProtectedTaskRequesterPrivateRoomResolver,
+} from "./protected-task-requester-private-room";
 
 type TaskFacts = Readonly<{
   id: string;
@@ -75,13 +78,7 @@ export type ProtectedTaskResultContentAuthorityDependencies = Readonly<{
   resolveRequesterHuman(userId: string): Promise<Readonly<{
     id: string;
   }> | null>;
-  resolveRequesterPrivateRoom(
-    userId: string,
-    agentId: string,
-  ): Promise<Readonly<{
-    roomId: string;
-    namespaceId: string;
-  }> | null>;
+  resolveRequesterPrivateRoom: ProtectedTaskRequesterPrivateRoomResolver;
   createProductContext(
     userId: string,
     database: DirectDatabase,
@@ -256,7 +253,7 @@ export function createProtectedTaskResultContentAuthorityResolver(
   const resolveRequesterHuman = overrides.resolveRequesterHuman
     ?? findActorByOwnerId;
   const resolveRequesterPrivateRoom = overrides.resolveRequesterPrivateRoom
-    ?? findAgentOwnerPrivateRoom;
+    ?? createProtectedTaskRequesterPrivateRoomResolver(db);
   const createProductContext = overrides.createProductContext
     ?? createHumanProductTransactionContext;
   const inspectAuthority = overrides.inspectAuthority
@@ -279,7 +276,11 @@ export function createProtectedTaskResultContentAuthorityResolver(
 
     const [human, room] = await Promise.all([
       resolveRequesterHuman(task.requestorId),
-      resolveRequesterPrivateRoom(task.requestorId, task.agentId),
+      resolveRequesterPrivateRoom(
+        task.requestorId,
+        task.agentId,
+        task.contentNamespaceId,
+      ),
     ]);
     if (human === null || room === null
       || expected.requesterHumanId !== human.id

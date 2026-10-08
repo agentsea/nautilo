@@ -710,9 +710,10 @@ describe("production protected Task predispatch composition", () => {
         roomId: ids.room,
         graphThreadId: "ignored-target-thread",
       }),
-      findAgentOwnerPrivateRoom: async (userId, agentId) => {
+      findAgentOwnerPrivateRoom: async (userId, agentId, namespaceId) => {
         privateRoomReads += 1;
         expect([userId, agentId]).toEqual([ids.requestor, ids.agent]);
+        expect(namespaceId).toBe(ids.namespace);
         return { roomId: ids.privateRoom, namespaceId: ids.namespace };
       },
       resolveTaskMemoryEnvelope: async input => {

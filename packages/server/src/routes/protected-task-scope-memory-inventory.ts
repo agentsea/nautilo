@@ -10,12 +10,15 @@ import type {
 } from "@nautilo/runtime";
 import {
   findActorByOwnerId,
-  findAgentOwnerPrivateRoom,
 } from "@nautilo/trust";
 
 import { getServerDirectDb } from "../lib/server-direct-db";
 import { createHumanProductTransactionContext } from
   "./human-message-product-store";
+import {
+  createProtectedTaskRequesterPrivateRoomResolver,
+  type ProtectedTaskRequesterPrivateRoomResolver,
+} from "./protected-task-requester-private-room";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -51,13 +54,7 @@ export type ProtectedTaskScopeMemoryInventoryResolverDependencies = Readonly<{
   resolveRequesterHuman(userId: string): Promise<Readonly<{
     id: string;
   }> | null>;
-  resolveRequesterPrivateRoom(
-    userId: string,
-    agentId: string,
-  ): Promise<Readonly<{
-    roomId: string;
-    namespaceId: string;
-  }> | null>;
+  resolveRequesterPrivateRoom: ProtectedTaskRequesterPrivateRoomResolver;
   createProductContext(
     userId: string,
     database: DirectDatabase,
@@ -153,7 +150,7 @@ export function createProtectedTaskScopeMemoryInventoryResolver(
   const resolveRequesterHuman = overrides.resolveRequesterHuman
     ?? findActorByOwnerId;
   const resolveRequesterPrivateRoom = overrides.resolveRequesterPrivateRoom
-    ?? findAgentOwnerPrivateRoom;
+    ?? createProtectedTaskRequesterPrivateRoomResolver(db);
   const createProductContext = overrides.createProductContext
     ?? createHumanProductTransactionContext;
   const discoverInventory = overrides.discoverInventory
@@ -163,7 +160,11 @@ export function createProtectedTaskScopeMemoryInventoryResolver(
     const pinned = pinScopeCoordinates(input);
     const [requesterHuman, sourceRoom] = await Promise.all([
       resolveRequesterHuman(pinned.requesterUserId),
-      resolveRequesterPrivateRoom(pinned.requesterUserId, pinned.agentId),
+      resolveRequesterPrivateRoom(
+        pinned.requesterUserId,
+        pinned.agentId,
+        pinned.contentNamespaceId,
+      ),
     ]);
     if (requesterHuman === null
       || requesterHuman.id !== pinned.requesterActorId

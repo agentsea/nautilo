@@ -18,12 +18,15 @@ import type {
 } from "@nautilo/runtime";
 import {
   findActorByOwnerId,
-  findAgentOwnerPrivateRoom,
 } from "@nautilo/trust";
 
 import { getServerDirectDb } from "../lib/server-direct-db";
 import { createHumanProductTransactionContext } from
   "./human-message-product-store";
+import {
+  createProtectedTaskRequesterPrivateRoomResolver,
+  type ProtectedTaskRequesterPrivateRoomResolver,
+} from "./protected-task-requester-private-room";
 import type {
   ProtectedTaskRuntimeMemoryPolicy,
 } from "./protected-task-runtime-grant-plan";
@@ -59,13 +62,7 @@ export type ProtectedTaskRuntimeNamespaceAuthorityResolverDependencies =
     resolveRequesterHuman(userId: string): Promise<Readonly<{
       id: string;
     }> | null>;
-    resolveRequesterPrivateRoom(
-      userId: string,
-      agentId: string,
-    ): Promise<Readonly<{
-      roomId: string;
-      namespaceId: string;
-    }> | null>;
+    resolveRequesterPrivateRoom: ProtectedTaskRequesterPrivateRoomResolver;
     createProductContext(
       userId: string,
       database: DirectDatabase,
@@ -122,7 +119,7 @@ export function createProtectedTaskRuntimeNamespaceAuthorityResolver(
   const resolveRequesterHuman = overrides.resolveRequesterHuman
     ?? findActorByOwnerId;
   const resolveRequesterPrivateRoom = overrides.resolveRequesterPrivateRoom
-    ?? findAgentOwnerPrivateRoom;
+    ?? createProtectedTaskRequesterPrivateRoomResolver(db);
   const createProductContext = overrides.createProductContext
     ?? createHumanProductTransactionContext;
   const inspectAuthority = overrides.inspectAuthority
@@ -148,7 +145,11 @@ export function createProtectedTaskRuntimeNamespaceAuthorityResolver(
     const requesterUserId = occurrence.task.requestorId;
     const [requesterHuman, sourceRoom, policy] = await Promise.all([
       resolveRequesterHuman(requesterUserId),
-      resolveRequesterPrivateRoom(requesterUserId, occurrence.task.agentId),
+      resolveRequesterPrivateRoom(
+        requesterUserId,
+        occurrence.task.agentId,
+        occurrence.task.contentNamespaceId,
+      ),
       readPolicy(),
     ]);
     if (requesterHuman === null

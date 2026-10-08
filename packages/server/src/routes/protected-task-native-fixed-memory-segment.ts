@@ -486,8 +486,12 @@ function memoryAuthority(input: Readonly<{
       mode: "namespace" as const,
       subjectUserId: input.subject.userId,
       agentId: input.occurrence.task.agentId,
-      readableNamespaceIds: Object.freeze([...envelope.readableNamespaces]),
-      mutableNamespaceIds: Object.freeze([...envelope.mutableNamespaces]),
+      readableNamespaceIds: Object.freeze([
+        ...envelope.readableNamespaces,
+      ].sort()),
+      mutableNamespaceIds: Object.freeze([
+        ...envelope.mutableNamespaces,
+      ].sort()),
       writableNamespaceId: envelope.writableNamespaces[0]!,
     });
   }
