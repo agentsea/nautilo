@@ -340,7 +340,7 @@ export class DesktopRelayHost {
     // owner returns the final receipt (or the inherited pipe is retired).
     // This is an execution-class rule, not a catalogue/tool-name allowlist.
     const retainSettlementOnAbort = callback === "dispatch" && isRecord(payload) &&
-      payload["executionClass"] === "computer_use";
+      (payload["executionClass"] === "computer_use" || payload["localExecutionBinding"] !== undefined);
     const cancel = () => {
       const pending = this.#pendingParentCallbacks.get(requestId);
       if (pending === undefined) return;

@@ -623,6 +623,7 @@ import type {
   MarkRoomReadResponse,
   MessageReadStateDto,
   MessageAttachmentRef,
+  ImageAssistanceSummary,
   MessageArtifactOpenRef,
   NotificationLevel,
   NotificationPreferencesDto,
@@ -748,7 +749,7 @@ export interface HumanAvatarUploadResponse {
 /**
  * Binary value that the host FormData implementation can serialize. Browser
  * callers pass a `Blob` or `File`; Expo callers pass an `expo-file-system`
- * `File`, whose `bytes()` method is what Winter fetch recognizes. Deliberately
+ * `File`, whose `bytes` method is what Winter fetch recognizes. Deliberately
  * excludes React Native's `{ uri, name, type }` descriptor, which Winter
  * cannot serialize as a multipart part.
  */
@@ -1177,6 +1178,7 @@ export const whoamiResponseSchema = z.object({
   capabilities: z.array(z.string()).default([]),
   features: z
     .object({
+      roomDiscoverability: z.boolean().optional(),
       office: z
         .object({
           enabled: z.boolean().default(false),
@@ -1695,6 +1697,8 @@ export const assistantModelSummarySchema = z
       ])
       .optional(),
     unavailableReason: z.string().optional(),
+    /** Caller-specific image admission, including automatic image assistance. */
+    imageInput: z.enum(["direct", "assisted", "unavailable"]).optional(),
     /** Authenticated caller's currently admitted payer source; checked again at dispatch. */
     fundingSource: z.enum(["personal", "server"]).optional(),
     /** Secret-free effective transport family for the admitted source. */
@@ -2399,6 +2403,7 @@ const personalServiceRecoverySchema = z.object({
     workload: z.string().min(1).nullable(),
     attemptOutcome: z.enum(["succeeded", "failed", "cancelled", "interrupted", "unknown"]).nullable(),
     failureCode: z.string().regex(/^[a-z0-9_]+$/).nullable(),
+    requestReference: z.string().regex(/^req_[0-9a-f]{12}$/).nullable().optional().default(null),
     taskId: z.uuid().nullable(),
     runId: z.uuid().nullable(),
     jobId: z.uuid().nullable(),
@@ -5846,6 +5851,7 @@ export class NautiloApiClient {
       readonly revision: number;
     },
     cryptoBinding?: ForegroundResumeCryptoBinding,
+    githubDigest?: string,
   ): Promise<{ ok: boolean }> {
     return this.request<{ ok: boolean }>({
       method: "POST",
@@ -5864,6 +5870,7 @@ export class NautiloApiClient {
             }
           : {}),
         ...cryptoBinding,
+        ...(githubDigest === undefined ? {} : { githubDigest }),
       },
       defaultErrorPrefix: "POST /api/auth/approval-reply",
     });
@@ -10203,6 +10210,7 @@ export class NautiloApiClient {
       authorAgentId?: string;
       authorHarnessId?: string;
       attachments?: MessageAttachmentRef[];
+      imageAssistance?: ImageAssistanceSummary;
     }>;
     pageInfo?: {
       hasMoreBefore: boolean;
@@ -10228,6 +10236,7 @@ export class NautiloApiClient {
         editedAt?: string | null;
         editRevision?: number;
         attachments?: MessageAttachmentRef[];
+        imageAssistance?: ImageAssistanceSummary;
       }>;
       pageInfo?: {
         hasMoreBefore: boolean;
@@ -10262,6 +10271,7 @@ export class NautiloApiClient {
       authorAgentId?: string;
       authorHarnessId?: string;
       attachments?: MessageAttachmentRef[];
+      imageAssistance?: ImageAssistanceSummary;
       artifacts?: MessageArtifactOpenRef[];
     }>;
     pageInfo: {
@@ -10305,6 +10315,7 @@ export class NautiloApiClient {
         authorAgentId?: string;
         authorHarnessId?: string;
         attachments?: MessageAttachmentRef[];
+        imageAssistance?: ImageAssistanceSummary;
         artifacts?: MessageArtifactOpenRef[];
       }>;
       pageInfo: {
@@ -10896,9 +10907,12 @@ export class NautiloApiClient {
     });
   }
 
-  /** flip room visibility public ↔ private (`POST /api/rooms/:id/visibility`). */
-  async setRoomVisibility(roomId: string, isPublic: boolean): Promise<{ ok: true }> {
-    const body: SetRoomVisibilityRequest = { public: isPublic };
+  /** Set public access and optionally directory listing (`POST /api/rooms/:id/visibility`). */
+  async setRoomVisibility(roomId: string, isPublic: boolean, discoverable?: boolean): Promise<{ ok: true }> {
+    const body: SetRoomVisibilityRequest = {
+      public: isPublic,
+      ...(discoverable === undefined ? {} : { discoverable }),
+    };
     return this.request<{ ok: true }>({
       method: "POST",
       path: `/api/rooms/${encodeURIComponent(roomId)}/visibility`,

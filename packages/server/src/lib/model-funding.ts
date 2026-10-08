@@ -26,7 +26,12 @@ import { getUserCapabilities } from "@nautilo/trust";
 import { readPersonalProviderCustody } from "./personal-provider-custody";
 import { getServerDirectDb } from "./server-direct-db";
 
-export type ModelFundingWorkload = "foreground_text_chat" | "native_text_task" | "research" | "decision";
+export type ModelFundingWorkload =
+  | "foreground_text_chat"
+  | "native_text_task"
+  | "research"
+  | "decision"
+  | "image_assistance";
 
 /** Runnable personal chat adapters; storing a service key never enables its paid path. */
 export const PERSONAL_CHAT_PROVIDER_IDS = [
@@ -77,6 +82,8 @@ export interface ResolveModelFundingInput {
   readonly priorDecision?: ModelFundingDecision;
   /** A definitive marketplace refusal may request a same-source direct attempt. */
   readonly transport?: "direct" | "surplus";
+  /** A related image call may narrow admission to the main turn's payer class. */
+  readonly fundingKind?: "server" | "personal";
 }
 
 export interface ModelFundingDeps {
@@ -176,6 +183,9 @@ function isServerOnlyGateway(modelId: string): boolean {
 function verifyPrior(input: ResolveModelFundingInput, provider: PersonalProviderId | null): void {
   const prior = input.priorDecision;
   if (!prior) return;
+  if (input.fundingKind && prior.kind !== input.fundingKind) {
+    throw new ModelFundingError("funding_source_changed");
+  }
   if (prior.humanUserId !== input.humanUserId || prior.workload !== input.workload) {
     throw new ModelFundingError("funding_source_changed");
   }
@@ -204,7 +214,12 @@ export async function resolveModelFunding(
   input: ResolveModelFundingInput,
   deps: ModelFundingDeps = DEFAULT_DEPS,
 ): Promise<ModelFundingDecision> {
-  if (!["foreground_text_chat", "native_text_task", "research", "decision"].includes(input.workload)) {
+  if (input.workload !== "foreground_text_chat" && input.workload !== "native_text_task"
+    && input.workload !== "research" && input.workload !== "decision"
+    && input.workload !== "image_assistance") {
+    throw new ModelFundingError("unsupported_workload");
+  }
+  if (input.workload === "image_assistance" && input.transport !== "direct") {
     throw new ModelFundingError("unsupported_workload");
   }
   if (!input.humanUserId.trim()) throw new ModelFundingError("server_credentials_forbidden");
@@ -217,7 +232,7 @@ export async function resolveModelFunding(
     throw new ModelFundingError("unsupported_provider");
   }
   verifyPrior(input, provider);
-  if (input.transport && !input.priorDecision) {
+  if (input.transport && !input.priorDecision && input.workload !== "image_assistance") {
     throw new ModelFundingError("funding_source_changed");
   }
 
@@ -238,9 +253,15 @@ export async function resolveModelFunding(
 
   // Priority applies only to fresh admissions. An eligible server-first route
   // needs neither a personal row lookup nor access to personal key custody.
-  if (!prior && policy.fundingPreference === "server_first"
+  const serverRoute = (transport: "direct" | "surplus" | undefined = input.transport) => {
+    const route = deps.serverRoute(input.modelId, input.workload, transport);
+    // Image assistance uses the reviewed direct adapters. A text marketplace
+    // mapping is not proof that the same route accepts image payloads.
+    return input.workload === "image_assistance" && route === "surplus" ? null : route;
+  };
+  if (!prior && input.fundingKind !== "personal" && policy.fundingPreference === "server_first"
     && caps.includes("use_server_provider_credentials")) {
-    const route = deps.serverRoute(input.modelId, input.workload);
+    const route = serverRoute();
     if (route) {
       return {
         kind: "server", humanUserId: input.humanUserId,
@@ -264,8 +285,9 @@ export async function resolveModelFunding(
   }
 
   // Switch-off and admitted server operations never inspect personal rows.
-  if (personalAllowed && provider && prior?.kind !== "server") {
-    const surplusEligible = input.transport !== "direct" && deps.personalSurplusRoute?.(input.modelId, input.workload) === true;
+  if (personalAllowed && provider && prior?.kind !== "server" && input.fundingKind !== "server") {
+    const surplusEligible = input.transport !== "direct"
+      && deps.personalSurplusRoute?.(input.modelId, input.workload) === true;
     const surplusCredential = surplusEligible
       ? prior?.kind === "personal" && prior.providerRoute === "surplus"
         ? priorCredential : await deps.getCredential(input.humanUserId, "surplus")
@@ -302,6 +324,11 @@ export async function resolveModelFunding(
     }
   }
   if (prior?.kind === "personal") throw new PersonalModelFundingUnavailableError();
+  if (input.fundingKind === "personal") {
+    throw new ModelFundingError(!policy.allowPersonalProviderKeys
+      ? "personal_credentials_disabled"
+      : !personalAllowed ? "personal_credentials_forbidden" : "personal_credential_missing");
+  }
   if (!caps.includes("use_server_provider_credentials")) {
     throw new ModelFundingError(personalAllowed && provider && prior?.kind !== "server"
       ? "personal_credential_missing"
@@ -314,7 +341,7 @@ export async function resolveModelFunding(
     throw new ModelFundingError("funding_source_changed");
   }
   const requestedServerTransport = input.transport ?? pinnedServerTransport;
-  const route = deps.serverRoute(input.modelId, input.workload, requestedServerTransport);
+  const route = serverRoute(requestedServerTransport);
   if (!route) throw new ModelFundingError("provider_credentials_missing");
   if (requestedServerTransport === "surplus" && route !== "surplus") {
     throw new ModelFundingError("funding_source_changed");

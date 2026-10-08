@@ -94,6 +94,8 @@ export interface ServiceCostRecoveryAttempt {
   workload: string | null;
   attemptOutcome: ServiceCostAttemptOutcome | null;
   failureCode: string | null;
+  /** One-way, content-free reference for correlating a provider receipt. */
+  requestReference: string | null;
   taskId: string | null;
   runId: string | null;
   jobId: string | null;

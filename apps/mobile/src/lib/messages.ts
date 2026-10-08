@@ -1,4 +1,4 @@
-// D369 Phase 6 — pure chat model. ALL conversation logic (lane matching,
+// pure chat model. ALL conversation logic (lane matching,
 // DTO→view normalizers, streaming reducer) lives here, React-free, so it
 // unit-tests in isolation. The screen (@/app/chat/[roomId].tsx) is wiring
 // only — it feeds ServerEvents into `applyStreamEvent` and renders the
@@ -16,7 +16,7 @@
 //     `content`) or — if no streaming bubble exists — appends a fresh
 //     assistant message. For `role: "user"/"human"` we replace the
 //     most-recent pending optimistic user item (the server does NOT
-//     echo our own `message.new` back to our socket per D124 B3, so
+//     echo our own `message.new` back to our socket, so
 //     the screen marks the optimistic item sent on send-return; this
 //     branch is a safety net for peers/other-socket echoes and for
 //     dedupe of any future reload). System rows are appended. All
@@ -28,18 +28,19 @@
 //   - All other ServerEvent types are returned unchanged.
 //
 // Determinism: every branch returns a fresh array (no in-place mutation).
-// Synthesized timestamps use `new Date().toISOString()` for streaming/
+// Synthesized timestamps use `new Date.toISOString` for streaming/
 // tool cards because the wire events carry no `createdAt`; tests mock
 // `Date` for determinism (same pattern as the workbench reducer).
 import {
   isProtectedMessageRealtimeEventV2,
   type MessageArtifactOpenRef,
+  type ImageAssistanceSummary,
   type ServerEvent,
 } from "@nautilo/types";
 
 export type ChatRole = "user" | "assistant" | "system";
 
-/** D408 — aggregated reaction row on a persisted message bubble. */
+/** aggregated reaction row on a persisted message bubble. */
 export type MessageReaction = {
   emoji: string;
   count: number;
@@ -71,7 +72,7 @@ export type ChatItem =
       status?: "pending" | "sent" | "failed";
       /** Optimistic-only correlation id (client-generated). */
       clientId?: string;
-      /** M178 turn correlation for the streaming assistant bubble. */
+      /**  turn correlation for the streaming assistant bubble. */
       turnId?: string;
       /**
        * React-only identity retained while a streaming row receives its
@@ -80,30 +81,31 @@ export type ChatItem =
        * reactions, replies, or other model lookups.
        */
       presentationKey?: string;
-      /** D300 stable assistant author id (multi-agent rooms). */
+      /**  stable assistant author id (multi-agent rooms). */
       authorAgentId?: string;
-      /** D124 — human author id for multi-human rooms. */
+      /** human author id for multi-human rooms. */
       sourceUserId?: string;
-      /** M230 — stable identity shared by every projection of one Human turn. */
+      /** stable identity shared by every projection of one Human turn. */
       logicalMessageKey?: string;
-      /** M230 — authoritative revision; absent means editing authority is unknown. */
+      /** authoritative revision; absent means editing authority is unknown. */
       editRevision?: number;
-      /** M230 — authoritative edit timestamp; null means never edited. */
+      /** authoritative edit timestamp; null means never edited. */
       editedAt?: string | null;
       /**
-       * D382/D391 — image attachment previews rendered above the text.
+       * image attachment previews rendered above the text.
        * Optimistic sends use a local `file://` uri (no headers). History-
-       * loaded rows (D391) use the authed byte-route URL + an `Authorization`
+       * loaded rows  use the authed byte-route URL + an `Authorization`
        * header so `<Image>` can fetch the server-side blob.
        */
       attachments?: MessageAttachmentPreview[];
-      /** D424 — server-authorized artifact cards linked to this user message. */
+      imageAssistance?: ImageAssistanceSummary;
+      /** server-authorized artifact cards linked to this user message. */
       artifacts?: MessageArtifactOpenRef[];
-      /** D408 — only on persisted (server-id) messages, not optimistic rows. */
+      /** only on persisted (server-id) messages, not optimistic rows. */
       reactions?: MessageReaction[];
-      /** D408 — inline quote-reply target (persisted server message id). */
+      /** inline quote-reply target (persisted server message id). */
       replyToMessageId?: number;
-      /** D426 — canonical child-thread summary for this parent message. */
+      /** canonical child-thread summary for this parent message. */
       replyCount?: number;
       summaryRevision?: number;
     }
@@ -119,7 +121,7 @@ export type ChatItem =
       createdAt: string;
     };
 
-/** D391 — attachment ref carried on a history message DTO. */
+/** attachment ref carried on a history message DTO. */
 export type HistoryAttachmentRef = {
   attachmentId: string;
   filename: string;
@@ -131,7 +133,7 @@ export type MessageAttachmentPreview =
   | Readonly<{ kind: "local"; uri: string }>
   | Readonly<HistoryAttachmentRef & { kind: "retained"; uri: string; headers?: Record<string, string> }>;
 
-/** D424 — server-authorized artifact pointer carried on history messages. */
+/** server-authorized artifact pointer carried on history messages. */
 export type HistoryArtifactOpenRef = MessageArtifactOpenRef;
 
 /** Row shape returned by `getLatestSession` / `getOlderRoomMessages`. */
@@ -147,17 +149,18 @@ export type HistoryMessageDto = {
   editedAt?: string | null;
   editRevision?: number;
   authorAgentId?: string;
-  /** D124 — human author id for multi-human rooms. */
+  /** human author id for multi-human rooms. */
   sourceUserId?: string;
-  /** D391 — retained attachments linked to this turn (images now). */
+  /** retained attachments linked to this turn (images now). */
   attachments?: HistoryAttachmentRef[];
-  /** D424 — safe artifact-open refs; never inferred from message content. */
+  imageAssistance?: ImageAssistanceSummary;
+  /** safe artifact-open refs; never inferred from message content. */
   artifacts?: HistoryArtifactOpenRef[];
-  /** D408 — inlined when non-empty (M121 aggregate shape). */
+  /** inlined when non-empty ( aggregate shape). */
   reactions?: { emoji: string; count: number; actorIds?: readonly string[] }[];
-  /** D124 — inline quote-reply target message id. */
+  /** inline quote-reply target message id. */
   replyToMessageId?: number | null;
-  /** D426 — canonical child-thread summary for a parent message. */
+  /** canonical child-thread summary for a parent message. */
   replyCount?: number;
   summaryRevision?: number;
 };
@@ -248,6 +251,7 @@ export function fromHistoryMessages(
   const items: ChatItem[] = dtos.flatMap<ChatItem>((d): ChatItem[] => {
     const role = normalizeRole(d.role);
     if (d.role === "tool") {
+      if (d.toolName === "image_assistance") return [];
       // displayContent is intentionally only the server's compact status line
       // (for example, `⚙ file [success]`). Recover its presentation metadata
       // before retaining the server-projected persisted content for the
@@ -288,6 +292,7 @@ export function fromHistoryMessages(
       status: "sent",
     };
     if (role === "user" && text !== d.content) msg.editContent = d.content;
+    if (role === "assistant" && d.imageAssistance) msg.imageAssistance = d.imageAssistance;
     if (d.authorAgentId) msg.authorAgentId = d.authorAgentId;
     if (d.sourceUserId) msg.sourceUserId = d.sourceUserId;
     if (role === "user") {
@@ -299,7 +304,7 @@ export function fromHistoryMessages(
         msg.editedAt = d.editedAt;
       }
     }
-    // D391 — render retained attachments from history via the authed byte route.
+    // render retained attachments from history via the authed byte route.
     if (resolveAttachment && d.attachments && d.attachments.length > 0) {
       msg.attachments = d.attachments.map(resolveAttachment);
     }
@@ -695,7 +700,7 @@ function isEmptyStreamingAssistantBubble(item: ChatItem): item is MessageItem {
 }
 
 /**
- * D408 — drop a reaction-only empty streaming placeholder after `react`
+ * drop a reaction-only empty streaming placeholder after `react`
  * completes. Matches by `turnId` when present; otherwise falls back to a
  * single unambiguous empty stream or an `authorAgentId` match. Never removes
  * bubbles with visible text or unrelated agents' streams.
@@ -751,6 +756,17 @@ export function applyStreamEvent(
   if (isProtectedMessageRealtimeEventV2(event)) return items;
 
   switch (event.type) {
+    case "job.status": {
+      if (event.status !== "failed" || event.errorCode !== "image_assistance_failed") return items;
+      const id = `image-read-error:${event.jobId}`;
+      if (items.some((item) => item.kind === "message" && item.id === id)) return items;
+      return [...items, {
+        kind: "message", id, role: "system", status: "sent",
+        text: "Image reading failed. Your images remain in this chat. Try again by reattaching them, or choose a model that supports images.",
+        createdAt: new Date().toISOString(),
+      }];
+    }
+
     case "message.deleted": {
       // The room subscription may receive our own delete after local state
       // already converged. Filtering is therefore deliberately idempotent.
@@ -844,6 +860,9 @@ export function applyStreamEvent(
         if (typeof event.replyToMessageId === "number") {
           replacement.replyToMessageId = event.replyToMessageId;
         }
+        if (role === "assistant" && event.imageAssistance) {
+          replacement.imageAssistance = event.imageAssistance;
+        }
         if (event.artifacts !== undefined) {
           replacement.artifacts = uniqueArtifacts(event.artifacts);
         }
@@ -879,7 +898,7 @@ export function applyStreamEvent(
               );
         if (reconcileIdx !== -1) {
           const target = items[reconcileIdx] as MessageItem;
-          // D382 — preserve optimistic `attachments` (server echo carries
+          // preserve optimistic `attachments` (server echo carries
           // no URIs); the spread keeps them on the replacement.
           const replacement: MessageItem = {
             ...target,
@@ -945,6 +964,7 @@ export function applyStreamEvent(
             turnId: undefined,
           };
           applyMessageNewEditMetadata(replacement, event, false);
+          if (event.imageAssistance) replacement.imageAssistance = event.imageAssistance;
           if (event.authorAgentId)
             replacement.authorAgentId = event.authorAgentId;
           if (typeof event.replyToMessageId === "number") {
@@ -965,6 +985,7 @@ export function applyStreamEvent(
           status: "sent",
         };
         applyMessageNewEditMetadata(fresh, event, false);
+        if (event.imageAssistance) fresh.imageAssistance = event.imageAssistance;
         if (event.authorAgentId) fresh.authorAgentId = event.authorAgentId;
         if (typeof event.replyToMessageId === "number") {
           fresh.replyToMessageId = event.replyToMessageId;
@@ -1094,7 +1115,7 @@ function nextStreamingPresentationKey(
   return `${base}:${ordinal}`;
 }
 
-/** D408 — per-message grouping flags for Telegram-style sender runs. */
+/** per-message grouping flags for Telegram-style sender runs. */
 export type MessageGroupingFlags = {
   isFirstOfRun: boolean;
   isLastOfRun: boolean;

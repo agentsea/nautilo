@@ -61,7 +61,7 @@ function fakeSummary(): CostsSummary {
       },
     ],
     serviceOperations: { operations: 1, succeeded: 0, failed: 0, cancelled: 1, interrupted: 0, unknown: 0, legacy: 0 },
-    serviceRecovery: { attempts: [{ provider: "tavily", operation: "search", workload: "deep_research", attemptOutcome: "cancelled", failureCode: "cancelled", taskId: null, runId: null, jobId: null, occurredAt: "2026-07-08T00:00:00.000Z" }] },
+    serviceRecovery: { attempts: [{ provider: "tavily", operation: "search", workload: "deep_research", attemptOutcome: "cancelled", failureCode: "cancelled", requestReference: null, taskId: null, runId: null, jobId: null, occurredAt: "2026-07-08T00:00:00.000Z" }] },
     byCallType: [{ callType: "chat", calls: 3, totalCostUsd: 0.021 }],
     byProvider: [{
       provider: "browser_use",

@@ -60,6 +60,8 @@ export const providerCostEvents = pgTable(
     pricingVersion: text("pricing_version"),
     measuredUnits: numeric("measured_units", { precision: 20, scale: 8 }),
     unitType: text("unit_type"),
+    /** One-way display reference derived from a provider request receipt. */
+    requestReference: varchar("request_reference", { length: 16 }),
     evidenceState: text("evidence_state", {
       enum: ["actual", "estimated", "unknown"],
     }).notNull(),
@@ -97,6 +99,10 @@ export const providerCostEvents = pgTable(
     check(
       "provider_cost_events_idempotency_digest_check",
       sql`${table.idempotencyKey} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "provider_cost_events_request_reference_check",
+      sql`${table.requestReference} IS NULL OR ${table.requestReference} ~ '^req_[0-9a-f]{12}$'`,
     ),
   ],
 );

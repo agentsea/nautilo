@@ -23,7 +23,7 @@ function grant(
   return {
     schemaVersion: 1,
     id,
-    canonicalRoot: "/Users/test/workspace",
+    canonicalRoot: "/tmp/test/workspace",
     access: ["read"],
     origin: "user_picker",
     lifetime: "durable",
@@ -153,12 +153,12 @@ describe("DesktopFilesystemGrantAuthority — merged list + fail-closed", () => 
     await withAuthority(async ({ authority, durable }) => {
       await authority.create({
         userId: USER_A,
-        grant: grant("durable-root", { canonicalRoot: "/Users/test/workspace", access: ["read", "create_modify"] }),
+        grant: grant("durable-root", { canonicalRoot: "/tmp/test/workspace", access: ["read", "create_modify"] }),
       });
       await authority.revoke({ userId: USER_A, grantId: "durable-root" });
       await authority.addEphemeral({
         grant: grant("overlay-root", {
-          canonicalRoot: "/Users/test/workspace",
+          canonicalRoot: "/tmp/test/workspace",
           access: ["read", "create_modify"],
           lifetime: "session",
         }),
@@ -428,7 +428,23 @@ describe("DesktopFilesystemGrantAuthority — revision + sharing shape", () => {
     await withAuthority(async ({ authority }) => {
       await authority.addEphemeral({ grant: grant("sess-1", { lifetime: "session" }) });
       const merged = await authority.list({ userId: USER_A });
-      expect(merged).toMatchObject({ ok: true, data: { revision: expect.any(Number) } });
+      expect(merged).toMatchObject({ ok: true, data: { revision: expect.any(Number) as unknown } });
     });
+  });
+});
+
+
+test("synchronous custody revision tracks the same canonical mutations as list", async () => {
+  await withAuthority(async ({ authority }) => {
+    const initial = authority.getRevision();
+    await authority.addEphemeral({ grant: grant("custody-write", { lifetime: "session", access: ["create_modify"] }) });
+    const listed = await authority.list({ userId: USER_A });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error("expected canonical list");
+    expect(authority.getRevision()).toBe(listed.data.revision);
+    expect(authority.getRevision()).toBeGreaterThan(initial);
+    const captured = authority.getRevision();
+    await authority.revoke({ userId: USER_A, grantId: "custody-write" });
+    expect(authority.getRevision()).toBeGreaterThan(captured);
   });
 });

@@ -143,7 +143,7 @@ export const TOOL_EXPOSURE_MANIFEST: ToolExposureManifest = {
     // explicit Git/GitHub workstation intent may need to establish the
     // local Current Folder before shell execution. This is the narrow folder
     // selector only; the broader filesystem family stays deferred.
-    shell: ["run_shell", "terminal", "select_current_folder"],
+    shell: ["exec_command", "write_stdin", "local_git", "read_shell_output", "human_terminal", "local_github", "run_shell", "terminal", "select_current_folder"],
     // separate from the ordinary shell family. Generic local shell
     // work must never expose Human-granted remote SSH authority.
     structured_ssh: [
@@ -242,7 +242,7 @@ const DEVELOPMENT_SHELL_REQUEST =
  * eagerly expose high-impact execution authority.
  */
 const EXPLICIT_RUN_SHELL_REQUEST =
-  /\b(?:use|call|invoke)\b[\s\S]{0,32}\brun_shell\b|\brun_shell\b[\s\S]{0,32}\b(?:run|execute)\b/i;
+  /\b(?:use|call|invoke)\b[\s\S]{0,32}\b(?:run_shell|exec_command|write_stdin)\b|\b(?:run_shell|exec_command|write_stdin)\b[\s\S]{0,32}\b(?:run|execute)\b/i;
 /**
  * Git/GitHub work is a concrete workstation-shell request, not a
  * reason to make the shell family eager for ordinary repository discussion.

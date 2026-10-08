@@ -47,6 +47,7 @@ Versions are release pins, not upstream-latest claims.
 | [OOMOL OpenConnector](https://github.com/oomol-lab/open-connector) | 1.4.1 (`1bfdc0343057303d2993bcff44d0d5821ea658fd`) | OOMOL | Apache-2.0 | Compose-managed connected-app runtime; Nautilo-modified derivative source. |
 | [agent-browser](https://github.com/vercel-labs/agent-browser) | 0.35.2 | Vercel Labs | Apache-2.0 | Desktop and Server vendored CLI (macOS and Linux arm64/x64). |
 | [Cua Driver](https://github.com/trycua/cua) | 0.23.2, base revision `e88e9d899ac5effaeae38619527ebaa46b26ce72` + Nautilo patch | Cua | [MIT](apps/desktop/cua-driver/qualification/LICENSE.md) | Desktop macOS native Computer Use driver. The exact upstream license is retained beside the source patch. The patch and resulting tree are pinned in `apps/desktop/cua-driver/qualification/manifest.json`; the package retains LICENSE, PROVENANCE.md, manifest.json, and qualification.patch. |
+| [GitHub CLI](https://github.com/cli/cli) | 2.102.0 | GitHub | MIT | Desktop official macOS arm64/x64 binaries; exact upstream license retained in `Contents/Resources/tools-github-cli/LICENSE`. |
 | [gogcli](https://github.com/openclaw/gogcli) | 0.31.1 | OpenClaw | MIT | Desktop vendored `gog` CLI (macOS arm64/x64). |
 | [FFmpeg](https://github.com/ispysoftware/agentdvr-ffmpeg-build) | 9.0.1 | FFmpeg / iSpy Connect | LGPL-3.0-or-later | Desktop macOS arm64/x64; GPL/nonfree disabled. Exact source, build scripts and licenses are included. |
 | [OpenSSL](https://openssl.org/) | 3.5.7 | OpenSSL Project | Apache-2.0 | Statically included in the Desktop FFmpeg libraries; source and license included. |
@@ -148,7 +149,7 @@ compact where every listed member shares the same version and license.
 | [Fastify](https://github.com/fastify/fastify) family | 5.12.5; cors 10.1.0; multipart 10.0.0; static 10.1.2; websocket 11.3.0; busboy 3.2.1 | Fastify | MIT | Server. |
 | [LangChain JS](https://github.com/langchain-ai/langchainjs) family | core 1.1.45; Anthropic 1.3.29; Fireworks 0.1.3; Google GenAI 2.1.29; OpenAI 1.4.5; Tavily 1.2.0; xAI 1.3.17 | LangChain | MIT | Server agent runtime. |
 | [LangGraph JS](https://github.com/langchain-ai/langgraphjs) family | langgraph 1.2.9; checkpoint-postgres 1.0.1 | LangChain | MIT | Server agent runtime. |
-| [Model Context Protocol TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) / [ACP TypeScript SDK](https://github.com/agentclientprotocol/typescript-sdk) | 1.30.0 / 1.3.0 | MCP / ACP | MIT / Apache-2.0 | Desktop and server integration surfaces. |
+| [Model Context Protocol TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) / [ACP TypeScript SDK](https://github.com/agentclientprotocol/typescript-sdk) | 1.31.0 / 1.3.0 | MCP / ACP | MIT / Apache-2.0 | Desktop and server integration surfaces. |
 | [Zod](https://github.com/colinhacks/zod) | 4.3.6 | Colin McDonnell | MIT | Desktop, server, Workbench, and mobile. |
 | [Drizzle ORM](https://github.com/drizzle-team/drizzle-orm) / [postgres.js](https://github.com/porsager/postgres) / [node-postgres](https://github.com/brianc/node-postgres) | 0.45.2 / 3.4.7 / 8.13.1 | Drizzle / porsager / brianc | Apache-2.0 / Unlicense / MIT | Server database clients. |
 | [OpenID/JWT libraries: Logto JS](https://github.com/logto-io/js) and [jose](https://github.com/panva/jose) | browser 3.0.13; react 4.0.13; jose 6.2.3 | Logto / panva | MIT / MIT | Desktop, Workbench, mobile, and server authentication. |
@@ -162,7 +163,7 @@ compact where every listed member shares the same version and license.
 | [Shiki](https://github.com/shikijs/shiki) engine, languages, and themes | 4.0.2 | Shiki | MIT | Workbench syntax highlighting. |
 | [xterm.js](https://github.com/xtermjs/xterm.js) / [TanStack Virtual](https://github.com/TanStack/virtual) | 6.0.0 + fit 0.11.0 / 3.13.24 | xterm.js / TanStack | MIT / MIT | Workbench. |
 | [Three.js](https://github.com/mrdoob/three.js) / [video.js](https://github.com/videojs/video.js) | 0.183.2 / 8.23.9 | three.js / Video.js | MIT / Apache-2.0 | Workbench media/UI. |
-| [sharp](https://github.com/lovell/sharp) | 0.35.4 | lovell | Apache-2.0 | Server image processing; platform libvips payloads are resolved through the lockfile. |
+| [sharp](https://github.com/lovell/sharp) | 0.35.5 | lovell | Apache-2.0 | Server image processing; platform libvips payloads are resolved through the lockfile. |
 | [Jimp](https://github.com/jimp-dev/jimp) | 1.6.1 | Jimp contributors | MIT | Computer Use Host and server image-processing dependency; locked plugin/type dependencies remain in the corresponding package closure. |
 | [CloudConvert Node SDK](https://github.com/cloudconvert/cloudconvert-node) | 3.0.0 | CloudConvert | MIT | Server integration. |
 | [AWS SDK for JavaScript v3](https://github.com/aws/aws-sdk-js-v3) | client-s3/lib-storage 3.1108.0 | Amazon Web Services | Apache-2.0 | Standalone Nautilo CLI release. |

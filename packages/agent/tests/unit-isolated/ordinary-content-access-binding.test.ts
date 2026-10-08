@@ -356,7 +356,7 @@ describe("ordinary content access checkpoint authority", () => {
       resolveWorkstationApprovalOverride: (request: Parameters<NonNullable<PostModelDeps["resolveWorkstationApprovalOverride"]>>[0]) =>
         overrideActive && request.toolCall.id === "call-1"
           ? { override: "auto" as const, executionClass: "profile_bound_sandbox" as const }
-          : { override: "none" as const, reason: "no_active_session" as const, detail: "No active session" },
+          : { override: "none" as const, executionClass: "profile_bound_sandbox" as const, reason: "no_active_session" as const, detail: "No active session" },
     } };
     const state = input();
     const first = state.messages![0] as AIMessage;

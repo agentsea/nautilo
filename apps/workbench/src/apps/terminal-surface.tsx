@@ -1,15 +1,5 @@
-// D373 / Stack 137 — terminal work surface (xterm.js renderer).
-//
-// Spike scope (Phase 0, task 0.3): mount an xterm bound to a main-process
-// node-pty session over the preload `terminal:*` bridge. Sessions outlive
-// the view — unmount disposes the xterm + listeners but NEVER kills the
-// PTY (that's the P1 "backgrounding" invariant; only the explicit Kill
-// action or app-quit ends a session).
-//
-// KNOWN spike limitations (→ P1): no scrollback ring buffer, so a full
-// remount of a persisted session starts with a blank screen (node-pty has
-// no scrollback). Persistent re-parenting of a single xterm instance is
-// the P1 fix (1.4).
+// Human terminal work surface. Sessions outlive the view; reopening replays
+// retained scrollback. Unmount disposes the renderer, never the running PTY.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
@@ -33,6 +23,10 @@ interface TerminalSurfaceProps {
   onSelectSession?: (id: string) => void;
   /** Assistant display name for the "… is driving" indicator (P2.2). */
   assistantName?: string;
+  handoffRoomId?: string | undefined;
+  handoffGenies?: readonly { id: string; name: string }[];
+  selectedHandoffGenieId?: string | undefined;
+  onSelectHandoffGenie?: (agentId: string) => void;
   onClose: () => void;
 }
 
@@ -47,6 +41,10 @@ export function TerminalSurface({
   onSession,
   onSelectSession,
   assistantName,
+  handoffRoomId,
+  handoffGenies = [],
+  selectedHandoffGenieId,
+  onSelectHandoffGenie,
   onClose,
 }: TerminalSurfaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -70,12 +68,29 @@ export function TerminalSurface({
   const [agentControlConsented, setAgentControlConsented] = useState(false);
   const [consentDialogOpen, setConsentDialogOpen] = useState(false);
   const [consentForRequest, setConsentForRequest] = useState(false);
+  const [consentError, setConsentError] = useState<string | null>(null);
+  const consentAttemptRef = useRef(0);
+  const pendingConsentRef = useRef<{ attempt: number; context: string } | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(
     sessionId ?? null,
   );
+  const consentContextRef = useRef("");
+  consentContextRef.current = JSON.stringify([
+    handoffRoomId ?? null, selectedHandoffGenieId ?? null, sessionId ?? null, activeSessionId, activeSession,
+  ]);
+  useEffect(() => {
+    consentAttemptRef.current += 1;
+    pendingConsentRef.current = null;
+    setConsentDialogOpen(false);
+    setConsentError(null);
+    setConsentForRequest(false);
+  }, [handoffRoomId, selectedHandoffGenieId, sessionId, activeSessionId, activeSession]);
+  useEffect(() => () => { consentAttemptRef.current += 1; }, []);
   // Multi-terminal switcher — live session pool (polled + refreshed on change).
   const [sessions, setSessions] = useState<TerminalSessionInfo[]>([]);
   const agentName = assistantName ?? "Agent";
+  const hasScopedHandoff = !sandboxed && Boolean(desktopAPI?.terminal?.grantHumanControl);
+  const missingHandoffTarget = hasScopedHandoff && (!handoffRoomId || !selectedHandoffGenieId);
 
   const refreshSessions = useCallback(async () => {
     const api = desktopAPI?.terminal;
@@ -137,7 +152,19 @@ export function TerminalSurface({
     const offController =
       typeof api.onController === "function"
         ? api.onController((evt) => {
-            if (evt.sessionId === sid) applyController(evt.controller);
+            if (evt.sessionId === sid) {
+              applyController(evt.controller);
+              if (evt.controller === "user") {
+                const pending = pendingConsentRef.current;
+                const interrupted = pending?.attempt === consentAttemptRef.current
+                  && pending.context === consentContextRef.current;
+                pendingConsentRef.current = null;
+                consentAttemptRef.current += 1;
+                setConsentDialogOpen(false);
+                setConsentError(interrupted ? "The handoff did not stay active. You have control; hand over the terminal again when ready." : null);
+                setAgentControlConsented(false);
+              }
+            }
           })
         : () => {};
 
@@ -289,6 +316,10 @@ export function TerminalSurface({
   const handleTakeControl = useCallback(async () => {
     const api = desktopAPI?.terminal;
     if (!api || !activeSessionId) return;
+    consentAttemptRef.current += 1;
+    pendingConsentRef.current = null;
+    setConsentDialogOpen(false);
+    setConsentError(null);
     try {
       await api.setController(activeSessionId, "user");
     } catch {
@@ -299,7 +330,7 @@ export function TerminalSurface({
   const handleLetAgentDrive = useCallback(async (fromRequest = false) => {
     const api = desktopAPI?.terminal;
     if (!api || !activeSessionId) return;
-    if (sandboxed || agentControlConsented) {
+    if (sandboxed || (!api.grantHumanControl && agentControlConsented)) {
       try {
         await api.setController(activeSessionId, "agent");
       } catch {
@@ -307,25 +338,49 @@ export function TerminalSurface({
       }
       return;
     }
+    consentAttemptRef.current += 1;
     setConsentForRequest(fromRequest);
+    setConsentError(null);
     setConsentDialogOpen(true);
   }, [activeSessionId, agentControlConsented, sandboxed]);
 
   const handleConfirmConsent = useCallback(async () => {
     const api = desktopAPI?.terminal;
-    if (!api || !activeSessionId) return;
+    const sid = activeSessionId;
+    if (!api || !sid) return;
+    const attempt = ++consentAttemptRef.current;
+    const context = consentContextRef.current;
+    pendingConsentRef.current = { attempt, context };
+    const roomId = handoffRoomId;
+    const agentId = selectedHandoffGenieId;
+    const stillCurrent = () => consentAttemptRef.current === attempt
+      && consentContextRef.current === context && activeSessionId === sid;
     try {
-      const granted = await api.grantAgentControl(activeSessionId);
-      if (!granted) return;
+      if (api.grantHumanControl && (!handoffRoomId || !selectedHandoffGenieId)) {
+        if (stillCurrent()) setConsentError("Choose a Genie in this chat before handing over the terminal.");
+        return;
+      }
+      const granted = api.grantHumanControl
+        ? await api.grantHumanControl(sid, { roomId: roomId!, agentId: agentId! })
+        : await api.grantAgentControl(sid);
+      if (!stillCurrent()) return;
+      if (!granted) {
+        setConsentError("The chat or terminal changed. Check the selected Genie and try again.");
+        return;
+      }
       setAgentControlConsented(true);
       setConsentDialogOpen(false);
       setConsentForRequest(false);
     } catch {
-      /* session may have closed */
+      if (stillCurrent()) setConsentError("The terminal could not be handed over. Check your connection and try again.");
+    } finally {
+      if (pendingConsentRef.current?.attempt === attempt) pendingConsentRef.current = null;
     }
-  }, [activeSessionId]);
+  }, [activeSessionId, handoffRoomId, selectedHandoffGenieId]);
 
   const handleCancelConsent = useCallback(async () => {
+    consentAttemptRef.current += 1;
+    pendingConsentRef.current = null;
     const api = desktopAPI?.terminal;
     const sid = activeSessionId;
     const clearsRequest = consentForRequest;
@@ -377,14 +432,28 @@ export function TerminalSurface({
               Take control
             </button>
           )}
-          {status === "ready" && controller === "user" && !agentRequested && (
-            <button
+          {status === "ready" && controller === "user" && (
+            <>
+            {hasScopedHandoff && handoffGenies.length > 1 && (
+              <select aria-label="Genie to control this terminal" value={selectedHandoffGenieId ?? ""}
+                onChange={event => onSelectHandoffGenie?.(event.target.value)}
+                className="rounded border border-border bg-background-panel px-1 py-0.5 text-xs">
+                <option value="" disabled>Choose Genie</option>
+                {handoffGenies.map(genie => <option key={genie.id} value={genie.id}>{genie.name}</option>)}
+              </select>
+            )}
+            {!agentRequested && <button
               type="button"
               onClick={() => void handleLetAgentDrive()}
+              disabled={missingHandoffTarget}
               className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               {"Let " + agentName + " drive"}
-            </button>
+            </button>}
+            {missingHandoffTarget && <span className="max-w-48 text-[10px] text-foreground-muted">
+              {handoffRoomId && handoffGenies.length > 0 ? "Choose a Genie to continue." : "Open a chat with a Genie to hand over terminal control."}
+            </span>}
+            </>
           )}
           <button
             type="button"
@@ -466,12 +535,13 @@ export function TerminalSurface({
         <div className="flex items-center justify-between gap-3 border-b border-primary/30 bg-primary/10 px-3 py-1.5 text-xs">
           <span className="flex items-center gap-1.5 text-foreground">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-            {agentName + " wants to type in this terminal."}
+            {hasScopedHandoff ? "Terminal control requested." : agentName + " wants to type in this terminal."}
           </span>
           <span className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => void handleLetAgentDrive(true)}
+              disabled={missingHandoffTarget}
               className="rounded border border-primary/50 bg-background-element px-2 py-0.5 font-semibold text-foreground hover:bg-[var(--primary-muted)]"
             >
               {"Let " + agentName + " drive"}
@@ -486,9 +556,11 @@ export function TerminalSurface({
           </span>
         </div>
       )}
+      {!consentDialogOpen && consentError && <p role="alert" className="border-b border-border px-3 py-2 text-xs text-destructive">{consentError}</p>}
       {consentDialogOpen && (
         <TerminalControlConsentDialog
           assistantName={agentName}
+          error={consentError ?? undefined}
           onCancel={handleCancelConsent}
           onConfirm={handleConfirmConsent}
         />

@@ -1,3 +1,4 @@
+import { imageAssistanceObservationMessages } from "../../src/executors/image-assistance";
 import { describe, expect, test } from "bun:test";
 import {
   AIMessage,
@@ -603,4 +604,25 @@ describe("protected conversation executor IO", () => {
       outcome: "authorization_callback_closed",
     });
   });
+});
+
+
+test("retains completed image observation pairs through the protected writer and deduplicates retry", async () => {
+  const payloads: unknown[] = [];
+  const messages = imageAssistanceObservationMessages({ status: "completed", modelId: "vision-a", modelDisplayName: "Vision A", attachmentIds: ["image-a"], inputDigest: "input-a", turnId: "turn-a", observations: "Visible total 123.45" });
+  const input = {
+    sessionId: "10000000-0000-4000-8000-000000000001", messages, authorization,
+    savedFingerprints: new Set<string>(),
+    preparer: { prepare: async (value: Parameters<ProtectedAgentMessageWritePreparer["prepare"]>[0]) => {
+      payloads.push(value.payload);
+      return { status: "prepared" as const, write: prepared(value.sessionId, value.idempotencyKey) };
+    } },
+    repository: { appendPreparedAgent: async () => ({ status: "committed" as const, message: committedMessage }) },
+  };
+  await persistProtectedAgentMessages(input);
+  await persistProtectedAgentMessages(input);
+  expect(payloads).toHaveLength(2);
+  expect(payloads[0]).toMatchObject({ role: "assistant", content: "", toolCalls: [{ name: "image_assistance", id: "image-assistance:turn-a:input-a" }] });
+  expect(payloads[1]).toMatchObject({ role: "tool", toolName: "image_assistance", sensitiveMetadata: { toolCallId: "image-assistance:turn-a:input-a" } });
+  expect(JSON.stringify(payloads[1])).toContain("123.45");
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type {
   ReadyToWorkAggregateStatus,
@@ -11,6 +11,7 @@ import type {
   ReadyToWorkSelection,
 } from "../../../../../desktop/electron/ready-to-work-contract";
 import { PinDialog } from "../../../components/pin-dialog";
+import { supportsAgentAccess } from "../../../hooks/use-agent-access";
 import { desktopAPI, isDesktop, type DesktopReadyToWorkAPI } from "../../../lib/desktop";
 import {
   readReadyToWorkPresentationMode,
@@ -40,6 +41,7 @@ const HARNESS_LABELS: Record<ReadyToWorkCodingHarnessId, string> = {
 type ReadyDisplayStatus = ReadyToWorkComponentStatus | ReadyToWorkCodingHarnessStatus;
 
 const REASON_COPY: Record<ReadyToWorkReason, string> = {
+  saved_state_unavailable: "Saved startup settings are unavailable.",
   not_selected: "This choice is off.",
   restore_requested: "Ready to work has not restored this choice yet.",
   owner_unavailable: "The feature owner is unavailable on this Desktop.",
@@ -84,16 +86,17 @@ function repairDestination(component: ReadyDisplayStatus): { href: string; label
   return REPAIR_DESTINATIONS[component.repairTarget];
 }
 
-function selectionFromStatus(status: ReadyToWorkAggregateStatus): ReadyToWorkSelection {
+function selectionFromStatus(status: ReadyToWorkAggregateStatus, managedAccess: boolean): ReadyToWorkSelection {
   const selected = (id: ReadyToWorkComponentId) =>
-    status.components.find((item) => item.id === id)?.state !== "off_by_choice";
+    managedAccess ? status.components.some(item => item.id === id && item.state !== "off_by_choice")
+      : status.components.find((item) => item.id === id)?.state !== "off_by_choice";
   return {
     voice: selected("voice"),
     auto_approve: selected("auto_approve"),
     workstation: selected("workstation"),
     computer_use: selected("computer_use"),
     // Harness membership comes from each Connection's canonical owner toggle.
-    coding_connection: true,
+    coding_connection: managedAccess ? selected("coding_connection") : true,
   };
 }
 
@@ -145,16 +148,30 @@ export function StartupSection({
   const [saving, setSaving] = useState(false);
   const [pinPromptOpen, setPinPromptOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const offRequested = useRef(false);
+  const statusVersion = useRef(0);
+  const managedAccess = supportsAgentAccess(readyToWork);
+  const componentAPIReady = !managedAccess || !!(readyToWork?.enrollComponents && readyToWork.disableComponents && readyToWork.restoreComponents);
+  const components = managedAccess ? COMPONENTS.filter(item => item.id !== "workstation") : COMPONENTS;
 
   const applyStatus = useCallback((next: ReadyToWorkAggregateStatus) => {
+    statusVersion.current += 1;
     setStatus(next);
+    setLoading(false);
     if (next.mode === "ready") {
-      setSelection(selectionFromStatus(next));
-      setDesiredMode("ready");
-      writeReadyToWorkPresentationMode("ready");
+      offRequested.current = false;
+      const nextSelection = selectionFromStatus(next, managedAccess);
+      setSelection(nextSelection);
+      const componentMode = !managedAccess || nextSelection.voice || nextSelection.auto_approve || nextSelection.computer_use || nextSelection.coding_connection ? "ready" : "individual";
+      setDesiredMode(componentMode);
+      writeReadyToWorkPresentationMode(componentMode);
+    } else if (next.mode === "standard" && offRequested.current) {
+      setDesiredMode("individual");
+      writeReadyToWorkPresentationMode("individual");
+      offRequested.current = false;
     }
     setError(null);
-  }, []);
+  }, [managedAccess]);
 
   useEffect(() => {
     if (!isDesktopShell || !readyToWork) {
@@ -162,15 +179,17 @@ export function StartupSection({
       return;
     }
     let cancelled = false;
-    void readyToWork.get().then((next) => {
-      if (!cancelled) applyStatus(next);
-    }).catch((cause) => {
-      if (!cancelled) setError(displayError(cause, "Ready to work status could not be loaded."));
-    }).finally(() => {
-      if (!cancelled) setLoading(false);
-    });
+    let receivedSubscriptionStatus = false;
     const unsubscribe = readyToWork.onStatusChanged((next) => {
+      receivedSubscriptionStatus = true;
       if (!cancelled) applyStatus(next);
+    });
+    void readyToWork.get().then((next) => {
+      if (!cancelled && !receivedSubscriptionStatus) applyStatus(next);
+    }).catch((cause) => {
+      if (!cancelled && !receivedSubscriptionStatus) setError(displayError(cause, "Ready to work status could not be loaded."));
+    }).finally(() => {
+      if (!cancelled && !receivedSubscriptionStatus) setLoading(false);
     });
     return () => {
       cancelled = true;
@@ -178,26 +197,26 @@ export function StartupSection({
     };
   }, [applyStatus, isDesktopShell, readyToWork]);
 
-  const selectedCount = useMemo(
-    () => COMPONENTS.filter((component) => selection[component.id]).length,
-    [selection],
-  );
+  const selectedCount = components.filter((component) => selection[component.id]).length;
   const enabledHarnesses = status?.codingHarnesses ?? [];
   const includedCount = selectedCount + enabledHarnesses.length;
-  const includedTotal = COMPONENTS.length + enabledHarnesses.length;
+  const includedTotal = components.length + enabledHarnesses.length;
 
   if (!isDesktopShell) return null;
 
-  const isEnrolled = status?.mode === "ready";
-  const canChooseReady = Boolean(readyToWork && !loading && !saving);
+  const isEnrolled = status?.mode === "ready" && (!managedAccess || status.components.some(component => component.id !== "workstation" && component.state !== "off_by_choice"));
+  const canChooseReady = Boolean(readyToWork && !loading && !saving && componentAPIReady);
   const showIndividualAction = isEnrolled && desiredMode === "individual";
 
   const submitPin = async (pin: string) => {
-    if (!readyToWork) return;
+    if (!readyToWork || !componentAPIReady) return;
     setSaving(true);
     setError(null);
     try {
-      applyStatus(await readyToWork.enroll({ selection, pin }));
+      const { workstation: _workstation, ...componentSelection } = selection;
+      applyStatus(await (managedAccess
+        ? readyToWork.enrollComponents!({ selection: componentSelection, pin })
+        : readyToWork.enroll({ selection, pin })));
       setPinPromptOpen(false);
     } catch (cause) {
       setError(displayError(cause, "Ready to work could not be enabled. Nothing was changed. Try again."));
@@ -207,11 +226,12 @@ export function StartupSection({
   };
 
   const restore = async () => {
-    if (!readyToWork) return;
+    if (!readyToWork || !componentAPIReady) return;
     setSaving(true);
     setError(null);
     try {
-      applyStatus(await readyToWork.restore());
+      if (managedAccess && !readyToWork.restoreComponents) throw new Error("Component restore requires a compatible Desktop");
+      applyStatus(await (managedAccess ? readyToWork.restoreComponents!() : readyToWork.restore()));
     } catch (cause) {
       setError(displayError(cause, "Ready to work could not be restored."));
     } finally {
@@ -220,12 +240,13 @@ export function StartupSection({
   };
 
   const disable = async () => {
-    if (!readyToWork) return;
+    if (!readyToWork || !componentAPIReady) return;
+    offRequested.current = true;
     setSaving(true);
     setError(null);
     try {
-      const next = await readyToWork.disable();
-      writeReadyToWorkPresentationMode("individual");
+      if (managedAccess && !readyToWork.disableComponents) throw new Error("Component reduction requires a compatible Desktop");
+      const next = await (managedAccess ? readyToWork.disableComponents!() : readyToWork.disable());
       applyStatus(next);
     } catch (cause) {
       setError(displayError(cause, "Ready to work could not be turned off."));
@@ -234,6 +255,54 @@ export function StartupSection({
     }
   };
 
+  const retryStatus = async () => {
+    if (!readyToWork) return;
+    const requestedVersion = statusVersion.current;
+    setSaving(true);
+    setError(null);
+    try {
+      const next = await readyToWork.get();
+      if (statusVersion.current === requestedVersion) applyStatus(next);
+    } catch {
+      if (statusVersion.current === requestedVersion) setError("Ready to work status could not be refreshed. Current access may be unchanged.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (status?.mode === "needs_attention") {
+    const persistence = status.persistence;
+    const primaryCopy = persistence?.liveAccess === "stopping"
+      ? "Stopping current access. Saved startup settings still need attention."
+      : "Saved settings need attention. Check the individual controls for current access.";
+    const reasonCopy = persistence?.reason === "unsupported"
+      ? "Use a compatible Desktop version to read these saved settings."
+      : persistence?.reason === "invalid"
+        ? "The saved settings could not be validated. Retry the status check or turn off Ready to work."
+        : "Retry the status check. Turning off Ready to work will be confirmed only when Desktop reports Standard.";
+
+    return (
+      <SectionCard
+        id="startup"
+        title="Ready at startup"
+        description="Choose how this Nautilo Desktop starts. Ready to work records your choices; it does not grant feature access."
+      >
+        <div role="status" aria-live="polite" className="space-y-2 rounded-md border border-[var(--warning)]/40 bg-[var(--warning)]/5 px-3 py-3">
+          <p className="text-sm font-medium text-foreground">Needs attention</p>
+          <p className="text-sm text-foreground-muted">{primaryCopy}</p>
+          <p className="text-sm text-foreground-muted">{reasonCopy}</p>
+        </div>
+        {error ? <p role="alert" className="text-sm text-error">{error}</p> : null}
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={() => { void retryStatus(); }} loading={saving}>Retry status</Button>
+          <Button variant="secondary" onClick={() => { void disable(); }} disabled={!componentAPIReady} loading={saving}>
+            {persistence?.liveAccess === "stopping" ? "Retry turn off" : "Turn off Ready to work"}
+          </Button>
+        </div>
+      </SectionCard>
+    );
+  }
+
   return (
     <SectionCard
       id="startup"
@@ -241,6 +310,7 @@ export function StartupSection({
       description="Choose how this Nautilo Desktop starts. Ready to work records your choices; it does not grant feature access."
     >
       {!readyToWork ? <p className="text-sm text-foreground-muted">Ready to work requires a current Nautilo Desktop build.</p> : null}
+      {managedAccess && !componentAPIReady ? <p className="text-sm text-foreground-muted">A compatible Desktop is required to change startup components without changing Development.</p> : null}
       {loading ? <p className="text-sm text-foreground-muted" role="status">Loading Ready to work status…</p> : null}
       {readyToWork && !loading ? <div className="space-y-4">
         <fieldset disabled={!canChooseReady} aria-describedby="startup-mode-description" className="space-y-2">
@@ -268,7 +338,7 @@ export function StartupSection({
         {desiredMode === "ready" ? <details className="rounded-md border border-border px-3 py-2">
           <summary className="cursor-pointer text-sm text-foreground">Included choices ({includedCount} of {includedTotal})</summary>
           <div className="mt-2 grid gap-1 sm:grid-cols-2">
-            {COMPONENTS.map((component) => <label key={component.id} className="flex items-center gap-2 text-sm text-foreground-muted">
+            {components.map((component) => <label key={component.id} className="flex items-center gap-2 text-sm text-foreground-muted">
               <input type="checkbox" checked={selection[component.id]} disabled={!canChooseReady} onChange={(event) => setSelection((current) => ({ ...current, [component.id]: event.target.checked }))} />
               {component.label}
             </label>)}
@@ -284,14 +354,14 @@ export function StartupSection({
         {status?.mode === "ready" ? <div aria-live="polite" className="rounded-md border border-border px-3 py-2">
           <p className="text-xs font-semibold uppercase tracking-wide text-foreground-dim">Current status</p>
           <ul className="mt-1 divide-y divide-border/60">{
-            status.components.filter((component) => status.codingHarnesses === undefined || component.id !== "coding_connection")
+            status.components.filter((component) => (!managedAccess || component.id !== "workstation") && (status.codingHarnesses === undefined || component.id !== "coding_connection"))
               .map((component) => <ComponentStatus key={component.id} component={component} />)
           }{(status.codingHarnesses ?? []).map((harness) => <ComponentStatus key={harness.id} component={harness} />)}</ul>
         </div> : null}
 
         {error ? <p role="alert" className="text-sm text-error">{error}</p> : null}
         <div className="flex flex-wrap gap-2">
-          {showIndividualAction ? <Button variant="secondary" onClick={() => { void disable(); }} loading={saving}>Use individual controls</Button> : null}
+          {showIndividualAction ? <Button variant="secondary" onClick={() => { void disable(); }} disabled={!componentAPIReady} loading={saving}>Use individual controls</Button> : null}
           {!showIndividualAction && desiredMode === "ready" ? <Button variant="primary" onClick={() => setPinPromptOpen(true)} disabled={!canChooseReady || selectedCount === 0} loading={saving}>{isEnrolled ? "Update with PIN" : "Review and enable with PIN"}</Button> : null}
           {isEnrolled && desiredMode === "ready" ? <Button variant="secondary" onClick={() => { void restore(); }} disabled={!canChooseReady} loading={saving}>Restore Ready</Button> : null}
         </div>

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { assertChatAttachmentImageSupport, ImageAttachmentModelError } from "../../src/messaging/attachments";
+import { assertChatAttachmentImageSupport, ImageAttachmentModelError, pendingChatAttachmentsAreImages } from "../../src/messaging/attachments";
+import type { resolveModelFunding } from "../../src/lib/model-funding";
 import type { findPendingMessageAttachmentForSender } from "@nautilo/db";
 
 const textModel = { id: "fireworks:accounts/fireworks/models/glm-5p3", label: "GLM 5.3" };
@@ -13,6 +14,37 @@ function lookup(mimeType: string | null, calls: unknown[]) {
 }
 
 describe("new image admission", () => {
+  test("accepts a caller-authorized auxiliary route while retaining native capability", async () => {
+    const calls: unknown[] = [];
+    const funding: typeof resolveModelFunding = async (input) => ({
+      kind: "personal", humanUserId: input.humanUserId, payerHumanId: input.humanUserId,
+      modelId: input.modelId, workload: input.workload, providerRoute: "fireworks",
+      credentialId: "synthetic-credential", credentialRevision: 1,
+    });
+    await assertChatAttachmentImageSupport({ ...args, models: [textModel], humanUserId: "synthetic-human",
+      fundingKind: "personal" }, lookup("image/png", calls), async () => "assisted", funding);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("a revoked auxiliary rejects before normalization with original upload retained", async () => {
+    const calls: unknown[] = [];
+    const funding: typeof resolveModelFunding = async (input) => ({
+      kind: "server", humanUserId: input.humanUserId, modelId: input.modelId,
+      workload: input.workload, providerRoute: "fireworks",
+    });
+    const error = await assertChatAttachmentImageSupport({ ...args, models: [textModel], humanUserId: "synthetic-human" },
+      lookup("image/png", calls), async () => "unavailable", funding).then(() => null, (error: unknown) => error);
+    expect(error).toBeInstanceOf(ImageAttachmentModelError);
+    expect(calls).toEqual([{ attachmentId: "upload", uploaderActorId: "sender", namespaceId: "room-namespace" }]);
+  });
+
+  test("the narrow personal-image exception excludes foreign, missing, and nonimage uploads", async () => {
+    expect(await pendingChatAttachmentsAreImages(args, lookup("image/png", []))).toBe(true);
+    for (const mime of [null, "text/plain", "audio/wav"]) {
+      expect(await pendingChatAttachmentsAreImages(args, lookup(mime, []))).toBe(false);
+    }
+    expect(await pendingChatAttachmentsAreImages({ ...args, writableNamespaceId: null }, lookup("image/png", []))).toBe(false);
+  });
   test("rejects a sender-scoped image for a text-only model with both recovery options", async () => {
     const calls: unknown[] = [];
     const error: unknown = await assertChatAttachmentImageSupport({ ...args, models: [textModel] }, lookup("image/png", calls))

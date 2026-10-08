@@ -1,3 +1,6 @@
+import { retainedImageAssistance, imageAssistanceHistory, imageAssistanceObservationMessages, attributeImageAssistance, failImageAssistance } from "./image-assistance";
+import { foregroundHumanTerminalAdmissionPort } from "../conversation/human-terminal-admission";
+import { foregroundLocalExecutionHistoryPort } from "../conversation/local-execution-history";
 import { finishMemoryReviewTurn, memoryReviewAdmission, memoryReviewCompletionState } from "../memory-review/admission";
 import type { ServerEvent, VerifiedOrdinaryOrigin } from "@nautilo/types";
 import {
@@ -23,6 +26,10 @@ import {
   collectPendingInterruptEvents,
   interruptValueToServerEvent,
   maybeSummarizeImagesWithVisionFallback,
+  modelSupportsInput,
+  imageAssistanceContext,
+  imageAssistanceInputDigest,
+  type ImageAssistanceResult,
   postTurnFallbackContextForTurn,
   postTurnFallbackContextForTurnByKey,
   shouldSuppressFallbackEmission,
@@ -133,6 +140,7 @@ import { openTaskWakeFundingSessionForInvocation } from "../task-funding-port";
 import {
   assertForegroundChatFundingWorkloadSupported,
   openForegroundChatFundingSessionForInvocation,
+  openImageAssistanceForInvocation,
 } from "../foreground-chat-funding-port";
 
 function parseStringArray(raw: unknown): string[] {
@@ -632,7 +640,10 @@ export async function* langgraphExecutor(
       policy: liveShadowContext?.enforcementPolicy,
       normalForeground: protectedTurn === undefined,
     });
+  let localExecutionHistoryRows: readonly import("../conductor/history-search").RoomHistoryHit[] = protectedTurn?.history ?? [];
   const postModelDeps: NautiloGraphDeps = {
+    localExecutionHistoryPortForState: (state) => foregroundLocalExecutionHistoryPort(state, signal, localExecutionHistoryRows),
+    humanTerminalAdmissionPortForState: (state) => foregroundHumanTerminalAdmissionPort(state, signal),
     ...defaultPostModelDeps,
     recallRecordsPortForState: (state) => {
       const ordinary = foregroundRecordRecallPortForState(state);
@@ -827,6 +838,8 @@ export async function* langgraphExecutor(
       : resolvedInitialRecordContext.representation === "protected"
         ? resolvedInitialRecordContext
         : undefined;
+  const retainedImageResults: ImageAssistanceResult[] = protectedTurn ? retainedImageAssistance(protectedTurn.history) : [];
+  let imageReplyContext = "";
   const historyMessages = protectedTurn === undefined
     ? await prepareForegroundEncryptedContext(
       () => resolveForegroundHistoryMessages({
@@ -834,8 +847,14 @@ export async function* langgraphExecutor(
         roomId,
         transcriptOwnerId,
         agentId,
+        onTranscriptRead: (rows) => { localExecutionHistoryRows = rows; },
         modelId,
         currentHumanText: message,
+        ...(multimodalImages.length > 0 && turnId ? { imageAssistanceTurnId: turnId } : {}),
+        onAuthorizedHistory: (hits) => {
+          retainedImageResults.push(...retainedImageAssistance(hits));
+          imageReplyContext = hits.find((hit) => hit.messageId === input["replyToMessageId"])?.snippet ?? "";
+        },
         ...(initialRecordContext === undefined
           ? {}
           : { recordContext: initialRecordContext }),
@@ -847,7 +866,7 @@ export async function* langgraphExecutor(
       liveShadowContext?.session?.authorizationDeadlineAt,
     )
     : await buildProtectedRoomHybridContext({
-        hits: protectedTurn.history,
+        hits: imageAssistanceHistory(protectedTurn.history),
         journal: protectedTurn.journal ?? { rollup: null, events: [] },
         currentHumanText: message,
         ...(initialRecordContext === undefined
@@ -871,13 +890,124 @@ export async function* langgraphExecutor(
   // Context repair must finish before any model is invoked. Image summaries
   // use the model too, so they deliberately run after Message, Journal,
   // Reflection, and Memory context has passed the Strict gate above.
-  const visionSummaryBlocks = await maybeSummarizeImagesWithVisionFallback({
-    humanUserId: causalHumanUserId ?? "",
-    mainModelId: modelId,
-    images: multimodalImages,
-    signal,
+  const userMessageForTranscript = buildForegroundUserHumanMessage({
+    userText: message, attachmentTextBlocks, multimodalImages, modelId,
+    suppressImageDropNote: true, replyToMessageId,
   });
-  const suppressImageDropNote = visionSummaryBlocks.length > 0;
+  const savedFingerprints = new Set<string>();
+  const inputMetadata =
+    input["metadata"] && typeof input["metadata"] === "object"
+      ? (input["metadata"] as Record<string, unknown>)
+      : undefined;
+  const isTaskOriginated = inputMetadata?.["originatedBy"] === "task";
+
+  const persistOptsBase = {
+    ...(supervisionMetadata === undefined
+      ? await memoryReviewAdmission(memoryAccessEnvelope, langgraphThreadId, {
+          threadId: langgraphThreadId, transcriptOwnerId, turnId, input,
+        })
+      : {}),
+    agentId,
+    roomId,
+    ...(subthreadRoomId ? { subthreadRoomId } : {}),
+    laneKey: effectiveLaneKey,
+    eventBus,
+    ...(supervisionMetadata ? { internalToolMetadata: supervisionMetadata } : {}),
+    ...(turnId ? { humanTurnId: turnId } : {}),
+    trustedExecutionEntrypoint: foregroundActivationState.trustedExecutionEntrypoint,
+    notificationContext: {
+      mentionedHumanUserIds: [],
+      // A Task wake has a requesting Human, but its synthetic input is not a
+      // Human-authored turn eligible for an assistant causal pair.
+      causalHumanUserId: isTaskOriginated ? null : causalHumanUserId,
+      causalHumanTurnId: isTaskOriginated ? null : causalHumanUserId ? turnId || null : null,
+    },
+  };
+  // preserve the user-sent workspace artifact focus lane through the
+  // async executor path. `persistMessages` resolves these external ids against
+  // the canonical room namespace before recording durable card relations; local
+  // file focus refs are deliberately excluded.
+  const messageArtifactExternalIds = Array.from(
+    new Set([
+      ...artifactRefs.map((ref) => ref.artifactId),
+      ...focusedResources.flatMap((resource) => {
+        if (resource.kind !== "workspace-artifact") return [];
+        const locator = resource.locator;
+        if (
+          locator &&
+          typeof locator === "object" &&
+          typeof (locator as { artifactId?: unknown }).artifactId === "string"
+        ) {
+          return [(locator as { artifactId: string }).artifactId];
+        }
+        return [];
+      }),
+    ]),
+  );
+
+  // internal wakes retain an audit input without publishing a fake
+  // Human message. Never apply the input metadata to an entire output batch:
+  // browser supervision uses internalToolMetadata for tool plumbing only, while
+  // a deliberate tool-free answer stays visible. Task report-back stays visible.
+  const isAdvancedVideoWorkcard = inputMetadata?.["originatedBy"] === "advanced_video_workcard";
+
+  // skip persisting the human row when it already exists (the bot is
+  // waking against an already-delivered message). The model still sees it via
+  // `graphInput.messages`; only the duplicate transcript row + event are avoided.
+  if (protectedTurn !== undefined && !humanAlreadyPersisted) {
+    throw new TypeError(
+      "Protected Human input must be coordinate-first persisted before Agent execution",
+    );
+  }
+  if (!humanAlreadyPersisted && protectedTurn === undefined) {
+    // stamp turn_id on this turn's retained attachments when the human
+    // row is persisted (only on the human persist call, which carries the ids).
+    const humanPersistOpts = {
+      ...persistOptsBase,
+      requireDurable: multimodalImages.length > 0,
+      notificationContext: {
+        mentionedHumanUserIds,
+        ...(mentionEveryone ? { mentionEveryone: true } : {}),
+        causalHumanUserId: null,
+        causalHumanTurnId: null,
+      },
+      ...(retainedAttachmentIds.length > 0 ? { retainedAttachmentIds } : {}),
+      ...(messageArtifactExternalIds.length > 0
+        ? { messageArtifactExternalIds }
+        : {}),
+    };
+    await persistMessages(
+      langgraphThreadId,
+      transcriptOwnerId,
+      [userMessageForTranscript],
+      savedFingerprints,
+      isTaskOriginated || supervisionMetadata !== undefined
+        ? { ...humanPersistOpts, metadata: supervisionMetadata ?? inputMetadata!, suppressUserMessageEvents: true }
+        : isAdvancedVideoWorkcard
+          ? { ...humanPersistOpts, metadata: inputMetadata }
+          : humanPersistOpts,
+    );
+  }
+
+  if (protectedTurn) imageReplyContext = protectedTurn.history.find((hit) => hit.messageId === input["replyToMessageId"])?.snippet ?? "";
+  const needsImageAssistance = multimodalImages.length > 0 && !modelSupportsInput(modelId, "image");
+  if (needsImageAssistance) await fundingSession?.recheckAttempt(modelId).catch((error) => failImageAssistance(error, signal));
+  const retainedImageResultAvailable = retainedImageResults.some((result) => result.inputDigest === imageAssistanceInputDigest({
+    turnId: turnId || _jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages,
+  }));
+  const assistance = needsImageAssistance && !retainedImageResultAvailable ? await openImageAssistanceForInvocation({
+    authority: getCurrentAcceptedInvocationAuthority(), jobInput: input,
+    causalHumanUserId, entrypoint: foregroundActivationState.trustedExecutionEntrypoint === "foreground.main" ? "foreground.main" : null,
+    modelId, roomId, agentId, fundingKind: fundingSession?.kind ?? "server",
+  }).catch((error) => failImageAssistance(error, signal)) : null;
+  const imageAssistanceResult = await maybeSummarizeImagesWithVisionFallback({
+    humanUserId: causalHumanUserId ?? "", mainModelId: modelId,
+    images: multimodalImages, userText: message, turnId: turnId || _jobId,
+    roomId, agentId, replyContext: imageReplyContext, retainedResults: retainedImageResults,
+    assistance, signal,
+  });
+  const visionSummaryBlocks = imageAssistanceResult ? [imageAssistanceContext(imageAssistanceResult)] : [];
+  const suppressImageDropNote = imageAssistanceResult !== null;
   const mergedAttachmentTextBlocks = [
     ...visionSummaryBlocks,
     ...attachmentTextBlocks,
@@ -899,9 +1029,7 @@ export async function* langgraphExecutor(
     ...userMessageArgs,
     serverTimePrefixIso,
   });
-  const userMessageForTranscript = serverTimePrefixIso
-    ? buildForegroundUserHumanMessage(userMessageArgs)
-    : userMessage;
+
 
   // the full transcript subsumes the old transient peer-diff /
   // subthread context block (deleted in ); only the live turn message is
@@ -1032,98 +1160,21 @@ export async function* langgraphExecutor(
   const liveShadowStreamState = Object.freeze({
     ordinals: new Map<string, number>(),
   });
-  const savedFingerprints = new Set<string>();
-  const inputMetadata =
-    input["metadata"] && typeof input["metadata"] === "object"
-      ? (input["metadata"] as Record<string, unknown>)
-      : undefined;
-  const isTaskOriginated = inputMetadata?.["originatedBy"] === "task";
-
-  const persistOptsBase = {
-    ...(supervisionMetadata === undefined
-      ? await memoryReviewAdmission(memoryAccessEnvelope, langgraphThreadId, {
-          threadId: langgraphThreadId, transcriptOwnerId, turnId, input,
-        })
-      : {}),
-    agentId,
-    roomId,
-    ...(subthreadRoomId ? { subthreadRoomId } : {}),
-    laneKey: effectiveLaneKey,
-    eventBus,
-    ...(supervisionMetadata ? { internalToolMetadata: supervisionMetadata } : {}),
-    ...(turnId ? { humanTurnId: turnId } : {}),
-    trustedExecutionEntrypoint: foregroundActivationState.trustedExecutionEntrypoint,
-    notificationContext: {
-      mentionedHumanUserIds: [],
-      // A Task wake has a requesting Human, but its synthetic input is not a
-      // Human-authored turn eligible for an assistant causal pair.
-      causalHumanUserId: isTaskOriginated ? null : causalHumanUserId,
-      causalHumanTurnId: isTaskOriginated ? null : causalHumanUserId ? turnId || null : null,
-    },
-  };
-  // preserve the user-sent workspace artifact focus lane through the
-  // async executor path. `persistMessages` resolves these external ids against
-  // the canonical room namespace before recording durable card relations; local
-  // file focus refs are deliberately excluded.
-  const messageArtifactExternalIds = Array.from(
-    new Set([
-      ...artifactRefs.map((ref) => ref.artifactId),
-      ...focusedResources.flatMap((resource) => {
-        if (resource.kind !== "workspace-artifact") return [];
-        const locator = resource.locator;
-        if (
-          locator &&
-          typeof locator === "object" &&
-          typeof (locator as { artifactId?: unknown }).artifactId === "string"
-        ) {
-          return [(locator as { artifactId: string }).artifactId];
-        }
-        return [];
-      }),
-    ]),
-  );
-
-  // internal wakes retain an audit input without publishing a fake
-  // Human message. Never apply the input metadata to an entire output batch:
-  // browser supervision uses internalToolMetadata for tool plumbing only, while
-  // a deliberate tool-free answer stays visible. Task report-back stays visible.
-  const isAdvancedVideoWorkcard = inputMetadata?.["originatedBy"] === "advanced_video_workcard";
-
-  // skip persisting the human row when it already exists (the bot is
-  // waking against an already-delivered message). The model still sees it via
-  // `graphInput.messages`; only the duplicate transcript row + event are avoided.
-  if (protectedTurn !== undefined && !humanAlreadyPersisted) {
-    throw new TypeError(
-      "Protected Human input must be coordinate-first persisted before Agent execution",
-    );
+  try {
+  if (imageAssistanceResult && !retainedImageResults.some((result) => result.inputDigest === imageAssistanceResult.inputDigest)) {
+    const observations = imageAssistanceObservationMessages(imageAssistanceResult);
+    if (protectedTurn) await protectedTurn.persist(observations);
+    else if (liveShadowRuntime) {
+      const protectedEvents = await publishLiveShadowRuntimeMessages({
+        runtime: liveShadowRuntime, operationId: _jobId, laneKey: effectiveLaneKey,
+        messages: observations, agentId, warn,
+        persistOrdinary: (messages) => persistMessages(langgraphThreadId, transcriptOwnerId, [...messages], savedFingerprints, { ...persistOptsBase, requireDurable: true }),
+      });
+      for (const event of protectedEvents) yield event;
+    } else await persistMessages(langgraphThreadId, transcriptOwnerId, observations, savedFingerprints, { ...persistOptsBase, requireDurable: true });
   }
-  if (!humanAlreadyPersisted && protectedTurn === undefined) {
-    // stamp turn_id on this turn's retained attachments when the human
-    // row is persisted (only on the human persist call, which carries the ids).
-    const humanPersistOpts = {
-      ...persistOptsBase,
-      notificationContext: {
-        mentionedHumanUserIds,
-        ...(mentionEveryone ? { mentionEveryone: true } : {}),
-        causalHumanUserId: null,
-        causalHumanTurnId: null,
-      },
-      ...(retainedAttachmentIds.length > 0 ? { retainedAttachmentIds } : {}),
-      ...(messageArtifactExternalIds.length > 0
-        ? { messageArtifactExternalIds }
-        : {}),
-    };
-    await persistMessages(
-      langgraphThreadId,
-      transcriptOwnerId,
-      [userMessageForTranscript],
-      savedFingerprints,
-      isTaskOriginated || supervisionMetadata !== undefined
-        ? { ...humanPersistOpts, metadata: supervisionMetadata ?? inputMetadata!, suppressUserMessageEvents: true }
-        : isAdvancedVideoWorkcard
-          ? { ...humanPersistOpts, metadata: inputMetadata }
-          : humanPersistOpts,
-    );
+  } catch (error) {
+    failImageAssistance(error, signal);
   }
 
   const protectedCheckpointSaver = protectedServices === undefined
@@ -1259,6 +1310,7 @@ export async function* langgraphExecutor(
       noteAgentProgressFromStreamEvent(ev, agentProgressHeartbeat);
 
       const { events, messagesToPersist, assistantMessageKey } = processStreamEvent(ev, tokenBatcher, toolTracker, streamCtx, sentenceDetector);
+      attributeImageAssistance(messagesToPersist, imageAssistanceResult);
       for (const event of events) {
         if (liveShadowRuntime !== undefined) {
           const protectedStream = await protectLiveShadowAssistantToken({
@@ -1471,6 +1523,7 @@ export async function* langgraphExecutor(
 export async function resolveForegroundHistoryMessages(
   args: {
     turnKind: TurnKind;
+    onTranscriptRead?: (rows: readonly import("../conductor/history-search").RoomHistoryHit[]) => void;
     roomId: string;
     transcriptOwnerId: string;
     agentId: string;
@@ -1481,6 +1534,8 @@ export async function resolveForegroundHistoryMessages(
     subthreadParentRoomId?: string;
     subthreadAnchorMessageId?: number;
     currentMessageId?: number;
+    imageAssistanceTurnId?: string;
+    onAuthorizedHistory?: (hits: readonly import("../conductor/history-search").RoomHistoryHit[]) => void;
   },
   depsOverride?: BuildTranscriptContextDeps,
 ): Promise<BaseMessage[]> {
@@ -1511,6 +1566,15 @@ export async function resolveForegroundHistoryMessages(
                 ),
             }),
       };
+  const authorizedDeps: BuildTranscriptContextDeps = {
+    ...effectiveDeps,
+    readRoomTranscript: async (scope) => {
+      const hits = await effectiveDeps.readRoomTranscript(scope);
+      args.onTranscriptRead?.(hits);
+      args.onAuthorizedHistory?.(hits);
+      return imageAssistanceHistory(hits);
+    },
+  };
   try {
     return await buildTranscriptContext(
       {
@@ -1526,6 +1590,7 @@ export async function resolveForegroundHistoryMessages(
           kind: "room",
           roomId: args.roomId,
           ownerId: args.transcriptOwnerId,
+          ...(args.imageAssistanceTurnId ? { imageAssistanceTurnId: args.imageAssistanceTurnId } : {}),
           ...(args.agentId ? { agentId: args.agentId } : {}),
           ...(args.currentMessageId != null ? { excludeMessageId: args.currentMessageId } : {}),
           ...(args.subthreadParentRoomId && args.subthreadAnchorMessageId != null
@@ -1540,7 +1605,7 @@ export async function resolveForegroundHistoryMessages(
         // Verbatim first cut with no recency window or summarization.
         maxLines: Number.MAX_SAFE_INTEGER,
       },
-      effectiveDeps,
+      authorizedDeps,
     );
   } finally {
     if (owned) await owned.close();

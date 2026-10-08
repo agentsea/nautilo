@@ -8,7 +8,7 @@ const preload = readFileSync(join(desktopRoot, "electron/preload.ts"), "utf8");
 const workbenchTypes = readFileSync(join(desktopRoot, "../workbench/src/lib/desktop.ts"), "utf8");
 const coordinator = readFileSync(join(desktopRoot, "electron/ready-to-work-coordinator.ts"), "utf8");
 
-describe("D557 Desktop Ready bridge", () => {
+describe("Desktop Ready bridge", () => {
   test("Hermes owner intent is sender-gated, durable, and removes routing before refresh", () => {
     expect(preload).toContain('ipcRenderer.invoke("hermesConnection:status")');
     expect(workbenchTypes).toContain("interface DesktopHermesConnectionAPI");
@@ -66,7 +66,7 @@ describe("D557 Desktop Ready bridge", () => {
   test("enrollment accepts one transient PIN while receipt storage stays main-only", () => {
     expect(main).toContain('ipcMain.handle("readyToWork:enroll"');
     expect(main).toContain('Object.keys(request).sort().join(",") === "pin,selection"');
-    expect(main).toContain("readyToWorkProtectedReceiptStore().save(");
+    expect(main).toContain("readyRemembered.save(");
     expect(preload).toContain("enroll: (input: { selection: ReadyToWorkSelection; pin: string })");
     expect(preload).not.toContain("startupReceipt");
     expect(workbenchTypes).not.toContain("startupReceipt");
@@ -85,7 +85,7 @@ describe("D557 Desktop Ready bridge", () => {
     expect(helper).not.toContain("ComputerUseLocalStore");
     expect(helper).not.toContain("store.mint");
 
-    const enrollStart = main.indexOf('ipcMain.handle("readyToWork:enroll"');
+    const enrollStart = main.indexOf("async function enrollReadyToWork(");
     const enrollEnd = main.indexOf('ipcMain.handle("readyToWork:restore"', enrollStart);
     const enroll = main.slice(enrollStart, enrollEnd);
     expect(enroll).toContain("activatedComputerUse = await enableReadyComputerUseDuringEnrollment(");
@@ -116,10 +116,10 @@ describe("D557 Desktop Ready bridge", () => {
     expect(main).toContain('trigger: "startup" | "relay_reconnect" | "explicit_restore"');
     expect(main).not.toContain('"owner_changed"');
     expect(main).toContain('reconcileReadyForServerSession(active, "relay_reconnect")');
-    expect(main).toContain('reconcileReadyToWorkNow(binding, "explicit_restore", generation)');
+    expect(main).toContain('reconcileReadyToWorkNow(binding, "explicit_restore", generation, readyRemembered.loadFor(binding) !== null)');
     expect(coordinator).toContain("if (input.trigger === \"startup\" && this.startupAttemptKey === key)");
     expect(main).toContain("const authenticated = await resolveReadyToWorkBindingForSession(activeSession)");
-    expect(main).toContain("const persisted = readyToWorkStore().loadFor(binding)");
+    expect(main).toContain("const persisted = readyRemembered.loadFor(binding)");
     expect(main).toContain("persisted.components.workstation !== desired.components.workstation");
     expect(main).toContain("if (serverSessions.active !== activeSession) return false");
     expect(main).toContain("const refreshedAuthority = authoritativeConnectionSnapshot()");
@@ -127,28 +127,23 @@ describe("D557 Desktop Ready bridge", () => {
     expect(main).toContain("readyToWorkOperationQueue.run(async () =>");
   });
 
-  test("PIN-free Off clears both stores and invokes owner disable paths", () => {
+  test("PIN-free Off invokes persistence reduction and always reaches live shutdown paths", () => {
     const start = main.indexOf('ipcMain.handle("readyToWork:disable"');
     const slice = main.slice(start, start + 2_400);
     expect(slice).toContain("readyToWorkCoordinator.disable(desired)");
-    expect(slice).toContain("readyToWorkProtectedReceiptStore().clear()");
-    expect(slice).toContain("readyToWorkStore().clear()");
+    expect(slice).toContain("readyToWorkPersistence.disable((desired, failedReduction)");
     expect(slice).toContain("resolveSessionFromSender(e)");
     expect(slice).not.toContain("resolveReadyToWorkBinding(e)");
     expect(slice).not.toContain("pin");
-    const clearIntent = slice.indexOf("readyToWorkStore().clear()");
-    const clearReceipt = slice.indexOf("readyToWorkProtectedReceiptStore().clear()");
     const disableOwners = slice.indexOf("readyToWorkCoordinator.disable(desired)");
-    expect(clearIntent).toBeGreaterThan(-1);
-    expect(clearReceipt).toBeGreaterThan(clearIntent);
     const clearBinding = slice.indexOf("readyToWorkCoordinatorBinding = null");
-    expect(clearBinding).toBeGreaterThan(clearReceipt);
-    expect(disableOwners).toBeGreaterThan(clearReceipt);
     expect(disableOwners).toBeGreaterThan(clearBinding);
     expect(slice.indexOf("readyToWorkGeneration += 1")).toBeGreaterThan(clearBinding);
-    expect(slice.indexOf("publishReadyToWorkStatus(status)")).toBeLessThan(disableOwners);
+    expect(slice.indexOf("publishReadyToWorkStatus(status)")).toBeGreaterThan(disableOwners);
     expect(slice).toContain("readyToWorkCleanupPromise = awaitReadyToWorkBounded(");
-    expect(slice).toContain("Durable intent is already disarmed");
+    expect(slice).toContain("fenceDevelopmentLocalExecutions()");
+    expect(slice).toContain("disableReadyWorkstationOwner(), disableReadyComputerUseOwner()");
+    expect(slice).toContain("requestReadyRendererOwners({ voice: false, autoApprove: false })");
   });
 
   test("uses null for omitted renderer owners so enrollment does not change them", () => {
@@ -170,15 +165,16 @@ describe("D557 Desktop Ready bridge", () => {
   });
 
   test("revalidates enrollment before persistence and narrows before owner cleanup", () => {
-    const start = main.indexOf('ipcMain.handle("readyToWork:enroll"');
+    const start = main.indexOf("async function enrollReadyToWork(");
     const end = main.indexOf('ipcMain.handle("readyToWork:restore"', start);
     const slice = main.slice(start, end);
     const revalidate = slice.indexOf("readyToWorkActiveBindingMatches(binding)");
-    const save = slice.indexOf("readyToWorkStore().save(desired)");
+    const save = slice.indexOf("readyRemembered.save(desired, receiptToPersist");
     const removed = slice.indexOf("const removed = {");
     const disable = slice.indexOf("readyToWorkCoordinator.disable(createReadyToWorkDesiredState(binding, removed))");
     expect(revalidate).toBeGreaterThan(-1);
     expect(save).toBeGreaterThan(revalidate);
+    expect(slice.indexOf("generation !== readyToWorkGeneration", revalidate)).toBeLessThan(save);
     expect(removed).toBeGreaterThan(save);
     expect(disable).toBeGreaterThan(removed);
     expect(slice).toContain("if (activatedWorkstation) await disableReadyWorkstationOwner()");
@@ -198,14 +194,13 @@ describe("D557 Desktop Ready bridge", () => {
   });
 
   test("verifies a non-live stored receipt before preserving it and keeps rollback best-effort", () => {
-    const start = main.indexOf("const existingReceipt = readyToWorkProtectedReceiptStore().readFor(binding)");
+    const start = main.indexOf("const existingReceipt = readyRemembered.readReceipt(binding)");
     const slice = main.slice(start, start + 6_000);
     expect(slice).toContain("const exactLive =");
     expect(slice).toContain("proof: { startupReceipt: existingReceipt.receipt }");
     expect(slice).toContain("canPreserveReceipt = false");
-    const clear = slice.indexOf(
-      "try { readyToWorkProtectedReceiptStore().clear(); } catch { /* rollback continues */ }",
-    );
+    const clear = slice.indexOf("readyToWorkPersistence.recordFailure(error, activatedComputerUse || activatedWorkstation)");
+    expect(slice).not.toContain("readyToWorkProtectedReceiptStore().clear()");
     expect(clear).toBeGreaterThan(-1);
     expect(slice.indexOf("if (activatedWorkstation) await disableReadyWorkstationOwner()", clear))
       .toBeGreaterThan(clear);
@@ -232,6 +227,59 @@ describe("D557 Desktop Ready bridge", () => {
     expect(coordinator).toContain("reset(): ReadyToWorkAggregateStatus");
   });
 
+  test("all status projections retain persistence attention and receipt failure invokes rollback", () => {
+    for (const entry of ["async function readyToWorkStatusForSender", "async function reconcileReadyToWorkNow",
+      "function attachReadyCodingHarnessPreview", "async function attachReadyCodingHarnessStatuses",
+      "async function refreshReadyToWorkStatus", "function publishReadyToWorkStatus"]) {
+      const start = main.indexOf(entry);
+      expect(main.slice(start, start + 1_200)).toContain("readyToWorkPersistence.attention()");
+    }
+    const start = main.indexOf("const nextReceipt = activated.data.startupReceipt");
+    expect(main.slice(start, start + 700)).toContain("readyToWorkPersistence.saveReceiptOrRollback(");
+    expect(main.slice(start, start + 700)).toContain("disableReadyWorkstationOwner");
+    expect(main).toContain("readyToWorkPersistence.recordFailure(error, activatedComputerUse || activatedWorkstation)");
+  });
+
+  test("Ready activation fences asynchronous admission and receipt writes after Off", () => {
+    const restore = main.slice(main.indexOf("async function restoreReadyWorkstation("), main.indexOf("async function observeReadyWorkstation("));
+    expect(restore).toContain("const generation = readyToWorkGeneration");
+    expect(main).toContain('readyToWorkPersistence.mayRestore(!componentsOnly && trigger === "explicit_restore" && desired !== null)');
+    const status = restore.indexOf("await getWorkstationServerSessionStatus()");
+    const activate = restore.indexOf("await activateStoredWorkstationProfile(");
+    expect(restore.indexOf("generation !== readyToWorkGeneration", status)).toBeLessThan(activate);
+    expect(restore).toContain("}, () => readyBindingIsCurrent(binding, generation))");
+    expect(restore).toContain("disableReadyWorkstationOwner, () => readyBindingIsCurrent(binding, generation)");
+    const activation = main.slice(main.indexOf("async function activateStoredWorkstationProfile("), main.indexOf('  "workstationProfiles:selectActiveProfile"'));
+    expect(activation).toContain("isCurrent: () => boolean = () => true");
+    for (const [awaited, effect] of [
+      ["const stored = await store.get", "const tokenPromise = getValidAccessToken"],
+      ["const bearerToken =", "const serverResult = await activateWorkstationProfileViaServer"],
+      ["const serverResult = await", "const userId = await"],
+      ["const userId = await", "factsResult = await discoverWorkstationFacts"],
+      ["factsResult = await discoverWorkstationFacts", "const activated = await activeWorkstationProfileController.activate"],
+      ["const activated = await activeWorkstationProfileController.activate", "const advertisement = refreshDesktopRelayCapabilities"],
+      ["const advertised =", "const completed = await completeWorkstationProfileActivation"],
+      ["const completed = await", "// 6. Completion"],
+    ]) {
+      const begin = activation.indexOf(awaited!);
+      const end = activation.indexOf(effect!, begin);
+      expect(begin).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(begin);
+      expect(activation.slice(begin, end)).toContain("if (!isCurrent())");
+    }
+  });
+
+  test("Ready Computer use enrollment checks generation before enable and rolls back stale results", () => {
+    const enable = main.slice(main.indexOf("async function enableReadyComputerUseDuringEnrollment("), main.indexOf("async function disableReadyComputerUseOwner("));
+    expect(enable).toContain("isCurrent: () => boolean = () => true");
+    expect(enable).toContain("if (!isCurrent() || !agentId) return false");
+    const effect = enable.indexOf("await setup.enable(pin, agentId)");
+    expect(enable.indexOf("if (!isCurrent())", effect)).toBeGreaterThan(effect);
+    expect(enable.slice(effect)).toContain("await setup.disable()");
+    expect(enable).toContain("return isCurrent() && enabledProjection?.effectiveProvider");
+    expect(main).toContain("binding.humanId,\n          () => readyBindingIsCurrent(binding, generation)");
+  });
+
   test("hard-bounds Ready authentication, status, and two-phase activation network", () => {
     expect(main).toContain("awaitReadyToWorkValueBounded(");
     expect(main).toContain("signal: AbortSignal.timeout(5_000)");
@@ -239,4 +287,20 @@ describe("D557 Desktop Ready bridge", () => {
     expect(main).toContain("timeoutMs: args.networkTimeoutMs");
     expect(coordinator).toContain("readyToWorkBoundedValue<T>");
   });
+});
+
+test("keyed persistence is used at every main read/write seam and manual activation waits old cleanup", () => {
+  expect(main).not.toContain("readyToWorkStore().loadFor(");
+  expect(main).not.toContain("readyToWorkStore().save(");
+  expect(main).not.toContain("readyToWorkProtectedReceiptStore().readFor(");
+  expect(main).not.toContain("readyToWorkProtectedReceiptStore().clear(");
+  expect(main).toContain("rememberedFilePath: readyToWorkRememberedStateFilePath()");
+  expect(main).toContain("rememberedFilePath: readyToWorkRememberedReceiptFilePath()");
+  const start = main.indexOf('  "workstationProfiles:selectActiveProfile",');
+  const finish = main.indexOf('ipcMain.handle("app:getVersion"', start);
+  const select = main.slice(start, finish);
+  expect(select.indexOf("await readyToWorkCleanupPromise")).toBeLessThan(select.indexOf("await activateStoredWorkstationProfile"));
+  expect(select).toContain("}, isCurrent)");
+  expect(select).toContain("ownerSession === serverSessions.active");
+  expect(main).toContain("settleReadyCleanup(readyToWorkCleanupPromise, [durableReduction, remoteCleanup])");
 });

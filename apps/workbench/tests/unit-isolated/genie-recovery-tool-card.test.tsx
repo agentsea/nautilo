@@ -5,7 +5,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { reapplyHappyDomGlobals } from "../bun-dom-preload";
 
 mock.module("../../src/hooks/use-auth", () => ({ useAuth: () => ({ session: { getAccessToken: async () => "token" } }) }));
-mock.module("../../src/lib/desktop", () => ({ isDesktop: false, desktopAPI: null }));
+mock.module("../../src/lib/desktop", () => ({ isDesktop: false, desktopAPI: null, getLocalExecutionAPI: () => null }));
 mock.module("../../src/adapters/runtime-contexts", () => ({ useToolActivity: () => [] }));
 const { GenieRecoveryAction, parseGenieRecoveryToolResult } = await import("../../src/components/tool-card/genie-recovery");
 const { ToolCard } = await import("../../src/components/tool-card/tool-card");

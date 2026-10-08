@@ -81,6 +81,33 @@ async function code(promise: Promise<unknown>): Promise<string | undefined> {
 }
 
 describe("trusted model funding", () => {
+  test("image assistance preserves a required payer class instead of following fresh preference", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
+    const input = { ...request(ALICE), workload: "image_assistance" as const, transport: "direct" as const };
+    h.setFundingPreference("server_first");
+    expect(await resolveModelFunding({ ...input, fundingKind: "personal" }, h.deps)).toMatchObject({
+      kind: "personal", payerHumanId: ALICE, workload: "image_assistance",
+    });
+    h.setFundingPreference("personal_first");
+    expect(await resolveModelFunding({ ...input, fundingKind: "server" }, h.deps)).toMatchObject({ kind: "server" });
+    h.rows.clear();
+    expect(await code(resolveModelFunding({ ...input, fundingKind: "personal" }, h.deps))).toBe("personal_credential_missing");
+  });
+
+  test("image assistance excludes unsupported marketplace transport and rechecks exact personal revision", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
+    const input = { ...request(ALICE), workload: "image_assistance" as const,
+      transport: "direct" as const, fundingKind: "personal" as const };
+    const admitted = await resolveModelFunding(input, h.deps);
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter", 2));
+    expect(await code(resolveModelFunding({ ...input, priorDecision: admitted }, h.deps))).toBe("personal_credential_stale");
+    h.setServerRoute("surplus");
+    expect(await code(resolveModelFunding({ ...input, fundingKind: "server" }, h.deps))).toBe("provider_credentials_missing");
+  });
   test("server route admits only an exact qualified Surplus mapping when direct credentials are absent", () => {
     const route = {
       catalogModelId: "venice:openai-gpt-55",

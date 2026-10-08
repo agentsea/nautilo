@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { useAuth } from "../../../hooks/use-auth";
 import { useCan } from "../../../hooks/use-can";
 import { apiClient } from "../../../lib/api";
@@ -11,6 +11,7 @@ import {
 } from "./SelectablePicker";
 
 type CreateMember = { kind: "user" | "agent"; id: string };
+type RoomVisibility = "private" | "external" | "public";
 
 /**
  * A successful create response is the only authoritative confirmation that
@@ -86,7 +87,9 @@ export function NewConversationDialog({
   const auth = useAuth();
   const can = useCan();
   const canCreateRooms = can("create_rooms") || can("manage_rooms");
-  const canCreatePublic = can("manage_rooms");
+  const canCreateOpen = can("manage_rooms");
+  const supportsRoomDiscoverability =
+    auth.viewer.features.roomDiscoverability === true;
   const canInvokeAgents = can("invoke_agents");
   const viewerUserId = auth.viewer.sessionUserId;
   const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
@@ -102,10 +105,16 @@ export function NewConversationDialog({
   const [selectedMeta, setSelectedMeta] = useState<Map<string, SelectedMeta>>(new Map());
   const selectedMetaRef = useRef<ReadonlyMap<string, SelectedMeta>>(new Map());
   const [customLabel, setCustomLabel] = useState("");
-  const [isPublic, setIsPublic] = useState(false);
+  const [visibility, setVisibility] = useState<RoomVisibility>("private");
   const [creating, setCreating] = useState(false);
   const creatingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!supportsRoomDiscoverability) {
+      setVisibility((current) => current === "external" ? "private" : current);
+    }
+  }, [supportsRoomDiscoverability]);
 
   // The dialog owns the data source now: server directory search, mapped to
   // picker candidates. The picker owns the query/debounce/ordering.
@@ -175,11 +184,15 @@ export function NewConversationDialog({
       setError("Sign in to start a conversation.");
       return;
     }
+    if (visibility === "external" && !supportsRoomDiscoverability) {
+      setError("This server does not support External rooms.");
+      return;
+    }
     // Take one immutable-in-practice snapshot for all of the request, naming,
     // and response validation. Never re-read live picker state after this.
     const userIds = [...selectedUsersRef.current].filter((id) => id !== viewerUserId);
     const agentIds = canInvokeAgents ? [...selectedAgentsRef.current] : [];
-    if (!isPublic && userIds.length === 0 && agentIds.length === 0) {
+    if (visibility === "private" && userIds.length === 0 && agentIds.length === 0) {
       setError("Pick at least one person or agent.");
       return;
     }
@@ -201,7 +214,7 @@ export function NewConversationDialog({
         ...userIds.map((id): CreateMember => ({ kind: "user", id })),
         ...agentIds.map((id): CreateMember => ({ kind: "agent", id })),
       ];
-      const isHumanDirect = !isPublic && userIds.length === 1 && agentIds.length === 0;
+      const isHumanDirect = visibility === "private" && userIds.length === 1 && agentIds.length === 0;
       if (!isHumanDirect && !canCreateRooms) {
         setError("You can message people directly, but your Server role cannot create shared Rooms.");
         return;
@@ -212,10 +225,17 @@ export function NewConversationDialog({
           : {
               label,
               members: memberIds,
-              ...(isPublic ? { kind: "open" as const } : {}),
+              ...(visibility === "private"
+                ? {}
+                : {
+                    kind: "open" as const,
+                    ...(visibility === "external" || supportsRoomDiscoverability
+                      ? { discoverable: visibility === "public" }
+                      : {}),
+                  }),
             },
       );
-      if (!responseMatchesRequestedRoster(detail.members, memberIds, isPublic)) {
+      if (!responseMatchesRequestedRoster(detail.members, memberIds, visibility !== "private")) {
         setError(
           "The server returned a mismatched member roster. This dialog is still open, but do not retry blindly; check your rooms first.",
         );
@@ -234,9 +254,10 @@ export function NewConversationDialog({
     canCreateRooms,
     canInvokeAgents,
     customLabel,
-    isPublic,
+    visibility,
     onClose,
     onCreated,
+    supportsRoomDiscoverability,
     viewerUserId,
   ]);
 
@@ -272,8 +293,10 @@ export function NewConversationDialog({
   const userCount = selectedUsers.size;
   const agentCount = selectedAgents.size;
   const primaryLabel = (() => {
+    if (visibility === "public") return "Create public room";
+    if (visibility === "external") return "Create external room";
     if (userCount === 0 && agentCount === 0) {
-      return isPublic ? "Create public room" : "Pick someone";
+      return "Pick someone";
     }
     if (userCount === 1 && agentCount === 0) return "Open DM";
     if (userCount === 0 && agentCount === 1) {
@@ -350,22 +373,38 @@ export function NewConversationDialog({
               <input
                 type="radio"
                 name="discoverability"
-                checked={!isPublic}
-                onChange={() => setIsPublic(false)}
+                checked={visibility === "private"}
+                onChange={() => setVisibility("private")}
                 className="mt-0.5"
               />
               <span>Private — only invited members</span>
             </label>
+            {supportsRoomDiscoverability ? (
+              <label
+                className={`flex items-start gap-2 text-xs ${canCreateOpen ? "cursor-pointer text-foreground" : "cursor-not-allowed text-foreground-muted"}`}
+                title={canCreateOpen ? undefined : "Only admins can create external rooms"}
+              >
+                <input
+                  type="radio"
+                  name="discoverability"
+                  checked={visibility === "external"}
+                  disabled={!canCreateOpen}
+                  onChange={() => setVisibility("external")}
+                  className="mt-0.5"
+                />
+                <span>External — public access, hidden from discovery</span>
+              </label>
+            ) : null}
             <label
-              className={`flex items-start gap-2 text-xs ${canCreatePublic ? "cursor-pointer text-foreground" : "cursor-not-allowed text-foreground-muted"}`}
-              title={canCreatePublic ? undefined : "Only admins can create public rooms"}
+              className={`flex items-start gap-2 text-xs ${canCreateOpen ? "cursor-pointer text-foreground" : "cursor-not-allowed text-foreground-muted"}`}
+              title={canCreateOpen ? undefined : "Only admins can create public rooms"}
             >
               <input
                 type="radio"
                 name="discoverability"
-                checked={isPublic}
-                disabled={!canCreatePublic}
-                onChange={() => setIsPublic(true)}
+                checked={visibility === "public"}
+                disabled={!canCreateOpen}
+                onChange={() => setVisibility("public")}
                 className="mt-0.5"
               />
               <span>Public — anyone on this server can find and join</span>
@@ -387,7 +426,7 @@ export function NewConversationDialog({
           </button>
           <button
             type="button"
-            disabled={(!isPublic && userCount === 0 && agentCount === 0) || creating}
+            disabled={(visibility === "private" && userCount === 0 && agentCount === 0) || creating}
             className="rounded border border-primary bg-primary px-3 py-1.5 text-xs font-medium text-[var(--on-primary)] disabled:opacity-50"
             onClick={() => void handleCreate()}
           >

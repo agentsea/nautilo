@@ -18,6 +18,7 @@ import {
   personalProviderCredentials,
   providerCostEvents,
   providerCostIdempotencyKey,
+  providerCostRequestReference,
   requeueBlockedPersonalSurplusAttempts,
   reconcileSurplusLlmAttemptCost,
   settlePersonalLlmAttempt,
@@ -326,6 +327,98 @@ describe("personal cost attempts and account isolation", () => {
       legacy: 0,
     });
     expect(summary.serviceRecovery).toEqual({ attempts: [] });
+  });
+
+  test("persists only safe service receipt references and projects unresolved recovery", async () => {
+    const payerHumanId = await createUser("service-receipt-reference-owner");
+    const taskId = await createTask(payerHumanId);
+    const idempotencyKey = providerCostIdempotencyKey(
+      `${FIXTURE_PREFIX}:service-receipt-reference:${randomUUID()}`,
+    );
+    providerCostKeys.push(idempotencyKey);
+    const attempt = {
+      userId: payerHumanId,
+      taskId,
+      provider: "tavily",
+      operation: "search",
+      workload: "deep_research",
+      fundingKind: "personal" as const,
+      payerHumanId,
+      providerRoute: "tavily",
+      credentialId: randomUUID(),
+      credentialRevision: 1,
+      attemptOutcome: "unknown" as const,
+      evidenceState: "unknown" as const,
+      idempotencyKey,
+    };
+    await insertProviderCostEventWith(db, attempt);
+
+    const [opened] = await db.select().from(providerCostEvents).where(
+      eq(providerCostEvents.idempotencyKey, idempotencyKey),
+    );
+    expect(opened?.requestReference).toBeNull();
+
+    const rawReceiptId = `private-tavily-request-${randomUUID()}`;
+    const requestReference = providerCostRequestReference(rawReceiptId);
+    if (requestReference === null) throw new Error("missing safe provider request reference");
+    await settleProviderCostEventWith(db, {
+      ...attempt,
+      attemptOutcome: "succeeded",
+      requestReference,
+    });
+
+    const unresolved = await getPersonalCostsSummary({
+      payerHumanId,
+      range: {
+        sinceIso: new Date(Date.now() - 60_000).toISOString(),
+        untilIso: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+    const serviceRecovery = unresolved.serviceRecovery;
+    if (serviceRecovery === undefined) throw new Error("missing service recovery summary");
+    expect(serviceRecovery.attempts).toHaveLength(1);
+    expect(serviceRecovery.attempts[0]).toMatchObject({
+      provider: "tavily",
+      operation: "search",
+      attemptOutcome: "succeeded",
+      requestReference,
+      taskId,
+    });
+    expect(JSON.stringify(unresolved)).not.toContain(rawReceiptId);
+
+    const estimatedSettlement = {
+      ...attempt,
+      attemptOutcome: "succeeded" as const,
+      evidenceState: "estimated" as const,
+      estimatedCostUsd: "0.008",
+      pricingVersion: "test-price-v1",
+      measuredUnits: 1,
+      unitType: "credit",
+    };
+    // A later settlement without a receipt must preserve the safe reference.
+    await settleProviderCostEventWith(db, estimatedSettlement);
+    const [settled] = await db.select().from(providerCostEvents).where(
+      eq(providerCostEvents.idempotencyKey, idempotencyKey),
+    );
+    expect(settled).toMatchObject({
+      attemptOutcome: "succeeded",
+      evidenceState: "estimated",
+      requestReference,
+    });
+    expect(JSON.stringify(settled)).not.toContain(rawReceiptId);
+
+    const conflict = await settleProviderCostEventWith(db, {
+      ...estimatedSettlement,
+      requestReference: providerCostRequestReference("different-provider-request"),
+    }).then(() => null, (error: unknown) => error);
+    expect(conflict).toBeInstanceOf(Error);
+    expect((conflict as Error).message).toBe(
+      "Provider cost attempt settlement conflicts with durable state",
+    );
+    const [afterConflict] = await db.select().from(providerCostEvents).where(
+      eq(providerCostEvents.idempotencyKey, idempotencyKey),
+    );
+    expect(afterConflict?.requestReference).toBe(requestReference);
   });
 
   test("prewires and settles one direct personal attempt in place", async () => {

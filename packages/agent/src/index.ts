@@ -38,13 +38,16 @@ export {
 } from "./utils/tool-argument-redaction";
 export {
   maybeSummarizeImagesWithVisionFallback,
-  type TextOnlyImagePolicy,
+  ImageAssistanceError,
+  imageAssistanceInputDigest,
+  imageAssistanceSummary,
+  imageAssistanceContext,
+  type ImageAssistanceResult,
 } from "./chat/vision-fallback";
 export {
   hasRunnableChatProviderCredentials,
   modelHasRunnableCredentials,
 } from "./chat/model-runtime-credentials";
-export { parseVisionCandidateIds } from "./chat/vision-candidates";
 
 // Graph
 export {
@@ -1431,3 +1434,4 @@ export { resolveSurplusDecisionServingAvailability, resolveQualifiedSurplusDecis
 
 export { runWithForegroundFundingSession, type ForegroundFundingSnapshot } from "./runtime/foreground-chat-funding";
 export { readForegroundFundingForThread } from "./graph/turn-id";
+export type { LocalExecutionHistoryPort, LocalExecutionHistoryReference } from "./tools/local-execution/history";

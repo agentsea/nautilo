@@ -148,10 +148,14 @@ function desktopAuthorityCommitHarness(input: Readonly<{
     "getRecentServerFingerprint",
     "configForCommittedActiveConnection",
     "saveConfig",
-    `${seam}; return {
+    `let readyToWorkGeneration = 0;
+    let readyVerifiedBinding = { binding: "prior" };
+    let readyToWorkCoordinatorBinding = { binding: "prior" };
+    ${seam}; return {
       installSourceDevelopmentAuthority,
       authoritativeConnectionSnapshot,
       commitDesktopConnectionAuthority,
+      readyState() { return { generation: readyToWorkGeneration, verifiedBinding: readyVerifiedBinding, coordinatorBinding: readyToWorkCoordinatorBinding }; },
     };`,
   )(
     (() => "fixed-uuid"),
@@ -185,6 +189,7 @@ function desktopAuthorityCommitHarness(input: Readonly<{
       serverFingerprint: string;
       priorAuthorityGuard: TestActiveAuthority;
     }>): boolean;
+    readyState(): { generation: number; verifiedBinding: unknown; coordinatorBinding: unknown };
   };
   return { ...harness, saved };
 }
@@ -556,6 +561,7 @@ describe("cold boot has one main-owned reachability authority", () => {
       serverFingerprint: "fingerprint-b",
       priorAuthorityGuard: prior,
     })).toBe(true);
+    expect(subject.readyState()).toEqual({ generation: 1, verifiedBinding: null, coordinatorBinding: null });
     expect(subject.saved).toHaveLength(1);
     expect(subject.authoritativeConnectionSnapshot()).toEqual({
       scope: "http://127.0.0.1:3201",
@@ -580,6 +586,7 @@ describe("cold boot has one main-owned reachability authority", () => {
       serverFingerprint: "fingerprint-b",
       priorAuthorityGuard: { ...authorityA, revision: "stale-revision" },
     })).toBe(false);
+    expect(subject.readyState()).toEqual({ generation: 0, verifiedBinding: { binding: "prior" }, coordinatorBinding: { binding: "prior" } });
     expect(subject.saved).toEqual([]);
     expect(subject.authoritativeConnectionSnapshot()).toEqual(authorityA);
   });
@@ -595,6 +602,7 @@ describe("cold boot has one main-owned reachability authority", () => {
       serverFingerprint: "fingerprint-b",
       priorAuthorityGuard: prior,
     })).toThrow("disk write failed");
+    expect(subject.readyState()).toEqual({ generation: 1, verifiedBinding: null, coordinatorBinding: null });
     expect(subject.saved).toEqual([]);
     expect(subject.authoritativeConnectionSnapshot()).toEqual(prior);
   });

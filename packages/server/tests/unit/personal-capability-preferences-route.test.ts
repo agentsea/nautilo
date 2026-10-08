@@ -14,14 +14,21 @@ const apps: FastifyInstance[] = [];
 
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 
-async function harness(input: { missingCredentials?: boolean } = {}) {
+async function harness(input: {
+  missingCredentials?: boolean;
+  failCollaboratorsAfterWrite?: boolean;
+} = {}) {
   const rows = new Map<string, PersonalCapabilityPreferences>();
   const writes: Array<{ humanId: string; expectedRevision: number; overrides: unknown }> = [];
   let openedSessions = 0;
+  let committed = false;
   const db = {} as ReturnType<NonNullable<PersonalCapabilityPreferenceRouteDeps["getDb"]>>;
   const deps: PersonalCapabilityPreferenceRouteDeps = {
     getDb: () => db,
-    getPreferences: async (_db, humanId) => rows.get(humanId) ?? { revision: 0, overrides: {} },
+    getPreferences: async (_db, humanId) => {
+      if (input.failCollaboratorsAfterWrite && committed) throw new Error("post-commit preference read");
+      return rows.get(humanId) ?? { revision: 0, overrides: {} };
+    },
     replacePreferences: async (_db, request) => {
       writes.push(request);
       const current = rows.get(request.humanId) ?? { revision: 0, overrides: {} };
@@ -30,10 +37,15 @@ async function harness(input: { missingCredentials?: boolean } = {}) {
       }
       const preferences = { revision: current.revision + 1, overrides: request.overrides };
       rows.set(request.humanId, preferences);
+      committed = true;
       return { status: "updated", preferences };
     },
-    listModels: () => [{ modelId: MODEL, displayName: "Model A", provider: "openrouter" }],
+    listModels: () => {
+      if (input.failCollaboratorsAfterWrite && committed) throw new Error("post-commit catalogue read");
+      return [{ modelId: MODEL, displayName: "Model A", provider: "openrouter" }];
+    },
     openSession: async (humanId) => {
+      if (input.failCollaboratorsAfterWrite && committed) throw new Error("post-commit funding read");
       openedSessions += 1;
       return {
         fundingPreference: "personal_first",
@@ -121,6 +133,23 @@ describe("personal capability preference routes", () => {
     });
     expect(reset.statusCode).toBe(200);
     expect(parse(reset)).toMatchObject({ revision: 2, overrides: {} });
+  });
+
+  test("finishes fallible projection collaborators before committing a successful PUT", async () => {
+    const source = await harness({ failCollaboratorsAfterWrite: true });
+    const response = await source.app.inject({
+      method: "PUT", url: "/api/account/capability-preferences", headers: { "x-test-user": USER_A },
+      payload: { expectedRevision: 0, overrides: { decision: MODEL } },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(parse(response)).toMatchObject({
+      revision: 1,
+      overrides: { decision: MODEL },
+      fundingPreference: "personal_first",
+    });
+    expect(source.rows.get(USER_A)).toEqual({ revision: 1, overrides: { decision: MODEL } });
+    expect(source.writes).toHaveLength(1);
   });
 
   test("rejects unknown roles/models and reports CAS conflicts", async () => {

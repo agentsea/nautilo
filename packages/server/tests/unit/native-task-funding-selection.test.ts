@@ -1,14 +1,71 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { resetModelCapabilitiesCacheForTests } from "@nautilo/model-capabilities";
+import { admittedDeepResearchTaskMetadata, deepResearchTaskMetadata } from "@nautilo/agent";
 
 import {
   assertNativeTaskRetainedModelSelection,
   nativeTaskSelectionPurpose,
+  shouldPrepareNativeTaskCallerFunding,
   validateNativeTaskExactModelSelection,
 } from "../../src/lib/native-task-funding";
 
 const NULL_TOOLS_MODEL = "google:gemini-2.5-pro";
 const GOOGLE_ENV: NodeJS.ProcessEnv = { GOOGLE_API_KEY: "synthetic-test-key" };
+const SERVER_BINDING = { kind: "server" as const, providerRoute: "openrouter" };
+const PERSONAL_BINDING = {
+  kind: "personal" as const,
+  providerRoute: "openrouter",
+  credentialId: "55555555-5555-4555-8555-555555555555",
+  credentialRevision: 2,
+};
+const MODEL_PLAN = {
+  version: 1 as const,
+  supervisorModel: "openrouter:supervisor",
+  researchModel: "openrouter:researcher",
+  summarizationModel: "openrouter:summarizer",
+  compressionModel: "openrouter:compressor",
+  finalReportModel: "openrouter:reporter",
+};
+const SERVER_RESEARCH_METADATA = admittedDeepResearchTaskMetadata({
+  reportLanguage: "English",
+  invokingModelId: "openrouter:moonshotai/kimi-k3",
+  modelPlan: MODEL_PLAN,
+  preferenceRevisions: {
+    supervisor: 1,
+    research: 1,
+    summarization: 1,
+    compression: 1,
+    finalReport: 1,
+  },
+  modelFunding: {
+    supervisor: SERVER_BINDING,
+    research: SERVER_BINDING,
+    summarization: SERVER_BINDING,
+    compression: SERVER_BINDING,
+    finalReport: SERVER_BINDING,
+  },
+  tavilyFunding: { kind: "server", providerRoute: "tavily" },
+});
+const PERSONAL_RESEARCH_METADATA = admittedDeepResearchTaskMetadata({
+  reportLanguage: "English",
+  invokingModelId: "openrouter:moonshotai/kimi-k3",
+  modelPlan: MODEL_PLAN,
+  preferenceRevisions: {
+    supervisor: 1,
+    research: 1,
+    summarization: 1,
+    compression: 1,
+    finalReport: 1,
+  },
+  modelFunding: {
+    supervisor: PERSONAL_BINDING,
+    research: SERVER_BINDING,
+    summarization: SERVER_BINDING,
+    compression: SERVER_BINDING,
+    finalReport: SERVER_BINDING,
+  },
+  tavilyFunding: { kind: "server", providerRoute: "tavily" },
+});
 
 beforeEach(() => {
   resetModelCapabilitiesCacheForTests();
@@ -16,6 +73,38 @@ beforeEach(() => {
 });
 
 describe("native caller-funded Task model selection", () => {
+  test("keeps admitted server-funded v2 research on caller funding without personal-key access", () => {
+    expect(shouldPrepareNativeTaskCallerFunding(SERVER_RESEARCH_METADATA, {
+      allowPersonalProviderKeys: false,
+      capabilities: ["use_server_provider_credentials"],
+    })).toBeTrue();
+    expect(shouldPrepareNativeTaskCallerFunding(SERVER_RESEARCH_METADATA, {
+      allowPersonalProviderKeys: true,
+      capabilities: ["use_server_provider_credentials"],
+    })).toBeTrue();
+
+    expect(shouldPrepareNativeTaskCallerFunding(undefined, {
+      allowPersonalProviderKeys: false,
+      capabilities: ["use_server_provider_credentials"],
+    })).toBeFalse();
+    expect(shouldPrepareNativeTaskCallerFunding(SERVER_RESEARCH_METADATA, {
+      allowPersonalProviderKeys: false,
+      capabilities: [],
+    })).toBeTrue();
+    expect(shouldPrepareNativeTaskCallerFunding(PERSONAL_RESEARCH_METADATA, {
+      allowPersonalProviderKeys: false,
+      capabilities: ["use_server_provider_credentials"],
+    })).toBeTrue();
+    expect(shouldPrepareNativeTaskCallerFunding(deepResearchTaskMetadata({
+      reportLanguage: "English",
+      invokingModelId: null,
+      modelPlan: MODEL_PLAN,
+    }), {
+      allowPersonalProviderKeys: false,
+      capabilities: ["use_server_provider_credentials"],
+    })).toBeFalse();
+  });
+
   test("derives the shared canonical tool need from auto, none, and whitelist modes", () => {
     expect(nativeTaskSelectionPurpose({ toolsMode: "auto", toolsWhitelist: [] }))
       .toBe("task-tools");

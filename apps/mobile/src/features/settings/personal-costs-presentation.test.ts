@@ -154,6 +154,7 @@ test("presents paid service outcomes and content-free recovery with legacy-serve
       provider: "tavily", operation: "search", workload: "deep_research",
       attemptOutcome: "failed", failureCode: "upstream_error",
       taskId: "task-1", runId: null, jobId: "job-1",
+      requestReference: "req_0123456789ab",
       occurredAt: "2026-10-08T10:00:00Z",
     }] },
   } as unknown as PersonalCostsSummary;
@@ -163,6 +164,7 @@ test("presents paid service outcomes and content-free recovery with legacy-serve
     "7 operations · 2 succeeded · 1 failed · 1 cancelled · 1 interrupted · 1 unknown · 1 older unclassified",
   );
   expect(personalServiceRecoveryAttempts(current)).toHaveLength(1);
+  expect(personalServiceRecoveryAttempts(current)[0]?.requestReference).toBe("req_0123456789ab");
 
   const legacy = {} as PersonalCostsSummary;
   expect(personalServiceOperations(legacy)).toBeNull();

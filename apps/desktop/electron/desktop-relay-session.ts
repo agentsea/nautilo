@@ -1,6 +1,8 @@
+import type { DesktopGitHubRuntime } from "./relay-dispatch/github";
 import type { RelayMcpHostHandle } from "@nautilo/mcp-client";
 import {
   RELAY_MEDIA_TRANSFER_TTL_MS,
+  LOCAL_EXECUTION_MAX_IDENTITIES,
   type RelayClient,
   type RelayStatus,
 } from "@nautilo/relay";
@@ -12,7 +14,13 @@ import type {
   MediaSessionsPort,
 } from "./relay-dispatch/media.ts";
 import type { StructuredSshDispatchRuntime } from "./relay-dispatch/structured-ssh.ts";
-import { RunShellOutputArtifactStore } from "./run-shell-output-continuity.ts";
+import {
+  RunShellOutputArtifactStore, RUN_SHELL_OUTPUT_ARTIFACT_MAX_BYTES,
+  RUN_SHELL_OUTPUT_ARTIFACT_TOTAL_BYTES, RUN_SHELL_OUTPUT_ARTIFACT_TTL_MS,
+  RUN_SHELL_OUTPUT_ARTIFACT_MAX_ENTRIES,
+} from "./run-shell-output-continuity.ts";
+import { LocalExecutionHost } from "./local-execution-host";
+import { LocalExecutionDispatch } from "./relay-dispatch/local-execution";
 import type { BrowserVisualObservationBinding } from "./browser-visual-observation.ts";
 
 export type DesktopRelayGoogleOAuthContext = Readonly<{
@@ -49,6 +57,16 @@ export interface DesktopRelaySessionOptions {
  * session. Transport shutdown remains the caller's LIFO responsibility.
  */
 export class DesktopRelaySession {
+  readonly localExecution = new LocalExecutionDispatch(new LocalExecutionHost({
+    retention: {
+      maxOutputBytes: RUN_SHELL_OUTPUT_ARTIFACT_MAX_BYTES,
+      maxTotalOutputBytes: RUN_SHELL_OUTPUT_ARTIFACT_TOTAL_BYTES,
+      completedTtlMs: RUN_SHELL_OUTPUT_ARTIFACT_TTL_MS,
+      maxExecutions: LOCAL_EXECUTION_MAX_IDENTITIES,
+      maxActiveExecutions: RUN_SHELL_OUTPUT_ARTIFACT_MAX_ENTRIES,
+      maxInputRequestsPerExecution: LOCAL_EXECUTION_MAX_IDENTITIES,
+    },
+  }));
   private readonly outputArtifactStoreValue =
     new RunShellOutputArtifactStore();
   private readonly pageSnapshotStoreValue = new BrowserPageSnapshotStore();
@@ -62,8 +80,21 @@ export class DesktopRelaySession {
   private mcpHostValue: RelayMcpHostHandle | null = null;
   private clientValue: RelayClient | null = null;
   private publisherValue: RelayCapabilityPublisher | null = null;
+  private githubRuntimeAttached = false;
+  private githubRuntimeValue: DesktopGitHubRuntime | null = null;
+  get githubRuntime(): DesktopGitHubRuntime | null { return this.closedValue ? null : this.githubRuntimeValue; }
+  attachGitHubRuntime(runtime: DesktopGitHubRuntime): void {
+    if (this.closedValue || this.githubRuntimeAttached) throw new Error("GitHub runtime already attached or session retired");
+    this.githubRuntimeAttached = true;
+    this.githubRuntimeValue = runtime;
+  }
+  retireGitHubRuntime(): void {
+    const runtime = this.githubRuntimeValue; this.githubRuntimeValue = null; runtime?.retire();
+  }
   private structuredSshRuntimeValue: StructuredSshDispatchRuntime | null = null;
   private readonly boundWork = new Set<Promise<void>>();
+  private localExecutionUnsubscribe: (() => void) | null = null;
+  private currentFolderRefresh: (() => void) | null = null;
   private retirementCompletion: Promise<void> | null = null;
   private mcpHostAttached = false;
   private transportAttached = false;
@@ -180,6 +211,22 @@ export class DesktopRelaySession {
     this.publisherValue = publisher;
   }
 
+  attachLocalExecutionObserver(listener: () => void): void {
+    this.assertAttachable(this.localExecutionUnsubscribe !== null, "local execution observer");
+    this.localExecutionUnsubscribe = this.localExecution.host.subscribe(listener);
+  }
+
+  attachCurrentFolderRefresh(refresh: () => void): void {
+    this.assertAttachable(this.currentFolderRefresh !== null, "Current Folder refresh");
+    this.currentFolderRefresh = refresh;
+  }
+
+  refreshCurrentFolder(): boolean {
+    if (this.closedValue || this.currentFolderRefresh === null) return false;
+    this.currentFolderRefresh();
+    return true;
+  }
+
   attachStructuredSshRuntime(runtime: StructuredSshDispatchRuntime): void {
     this.assertAttachable(this.structuredSshRuntimeAttached, "structured SSH runtime");
     this.structuredSshRuntimeAttached = true;
@@ -193,6 +240,10 @@ export class DesktopRelaySession {
   retire(): DesktopRelayRetiredTransport {
     if (this.closedValue) return { client: null, mcpHost: null };
     this.closedValue = true;
+    this.localExecutionUnsubscribe?.();
+    this.localExecutionUnsubscribe = null;
+    this.localExecution.host.dispose();
+    this.currentFolderRefresh = null;
     const retired = {
       client: this.clientValue,
       mcpHost: this.mcpHostValue,
@@ -260,10 +311,12 @@ export class DesktopRelaySession {
     this.coordinateScales.clear();
     this.visualObservations.clear();
     this.googleOAuthContextValue = null;
+    this.retireGitHubRuntime();
     this.structuredSshRuntimeValue = null;
   }
 
   private async drainRetiredWork(): Promise<void> {
+    await this.localExecution.host.finishDisposal();
     while (this.boundWork.size > 0) {
       await Promise.allSettled([...this.boundWork]);
     }

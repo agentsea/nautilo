@@ -1,9 +1,9 @@
 /**
- * D212 — client-side reaction wiring locks:
+ * Client-side reaction wiring checks:
  *   1. restoreSessionMessages carries inlined `reactions` into
  *      `metadata.custom.reactions` for user + assistant text messages.
  *   2. The agent `react` tool result is NOT restored as a tool card,
- *      and skipping it preserves FIFO pairing for the next real tool.
+ *      and skipping it preserves exact-ID pairing for sibling tools.
  *   3. reaction.added / reaction.removed WS events route by room lane.
  */
 import { describe, expect, test } from "bun:test";
@@ -26,7 +26,7 @@ function reactionsOf(m: Restored): { emoji: string; count: number }[] | undefine
   return m.metadata?.custom?.reactions;
 }
 
-describe("restoreSessionMessages — D212 reactions plumbing", () => {
+describe("restoreSessionMessages — reactions plumbing", () => {
   test("user message carries inlined reactions into metadata.custom", () => {
     const msgs: StoredSessionMessageDto[] = [
       {
@@ -52,18 +52,18 @@ describe("restoreSessionMessages — D212 reactions plumbing", () => {
   });
 });
 
-describe("restoreSessionMessages — D212 react tool-card suppression", () => {
+describe("restoreSessionMessages — react tool-card suppression", () => {
   test("react tool result is not restored as a tool-call part", () => {
     const msgs: StoredSessionMessageDto[] = [
       { id: "1", role: "assistant", content: "", toolCalls: JSON.stringify([{ id: "c1", name: "react" }]) },
-      { id: "2", role: "tool", content: '{"ok":true}', toolName: "react" },
+      { id: "2", role: "tool", content: '{"ok":true}', toolName: "react", toolCallId: "c1" },
     ];
     const out = restoreSessionMessages(msgs) as unknown as Restored[];
     const toolParts = out.flatMap((m) => m.content).filter((p) => p.type === "tool-call");
     expect(toolParts).toHaveLength(0);
   });
 
-  test("skipping react preserves FIFO pairing for the next real tool", () => {
+  test("skipping react preserves exact sibling pairing despite reversed completion order", () => {
     const msgs: StoredSessionMessageDto[] = [
       {
         id: "1",
@@ -74,8 +74,8 @@ describe("restoreSessionMessages — D212 react tool-card suppression", () => {
           { id: "c2", name: "search_memory", args: { query: "x" } },
         ]),
       },
-      { id: "2", role: "tool", content: '{"ok":true}', toolName: "react" },
-      { id: "3", role: "tool", content: "results", toolName: "search_memory" },
+      { id: "3", role: "tool", content: "results", toolName: "search_memory", toolCallId: "c2" },
+      { id: "2", role: "tool", content: '{"ok":true}', toolName: "react", toolCallId: "c1" },
     ];
     const out = restoreSessionMessages(msgs) as unknown as Restored[];
     const toolParts = out.flatMap((m) => m.content).filter((p) => p.type === "tool-call");
@@ -88,15 +88,24 @@ describe("restoreSessionMessages — D212 react tool-card suppression", () => {
   test("react detected via the paired call name when message toolName is absent", () => {
     const msgs: StoredSessionMessageDto[] = [
       { id: "1", role: "assistant", content: "", toolCalls: JSON.stringify([{ id: "c1", name: "react" }]) },
-      { id: "2", role: "tool", content: '{"ok":true}' },
+      { id: "2", role: "tool", content: '{"ok":true}', toolCallId: "c1" },
     ];
     const out = restoreSessionMessages(msgs) as unknown as Restored[];
     const toolParts = out.flatMap((m) => m.content).filter((p) => p.type === "tool-call");
     expect(toolParts).toHaveLength(0);
   });
+  test("a legacy unnamed result cannot borrow a pending reaction call's identity", () => {
+    const msgs: StoredSessionMessageDto[] = [
+      { id: "1", role: "assistant", content: "", toolCalls: JSON.stringify([{ id: "c1", name: "react" }]) },
+      { id: "2", role: "tool", content: '{"ok":true}' },
+    ];
+    const out = restoreSessionMessages(msgs) as unknown as Restored[];
+    const toolParts = out.flatMap((m) => m.content).filter((p) => p.type === "tool-call");
+    expect(toolParts).toMatchObject([{ toolName: "tool result", toolCallId: "restored-2" }]);
+  });
 });
 
-describe("applyReactionDelta — D212 P2 count aggregation", () => {
+describe("applyReactionDelta — count aggregation", () => {
   test("add a brand-new emoji inserts with count 1", () => {
     expect(applyReactionDelta([], "👍", 1)).toEqual([{ emoji: "👍", count: 1 }]);
   });
@@ -130,7 +139,7 @@ describe("applyReactionDelta — D212 P2 count aggregation", () => {
   });
 });
 
-describe("shouldApplyWsEventForActiveRoom — D212 reaction routing", () => {
+describe("shouldApplyWsEventForActiveRoom — reaction routing", () => {
   const ROOM = "809996bd-5db4-44a1-875d-82eb9ff84c82";
   const OTHER = "11111111-2222-3333-4444-555555555555";
 

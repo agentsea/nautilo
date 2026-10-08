@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 import type {
+  AgentAccessStatus,
   ReadyToWorkAggregateStatus,
   ReadyToWorkComponentId,
   ReadyToWorkSelection,
@@ -14,9 +15,10 @@ import { StartupSection } from "../../src/pages/settings/sections/startup-sectio
 
 const componentIds: ReadyToWorkComponentId[] = ["voice", "auto_approve", "workstation", "computer_use", "coding_connection"];
 
-function status(mode: "standard" | "ready", overrides: Partial<ReadyToWorkAggregateStatus["components"][number]> = {}): ReadyToWorkAggregateStatus {
+function status(mode: "standard" | "ready" | "needs_attention", overrides: Partial<ReadyToWorkAggregateStatus["components"][number]> = {}): ReadyToWorkAggregateStatus {
   return {
     mode,
+    ...(mode === "needs_attention" ? { persistence: { reason: "unavailable" as const, liveAccess: "unchanged" as const } } : {}),
     components: componentIds.map((id) => ({
       id,
       state: mode === "standard" ? "off_by_choice" as const : "needs_attention" as const,
@@ -223,6 +225,132 @@ describe("StartupSection", () => {
     await view.findByRole("alert");
     expect(view.getByRole("alert").textContent).toBe("Ready to work could not be enabled. Nothing was changed. Try again.");
     expect(document.body.textContent).not.toContain("raw Desktop secret 123456");
-    expect([...Array(window.localStorage.length)].map((_, index) => window.localStorage.key(index))).toEqual([]);
+    expect(Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index))).toEqual([]);
   });
+
+  test("keeps saved choices untouched while persistence needs attention and confirms Off only on Standard", async () => {
+    const attention: ReadyToWorkAggregateStatus = {
+      ...status("needs_attention"),
+      persistence: { reason: "changed", liveAccess: "unchanged" },
+    };
+    const port = readyPort(attention);
+    port.disable.mockResolvedValueOnce({
+      ...attention,
+      persistence: { reason: "changed", liveAccess: "stopping" },
+    });
+    const view = renderStartup(<StartupSection isDesktopShell readyToWork={port.api} />);
+
+    expect(await view.findByText("Saved settings need attention. Check the individual controls for current access.")).toBeTruthy();
+    expect(view.getByText("Retry the status check. Turning off Ready to work will be confirmed only when Desktop reports Standard.")).toBeTruthy();
+    fireEvent.click(view.getByRole("button", { name: "Turn off Ready to work" }));
+    await view.findByText("Stopping current access. Saved startup settings still need attention.");
+    expect(window.localStorage.getItem("nautilo.ready-to-work.presentation-mode.v1")).toBeNull();
+    expect(view.getByRole("button", { name: "Retry turn off" })).toBeTruthy();
+
+    await port.emit(status("standard"));
+    expect(view.queryByText("Needs attention")).toBeNull();
+  });
+
+  test("offers status retry and compatible Desktop guidance for unsupported saved settings", async () => {
+    const unsupported: ReadyToWorkAggregateStatus = {
+      ...status("needs_attention"),
+      persistence: { reason: "unsupported", liveAccess: "unchanged" },
+    };
+    const port = readyPort(unsupported);
+    const view = renderStartup(<StartupSection isDesktopShell readyToWork={port.api} />);
+
+    expect(await view.findByText("Use a compatible Desktop version to read these saved settings.")).toBeTruthy();
+    fireEvent.click(view.getByRole("button", { name: "Retry status" }));
+    await waitFor(() => expect(port.get).toHaveBeenCalledTimes(2));
+    expect(view.getByRole("button", { name: "Turn off Ready to work" })).toBeTruthy();
+  });
+
+  test("does not let the initial status reply overwrite a newer Desktop subscription", async () => {
+    const port = readyPort(status("standard"));
+    let resolveInitial!: (next: ReadyToWorkAggregateStatus) => void;
+    port.get.mockImplementationOnce(() => new Promise((resolve) => { resolveInitial = resolve; }));
+    const view = renderStartup(<StartupSection isDesktopShell readyToWork={port.api} />);
+    await port.emit({
+      ...status("needs_attention"),
+      persistence: { reason: "invalid", liveAccess: "stopping" },
+    });
+    await act(async () => {
+      resolveInitial(status("ready"));
+      await Promise.resolve();
+    });
+
+    expect(await view.findByText("Stopping current access. Saved startup settings still need attention.")).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Restore Ready" })).toBeNull();
+  });
+});
+
+function componentPort(initial: ReadyToWorkAggregateStatus) {
+  const port = readyPort(initial);
+  const access: AgentAccessStatus = { sandboxedChoice: "development", choiceReason: "chosen_by_user", readiness: "ready", reason: null, repairAction: null,
+    fullMac: { state: "inactive", eligible: true }, capabilities: { commands: true, interactiveContainedTerminals: true, fullMacOneShot: false } };
+  const enrollComponents = mock(async (_input: { selection: Omit<ReadyToWorkSelection, "workstation">; pin: string }) => status("ready"));
+  const disableComponents = mock(async () => status("standard"));
+  const restoreComponents = mock(async () => status("ready"));
+  Object.assign(port.api, { getAgentAccess: async () => access, chooseAgentAccess: async () => access, restoreDevelopment: async () => access,
+    onAgentAccessChanged: () => () => {}, enrollComponents, disableComponents, restoreComponents });
+  return { ...port, enrollComponents, disableComponents, restoreComponents };
+}
+
+test("new Startup edits the four component choices without submitting a Development selection", async () => {
+  const initial = status("ready");
+  initial.components = initial.components.map(component => component.id === "coding_connection" || component.id === "voice"
+    ? { ...component, state: "off_by_choice", reason: "not_selected", repairTarget: null } : component);
+  const port = componentPort(initial);
+  const view = renderStartup(<StartupSection isDesktopShell readyToWork={port.api} />);
+  await view.findByRole("button", { name: "Update with PIN" });
+  expect(view.queryByRole("checkbox", { name: "Developer Workstation" })).toBeNull();
+  const input = await openPin(view); await submitPin(view, input, "123456");
+  await waitFor(() => expect(port.enrollComponents).toHaveBeenCalledTimes(1));
+  expect(port.enrollComponents.mock.calls[0]?.[0]).toEqual({ selection: { voice: false, auto_approve: true, computer_use: true, coding_connection: false }, pin: "123456" });
+  expect(port.enroll).toHaveBeenCalledTimes(0);
+});
+
+test("new Startup Restore and Off preserve Development through the narrow component owner", async () => {
+  const port = componentPort(status("ready"));
+  const view = renderStartup(<StartupSection isDesktopShell readyToWork={port.api} />);
+  fireEvent.click(await view.findByRole("button", { name: "Restore Ready" }));
+  await waitFor(() => expect(port.restoreComponents).toHaveBeenCalledTimes(1));
+  fireEvent.click(view.getByRole("radio", { name: /Individual controls/ }));
+  fireEvent.click(view.getByRole("button", { name: "Use individual controls" }));
+  await waitFor(() => expect(port.disableComponents).toHaveBeenCalledTimes(1));
+  expect(port.restore).toHaveBeenCalledTimes(0); expect(port.disable).toHaveBeenCalledTimes(0);
+});
+
+test("a partial new bridge never falls back to aggregate startup mutations", async () => {
+  const port = componentPort(status("ready")); delete port.api.disableComponents;
+  const view = renderStartup(<StartupSection isDesktopShell readyToWork={port.api} />);
+  await view.findByText("A compatible Desktop is required to change startup components without changing Development.");
+  expect((view.getByRole("button", { name: "Update with PIN" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((view.getByRole("button", { name: "Restore Ready" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(port.enroll).toHaveBeenCalledTimes(0); expect(port.restore).toHaveBeenCalledTimes(0); expect(port.disable).toHaveBeenCalledTimes(0);
+});
+
+test("narrow component Off remains Individual when aggregate Ready retains Development", async () => {
+  const port = componentPort(status("ready"));
+  port.disableComponents.mockImplementation(async () => ({ ...status("ready"), components: status("ready").components.map(component =>
+    component.id === "workstation" ? component : { ...component, state: "off_by_choice", reason: "not_selected", repairTarget: null }) }));
+  const view = renderStartup(<StartupSection isDesktopShell readyToWork={port.api} />);
+  await view.findByRole("button", { name: "Restore Ready" });
+  fireEvent.click(view.getByRole("radio", { name: /Individual controls/ }));
+  fireEvent.click(view.getByRole("button", { name: "Use individual controls" }));
+  await waitFor(() => expect((view.getByRole("radio", { name: /Individual controls/ }) as HTMLInputElement).checked).toBe(true));
+  await waitFor(() => expect(view.queryByRole("button", { name: "Restore Ready" })).toBeNull());
+  expect(port.disableComponents).toHaveBeenCalledTimes(1); expect(port.disable).toHaveBeenCalledTimes(0);
+});
+
+test("missing new component status does not fabricate a selected startup choice", async () => {
+  const initial = status("ready"); initial.components = initial.components.filter(component => component.id === "workstation");
+  const port = componentPort(initial);
+  const view = renderStartup(<StartupSection isDesktopShell readyToWork={port.api} />);
+  await waitFor(() => expect((view.getByRole("radio", { name: /Individual controls/ }) as HTMLInputElement).checked).toBe(true));
+  fireEvent.click(view.getByRole("radio", { name: /^Ready to work/ }));
+  expect((view.getByRole("checkbox", { name: "Voice" }) as HTMLInputElement).checked).toBe(false);
+  expect((view.getByRole("checkbox", { name: "Auto-approve" }) as HTMLInputElement).checked).toBe(false);
+  expect((view.getByRole("checkbox", { name: "Computer Use" }) as HTMLInputElement).checked).toBe(false);
+  expect((view.getByRole("button", { name: "Review and enable with PIN" }) as HTMLButtonElement).disabled).toBe(true);
 });

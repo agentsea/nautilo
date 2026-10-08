@@ -232,6 +232,9 @@ export default function PersonalCostsScreen() {
             {serviceRecovery.length > 0 ? (
               <>
                 <Text style={styles.sectionLabel}>RECENT UNRESOLVED PAID SERVICES</Text>
+                <Text style={styles.help}>
+                  Showing up to 100 newest unresolved operations. Older unresolved operations remain included in the totals.
+                </Text>
                 {serviceRecovery.map((attempt, index) => (
                   <View
                     key={`${attempt.provider}:${attempt.operation}:${attempt.occurredAt}:${index}`}
@@ -246,6 +249,7 @@ export default function PersonalCostsScreen() {
                       {attempt.failureCode ? ` · Failure ${attempt.failureCode.replaceAll("_", " ")}` : ""}
                     </Text>
                     {attempt.taskId ? <Text selectable style={styles.help}>Task {attempt.taskId}</Text> : null}
+                    {attempt.requestReference ? <Text selectable style={styles.help}>Request {attempt.requestReference}</Text> : null}
                     {attempt.runId ? <Text selectable style={styles.help}>Run {attempt.runId}</Text> : null}
                     {attempt.jobId ? <Text selectable style={styles.help}>Job {attempt.jobId}</Text> : null}
                     <Text style={styles.help}>Observed {new Date(attempt.occurredAt).toLocaleString()}</Text>

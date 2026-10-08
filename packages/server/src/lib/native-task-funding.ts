@@ -16,6 +16,29 @@ import { callerTaskModelEnvironment, callerTaskModelIds, personalOnlyTaskModelId
 
 type Candidate = Parameters<TaskFundingPort["prepareCreation"]>[0];
 
+export function shouldPrepareNativeTaskCallerFunding(
+  metadata: Candidate["metadata"],
+  access: Readonly<{
+    allowPersonalProviderKeys: boolean;
+    capabilities: readonly string[];
+  }>,
+): boolean {
+  if (access.allowPersonalProviderKeys
+    && access.capabilities.includes("use_personal_provider_credentials")) return true;
+  return hasAdmittedDeepResearchFunding(metadata);
+}
+
+function hasAdmittedDeepResearchFunding(metadata: Candidate["metadata"]): boolean {
+  try {
+    return readDeepResearchTaskMetadata(metadata)?.version === 2;
+  } catch {
+    // Preserve the legacy server-funding path for inputs that are not a valid,
+    // admitted v2 Deep Research task. The worker's metadata parser remains the
+    // authority for rejecting malformed legacy definitions.
+    return false;
+  }
+}
+
 function supportedShape(task: Candidate): boolean {
   return task.ownerId === task.requestorId && !task.parentTaskId && (task.depth ?? 0) === 0
     && (task.contentRepresentation ?? "ordinary") === "ordinary"
@@ -313,7 +336,16 @@ export const nativeTaskFundingPort: TaskFundingPort = {
   async prepareCreation(input, provenance) {
     const caps = await getUserCapabilities(input.requestorId);
     const policy = await getServerProviderPolicy(getServerDirectDb());
-    if (!policy.allowPersonalProviderKeys || !caps.includes("use_personal_provider_credentials")) return false;
+    let admittedDeepResearch: boolean;
+    try {
+      admittedDeepResearch = readDeepResearchTaskMetadata(input.metadata)?.version === 2;
+    } catch {
+      throw new TaskFundingError("unsupported_workload");
+    }
+    if (!shouldPrepareNativeTaskCallerFunding(input.metadata, {
+      allowPersonalProviderKeys: policy.allowPersonalProviderKeys,
+      capabilities: caps,
+    })) return false;
     const originSupported = provenance.kind === "human_api"
       ? !provenance.requestedParentTaskId
       : provenance.kind === "agent_turn"
@@ -321,7 +353,7 @@ export const nativeTaskFundingPort: TaskFundingPort = {
         && provenance.roomId === input.callingRoomId && !provenance.parentTaskId;
     if (!originSupported || input.targetRoomId || !supportedShape(input)
       || !input.callingRoomId || !await isOwnPrivateGenieRoom(input.requestorId, input.callingRoomId, input.agentId)) {
-      if (caps.includes("use_server_provider_credentials")) return false;
+      if (!admittedDeepResearch && caps.includes("use_server_provider_credentials")) return false;
       throw new TaskFundingError("unsupported_workload");
     }
     await fundingBoundary(async () => {

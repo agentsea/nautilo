@@ -536,8 +536,11 @@ export function RelationshipExplorer({ onCollapse }: { onCollapse?: () => void }
                         ) : null}
                       </span>
                       {room.kind === "open" ? (
-                        <span className="shrink-0" aria-label="Public room">
-                          🌐
+                        <span
+                          className="shrink-0"
+                          aria-label={room.discoverable === false ? "External room" : "Public room"}
+                        >
+                          {room.discoverable === false ? "◌" : "🌐"}
                         </span>
                       ) : null}
                       <button

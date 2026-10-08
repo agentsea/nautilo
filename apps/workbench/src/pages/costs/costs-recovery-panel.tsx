@@ -119,7 +119,8 @@ export function CostsServiceRecoveryPanel({ attempts }: {
   return (
     <Panel title="Recent unresolved paid services">
       <p className="mb-3 text-xs text-foreground-muted">
-        Content-free references for paid service operations whose charge is still unknown.
+        Showing up to 100 newest paid service operations whose charge is still unknown.
+        Older unresolved operations remain included in the totals.
       </p>
       <ul className="divide-y divide-border">
         {attempts.map((attempt, index) => (
@@ -136,6 +137,7 @@ export function CostsServiceRecoveryPanel({ attempts }: {
             <p className="mt-1 text-foreground-muted">
               Outcome {attempt.attemptOutcome ?? "older unclassified"}
               {attempt.failureCode ? ` · Failure ${attempt.failureCode.replaceAll("_", " ")}` : ""}
+              {attempt.requestReference ? ` · Request ${attempt.requestReference}` : ""}
               {attempt.taskId ? ` · Task ${attempt.taskId}` : ""}
               {attempt.runId ? ` · Run ${attempt.runId}` : ""}
               {attempt.jobId ? ` · Job ${attempt.jobId}` : ""}

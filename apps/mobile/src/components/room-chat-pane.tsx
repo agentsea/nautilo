@@ -69,6 +69,9 @@ export function RoomChatPane({
 }: RoomChatPaneProps) {
   const t = useAppTheme();
   const isSurfaceFocused = useIsFocused();
+  useEffect(() => {
+    if (isSurfaceFocused) c.refreshModelAvailability();
+  }, [isSurfaceFocused, c.refreshModelAvailability]);
   const styles = useMemo(() => createStyles(t), [t]);
   const transcriptWrapRef = useRef<View>(null);
   const recoveredScrollRequestRef = useRef<number | null>(null);
@@ -328,6 +331,7 @@ export function RoomChatPane({
             pending={item.status === "pending"}
             failed={item.status === "failed"}
             attachments={item.attachments}
+            imageAssistance={item.imageAssistance}
             onAttachmentPress={(attachment) => {
               if (persisted && isRetainedAttachment(attachment)) {
                 markTranscriptInteraction();
@@ -696,7 +700,7 @@ export function RoomChatPane({
 
 function createStyles(t: AppTheme) {
   return StyleSheet.create({
-    transcriptWrap: { flex: 1 },
+    transcriptWrap: { flex: 1, flexShrink: 1, minHeight: 0, overflow: "hidden" },
     listBody: { paddingHorizontal: t.spacing.md, paddingVertical: t.spacing.sm },
     highlightedRow: {
       borderRadius: t.radii.md,

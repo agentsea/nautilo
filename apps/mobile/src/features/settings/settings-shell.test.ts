@@ -93,3 +93,24 @@ describe("Settings landing route inventory", () => {
     expect(rows.some((row) => row.id === "security")).toBe(true);
   });
 });
+
+
+test("personal settings keep their native header and back navigation visible", async () => {
+  const layout = await Bun.file(new URL("../../app/(drawer)/(tabs)/settings/_layout.tsx", import.meta.url)).text();
+  for (const route of ["provider-keys", "personal-costs", "capability-models", "capability-model-picker"]) {
+    expect(layout).toContain(`name="${route}" options={{ headerShown: true }}`);
+    const screen = await Bun.file(new URL(`../../app/(drawer)/(tabs)/settings/${route}.tsx`, import.meta.url)).text();
+    expect(screen).toContain("<AppBar");
+    expect(screen).toContain("<AppBarBackButton");
+  }
+});
+
+
+test("capability-model account actions resolve to existing settings screens", async () => {
+  const screen = await Bun.file(new URL("../../app/(drawer)/(tabs)/settings/capability-models.tsx", import.meta.url)).text();
+  const destinations = [...screen.matchAll(/router\.push\("\/\(drawer\)\/\(tabs\)\/settings\/([^"/]+)"\)/g)];
+  expect(destinations.length).toBeGreaterThan(0);
+  for (const [, destination] of destinations) {
+    expect(await Bun.file(new URL(`../../app/(drawer)/(tabs)/settings/${destination}.tsx`, import.meta.url)).exists()).toBe(true);
+  }
+});

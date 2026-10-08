@@ -16,6 +16,7 @@ export function buildSystemPrompt(params: {
   tools: StructuredTool[];
   isGuest: boolean;
   explicitlySelected?: boolean;
+  useManagedLocalExecution?: boolean;
 }): string {
   const { assistantName, tools, isGuest, explicitlySelected } = params;
   const toolNames = new Set(tools.map((t) => t.name));
@@ -40,7 +41,9 @@ You have access to ${tools.length} tools:
   }
 
   if (toolNames.has("apply_patch")) {
-    prompt += DEVELOPMENT_FILE_WORKFLOW;
+    prompt += params.useManagedLocalExecution
+      ? DEVELOPMENT_FILE_WORKFLOW.replace("`run_shell`", "`exec_command`")
+      : DEVELOPMENT_FILE_WORKFLOW;
   }
 
   if (!isGuest && (toolNames.has("in_background") || toolNames.has("task"))) {

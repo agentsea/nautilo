@@ -61,6 +61,8 @@ export interface InsertProviderCostEventInput {
   pricingVersion?: string | null;
   measuredUnits?: number | null;
   unitType?: string | null;
+  /** One-way `req_` reference; raw provider request IDs must never cross this boundary. */
+  requestReference?: string | null;
   /** Lowercase SHA-256 digest; raw provider operation IDs are never stored. */
   idempotencyKey: string;
 }
@@ -80,6 +82,24 @@ function normalizedFailureCode(value: string | null | undefined): string | null 
 /** Hashes provider receipts and local execution coordinates before persistence. */
 export function providerCostIdempotencyKey(identity: string): string {
   return createHash("sha256").update(identity, "utf8").digest("hex");
+}
+
+// A 48-bit display tag is compact enough to copy while distinguishing the at
+// most 100 recent rows in this diagnostic. It is correlation, not identity or
+// a security boundary; raw provider receipts are never stored in this ledger.
+const SAFE_PROVIDER_REQUEST_REFERENCE_HEX_LENGTH = 12;
+
+/** Content-free provider receipt reference matching the model-cost recovery API. */
+export function providerCostRequestReference(receiptId: string | null | undefined): string | null {
+  if (receiptId === null || receiptId === undefined) return null;
+  const digest = createHash("sha256").update(receiptId, "utf8").digest("hex");
+  return `req_${digest.slice(0, SAFE_PROVIDER_REQUEST_REFERENCE_HEX_LENGTH)}`;
+}
+
+function normalizedRequestReference(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  if (!/^req_[0-9a-f]{12}$/.test(value)) throw new Error("Invalid provider request reference");
+  return value;
 }
 
 function normalizedUsd(value: string | null | undefined): string | null {
@@ -113,6 +133,7 @@ export async function insertProviderCostEventWith(
   const amounts = assertEvidence(input);
   const measuredUnits = normalizedMeasuredUnits(input.measuredUnits);
   const failureCode = normalizedFailureCode(input.failureCode);
+  const requestReference = normalizedRequestReference(input.requestReference);
   await handle
     .insert(providerCostEvents)
     .values({
@@ -136,6 +157,7 @@ export async function insertProviderCostEventWith(
       pricingVersion: input.pricingVersion ?? null,
       measuredUnits,
       unitType: input.unitType ?? null,
+      requestReference,
       evidenceState: input.evidenceState,
       idempotencyKey: input.idempotencyKey,
       ...amounts,
@@ -159,6 +181,7 @@ export async function settleProviderCostEventWith(
   const amounts = assertEvidence(input);
   const measuredUnits = normalizedMeasuredUnits(input.measuredUnits);
   const failureCode = normalizedFailureCode(input.failureCode);
+  const requestReference = normalizedRequestReference(input.requestReference);
   const outcome = input.attemptOutcome ?? null;
   const outcomeCompatible = outcome === null
     ? isNull(providerCostEvents.attemptOutcome)
@@ -177,6 +200,12 @@ export async function settleProviderCostEventWith(
         ),
       )
     : sql`TRUE`;
+  const requestReferenceCompatible = requestReference === null
+    ? sql`TRUE`
+    : or(
+        isNull(providerCostEvents.requestReference),
+        eq(providerCostEvents.requestReference, requestReference),
+      );
   const rows = await handle.update(providerCostEvents).set({
     attemptOutcome: outcome === null || outcome === "unknown"
       ? providerCostEvents.attemptOutcome
@@ -196,6 +225,7 @@ export async function settleProviderCostEventWith(
     pricingVersion: sql`COALESCE(${providerCostEvents.pricingVersion}, ${input.pricingVersion ?? null})`,
     measuredUnits: sql`COALESCE(${providerCostEvents.measuredUnits}, ${measuredUnits})`,
     unitType: sql`COALESCE(${providerCostEvents.unitType}, ${input.unitType ?? null})`,
+    requestReference: sql`COALESCE(${providerCostEvents.requestReference}, ${requestReference})`,
   })
     .where(and(
       eq(providerCostEvents.idempotencyKey, input.idempotencyKey),
@@ -217,6 +247,7 @@ export async function settleProviderCostEventWith(
         : isNull(providerCostEvents.credentialRevision),
       outcomeCompatible,
       evidenceCompatible,
+      requestReferenceCompatible,
     )).returning({ id: providerCostEvents.id });
   if (rows.length !== 1) throw new Error("Provider cost attempt settlement conflicts with durable state");
 }
@@ -380,6 +411,7 @@ export function buildProviderCostRecoveryAttemptsQuery(
     workload: providerCostEvents.workload,
     attemptOutcome: providerCostEvents.attemptOutcome,
     failureCode: providerCostEvents.failureCode,
+    requestReference: providerCostEvents.requestReference,
     taskId: providerCostEvents.taskId,
     runId: providerCostEvents.runId,
     jobId: providerCostEvents.jobId,

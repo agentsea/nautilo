@@ -1,5 +1,5 @@
 /**
- * D440 Phase 2 — typed Git broker public surface.
+ * typed Git broker public surface.
  *
  * Re-exports the broker class, types, and preflight primitives.
  * The package-level `index.ts`
@@ -40,3 +40,6 @@ export type {
   BrokerRegisteredWorktree,
   GitDispositionReason,
 } from "./types";
+
+export type { GitNetworkRemote, GitNetworkContext, GitNetworkTransport, GitNetworkPushPreparation,
+  GitNetworkLocalSnapshot, GitNetworkDisposition, GitNetworkFetchedMetadata, GitNetworkWorktreeInput } from "./network";

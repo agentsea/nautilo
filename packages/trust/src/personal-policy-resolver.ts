@@ -1,3 +1,6 @@
+import { parseGitHubOperation } from "@nautilo/types";
+import { parseHumanTerminalOperation } from "../../types/src/human-terminal";
+import { isLocalExecutionReadArgs } from "@nautilo/types";
 import type { ToolCall } from "@langchain/core/messages/tool";
 import { log, warn } from "@nautilo/logger";
 import type {
@@ -59,10 +62,10 @@ import {
 export class PersonalPolicyResolver implements PolicyResolver {
   /**
    * `ownerId` is resolved on every read so the resolver tracks the
-   * current bootstrap-state-cache value (D120 A1.P1) after a claim
-   * redeem refreshes it, without a server restart.
+   * current bootstrap-state-cache value after claim redemption refreshes it,
+   * without a server restart.
    *
-   * History (D112 P18/19 → D120 A1.P1): pre-D112 the ctor stored
+   * History: before the bootstrap-state-cache fix the ctor stored
    * `ownerId` as a string snapshot captured at server boot. The server
    * boots with the bootstrap dummy `users` row as owner (see
    * `seedDefaultOwner`). The claim redeem replaced the dummy row in
@@ -75,8 +78,8 @@ export class PersonalPolicyResolver implements PolicyResolver {
    * routed those events to a userId no authenticated socket had bound
    * — every approval prompt silently dropped (2026-05-08 smoke run).
    *
-   * D112 fixed it via an env-var round-trip + a callback that
-   * read the env on every request. D120 A1.P1 retired the env var:
+   * An earlier implementation fixed it via an env-var round-trip + a callback that
+   * read the env on every request. The corrected implementation retired the env var:
    * the callback now reads from the bootstrap-state-cache,
    * populated at boot from `findClaimedOwnerId()` and refreshed
    * inside the redeem transaction tail.
@@ -110,7 +113,7 @@ export class PersonalPolicyResolver implements PolicyResolver {
   }
 
   private resolveAgentId(agentId: string): string {
-    // D120 A1.P1b: fallback no longer reads NAUTILO_DEFAULT_AGENT_ID.
+    // fallback no longer reads NAUTILO_DEFAULT_AGENT_ID.
     // The constructor's `defaultAgentId` arg is the wired-at-boot value
     // (sourced from the bootstrap-state-cache by bin/nautilo-server). If
     // a caller forgot to pass agentId AND the resolver was constructed
@@ -203,7 +206,7 @@ export class PersonalPolicyResolver implements PolicyResolver {
       // owner > admin > superuser > member > contributor > guest).
       // Server-wide model: agentId is not part of role derivation.
       // The fallback ladder for users in no Group is intentionally
-      // shorter post-D219: only bootstrap-owner equality maps to `owner`
+      // short: only bootstrap-owner equality maps to `owner`
       // (since a fresh server seeds the bootstrap claimer into the
       // `owners` Group, this fallback only fires for tests / pre-bootstrap
       // edge paths). The retired `serverRole='admin'` branch is gone.
@@ -212,7 +215,7 @@ export class PersonalPolicyResolver implements PolicyResolver {
         if (binding.userId === this.ownerId) {
           roleSlug = "owner";
         } else {
-          // D219: the `serverRole === "admin"` fallback branch is gone
+          // The `serverRole === "admin"` fallback branch is gone
           // (the enum is retired). Post-M128 every real user is seated in
           // a Group, so this only fires for pre-bootstrap / test edge
           // paths: bootstrap-owner equality → owner, else guest.
@@ -459,7 +462,7 @@ export class PersonalPolicyResolver implements PolicyResolver {
     // Defense-in-depth (M155): a non-human actor (e.g. an `agent`) has no
     // capability subject — the capability model (M128/M133) is human-keyed.
     // Feeding an agent actor here would silently collapse `toolPolicy` to the
-    // guest 5-set (D300 regression). Fail loud instead of degrading silently.
+    // guest 5-set (regression). Fail loud instead of degrading silently.
     // A `null` actor is still the legitimate guest/unknown defensive path.
     if (actor && actor.kind !== "user") {
       throw new Error(
@@ -562,7 +565,7 @@ export class PersonalPolicyResolver implements PolicyResolver {
     tool: ToolCall,
     envelope?: MemoryAccessEnvelope | null,
   ): Promise<ToolAccessDecision> {
-    // D079 Phase 4 — the unified `file` tool dispatches on a `command`
+    // The unified `file` tool dispatches on a `command`
     // arg with per-command severity that can't be captured by a
     // single tool-level ToolImpact. The tool-level policy registers
     // `file` as `destructive` (the conservative default for tier
@@ -599,8 +602,8 @@ export class PersonalPolicyResolver implements PolicyResolver {
       if (command) {
         const severity = resolveFileCommandPolicy(command);
         if (severity === "read_only") {
-          // D079 PR-011 security port — absolute-zone READS must flow
-          // through envelope policy so guest / stranger actors (whose
+          // Absolute-zone reads must flow through envelope policy so guest /
+          // stranger actors (whose
           // envelope sets `policy["file"] = "forbidden"`) don't get
           // blanket read access to arbitrary paths. The short-circuit's
           // job is to auto-approve reads in BOUNDED zones (workspace /
@@ -608,7 +611,7 @@ export class PersonalPolicyResolver implements PolicyResolver {
           // realpath-containment check already confirm the target is
           // under an allowed root.
           //
-          // D087 Phase 1 carve-out — every command that routes
+          // Specific carve-out — every command that routes
           // through the staged-patch substrate (content stages +
           // structural stages + the apply_patch / list_patches agent
           // verbs) short-circuits to read_only in every zone, including
@@ -642,7 +645,7 @@ export class PersonalPolicyResolver implements PolicyResolver {
             "write",
             "insert",
             "str_replace",
-            // structural stages (D087 §1.3.5)
+            // structural stages
             "delete",
             "move",
             "copy",
@@ -690,7 +693,7 @@ export class PersonalPolicyResolver implements PolicyResolver {
       // here by not short-circuiting.
     }
 
-    // D306 — the dedicated `convert` tool gates on NETWORK EGRESS, not on
+    // The dedicated `convert` tool gates on network egress, not on
     // artifact creation. A local-backend convert (Markdown -> PDF/DOCX
     // landing as the user's own artifact) is the same trust event as a
     // workspace file write: the user asked for it, nothing leaves the
@@ -707,7 +710,7 @@ export class PersonalPolicyResolver implements PolicyResolver {
       // Cloud egress → fall through to envelope policy (HIL gated).
     }
 
-    // D503 — `manage_local_mcp.install` is a single exact-effect approval.
+    // `manage_local_mcp.install` is a single exact-effect approval.
     // It deliberately enters the ordinary ask path even for a standard user;
     // post-model then disables workstation overrides and standing/auto
     // approval for this action.
@@ -743,6 +746,14 @@ export class PersonalPolicyResolver implements PolicyResolver {
     if (envelope?.toolPolicy) {
       const access = envelope.toolPolicy[tool.name];
       if (access) {
+        // The actor still needs this tool's workstation capability. Observing
+        // an owned execution cannot send input, stop it, or launch work; its
+        // exact live/history authority is independently rechecked at dispatch.
+        if (access !== "forbidden" && ((tool.name === "write_stdin" && isLocalExecutionReadArgs(tool.args))
+          || (tool.name === "human_terminal" && parseHumanTerminalOperation(tool.args)?.action === "read")
+          || (tool.name === "local_github" && ["issue_read", "pr_read"].includes(parseGitHubOperation(tool.args)?.operation ?? "")))) {
+          return { type: "read_only" };
+        }
         const agentIdForRouting = this.resolveAgentId(envelope.agentId);
         return toolAccessToDecision(
           access,
@@ -799,6 +810,9 @@ export class PersonalPolicyResolver implements PolicyResolver {
       ? await getUserCapabilities(subjectUserId)
       : [];
     if (caps.includes(requiredCap)) {
+      if (((tool.name === "write_stdin" && isLocalExecutionReadArgs(tool.args))
+          || (tool.name === "human_terminal" && parseHumanTerminalOperation(tool.args)?.action === "read")
+          || (tool.name === "local_github" && ["issue_read", "pr_read"].includes(parseGitHubOperation(tool.args)?.operation ?? "")))) return { type: "read_only" };
       if (requiresApproval) {
         return {
           type: "require_approval",
@@ -957,7 +971,7 @@ export function buildGuestToolPolicy(): Record<string, ToolAccess> {
  * no `requiredCapability` behave the same regardless of caps.
  */
 /**
- * D306 — decide whether a `convert` tool call runs on the LOCAL backend (no
+ * Decide whether a `convert` tool call runs on the LOCAL backend (no
  * network egress). Kept here as a small pure predicate because trust must not
  * depend on the agent package; it mirrors the local-capability check in the
  * convert backend resolver (`@nautilo/agent` convert/backend-resolver.ts) and

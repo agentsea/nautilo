@@ -14,11 +14,12 @@ describe("public account deletion release contract", () => {
   test("requires exact confirmation and fresh authentication before mutation", () => {
     const confirmation = accountRoute.indexOf('body?.["confirmation"] !== "DELETE MY ACCOUNT"');
     const freshAuth = accountRoute.indexOf("requireFreshLogtoAccessToken(request, reply)", confirmation);
-    const deletion = accountRoute.indexOf("deleteLocalUserAccount(userId)", freshAuth);
+    const deletion = accountRoute.indexOf("deleteLocalUserAccount(userId,", freshAuth);
 
     expect(confirmation).toBeGreaterThan(-1);
     expect(freshAuth).toBeGreaterThan(confirmation);
     expect(deletion).toBeGreaterThan(freshAuth);
+    expect(accountRoute.slice(deletion, deletion + 160)).toContain("onCommitted: deps.onAuthorityRevoked");
   });
 
   test("removes restrictive push dependents before the user row", () => {

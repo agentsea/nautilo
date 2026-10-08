@@ -1,5 +1,5 @@
 /**
- * D440 Phase 2 — unit tests for the Git broker preflight.
+ * Unit tests for the Git broker preflight.
  *
  * Pure-filesystem preflight: identity canonicalization, alternates,
  * submodules, escaping symlinks, pathspec magic/escape, live `.env`,
@@ -29,6 +29,9 @@ import {
   rejectLiveEnvPath,
   rejectSubmodules,
   validateWorktreeTarget,
+  validateCloneChild,
+  pinGitDirectory,
+  sameGitDirectory,
 } from "../../src/git-broker/preflight";
 
 function mkTmp(prefix: string): string {
@@ -44,9 +47,24 @@ function initRepo(root: string): void {
   writeFileSync(resolve(root, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n");
 }
 
+test("clone accepts only one absent child of current granted canonical Folder", () => {
+  const root = mkTmp("clone-preflight-");
+  try {
+    const candidate = validateCloneChild(root, "project", [root]);
+    expect(candidate.target).toBe(join(root, "project"));
+    expect(sameGitDirectory(candidate.root)).toBe(true);
+    expect(() => validateCloneChild(root, "../escape", [root])).toThrow();
+    expect(() => validateCloneChild(root, "project", [])).toThrow();
+    symlinkSync(join(root, "missing"), join(root, "project"));
+    expect(() => validateCloneChild(root, "project", [root])).toThrow();
+    expect(() => validateCloneChild(root, "private", [root], [join(root, "private")])).toThrow();
+    expect(() => pinGitDirectory(join(root, "project"))).toThrow();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 describe("canonicalizeRepositoryIdentity", () => {
   test("regular repo: git-dir == common-dir, not linked", () => {
-    const root = mkTmp("d440-ident-regular-");
+    const root = mkTmp("git-preflight-ident-regular-");
     initRepo(root);
     const id = canonicalizeRepositoryIdentity(root);
     expect(id.workTree).toBe(root);
@@ -57,7 +75,7 @@ describe("canonicalizeRepositoryIdentity", () => {
   });
 
   test("linked worktree: .git file -> gitdir under <common>/worktrees/<name>", () => {
-    const root = mkTmp("d440-ident-linked-");
+    const root = mkTmp("git-preflight-ident-linked-");
     const mainRepo = resolve(root, "main");
     const wt = resolve(root, "wt");
     const commonDir = resolve(mainRepo, ".git");
@@ -77,7 +95,7 @@ describe("canonicalizeRepositoryIdentity", () => {
   });
 
   test("linked worktree: rejects a forged common-dir pointer without an exact backlink", () => {
-    const root = mkTmp("d440-ident-linked-forged-");
+    const root = mkTmp("git-preflight-ident-linked-forged-");
     const mainRepo = resolve(root, "main");
     const wt = resolve(root, "wt");
     const other = resolve(root, "other");
@@ -96,7 +114,7 @@ describe("canonicalizeRepositoryIdentity", () => {
   });
 
   test("missing .git -> deny-repo-identity-mismatch", () => {
-    const root = mkTmp("d440-ident-missing-");
+    const root = mkTmp("git-preflight-ident-missing-");
     expect(() => canonicalizeRepositoryIdentity(root)).toThrow(
       GitPreflightError,
     );
@@ -109,7 +127,7 @@ describe("canonicalizeRepositoryIdentity", () => {
 
 describe("rejectAlternates", () => {
   test("no alternates file -> ok", () => {
-    const root = mkTmp("d440-alt-none-");
+    const root = mkTmp("git-preflight-alt-none-");
     initRepo(root);
     const id = canonicalizeRepositoryIdentity(root);
     expect(() => rejectAlternates(id, [root])).not.toThrow();
@@ -117,7 +135,7 @@ describe("rejectAlternates", () => {
   });
 
   test("alternate inside granted root -> ok", () => {
-    const root = mkTmp("d440-alt-granted-");
+    const root = mkTmp("git-preflight-alt-granted-");
     initRepo(root);
     const altDir = resolve(root, "alt-objects");
     mkdirSync(altDir, { recursive: true });
@@ -128,8 +146,8 @@ describe("rejectAlternates", () => {
   });
 
   test("alternate outside granted roots -> deny-alternates", () => {
-    const root = mkTmp("d440-alt-escape-");
-    const outside = mkTmp("d440-alt-outside-");
+    const root = mkTmp("git-preflight-alt-escape-");
+    const outside = mkTmp("git-preflight-alt-outside-");
     initRepo(root);
     mkdirSync(outside, { recursive: true });
     writeFileSync(resolve(root, ".git", "objects", "info", "alternates"), outside + "\n");
@@ -143,7 +161,7 @@ describe("rejectAlternates", () => {
 
 describe("rejectSubmodules", () => {
   test("no .gitmodules -> ok", () => {
-    const root = mkTmp("d440-sub-none-");
+    const root = mkTmp("git-preflight-sub-none-");
     initRepo(root);
     const id = canonicalizeRepositoryIdentity(root);
     expect(() => rejectSubmodules(id)).not.toThrow();
@@ -151,7 +169,7 @@ describe("rejectSubmodules", () => {
   });
 
   test(".gitmodules with [submodule] section -> deny-submodules", () => {
-    const root = mkTmp("d440-sub-active-");
+    const root = mkTmp("git-preflight-sub-active-");
     initRepo(root);
     writeFileSync(
       resolve(root, ".gitmodules"),
@@ -166,7 +184,7 @@ describe("rejectSubmodules", () => {
 
 describe("rejectEscapingSymlinks", () => {
   test("in-root symlink -> ok", () => {
-    const root = mkTmp("d440-sym-in-");
+    const root = mkTmp("git-preflight-sym-in-");
     initRepo(root);
     const target = resolve(root, "link-target");
     mkdirSync(target, { recursive: true });
@@ -176,8 +194,8 @@ describe("rejectEscapingSymlinks", () => {
   });
 
   test("symlink escaping granted roots -> deny-escaping-symlink", () => {
-    const root = mkTmp("d440-sym-escape-");
-    const outside = mkTmp("d440-sym-out-");
+    const root = mkTmp("git-preflight-sym-escape-");
+    const outside = mkTmp("git-preflight-sym-out-");
     initRepo(root);
     symlinkSync(outside, resolve(root, "escape"));
     expect(() => rejectEscapingSymlinks(root, [root])).toThrow(GitPreflightError);
@@ -189,32 +207,32 @@ describe("rejectEscapingSymlinks", () => {
 
 describe("normalizePathspec", () => {
   test("plain in-target relative path -> normalized absolute", () => {
-    const root = mkTmp("d440-ps-plain-");
+    const root = mkTmp("git-preflight-ps-plain-");
     const out = normalizePathspec("src/file.ts", root);
     expect(out).toBe(resolve(root, "src", "file.ts"));
     rmSync(root, { recursive: true, force: true });
   });
 
   test("pathspec magic `:(...)` -> deny-pathspec-magic", () => {
-    const root = mkTmp("d440-ps-magic-");
+    const root = mkTmp("git-preflight-ps-magic-");
     expect(() => normalizePathspec(":(top)src/file.ts", root)).toThrow(GitPreflightError);
     rmSync(root, { recursive: true, force: true });
   });
 
   test("absolute pathspec -> deny-pathspec-outside-target", () => {
-    const root = mkTmp("d440-ps-abs-");
+    const root = mkTmp("git-preflight-ps-abs-");
     expect(() => normalizePathspec("/etc/passwd", root)).toThrow(GitPreflightError);
     rmSync(root, { recursive: true, force: true });
   });
 
   test("parent traversal -> deny-pathspec-outside-target", () => {
-    const root = mkTmp("d440-ps-parent-");
+    const root = mkTmp("git-preflight-ps-parent-");
     expect(() => normalizePathspec("../escape", root)).toThrow(GitPreflightError);
     rmSync(root, { recursive: true, force: true });
   });
 
   test("glob `**` -> deny-pathspec-magic", () => {
-    const root = mkTmp("d440-ps-glob-");
+    const root = mkTmp("git-preflight-ps-glob-");
     expect(() => normalizePathspec("src/**", root)).toThrow(GitPreflightError);
     rmSync(root, { recursive: true, force: true });
   });
@@ -240,7 +258,7 @@ describe("rejectLiveEnvPath", () => {
 
 describe("validateWorktreeTarget", () => {
   test("empty dir inside granted root -> ok", () => {
-    const root = mkTmp("d440-wt-ok-");
+    const root = mkTmp("git-preflight-wt-ok-");
     const target = resolve(root, "target");
     mkdirSync(target, { recursive: true });
     const out = validateWorktreeTarget(target, [root]);
@@ -249,7 +267,7 @@ describe("validateWorktreeTarget", () => {
   });
 
   test("non-empty target -> deny-target-not-empty", () => {
-    const root = mkTmp("d440-wt-nonempty-");
+    const root = mkTmp("git-preflight-wt-nonempty-");
     const target = resolve(root, "target");
     mkdirSync(target, { recursive: true });
     writeFileSync(resolve(target, "file"), "x");
@@ -258,7 +276,7 @@ describe("validateWorktreeTarget", () => {
   });
 
   test("symlink target -> deny-target-symlink", () => {
-    const root = mkTmp("d440-wt-sym-");
+    const root = mkTmp("git-preflight-wt-sym-");
     const real = resolve(root, "real");
     mkdirSync(real, { recursive: true });
     const link = resolve(root, "link");
@@ -268,8 +286,8 @@ describe("validateWorktreeTarget", () => {
   });
 
   test("target outside granted roots -> deny-target-outside-grant", () => {
-    const root = mkTmp("d440-wt-out-");
-    const outside = mkTmp("d440-wt-outside-");
+    const root = mkTmp("git-preflight-wt-out-");
+    const outside = mkTmp("git-preflight-wt-outside-");
     const target = resolve(outside, "target");
     mkdirSync(target, { recursive: true });
     expect(() => validateWorktreeTarget(target, [root])).toThrow(GitPreflightError);
@@ -280,7 +298,7 @@ describe("validateWorktreeTarget", () => {
 
 describe("auditLocalConfig", () => {
   test("clean config -> ok", () => {
-    const root = mkTmp("d440-cfg-clean-");
+    const root = mkTmp("git-preflight-cfg-clean-");
     initRepo(root);
     const id = canonicalizeRepositoryIdentity(root);
     expect(() => auditLocalConfig(id)).not.toThrow();
@@ -288,7 +306,7 @@ describe("auditLocalConfig", () => {
   });
 
   test("core.hooksPath -> deny-config-unsafe", () => {
-    const root = mkTmp("d440-cfg-hooks-");
+    const root = mkTmp("git-preflight-cfg-hooks-");
     initRepo(root);
     writeFileSync(
       resolve(root, ".git", "config"),
@@ -301,7 +319,7 @@ describe("auditLocalConfig", () => {
   });
 
   test("filter driver -> deny-config-unsafe", () => {
-    const root = mkTmp("d440-cfg-filter-");
+    const root = mkTmp("git-preflight-cfg-filter-");
     initRepo(root);
     writeFileSync(
       resolve(root, ".git", "config"),
@@ -314,7 +332,7 @@ describe("auditLocalConfig", () => {
   });
 
   test("alias -> deny-alias", () => {
-    const root = mkTmp("d440-cfg-alias-");
+    const root = mkTmp("git-preflight-cfg-alias-");
     initRepo(root);
     writeFileSync(
       resolve(root, ".git", "config"),

@@ -3,8 +3,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { replacePersonalCapabilityPreferences } from "../../src";
 
-const migrationPath = join(import.meta.dir, "../../src/migrations/0320_uneven_juggernaut.sql");
-const grantsMigrationPath = join(import.meta.dir, "../../src/migrations/0321_personal_capability_preferences_grants.sql");
+const migrationPath = join(import.meta.dir, "../../src/migrations/0321_uneven_juggernaut.sql");
+const grantsMigrationPath = join(import.meta.dir, "../../src/migrations/0322_personal_capability_preferences_grants.sql");
 
 describe("personal capability preference database contract", () => {
   test("creates one sparse revisioned row per Human without embedding or copied defaults", async () => {

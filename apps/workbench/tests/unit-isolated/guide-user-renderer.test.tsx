@@ -18,7 +18,7 @@ mock.module("../../src/hooks/use-auth", () => ({
     },
   }),
 }));
-mock.module("../../src/lib/desktop", () => ({ isDesktop: false, desktopAPI: null }));
+mock.module("../../src/lib/desktop", () => ({ isDesktop: false, desktopAPI: null, getLocalExecutionAPI: () => null }));
 mock.module("../../src/contexts/setup-status-context", () => ({
   useSetupStatus: () => ({ providers: { managedByCloud: false } }),
 }));

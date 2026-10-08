@@ -80,7 +80,7 @@ describe("Deep Research personal funding recovery", () => {
       }, {}))).toThrow(DeepResearchFundingUnavailableError);
   });
 
-  test("starts an eager graph stream inside the admitted funding scope", async () => {
+  test("runs a server-funded v2 research worker inside the admitted funding scope", async () => {
     const observedFunding: Array<ReturnType<typeof getDeepResearchFunding>> = [];
     const observedUsage: Array<ReturnType<typeof getUsageContext>> = [];
     _setDeepResearchEventStreamForTests((_graph, _input, _config) => {

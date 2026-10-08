@@ -830,6 +830,7 @@ export {
   buildPersonalProviderCostsByTaskQuery,
   buildProviderCostRecoveryAttemptsQuery,
   providerCostIdempotencyKey,
+  providerCostRequestReference,
   estimateProviderToolCostUsd,
   PROVIDER_TOOL_PRICING_VERSION,
   type InsertProviderCostEventInput,

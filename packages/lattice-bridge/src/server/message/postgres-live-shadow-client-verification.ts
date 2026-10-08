@@ -10,6 +10,7 @@ import {
 } from "@nautilo/lattice-crypto";
 import {
   encodeProtectedMessageDtoV2,
+  parseImageAssistanceSummary,
   parseProtectedMessageDtoV2,
   type LiveShadowMessageRealtimeEventV1,
 } from "@nautilo/types";
@@ -52,7 +53,7 @@ type FullDurableRecoveryEvent = Omit<ShadowDurableRecoveryEvent,
   "wireVersion" | "ordinaryPayloadBytesBase64url"> & { readonly wireVersion: 2 };
 
 /**
- * Re-resolve the exact active device signing key used by an M275 history-read
+ * Re-resolve the exact active device signing key used by a history-read
  * acknowledgement. The restricted crypto schema stays behind the bridge; HTTP
  * composition receives only an owned public-key copy and must wipe it.
  */
@@ -276,8 +277,13 @@ export function encodeLiveShadowOrdinaryPayloadV2(
         : { sensitiveMetadata: parsedToolCalls as never }),
     });
   }
+  const metadataJson = row["metadata_json"] === undefined ? null : nullableText(row, "metadata_json");
+  const metadata: unknown = metadataJson === null ? null : JSON.parse(metadataJson);
+  const imageAssistance = role === "assistant" && metadata && typeof metadata === "object"
+    ? parseImageAssistanceSummary((metadata as Record<string, unknown>)["nautilo_image_assistance"]) : undefined;
   return encodeMessagePayloadV2({
     role,
+    ...(imageAssistance ? { sensitiveMetadata: { imageAssistance: { ...imageAssistance } } } : {}),
     // An Assistant tool-call Message canonically has empty textual content.
     // Empty is distinct from a missing/non-string product value.
     content: stringValue(row, "content"),
@@ -596,7 +602,7 @@ export async function verifyAndRecordLiveShadowClientVerification(
                 l.shadow_durable_event_digest, l.completion,
                 l.disposition, l.parity_status, l.author_role,
                 l.representation_mode, l.publication_policy_revision,
-                sm.role, ${full ? "NULL::text AS content, NULL::text AS tool_calls, NULL::text AS tool_name" : "sm.content, sm.tool_calls, sm.tool_name"},
+                sm.role, ${full ? "NULL::text AS content, NULL::text AS tool_calls, NULL::text AS tool_name, NULL::text AS metadata_json" : "sm.content, sm.tool_calls, sm.tool_name, sm.metadata::text AS metadata_json"},
                 sm.created_at, sm.crypto_object_id AS mapped_object_id
            FROM session_message_crypto_revisions l
            JOIN session_messages sm
@@ -908,7 +914,7 @@ export async function recoverPostgresLiveShadowTurn(
             l.shadow_transcript_ordinal, l.shadow_durable_event_digest,
             l.completion, l.disposition, l.parity_status, l.author_role,
             l.representation_mode, l.publication_policy_revision,
-            sm.role, ${full ? "NULL::text AS content, NULL::text AS tool_calls, NULL::text AS tool_name" : "sm.content, sm.tool_calls, sm.tool_name"}, sm.created_at,
+            sm.role, ${full ? "NULL::text AS content, NULL::text AS tool_calls, NULL::text AS tool_name, NULL::text AS metadata_json" : "sm.content, sm.tool_calls, sm.tool_name, sm.metadata::text AS metadata_json"}, sm.created_at,
             sm.crypto_object_id AS mapped_object_id
        FROM session_message_crypto_revisions l
        JOIN session_messages sm

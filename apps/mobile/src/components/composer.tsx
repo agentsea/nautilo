@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   PanResponder,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -20,6 +21,9 @@ import { useCommandCatalogue } from '@/features/commands/use-command-catalogue';
 
 // Drag the mic this far left (px) mid-hold to arm cancel; release past it discards.
 const CANCEL_SLIDE_THRESHOLD = 80;
+
+const COMPOSER_CONTROL_MIN_HEIGHT = 44;
+const COMPOSER_INPUT_MAX_HEIGHT = 120;
 
 type ComposerProps = {
   onSend: (text: string) => void | Promise<boolean>;
@@ -40,6 +44,8 @@ type ComposerProps = {
   /** Leading action integrated into the message entry surface. */
   attachSlot?: ReactNode;
   attachmentsSlot?: ReactNode;
+  /** Status, recovery guidance and choices share the bounded scroll body. */
+  contextSlot?: ReactNode;
   hasAttachments?: boolean;
   /**
    * When true, a turn is in-flight and the spatially stable Stop control is
@@ -89,6 +95,7 @@ export function Composer({
   controls,
   attachSlot,
   attachmentsSlot,
+  contextSlot,
   hasAttachments = false,
   busy = false,
   onStop,
@@ -105,10 +112,23 @@ export function Composer({
     onChangeText?.(next);
   }, [onChangeText, value]);
   const inputRef = useRef<TextInput>(null);
+  const bodyRef = useRef<ScrollView>(null);
+  const [inputMaxHeight, setInputMaxHeight] = useState(COMPOSER_INPUT_MAX_HEIGHT);
   const trimmed = text.trim();
   const canSend = !disabled && !sendDisabled && (trimmed.length > 0 || hasAttachments);
   const t = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
+  // The chat screen already owns keyboard avoidance. Reveal the input without
+  // introducing another keyboard inset inside this bounded scroll viewport.
+  const revealFocusedInput = useCallback(() => {
+    requestAnimationFrame(() => {
+      if (inputRef.current?.isFocused()) {
+        bodyRef.current?.scrollResponderScrollNativeHandleToKeyboard(
+          inputRef.current, COMPOSER_CONTROL_MIN_HEIGHT + t.spacing.sm * 2, true,
+        );
+      }
+    });
+  }, [t.spacing.sm]);
   const activeCommand = activeCommandQuery(text);
   const commandCatalogue = useCommandCatalogue(serverUrl);
   const commandMatches = useMemo(
@@ -227,94 +247,107 @@ export function Composer({
 
   return (
     <View style={styles.container}>
-      {attachmentsSlot}
-      <View style={styles.inputSurface}>
-        {attachSlot ? <View style={styles.inputLeadingAction}>{attachSlot}</View> : null}
-        <TextInput
-          ref={inputRef}
-          style={styles.input}
-          value={text}
-          onChangeText={setText}
-          placeholder={placeholder}
-          placeholderTextColor={t.color.text.dim}
-          editable={!disabled}
-          multiline
-          returnKeyType="send"
-          blurOnSubmit={false}
-          onSubmitEditing={() => void handleSubmitEditing()}
-        />
-      </View>
-      {text.length > 0 && onDiscardDraft ? <Pressable onPress={onDiscardDraft} accessibilityRole="button" accessibilityLabel="Discard draft"><Text style={styles.discardDraft}>Discard draft</Text></Pressable> : null}
-      {activeCommand ? (
-        <View style={styles.commandPicker} accessibilityLiveRegion="polite">
-          {commandCatalogue.loading ? (
-            <Text style={styles.commandStatus}>Loading commands…</Text>
-          ) : commandCatalogue.error ? (
-            <View style={styles.commandErrorRow}>
-              <Text style={styles.commandStatus}>Couldn’t load commands.</Text>
-              <Pressable
-                onPress={commandCatalogue.retry}
-                accessibilityRole="button"
-                accessibilityLabel="Retry loading commands">
-                <Text style={styles.commandRetry}>Retry</Text>
-              </Pressable>
-            </View>
-          ) : commandMatches.length === 0 ? (
-            <Text style={styles.commandStatus}>No enabled commands match.</Text>
-          ) : (
-            commandMatches.map((command) => (
-              <Pressable
-                key={command.name}
-                style={styles.commandRow}
-                onPress={() => chooseCommand(command.name)}
-                accessibilityRole="button"
-                accessibilityLabel={`Use command ${command.name}`}>
-                <Text style={styles.commandName}>/{command.name}</Text>
-                <Text style={styles.commandDescription} numberOfLines={1}>
-                  {command.description}
-                </Text>
-              </Pressable>
-            ))
-          )}
+      <ScrollView
+        ref={bodyRef}
+        style={styles.body}
+        contentContainerStyle={styles.bodyContent}
+        onLayout={(event) => {
+          setInputMaxHeight(Math.min(COMPOSER_INPUT_MAX_HEIGHT, event.nativeEvent.layout.height));
+          revealFocusedInput();
+        }}
+        keyboardShouldPersistTaps="handled"
+        nestedScrollEnabled>
+        {contextSlot ? <View style={styles.context}>{contextSlot}</View> : null}
+        {attachmentsSlot}
+        <View style={styles.inputSurface}>
+          {attachSlot ? <View style={styles.inputLeadingAction}>{attachSlot}</View> : null}
+          <TextInput
+            ref={inputRef}
+            style={[styles.input, { maxHeight: inputMaxHeight }]}
+            onFocus={revealFocusedInput}
+            value={text}
+            onChangeText={setText}
+            placeholder={placeholder}
+            placeholderTextColor={t.color.text.dim}
+            editable={!disabled}
+            multiline
+            returnKeyType="send"
+            blurOnSubmit={false}
+            onSubmitEditing={() => void handleSubmitEditing()}
+          />
         </View>
-      ) : null}
-      {activeMention ? (
-        <View style={styles.mentionPicker} accessibilityLiveRegion="polite">
-          {mentionMatches.length === 0 ? (
-            <Text style={styles.mentionStatus}>No matching people in this conversation.</Text>
-          ) : (
-            mentionMatches.map((candidate) => (
-              <Pressable
-                key={candidate.actorId}
-                style={styles.mentionRow}
-                onPress={() => chooseMention(candidate)}
-                accessibilityRole="button"
-                accessibilityLabel={candidate.kind === "audience"
-                  ? "Mention everyone — Notify everyone in this room"
-                  : `Mention ${candidate.displayName} at ${candidate.handle}`}>
-                <View style={styles.mentionAvatar}>
-                  {candidate.kind === "audience" ? (
-                    <Feather name="users" size={15} color={t.color.text.muted} />
-                  ) : (
-                    <Text style={styles.mentionInitial}>{candidate.displayName.trim().charAt(0).toUpperCase()}</Text>
+        {text.length > 0 && onDiscardDraft ? <Pressable onPress={onDiscardDraft} accessibilityRole="button" accessibilityLabel="Discard draft"><Text style={styles.discardDraft}>Discard draft</Text></Pressable> : null}
+        {activeCommand ? (
+          <View style={styles.commandPicker} accessibilityLiveRegion="polite">
+            {commandCatalogue.loading ? (
+              <Text style={styles.commandStatus}>Loading commands…</Text>
+            ) : commandCatalogue.error ? (
+              <View style={styles.commandErrorRow}>
+                <Text style={styles.commandStatus}>Couldn’t load commands.</Text>
+                <Pressable
+                  onPress={commandCatalogue.retry}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry loading commands">
+                  <Text style={styles.commandRetry}>Retry</Text>
+                </Pressable>
+              </View>
+            ) : commandMatches.length === 0 ? (
+              <Text style={styles.commandStatus}>No enabled commands match.</Text>
+            ) : (
+              commandMatches.map((command) => (
+                <Pressable
+                  key={command.name}
+                  style={styles.commandRow}
+                  onPress={() => chooseCommand(command.name)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Use command ${command.name}`}>
+                  <Text style={styles.commandName}>/{command.name}</Text>
+                  <Text style={styles.commandDescription} numberOfLines={1}>
+                    {command.description}
+                  </Text>
+                </Pressable>
+              ))
+            )}
+          </View>
+        ) : null}
+        {activeMention ? (
+          <View style={styles.mentionPicker} accessibilityLiveRegion="polite">
+            {mentionMatches.length === 0 ? (
+              <Text style={styles.mentionStatus}>No matching people in this conversation.</Text>
+            ) : (
+              mentionMatches.map((candidate) => (
+                <Pressable
+                  key={candidate.actorId}
+                  style={styles.mentionRow}
+                  onPress={() => chooseMention(candidate)}
+                  accessibilityRole="button"
+                  accessibilityLabel={candidate.kind === "audience"
+                    ? "Mention everyone — Notify everyone in this room"
+                    : `Mention ${candidate.displayName} at ${candidate.handle}`}>
+                  <View style={styles.mentionAvatar}>
+                    {candidate.kind === "audience" ? (
+                      <Feather name="users" size={15} color={t.color.text.muted} />
+                    ) : (
+                      <Text style={styles.mentionInitial}>{candidate.displayName.trim().charAt(0).toUpperCase()}</Text>
+                    )}
+                  </View>
+                  <View style={styles.mentionCopy}>
+                    <Text style={styles.mentionName} numberOfLines={1}>
+                      {candidate.kind === "audience" ? "@everyone" : candidate.displayName}
+                    </Text>
+                    <Text style={styles.mentionHandle} numberOfLines={1}>
+                      {candidate.kind === "audience" ? "Notify everyone in this room" : `@${candidate.handle}`}
+                    </Text>
+                  </View>
+                  {candidate.kind === "audience" ? null : (
+                    <Text style={styles.mentionKind}>{candidate.kind === "user" ? "Person" : "Genie"}</Text>
                   )}
-                </View>
-                <View style={styles.mentionCopy}>
-                  <Text style={styles.mentionName} numberOfLines={1}>
-                    {candidate.kind === "audience" ? "@everyone" : candidate.displayName}
-                  </Text>
-                  <Text style={styles.mentionHandle} numberOfLines={1}>
-                    {candidate.kind === "audience" ? "Notify everyone in this room" : `@${candidate.handle}`}
-                  </Text>
-                </View>
-                {candidate.kind === "audience" ? null : (
-                  <Text style={styles.mentionKind}>{candidate.kind === "user" ? "Person" : "Genie"}</Text>
-                )}
-              </Pressable>
-            ))
-          )}
-        </View>
-      ) : null}
+                </Pressable>
+              ))
+            )}
+          </View>
+        ) : null}
+      </ScrollView>
       {recording ? (
         <View style={styles.controlRow}>
           {/* While recording, the control row IS the slide-to-cancel track:
@@ -399,6 +432,8 @@ function createStyles(t: AppTheme) {
   return StyleSheet.create({
     container: {
       flexDirection: 'column',
+      flexShrink: 0,
+      maxHeight: '100%',
       gap: t.spacing.sm,
       paddingHorizontal: t.spacing.md,
       paddingVertical: t.spacing.sm,
@@ -406,6 +441,9 @@ function createStyles(t: AppTheme) {
       borderTopColor: t.color.border.default,
       backgroundColor: t.color.surface.background,
     },
+    body: { flexGrow: 0, flexShrink: 1, minHeight: 0 },
+    bodyContent: { gap: t.spacing.sm },
+    context: { marginHorizontal: -t.spacing.md },
     inputSurface: {
       minHeight: 48,
       flexDirection: 'row',
@@ -421,7 +459,6 @@ function createStyles(t: AppTheme) {
     input: {
       flex: 1,
       minHeight: 36,
-      maxHeight: 120,
       paddingLeft: t.spacing.xs,
       paddingRight: t.spacing.md,
       paddingVertical: t.spacing.sm,
@@ -534,7 +571,8 @@ function createStyles(t: AppTheme) {
       color: t.color.status.error,
     },
     controlRow: {
-      minHeight: 44,
+      flexShrink: 0,
+      minHeight: COMPOSER_CONTROL_MIN_HEIGHT,
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
@@ -552,7 +590,8 @@ function createStyles(t: AppTheme) {
       overflow: 'hidden',
     },
     actionRow: {
-      minHeight: 44,
+      flexShrink: 0,
+      minHeight: COMPOSER_CONTROL_MIN_HEIGHT,
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',

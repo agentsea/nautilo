@@ -14,13 +14,14 @@ export async function readMessageBackfillOrdinarySource(executor: ConversationPr
   const [session] = await query(executor, db.select({message_source_revision: sessions.messageSourceRevision})
     .from(sessions).where(eq(sessions.id, input.sessionId)).for("share"));
   if (session === undefined) return null;
-  const oversized = sql<boolean>`coalesce(octet_length(${sessionMessages.content}), 0) + coalesce(octet_length(${sessionMessages.toolCalls}), 0) + coalesce(octet_length(${sessionMessages.toolName}), 0) > ${MESSAGE_PAYLOAD_MAX_BYTES_V2}`;
+  const oversized = sql<boolean>`coalesce(octet_length(${sessionMessages.content}), 0) + coalesce(octet_length(${sessionMessages.toolCalls}), 0) + coalesce(octet_length(${sessionMessages.toolName}), 0) + coalesce(octet_length((${sessionMessages.metadata}->'nautilo_image_assistance')::text), 0) > ${MESSAGE_PAYLOAD_MAX_BYTES_V2}`;
   const [row] = await query(executor, db.select({message_id: sessionMessages.id, session_id: sessionMessages.sessionId,
     role: sessionMessages.role, created_at: sessionMessages.createdAt,
     oversized: oversized.as("oversized"),
     content: sql<string | null>`case when ${oversized} then null else ${sessionMessages.content} end`.as("content"),
     tool_calls: sql<string | null>`case when ${oversized} then null else ${sessionMessages.toolCalls} end`.as("tool_calls"),
     tool_name: sql<string | null>`case when ${oversized} then null else ${sessionMessages.toolName} end`.as("tool_name"),
+    metadata_json: sql<string | null>`case when ${oversized} then null else ${sessionMessages.metadata}::text end`.as("metadata_json"),
   }).from(sessionMessages).where(and(eq(sessionMessages.id, input.messageId), eq(sessionMessages.sessionId, input.sessionId),
     eq(sessionMessages.editRevision, input.revision))));
   if (row?.oversized === true) throw new TypeError("Canonical source exceeds Message payload encoding");

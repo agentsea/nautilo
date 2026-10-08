@@ -1,3 +1,4 @@
+import { parseImageAssistanceSummary, type ImageAssistanceSummary } from "@nautilo/types";
 import type { BaseMessage } from "@langchain/core/messages";
 import { HumanMessage, SystemMessage, ToolMessage, AIMessage } from "@langchain/core/messages";
 import {
@@ -47,7 +48,7 @@ import {
 import { durableComputerResultText } from "../tools/computer/model-result-projector";
 
 /**
- * M084 — scope subagents use dedicated LangGraph `thread_id` values
+ * Scoped subagents use dedicated LangGraph `thread_id` values
  * (`subagent:<parentThreadId>:…`). Those sessions share `room_id` with the
  * parent; transcript APIs must ignore them so the main chat does not swap
  * to the subagent internal thread.
@@ -84,13 +85,13 @@ export interface EnsureSessionOptions {
   ownerId: string;
   personaId: string;
   /**
-   * M042B (addresses inherited M042A gap): populate agent_id on new
+   * Populate agent_id on new
    * session rows so the seed backfill doesn't have to run every boot.
    * Optional — omit / empty stores NULL and seedDefaultAgent backfills.
    */
   agentId?: string;
   /**
-   * M042B: populate room_id on new session rows. Optional for the same
+   * Populate room_id on new session rows. Optional for the same
    * reason as agentId. Empty / undefined stores NULL; seedDefaultRoom
    * backfills on next boot.
    */
@@ -212,19 +213,19 @@ export interface AppendTranscriptOptions {
   memoryReview?: MemoryReviewAdmission;
   agentId?: string;
   roomId?: string;
-  /** M070 — human rows only; keeps identical text across turns distinct in DB. */
+  /** human rows only; keeps identical text across turns distinct in DB. */
   humanTurnId?: string;
   /**
-   * M233 — bounded, server-authored notification provenance. Directed facts
+   * bounded, server-authored notification provenance. Directed facts
    * and Subthread participation are written in this append transaction.
    */
   notificationContext?: AppendNotificationContext;
-  /** M084 — default `main`; `subagent` for hidden nested runs */
+  /** default `main`; `subagent` for hidden nested runs */
   transcriptOrigin?: "main" | "subagent";
   parentThreadId?: string;
   scopeId?: string;
   /**
-   * M143 — per-row `session_messages.metadata` (jsonb). Used by the Task
+   * per-row `session_messages.metadata` (jsonb). Used by the Task
    * report-back wake to tag the synthetic input row with
    * `{ originatedBy: "task", taskId, taskRunId }` so the read-side filters
    * hide it from chat render / unread / reactions. Applied to every row in
@@ -235,7 +236,7 @@ export interface AppendTranscriptOptions {
   /** Hidden supervision audit for tool-call/result rows, never a tool-free answer. */
   internalToolMetadata?: Record<string, unknown>;
   /**
-   * D426 — when set, this append is writing Subthread CHILD reply rows
+   * when set, this append is writing Subthread CHILD reply rows
    * into the Subthread Room `subthreadRoomId`. Every persisted row is
    * stamped `session_messages.subthread_room_id = subthreadRoomId`
    * (child linkage), and — if at least one COUNTED reply row (see
@@ -265,7 +266,7 @@ export interface AppendTranscriptResult {
     replyToMessageId: number | null;
   }>;
   /**
-   * D426 — present only when this append wrote Subthread child rows
+   * present only when this append wrote Subthread child rows
    * (`options.subthreadRoomId`) AND at least one COUNTED reply row was
    * newly inserted, so the root anchor summary was recomputed. Carries
    * the post-update `reply_count` / `last_reply_at` / `summary_revision`
@@ -297,6 +298,9 @@ export function transcriptMetadataForMessage(message: BaseMessage, options: Appe
       nautilo_browser_decision_observation: true,
     };
   }
+  const imageAssistance = AIMessage.isInstance(message)
+    ? parseImageAssistanceSummary(message.additional_kwargs["nautilo_image_assistance"]) : undefined;
+  if (imageAssistance) metadata = { ...metadata, nautilo_image_assistance: imageAssistance };
   return withTranscriptToolPresentation(message, metadata);
 }
 
@@ -334,13 +338,13 @@ export async function appendTranscriptMessages(
       scopeId: options.scopeId ?? null,
       metadata: transcriptMetadataForMessage(message, options),
       /**
-       * D426 — Subthread child linkage. NULL for top-level Room messages;
+       * Subthread child linkage. NULL for top-level Room messages;
        * set to the Subthread Room id for every child reply row so the
        * root summary aggregate can fan on `subthread_room_id`.
        */
       subthreadRoomId: options.subthreadRoomId ?? null,
       /**
-       * D359 — quote-reply FK. The reply pointer rides on the human
+       * quote-reply FK. The reply pointer rides on the human
        * HumanMessage as `additional_kwargs.nautilo_reply_to_message_id`
        * (set in `buildForegroundUserHumanMessage`). Assistant/tool/system
        * rows must never carry it, so the extraction guards on the `user`
@@ -375,7 +379,8 @@ export async function appendTranscriptMessages(
   );
 }
 
-export interface SessionMessage {
+export interface SessionMessage extends TranscriptToolPresentation {
+  imageAssistance?: ImageAssistanceSummary | undefined;
   id: string;
   logicalMessageKey?: string;
   role: string;
@@ -385,27 +390,27 @@ export interface SessionMessage {
   createdAt: Date;
   editedAt?: Date | null;
   editRevision?: number;
-  /** D124 — quote-reply FK when set. */
+  /** quote-reply FK when set. */
   replyToMessageId?: number | null;
   /**
-   * D426 — denormalized root reply summary, surfaced on root (anchor)
+   * denormalized root reply summary, surfaced on root (anchor)
    * rows in parent room history. Absent on child / non-anchor rows
    * (callers leave it unset). `summaryRevision` is monotonic per root.
    */
   replyCount?: number;
   lastReplyAt?: Date | null;
   summaryRevision?: number;
-  /** D124 — `sessions.owner_id` for room-scoped cross-session fan-in. */
+  /** `sessions.owner_id` for room-scoped cross-session fan-in. */
   sourceUserId?: string;
-  /** D300 — `sessions.agent_id` for assistant/tool rows in multi-agent rooms. */
+  /** `sessions.agent_id` for assistant/tool rows in multi-agent rooms. */
   authorAgentId?: string;
   /** External harness that authored this Task result; `authorAgentId` is its delegator. */
   authorHarnessId?: string;
-  /** D391 — retained attachments linked to this human turn (by M134
+  /** retained attachments linked to this human turn (by
    *  `fingerprint` as `turn_id`). Present only on user rows that have
    *  retained attachments; absent otherwise. */
   attachments?: MessageAttachmentRef[] | undefined;
-  /** D391 — the M134 fingerprint used to join attachments. Carried
+  /** The fingerprint used to join attachments. Carried
    *  internally for the read-side reconcile; not serialized by the route
    *  (the route maps `attachments`, not this field). */
   fingerprint?: string | null | undefined;
@@ -414,7 +419,7 @@ export interface SessionMessage {
 }
 
 /**
- * M275 — exact durable coordinates for rows that survived the canonical
+ * exact durable coordinates for rows that survived the canonical
  * cross-member Room ordering and de-duplication pass. These coordinates are
  * server-internal sidecar input; they are deliberately kept out of the
  * ordinary {@link SessionMessage} projection returned to existing clients.
@@ -512,7 +517,7 @@ export async function getLatestSession(ownerId: string, threadId?: string): Prom
 }
 
 /**
- * M146 (R7) — fetch the latest session for a SUBAGENT thread by exact
+ * Fetch the latest session for a SUBAGENT thread by exact
  * `threadId`. Unlike {@link getLatestSession}, this deliberately does NOT apply
  * the subagent-transcript exclusion: orphan task runs live on `subagent:`-
  * prefixed threads, and the `task` `read` / `GET /api/tasks/:id` surfaces want
@@ -551,13 +556,13 @@ export async function getLatestSubagentSession(
 }
 
 /**
- * M163 — roles that are the run's OWN authored output. Excludes `system`
+ * roles that are the run's OWN authored output. Excludes `system`
  * (internal prompt) and `user` (the synthetic brief AND any peer reply that
  * landed on the thread, e.g. ask_peer await/resume).
  */
 const AGENT_AUTHORED_ROLES = ["assistant", "tool"] as const;
 
-/** M163 — one parsed tool call the agent emitted on an `assistant` turn. */
+/** one parsed tool call the agent emitted on an `assistant` turn. */
 export interface RunAgentTranscriptToolCall {
   name: string;
   args: Record<string, unknown>;
@@ -570,7 +575,7 @@ export interface RunAgentTranscriptMessage extends TranscriptToolPresentation {
   content: string;
   toolName: string | null;
   /**
-   * M163 — parsed `session_messages.tool_calls`. Non-null only on `assistant`
+   * parsed `session_messages.tool_calls`. Non-null only on `assistant`
    * rows that emitted tool calls; `null` on `tool` rows and on tool-call-free
    * assistant rows. The agent's own inputs — safe to surface.
    */
@@ -594,7 +599,7 @@ export interface GetRunAgentTranscriptOptions {
 }
 
 /**
- * M163 — defensively parse `session_messages.tool_calls` (a JSON string of
+ * defensively parse `session_messages.tool_calls` (a JSON string of
  * LangChain `tool_calls`) into structured args. Malformed / null JSON yields
  * `null` (never throws, never poisons the row).
  */
@@ -622,7 +627,7 @@ export function parseTranscriptToolCalls(
 }
 
 /**
- * M163 — single source of truth for "the agent-authored transcript of a Task
+ * single source of truth for "the agent-authored transcript of a Task
  * run". Returns ONLY `assistant` + `tool` rows (never `user`/`system`), scoped
  * to one run by exact `thread_id`, owner, agent, and the run time window, under
  * the task owner's RLS trust context. Consumed by both the `task` tool `read`
@@ -724,7 +729,7 @@ export async function getLatestSessionForRoom(
         ),
       )
       // Room-scoped history must include legacy thread_id shapes that were
-      // backfilled to the Room after M042B, not just the Room's graphThreadId.
+      // backfilled to the Room, not just the Room's graphThreadId.
       .orderBy(sql`COALESCE(${sessions.endedAt}, ${sessions.startedAt}) DESC`)
       .limit(1);
 
@@ -741,7 +746,7 @@ export async function getLatestSessionForRoom(
 }
 
 /**
- * M259 — latest ordinary session authored by any current Human member of a
+ * latest ordinary session authored by any current Human member of a
  * Room. The caller's user id establishes the RLS trust context only; the
  * route must verify the caller's exact Room membership first.
  */
@@ -784,7 +789,7 @@ export async function getLatestSessionForRoomAcrossMembers(
 }
 
 /**
- * D391 — fetch retained attachments for a set of human-turn fingerprints and
+ * fetch retained attachments for a set of human-turn fingerprints and
  * group them into `{ fingerprint -> MessageAttachmentRef[] }`. Used by the
  * history reads to attach `attachments[]` per deduped message. The dedup
  * keeps one message per fingerprint, so each attachment list surfaces once.
@@ -839,10 +844,12 @@ export async function getSessionMessages(
   return rows.map((r) => ({
     id: String(r.id),
     logicalMessageKey: logicalMessageKey(r),
+    ...(parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) ? { imageAssistance: parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) } : {}),
     role: r.role,
     content: r.content,
     toolCalls: sanitizeSerializedTranscriptToolCalls(r.toolCalls),
     toolName: r.toolName ?? null,
+    ...(r.role === "tool" ? readTranscriptToolPresentation(r.metadata) : {}),
     createdAt: r.createdAt,
     editedAt: r.editedAt,
     editRevision: r.editRevision,
@@ -877,10 +884,12 @@ export async function getLatestSessionMessages(
   return [...rows].reverse().map((r) => ({
     id: String(r.id),
     logicalMessageKey: logicalMessageKey(r),
+    ...(parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) ? { imageAssistance: parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) } : {}),
     role: r.role,
     content: r.content,
     toolCalls: sanitizeSerializedTranscriptToolCalls(r.toolCalls),
     toolName: r.toolName ?? null,
+    ...(r.role === "tool" ? readTranscriptToolPresentation(r.metadata) : {}),
     createdAt: r.createdAt,
     editedAt: r.editedAt,
     editRevision: r.editRevision,
@@ -935,10 +944,12 @@ export async function getRoomMessagesBeforeCursor(args: {
       messages: [...pageRows].reverse().map((r) => ({
         id: String(r.id),
         logicalMessageKey: logicalMessageKey(r),
+    ...(parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) ? { imageAssistance: parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) } : {}),
         role: r.role,
         content: r.content,
         toolCalls: sanitizeSerializedTranscriptToolCalls(r.toolCalls),
         toolName: r.toolName ?? null,
+        ...(r.role === "tool" ? readTranscriptToolPresentation(r.metadata) : {}),
         createdAt: r.createdAt,
         editedAt: r.editedAt,
         editRevision: r.editRevision,
@@ -960,7 +971,7 @@ export async function getRoomMessagesBeforeCursor(args: {
 }
 
 /**
- * D124 — `GET /api/rooms/:id/messages` cursor page across all member sessions.
+ * `GET /api/rooms/:id/messages` cursor page across all member sessions.
  *
  * Returns messages from every `sessions` row with `room_id = :roomId` whose
  * `owner_id` matches a human `room_members` actor for that room. Subagent
@@ -1019,7 +1030,7 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
           eq(actors.kind, "user"),
           eq(actors.ownerId, sessions.ownerId),
           excludeSubagentTranscriptSessions(),
-          // M143 — hide the Task report-back synthetic input row. NULL-safe:
+          // hide the Task report-back synthetic input row. NULL-safe:
           // `metadata` is NULL on every pre-existing row, and a bare `<> 'task'`
           // evaluates to NULL (not-true) → it would silently drop the entire
           // normal transcript. `IS DISTINCT FROM` treats NULL as "not task".
@@ -1078,15 +1089,15 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
       .limit(limit + 1),
   );
 
-  // M134 — read-side de-duplication. When the Room Conductor wakes N>1 bots
+  // read-side de-duplication. When the Room Conductor wakes N>1 bots
   // for one inbound user message, each bot's job persists the human message
-  // into its own per-bot session (M070 dedup is per-session), so the
+  // into its own per-bot session (dedup is per-session), so the
   // cross-session room transcript would otherwise show it N times. Every
   // woken bot shares one `turnId`, making the human-message `fingerprint`
   // identical across those sessions, so we collapse user-role rows that share
   // a non-null fingerprint (keep the first seen). Genuinely distinct user
   // sends carry distinct `humanTurnId`s ⇒ distinct fingerprints ⇒ never
-  // collapsed. D124/D190 system rows are also fanned out one-per-human session
+  // collapsed. System rows are also fanned out one-per-human session
   // for visibility; collapse identical rows from that fan-out by
   // content+sidecar+createdAt so one audit line renders once per room event.
   const seenUserFingerprints = new Set<string>();
@@ -1111,7 +1122,7 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
   });
 
   const pageRows = deduped.slice(0, limit);
-  // D391 — reconcile attachments at the dedup. Each surviving user row
+  // reconcile attachments at the dedup. Each surviving user row
   // carries a non-null `fingerprint`; retained attachments are stamped with
   // that same fingerprint as `turn_id`, so fetching by the page's
   // fingerprints yields exactly one attachment list per deduped human turn
@@ -1128,12 +1139,15 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
     messages: [...pageRows].reverse().map((r) => ({
       id: String(r.id),
       logicalMessageKey: logicalMessageKey(r),
+    ...(args.contentRepresentation !== "structural" && parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) ? { imageAssistance: parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) } : {}),
       role: r.role,
       content: args.contentRepresentation === "structural" ? null : (r.content ?? null),
       toolCalls: args.contentRepresentation === "structural"
         ? null
         : sanitizeSerializedTranscriptToolCalls(r.toolCalls ?? null),
       toolName: args.contentRepresentation === "structural" ? null : (r.toolName ?? null),
+      ...(args.contentRepresentation !== "structural" && r.role === "tool"
+        ? readTranscriptToolPresentation(r.metadata) : {}),
       createdAt: r.createdAt,
       editedAt: r.editedAt,
       editRevision: r.editRevision,
@@ -1161,7 +1175,7 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
 }
 
 /**
- * Public ordinary Room history. M275's protected sidecar composes from
+ * Public ordinary Room history. The protected sidecar composes from
  * {@link getRoomMessagesAcrossMemberSessionsWithSelection}; this wrapper
  * preserves the byte-compatible response shape for every existing caller.
  */
@@ -1180,7 +1194,7 @@ export async function getRoomMessagesAcrossMemberSessions(args: {
 }
 
 /**
- * M087 — timestamp (ISO-8601 UTC) of the most-recent `role = 'user'`
+ * timestamp (ISO-8601 UTC) of the most-recent `role = 'user'`
  * message in the given room, across the owner's sessions for that room, or
  * `null` when the room has no prior user message (brand-new room) or on any
  * lookup failure. Called at chat ingress BEFORE the new turn's user message
@@ -1349,7 +1363,7 @@ function getRole(message: BaseMessage): string {
 }
 
 /**
- * D359 — pull the quote-reply FK off the human HumanMessage's
+ * pull the quote-reply FK off the human HumanMessage's
  * `additional_kwargs.nautilo_reply_to_message_id` (set by
  * `buildForegroundUserHumanMessage`). Returns `null` for non-human
  * rows and for any kwarg shape that isn't a safe integer, so

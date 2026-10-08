@@ -22,6 +22,85 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   decision and Deep Research workloads, provider actual charges and estimates,
   and service outcomes independently of unresolved charges; service estimates
   retain their pricing version and reported usage basis.
+
+- Rooms can be marked External to keep public-room behavior while hiding them
+  from discovery and automatic onboarding. Existing members and explicit
+  invitations continue to work normally.
+
+- Reloaded chat history associates parallel tool results with their exact
+  command, including when an approval delays an earlier command. Older results
+  without a saved call identity remain visible without guessed command details.
+
+- Developer Workstation PIN activation shows its pending state and prevents
+  duplicate submissions while checking and enabling access.
+
+- Compatible Desktop clients support managed local commands through
+  `exec_command` and `write_stdin` under existing contained Workstation access.
+  Commands keep running after yielding, retain output and actual exit status,
+  and provide explicit Stop and local preview actions. Compatible Desktops hide
+  the legacy Genie command tools once the replacement capabilities are available;
+  older clients retain their existing tools. Human Terminal remains available.
+  Command cards update automatically as processes produce output or finish,
+  including while collapsed, and preview links work in colored tool output.
+  Stopping npm-launched commands confirms process-group cleanup on macOS
+  without mistaking an already departed group for a cleanup failure.
+  Desktop saves final command receipts and their retained output with OS
+  encryption, so authorized chat history can recover them after a restart.
+  Recovered records are read-only; uncertain cleanup stays uncertain.
+  Shutdown cancels each execution once and preserves a confirmed final result
+  when an earlier termination attempt was temporarily uncertain.
+  Genies can recover saved final command results after a Desktop or server
+  restart through read-only `write_stdin`, when the original result remains in
+  the currently authorized conversation history. Recovery checks current
+  membership and encryption access and never restores input or replay authority.
+  Expired live receipts also recover their authorized saved final output without
+  restarting the command.
+  Compatible Desktop versions retain supported execution capabilities when
+  reconnecting to an older server. Pure output reads retain actor permission
+  checks without asking to reactivate Development access.
+  Typed local Git operations are available through `local_git`, and retained
+  shell output can be paged or searched through `read_shell_output`, without
+  launching another shell command.
+  Basic commands can use installed utilities inside the selected project without
+  activating Development access. They use a private temporary home, isolated
+  networking, and the existing chat, encryption, and approval checks. Continuing
+  a command keeps its original project even when the selected folder changes.
+  Remembered Development access is stored separately for each Human and server.
+  Turning it off removes that saved proof; changed legacy state requires fresh
+  confirmation, and interrupted saves remain visible as needing attention.
+  Human Terminal handoff selects a Genie in the current chat and scopes consent
+  to that Human, chat, Desktop, and existing terminal. Taking control revokes
+  the handoff without killing the Human's job. Compatible Genies use a separate
+  read/run/write tool; queued input cannot migrate to a new handoff, and input
+  receipts acknowledge submission without claiming command completion.
+  Routine capability refreshes preserve valid handoffs; interrupted handoffs
+  return control with a visible explanation.
+  Compatible Desktop clients show Basic and Development in one Agent access
+  control, with saved choice separate from current readiness. Startup actions
+  preserve that choice while managing other components. Temporary Full Mac
+  activation remains explicit and is never remembered as a sandboxed choice.
+  Eligible foreground Full Mac commands use the same managed pipe lifecycle,
+  pinned to the activation selected before command approval. Revocation or
+  connection loss stops those commands; later activation cannot resume an old
+  approval. Full Mac does not enable agent-created PTYs or interactive input.
+  Genies on compatible clients can search retained command output through
+  read-only `write_stdin`, including saved results after restart. Search reports
+  byte positions, continuation, missing retained output, and whether a quiet
+  command may still produce a match. Searching does not consume ordinary output.
+  Contained commands and filesystem grants protect the GitHub CLI account
+  directory on macOS and Linux.
+
+- Server native image checks recognize the patched Sharp and libvips packages.
+
+- Update the MCP transport and image-processing libraries to their supported
+  patched releases, and retire obsolete server security decisions.
+
+- Mobile model search keeps its field and scrollable choices above the keyboard
+  on compact screens; selecting a result works on the first tap.
+
+- Mobile personal key and cost settings retain their header and Back action above
+  the safe area.
+
 - Reflection allows up to ten minutes per poll, preserves completed batch results
   when repair runs out of time, and gives other eligible records a turn after
   timed-out work yields.
@@ -53,14 +132,19 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   exact-model Tasks retain their selected model.
   Mobile cost amounts use the same rounding and tiny-amount display as Workbench.
 
-- Text-only chat models reject new image attachments with clear removal/model
-  selection guidance. Queued images remain editable after a model switch;
-  earlier image history stays saved and text conversations can continue with
-  an explicit image-context notice.
+- Text-only chat models can use an available image-reading model automatically,
+  while keeping the selected chat model. Selection uses the current model
+  catalog, authorized credentials, privacy requirements and estimated cost.
+  Answers identify the image-reading model; completed observations remain
+  available for follow-up questions. When no supported image route is available,
+  attachments show clear removal/model selection guidance. Queued images remain
+  editable after a model switch, and earlier image history stays saved.
   Returning to the app keeps chat visible while access refreshes, and model
   changes avoid repeated full-catalog work and temporary raw provider IDs.
-  On Mobile, tapping the image attachment button for a text-only model explains
-  the restriction without opening the photo picker.
+  On Mobile, tapping the image attachment button when no image route is available
+  explains the restriction without opening the photo picker.
+  Long Mobile drafts and attachment guidance remain scrollable on compact screens,
+  with message actions kept above the software keyboard.
 
 - Successful skips end the agent turn without another model call. Silence and
   hand-off control activity stays out of chat while rejected hand-offs remain

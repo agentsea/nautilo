@@ -18,7 +18,7 @@ import type { RelayDesktopFilesystemGrantSnapshot } from "../../src/types";
 const REQUEST: RelayDesktopFilesystemGrantRequest = {
   version: RELAY_DESKTOP_FILESYSTEM_GRANT_REQUEST_VERSION,
   grantIds: ["grant-1"],
-  requestedRoot: "/Users/alice/project",
+  requestedRoot: "/path/to/project",
   operation: "create_modify",
   subject: {
     userId: "user-1",
@@ -33,9 +33,9 @@ const REQUEST: RelayDesktopFilesystemGrantRequest = {
   },
 };
 
-describe("D418 desktop-filesystem-grant request protocol", () => {
-  test("uses protocol v19 and parses the strict v1 reference envelope", () => {
-    expect(RELAY_PROTOCOL_VERSION).toBe(20);
+describe("Desktop-filesystem-grant request protocol", () => {
+  test("uses protocol v27 and parses the strict v1 reference envelope", () => {
+    expect(RELAY_PROTOCOL_VERSION).toBe(27);
     expect(DESKTOP_FILESYSTEM_GRANT_REQUEST_PROTOCOL_VERSION).toBe(9);
     expect(CAPABILITY_UPDATE_PROTOCOL_VERSION).toBe(7);
     expect(parseRelayDesktopFilesystemGrantRequest(REQUEST)).toEqual({ ok: true, request: REQUEST });
@@ -121,7 +121,7 @@ describe("D418 desktop-filesystem-grant request protocol", () => {
     }
   });
 
-  test("D418 default-instance — subject.instanceId accepts the canonical default and named ids", () => {
+  test("default-instance — subject.instanceId accepts the canonical default and named ids", () => {
     // Exact empty string is the canonical default instance and is valid.
     expect(
       parseRelayDesktopFilesystemGrantRequest({
@@ -144,7 +144,7 @@ describe("D418 desktop-filesystem-grant request protocol", () => {
     });
   });
 
-  test("D418 default-instance — subject.instanceId rejects whitespace and noncanonical ids", () => {
+  test("default-instance — subject.instanceId rejects whitespace and noncanonical ids", () => {
     for (const bad of ["  ", "\t", "instance-1 ", " instance-1", "Instance-1", "-bad", "bad!"]) {
       expect(
         parseRelayDesktopFilesystemGrantRequest({
@@ -170,7 +170,7 @@ const SNAPSHOT: RelayDesktopFilesystemGrantSnapshot = {
   grants: [
     {
       id: "grant-1",
-      canonicalRoot: "/Users/alice/project",
+      canonicalRoot: "/path/to/project",
       access: ["read", "create_modify"],
       policyVersion: 3,
       lifetime: "session",
@@ -179,7 +179,7 @@ const SNAPSHOT: RelayDesktopFilesystemGrantSnapshot = {
   ],
 };
 
-describe("D418 advisory active-grant snapshot protocol", () => {
+describe("Advisory active-grant snapshot protocol", () => {
   test("parses a strict snapshot and carries only redacted discovery fields", () => {
     const parsed = parseRelayDesktopFilesystemGrantSnapshot(SNAPSHOT);
     expect(parsed).toEqual({ ok: true, snapshot: SNAPSHOT });
@@ -211,7 +211,7 @@ describe("D418 advisory active-grant snapshot protocol", () => {
     ).toMatchObject({ ok: false });
   });
 
-  test("D418 default-instance — instanceId accepts the canonical default and named ids", () => {
+  test("default-instance — instanceId accepts the canonical default and named ids", () => {
     expect(
       parseRelayDesktopFilesystemGrantSnapshot({ ...SNAPSHOT, instanceId: "" }),
     ).toEqual({ ok: true, snapshot: { ...SNAPSHOT, instanceId: "" } });
@@ -220,7 +220,7 @@ describe("D418 advisory active-grant snapshot protocol", () => {
     ).toEqual({ ok: true, snapshot: { ...SNAPSHOT, instanceId: "stack-b" } });
   });
 
-  test("D418 default-instance — instanceId rejects whitespace and noncanonical ids", () => {
+  test("default-instance — instanceId rejects whitespace and noncanonical ids", () => {
     for (const bad of ["  ", "\t", "instance-1 ", " instance-1", "Instance-1", "-bad", "bad!"]) {
       expect(
         parseRelayDesktopFilesystemGrantSnapshot({ ...SNAPSHOT, instanceId: bad }),
@@ -294,7 +294,7 @@ describe("D418 advisory active-grant snapshot protocol", () => {
   });
 });
 
-describe("D418 protocol v7 desktop-session capability-update transport", () => {
+describe("Protocol v7 desktop-session capability-update transport", () => {
   const CAPS = { profile: "desktop-agent" as const, canReadWorkspace: true };
 
   test("register carries desktopSessionId and capabilityRevision for desktop relays", () => {

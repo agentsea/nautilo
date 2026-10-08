@@ -85,6 +85,7 @@ handoff, or replacement:
 
 - sidecar client/supervisor, capability publisher, and MCP host handle;
 - run-shell retained-output store and browser page snapshot store;
+- managed local executions, their sandbox/proxy resources and retained receipts;
 - media session records, byte accounting, and browser coordinate scales;
 - the exact server-bound Google OAuth tuple;
 - the session's structured SSH runtime reference and status callback; and
@@ -118,6 +119,85 @@ An advertisement remains readiness, never authority. Every local executor
 revalidates its current binding immediately before work. A retired publisher
 cannot refresh through a replacement session.
 
+## Managed local commands
+
+On compatible Desktop clients, `exec_command` starts one complete command with
+pipes by default or a fresh PTY when requested. `write_stdin` retrieves output,
+sends admitted interactive input, or explicitly cancels the same execution.
+The Human Terminal pool and its explicit Genie handoff remain separate.
+
+Server admission supplies the initiating Human, Agent, conversation, run,
+selected Desktop, pairing and execution-generation identity. Electron checks
+Basic authority or the contained Workstation profile and local folder grants, prepares
+the sandbox once, and transfers its ownership to `LocalExecutionHost` inside
+the same `DesktopRelaySession`. Neither a model argument nor a catalogue entry
+can select uncontained authority.
+
+Compatible peers also support foreground Full Mac pipe commands through this
+same host. Server admission pins the exact temporary activation before command
+approval and revalidates it at dispatch. The existing foreground source owner
+checks current Human, Agent, Room and protected-content access. Full Mac starts
+receive the normal account HOME and a controlled installed-tool PATH, without
+inheriting application credentials from Electron. Stdin is closed; agent-created
+PTYs and subsequent interactive input remain unsupported in this mode.
+
+Activation revocation cancels matching work after a yield. Desktop also cancels
+Full Mac commands locally when its Relay connection is lost, covering a server
+crash that cannot deliver cancellation. Contained work retains its separate
+reconnection behavior. Readable final receipts do not reactivate an ended grant,
+and a later activation cannot authorize a command parked under an earlier one.
+
+An RPC yield does not end the process, close its network proxy, or consume its
+output. Command and input identities prevent repeated transport delivery from
+replaying effects. Cursor reads are repeatable; completion retains the actual
+exit status and diagnostics. Retention gaps and expired receipts are explicit.
+The host retains replay identities after output expiry, so an expired result
+cannot silently restart a command.
+
+Peers negotiating output search can use a literal `search` with `write_stdin`.
+Search is a pure read and cannot be combined with input, cancellation or waiting.
+It uses the same sanitized capture and owner checks as ordinary reads, including
+saved final results. Its separate search cursor permits overlapping matches and
+matches spanning a later output append. Results distinguish a retained-output
+gap, a pending miss and an exhausted settled result. Search pages do not replace
+the command card's ordinary output observation or pagination cursor.
+
+Desktop also saves settled receipts and their already-redacted retained output
+window in OS-protected local history. This copy survives the live host's output
+expiry and application restart. It is a historical display record, never a
+restored process, execution grant, or replacement for the signed transcript.
+Recovery checks the current Human, pinned server, selected Desktop and Room
+access. Protected chat recovery additionally requires the existing verified
+history reader. Missing storage, unavailable keys or failed authorization do
+not create a plaintext fallback or imply that a command did not run.
+
+Local command history stays in the Desktop profile until explicitly removed;
+there is no automatic age-based deletion of these saved records. Storage grows
+with retained command results. Capture gaps remain explicit, and saving a
+receipt cannot recover output already discarded before settlement. This local
+copy does not synchronize to other devices or amend the Agent's transcript.
+Historical records expose no input, Stop or preview authority, and an uncertain
+cleanup receipt remains uncertain after recovery.
+
+Current Folder changes refresh dispatch preparation without replacing the
+execution owner or retargeting running commands. Original grants and folder
+identity remain checked for continuation. Local revocation fences matching
+work; logout, server switch and actual Desktop-session retirement end owned
+processes. A temporary transport interruption preserves contained work while
+its local authority remains valid. Process cleanup covers the owned process
+group, not arbitrary daemonized or escaped descendants.
+
+The served Workbench feature-detects the Desktop bridge for reads, Stop and
+Human-clicked loopback previews. A URL in output is an unverified suggestion,
+not proof of readiness or port ownership. Preview uses the existing Browser
+surface. The capability is not advertised by headless Relay or older peers.
+On the exact initiating Desktop, protocol 26 or later with managed pipe/PTY,
+typed local Git and retained-output support hides `run_shell` and `terminal`
+from model binding, discovery and activation. The registered handlers remain
+available to older or incomplete peers. `local_git`, `read_shell_output` and
+explicit `human_terminal` handoff preserve the separate supported operations;
+active handoff consent is not a prerequisite for hiding the legacy tools.
+
 ## Fixed Desktop dispatch order
 
 Two security-sensitive lanes run before the closed 14-family router:
@@ -128,7 +208,9 @@ Two security-sensitive lanes run before the closed 14-family router:
    Automation binding and the injected Computer Use dispatcher. Relay recognizes no
    public Computer Use tool name or Cua operation.
 
-The fixed router then executes this compile-time order:
+Managed `exec_command` / `write_stdin` dispatch uses its dedicated local execution
+authority adapter before the fixed router. The router retains this order for
+the existing tools:
 
 1. structured SSH and its retained output;
 2. retained `run_shell` output continuation;

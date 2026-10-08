@@ -2,11 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { decodeMessagePayloadV2, encodeMessagePayloadV2 } from "@nautilo/lattice-bridge";
 import {
   reconcileRoomHistoryShadowPayloads,
+  projectAuthenticatedRoomHistoryPayload,
   restoreSessionMessages,
   roomHistoryShadowOrdinarySibling,
   withholdRoomHistoryShadowPayloads,
 } from "./session-rehydrate";
-describe("restoreSessionMessages M230 edit metadata", () => {
+describe("restoreSessionMessages edit metadata", () => {
   test("preserves harness authorship separately from the delegating agent", () => {
     const [message] = restoreSessionMessages([{
       id: "harness-result-1",
@@ -106,12 +107,14 @@ describe("restoreSessionMessages M230 edit metadata", () => {
       {
         id: "result-page-1",
         role: "tool",
+        toolCallId: "inspect-page-1",
         toolName: "inspect_open_design",
         content: "page one",
       },
       {
         id: "result-page-2",
         role: "tool",
+        toolCallId: "inspect-page-2",
         toolName: "inspect_open_design",
         content: "page two",
       },
@@ -440,4 +443,60 @@ describe("restoreSessionMessages M230 edit metadata", () => {
     expect(JSON.stringify(reconciled)).not.toContain("secret-call");
   });
 
+});
+
+
+test("restores completed image attribution on the main assistant answer", () => {
+  const imageAssistance = {
+    status: "completed" as const, modelId: "provider:image-reader",
+    modelDisplayName: "Image reader", attachmentIds: ["image-1"],
+  };
+  const [answer] = restoreSessionMessages([{
+    id: "2", role: "assistant", content: "The chart rose.", imageAssistance,
+  }]);
+  expect(answer?.metadata?.custom?.imageAssistance).toEqual(imageAssistance);
+  const [ordinary] = restoreSessionMessages([{
+    id: "3", role: "assistant", content: "A text-only answer.",
+  }]);
+  expect(ordinary?.metadata?.custom?.imageAssistance).toBeUndefined();
+});
+
+
+test("protected reload projects only authenticated image attribution", () => {
+  const ordinary = {
+    id: "2", role: "assistant", content: "ordinary sibling",
+    imageAssistance: { status: "completed" as const, modelId: "provider:unverified", modelDisplayName: "Unverified", attachmentIds: ["image-1"] },
+  };
+  const trusted = { status: "completed" as const, modelId: "provider:verified", modelDisplayName: "Verified image reader", attachmentIds: ["image-1"] };
+  const projected = projectAuthenticatedRoomHistoryPayload(ordinary, {
+    role: "assistant", content: "Authenticated answer", sensitiveMetadata: { imageAssistance: trusted },
+  });
+  const [answer] = restoreSessionMessages([projected]);
+  expect(answer?.metadata?.custom?.imageAssistance).toEqual(trusted);
+  const without = projectAuthenticatedRoomHistoryPayload(ordinary, { role: "assistant", content: "Authenticated answer" });
+  expect(without.imageAssistance).toBeUndefined();
+});
+
+
+test("omits ordinary and authenticated protected image observations from visible chat", () => {
+  const helper = { id: "1", role: "tool", toolName: "image_assistance", content: '{"observations":"private observation"}' };
+  expect(restoreSessionMessages([helper])).toEqual([]);
+  const opened = projectAuthenticatedRoomHistoryPayload({ ...helper, toolName: "unverified" }, {
+    role: "tool", toolName: "image_assistance", content: helper.content,
+    sensitiveMetadata: { toolCallId: "image-assistance:input-digest" },
+  });
+  expect(restoreSessionMessages([opened])).toEqual([]);
+  expect(restoreSessionMessages([{ id: "2", role: "user", content: "image_assistance is a word" }])).toHaveLength(1);
+});
+
+
+test("hidden image helper declaration does not consume another visible tool result", () => {
+  const restored = restoreSessionMessages([
+    { id: "1", role: "assistant", content: "", toolCalls: JSON.stringify([{ id: "image-assistance:input-digest", name: "image_assistance", args: {} }]) },
+    { id: "2", role: "tool", toolName: "image_assistance", content: '{"observations":"private observation"}' },
+    { id: "3", role: "assistant", content: "", toolCalls: JSON.stringify([{ id: "call-visible", name: "lookup", args: {} }]) },
+    { id: "4", role: "tool", toolCallId: "call-visible", toolName: "lookup", content: "Visible result" },
+  ]);
+  expect(restored).toHaveLength(1);
+  expect(restored[0]?.content).toMatchObject([{ type: "tool-call", toolCallId: "call-visible", toolName: "lookup" }]);
 });

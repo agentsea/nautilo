@@ -174,6 +174,7 @@ export function protectedTranscriptMessagesToHistoryHits(
       messageId: message.messageId,
       ts: new Date(message.createdAt.getTime()),
       role: message.payload.role,
+      toolName: message.payload.toolName,
       authorDisplayName: message.author.displayName,
       handle: message.author.handle,
       authorActorId: message.author.actorId,

@@ -33,6 +33,7 @@ const fetchCostsSummary = mock(async (): Promise<CostsSummary> => ({
     provider: "tavily", operation: "search", workload: "deep_research",
     attemptOutcome: "failed", failureCode: "upstream_error",
     taskId: null, runId: "run-ref", jobId: null,
+    requestReference: "req_0123456789ab",
     occurredAt: "2026-10-08T10:00:00Z",
   }] },
 }));
@@ -57,6 +58,9 @@ test("administrator Costs shows service outcomes and unresolved diagnostics", as
   expect(view.getByText("Recent unresolved paid services")).toBeTruthy();
   expect(view.container.textContent).toContain("tavily · search · deep research");
   expect(view.container.textContent).toContain("Run run-ref");
+  expect(view.container.textContent).toContain("Request req_0123456789ab");
+  expect(view.container.textContent).toContain("100 newest");
+  expect(view.container.textContent).toContain("Older unresolved operations remain included in the totals.");
   const providerRow = view.getByText("Tavily · Search").closest("tr");
   expect(providerRow?.textContent).toContain("$0.02");
   expect(providerRow?.textContent).toContain("$0.01");

@@ -85,7 +85,7 @@ export default function CapabilityModelsScreen() {
         ))}
         {state.data ? <View style={styles.actions}>
           <Pressable style={({ pressed }) => [styles.action, pressed && styles.pressed]} onPress={() => router.push("/(drawer)/(tabs)/settings/provider-keys")} accessibilityRole="button"><Text style={styles.actionText}>Personal API keys</Text></Pressable>
-          <Pressable style={({ pressed }) => [styles.action, pressed && styles.pressed]} onPress={() => router.push("/(drawer)/(tabs)/settings/costs")} accessibilityRole="button"><Text style={styles.actionText}>Your costs</Text></Pressable>
+          <Pressable style={({ pressed }) => [styles.action, pressed && styles.pressed]} onPress={() => router.push("/(drawer)/(tabs)/settings/personal-costs")} accessibilityRole="button"><Text style={styles.actionText}>Your costs</Text></Pressable>
         </View> : null}
         <Text style={styles.helper}>You can save a compatible model before adding its key. Readiness and funding are checked again when fresh work starts.</Text>
       </Screen>

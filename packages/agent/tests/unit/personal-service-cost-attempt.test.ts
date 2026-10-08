@@ -68,6 +68,7 @@ describe("personal service cost attempts", () => {
     await recorder({
       provider: "tavily",
       operation: "extract",
+      receiptId: "provider-request-secret",
       actualCostUsd: "0.0042",
       evidenceState: "actual",
     });
@@ -86,7 +87,9 @@ describe("personal service cost attempts", () => {
       pricingVersion: null,
       measuredUnits: null,
       unitType: null,
+      requestReference: "req_21f3c626592e",
     });
+    expect(JSON.stringify(settled[0])).not.toContain("provider-request-secret");
     expect(settled[0]).toMatchObject({
       fundingKind: "personal",
       userId: "human-a",

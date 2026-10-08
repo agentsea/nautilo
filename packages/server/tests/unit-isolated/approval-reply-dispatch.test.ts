@@ -43,6 +43,7 @@ type HostChoiceResumeFn = (
   choice: { choiceId: string; selector: string },
   processor: unknown,
   laneKey: string,
+  signal?: unknown,
 ) => Promise<void>;
 type ConnectedWebActionResumeFn = (
   threadId: string,
@@ -86,6 +87,9 @@ mock.module("@nautilo/agent", () => ({
   // Legacy approval replies have no active D476 projection binding.
   readProjectionResumeBindingForThread: mock(async () => ({ kind: "none" as const })),
 }));
+const { getForegroundFundingSession } = await import(
+  "../../../agent/src/runtime/foreground-chat-funding"
+);
 
 // NOTE: these imports appear AFTER the `mock.module(...)` call above —
 // that ordering is intentional (mock.module must be evaluated before
@@ -2087,5 +2091,100 @@ describe("POST /api/auth/host-choice-reply — exact paired host resume", () => 
     expect(duplicate.statusCode).toBe(409);
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(hostChoiceResumeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("reopens and installs the pinned personal payer before a host-choice resume", async () => {
+    const threadId = "thread-host-choice-funded-dual";
+    const snapshot: ForegroundFundingSnapshot = {
+      modelId: "anthropic:claude-sonnet-4-6",
+      binding: {
+        kind: "personal",
+        providerRoute: "anthropic",
+        credentialId: "77777777-7777-4777-8777-777777777777",
+        credentialRevision: 4,
+      },
+    };
+    savedFundingByThread.set(threadId, snapshot);
+    agentReadSequences.set(threadId, ["stub-envelope-agent", "stub-envelope-agent"]);
+    humanReadSequences.set(threadId, [OWNER_ID, OWNER_ID]);
+    fundingSessionForResume = restoredFundingSession;
+    fundingReadCalls.length = 0;
+    fundingOpenCalls.length = 0;
+    hostChoiceResumeSpy.mockClear();
+    hostChoiceResumeSpy.mockImplementationOnce(async () => {
+      expect(getForegroundFundingSession()).toBe(restoredFundingSession);
+    });
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/auth/host-choice-reply",
+        headers: { Authorization: `Bearer ${validToken}` },
+        payload: {
+          choiceId: "choice-funded-dual",
+          selector: "selector-personal",
+          threadId,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      await Bun.sleep(15);
+      expect(fundingReadCalls).toContainEqual({ threadId });
+      expect(fundingOpenCalls).toContainEqual({
+        humanUserId: OWNER_ID,
+        modelId: snapshot.modelId,
+        roomId: RESUME_ROOM_ID,
+        agentId: "stub-envelope-agent",
+        entrypoint: "foreground.main",
+        prior: snapshot,
+      });
+      expect(hostChoiceResumeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      savedFundingByThread.delete(threadId);
+      agentReadSequences.delete(threadId);
+      humanReadSequences.delete(threadId);
+    }
+  });
+
+  test("fails closed when a personal-only host-choice payer cannot reopen", async () => {
+    const threadId = "thread-host-choice-funded-personal-only";
+    savedFundingByThread.set(threadId, {
+      modelId: "anthropic:claude-sonnet-4-6",
+      binding: {
+        kind: "personal",
+        providerRoute: "anthropic",
+        credentialId: "66666666-6666-4666-8666-666666666666",
+        credentialRevision: 2,
+      },
+    });
+    agentReadSequences.set(threadId, ["stub-envelope-agent", "stub-envelope-agent"]);
+    humanReadSequences.set(threadId, [OWNER_ID, OWNER_ID]);
+    fundingSessionForResume = null;
+    fundingOpenCalls.length = 0;
+    hostChoiceResumeSpy.mockClear();
+    const warningSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/auth/host-choice-reply",
+        headers: { Authorization: `Bearer ${validToken}` },
+        payload: {
+          choiceId: "choice-funded-personal-only",
+          selector: "selector-personal",
+          threadId,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      await Bun.sleep(15);
+      expect(fundingOpenCalls).toHaveLength(1);
+      expect(hostChoiceResumeSpy).not.toHaveBeenCalled();
+      expect(JSON.stringify(warningSpy.mock.calls)).toContain("Saved funding is unavailable");
+    } finally {
+      warningSpy.mockRestore();
+      fundingSessionForResume = restoredFundingSession;
+      savedFundingByThread.delete(threadId);
+      agentReadSequences.delete(threadId);
+      humanReadSequences.delete(threadId);
+    }
   });
 });

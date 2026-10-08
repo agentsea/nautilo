@@ -9,6 +9,7 @@ import {
   estimateProviderToolCostUsd,
   insertProviderCostEventWith,
   providerCostIdempotencyKey,
+  providerCostRequestReference,
   PROVIDER_TOOL_PRICING_VERSION,
   settleProviderCostEventWith,
 } from "../../src/queries/provider-costs";
@@ -48,6 +49,8 @@ describe("provider cost events", () => {
     expect(estimateProviderToolCostUsd("tavily:credit", 1.25)).toBe("0.01000000");
     expect(estimateProviderToolCostUsd("tavily:credit", 0)).toBe("0.00000000");
     expect(providerCostIdempotencyKey("raw-provider-receipt")).toMatch(/^[0-9a-f]{64}$/);
+    expect(providerCostRequestReference("raw-provider-receipt")).toMatch(/^req_[0-9a-f]{12}$/);
+    expect(providerCostRequestReference(null)).toBeNull();
   });
 
   test("writes exact-decimal evidence with conflict-safe idempotency", async () => {
@@ -78,6 +81,7 @@ describe("provider cost events", () => {
       pricingVersion: PROVIDER_TOOL_PRICING_VERSION,
       measuredUnits: 0.5,
       unitType: "credit",
+      requestReference: providerCostRequestReference("raw-provider-receipt"),
       actualCostUsd: "0.014",
       evidenceState: "actual",
       idempotencyKey: DIGEST,
@@ -97,10 +101,11 @@ describe("provider cost events", () => {
       pricingVersion: PROVIDER_TOOL_PRICING_VERSION,
       measuredUnits: "0.50000000",
       unitType: "credit",
+      requestReference: providerCostRequestReference("raw-provider-receipt"),
       idempotencyKey: DIGEST,
     });
     expect(conflictTarget).toBeTruthy();
-    expect(JSON.stringify(values)).not.toContain("run-private-id");
+    expect(JSON.stringify(values)).not.toContain("raw-provider-receipt");
   });
 
   test("keeps a provider-reported zero-unit estimate as known zero evidence", async () => {
@@ -120,6 +125,7 @@ describe("provider cost events", () => {
       evidenceState: "estimated",
       measuredUnits: 0,
       unitType: "credit",
+      requestReference: "req_0123456789ab",
       idempotencyKey: DIGEST,
     });
     expect(values).toMatchObject({
@@ -182,6 +188,7 @@ describe("provider cost events", () => {
       actualCostUsd: "0.00000000",
       evidenceState: "actual",
     });
+    expect(updateValues?.["requestReference"]).toBeTruthy();
   });
 
   test("provider Task and recovery queries are payer-filtered and content-free", () => {
@@ -199,6 +206,7 @@ describe("provider cost events", () => {
     }
     expect(byTask.sql).toContain('group by "provider_cost_events"."task_id"');
     expect(recovery.sql).toContain('"provider_cost_events"."evidence_state" =');
+    expect(recovery.sql).toContain('"request_reference"');
     expect(recovery.sql).toContain("limit");
     expect(recovery.params).toContain(100);
   });
@@ -242,6 +250,19 @@ describe("provider cost events", () => {
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toBe("Invalid provider failure code");
     }
+  });
+
+  test("rejects raw provider receipt IDs at the database write boundary", async () => {
+    const handle = { insert: () => { throw new Error("must not insert"); } } as unknown as DirectDatabase;
+    const rejected = await insertProviderCostEventWith(handle, {
+      provider: "tavily",
+      operation: "search",
+      evidenceState: "unknown",
+      requestReference: "raw-provider-request-id",
+      idempotencyKey: DIGEST,
+    }).then(() => null, (error: unknown) => error);
+    expect(rejected).toBeInstanceOf(Error);
+    expect((rejected as Error).message).toBe("Invalid provider request reference");
   });
 
   test("builds bounded provider aggregate queries without joining raw LLM events", () => {
@@ -316,6 +337,11 @@ describe("provider cost events", () => {
         { day: "2026-09-01", estimated_cost: "0", actual_cost: "0.01400000", total_cost: "0.01400000" },
         { day: "2026-09-02", estimated_cost: "0", actual_cost: "0", total_cost: "0" },
       ],
+      [],
+      [{ provider: "tavily", operation: "search", workload: "deep_research",
+        attemptOutcome: "unknown", failureCode: "provider_transport_unknown",
+        requestReference: "req_0123456789ab", taskId: null, runId: null, jobId: null,
+        occurredAt: new Date("2026-09-02T00:00:00.000Z") }],
     ]));
 
     const summary = await getCostsSummary(RANGE);
@@ -356,5 +382,17 @@ describe("provider cost events", () => {
       { day: "2026-09-01", estimatedCostUsd: 0.02, actualCostUsd: 0.014, totalCostUsd: 0.034 },
       { day: "2026-09-02", estimatedCostUsd: 0, actualCostUsd: 0, totalCostUsd: 0 },
     ]);
+    expect(summary.serviceRecovery.attempts).toEqual([{
+      provider: "tavily",
+      operation: "search",
+      workload: "deep_research",
+      attemptOutcome: "unknown",
+      failureCode: "provider_transport_unknown",
+      requestReference: "req_0123456789ab",
+      taskId: null,
+      runId: null,
+      jobId: null,
+      occurredAt: "2026-09-02T00:00:00.000Z",
+    }]);
   });
 });

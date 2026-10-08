@@ -42,7 +42,7 @@ mac:
   # Sharp's darwin native addons and libvips payload are selected by
   # process.arch. Keep both thin payload trees as runtime-selected files
   # during universal merge rather than attempting to lipo them.
-  x64ArchFiles: "Contents/Resources/{bun,tools,tools-cua,tools-computer-use-host,tools-browser-vision,tools-agent-browser,tools-gog,tools-ffmpeg,tools-officecli,tools-apply-patch,tools-ripgrep,app.asar.unpacked/node_modules/{node-pty,argon2,sharp,@img/sharp-darwin-arm64,@img/sharp-darwin-x64,@img/sharp-libvips-darwin-arm64,@img/sharp-libvips-darwin-x64}}/**/*"
+  x64ArchFiles: "Contents/Resources/{bun,tools,tools-cua,tools-computer-use-host,tools-browser-vision,tools-agent-browser,tools-gog,tools-github-cli,tools-ffmpeg,tools-officecli,tools-apply-patch,tools-ripgrep,app.asar.unpacked/node_modules/{node-pty,argon2,sharp,@img/sharp-darwin-arm64,@img/sharp-darwin-x64,@img/sharp-libvips-darwin-arm64,@img/sharp-libvips-darwin-x64}}/**/*"
   notarize: false
   # user-facing permission strings + Info.plist
   # release metadata. macOS requires permission strings in Info.plist
@@ -72,6 +72,15 @@ mac:
     NSHumanReadableCopyright: "Copyright © 2026 Nautilo"
     LSMinimumSystemVersion: "11.0"
   extraResources:
+    # Official GitHub CLI, fixed platform selection and MIT license.
+    - from: vendor/github-cli
+      to: tools-github-cli
+      filter:
+        - "darwin-arm64/gh"
+        - "darwin-x64/gh"
+        - "LICENSE"
+        - "manifest.json"
+        - ".version"
     # this Darwin-universal executable must remain mac-only. Keeping the
     # resource mapping under `mac` prevents a stale macOS vendor cache from
     # leaking Cua into Linux/Windows packages, whose build scripts do not vendor it.

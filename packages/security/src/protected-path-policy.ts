@@ -1,5 +1,5 @@
 /**
- * Canonical protected-path policy descriptors — D418 task 2.2.3 foundation.
+ * Canonical protected-path policy descriptors.
  *
  * This module is a **pure Node-only** policy factory + matcher. Given a
  * home directory and a platform it produces a deterministic, canonical set
@@ -273,6 +273,7 @@ const COMMON_HOME_ROOTS: readonly BuiltinEntry[] = [
  * table.
  */
 const LINUX_HOME_ROOTS: readonly BuiltinEntry[] = [
+  { rel: ".config/gh", category: "cloud", label: "GitHub CLI account credentials" },
   { rel: ".config/gcloud", category: "cloud", label: "gcloud credentials" },
   { rel: ".mozilla/firefox", category: "browser_store", label: "Firefox profile (Linux)" },
   { rel: ".config/google-chrome", category: "browser_store", label: "Chrome profile (Linux)" },
@@ -287,6 +288,7 @@ const LINUX_HOME_ROOTS: readonly BuiltinEntry[] = [
  * encrypted credential stores.
  */
 const DARWIN_HOME_ROOTS: readonly BuiltinEntry[] = [
+  { rel: ".config/gh", category: "cloud", label: "GitHub CLI account credentials" },
   { rel: ".config/gcloud", category: "cloud", label: "gcloud credentials" },
   { rel: "Library/Keychains", category: "macos_keychain", label: "macOS user keychains" },
   { rel: "Library/Application Support/Google/Chrome", category: "browser_store", label: "Chrome profile (macOS)" },

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   and,
@@ -24,6 +23,7 @@ import {
   buildPersonalProviderCostsByTaskQuery,
   buildProviderCostRecoveryAttemptsQuery,
   buildProviderCostsSummaryQueries,
+  providerCostRequestReference,
 } from "./provider-costs";
 import { personalProviderCredentials } from "../schema/personal-provider-credentials";
 import { providerCostEvents } from "../schema/provider-costs";
@@ -911,6 +911,7 @@ function serviceRecoveryAttempt(row: Record<string, unknown>): ServiceCostRecove
     workload: s(row["workload"]),
     attemptOutcome: row["attemptOutcome"] as ServiceCostRecoveryAttempt["attemptOutcome"],
     failureCode: s(row["failureCode"]),
+    requestReference: s(row["requestReference"]),
     taskId: s(row["taskId"]),
     runId: s(row["runId"]),
     jobId: s(row["jobId"]),
@@ -1231,17 +1232,6 @@ function safeRecoveryReason(value: string | null, fallback: string): string {
   return value !== null && SAFE_RECOVERY_REASONS.has(value) ? value : fallback;
 }
 
-// A 48-bit display tag is compact enough to copy while distinguishing the at
-// most 100 recent rows in this diagnostic. It is correlation, not identity or
-// a security boundary; the raw provider receipt remains server-side.
-const SAFE_REQUEST_REFERENCE_HEX_LENGTH = 12;
-
-function safeRequestReference(providerRequestId: string | null): string | null {
-  if (providerRequestId === null) return null;
-  const digest = createHash("sha256").update(providerRequestId, "utf8").digest("hex");
-  return `req_${digest.slice(0, SAFE_REQUEST_REFERENCE_HEX_LENGTH)}`;
-}
-
 function personalRecoveryAttempt(row: {
   id: string;
   taskId: string | null;
@@ -1283,7 +1273,7 @@ function personalRecoveryAttempt(row: {
     status,
     reason,
     providerRoute: row.providerRoute ?? "unknown",
-    requestReference: safeRequestReference(row.providerRequestId),
+    requestReference: providerCostRequestReference(row.providerRequestId),
     lastObservedAt: row.updatedAt.toISOString(),
     repairAction,
     taskId: row.taskId,

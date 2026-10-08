@@ -4,6 +4,7 @@ import {
   insertProviderCostEvent,
   settleProviderCostEvent,
   providerCostIdempotencyKey,
+  providerCostRequestReference,
   estimateProviderToolCostUsd,
   PROVIDER_TOOL_PRICING_VERSION,
   type InsertProviderCostEventInput,
@@ -94,6 +95,7 @@ function providerCostEvidenceFields(receipt: ProviderCostReceipt) {
     pricingVersion: receipt.pricingVersion ?? null,
     measuredUnits: receipt.measuredUnits ?? null,
     unitType: receipt.unitType ?? null,
+    requestReference: providerCostRequestReference(receipt.receiptId),
   };
 }
 

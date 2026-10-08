@@ -55,7 +55,7 @@ export interface PersonalCapabilityPreferenceRouteDeps {
   readonly getDb?: typeof getServerDirectDb;
   readonly getPreferences?: typeof getPersonalCapabilityPreferences;
   readonly replacePreferences?: typeof replacePersonalCapabilityPreferences;
-  readonly openSession?: (humanId: string) => Promise<{
+  readonly openSession?: (humanId: string, preferences: PersonalCapabilityPreferences) => Promise<{
     readonly session: CapabilityFundingSession;
     readonly fundingPreference: "personal_first" | "server_first";
   }>;
@@ -203,27 +203,37 @@ export function personalCapabilityPreferenceRoutes(
     getDb: overrides.getDb ?? getServerDirectDb,
     getPreferences: overrides.getPreferences ?? getPersonalCapabilityPreferences,
     replacePreferences: overrides.replacePreferences ?? replacePersonalCapabilityPreferences,
-    openSession: overrides.openSession ?? (async (humanId: string) => {
+    openSession: overrides.openSession ?? (async (
+      humanId: string,
+      preferences: PersonalCapabilityPreferences,
+    ) => {
       const snapshot = await createModelFundingSnapshot(humanId);
       return {
-        session: createCapabilityFundingSession(humanId, undefined, snapshot.deps),
+        session: createCapabilityFundingSession(humanId, undefined, snapshot.deps, {
+          readPreferences: () => Promise.resolve(preferences),
+        }),
         fundingPreference: snapshot.policy.fundingPreference ?? "personal_first",
       };
     }),
     listModels: overrides.listModels ?? listPersonalCapabilityModels,
   };
 
-  const read = async (humanId: string) => {
-    const [preferences, projection] = await Promise.all([
-      deps.getPreferences(deps.getDb(), humanId),
-      deps.openSession(humanId),
-    ]);
+  const projectResponse = async (
+    humanId: string,
+    preferences: PersonalCapabilityPreferences,
+  ) => {
+    const projection = await deps.openSession(humanId, preferences);
     return {
       ...preferences,
       fundingPreference: projection.fundingPreference,
       capabilities: await projectPreferences(preferences, projection.session, deps.listModels),
     };
   };
+
+  const read = async (humanId: string) => projectResponse(
+    humanId,
+    await deps.getPreferences(deps.getDb(), humanId),
+  );
 
   app.get("/api/account/capability-preferences", async (request, reply) => {
     const humanId = request.sessionUserId;
@@ -246,6 +256,13 @@ export function personalCapabilityPreferenceRoutes(
           return reply.code(422).send({ error: "unsupported_capability_model", role });
         }
       }
+      // Complete every fallible projection dependency before the CAS write.
+      // A successful mutation must never be reported as a retryable failure
+      // merely because a response-time catalogue or funding read then failed.
+      const projected = await projectResponse(humanId, {
+        revision: body.expectedRevision + 1,
+        overrides: body.overrides,
+      });
       const result = await deps.replacePreferences(deps.getDb(), {
         humanId,
         expectedRevision: body.expectedRevision,
@@ -254,7 +271,7 @@ export function personalCapabilityPreferenceRoutes(
       if (result.status === "conflict") {
         return reply.code(409).send({ error: "capability_preference_conflict", currentRevision: result.currentRevision });
       }
-      return reply.send(await read(humanId));
+      return reply.send({ ...projected, ...result.preferences });
     } catch {
       return reply.code(503).send({ error: "capability_preferences_unavailable", retryable: true });
     }

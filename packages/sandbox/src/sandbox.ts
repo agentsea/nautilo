@@ -1,23 +1,7 @@
 /**
- * The `Sandbox` class. D060 Phase 1 task 1.4.
- *
- * Single instance per agent process, shared via DI. `wrap()` dispatches
- * on the detected backend without re-probing. Config can be swapped at
- * runtime via `setConfig()` — JS is single-threaded so the field
- * reassignment is atomic.
- *
- * Port: Spacebot `src/sandbox.rs:156-394` (`Sandbox` struct + impl).
- *
- * Phase 1 scope for this file:
- *   - class shape + constructor
- *   - static async `create()` factory
- *   - config getters/setters + project-path refresh
- *   - `containmentActive()`
- *   - `isPathAllowed()` (canonical-path containment check)
- *   - `promptReadAllowlist()` / `promptWriteAllowlist()` for UI
- *   - `wrap()` STUB that throws "not implemented yet"
- *
- * 1.5 fills in bubblewrap `wrap()`; 1.6 wires macOS stub + passthrough.
+ * The contained process adapter. Sandbox.create selects the backend once;
+ * wrap constructs the exact process environment and OS containment profile.
+ * Runtime-only local authority is kept separate from serialized policy.
  */
 
 import { log, warn } from "@nautilo/logger";
@@ -57,6 +41,8 @@ export interface SandboxCreateOptions {
    * supplied sandbox config cannot enable it.
    */
   readonly allowWorkspaceGovernanceWrites?: boolean;
+  /** Locally owned scratch HOME; never accepted from a wire envelope. */
+  readonly managedHome?: string;
   /**
    * The active workspace root — the directory the user considers
    * "their drawer". Always writable when mode=enabled.
@@ -98,6 +84,7 @@ export interface SandboxCreateOptions {
 
 export class Sandbox {
   private readonly workspace: string;
+  private readonly managedHome: string | undefined;
   private readonly dataDir: string;
   private readonly toolsBin: string;
   private readonly backend: SandboxBackend;
@@ -108,6 +95,7 @@ export class Sandbox {
 
   constructor(opts: SandboxCreateOptions) {
     this.workspace = canonicalize(opts.workspace);
+    this.managedHome = opts.managedHome === undefined ? undefined : canonicalize(opts.managedHome);
     this.dataDir = canonicalize(opts.dataDir);
     this.toolsBin = canonicalize(opts.toolsBin);
     this.backend = opts.backend;
@@ -219,7 +207,7 @@ export class Sandbox {
   }
 
   /**
-   * Merge project-scoped writable paths (D057 workspace-switch flow).
+   * Merge project-scoped writable paths (workspace-switch flow).
    * Does NOT touch `writablePaths` — that's user-configured state
    * which we never synthesize. `projectPaths` is ephemeral; it's
    * re-populated by the agent every time the active workspace
@@ -403,7 +391,9 @@ export class Sandbox {
     cwd: string,
     commandEnv: Readonly<Record<string, string>>,
   ): SpawnArgs {
-    const config = this.config;
+    const config = this.managedHome === undefined ? this.config : {
+      ...this.config, writablePaths: [...this.config.writablePaths, this.managedHome],
+    };
 
     if (config.mode === "disabled") {
       this.logDispatchOnce("passthrough (mode=disabled)");
@@ -425,6 +415,7 @@ export class Sandbox {
         );
         return buildBubblewrap({
           workspace: this.workspace,
+          ...(this.managedHome === undefined ? {} : { managedHome: this.managedHome }),
           dataDir: this.dataDir,
           toolsBin: this.toolsBin,
           procSupported: this.backend.procSupported,
@@ -442,6 +433,7 @@ export class Sandbox {
         this.logDispatchOnce("sandbox-exec");
         return buildSandboxExec({
           workspace: this.workspace,
+          ...(this.managedHome === undefined ? {} : { managedHome: this.managedHome }),
           dataDir: this.dataDir,
           toolsBin: this.toolsBin,
           config,

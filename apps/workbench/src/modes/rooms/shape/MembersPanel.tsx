@@ -57,6 +57,8 @@ export interface MembersPanelProps {
    * `useCan()("manage_rooms")`; defaults false when omitted (SSR tests).
    */
   readonly viewerCanManageRooms?: boolean;
+  /** Exact server feature support; defaults false for cached/older servers. */
+  readonly viewerSupportsRoomDiscoverability?: boolean;
   /**
    * Sort-by-talking input: actorId → epoch-ms of that member's most
    * recent message, derived client-side from the room transcript. Omit (or
@@ -106,6 +108,7 @@ export function MembersPanel({
   onMembershipChanged,
   lastSpokeAtMs,
   viewerCanManageRooms,
+  viewerSupportsRoomDiscoverability,
 }: MembersPanelProps): ReactElement | null {
   const toast = useToast();
   const focus = useRoomFocus(roomId);
@@ -114,6 +117,8 @@ export function MembersPanel({
   const voice = useVoiceControls();
   const askUser = useAskUserPicker();
   const canManageRooms = viewerCanManageRooms ?? false;
+  const supportsRoomDiscoverability =
+    viewerSupportsRoomDiscoverability === true;
 
   const handleAskUserPick = useCallback(
     (botActorId: string) => {
@@ -159,6 +164,7 @@ export function MembersPanel({
   const [members, setMembers] = useState<readonly RoomMemberDto[]>(initialMembers);
   const [roomLabel, setRoomLabel] = useState<string>("");
   const [roomKind, setRoomKind] = useState<RoomKind>("private");
+  const [roomDiscoverable, setRoomDiscoverable] = useState<boolean>(true);
   const [conductorMode, setConductorMode] = useState<RoomConductorMode>("advanced");
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -192,6 +198,7 @@ export function MembersPanel({
       setMembers(detail.members);
       setRoomLabel(detail.label);
       setRoomKind(detail.kind);
+      setRoomDiscoverable(detail.discoverable !== false);
       setConductorMode(detail.conductorMode === "standard" ? "standard" : "advanced");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load members");
@@ -360,18 +367,39 @@ export function MembersPanel({
   );
 
   const handleVisibilityFlip = useCallback(
-    async (isPublic: boolean) => {
-      const alreadyPublic = roomKind === "open";
-      if (isPublic === alreadyPublic) return;
+    async (visibility: "private" | "external" | "public") => {
+      if (visibility === "external" && !supportsRoomDiscoverability) {
+        toast.show({
+          variant: "error",
+          title: "External rooms are unavailable",
+          message: "This server does not support hidden discovery settings.",
+        });
+        return;
+      }
+      const currentVisibility = roomKind !== "open"
+        ? "private"
+        : roomDiscoverable ? "public" : "external";
+      if (visibility === currentVisibility) return;
       setVisibilityBusy(true);
       try {
-        await apiClient.setRoomVisibility(roomId, isPublic);
+        const isPublic = visibility !== "private";
+        await apiClient.setRoomVisibility(
+          roomId,
+          isPublic,
+          isPublic && supportsRoomDiscoverability
+            ? visibility === "public"
+            : undefined,
+        );
         await refresh();
         onMembershipChanged?.();
         toast.show({
           variant: "success",
-          title: isPublic ? "Room is now public" : "Room is now private",
-          message: isPublic ? "Public 🌐" : "Private",
+          title: `Room is now ${visibility}`,
+          message: visibility === "public"
+            ? "Public 🌐"
+            : visibility === "external"
+              ? "External — public access, hidden from discovery"
+              : "Private",
         });
       } catch (e) {
         toast.show({
@@ -383,7 +411,7 @@ export function MembersPanel({
         setVisibilityBusy(false);
       }
     },
-    [onMembershipChanged, refresh, roomId, roomKind, toast],
+    [onMembershipChanged, refresh, roomDiscoverable, roomId, roomKind, supportsRoomDiscoverability, toast],
   );
 
   const handleConductorModeFlip = useCallback(
@@ -529,6 +557,8 @@ export function MembersPanel({
             <RoomSettingsSection
               label={roomLabel}
               kind={roomKind}
+              discoverable={roomDiscoverable}
+              supportsRoomDiscoverability={supportsRoomDiscoverability}
               conductorMode={conductorMode}
               canEdit={canEditRoom}
               canFlipVisibility={canFlipVisibility}
@@ -537,7 +567,7 @@ export function MembersPanel({
               visibilityBusy={visibilityBusy}
               conductorModeBusy={conductorModeBusy}
               onRename={(next) => void handleRename(next)}
-              onVisibilityFlip={(isPublic) => void handleVisibilityFlip(isPublic)}
+              onVisibilityFlip={(visibility) => void handleVisibilityFlip(visibility)}
               onConductorModeFlip={(next) => void handleConductorModeFlip(next)}
             />
             {loading ? (
@@ -648,6 +678,8 @@ export function MembersPanel({
 function RoomSettingsSection({
   label,
   kind,
+  discoverable,
+  supportsRoomDiscoverability,
   conductorMode,
   canEdit,
   canFlipVisibility,
@@ -661,6 +693,8 @@ function RoomSettingsSection({
 }: {
   readonly label: string;
   readonly kind: RoomKind;
+  readonly discoverable: boolean;
+  readonly supportsRoomDiscoverability: boolean;
   readonly conductorMode: RoomConductorMode;
   readonly canEdit: boolean;
   readonly canFlipVisibility: boolean;
@@ -669,7 +703,7 @@ function RoomSettingsSection({
   readonly visibilityBusy: boolean;
   readonly conductorModeBusy: boolean;
   readonly onRename: (next: string) => void;
-  readonly onVisibilityFlip: (isPublic: boolean) => void;
+  readonly onVisibilityFlip: (visibility: "private" | "external" | "public") => void;
   readonly onConductorModeFlip: (next: RoomConductorMode) => void;
 }): ReactElement {
   const [draft, setDraft] = useState(label);
@@ -677,7 +711,7 @@ function RoomSettingsSection({
     setDraft(label);
   }, [label]);
 
-  const isPublic = kind === "open";
+  const visibility = kind !== "open" ? "private" : discoverable ? "public" : "external";
 
   return (
     <div
@@ -716,11 +750,14 @@ function RoomSettingsSection({
           >
             {(
               [
-                { isPublic: false, label: "Private" },
-                { isPublic: true, label: "Public 🌐" },
+                { visibility: "private", label: "Private" },
+                ...(supportsRoomDiscoverability
+                  ? [{ visibility: "external", label: "External — public access, hidden from discovery" } as const]
+                  : []),
+                { visibility: "public", label: "Public 🌐 — anyone on this server can find and join" },
               ] as const
-            ).map(({ isPublic, label: optionLabel }) => {
-              const checked = isPublic ? kind === "open" : kind === "group";
+            ).map(({ visibility: option, label: optionLabel }) => {
+              const checked = visibility === option;
               return (
                 <label
                   key={optionLabel}
@@ -731,9 +768,9 @@ function RoomSettingsSection({
                     name="room-visibility"
                     checked={checked}
                     disabled={visibilityBusy}
-                    onChange={() => onVisibilityFlip(isPublic)}
+                    onChange={() => onVisibilityFlip(option)}
                     className="h-3 w-3"
-                    data-testid={isPublic ? "visibility-radio-public" : "visibility-radio-private"}
+                    data-testid={`visibility-radio-${option}`}
                   />
                   <span className={checked ? "text-foreground" : "text-foreground-muted"}>
                     {optionLabel}
@@ -744,7 +781,11 @@ function RoomSettingsSection({
           </fieldset>
         ) : (
           <span className="text-xs text-foreground" data-testid="members-panel-visibility">
-            {isPublic ? "Public 🌐" : "Private"}
+            {visibility === "public"
+              ? "Public 🌐"
+              : visibility === "external"
+                ? "External — public access, hidden from discovery"
+                : "Private"}
           </span>
         )}
       </div>

@@ -1,5 +1,5 @@
 /**
- * D418 — server-side Full Workstation session registry.
+ * server-side Full Workstation session registry.
  *
  * Policy-state foundation ONLY. This module holds the in-memory
  * `FullWorkstationSession` state that the server uses to decide whether
@@ -95,7 +95,7 @@ export interface FullWorkstationBinding {
    */
   readonly serverBindingId: string;
   /**
-   * D418 Commit 2 — the server-derived `pairingGeneration` (the validated
+   * Commit 2 — the server-derived `pairingGeneration` (the validated
    * relay-token row id). NEVER client-authored: the route resolves it from
    * the authenticated relay registry, never from the client payload. A
    * mismatch with an existing active session's `pairingGeneration` is the
@@ -122,7 +122,7 @@ export interface FullWorkstationSession extends FullWorkstationBinding {
   readonly activatedAt: string;
 }
 
-/** Server-only, one-time preauthorization for the two-phase D418 flow. */
+/** Server-only, one-time preauthorization for the two-phase flow. */
 export interface PendingWorkstationAuthorization {
   /** Opaque random capability returned to Electron main; never audited. */
   readonly ticket: string;
@@ -132,7 +132,7 @@ export interface PendingWorkstationAuthorization {
   readonly desktopSessionId: string;
   readonly serverBindingId: string;
   /**
-   * D418 Commit 2 — the server-derived pairing generation captured at
+   * Commit 2 — the server-derived pairing generation captured at
    * phase-one issue. Completion requires the advertised binding to carry
    * the SAME `pairingGeneration`; a re-pair between phase one and two
    * invalidates the ticket.
@@ -210,7 +210,7 @@ export type ActivateDenialCode =
 export type DisableDenialCode = "not_active";
 
 // ---------------------------------------------------------------------------
-// D418 Commit 4 — runtime-owned redacted Workstation execution-ADMISSION
+// Commit 4 — runtime-owned redacted Workstation execution-ADMISSION
 // audit row. Emitted by the server-side override resolver
 // (`createWorkstationApprovalOverrideResolver`) for every dispatch it is
 // consulted on. The row is REDACTED: it carries ONLY the execution class,
@@ -308,6 +308,12 @@ export interface InvalidateResult {
 }
 
 export interface FullWorkstationSessionRegistryOptions {
+  /** Synchronous execution fencing, independent of optional audit delivery. */
+  readonly onAuthorityRevoked?: (input: {
+    readonly binding: FullWorkstationSession;
+    readonly reason: "disabled" | "binding_replaced" | "profile_replaced" | "grants_removed" | "invalidated";
+    readonly revokedGrantIds?: readonly string[];
+  }) => void;
   /**
    * Injected audit callback. Invoked once per activate / disable /
    * invalidate transition with an audit-envelope-shaped event. The
@@ -333,7 +339,7 @@ function isNonBlankString(value: unknown): value is string {
 }
 
 /**
- * D418 — both binding revisions must be POSITIVE safe integers (>= 1) for
+ * both binding revisions must be POSITIVE safe integers (>= 1) for
  * activation. A `profileRevision` of 0 means "no profile revisions have
  * happened" and is not an activatable binding; a `capabilityRevision` of 0
  * is the pre-advertisement default and likewise not activatable. An empty
@@ -463,12 +469,14 @@ export class InMemoryWorkstationSessionRegistry {
   private readonly sessions = new Map<string, FullWorkstationSession>();
   private readonly pendingAuthorizations = new Map<string, PendingWorkstationAuthorization>();
   private readonly audit: ((event: WorkstationAccessAuditEvent) => void) | undefined;
+  private readonly onAuthorityRevoked: FullWorkstationSessionRegistryOptions["onAuthorityRevoked"];
   private readonly now: () => Date;
   private readonly mintPendingTicket: () => string;
   private readonly pendingAuthorizationTtlMs: number;
 
   constructor(options: FullWorkstationSessionRegistryOptions = {}) {
     this.audit = options.audit;
+    this.onAuthorityRevoked = options.onAuthorityRevoked;
     this.now = options.now ?? defaultNow;
     this.mintPendingTicket = options.mintPendingTicket ?? randomUUID;
     this.pendingAuthorizationTtlMs = options.pendingAuthorizationTtlMs ?? 60_000;
@@ -614,11 +622,13 @@ export class InMemoryWorkstationSessionRegistry {
     // client flag self-authorize. The new binding is authoritative and may
     // legitimately carry an empty durable grant set.
     if (
+      existing.instanceId !== s.instanceId || existing.relayId !== s.relayId ||
       existing.serverBindingId !== s.serverBindingId ||
       existing.pairingGeneration !== s.pairingGeneration ||
       existing.desktopSessionId !== s.desktopSessionId
     ) {
       this.sessions.delete(s.userId);
+      this.onAuthorityRevoked?.({ binding: structuredClone(existing), reason: "binding_replaced" });
       const stored: FullWorkstationSession = { ...s, activatedAt: this.now().toISOString() };
       this.sessions.set(s.userId, stored);
       this.emitActivate("switched", stored);
@@ -641,6 +651,15 @@ export class InMemoryWorkstationSessionRegistry {
     // including to an empty durable grant set, requires no additional
     // authority; broadening is valid here because the route has just
     // required fresh PIN proof against the authoritative new profile binding.
+    const removedGrantIds = existing.grantIds.filter(id => !s.grantIds.includes(id));
+    const profileReplaced = existing.profileId !== s.profileId || existing.profileRevision !== s.profileRevision;
+    if (profileReplaced || removedGrantIds.length > 0) {
+      this.sessions.delete(s.userId);
+      this.onAuthorityRevoked?.({ binding: structuredClone(existing),
+        reason: profileReplaced ? "profile_replaced" : "grants_removed",
+        ...(!profileReplaced ? { revokedGrantIds: removedGrantIds } : {}),
+      });
+    }
     const stored: FullWorkstationSession = { ...s, activatedAt: this.now().toISOString() };
     this.sessions.set(s.userId, stored);
     const outcome: ActivateOutcome = grantIdsSubsetOf(s.grantIds, existing.grantIds)
@@ -658,6 +677,11 @@ export class InMemoryWorkstationSessionRegistry {
     return this.sessions.get(userId) ?? null;
   }
 
+  /** Server-owned snapshot for post-commit effective-authority reconciliation. */
+  activeUserIds(): readonly string[] {
+    return [...this.sessions.keys()];
+  }
+
   /**
    * Disable the active session for a user. User-bound (keyed on
    * `userId`) and idempotent: disabling when no session is active is a
@@ -670,6 +694,7 @@ export class InMemoryWorkstationSessionRegistry {
       return { ok: true, outcome: "not_active", session: null };
     }
     this.sessions.delete(userId);
+    this.onAuthorityRevoked?.({ binding: structuredClone(existing), reason: "disabled" });
     this.emitDisable(existing, userId);
     return { ok: true, outcome: "disabled", session: existing };
   }
@@ -678,7 +703,7 @@ export class InMemoryWorkstationSessionRegistry {
    * Invalidate any active session bound to the given relay binding.
    * Used on relay disconnect / un-pair. Matches on `userId` +
    * `serverBindingId` (+ `relayId` + `desktopSessionId` when supplied).
-   * D418 Commit 2 — an optional `pairingGeneration` filter pins the
+   * Commit 2 — an optional `pairingGeneration` filter pins the
    * invalidation to the exact prior generation so a re-paired relay does
    * not accidentally clear a session already re-activated under the new
    * generation. Returns whether a session was invalidated.
@@ -713,6 +738,7 @@ export class InMemoryWorkstationSessionRegistry {
       return { ok: true, invalidated: false, session: null };
     }
     this.sessions.delete(input.userId);
+    this.onAuthorityRevoked?.({ binding: structuredClone(existing), reason: "invalidated" });
     this.emitInvalidate(existing, "invalidateForRelayBinding");
     return { ok: true, invalidated: true, session: existing };
   }
