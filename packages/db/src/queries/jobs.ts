@@ -37,6 +37,7 @@ function db() {
   return getSharedDirectDb();
 }
 type JobMutationDb = Pick<ReturnType<typeof db>, "insert" | "update">;
+type JobInsertDb = Pick<ReturnType<typeof db>, "insert">;
 type ProtectedTaskJobTerminalDb = Pick<
   ReturnType<typeof db>,
   "select" | "update"
@@ -83,8 +84,25 @@ export async function persistJobWithDatabase(
   database: ReturnType<typeof db>,
   payload: PersistJobPayload,
 ): Promise<string> {
-  const insert = async (tx: JobMutationDb) => {
-    const [row] = await tx
+  if (payload.publicationPolicy === undefined) {
+    return database.transaction(async (tx) => {
+      await acquireOrdinaryEncryptionPublicationFence(tx);
+      return persistJobInTransaction(tx, payload);
+    });
+  }
+  const publicationPolicy = payload.publicationPolicy;
+  return database.transaction(async (tx) => {
+    await acquireEncryptionPublicationFence(tx, publicationPolicy);
+    return persistJobInTransaction(tx, payload);
+  });
+}
+
+/** @internal Insert through an already fenced canonical product transaction. */
+export async function persistJobInTransaction(
+  tx: JobInsertDb,
+  payload: PersistJobPayload,
+): Promise<string> {
+  const [row] = await tx
     .insert(jobs)
     .values({
       ownerId: payload.ownerId,
@@ -97,20 +115,8 @@ export async function persistJobWithDatabase(
       input: payload.input,
     })
     .returning({ id: jobs.id });
-    if (!row) throw new Error("Failed to persist job");
-    return row.id;
-  };
-  if (payload.publicationPolicy === undefined) {
-    return database.transaction(async (tx) => {
-      await acquireOrdinaryEncryptionPublicationFence(tx);
-      return insert(tx);
-    });
-  }
-  const publicationPolicy = payload.publicationPolicy;
-  return database.transaction(async (tx) => {
-    await acquireEncryptionPublicationFence(tx, publicationPolicy);
-    return insert(tx);
-  });
+  if (!row) throw new Error("Failed to persist job");
+  return row.id;
 }
 
 export async function updateJobStatus(

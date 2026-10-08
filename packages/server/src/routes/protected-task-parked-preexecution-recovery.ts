@@ -1,14 +1,20 @@
 import {
   recoverUnstartedParkedProtectedTaskRun,
+  recoverUnstartedParkedProtectedTaskClaim,
+  discoverParkedProtectedTaskAdditionalAuthority,
   type DirectDatabase,
+  type ParkedProtectedTaskAdditionalAuthority,
+  type ProtectedTaskDurableJobReference,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
 } from "@nautilo/db";
 import {
   sameTaskRuntimeAuthorityPlan,
   sameBackgroundAuthorizationRecord,
+  type ProtectedTaskOccurrence,
   type BackgroundAuthorizationTaskRuntimeDeferralRepository,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
 } from "@nautilo/runtime";
+import { sameProtectedTaskRuntimeOccurrence } from "./protected-task-runtime-grant-plan";
 import { classifyProtectedTaskPreexecutionAuthorization } from "./protected-task-preexecution-recovery";
 
 /** The DB owner invokes grant deferral only after durable non-execution proof. */
@@ -17,7 +23,41 @@ export function createProtectedTaskParkedPreexecutionRecovery(input: Readonly<{
   repository: Pick<BackgroundAuthorizationTaskRuntimeDeferralRepository,
     "get" | "deferUnstartedTaskRuntimeRequest">;
   now(): number;
-}>, recover = recoverUnstartedParkedProtectedTaskRun) {
+}>, recover = recoverUnstartedParkedProtectedTaskRun, overrides: Partial<{
+  recoverClaim: typeof recoverUnstartedParkedProtectedTaskClaim;
+  discover: typeof discoverParkedProtectedTaskAdditionalAuthority;
+}> = {}) {
+  const recoverClaim = overrides.recoverClaim ?? recoverUnstartedParkedProtectedTaskClaim;
+  const discover = overrides.discover ?? discoverParkedProtectedTaskAdditionalAuthority;
+  const deferExactClaim = async (expected: BackgroundAuthorizationTaskRuntimeRecordV3) => {
+    const current = await input.repository.get(expected.snapshot.requestId);
+    if (current === null || current.snapshot.formatVersion !== 3
+      || current.authoritySet === undefined) return false;
+    const taskRecord = current as BackgroundAuthorizationTaskRuntimeRecordV3;
+    if (taskRecord.idempotencyKey !== expected.idempotencyKey
+      || !sameTaskRuntimeAuthorityPlan(taskRecord, expected)
+      || taskRecord.finishedAt !== null) return false;
+    // A lost crypto response can precede the product reset. The canonical
+    // deferral retains the work identity and advances only its recipient.
+    const snapshot = taskRecord.snapshot;
+    if (snapshot.state === "awaiting_recipient") {
+      return snapshot.recipientGeneration === expected.snapshot.recipientGeneration + 1
+        && snapshot.retryCount === expected.snapshot.retryCount
+        && snapshot.lastRetryReason === "stale_authority"
+        && snapshot.nextAttemptAt === snapshot.updatedAt
+        && snapshot.recipient === null && snapshot.acceptedResponse === null
+        && snapshot.claimId === null && snapshot.claimExpiresAt === null
+        && snapshot.descriptorDigest === null
+        && taskRecord.descriptorBytes === null && taskRecord.acceptedMaterial === null;
+    }
+    if ((snapshot.state !== "claimed" && snapshot.state !== "running")
+      || snapshot.claimId !== expected.snapshot.claimId
+      || snapshot.recipientGeneration !== expected.snapshot.recipientGeneration) return false;
+    const deferred = await input.repository.deferUnstartedTaskRuntimeRequest({
+      expected: taskRecord, now: input.now(),
+    });
+    return deferred.status === "deferred" || deferred.status === "exact_replay";
+  };
   const recoverImmediate = async (
     start: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
     claimed: BackgroundAuthorizationTaskRuntimeRecordV3,
@@ -30,33 +70,7 @@ export function createProtectedTaskParkedPreexecutionRecovery(input: Readonly<{
       || expected.snapshot.workId !== pinned.taskRunId
       || expected.expectedPolicyRevision !== pinned.jobReference.policyRevision) return false;
     const result = await recover(input.db, pinned, new Date(input.now()), async () => {
-      const current = await input.repository.get(expected.snapshot.requestId);
-      if (current === null || current.snapshot.formatVersion !== 3
-        || current.authoritySet === undefined) return false;
-      const taskRecord = current as BackgroundAuthorizationTaskRuntimeRecordV3;
-      if (taskRecord.idempotencyKey !== expected.idempotencyKey
-        || !sameTaskRuntimeAuthorityPlan(taskRecord, expected)
-        || taskRecord.finishedAt !== null) return false;
-      // A lost crypto response can precede the product reset. The canonical
-      // deferral retains the work identity and advances only its recipient.
-      const snapshot = taskRecord.snapshot;
-      if (snapshot.state === "awaiting_recipient") {
-        return snapshot.recipientGeneration === expected.snapshot.recipientGeneration + 1
-          && snapshot.retryCount === expected.snapshot.retryCount
-          && snapshot.lastRetryReason === "stale_authority"
-          && snapshot.nextAttemptAt === snapshot.updatedAt
-          && snapshot.recipient === null && snapshot.acceptedResponse === null
-          && snapshot.claimId === null && snapshot.claimExpiresAt === null
-          && snapshot.descriptorDigest === null
-          && taskRecord.descriptorBytes === null && taskRecord.acceptedMaterial === null;
-      }
-      if ((snapshot.state !== "claimed" && snapshot.state !== "running")
-        || snapshot.claimId !== expected.snapshot.claimId
-        || snapshot.recipientGeneration !== expected.snapshot.recipientGeneration) return false;
-      const deferred = await input.repository.deferUnstartedTaskRuntimeRequest({
-        expected: taskRecord, now: input.now(),
-      });
-      return deferred.status === "deferred" || deferred.status === "exact_replay";
+      return deferExactClaim(expected);
     });
     // Even if reset must be retried, ordinary Job failure cannot overwrite the
     // exact cancellation that has already proved no execution took place.
@@ -92,5 +106,48 @@ export function createProtectedTaskParkedPreexecutionRecovery(input: Readonly<{
       failed: result.status === "cancelled",
     };
   };
-  return Object.assign(recoverImmediate, { recoverDiscovered });
+  const recoverClaimImmediate = async (
+    supplied: Readonly<{
+      expected: ParkedProtectedTaskAdditionalAuthority;
+      jobReference: ProtectedTaskDurableJobReference;
+    }>,
+    claimed: BackgroundAuthorizationTaskRuntimeRecordV3,
+  ): Promise<boolean> => {
+    const pinned = structuredClone(supplied);
+    const expected = structuredClone(claimed);
+    if (expected.snapshot.state !== "claimed" || expected.snapshot.claimId === null
+      || expected.snapshot.requestId !== pinned.jobReference.authorizationRequestId
+      || expected.snapshot.workId !== pinned.expected.occurrence.run.id
+      || expected.expectedPolicyRevision !== pinned.jobReference.policyRevision) return false;
+    const result = await recoverClaim(input.db, pinned, new Date(input.now()), () =>
+      deferExactClaim(expected));
+    return result.status !== "stale";
+  };
+  const recoverExpiredClaim = async (observed: ProtectedTaskOccurrence): Promise<boolean> => {
+    if (observed.run.jobId === null) return false;
+    const expected = await discover(input.db, { taskRunId: observed.run.id });
+    if (expected === null
+      || !sameProtectedTaskRuntimeOccurrence(observed, expected.occurrence)) return false;
+    const selected = await input.repository.get(expected.authorizationRequestId);
+    const now = input.now();
+    if (selected === null || selected.snapshot.formatVersion !== 3
+      || selected.authoritySet === undefined
+      || selected.snapshot.state !== "claimed" || selected.snapshot.claimExpiresAt === null
+      || !Number.isSafeInteger(now) || now < selected.snapshot.claimExpiresAt) return false;
+    const jobReference: ProtectedTaskDurableJobReference = {
+      kind: "protected_task_run_v1", taskId: expected.occurrence.task.id,
+      taskRunId: expected.occurrence.run.id,
+      inputObjectId: expected.occurrence.task.cryptoObjectId,
+      resultObjectId: expected.priorJob.reference.resultObjectId,
+      authorizationRequestId: expected.authorizationRequestId,
+      policyRevision: selected.expectedPolicyRevision,
+      executionSegment: expected.nextExecutionSegment,
+      resumeContinuationFingerprint: expected.continuationFingerprint,
+    };
+    return recoverClaimImmediate({ expected, jobReference },
+      selected as BackgroundAuthorizationTaskRuntimeRecordV3);
+  };
+  return Object.assign(recoverImmediate, {
+    recoverDiscovered, recoverClaim: recoverClaimImmediate, recoverExpiredClaim,
+  });
 }

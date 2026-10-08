@@ -1,7 +1,12 @@
 import {
   acquireEncryptionConsumptionFence,
+  acquireEncryptionPublicationFence,
+  exactParkedProtectedTaskJobReference,
+  persistJobInTransaction,
   type ParkedProtectedTaskAdditionalAuthority,
+  type PersistJobPayload,
   type PostgresJsBridgeConnection,
+  type ProtectedTaskDurableJobReference,
 } from "@nautilo/db";
 import {
   type DomainForegroundAuthorityEntry,
@@ -21,6 +26,7 @@ import {
   verifyDomainForegroundAuthorizationV2,
   type DomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
+import type { CanonicalTranscriptTx } from "@nautilo/trust";
 import {
   PostgresDomainKeyAuthorityRepository,
 } from "../delivery/postgres-domain-key-authority.ts";
@@ -89,6 +95,10 @@ export type TaskRuntimeAuthoritySubject = Readonly<{
   userId: string;
   humanActorId: string;
   deviceId: string;
+}>;
+
+export type ParkedTaskRuntimeJobPersistence = Readonly<{
+  persistJob(payload: PersistJobPayload): Promise<string>;
 }>;
 
 /** Durable V3 facts authenticated at response acceptance, without its bearer. */
@@ -476,6 +486,132 @@ type CurrentAcceptedTaskRuntimeAuthorityInput = Readonly<{
     signal?: AbortSignal;
 }>;
 
+function parkedContinuationJobReference(input: Readonly<{
+  expected: ParkedProtectedTaskAdditionalAuthority;
+  policyRevision: number;
+}>): ProtectedTaskDurableJobReference {
+  return Object.freeze({
+    kind: "protected_task_run_v1",
+    taskId: input.expected.occurrence.task.id,
+    taskRunId: input.expected.occurrence.run.id,
+    inputObjectId: input.expected.occurrence.task.cryptoObjectId,
+    resultObjectId: input.expected.priorJob.reference.resultObjectId,
+    authorizationRequestId: input.expected.authorizationRequestId,
+    policyRevision: input.policyRevision,
+    executionSegment: input.expected.nextExecutionSegment,
+    resumeContinuationFingerprint: input.expected.continuationFingerprint,
+  });
+}
+
+function exactParkedContinuationJobPayload(input: Readonly<{
+  payload: PersistJobPayload;
+  expected: ParkedProtectedTaskAdditionalAuthority;
+  expectedReference: ProtectedTaskDurableJobReference;
+  targetRoomId: string;
+  policyRevision: number;
+}>): boolean {
+  const publication = input.payload.publicationPolicy;
+  return input.payload.ownerId === input.expected.occurrence.task.requestorId
+    && input.payload.requestorId
+      === input.expected.occurrence.task.requestorId
+    && input.payload.laneKey === `task:${input.expected.occurrence.task.id}`
+    && input.payload.roomId === input.targetRoomId
+    && input.payload.type === "foreground"
+    && publication !== undefined
+    && Object.keys(publication).sort().join(",")
+      === "expectedRevision,representation"
+    && publication.expectedRevision === input.policyRevision
+    && publication.representation === "protected_only"
+    && exactParkedProtectedTaskJobReference(
+      input.payload.input,
+      input.expectedReference,
+    );
+}
+
+async function withParkedTaskRuntimeJobPersistence<Value>(input: Readonly<{
+  transaction: CanonicalTranscriptTx;
+  expected: ParkedProtectedTaskAdditionalAuthority;
+  targetRoomId: string;
+  policyRevision: number;
+  use(persistence: ParkedTaskRuntimeJobPersistence): Promise<Value>;
+}>): Promise<Value> {
+  const expectedReference = parkedContinuationJobReference(input);
+  const pending = new Set<Promise<unknown>>();
+  const failures: unknown[] = [];
+  let active = true;
+  const assertActive = (): void => {
+    if (!active) {
+      throw new TypeError("Parked Task Job persistence is not active");
+    }
+  };
+  const persistence: ParkedTaskRuntimeJobPersistence = Object.freeze({
+    persistJob: (payload: PersistJobPayload): Promise<string> => {
+      assertActive();
+      if (!exactParkedContinuationJobPayload({
+        payload,
+        expected: input.expected,
+        expectedReference,
+        targetRoomId: input.targetRoomId,
+        policyRevision: input.policyRevision,
+      })) {
+        throw new TypeError(
+          "Parked Task Job persistence payload is invalid",
+        );
+      }
+      const normalized: PersistJobPayload = Object.freeze({
+        ownerId: input.expected.occurrence.task.requestorId,
+        requestorId: input.expected.occurrence.task.requestorId,
+        laneKey: `task:${input.expected.occurrence.task.id}`,
+        roomId: input.targetRoomId,
+        type: "foreground",
+        input: Object.freeze({ ...expectedReference }),
+        publicationPolicy: Object.freeze({
+          expectedRevision: input.policyRevision,
+          representation: "protected_only" as const,
+        }),
+      });
+      const operation = (async () => {
+        await acquireEncryptionPublicationFence(
+          input.transaction,
+          normalized.publicationPolicy!,
+        );
+        assertActive();
+        const jobId = await persistJobInTransaction(
+          input.transaction,
+          normalized,
+        );
+        assertActive();
+        return jobId;
+      })();
+      pending.add(operation);
+      void operation.catch(error => failures.push(error)).finally(() => {
+        pending.delete(operation);
+      });
+      return operation;
+    },
+  });
+  let failed = false;
+  let failure: unknown;
+  let result: Value;
+  try {
+    result = await input.use(persistence);
+  } catch (error) {
+    failed = true;
+    failure = error;
+    result = undefined as Value;
+  }
+  active = false;
+  await Promise.allSettled([...pending]);
+  if (failed) throw failure;
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      "Parked Task Job persistence failed while closing authority",
+    );
+  }
+  return result;
+}
+
 type CurrentAcceptedTaskRuntimeAuthorityUse<Value> =
   | Readonly<{
     kind: "current";
@@ -514,6 +650,7 @@ type CurrentAcceptedTaskRuntimeAuthorityUse<Value> =
     use(
       authority: CurrentTaskRuntimeAuthority,
       restricted: PostgresJsBridgeConnection,
+      persistence: ParkedTaskRuntimeJobPersistence,
     ): Promise<Value>;
   }>;
 
@@ -773,7 +910,17 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
               } else {
                 result = await withParkedTaskRuntimeRestrictedAuthority(
                   restricted,
-                  scoped => authorityUse.use(authority, scoped),
+                  scoped => withParkedTaskRuntimeJobPersistence({
+                    transaction: tx,
+                    expected: authorityUse.expected,
+                    targetRoomId: authorityUse.targetRoomId,
+                    policyRevision: policy.revision,
+                    use: persistence => authorityUse.use(
+                      authority,
+                      scoped,
+                      persistence,
+                    ),
+                  }),
                 );
               }
               input.signal?.throwIfAborted();
@@ -878,6 +1025,7 @@ export async function withCurrentAcceptedParkedTaskRuntimeAuthority<Value>(
     use(
       authority: CurrentTaskRuntimeAuthority,
       restricted: PostgresJsBridgeConnection,
+      persistence: ParkedTaskRuntimeJobPersistence,
     ): Promise<Value>;
   }>,
 ): Promise<Value | null> {
@@ -922,6 +1070,10 @@ export async function withCurrentAcceptedParkedTaskRuntimeAuthority<Value>(
       ? {}
       : { expectedNamespaceParticipants }),
     validateCurrentRouting,
-    use: (authority, restricted) => use(authority, restricted),
+    use: (authority, restricted, persistence) => use(
+      authority,
+      restricted,
+      persistence,
+    ),
   });
 }

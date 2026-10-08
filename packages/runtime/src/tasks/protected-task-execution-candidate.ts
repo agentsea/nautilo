@@ -1,4 +1,5 @@
 import type { JobExecutor } from "../job";
+import type { PersistJobPayload } from "@nautilo/db";
 import type { TaskRunResultPayloadV1 } from "@nautilo/lattice-bridge";
 import type { ProtectedTaskJobReferenceV1 } from "./protected-task-job-reference";
 
@@ -42,6 +43,10 @@ export type ProtectedTaskExecutionSettlement = Readonly<{
  * before it returns, and cannot be reconstructed from the durable reference.
  */
 export interface ProtectedTaskExecutionCandidate {
+  /** Parked-only queued Job persistence under the held product authority. */
+  persistJob?(payload: PersistJobPayload): Promise<string>;
+  /** Reconcile an uncertain parked persistence response before releasing custody. */
+  recoverBeforeExecution?(): Promise<boolean>;
   /**
    * Attach the already-persisted content-free Job to the exact TaskRun before
    * protected input can be opened. This transition is one-shot.

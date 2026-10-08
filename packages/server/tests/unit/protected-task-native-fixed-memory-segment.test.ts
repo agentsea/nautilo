@@ -1195,7 +1195,15 @@ describe("protected Task native fixed Memory segment", () => {
       executionSegment: 2,
       resumeContinuationFingerprint: "A".repeat(43),
     });
-    let continued = false;
+    const additionalAuthorityResume = Object.freeze({
+      interruptId: "prior-additional-authority",
+      authorizationRequestId: REQUEST,
+      effectDisposition: "not_started_v1" as const,
+      operationId: "prior-memory-operation",
+      requestDigest: bytes(31),
+      requiredAuthorityDigest: bytes(37),
+    });
+    let carriedResume: unknown;
     const baseOverrides = overrides(calls, "additional-authority");
     if (baseOverrides === undefined) {
       throw new TypeError("Test overrides are unavailable");
@@ -1220,7 +1228,8 @@ describe("protected Task native fixed Memory segment", () => {
     }, {
       ...baseOverrides,
       runSegment: async segment => {
-        continued = segment.execution.continueFromCheckpoint === true;
+        carriedResume = segment.execution.resume;
+        expect(segment.execution.continueFromCheckpoint).toBeUndefined();
         return baseRunSegment(segment);
       },
     });
@@ -1235,6 +1244,7 @@ describe("protected Task native fixed Memory segment", () => {
           policy: value.policy,
           reference,
           stableRoutingDigest: value.stableRoutingDigest,
+          additionalAuthorityResume,
         });
         const transient = await prepared.openTransientInput({
           occurrence: value.runningOccurrence,
@@ -1252,7 +1262,16 @@ describe("protected Task native fixed Memory segment", () => {
         ));
       },
     });
-    expect(continued).toBe(true);
+    expect(carriedResume).toEqual({
+      "prior-additional-authority": {
+        type: "protected_task_additional_authority_granted_v1",
+        authorizationRequestId: REQUEST,
+        effectDisposition: "not_started_v1",
+        operationId: "prior-memory-operation",
+        requestDigest: bytes(31),
+        requiredAuthorityDigest: bytes(37),
+      },
+    });
     expect(published).toEqual([]);
     expect(parked).toHaveLength(1);
     expect(parked[0]).toMatchObject({
@@ -1442,6 +1461,54 @@ describe("protected Task native fixed Memory segment", () => {
       } as unknown as ProtectedTaskRuntimeMemoryPolicy,
       reference: value.reference,
       stableRoutingDigest: value.stableRoutingDigest,
+    })).toThrow("preparation is not exact");
+  });
+
+  test("requires a typed resume only for an additional-authority continuation", async () => {
+    const value = await fixture();
+    const prepare = createProtectedTaskNativeFixedMemorySegment(
+      compositionInput(value.crypto, runner()),
+      overrides([]),
+    );
+    const additionalAuthorityResume = {
+      interruptId: "additional-authority-exact",
+      authorizationRequestId: REQUEST,
+      effectDisposition: "not_started_v1" as const,
+      operationId: "memory-operation-exact",
+      requestDigest: bytes(41),
+      requiredAuthorityDigest: bytes(43),
+    };
+    expect(() => prepare({
+      occurrence: value.occurrence,
+      predispatch: value.predispatch,
+      policy: value.policy,
+      reference: value.reference,
+      stableRoutingDigest: value.stableRoutingDigest,
+      additionalAuthorityResume,
+    })).toThrow("preparation is not exact");
+
+    const continuationReference: TaskRuntimeGrantClaimPlan["reference"] = {
+      ...value.reference,
+      executionSegment: 2,
+      resumeContinuationFingerprint: "A".repeat(43),
+    };
+    expect(() => prepare({
+      occurrence: value.occurrence,
+      predispatch: value.predispatch,
+      policy: value.policy,
+      reference: continuationReference,
+      stableRoutingDigest: value.stableRoutingDigest,
+    })).toThrow("preparation is not exact");
+    expect(() => prepare({
+      occurrence: value.occurrence,
+      predispatch: value.predispatch,
+      policy: value.policy,
+      reference: continuationReference,
+      stableRoutingDigest: value.stableRoutingDigest,
+      additionalAuthorityResume: {
+        ...additionalAuthorityResume,
+        authorizationRequestId: "foreign-request",
+      },
     })).toThrow("preparation is not exact");
   });
 

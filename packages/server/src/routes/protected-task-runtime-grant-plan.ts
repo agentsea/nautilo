@@ -24,6 +24,7 @@ import {
   taskRuntimeStableIdempotencyKey,
   taskRuntimeStableRoutingDigest,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
+  type ProtectedTaskNativeAdditionalAuthorityResume,
   type TaskRuntimeGrantClaimPlan,
   type TaskRuntimeGrantStableIdentity,
   type ProtectedTaskPredispatchPlan,
@@ -140,6 +141,8 @@ export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
     reference: TaskRuntimeGrantClaimPlan["reference"];
     /** Server-derived original routing commitment for a later atomic park. */
     stableRoutingDigest: Uint8Array;
+    /** Exact pending interrupt and immutable pre-effect proof for a parked run. */
+    additionalAuthorityResume?: ProtectedTaskNativeAdditionalAuthorityResume;
     scopeMemory?: TaskScopeMemoryBinding;
     /** Exact committed preimage; retained only for fixed Scope execution admission. */
     scopeWorkIdentity?: string;

@@ -431,6 +431,7 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     publishResult: nativeExecution.publishResult,
     createDedicatedPool: input.createDedicatedPool ?? createDedicatedEncryptedCheckpointPool,
     recoverUnstarted: parkedRecovery,
+    recoverClaim: parkedRecovery.recoverClaim,
     now,
   });
   const parkedSettlement = createProtectedTaskParkedAuthorizationSettlement({
@@ -470,6 +471,7 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
           return Object.freeze({ status: settled === "inactive"
             ? "inactive" as const : "awaiting_authorization" as const });
         }
+        await parkedRecovery.recoverExpiredClaim(occurrence);
         await prepareParked(occurrence);
         return parked.prepareOrClaimExact(occurrence);
       },

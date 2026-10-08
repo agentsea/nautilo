@@ -11,6 +11,7 @@ import {
   type ParkedProtectedTaskAdditionalAuthorityJobRow,
   type ParkedProtectedTaskAdditionalAuthorityRunRow,
   type ParkedProtectedTaskAdditionalAuthorityTaskRow,
+  type PersistJobPayload,
   type ProtectedTaskDurableJobReference,
   type ProtectedTaskExecutionContinuationProof,
 } from "@nautilo/db";
@@ -40,6 +41,7 @@ import {
   withCurrentTaskRuntimeAuthority,
   type AcceptedTaskRuntimeAuthorizationV3,
   type CurrentTaskRuntimeAuthority,
+  type ParkedTaskRuntimeJobPersistence,
   type TaskRuntimeDomainAuthorityRequirement,
   type TaskRuntimeNamespaceAuthorityRequirement,
 } from "../../src/server/task/current-task-runtime-authority.ts";
@@ -396,6 +398,7 @@ function productAuthority(
     targetRoomId?: string | null;
     wideBringBack?: boolean;
     participantHumanIds?: readonly string[];
+    insertedJobs?: Record<string, unknown>[];
   }> = {},
 ) {
   const member = { actor_id: HUMAN, kind: "user" };
@@ -476,6 +479,14 @@ function productAuthority(
       };
       return query;
     },
+    insert: () => ({
+      values: (payload: Record<string, unknown>) => ({
+        returning: async () => {
+          routing.insertedJobs?.push(payload);
+          return [{ id: "20000000-0000-4000-8000-00000000000b" }];
+        },
+      }),
+    }),
   };
   const executor: PostgresJsBridgeExecutor = {
     query: async <Row extends PostgresJsBridgeRow>(
@@ -1002,6 +1013,131 @@ describe("current Task Runtime authority", () => {
     expect(() => retained?.query("SELECT current_user::text"))
       .toThrow("Parked Task Runtime authority is not active");
     expect(events.filter(event => event === "role")).toHaveLength(roleReads);
+  });
+
+  test("persists only the exact continuation on the held product transaction", async () => {
+    const value = await fixture(true);
+    const parked = parkedAuthorityRows();
+    const events: string[] = [];
+    const insertedJobs: Record<string, unknown>[] = [];
+    const reference: ProtectedTaskDurableJobReference = Object.freeze({
+      kind: "protected_task_run_v1",
+      taskId: TASK,
+      taskRunId: RUN,
+      inputObjectId: parked.expected.occurrence.task.cryptoObjectId,
+      resultObjectId: parked.expected.priorJob.reference.resultObjectId,
+      authorizationRequestId: parked.expected.authorizationRequestId,
+      policyRevision: value.plan.policyRevision,
+      executionSegment: parked.expected.nextExecutionSegment,
+      resumeContinuationFingerprint:
+        parked.expected.continuationFingerprint,
+    });
+    const payload: PersistJobPayload = {
+      ownerId: USER,
+      requestorId: USER,
+      laneKey: `task:${TASK}`,
+      roomId: ROOM,
+      type: "foreground",
+      input: reference,
+      publicationPolicy: {
+        expectedRevision: value.plan.policyRevision,
+        representation: "protected_only",
+      },
+    };
+    let retained: ParkedTaskRuntimeJobPersistence | null = null;
+    const result = await withCurrentAcceptedParkedTaskRuntimeAuthority({
+      ...productAuthority(value, events, parked, { insertedJobs }),
+      restricted: restrictedAuthority(value, { events }),
+      crypto: value.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+      accepted: value.accepted,
+      expected: parked.expected,
+      targetRoomId: ROOM,
+      validateCurrentRouting: () => true,
+      now: () => NOW + 1,
+      use: async (
+        _authority: CurrentTaskRuntimeAuthority,
+        _restricted: PostgresJsBridgeConnection,
+        persistence: ParkedTaskRuntimeJobPersistence,
+      ) => {
+        retained = persistence;
+        expect(() => persistence.persistJob({
+          ...payload,
+          publicationPolicy: {
+            expectedRevision: value.plan.policyRevision + 1,
+            representation: "protected_only",
+          },
+        })).toThrow("persistence payload is invalid");
+        return persistence.persistJob(payload);
+      },
+    } as unknown as Parameters<
+      typeof withCurrentAcceptedParkedTaskRuntimeAuthority<string>
+    >[0]);
+    expect(result).toBe("20000000-0000-4000-8000-00000000000b");
+    expect(insertedJobs).toEqual([{
+      ownerId: USER,
+      requestorId: USER,
+      laneKey: `task:${TASK}`,
+      roomId: ROOM,
+      type: "foreground",
+      status: "queued",
+      input: reference,
+    }]);
+    expect(() => retained?.persistJob(payload))
+      .toThrow("Parked Task Job persistence is not active");
+  });
+
+  test("drains and rejects unawaited parked Job persistence before commit", async () => {
+    const value = await fixture(true);
+    const parked = parkedAuthorityRows();
+    const events: string[] = [];
+    const operation = withCurrentAcceptedParkedTaskRuntimeAuthority({
+      ...productAuthority(value, events, parked),
+      restricted: restrictedAuthority(value, { events }),
+      crypto: value.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+      accepted: value.accepted,
+      expected: parked.expected,
+      targetRoomId: ROOM,
+      validateCurrentRouting: () => true,
+      now: () => NOW + 1,
+      use: async (
+        _authority: CurrentTaskRuntimeAuthority,
+        _restricted: PostgresJsBridgeConnection,
+        persistence: ParkedTaskRuntimeJobPersistence,
+      ) => {
+        void persistence.persistJob({
+          ownerId: USER,
+          requestorId: USER,
+          laneKey: `task:${TASK}`,
+          roomId: ROOM,
+          type: "foreground",
+          input: {
+            kind: "protected_task_run_v1",
+            taskId: TASK,
+            taskRunId: RUN,
+            inputObjectId: parked.expected.occurrence.task.cryptoObjectId,
+            resultObjectId: parked.expected.priorJob.reference.resultObjectId,
+            authorizationRequestId: parked.expected.authorizationRequestId,
+            policyRevision: value.plan.policyRevision,
+            executionSegment: parked.expected.nextExecutionSegment,
+            resumeContinuationFingerprint:
+              parked.expected.continuationFingerprint,
+          },
+          publicationPolicy: {
+            expectedRevision: value.plan.policyRevision,
+            representation: "protected_only",
+          },
+        });
+        return "unsafe";
+      },
+    } as unknown as Parameters<
+      typeof withCurrentAcceptedParkedTaskRuntimeAuthority<string>
+    >[0]);
+    const outcome = operation.catch((error: unknown): unknown => error);
+    expect(await outcome).toBeInstanceOf(AggregateError);
   });
 
   test("snapshots the parked callback before awaiting its locked proof", async () => {

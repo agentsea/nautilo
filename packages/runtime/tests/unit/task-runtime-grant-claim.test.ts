@@ -24,7 +24,7 @@ import {
   type DomainForegroundAuthorizationPlanV2,
   type DomainForegroundAuthorizationPublicCurrentAuthorityV2,
 } from "@nautilo/lattice-crypto/wire";
-import type { StartProtectedTaskRunInput } from "@nautilo/db";
+import type { PersistJobPayload, StartProtectedTaskRunInput } from "@nautilo/db";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import type { TaskScopeMemoryBinding } from "@nautilo/lattice-bridge/server";
 
@@ -261,6 +261,23 @@ function parkedPreparation() {
     idempotencyKey: taskRuntimeStableIdempotencyKey(stable),
   });
   return { occurrence: parkedOccurrence, stableIdentity: stable, initialRecord: initial };
+}
+
+function parkedPersistPayload(
+  reference: ParkedTaskRuntimeGrantClaimPlan["reference"],
+): PersistJobPayload {
+  return {
+    ownerId: REQUESTOR,
+    requestorId: REQUESTOR,
+    laneKey: `task:${TASK}`,
+    roomId: ROOM,
+    type: "foreground",
+    input: reference,
+    publicationPolicy: {
+      expectedRevision: reference.policyRevision,
+      representation: "protected_only",
+    },
+  };
 }
 
 function scopeBinding(
@@ -809,6 +826,14 @@ async function parkedClaimFixture(
   await acceptGrant(value);
 
   const starts: ParkedTaskRuntimeExecutionStartInput[] = [];
+  const persistenceInputs: Parameters<
+    ParkedTaskRuntimeGrantClaimPlan["persistJob"]
+  >[0][] = [];
+  const recoveryInputs: Parameters<
+    ParkedTaskRuntimeGrantClaimPlan["recoverBeforeExecution"]
+  >[0][] = [];
+  let persistedJobId = "parked-continuation-job";
+  let persistenceError: Error | null = null;
   let deferrals = 0;
   let clock = NOW + 3;
   const fingerprint = prepared.stableIdentity.resumeContinuationFingerprint;
@@ -830,6 +855,15 @@ async function parkedClaimFixture(
     scheduling: base.scheduling,
     executor: base.executor,
     ...(parkedScope === undefined ? {} : { scopeMemory: parkedScope }),
+    persistJob: async input => {
+      persistenceInputs.push(input);
+      if (persistenceError !== null) throw persistenceError;
+      return persistedJobId;
+    },
+    recoverBeforeExecution: async input => {
+      recoveryInputs.push(input);
+      return true;
+    },
     start: async (input: ParkedTaskRuntimeExecutionStartInput) => {
       starts.push(input);
       return { status: "started" as const };
@@ -887,6 +921,10 @@ async function parkedClaimFixture(
     plan,
     coordinator,
     starts,
+    persistenceInputs,
+    recoveryInputs,
+    setPersistedJobId: (value: string) => { persistedJobId = value; },
+    setPersistenceError: (value: Error | null) => { persistenceError = value; },
     deferrals: () => deferrals,
     setParkedClock: (next: number) => { clock = next; },
   };
@@ -1043,6 +1081,16 @@ describe("parked Task Runtime grant claim", () => {
     );
     if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
     const newJobId = "parked-continuation-job";
+    const payload = parkedPersistPayload(value.plan.reference);
+    expect(await claimed.dispatch.candidate.persistJob?.(payload)).toBe(newJobId);
+    expect(value.persistenceInputs).toHaveLength(1);
+    expect(value.persistenceInputs[0]).toMatchObject({
+      occurrence: value.prepared.occurrence,
+      claimId: "parked-task-runtime-claim",
+      reference: value.plan.reference,
+      payload,
+    });
+    expect(value.persistenceInputs[0]!.payload).not.toBe(payload);
     expect(await claimed.dispatch.candidate.start(newJobId))
       .toEqual({ status: "started" });
     expect(value.starts).toHaveLength(1);
@@ -1087,16 +1135,41 @@ describe("parked Task Runtime grant claim", () => {
     expect(value.recipients.size).toBe(0);
   });
 
+  test("retains custody until uncertain persistence recovery settles once", async () => {
+    const value = await parkedClaimFixture();
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
+    value.setPersistenceError(new Error("persistence response unknown"));
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.persistJob?.(
+      parkedPersistPayload(value.plan.reference),
+    )).rejects.toThrow("persistence response unknown");
+    expect(value.recipients.size).toBe(1);
+    expect(await Promise.all([
+      claimed.dispatch.candidate.recoverBeforeExecution?.(),
+      claimed.dispatch.candidate.recoverBeforeExecution?.(),
+    ])).toEqual([true, true]);
+    expect(value.recoveryInputs).toHaveLength(1);
+    expect(value.recipients.size).toBe(0);
+  });
+
   test("rejects reusing the prior parked Job for a continuation", async () => {
     const value = await parkedClaimFixture();
     const claimed = await value.coordinator.prepareOrClaimExact(
       value.prepared.occurrence,
     );
     if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
+    value.setPersistedJobId(JOB);
     // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
-    await expect(claimed.dispatch.candidate.start(JOB))
-      .rejects.toThrow("requires a fresh Job");
+    await expect(claimed.dispatch.candidate.persistJob?.(
+      parkedPersistPayload(value.plan.reference),
+    )).rejects.toThrow("persisted Job identity is invalid");
+    expect(await claimed.dispatch.candidate.recoverBeforeExecution?.()).toBe(true);
     expect(value.starts).toEqual([]);
+    expect(value.recoveryInputs).toHaveLength(1);
     expect(value.recipients.size).toBe(0);
   });
 

@@ -165,7 +165,11 @@ async function fixture() {
       ownerHeld = true;
       try {
         expect(operation).toBeDefined();
-        return await use({ resolved, canonical } as never);
+        return await use({ resolved, canonical, persistJob: async () => {
+          expect(ownerHeld).toBe(true);
+          events.push("persist-held");
+          return NEW_JOB;
+        } } as never);
       } finally {
         ownerHeld = false;
         events.push("owner-close");
@@ -179,15 +183,23 @@ async function fixture() {
     serverScope: "https://server.example", resolver: {} as never,
     recipients: {} as never, repository: repository as never,
     withCurrentAuthority: async () => null,
-    prepareExecution: async () => ({
+    prepareExecution: async value => {
+      expect(value.additionalAuthorityResume).toEqual({
+        interruptId: "interrupt:1", authorizationRequestId: REQUEST,
+        effectDisposition: "not_started_v1", operationId: "operation:1",
+        requestDigest: new Uint8Array(32).fill(1),
+        requiredAuthorityDigest: new Uint8Array(32).fill(2),
+      });
+      return ({
       executor: async function* () { yield* []; },
       openTransientInput: async () => ({ message: "opened" }),
-    }),
+    }); },
     publishResult: async () => {},
     createDedicatedPool: (() => {
       throw new Error("unused pool factory");
     }) as never,
     recoverUnstarted: async () => true,
+    recoverClaim: async () => { events.push("recover-claim"); return true; },
     now: () => NOW,
   }, {
     resolvePlan: async () => resolved,
@@ -267,4 +279,25 @@ test.each([
     claimId: "claim:parked", jobId: NEW_JOB, reference: { ...plan.reference, ...patch } } as
     ParkedTaskRuntimeExecutionStartInput)).toEqual({ status: "stale" });
   expect(f.events).toEqual(["owner", "owner-close"]);
+});
+
+
+test("persists under the exact claimed owner and recovers without a Job id", async () => {
+  const f = await fixture();
+  const plan = await f.composition.plan(f.occurrence);
+  if (plan === null) throw new Error("parked continuation plan missing");
+  const claimed = { ...f.selected, snapshot: { ...f.selected.snapshot,
+    state: "claimed" as const, claimId: "claim:parked" } };
+  const value = { occurrence: f.occurrence, claimed,
+    claimId: "claim:parked", reference: plan.reference };
+  expect(await plan.persistJob({ ...value, payload: {} as never })).toBe(NEW_JOB);
+  expect(f.events).toEqual([
+    "owner", "owner-close", "owner", "persist-held", "owner-close",
+  ]);
+  expect(await plan.recoverBeforeExecution(value)).toBe(true);
+  expect(f.events.at(-1)).toBe("recover-claim");
+  const failure = await plan.persistJob({ ...value, claimId: "substituted", payload: {} as never })
+    .then(() => null, (error: unknown) => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as Error).message).toContain("stale");
 });

@@ -5,6 +5,8 @@ import {
   startParkedProtectedTaskRunAdditionalAuthoritySegment,
   type DirectDatabase,
   type PostgresJsBridgeConnection,
+  type ParkedProtectedTaskAdditionalAuthority,
+  type ProtectedTaskDurableJobReference,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
 } from "@nautilo/db";
 import type { LatticeCrypto, TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
@@ -85,6 +87,10 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
   publishResult: ParkedTaskRuntimeGrantClaimPlan["publishResult"];
   createDedicatedPool: Parameters<typeof readProtectedTaskCheckpointPhysicalManifest>[0]["createDedicatedPool"];
   recoverUnstarted(start: StartInput, claimed: BackgroundAuthorizationTaskRuntimeRecordV3): Promise<boolean>;
+  recoverClaim(input: Readonly<{
+    expected: ParkedProtectedTaskAdditionalAuthority;
+    jobReference: ProtectedTaskDurableJobReference;
+  }>, claimed: BackgroundAuthorizationTaskRuntimeRecordV3): Promise<boolean>;
   now(): number;
 }>, overrides: Partial<Dependencies> = {}) {
   const resolvePlan = overrides.resolvePlan ?? createParkedTaskRuntimeAuthorizationPlanResolver({
@@ -143,6 +149,14 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
           target: { roomId: memory.routing.targetRoomId, targetUserIds: memory.routing.targetUserIds },
           memory: memory.resolution },
         stableRoutingDigest: expected.proof.continuation.stableRoutingDigest.slice(),
+        additionalAuthorityResume: {
+          interruptId: expected.proof.continuation.interruptId!,
+          authorizationRequestId: expected.authorizationRequestId,
+          effectDisposition: "not_started_v1",
+          operationId: expected.proof.continuation.operationId!,
+          requestDigest: expected.proof.continuation.requestDigest!.slice(),
+          requiredAuthorityDigest: expected.proof.continuation.requiredAuthorityDigest!.slice(),
+        },
         ...(memory.scopeMemory === undefined ? {} : {
           scopeMemory: memory.scopeMemory, scopeWorkIdentity: canonical.scopeWorkIdentity,
         }),
@@ -161,6 +175,30 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
         reference, scheduling, ...execution,
         ...(memory.scopeMemory === undefined ? {} : { scopeMemory: memory.scopeMemory }),
         publishResult: input.publishResult,
+        persistJob: async value => {
+          if (value.claimed.snapshot.state !== "claimed"
+            || value.claimed.snapshot.claimId !== value.claimId
+            || Object.keys(value.reference).length !== Object.keys(reference).length
+            || Object.entries(reference).some(([key, expectedValue]) =>
+              Reflect.get(value.reference, key) !== expectedValue)) {
+            throw new Error("Parked Task persistence authority is stale");
+          }
+          const claimedRequest = value.claimed.descriptorBytes === null ? null
+            : decodeTaskRuntimeBackgroundAuthorizationRequestV1(value.claimed.descriptorBytes);
+          if (claimedRequest === null) throw new Error("Parked Task persistence request is missing");
+          try {
+            const jobId = await authority.withPlan({ occurrence: value.occurrence,
+              record: value.claimed, request: claimedRequest }, held =>
+              held.persistJob(value.payload));
+            if (jobId === null) throw new Error("Parked Task persistence authority is stale");
+            return jobId;
+          } finally {
+            destroyTaskRuntimeBackgroundAuthorizationRequestV1(claimedRequest);
+          }
+        },
+        recoverBeforeExecution: value => input.recoverClaim({
+          expected: pinned.expected, jobReference: value.reference,
+        }, value.claimed),
         start: async value => {
           if (value.claimed.snapshot.state !== "claimed"
             || value.claimed.snapshot.claimId !== value.claimId

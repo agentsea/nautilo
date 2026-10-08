@@ -106,6 +106,13 @@ export {
   interruptValueToServerEvent,
   collectPendingInterruptEvents,
 } from "./graph/interrupt-mapping";
+export {
+  PROTECTED_TASK_ADDITIONAL_AUTHORITY_GRANTED_V1,
+  assertProtectedTaskAdditionalAuthorityResumeAcknowledgementV1,
+  createProtectedTaskAdditionalAuthorityResumeMapV1,
+  type ProtectedTaskAdditionalAuthorityResumeAcknowledgementV1,
+  type ProtectedTaskAdditionalAuthorityResumeBindingV1,
+} from "./graph/protected-task-additional-authority-resume";
 export { readPendingInterruptEventsForThread } from "./graph/pending-interrupts";
 export { resumeGraphWithConnectedWebAction } from "./graph/resume-connected-web-action";
 export {

@@ -21,6 +21,7 @@ import {
   type DomainForegroundAuthorizationPublicCurrentAuthorityV2,
 } from "@nautilo/lattice-crypto/wire";
 import type {
+  PersistJobPayload,
   StartProtectedTaskRunInput,
   StartProtectedTaskRunResult,
 } from "@nautilo/db";
@@ -257,6 +258,19 @@ export type ParkedTaskRuntimeGrantClaimPlan = Readonly<{
   executor: JobExecutor;
   scopeMemory?: TaskScopeMemoryBinding;
   modelAttribution?: "external";
+  persistJob(input: Readonly<{
+    occurrence: ProtectedTaskOccurrence;
+    claimed: BackgroundAuthorizationTaskRuntimeRecordV3;
+    claimId: string;
+    reference: ProtectedTaskJobReferenceV1;
+    payload: PersistJobPayload;
+  }>): Promise<string>;
+  recoverBeforeExecution(input: Readonly<{
+    occurrence: ProtectedTaskOccurrence;
+    claimed: BackgroundAuthorizationTaskRuntimeRecordV3;
+    claimId: string;
+    reference: ProtectedTaskJobReferenceV1;
+  }>): Promise<boolean>;
   start(
     input: ParkedTaskRuntimeExecutionStartInput,
   ): Promise<ProtectedTaskExecutionStartResult>;
@@ -1581,6 +1595,8 @@ type TaskRuntimeExecutionCandidateInput = Readonly<{
   now: () => number;
   claimId: string;
   result: TaskRuntimeResultBinding;
+  persistJob?(payload: PersistJobPayload): Promise<string>;
+  recoverBeforeExecution?(): Promise<boolean>;
   start(jobId: string): Promise<ProtectedTaskExecutionStartResult>;
   deferBeforeExecution?(jobId: string): Promise<boolean>;
   openTransientInput(
@@ -1604,12 +1620,19 @@ function executionTimestamp(
 function createTaskRuntimeExecutionCandidate(
   input: TaskRuntimeExecutionCandidateInput,
 ): ProtectedTaskExecutionCandidate {
-  let state: "ready" | "starting" | "started" | "running" | "finished" =
-    "ready";
+  if ((input.persistJob === undefined)
+    !== (input.recoverBeforeExecution === undefined)) {
+    throw new TypeError("Task Runtime persistence recovery is incomplete");
+  }
+  let state: "ready" | "persisting" | "persisted"
+    | "persistence_uncertain" | "starting" | "started" | "running"
+    | "finished" = "ready";
   let runningOccurrence: ProtectedTaskRunningOccurrence | null = null;
   let released = false;
+  let persistedJobId: string | null = null;
   let startedJobId: string | null = null;
   let deferral: Promise<boolean> | undefined;
+  let persistenceRecovery: Promise<boolean> | undefined;
   const release = (): void => {
     if (released) return;
     released = true;
@@ -1618,13 +1641,58 @@ function createTaskRuntimeExecutionCandidate(
       input.claimed.snapshot.recipientGeneration,
     );
   };
+  const persisted = input.persistJob === undefined
+    ? {}
+    : {
+        async persistJob(payload: PersistJobPayload): Promise<string> {
+          if (state !== "ready" || released) {
+            throw new Error("Task Runtime execution candidate is one-use");
+          }
+          state = "persisting";
+          try {
+            const jobId = await input.persistJob!(structuredClone(payload));
+            if (typeof jobId !== "string" || jobId.trim().length === 0
+              || jobId === input.occurrence.run.jobId) {
+              throw new TypeError("Task Runtime persisted Job identity is invalid");
+            }
+            if (state !== "persisting" || released) {
+              state = "persistence_uncertain";
+              throw new Error("Task Runtime persistence eligibility changed");
+            }
+            persistedJobId = jobId;
+            state = "persisted";
+            return jobId;
+          } catch (error) {
+            if (state === "persisting") state = "persistence_uncertain";
+            throw error;
+          }
+        },
+        recoverBeforeExecution(): Promise<boolean> {
+          if (state !== "persistence_uncertain"
+            || input.recoverBeforeExecution === undefined) {
+            return Promise.resolve(false);
+          }
+          persistenceRecovery ??= input.recoverBeforeExecution().finally(() => {
+            state = "finished";
+            release();
+          });
+          return persistenceRecovery;
+        },
+      };
   return Object.freeze({
+    ...persisted,
     async start(jobId: string): Promise<StartProtectedTaskRunResult> {
-      if (state !== "ready") {
+      const expectedState = input.persistJob === undefined ? "ready" : "persisted";
+      if (state !== expectedState) {
         throw new Error("Task Runtime execution candidate is one-use");
       }
       if (typeof jobId !== "string" || jobId.trim().length === 0) {
         throw new TypeError("Task Runtime Job identity is invalid");
+      }
+      if (persistedJobId !== null && persistedJobId !== jobId) {
+        state = "finished";
+        release();
+        throw new TypeError("Task Runtime persisted Job identity was substituted");
       }
       state = "starting";
       startedJobId = jobId;
@@ -1929,6 +1997,11 @@ function createTaskRuntimeExecutionCandidate(
     },
     onIneligible(): void {
       if (state === "running" || state === "finished") return;
+      if (state === "persisting" || state === "persistence_uncertain") {
+        state = "persistence_uncertain";
+        release();
+        return;
+      }
       state = "finished";
       release();
     },
@@ -2390,6 +2463,19 @@ class ParkedTaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
         now: this.#now,
         claimId,
         result,
+        persistJob: payload => plan.persistJob(Object.freeze({
+          occurrence,
+          claimed: claimedRecord,
+          claimId,
+          reference: plan.reference,
+          payload,
+        })),
+        recoverBeforeExecution: () => plan.recoverBeforeExecution(Object.freeze({
+          occurrence,
+          claimed: claimedRecord,
+          claimId,
+          reference: plan.reference,
+        })),
         start: (jobId) => {
           if (jobId === occurrence.run.jobId) {
             throw new TypeError(

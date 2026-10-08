@@ -1,4 +1,4 @@
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 
 import type { DirectDatabase } from "../config/direct-database";
 import { jobs } from "../schema/jobs";
@@ -13,8 +13,12 @@ import {
   type PreparedParkedProtectedTaskAdditionalAuthorityStart,
 } from "./protected-task-parked-start-proof";
 import {
+  copyParkedProtectedTaskAdditionalAuthority,
+  lockParkedProtectedTaskAdditionalAuthority,
   PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY,
   PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY,
+  type ParkedProtectedTaskAdditionalAuthority,
+  type ProtectedTaskDurableJobReference,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
 } from "./tasks";
 
@@ -23,6 +27,11 @@ export type ParkedProtectedTaskPreexecutionRecoveryResult = Readonly<{
 }>;
 
 type RecoveryTransaction = Pick<DirectDatabase, "select" | "update">;
+
+export type RecoverUnstartedParkedProtectedTaskClaimInput = Readonly<{
+  expected: ParkedProtectedTaskAdditionalAuthority;
+  jobReference: ProtectedTaskDurableJobReference;
+}>;
 
 const taskProjection = Object.freeze({
   id: tasks.id,
@@ -101,6 +110,85 @@ const nextJobProjection = Object.freeze({
     eq(jobs.metadata, {}),
   )!.mapWith(Boolean),
 });
+
+type ParkedClaimJob = Readonly<{
+  id: string;
+  ownerId: string;
+  requestorId: string;
+  laneKey: string | null;
+  type: string;
+  status: string;
+  reference: unknown;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  pristine: boolean;
+}>;
+
+function exactParkedClaimReference(
+  expected: ParkedProtectedTaskAdditionalAuthority,
+  reference: ProtectedTaskDurableJobReference,
+): boolean {
+  const prior = expected.priorJob.reference;
+  return exactParkedProtectedTaskJobReference(reference, reference)
+    && reference.taskId === expected.occurrence.task.id
+    && reference.taskRunId === expected.occurrence.run.id
+    && reference.inputObjectId === expected.occurrence.task.cryptoObjectId
+    && reference.resultObjectId === prior.resultObjectId
+    && reference.authorizationRequestId === expected.authorizationRequestId
+    && Number.isSafeInteger(reference.policyRevision)
+    && reference.policyRevision >= 1
+    && reference.executionSegment === expected.nextExecutionSegment
+    && reference.resumeAcceptanceId === undefined
+    && reference.resumeContinuationFingerprint
+      === expected.continuationFingerprint;
+}
+
+function exactParkedClaimJob(
+  expected: ParkedProtectedTaskAdditionalAuthority,
+  reference: ProtectedTaskDurableJobReference,
+  job: ParkedClaimJob,
+): "queued" | "cancelled" | null {
+  if (job.ownerId !== expected.occurrence.task.requestorId
+    || job.requestorId !== expected.occurrence.task.requestorId
+    || job.laneKey !== `task:${expected.occurrence.task.id}`
+    || job.type !== "foreground"
+    || !job.pristine
+    || !exactParkedProtectedTaskJobReference(job.reference, reference)
+    || job.startedAt !== null) return null;
+  if (job.status === "queued" && job.completedAt === null) return "queued";
+  return job.status === "cancelled"
+      && job.completedAt instanceof Date
+      && Number.isFinite(job.completedAt.getTime())
+      && job.completedAt.getTime() >= expected.priorJob.parkedAt.getTime()
+    ? "cancelled"
+    : null;
+}
+
+async function lockParkedClaimJobs(
+  tx: RecoveryTransaction,
+  expected: ParkedProtectedTaskAdditionalAuthority,
+  reference: ProtectedTaskDurableJobReference,
+): Promise<Readonly<{
+  jobs: readonly ParkedClaimJob[];
+  queuedIds: readonly string[];
+}> | null> {
+  const locked = await lockParkedProtectedTaskAdditionalAuthority(tx, expected);
+  if (locked === null) return null;
+  const rows = await (
+    tx.select(nextJobProjection).from(jobs)
+      .where(eq(jobs.input, reference)).orderBy(asc(jobs.id)).for("update")
+  ) as unknown as readonly ParkedClaimJob[];
+  const queuedIds: string[] = [];
+  for (const row of rows) {
+    const state = exactParkedClaimJob(locked.current, reference, row);
+    if (state === null) return null;
+    if (state === "queued") queuedIds.push(row.id);
+  }
+  return Object.freeze({
+    jobs: Object.freeze([...rows]),
+    queuedIds: Object.freeze(queuedIds.sort()),
+  });
+}
 
 type LockedRecovery = Readonly<{
   task: NonNullable<Awaited<ReturnType<typeof selectTask>>>;
@@ -342,4 +430,91 @@ export async function recoverUnstartedParkedProtectedTaskRun(
     return { status: "cancelled" };
   }
   return recovery;
+}
+
+/**
+ * Recover a claimed parked continuation before its Job identity is known.
+ * Exact Job absence and cancellation are serialized with same-transaction
+ * continuation persistence by the shared Task -> Run -> prior Job locks.
+ */
+export async function recoverUnstartedParkedProtectedTaskClaim(
+  db: DirectDatabase,
+  supplied: RecoverUnstartedParkedProtectedTaskClaimInput,
+  recoveredAt: Date,
+  deferAuthorization: () => Promise<boolean>,
+): Promise<ParkedProtectedTaskPreexecutionRecoveryResult> {
+  const expected = copyParkedProtectedTaskAdditionalAuthority(supplied.expected);
+  const reference = Object.freeze({ ...supplied.jobReference });
+  if (!exactParkedClaimReference(expected, reference)
+    || !(recoveredAt instanceof Date)
+    || !Number.isFinite(recoveredAt.getTime())
+    || recoveredAt.getTime() < expected.priorJob.parkedAt.getTime()
+    || typeof deferAuthorization !== "function") {
+    throw new TypeError(
+      "Protected Task parked claim recovery input is malformed",
+    );
+  }
+  const cancelledAt = new Date(recoveredAt.getTime());
+  const cancellation = await db.transaction(async tx => {
+    const locked = await lockParkedClaimJobs(tx, expected, reference);
+    if (locked === null) return { status: "stale" as const };
+    if (locked.queuedIds.length === 0) {
+      return {
+        status: "ready" as const,
+        hadJobs: locked.jobs.length > 0,
+        cancelled: false,
+      };
+    }
+    const cancelledRows = await tx.update(jobs).set({
+      status: "cancelled",
+      completedAt: cancelledAt,
+    }).where(and(
+      inArray(jobs.id, locked.queuedIds),
+      eq(jobs.input, reference),
+      eq(jobs.status, "queued"),
+      isNull(jobs.startedAt),
+      isNull(jobs.completedAt),
+      isNull(jobs.result),
+      isNull(jobs.message),
+      eq(jobs.metadata, {}),
+    )).returning({ id: jobs.id });
+    const cancelledIds = cancelledRows.map(row => row.id).sort();
+    if (cancelledIds.length !== locked.queuedIds.length
+      || cancelledIds.some((id, index) => id !== locked.queuedIds[index])) {
+      throw new Error(
+        "Protected Task parked claim recovery lost a queued continuation Job",
+      );
+    }
+    return {
+      status: "ready" as const,
+      hadJobs: true,
+      cancelled: true,
+    };
+  });
+  if (cancellation.status === "stale") return cancellation;
+
+  try {
+    return await db.transaction(async tx => {
+      const locked = await lockParkedClaimJobs(tx, expected, reference);
+      if (locked === null || locked.queuedIds.length > 0) {
+        return cancellation.hadJobs || cancellation.cancelled
+          ? { status: "cancelled" as const }
+          : { status: "stale" as const };
+      }
+      if (!await deferAuthorization()) {
+        return cancellation.hadJobs || cancellation.cancelled
+          ? { status: "cancelled" as const }
+          : { status: "stale" as const };
+      }
+      return {
+        status: cancellation.cancelled || !cancellation.hadJobs
+          ? "recovered" as const
+          : "exact_replay" as const,
+      };
+    });
+  } catch {
+    return cancellation.hadJobs || cancellation.cancelled
+      ? { status: "cancelled" }
+      : { status: "stale" };
+  }
 }

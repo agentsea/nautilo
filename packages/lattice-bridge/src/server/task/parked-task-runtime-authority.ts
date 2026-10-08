@@ -1,21 +1,10 @@
 import {
-  and,
+  copyParkedProtectedTaskAdditionalAuthority,
   eq,
-  jobs,
-  parseParkedProtectedTaskAdditionalAuthority,
-  parkedTaskAdditionalAuthorityTaskProjection,
-  parkedTaskAdditionalAuthorityRunProjection,
-  parkedTaskAdditionalAuthorityJobProjection,
-  readProtectedTaskExecutionContinuationProof,
-  sameParkedProtectedTaskAdditionalAuthority,
-  sql,
-  taskRuns,
-  tasks,
+  lockParkedProtectedTaskAdditionalAuthority,
   rooms,
+  type LockedParkedProtectedTaskAdditionalAuthorityTaskRow,
   type ParkedProtectedTaskAdditionalAuthority,
-  type ParkedProtectedTaskAdditionalAuthorityJobRow,
-  type ParkedProtectedTaskAdditionalAuthorityRunRow,
-  type ParkedProtectedTaskAdditionalAuthorityTaskRow,
   type PostgresJsBridgeConnection,
   type PostgresJsBridgeExecutor,
   type PostgresJsBridgeRow,
@@ -84,19 +73,6 @@ export type ParkedTaskRuntimeExpectedNamespaceParticipants =
     match: "exact" | "includes";
     participantHumanIds: readonly string[];
   }>[];
-
-const parkedTaskRuntimeRoutingTaskProjection = {
-  ...parkedTaskAdditionalAuthorityTaskProjection,
-  preset: tasks.preset,
-  targetUserIds: tasks.targetUserIds,
-  useScope: tasks.useScope,
-  scopeId: tasks.scopeId,
-  targetChat: tasks.targetChat,
-  targetRoomId: tasks.targetRoomId,
-  wideBringBack:
-    sql<boolean>`(${tasks.metadata} -> 'bringBack') IS DISTINCT FROM 'false'::jsonb`
-      .mapWith(Boolean).as("wide_bring_back"),
-} as const;
 
 export function copyParkedTaskRuntimeExpectedNamespaceParticipants(
   value: unknown,
@@ -422,58 +398,8 @@ export function copyParkedTaskRuntimeAuthority(
   expected: ParkedProtectedTaskAdditionalAuthority,
 ): ParkedProtectedTaskAdditionalAuthority {
   try {
-    const task = expected.occurrence.task;
-    const run = expected.occurrence.run;
-    const priorJob = expected.priorJob;
-    const copy = parseParkedProtectedTaskAdditionalAuthority({
-      task: {
-        ...task,
-        cryptoRequiredNamespaceFingerprint:
-          task.cryptoRequiredNamespaceFingerprint.slice(),
-        cryptoMappingState: "verified",
-        contentPristine: true,
-      },
-      run: {
-        ...run,
-        startedAt: new Date(run.startedAt.getTime()),
-        pristine: true,
-      },
-      job: {
-        id: priorJob.id,
-        ownerId: task.requestorId,
-        requestorId: task.requestorId,
-        laneKey: `task:${task.id}`,
-        type: "foreground",
-        status: "completed",
-        startedAt: new Date(run.startedAt.getTime()),
-        completedAt: new Date(priorJob.parkedAt.getTime()),
-        reference: { ...priorJob.reference },
-        parkReceipt: {
-          version: 1,
-          taskId: task.id,
-          taskRunId: run.id,
-          jobId: priorJob.id,
-          graphThreadId: run.graphThreadId,
-          generation: priorJob.generation,
-          executionSegment: priorJob.reference.executionSegment,
-          interrupts: priorJob.interrupts.map(interrupt => ({ ...interrupt })),
-          parkedAt: priorJob.parkedAt.toISOString(),
-        },
-        pristine: true,
-      },
-      proof: expected.proof,
-      authorizationRequestId: expected.authorizationRequestId,
-    });
-    if (copy === null
-      || !sameParkedProtectedTaskAdditionalAuthority(expected, copy)) {
-      throw new TypeError("Parked Task Runtime authority descriptor is invalid");
-    }
-    return copy;
+    return copyParkedProtectedTaskAdditionalAuthority(expected);
   } catch (error) {
-    if (error instanceof TypeError
-      && error.message === "Parked Task Runtime authority descriptor is invalid") {
-      throw error;
-    }
     throw new TypeError(
       "Parked Task Runtime authority descriptor is invalid",
       { cause: error },
@@ -493,63 +419,20 @@ export async function lockCurrentParkedTaskAdditionalAuthorityWithRouting(
 }>,
 ): Promise<Readonly<{
   current: ParkedProtectedTaskAdditionalAuthority;
-  task: ParkedProtectedTaskAdditionalAuthorityTaskRow
+  task: LockedParkedProtectedTaskAdditionalAuthorityTaskRow
     & ParkedTaskRuntimeLockedRoutingTask;
 }> | null> {
-  const expected = copyParkedTaskRuntimeAuthority(input.expected);
-
-  const taskRows = await input.transaction.select(
-    parkedTaskRuntimeRoutingTaskProjection,
-  ).from(tasks).where(eq(tasks.id, expected.occurrence.task.id))
-    .limit(2).for("update");
-  const task = taskRows.length === 1
-    ? taskRows[0] as ParkedProtectedTaskAdditionalAuthorityTaskRow
-      & ParkedTaskRuntimeLockedRoutingTask
-    : undefined;
-  if (task === undefined) return null;
-
-  const runRows = await input.transaction.select(
-    parkedTaskAdditionalAuthorityRunProjection,
-  ).from(taskRuns).where(and(
-    eq(taskRuns.id, expected.occurrence.run.id),
-    eq(taskRuns.taskId, task.id),
-  )).limit(2).for("update");
-  const run = runRows.length === 1
-    ? runRows[0] as ParkedProtectedTaskAdditionalAuthorityRunRow
-    : undefined;
-  if (run === undefined || run.jobId !== expected.priorJob.id) return null;
-
-  const jobRows = await input.transaction.select(
-    parkedTaskAdditionalAuthorityJobProjection,
-  ).from(jobs).where(and(
-    eq(jobs.id, expected.priorJob.id),
-    sql`${jobs.input} ->> 'kind' = 'protected_task_run_v1'`,
-  )).limit(2).for("update");
-  const job = jobRows.length === 1
-    ? jobRows[0] as ParkedProtectedTaskAdditionalAuthorityJobRow
-    : undefined;
-  if (job === undefined) return null;
-
-  const proof = await readProtectedTaskExecutionContinuationProof(
+  const locked = await lockParkedProtectedTaskAdditionalAuthority(
     input.transaction,
-    {
-      taskId: task.id,
-      taskRunId: run.id,
-      jobId: job.id,
-      executionSegment: expected.priorJob.reference.executionSegment,
-    },
+    input.expected,
   );
-  const current = parseParkedProtectedTaskAdditionalAuthority({
-    task,
-    run,
-    job,
-    proof,
-    authorizationRequestId: expected.authorizationRequestId,
-  });
-  return current !== null
-      && sameParkedProtectedTaskAdditionalAuthority(expected, current)
-    ? Object.freeze({ current, task })
-    : null;
+  return locked === null
+    ? null
+    : Object.freeze({
+        current: locked.current,
+        task: locked.task as LockedParkedProtectedTaskAdditionalAuthorityTaskRow
+          & ParkedTaskRuntimeLockedRoutingTask,
+      });
 }
 
 export async function lockCurrentParkedTaskAdditionalAuthority(input: Readonly<{

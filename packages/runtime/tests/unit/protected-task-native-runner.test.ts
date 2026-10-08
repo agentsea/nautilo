@@ -214,6 +214,37 @@ describe("protected Task native runner", () => {
     expect(scenario.published).toEqual([]);
   });
 
+  test("carries an exact interrupt-keyed additional-authority resume", async () => {
+    const resume = Object.freeze({
+      "interrupt-exact": Object.freeze({
+        type: "protected_task_additional_authority_granted_v1" as const,
+        authorizationRequestId: `task-run-authorization:${RUN_ID}`,
+        effectDisposition: "not_started_v1" as const,
+        operationId: "memory-operation-exact",
+        requestDigest: new Uint8Array(32).fill(11),
+        requiredAuthorityDigest: new Uint8Array(32).fill(19),
+      }),
+    });
+    const scenario = fixture({
+      execution: { ...fixture().input.execution, resume },
+    });
+    let captured: RunScopeSubagentOpts | undefined;
+    await runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async options => {
+        captured = options;
+        return {
+          status: "completed",
+          threadId: GRAPH_THREAD_ID,
+          finalText: "internal transcript",
+          finalResponseText: "Protected result",
+        };
+      },
+    });
+
+    expect(captured?.resume).toBe(resume);
+    expect(captured?.continueFromCheckpoint).toBeUndefined();
+  });
+
   test("returns a protected error payload without ordinary report-back", async () => {
     const scenario = fixture();
     const result = await runProtectedTaskNativeSegment(scenario.input, {

@@ -4091,6 +4091,69 @@ export function sameParkedProtectedTaskAdditionalAuthority(
     && left.nextExecutionSegment === right.nextExecutionSegment;
 }
 
+/** Validate and detach one parked authority descriptor for later locked use. */
+export function copyParkedProtectedTaskAdditionalAuthority(
+  expected: ParkedProtectedTaskAdditionalAuthority,
+): ParkedProtectedTaskAdditionalAuthority {
+  try {
+    const task = expected.occurrence.task;
+    const run = expected.occurrence.run;
+    const priorJob = expected.priorJob;
+    const copy = parseParkedProtectedTaskAdditionalAuthority({
+      task: {
+        ...task,
+        cryptoRequiredNamespaceFingerprint:
+          task.cryptoRequiredNamespaceFingerprint.slice(),
+        cryptoMappingState: "verified",
+        contentPristine: true,
+      },
+      run: {
+        ...run,
+        startedAt: new Date(run.startedAt.getTime()),
+        pristine: true,
+      },
+      job: {
+        id: priorJob.id,
+        ownerId: task.requestorId,
+        requestorId: task.requestorId,
+        laneKey: `task:${task.id}`,
+        type: "foreground",
+        status: "completed",
+        startedAt: new Date(run.startedAt.getTime()),
+        completedAt: new Date(priorJob.parkedAt.getTime()),
+        reference: { ...priorJob.reference },
+        parkReceipt: {
+          version: 1,
+          taskId: task.id,
+          taskRunId: run.id,
+          jobId: priorJob.id,
+          graphThreadId: run.graphThreadId,
+          generation: priorJob.generation,
+          executionSegment: priorJob.reference.executionSegment,
+          interrupts: priorJob.interrupts.map(interrupt => ({ ...interrupt })),
+          parkedAt: priorJob.parkedAt.toISOString(),
+        },
+        pristine: true,
+      },
+      proof: expected.proof,
+      authorizationRequestId: expected.authorizationRequestId,
+    });
+    if (copy === null
+      || !sameParkedProtectedTaskAdditionalAuthority(expected, copy)) {
+      throw new TypeError("Parked Task authority descriptor is invalid");
+    }
+    return copy;
+  } catch (error) {
+    if (error instanceof TypeError
+      && error.message === "Parked Task authority descriptor is invalid") {
+      throw error;
+    }
+    throw new TypeError("Parked Task authority descriptor is invalid", {
+      cause: error,
+    });
+  }
+}
+
 /** Shared content-free projections for discovery and locked revalidation. */
 export const parkedTaskAdditionalAuthorityTaskProjection = Object.freeze({
   id: tasks.id,
@@ -4154,6 +4217,95 @@ export const parkedTaskAdditionalAuthorityJobProjection = Object.freeze({
     sql<boolean>`NOT (${jobs.metadata} ? ${PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY})`,
   )!.mapWith(Boolean),
 });
+
+export type LockedParkedProtectedTaskAdditionalAuthorityTaskRow =
+  ParkedProtectedTaskAdditionalAuthorityTaskRow & Readonly<{
+    preset: string;
+    targetUserIds: unknown;
+    useScope: boolean;
+    scopeId: string | null;
+    targetChat: string;
+    targetRoomId: string | null;
+    wideBringBack: boolean;
+  }>;
+
+const lockedParkedTaskAdditionalAuthorityTaskProjection = Object.freeze({
+  ...parkedTaskAdditionalAuthorityTaskProjection,
+  preset: tasks.preset,
+  targetUserIds: tasks.targetUserIds,
+  useScope: tasks.useScope,
+  scopeId: tasks.scopeId,
+  targetChat: tasks.targetChat,
+  targetRoomId: tasks.targetRoomId,
+  wideBringBack:
+    sql<boolean>`(${tasks.metadata} -> 'bringBack') IS DISTINCT FROM 'false'::jsonb`
+      .mapWith(Boolean).as("wide_bring_back"),
+});
+
+/**
+ * Re-read one parked additional-authority descriptor while holding the
+ * canonical Task -> Run -> prior Job lifecycle locks.
+ */
+export async function lockParkedProtectedTaskAdditionalAuthority(
+  transaction: Pick<DirectDatabase, "select">,
+  supplied: ParkedProtectedTaskAdditionalAuthority,
+): Promise<Readonly<{
+  current: ParkedProtectedTaskAdditionalAuthority;
+  task: LockedParkedProtectedTaskAdditionalAuthorityTaskRow;
+}> | null> {
+  const expected = copyParkedProtectedTaskAdditionalAuthority(supplied);
+  const taskRows = await transaction.select(
+    lockedParkedTaskAdditionalAuthorityTaskProjection,
+  ).from(tasks).where(eq(tasks.id, expected.occurrence.task.id))
+    .limit(2).for("update");
+  const task = taskRows.length === 1
+    ? taskRows[0] as LockedParkedProtectedTaskAdditionalAuthorityTaskRow
+    : undefined;
+  if (task === undefined) return null;
+
+  const runRows = await transaction.select(
+    parkedTaskAdditionalAuthorityRunProjection,
+  ).from(taskRuns).where(and(
+    eq(taskRuns.id, expected.occurrence.run.id),
+    eq(taskRuns.taskId, task.id),
+  )).limit(2).for("update");
+  const run = runRows.length === 1
+    ? runRows[0] as ParkedProtectedTaskAdditionalAuthorityRunRow
+    : undefined;
+  if (run === undefined || run.jobId !== expected.priorJob.id) return null;
+
+  const jobRows = await transaction.select(
+    parkedTaskAdditionalAuthorityJobProjection,
+  ).from(jobs).where(and(
+    eq(jobs.id, expected.priorJob.id),
+    sql`${jobs.input} ->> 'kind' = 'protected_task_run_v1'`,
+  )).limit(2).for("update");
+  const job = jobRows.length === 1
+    ? jobRows[0] as ParkedProtectedTaskAdditionalAuthorityJobRow
+    : undefined;
+  if (job === undefined) return null;
+
+  const proof = await readProtectedTaskExecutionContinuationProof(
+    transaction,
+    {
+      taskId: task.id,
+      taskRunId: run.id,
+      jobId: job.id,
+      executionSegment: expected.priorJob.reference.executionSegment,
+    },
+  );
+  const current = parseParkedProtectedTaskAdditionalAuthority({
+    task,
+    run,
+    job,
+    proof,
+    authorizationRequestId: expected.authorizationRequestId,
+  });
+  return current !== null
+      && sameParkedProtectedTaskAdditionalAuthority(expected, current)
+    ? Object.freeze({ current, task })
+    : null;
+}
 
 /**
  * Discover one parked additional-authority candidate without taking lifecycle

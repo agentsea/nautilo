@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { describe, expect, test } from "bun:test";
-import { resolveModelRole } from "@nautilo/agent";
+import { resolveModelRole, assertProtectedTaskAdditionalAuthorityResumeAcknowledgementV1 } from "@nautilo/agent";
 import {
   actors,
   agentCryptoRuntimeChallenges,
@@ -2555,6 +2555,8 @@ describePostgres("sealed protected Task Memory object writer", () => {
           expectedReference,
           publicationPolicy,
         ) => {
+          connectedJobId = jobId;
+          base.jobIds.add(jobId);
           if (scenario === "linked cancellation") {
             expect(await transitionTaskLifecycleTerminal(base.productDb, {
               taskId: expectedReference.taskId,
@@ -2673,10 +2675,10 @@ describePostgres("sealed protected Task Memory object writer", () => {
                     graphThreadId: segment.graphThreadId,
                   }));
                   segmentContinuationModes.push(
-                    segment.execution.continueFromCheckpoint === true,
+                    segment.execution.resume !== undefined,
                   );
                   if (scenario === "parked continuation"
-                    && segment.execution.continueFromCheckpoint !== true) {
+                    && segment.execution.resume === undefined) {
                     await segment.checkpointSaver.put({
                       configurable: {
                         thread_id: segment.graphThreadId,
@@ -2725,7 +2727,21 @@ describePostgres("sealed protected Task Memory object writer", () => {
                     });
                   }
                   if (scenario === "parked continuation") {
-                    expect(segment.execution.continueFromCheckpoint).toBe(true);
+                    expect(segment.execution.continueFromCheckpoint).toBeUndefined();
+                    const resume = segment.execution.resume as Record<string, unknown>;
+                    expect(Object.keys(resume)).toEqual(["additional-authority-1"]);
+                    assertProtectedTaskAdditionalAuthorityResumeAcknowledgementV1(
+                      resume["additional-authority-1"], {
+                        authorizationRequestId: continuationAuthorizationRequestId,
+                        effectDisposition: "not_started_v1",
+                        operationId: "connected-protected-memory-operation-1",
+                        requestDigest: digest(
+                          `connected-protected-memory-operation:${activeConnected.taskRunId}`,
+                        ),
+                        requiredAuthorityDigest:
+                          protectedTaskSemanticAuthorityRequirementsDigest(continuationRequirements),
+                      },
+                    );
                     controlledEffectExecutions += 1;
                   }
                   return Object.freeze({

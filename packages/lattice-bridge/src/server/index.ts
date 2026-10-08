@@ -947,6 +947,7 @@ export {
   withCurrentAcceptedParkedTaskRuntimeAuthority,
   type AcceptedTaskRuntimeAuthorizationV3,
   type CurrentTaskRuntimeAuthority,
+  type ParkedTaskRuntimeJobPersistence,
   type TaskRuntimeAuthoritySubject,
   type TaskRuntimeDomainAuthorityRequirement,
   type TaskRuntimeNamespaceAuthorityRequirement,

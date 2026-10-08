@@ -209,7 +209,9 @@ test("lends only the exact selected canonical record through the held repository
     withAuthority: async input => {
       expect(input.validateCurrentRouting(f.facts)).toBe(true);
       held = true;
-      try { return await input.use(f.current, {} as never); }
+      try { return await input.use(f.current, {} as never, { persistJob: async () => {
+        throw new Error("unexpected persistence");
+      } }); }
       finally { held = false; }
     },
     repository: async () => repository,
@@ -242,7 +244,9 @@ test("rejects expired requests and claims without entering the caller use", asyn
     productContext: async () => ({ canonicalRunner: {} }) as never,
     withAuthority: async input => {
       expect(input.validateCurrentRouting(f.facts)).toBe(true);
-      return input.use(f.current, {} as never);
+      return input.use(f.current, {} as never, { persistJob: async () => {
+        throw new Error("unexpected persistence");
+      } });
     },
     repository: async () => ({ get: async () => f.selected }) as never,
   });
@@ -276,7 +280,9 @@ test("uses an immutable caller snapshot across asynchronous plan resolution", as
     productContext: async () => ({ canonicalRunner: {} }) as never,
     withAuthority: async input => {
       expect(input.validateCurrentRouting(f.facts)).toBe(true);
-      return input.use(f.current, {} as never);
+      return input.use(f.current, {} as never, { persistJob: async () => {
+        throw new Error("unexpected persistence");
+      } });
     },
     repository: async () => ({ get: async () => f.selected }) as never,
   });

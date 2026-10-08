@@ -345,6 +345,7 @@ export {
 } from "./utils/profile-migration-artifact-primitives";
 export {
   persistJob,
+  persistJobInTransaction,
   startProtectedTaskJob,
   settleProtectedTaskJobTerminal,
   cancelUnstartedProtectedTaskJobWithDatabase,
@@ -702,6 +703,7 @@ export {
   type ParkedProtectedTaskAdditionalAuthorityTaskRow,
   type ParkedProtectedTaskAdditionalAuthorityRunRow,
   type ParkedProtectedTaskAdditionalAuthorityJobRow,
+  type LockedParkedProtectedTaskAdditionalAuthorityTaskRow,
   type ProtectedTaskRunInterruptKind,
   type ProtectedTaskRunInterruptCoordinate,
   type ProtectedTaskAwaitReplyMessageReference,
@@ -730,6 +732,8 @@ export {
   type ListAwaitingWriterReviewTasksOptions,
   type TransitionTaskLifecycleTerminalInput,
   type SettleCancelledProtectedTaskRunAuthorizationInput,
+  copyParkedProtectedTaskAdditionalAuthority,
+  lockParkedProtectedTaskAdditionalAuthority,
 } from "./queries/tasks";
 export {
   appendPendingArtifactEvent,
@@ -942,6 +946,9 @@ export { PHYSICAL_FILE_URI_COLUMNS, physicalFileUriBase, rebindPhysicalFileUri }
 
 export * from "./queries/task-run-message-associations";
 export * from "./queries/protected-task-execution-receipts";
+export {
+  exactParkedProtectedTaskJobReference,
+} from "./queries/protected-task-parked-start-proof";
 
 export {
   recoverUnstartedProtectedTaskRun,
@@ -954,5 +961,7 @@ export {
 } from "./queries/protected-task-preexecution";
 export {
   recoverUnstartedParkedProtectedTaskRun,
+  recoverUnstartedParkedProtectedTaskClaim,
   type ParkedProtectedTaskPreexecutionRecoveryResult,
+  type RecoverUnstartedParkedProtectedTaskClaimInput,
 } from "./queries/protected-task-parked-preexecution";

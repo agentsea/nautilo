@@ -218,6 +218,21 @@ type PendingProtectedTaskExecution = Readonly<{
   candidate: ProtectedTaskExecutionCandidate;
 }>;
 
+type ParkedProtectedTaskPersistenceCandidate =
+  ProtectedTaskExecutionCandidate & Required<Pick<
+    ProtectedTaskExecutionCandidate,
+    "persistJob" | "recoverBeforeExecution"
+  >>;
+
+function parkedProtectedTaskPersistenceCandidate(
+  candidate: ProtectedTaskExecutionCandidate,
+): ParkedProtectedTaskPersistenceCandidate | null {
+  return typeof candidate.persistJob === "function"
+      && typeof candidate.recoverBeforeExecution === "function"
+    ? candidate as ParkedProtectedTaskPersistenceCandidate
+    : null;
+}
+
 /** Ordinary Human-to-Agent turns fork when their Agent checkpoint thread is busy. */
 export function ordinaryConversationExecutionRoute(): ForegroundExecutionRoute {
   return {
@@ -883,6 +898,8 @@ export class JobManager {
       || typeof input.candidate.start !== "function"
       || typeof input.candidate.run !== "function"
       || typeof input.candidate.onIneligible !== "function"
+      || (typeof input.candidate.persistJob === "function")
+        !== (typeof input.candidate.recoverBeforeExecution === "function")
       || (input.modelAttribution !== undefined && input.modelAttribution !== "external")
     ) {
       rejectCandidate();
@@ -1284,6 +1301,11 @@ export class JobManager {
     const durableInputDisposition = protectedTaskExecution
       ? "full" as const
       : durableCandidate?.durableJobInputDisposition;
+    const parkedPersistence = protectedTaskExecution === undefined
+      ? null
+      : parkedProtectedTaskPersistenceCandidate(
+          protectedTaskExecution.candidate,
+        );
     const inputRecord: Record<string, unknown> = protectedTaskExecution
       ? {
           ownerId: protectedTaskExecution.scheduling.ownerId,
@@ -1315,7 +1337,8 @@ export class JobManager {
         ? {}
         : { durableInputDisposition }),
       executor,
-      persist: this.persistJobFn,
+      persist: parkedPersistence?.persistJob.bind(parkedPersistence)
+        ?? this.persistJobFn,
       updateStatus: this.updateJobStatusFn,
       ...(protectedTaskExecution === undefined
         ? {}
@@ -1328,10 +1351,28 @@ export class JobManager {
     try {
       await job.persist();
     } catch {
-      this.failAcceptedForegroundBeforePersistence(
-        virtualIds, merged.laneKey, threadId, merged.roomId,
-        "job_persistence_unavailable",
-      );
+      if (parkedPersistence === null) {
+        this.failAcceptedForegroundBeforePersistence(
+          virtualIds, merged.laneKey, threadId, merged.roomId,
+          "job_persistence_unavailable",
+        );
+      } else {
+        try {
+          if (!await parkedPersistence.recoverBeforeExecution()) {
+            log("[maintenance] parked protected Task persistence recovery deferred");
+          }
+        } catch {
+          log("[maintenance] parked protected Task persistence recovery deferred");
+        }
+        // The parked Task remains the user-visible retry surface. A virtual
+        // Job that may never have received an id must not publish a competing
+        // foreground failure.
+        this.deferRecoveredParkedPersistence(
+          virtualIds,
+          threadId,
+          merged.roomId,
+        );
+      }
       await this.releaseLaneAfterPrePersistenceFailure(tryRes);
       return;
     }
@@ -2376,6 +2417,18 @@ export class JobManager {
         status: "failed",
         laneKey,
       });
+    }
+  }
+
+  /** Retain the durable acceptance for Stop/maintenance without a false Job failure. */
+  private deferRecoveredParkedPersistence(
+    virtualIds: readonly string[],
+    threadId: string,
+    roomId: string,
+  ): void {
+    this.invalidateForegroundCandidates(virtualIds);
+    for (const virtualId of virtualIds) {
+      this.failedPrePersistenceScope.set(virtualId, { threadId, roomId });
     }
   }
 

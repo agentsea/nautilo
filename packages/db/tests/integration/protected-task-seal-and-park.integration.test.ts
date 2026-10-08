@@ -11,12 +11,15 @@ import {
   jobs,
   getUnstartedProtectedTaskRunRecoveryBoundary,
   listUnstartedProtectedTaskRunRecoveryCandidates,
+  lockParkedProtectedTaskAdditionalAuthority,
   namespaces,
   protectedTaskContinuationReceipts,
   protectedTaskAdditionalAuthorityContinuationFingerprint,
   protectedTaskSemanticAuthorityRequirementsDigest,
   protectedTaskExecutionSegmentReceipts,
+  persistJobInTransaction,
   readParkedProtectedTaskAdditionalAuthority,
+  recoverUnstartedParkedProtectedTaskClaim,
   recoverUnstartedParkedProtectedTaskRun,
   resolveAppDatabaseConnectionString,
   sealAndParkProtectedTaskRun,
@@ -716,6 +719,92 @@ for (const linked of [false, true]) {
     }
   });
 }
+
+test("product-role parked claim recovery proves exact Job absence", async () => {
+  const fixture = await createFixture();
+  try {
+    expect(await sealAndParkProtectedTaskRun(productA, input(fixture)))
+      .toMatchObject({ status: "parked" });
+    const expected = await readParkedProtectedTaskAdditionalAuthority(productA, {
+      taskRunId: fixture.taskRunId,
+      authorizationRequestId: "authority-request:1",
+    });
+    expect(expected).not.toBeNull();
+    let deferrals = 0;
+    expect(await recoverUnstartedParkedProtectedTaskClaim(
+      productA,
+      { expected: expected!, jobReference: additionalAuthorityReference(fixture) },
+      new Date(input(fixture).park.parkedAt.getTime() + 1),
+      async () => {
+        deferrals += 1;
+        const rows = await productB.select({ id: jobs.id }).from(jobs)
+          .where(eq(jobs.input, additionalAuthorityReference(fixture)));
+        expect(rows).toEqual([]);
+        return true;
+      },
+    )).toEqual({ status: "recovered" });
+    expect(deferrals).toBe(1);
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+test("same locked parked proof serializes persistence before claim recovery", async () => {
+  const fixture = await createFixture();
+  let persistedJobId: string | null = null;
+  try {
+    expect(await sealAndParkProtectedTaskRun(productA, input(fixture)))
+      .toMatchObject({ status: "parked" });
+    const expected = await readParkedProtectedTaskAdditionalAuthority(productA, {
+      taskRunId: fixture.taskRunId,
+      authorizationRequestId: "authority-request:1",
+    });
+    expect(expected).not.toBeNull();
+    let releasePersistence!: () => void;
+    let lockedPersistence!: () => void;
+    const release = new Promise<void>(resolve => { releasePersistence = resolve; });
+    const locked = new Promise<void>(resolve => { lockedPersistence = resolve; });
+    const persisted = productA.transaction(async tx => {
+      expect(await lockParkedProtectedTaskAdditionalAuthority(tx, expected!))
+        .not.toBeNull();
+      lockedPersistence();
+      await release;
+      return persistJobInTransaction(tx, {
+        ownerId: fixture.userId,
+        requestorId: fixture.userId,
+        laneKey: `task:${fixture.taskId}`,
+        type: "foreground",
+        input: additionalAuthorityReference(fixture),
+        publicationPolicy: {
+          expectedRevision: 2,
+          representation: "protected_only",
+        },
+      });
+    });
+    await locked;
+    let recoverySettled = false;
+    const recovery = recoverUnstartedParkedProtectedTaskClaim(
+      productB,
+      { expected: expected!, jobReference: additionalAuthorityReference(fixture) },
+      new Date(input(fixture).park.parkedAt.getTime() + 1),
+      async () => true,
+    ).finally(() => { recoverySettled = true; });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(recoverySettled).toBe(false);
+    releasePersistence();
+    const jobId = await persisted;
+    persistedJobId = jobId;
+    expect(await recovery).toEqual({ status: "recovered" });
+    expect(await productA.select({ status: jobs.status, startedAt: jobs.startedAt })
+      .from(jobs).where(eq(jobs.id, jobId)))
+      .toEqual([{ status: "cancelled", startedAt: null }]);
+  } finally {
+    if (persistedJobId !== null) {
+      await admin.delete(jobs).where(eq(jobs.id, persistedJobId));
+    }
+    await cleanupFixture(fixture);
+  }
+});
 
 test("product-role recovery never resets a continuation after its Job started", async () => {
   const fixture = await createFixture();

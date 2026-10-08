@@ -1,5 +1,6 @@
 import {
   runScopeSubagentUntilPause,
+  type ProtectedTaskAdditionalAuthorityResumeBindingV1,
   type RunScopeSubagentOpts,
   type RunScopeSubagentResult,
 } from "@nautilo/agent";
@@ -111,6 +112,10 @@ export type ProtectedTaskNativeAdditionalAuthorityContinuation = Readonly<{
   requiredAuthorityDigest: Uint8Array;
   semanticAuthorityRequirements: ProtectedTaskSemanticAuthorityRequirements;
 }>;
+
+/** Immutable parked proof used to build one exact interrupt-keyed resume. */
+export type ProtectedTaskNativeAdditionalAuthorityResume =
+  ProtectedTaskAdditionalAuthorityResumeBindingV1;
 
 export interface ProtectedTaskNativeRunnerDependencies {
   runScopeSubagent(

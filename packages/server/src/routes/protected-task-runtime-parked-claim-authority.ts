@@ -1,4 +1,4 @@
-import type { DirectDatabase, PostgresJsBridgeConnection } from "@nautilo/db";
+import type { DirectDatabase, PersistJobPayload, PostgresJsBridgeConnection } from "@nautilo/db";
 import type { LatticeCrypto } from "@nautilo/lattice-crypto";
 import {
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
@@ -44,6 +44,7 @@ type HeldPlan = Readonly<{
   canonical: ReturnType<typeof createParkedTaskRuntimeAuthorizationRecord>;
   current: CurrentTaskRuntimeAuthority;
   repository: Repository;
+  persistJob(payload: PersistJobPayload): Promise<string>;
 }>;
 
 type Operation = Readonly<{
@@ -125,7 +126,7 @@ export function createProtectedTaskRuntimeParkedClaimAuthority(input: Readonly<{
           routing = structuredClone(facts);
           return true;
         },
-        use: async (current, restricted) => {
+        use: async (current, restricted, persistence) => {
           if (routing === null) return null;
           const facts = current.namespaceRequirements.map(namespace => {
             const domain = current.domains.find(value => value.domainId === namespace.domainId);
@@ -149,7 +150,8 @@ export function createProtectedTaskRuntimeParkedClaimAuthority(input: Readonly<{
             || (selected.snapshot.state === "claimed"
               && (selected.snapshot.claimExpiresAt === null
                 || before >= selected.snapshot.claimExpiresAt))) return null;
-          const value = await use({ resolved, canonical, current, repository });
+          const value = await use({ resolved, canonical, current, repository,
+            persistJob: persistence.persistJob });
           // The Lattice owner checks signed authority expiry at commit. A claim
           // lease can be shorter, so its own fence must survive this callback.
           const after = input.now();

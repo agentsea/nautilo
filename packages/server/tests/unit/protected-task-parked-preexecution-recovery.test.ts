@@ -246,3 +246,95 @@ test("restart recovery preserves cancellation when authorization settlement must
   expect(await recovery.recoverDiscovered(startInput(), { immediate: false }))
     .toEqual({ cancelled: true, reset: false, failed: true });
 });
+
+function parkedClaimProof() {
+  const expected = {
+    occurrence: {
+      task: { id: "parked-task", contentNamespaceId: "parked-namespace", cryptoObjectId: "input",
+        cryptoRequiredNamespaceFingerprint: new Uint8Array(32) },
+      run: { id: RUN, jobId: "prior-job", startedAt: new Date(NOW) },
+    },
+    authorizationRequestId: REQUEST,
+    priorJob: { reference: { resultObjectId: "result" } },
+    nextExecutionSegment: 2,
+    continuationFingerprint: "fingerprint",
+  } as unknown as import("@nautilo/db").ParkedProtectedTaskAdditionalAuthority;
+  return { expected, jobReference: {
+    kind: "protected_task_run_v1" as const,
+    taskId: expected.occurrence.task.id, taskRunId: RUN,
+    inputObjectId: "input", resultObjectId: "result",
+    authorizationRequestId: REQUEST, policyRevision: 7, executionSegment: 2,
+    resumeContinuationFingerprint: "fingerprint",
+  } };
+}
+
+test("claim recovery needs no returned Job id and retains execution retries", async () => {
+  const claimed = claimedRecord();
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  await repository.create(claimed);
+  const proof = parkedClaimProof();
+  let absenceProven = false;
+  const recovery = createProtectedTaskParkedPreexecutionRecovery({
+    db: {} as never,
+    repository: {
+      get: id => repository.get(id),
+      deferUnstartedTaskRuntimeRequest: value => {
+        expect(absenceProven).toBe(true);
+        return repository.deferUnstartedTaskRuntimeRequest(value);
+      },
+    },
+    now: () => NOW + 10,
+  }, undefined, {
+    recoverClaim: async (_db, selected, _at, defer) => {
+      expect(selected).toEqual(proof);
+      absenceProven = true;
+      return await defer() ? { status: "recovered" } : { status: "stale" };
+    },
+  });
+  expect(await recovery.recoverClaim(proof, claimed)).toBe(true);
+  expect((await repository.get(REQUEST))?.snapshot).toMatchObject({
+    state: "awaiting_recipient", recipientGeneration: 1,
+    retryCount: claimed.snapshot.retryCount,
+  });
+  expect(await recovery.recoverClaim(proof, claimed)).toBe(true);
+  expect((await repository.get(REQUEST))?.snapshot.recipientGeneration).toBe(1);
+});
+
+test("claim recovery cannot defer when the DB finds execution or changed product proof", async () => {
+  const claimed = claimedRecord();
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  await repository.create(claimed);
+  const recovery = createProtectedTaskParkedPreexecutionRecovery({
+    db: {} as never, repository, now: () => NOW + 60_001,
+  }, undefined, { recoverClaim: async () => ({ status: "stale" }) });
+  expect(await recovery.recoverClaim(parkedClaimProof(), claimed)).toBe(false);
+  expect((await repository.get(REQUEST))?.snapshot.state).toBe("claimed");
+});
+
+
+test("observer recovers an expired no-Job claim without device or content authority", async () => {
+  const claimed = claimedRecord();
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  await repository.create(claimed);
+  const proof = parkedClaimProof();
+  let now = NOW + 10;
+  let proofs = 0;
+  const recovery = createProtectedTaskParkedPreexecutionRecovery({
+    db: {} as never, repository, now: () => now,
+  }, undefined, {
+    discover: async () => proof.expected,
+    recoverClaim: async (_db, actual, _at, defer) => {
+      expect(actual).toEqual(proof);
+      proofs += 1;
+      return await defer() ? { status: "recovered" } : { status: "stale" };
+    },
+  });
+  expect(await recovery.recoverExpiredClaim(proof.expected.occurrence)).toBe(false);
+  expect(proofs).toBe(0);
+  now = NOW + 30_000;
+  expect(await recovery.recoverExpiredClaim(proof.expected.occurrence)).toBe(true);
+  expect(proofs).toBe(1);
+  expect((await repository.get(REQUEST))?.snapshot.state).toBe("awaiting_recipient");
+  expect(await recovery.recoverExpiredClaim(proof.expected.occurrence)).toBe(false);
+  expect(proofs).toBe(1);
+});

@@ -3,6 +3,7 @@ import { getTableName } from "drizzle-orm";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
+  recoverUnstartedParkedProtectedTaskClaim,
   recoverUnstartedParkedProtectedTaskRun,
 } from "../../src/queries/protected-task-parked-preexecution";
 import {
@@ -17,9 +18,12 @@ import {
   protectedTaskSemanticAuthorityRequirementsDigest,
 } from "../../src/queries/protected-task-execution-receipts";
 import type {
+  ParkedProtectedTaskAdditionalAuthority,
   ProtectedTaskDurableJobReference,
   StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
 } from "../../src/queries/tasks";
+import { parseParkedProtectedTaskAdditionalAuthority } from
+  "../../src/queries/tasks";
 import { jobs } from "../../src/schema/jobs";
 import { protectedTaskContinuationReceipts } from
   "../../src/schema/protected-task-continuation-receipts";
@@ -173,7 +177,10 @@ function parkReceipt(segment = 1, overrides: Record<string, unknown> = {}) {
 function taskRow(overrides: Record<string, unknown> = {}) {
   return {
     id: ids.task,
+    ownerId: ids.owner,
     requestorId: ids.owner,
+    agentId: "50000000-0000-4000-8000-000000000005",
+    callingRoomId: null,
     scheduleKind: "one_shot",
     status: "awaiting",
     contentRepresentation: "protected",
@@ -195,6 +202,7 @@ function runRow(overrides: Record<string, unknown> = {}) {
     jobId: ids.priorJob,
     graphThreadId,
     status: "awaiting",
+    startedAt: new Date("2026-10-08T09:59:00.000Z"),
     pristine: true,
     ...overrides,
   };
@@ -278,6 +286,23 @@ function continuationReceipt(
     sealedAt: parkedAt,
     ...overrides,
   };
+}
+
+function expectedAuthority(
+  segment = 1,
+): ParkedProtectedTaskAdditionalAuthority {
+  const expected = parseParkedProtectedTaskAdditionalAuthority({
+    task: taskRow() as never,
+    run: runRow() as never,
+    job: priorJobRow(segment) as never,
+    proof: {
+      segment: segmentReceipt(segment) as never,
+      continuation: continuationReceipt(segment) as never,
+    },
+    authorizationRequestId: nextReference(segment).authorizationRequestId,
+  });
+  if (expected === null) throw new Error("invalid parked authority fixture");
+  return expected;
 }
 
 function discoveryRow(
@@ -681,5 +706,180 @@ describe("parked protected Task pre-execution recovery", () => {
     )).toEqual({ status: "exact_replay" });
     expect(fixture.writes).toHaveLength(writes);
     expect(fixture.transactionCount()).toBe(4);
+  });
+});
+
+function claimJobRow(
+  id: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id,
+    ownerId: ids.owner,
+    requestorId: ids.owner,
+    laneKey: `task:${ids.task}`,
+    type: "foreground",
+    status: "queued",
+    reference: nextReference(),
+    startedAt: null,
+    completedAt: null,
+    pristine: true,
+    ...overrides,
+  };
+}
+
+function claimHarness(initialJobs: ReturnType<typeof claimJobRow>[]) {
+  let currentJobs = initialJobs.map(row => ({ ...row }));
+  const locks: string[] = [];
+  const writes: string[][] = [];
+  const db = {
+    transaction: async <T>(operation: (value: unknown) => Promise<T>) => {
+      const rows = (table: unknown, projection: Record<string, unknown>) => {
+        if (table === tasks) return [taskRow({
+          preset: "task",
+          targetUserIds: [],
+          useScope: false,
+          scopeId: null,
+          targetChat: "room",
+          targetRoomId: null,
+          wideBringBack: true,
+        })];
+        if (table === taskRuns) return [runRow()];
+        if (table === jobs) {
+          return Object.hasOwn(projection, "parkReceipt")
+            ? [priorJobRow()]
+            : currentJobs;
+        }
+        if (table === protectedTaskExecutionSegmentReceipts) {
+          return [segmentReceipt()];
+        }
+        if (table === protectedTaskContinuationReceipts) {
+          return [continuationReceipt()];
+        }
+        throw new Error("unexpected table");
+      };
+      const tx = {
+        select: (projection: Record<string, unknown> = {}) => ({
+          from: (table: unknown) => {
+            const query = {
+              where: (_condition: unknown) => query,
+              orderBy: (_order: unknown) => query,
+              limit: (_limit: number) => query,
+              for: async (kind: string) => {
+                locks.push(`${getTableName(table as typeof tasks)}:${kind}`);
+                return rows(table, projection);
+              },
+              then: <TResult1 = unknown[]>(
+                resolve: (value: unknown[]) => TResult1 | PromiseLike<TResult1>,
+              ) => Promise.resolve(rows(table, projection)).then(resolve),
+            };
+            return query;
+          },
+        }),
+        update: (table: unknown) => ({
+          set: (patch: Record<string, unknown>) => ({
+            where: (_condition: unknown) => ({
+              returning: async () => {
+                if (table !== jobs) throw new Error("unexpected update table");
+                const ids = currentJobs.filter(row =>
+                  row.status === "queued"
+                  && row.startedAt === null
+                  && row.completedAt === null
+                  && row.pristine
+                ).map(row => row.id).sort();
+                currentJobs = currentJobs.map(row => ids.includes(row.id)
+                  ? { ...row, ...patch }
+                  : row);
+                writes.push(ids);
+                return ids.map(id => ({ id }));
+              },
+            }),
+          }),
+        }),
+      };
+      return operation(tx);
+    },
+  } as unknown as DirectDatabase;
+  return { db, locks, writes };
+}
+
+describe("parked protected Task claimed-before-Job recovery", () => {
+  test("defers an exact claimed continuation with no persisted Job", async () => {
+    const fixture = claimHarness([]);
+    let deferred = 0;
+    expect(await recoverUnstartedParkedProtectedTaskClaim(
+      fixture.db,
+      { expected: expectedAuthority(), jobReference: nextReference() },
+      recoveredAt,
+      async () => { deferred += 1; return true; },
+    )).toEqual({ status: "recovered" });
+    expect(deferred).toBe(1);
+    expect(fixture.writes).toEqual([]);
+    expect(fixture.locks.slice(0, 4)).toEqual([
+      "tasks:update",
+      "task_runs:update",
+      "jobs:update",
+      "jobs:update",
+    ]);
+  });
+
+  test("cancels every exact queued duplicate and accepts a cancelled replay", async () => {
+    const oldId = "30000000-0000-4000-8000-000000000006";
+    const newId = "30000000-0000-4000-8000-000000000007";
+    const fixture = claimHarness([
+      claimJobRow(oldId, { status: "cancelled", completedAt: recoveredAt }),
+      claimJobRow(newId),
+      claimJobRow(ids.nextJob),
+    ]);
+    expect(await recoverUnstartedParkedProtectedTaskClaim(
+      fixture.db,
+      { expected: expectedAuthority(), jobReference: nextReference() },
+      recoveredAt,
+      async () => true,
+    )).toEqual({ status: "recovered" });
+    expect(fixture.writes).toEqual([[ids.nextJob, newId].sort()]);
+
+    const replay = claimHarness([
+      claimJobRow(oldId, { status: "cancelled", completedAt: recoveredAt }),
+    ]);
+    expect(await recoverUnstartedParkedProtectedTaskClaim(
+      replay.db,
+      { expected: expectedAuthority(), jobReference: nextReference() },
+      recoveredAt,
+      async () => true,
+    )).toEqual({ status: "exact_replay" });
+  });
+
+  test("rejects started, effectful and substituted exact-reference Jobs", async () => {
+    for (const row of [
+      claimJobRow(ids.nextJob, {
+        status: "running",
+        startedAt: recoveredAt,
+      }),
+      claimJobRow(ids.nextJob, { pristine: false }),
+      claimJobRow(ids.nextJob, { ownerId: ids.namespace }),
+    ]) {
+      const fixture = claimHarness([row]);
+      let deferred = 0;
+      expect(await recoverUnstartedParkedProtectedTaskClaim(
+        fixture.db,
+        { expected: expectedAuthority(), jobReference: nextReference() },
+        recoveredAt,
+        async () => { deferred += 1; return true; },
+      )).toEqual({ status: "stale" });
+      expect(deferred).toBe(0);
+      expect(fixture.writes).toEqual([]);
+    }
+  });
+
+  test("retains durable cancellation when authorization deferral is unresolved", async () => {
+    const fixture = claimHarness([claimJobRow(ids.nextJob)]);
+    expect(await recoverUnstartedParkedProtectedTaskClaim(
+      fixture.db,
+      { expected: expectedAuthority(), jobReference: nextReference() },
+      recoveredAt,
+      async () => false,
+    )).toEqual({ status: "cancelled" });
+    expect(fixture.writes).toEqual([[ids.nextJob]]);
   });
 });

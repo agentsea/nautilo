@@ -381,6 +381,7 @@ export type {
 export {
   createProtectedTaskFailurePayload,
   runProtectedTaskNativeSegment,
+  type ProtectedTaskNativeAdditionalAuthorityResume,
   type ProtectedTaskNativeExecution,
   type ProtectedTaskNativeRunnerDependencies,
   type ProtectedTaskNativeSegmentMode,

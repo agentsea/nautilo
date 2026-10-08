@@ -1,4 +1,7 @@
-import type { RunScopeSubagentOpts } from "@nautilo/agent";
+import {
+  createProtectedTaskAdditionalAuthorityResumeMapV1,
+  type RunScopeSubagentOpts,
+} from "@nautilo/agent";
 import type {
   PostgresJsBridgeConnection,
   SealAndParkProtectedTaskRunInput,
@@ -336,7 +339,13 @@ function executablePolicyMode(
 }
 
 function exactPreparation(input: Parameters<PrepareExecution>[0]): void {
-  const { occurrence, predispatch, policy, reference } = input;
+  const {
+    additionalAuthorityResume,
+    occurrence,
+    predispatch,
+    policy,
+    reference,
+  } = input;
   assertProtectedTaskJobReferenceV1(reference);
   if (!sameOccurrence(occurrence, predispatch.occurrence)
     || predispatch.scheduling.ownerId !== occurrence.task.ownerId
@@ -363,8 +372,12 @@ function exactPreparation(input: Parameters<PrepareExecution>[0]): void {
           !== `task-run-authorization:${occurrence.run.id}`
         || "resumeContinuationFingerprint" in reference
         || "resumeAcceptanceId" in reference
+        || additionalAuthorityResume !== undefined
       : !("resumeContinuationFingerprint" in reference)
-        || "resumeAcceptanceId" in reference)
+        || "resumeAcceptanceId" in reference
+        || additionalAuthorityResume === undefined
+        || additionalAuthorityResume.authorizationRequestId
+          !== reference.authorizationRequestId)
     || !(input.stableRoutingDigest instanceof Uint8Array)
     || input.stableRoutingDigest.length !== 32) {
     throw new TypeError("Protected Task fixed Memory preparation is not exact");
@@ -705,7 +718,12 @@ export function createProtectedTaskNativeFixedMemorySegment(
     const policy = Object.freeze({ ...preparation.policy });
     const reference = Object.freeze({ ...preparation.reference });
     const stableRoutingDigest = preparation.stableRoutingDigest.slice();
-    const continuation = reference.executionSegment > 1;
+    const additionalAuthorityResume = preparation.additionalAuthorityResume
+      === undefined
+      ? undefined
+      : createProtectedTaskAdditionalAuthorityResumeMapV1(
+          preparation.additionalAuthorityResume,
+        );
     const scopeMemory = preparation.scopeMemory === undefined
       ? undefined
       : Object.freeze({
@@ -972,9 +990,9 @@ export function createProtectedTaskNativeFixedMemorySegment(
                                   subEnvelope: predispatch.memory.envelope,
                                   actorRole: "owner",
                                   roomId: predispatch.scheduling.roomId,
-                                  ...(continuation
-                                    ? { continueFromCheckpoint: true }
-                                    : {}),
+                                  ...(additionalAuthorityResume === undefined
+                                    ? {}
+                                    : { resume: additionalAuthorityResume }),
                                   ...(runningOccurrence.task.callingRoomId === null
                                     ? {}
                                     : {
