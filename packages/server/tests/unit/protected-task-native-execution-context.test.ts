@@ -191,9 +191,15 @@ function profile(): NautiloProfile {
   } as NautiloProfile;
 }
 
-function harness(taskOverrides: Partial<Task> = {}) {
+function harness(
+  taskOverrides: Partial<Task> = {},
+  executionOverrides: Readonly<{
+    run?: Partial<TaskRun>;
+    reference?: Record<string, unknown>;
+  }> = {},
+) {
   const currentTask = task(taskOverrides);
-  let currentRun = run();
+  let currentRun = run(executionOverrides.run);
   let attachCalls = 0;
   const job = {
     id: ids.job,
@@ -202,7 +208,7 @@ function harness(taskOverrides: Partial<Task> = {}) {
     laneKey: `task:${ids.task}`,
     type: "foreground" as const,
     status: "running" as const,
-    input: reference(),
+    input: executionOverrides.reference ?? reference(),
     result: null,
     message: null,
     createdAt: startedAt,
@@ -222,6 +228,11 @@ function harness(taskOverrides: Partial<Task> = {}) {
       input: { modelId: string },
     ) => {
       attachCalls += 1;
+      if (currentRun.modelId !== null) {
+        return currentRun.modelId === input.modelId
+          ? { status: "same" as const }
+          : { status: "stale" as const };
+      }
       currentRun = run({ modelId: input.modelId });
       return { status: "attached" as const };
     },
@@ -281,6 +292,62 @@ describe("protected Task native execution context", () => {
     expect(context.modelId).toBe("provider:exact-model");
     expect(context.modelFallbackMode).toBe("none");
     expect(context.toolWhitelist).toEqual(["search_memory"]);
+  });
+
+  test("reuses the exact persisted model for a continuation segment", async () => {
+    const modelId = "provider:profile-model/selected";
+    const state = harness({}, {
+      run: { modelId },
+      reference: {
+        ...reference(),
+        authorizationRequestId: "request-2",
+        executionSegment: 2,
+        resumeContinuationFingerprint: "A".repeat(43),
+      },
+    });
+    const context = await createProductionProtectedTaskNativeExecutionContext({
+      ...state.dependencies,
+      resolveTaskModel: () => ({ modelId, reasons: [] }),
+    })(input);
+
+    expect(context.modelId).toBe(modelId);
+    expect(state.attachCalls).toBe(1);
+  });
+
+  test("rejects a continuation when current model selection drifted", async () => {
+    const state = harness({}, {
+      run: { modelId: "provider:previous-model" },
+      reference: {
+        ...reference(),
+        authorizationRequestId: "request-2",
+        executionSegment: 2,
+        resumeContinuationFingerprint: "A".repeat(43),
+      },
+    });
+    const load = createProductionProtectedTaskNativeExecutionContext({
+      ...state.dependencies,
+      resolveTaskModel: () => ({
+        modelId: "provider:replacement-model",
+        reasons: [],
+      }),
+    });
+
+    await Promise.resolve(expect(load(input)).rejects.toThrow(
+      "Protected Task execution model binding is stale",
+    ));
+    expect(state.attachCalls).toBe(1);
+  });
+
+  test("rejects a prebound model on the initial execution segment", async () => {
+    const state = harness({}, { run: { modelId: "provider:prebound-model" } });
+    const load = createProductionProtectedTaskNativeExecutionContext(
+      state.dependencies,
+    );
+
+    await Promise.resolve(expect(load(input)).rejects.toThrow(
+      "Protected Task execution is no longer current",
+    ));
+    expect(state.attachCalls).toBe(0);
   });
 
   test("rejects a stale Job before funding or model attachment", async () => {

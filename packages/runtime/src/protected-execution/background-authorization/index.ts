@@ -58,6 +58,7 @@ export {
   InMemoryBackgroundAuthorizationRepository,
   parseBackgroundAuthorizationRecord,
   isTaskRuntimeStableIdempotencyKey,
+  sameBackgroundAuthorizationRecord,
   type BackgroundAuthorizationAcceptResponseResult,
   type BackgroundAuthorizationAcceptedMaterial,
   type BackgroundAuthorizationAuthoritySetV2,
@@ -140,6 +141,7 @@ export {
 
 export {
   attachExactTaskRuntimeRecipient,
+  createParkedTaskRuntimeGrantClaim,
   createTaskRuntimeGrantClaim,
   prepareUnclaimedParkedTaskRuntimeAuthority,
   rotateExpiredTaskRuntimeRecipient,
@@ -148,6 +150,10 @@ export {
   taskRuntimeStableRoutingDigest,
   type AttachExactTaskRuntimeRecipientInput,
   type BindTaskRuntimeRecipientResult,
+  type ParkedTaskRuntimeClaimAuthorityPort,
+  type ParkedTaskRuntimeExecutionStartInput,
+  type ParkedTaskRuntimeGrantClaimDependencies,
+  type ParkedTaskRuntimeGrantClaimPlan,
   type PrepareUnclaimedParkedTaskRuntimeAuthorityInput,
   type PrepareUnclaimedParkedTaskRuntimeAuthorityResult,
   type RotateExpiredTaskRuntimeRecipientInput,

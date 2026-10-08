@@ -372,6 +372,12 @@ export {
   type ProtectedTaskOccurrenceJobManager,
   type ParkedProtectedTaskOccurrenceCoordinatorDeps,
 } from "./tasks/protected-task-occurrence-coordinator";
+export type {
+  ProtectedTaskExecutionCandidate,
+  ProtectedTaskExecutionSettlement,
+  ProtectedTaskExecutionStartResult,
+  ProtectedTaskJobSchedulingFacts,
+} from "./tasks/protected-task-execution-candidate";
 export {
   createProtectedTaskFailurePayload,
   runProtectedTaskNativeSegment,

@@ -186,7 +186,7 @@ export function destroyAcceptedTaskRuntimeRecord(
   accepted.issuerSigningPublicKeyHash.fill(0);
 }
 
-function copyHeldAuthority(
+export function copyProtectedTaskRuntimeAuthority(
   authority: CurrentTaskRuntimeAuthority,
   nativeExecutionSupported: boolean,
 ): HeldProtectedTaskRuntimeAuthority {
@@ -229,7 +229,7 @@ function copyHeldAuthority(
   });
 }
 
-function destroyHeldAuthority(authority: HeldProtectedTaskRuntimeAuthority): void {
+export function destroyProtectedTaskRuntimeAuthority(authority: HeldProtectedTaskRuntimeAuthority): void {
   authority.foreground.committerDeviceSigningPublicKey.fill(0);
   for (const domain of authority.foreground.domains) {
     domain.participantDigest.fill(0);
@@ -503,14 +503,14 @@ export function createCurrentProtectedTaskRuntimeAuthorityPort(
       phase,
       dependencies,
       (authority, facts) =>
-        copyHeldAuthority(authority, facts.nativeExecutionSupported),
+        copyProtectedTaskRuntimeAuthority(authority, facts.nativeExecutionSupported),
     );
     if (held === null) return null;
     try {
       input.signal?.throwIfAborted();
       return await input.use(held);
     } finally {
-      destroyHeldAuthority(held);
+      destroyProtectedTaskRuntimeAuthority(held);
     }
   };
 }
@@ -555,7 +555,7 @@ export function createCurrentProtectedTaskRuntimeClaimAuthorityPort(
           material.authorizationExpiresAt,
           claimedAt + BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
         );
-        const held = copyHeldAuthority(
+        const held = copyProtectedTaskRuntimeAuthority(
           authority,
           facts.nativeExecutionSupported,
         );
@@ -568,7 +568,7 @@ export function createCurrentProtectedTaskRuntimeClaimAuthorityPort(
           );
           return value;
         } finally {
-          destroyHeldAuthority(held);
+          destroyProtectedTaskRuntimeAuthority(held);
         }
       },
       () => {

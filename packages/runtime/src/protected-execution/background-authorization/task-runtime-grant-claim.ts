@@ -38,6 +38,7 @@ import {
 import type { JobExecutor } from "../../job";
 import type {
   ProtectedTaskExecutionCandidate,
+  ProtectedTaskExecutionStartResult,
   ProtectedTaskJobSchedulingFacts,
 } from "../../tasks/protected-task-execution-candidate";
 import type { ProtectedTaskJobReferenceV1 } from
@@ -102,6 +103,10 @@ type CurrentTaskRuntimeClaimAuthorityPort = <Value>(input: Readonly<{
     claimExpiresAt: number,
   ): Value | Promise<Value>;
 }>) => Promise<Value | null>;
+
+/** Held parked authority owner for the exact grant_ready -> claimed CAS. */
+export type ParkedTaskRuntimeClaimAuthorityPort =
+  CurrentTaskRuntimeClaimAuthorityPort;
 
 export type TaskRuntimeRecipientDeviceBinding = Readonly<{
   userId: string;
@@ -195,6 +200,19 @@ type TaskRuntimeResultBinding = Readonly<{
   }>;
 }>;
 
+type TaskRuntimeExecutionOpenInput = Readonly<{
+  occurrence: ProtectedTaskRunningOccurrence;
+  record: BackgroundAuthorizationTaskRuntimeRecordV3;
+  reference: ProtectedTaskJobReferenceV1;
+  domains: readonly DomainForegroundSecretEntry[];
+  evidence: TaskRuntimeExecutionEvidence;
+  signal: AbortSignal;
+}>;
+
+type TaskRuntimeExecutionPublishInput = TaskRuntimeExecutionOpenInput & Readonly<{
+  payload: TaskRunResultPayloadV1;
+}>;
+
 export type TaskRuntimeGrantClaimPlan = Readonly<{
   stableIdentity: TaskRuntimeGrantStableIdentity;
   initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3;
@@ -217,21 +235,38 @@ export type TaskRuntimeGrantClaimPlan = Readonly<{
     binding: TaskRuntimeRecipientDeviceBinding;
     authority: TaskRuntimeRecipientCurrentAuthority;
   }>): TaskRuntimeBackgroundAuthorizationRequestV1;
-  openTransientInput(input: Readonly<{
-    occurrence: ProtectedTaskRunningOccurrence;
-    record: BackgroundAuthorizationTaskRuntimeRecordV3;
-    domains: readonly DomainForegroundSecretEntry[];
-    evidence: TaskRuntimeExecutionEvidence;
-    signal: AbortSignal;
-  }>): Promise<Record<string, unknown>>;
-  publishResult(input: Readonly<{
-    occurrence: ProtectedTaskRunningOccurrence;
-    record: BackgroundAuthorizationTaskRuntimeRecordV3;
-    payload: TaskRunResultPayloadV1;
-    domains: readonly DomainForegroundSecretEntry[];
-    evidence: TaskRuntimeExecutionEvidence;
-    signal: AbortSignal;
-  }>): Promise<void>;
+  openTransientInput(
+    input: TaskRuntimeExecutionOpenInput,
+  ): Promise<Record<string, unknown>>;
+  publishResult(input: TaskRuntimeExecutionPublishInput): Promise<void>;
+}>;
+
+export type ParkedTaskRuntimeExecutionStartInput = Readonly<{
+  occurrence: ProtectedTaskOccurrence;
+  claimed: BackgroundAuthorizationTaskRuntimeRecordV3;
+  claimId: string;
+  jobId: string;
+  reference: ProtectedTaskJobReferenceV1;
+}>;
+
+export type ParkedTaskRuntimeGrantClaimPlan = Readonly<{
+  stableIdentity: TaskRuntimeGrantStableIdentity;
+  initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3;
+  reference: ProtectedTaskJobReferenceV1;
+  scheduling: ProtectedTaskJobSchedulingFacts;
+  executor: JobExecutor;
+  scopeMemory?: TaskScopeMemoryBinding;
+  modelAttribution?: "external";
+  start(
+    input: ParkedTaskRuntimeExecutionStartInput,
+  ): Promise<ProtectedTaskExecutionStartResult>;
+  deferBeforeExecution?(
+    input: ParkedTaskRuntimeExecutionStartInput,
+  ): Promise<boolean>;
+  openTransientInput(
+    input: TaskRuntimeExecutionOpenInput,
+  ): Promise<Record<string, unknown>>;
+  publishResult(input: TaskRuntimeExecutionPublishInput): Promise<void>;
 }>;
 
 export type TaskRuntimeGrantStableIdentity = Readonly<{
@@ -348,6 +383,23 @@ export interface TaskRuntimeGrantClaimDependencies {
     occurrence: ProtectedTaskOccurrence,
   ): Promise<TaskRuntimeGrantClaimPlan> | TaskRuntimeGrantClaimPlan;
   withCurrentClaimAuthority: CurrentTaskRuntimeClaimAuthorityPort;
+  withCurrentAuthority: CurrentTaskRuntimeAuthorityPort;
+  now?: () => number;
+  claimId?: () => string;
+}
+
+export interface ParkedTaskRuntimeGrantClaimDependencies {
+  repository: Pick<
+    BackgroundAuthorizationTaskRuntimeReplacementRepository,
+    "get" | "compareAndSwap"
+  >;
+  recipients: TaskRuntimeRecipientRegistry;
+  plan(
+    occurrence: ProtectedTaskOccurrence,
+  ): Promise<ParkedTaskRuntimeGrantClaimPlan | null>
+    | ParkedTaskRuntimeGrantClaimPlan
+    | null;
+  withCurrentClaimAuthority: ParkedTaskRuntimeClaimAuthorityPort;
   withCurrentAuthority: CurrentTaskRuntimeAuthorityPort;
   now?: () => number;
   claimId?: () => string;
@@ -664,6 +716,37 @@ function exactScopeNamespaceRequirements(
     });
 }
 
+function parkedScopeNamespaceRequirements(
+  plan: ParkedTaskRuntimeGrantClaimPlan,
+  scopeMemory: TaskScopeMemoryBinding,
+): boolean {
+  const contentNamespaceId = plan.stableIdentity.contentNamespaceId;
+  const outputNamespaceId = plan.stableIdentity.outputNamespaceId;
+  const expectedIds = [...new Set([
+    ...scopeMemory.readableNamespaceIds,
+    contentNamespaceId,
+    ...(outputNamespaceId === null ? [] : [outputNamespaceId]),
+  ])].sort();
+  const encryptable = new Set([
+    scopeMemory.originWritableNamespaceId,
+    contentNamespaceId,
+    ...(outputNamespaceId === null ? [] : [outputNamespaceId]),
+  ]);
+  const requirements = plan.initialRecord.authoritySet.namespaceRequirements;
+  return expectedIds.every(namespaceId => {
+    const matches = requirements.filter(requirement =>
+      requirement.namespaceId === namespaceId
+    );
+    const requiredOperations = encryptable.has(namespaceId)
+      ? (["decrypt", "encrypt"] as const)
+      : (["decrypt"] as const);
+    return matches.length === 1
+      && requiredOperations.every(operation =>
+        matches[0]!.operations.includes(operation)
+      );
+  });
+}
+
 function assertPlan(
   occurrence: ProtectedTaskOccurrence,
   plan: TaskRuntimeGrantClaimPlan,
@@ -734,6 +817,88 @@ function assertPlan(
     || typeof plan.openTransientInput !== "function"
     || typeof plan.publishResult !== "function"
   ) throw new TypeError("Task Runtime grant plan disagrees with its occurrence");
+  return Object.freeze({
+    taskId: occurrence.task.id,
+    taskRunId: occurrence.run.id,
+    contentRevision: 1 as const,
+    objectId: resultObjectId,
+    signerAgentId: occurrence.task.agentId,
+    namespace: Object.freeze({
+      namespaceId: outputNamespace.namespaceId,
+      domainId: outputNamespace.domainId,
+      operations: Object.freeze(["encrypt"] as const),
+      expectedAccessRevision: outputNamespace.expectedAccessRevision,
+      expectedPolicyRevision: outputNamespace.expectedPolicyRevision,
+    }),
+  });
+}
+
+function assertParkedPlan(
+  occurrence: ProtectedTaskOccurrence,
+  plan: ParkedTaskRuntimeGrantClaimPlan,
+  scopeMemory: TaskScopeMemoryBinding | undefined,
+): TaskRuntimeResultBinding {
+  const initial = plan.initialRecord;
+  const identity = plan.stableIdentity;
+  const resultObjectId = deriveTaskContentCryptoObjectIdV1({
+    kind: "run_result",
+    taskId: occurrence.task.id,
+    taskRunId: occurrence.run.id,
+    contentRevision: 1,
+  });
+  const outputNamespaces = initial.authoritySet?.namespaceRequirements.filter(
+    requirement => requirement.namespaceId === occurrence.task.contentNamespaceId,
+  ) ?? [];
+  const outputNamespace = outputNamespaces[0];
+  const outputDomains = outputNamespace === undefined
+    ? []
+    : initial.authoritySet?.domainRequirements.filter(requirement =>
+      requirement.domainId === outputNamespace.domainId
+    ) ?? [];
+  const outputDomain = outputDomains[0];
+  if (
+    !isTaskRuntimeRecord(initial)
+    || !exactUnclaimedParkedInitialRecord(occurrence, identity, initial)
+    || initial.idempotencyKey !== taskRuntimeStableIdempotencyKey(identity)
+    || (identity.memoryMode === "scope"
+      ? scopeMemory === undefined
+        || scopeMemory.scopeId !== identity.scopeId
+        || !parkedScopeNamespaceRequirements(plan, scopeMemory)
+      : scopeMemory !== undefined)
+    || plan.reference.taskId !== occurrence.task.id
+    || plan.reference.taskRunId !== occurrence.run.id
+    || plan.reference.resultObjectId !== resultObjectId
+    || plan.reference.inputObjectId !== occurrence.task.cryptoObjectId
+    || plan.reference.authorizationRequestId !== initial.snapshot.requestId
+    || plan.reference.policyRevision !== initial.expectedPolicyRevision
+    || plan.reference.executionSegment !== identity.executionSegment
+    || !Object.hasOwn(plan.reference, "resumeContinuationFingerprint")
+    || Object.hasOwn(plan.reference, "resumeAcceptanceId")
+    || plan.reference.resumeContinuationFingerprint
+      !== identity.resumeContinuationFingerprint
+    || plan.scheduling.ownerId !== occurrence.task.ownerId
+    || plan.scheduling.requestorId !== occurrence.task.requestorId
+    || plan.scheduling.agentId !== occurrence.task.agentId
+    || plan.scheduling.roomId !== identity.targetRoomId
+    || plan.scheduling.callingRoomId !== occurrence.task.callingRoomId
+    || plan.scheduling.graphThreadId !== occurrence.run.graphThreadId
+    || outputNamespaces.length !== 1
+    || outputNamespace === undefined
+    || outputNamespace.domainId !== initial.domainId
+    || outputNamespace.operations.length !== 2
+    || outputNamespace.operations[0] !== "decrypt"
+    || outputNamespace.operations[1] !== "encrypt"
+    || outputNamespace.expectedAccessRevision
+      !== initial.expectedNamespaceAccessRevision
+    || outputNamespace.expectedPolicyRevision !== initial.expectedPolicyRevision
+    || outputDomains.length !== 1
+    || outputDomain === undefined
+    || outputDomain.expectedEpoch !== initial.expectedDomainEpoch
+    || typeof plan.executor !== "function"
+    || typeof plan.start !== "function"
+    || typeof plan.openTransientInput !== "function"
+    || typeof plan.publishResult !== "function"
+  ) throw new TypeError("Parked Task Runtime grant plan disagrees with its occurrence");
   return Object.freeze({
     taskId: occurrence.task.id,
     taskRunId: occurrence.run.id,
@@ -1403,24 +1568,52 @@ export async function prepareUnclaimedParkedTaskRuntimeAuthority(
     : classify(created.record);
 }
 
-function createCandidate(input: Readonly<{
+type TaskRuntimeExecutionCandidateInput = Readonly<{
   occurrence: ProtectedTaskOccurrence;
   claimed: BackgroundAuthorizationTaskRuntimeRecordV3;
-  plan: TaskRuntimeGrantClaimPlan;
-  dependencies: TaskRuntimeGrantClaimDependencies;
+  reference: ProtectedTaskJobReferenceV1;
+  repository: Pick<
+    BackgroundAuthorizationTaskRuntimeReplacementRepository,
+    "get" | "compareAndSwap"
+  >;
+  recipients: TaskRuntimeRecipientRegistry;
+  withCurrentAuthority: CurrentTaskRuntimeAuthorityPort;
+  now: () => number;
   claimId: string;
   result: TaskRuntimeResultBinding;
-}>): ProtectedTaskExecutionCandidate {
+  start(jobId: string): Promise<ProtectedTaskExecutionStartResult>;
+  deferBeforeExecution?(jobId: string): Promise<boolean>;
+  openTransientInput(
+    input: TaskRuntimeExecutionOpenInput,
+  ): Promise<Record<string, unknown>>;
+  publishResult(input: TaskRuntimeExecutionPublishInput): Promise<void>;
+}>;
+
+function executionTimestamp(
+  now: () => number,
+  minimum: number,
+  message: string,
+): number {
+  const timestamp = now();
+  if (!Number.isSafeInteger(timestamp) || timestamp < minimum) {
+    throw new TypeError(message);
+  }
+  return timestamp;
+}
+
+function createTaskRuntimeExecutionCandidate(
+  input: TaskRuntimeExecutionCandidateInput,
+): ProtectedTaskExecutionCandidate {
   let state: "ready" | "starting" | "started" | "running" | "finished" =
     "ready";
   let runningOccurrence: ProtectedTaskRunningOccurrence | null = null;
   let released = false;
-  let startInput: StartProtectedTaskRunInput | null = null;
+  let startedJobId: string | null = null;
   let deferral: Promise<boolean> | undefined;
   const release = (): void => {
     if (released) return;
     released = true;
-    input.dependencies.recipients.delete(
+    input.recipients.delete(
       input.claimed.snapshot.requestId,
       input.claimed.snapshot.recipientGeneration,
     );
@@ -1434,23 +1627,9 @@ function createCandidate(input: Readonly<{
         throw new TypeError("Task Runtime Job identity is invalid");
       }
       state = "starting";
+      startedJobId = jobId;
       try {
-        startInput = {
-          taskId: input.occurrence.task.id,
-          taskRunId: input.occurrence.run.id,
-          graphThreadId: input.occurrence.run.graphThreadId,
-          jobId,
-          contentRepresentation:
-            input.occurrence.task.contentRepresentation,
-          contentNamespaceId: input.occurrence.task.contentNamespaceId,
-          contentRevision: input.occurrence.task.contentRevision,
-          cryptoObjectId: input.occurrence.task.cryptoObjectId,
-          cryptoAccessRevision: input.occurrence.task.cryptoAccessRevision,
-          cryptoRequiredNamespaceFingerprint:
-            input.occurrence.task.cryptoRequiredNamespaceFingerprint.slice(),
-          jobReference: input.plan.reference,
-        };
-        const result = await input.plan.startProtectedTaskRun(startInput);
+        const result = await input.start(jobId);
         if (state !== "starting") {
           release();
           return Object.freeze({ status: "stale" as const });
@@ -1487,9 +1666,10 @@ function createCandidate(input: Readonly<{
     async run<Value>(work: (
       transientInput: Record<string, unknown>,
       authorizationSignal: AbortSignal,
-      publication: Readonly<{
+      settlement: Readonly<{
         publish(payload: TaskRunResultPayloadV1): Promise<void>;
-        awaitPublished(): Promise<boolean>;
+        park(settle: (parkedAt: number) => Promise<boolean>): Promise<void>;
+        awaitSettled(): Promise<boolean>;
       }>,
     ) => Promise<Value>): Promise<Value> {
       if (state === "ready") {
@@ -1505,7 +1685,7 @@ function createCandidate(input: Readonly<{
       state = "running";
       let workInvoked = false;
       try {
-        const current = await input.dependencies.repository.get(
+        const current = await input.repository.get(
           input.claimed.snapshot.requestId,
         );
         if (
@@ -1523,7 +1703,7 @@ function createCandidate(input: Readonly<{
           throw new Error("Task Runtime authorization request is unavailable");
         }
         try {
-          const authority = await input.dependencies.withCurrentAuthority({
+          const authority = await input.withCurrentAuthority({
             occurrence,
             record: current,
             request,
@@ -1548,7 +1728,7 @@ function createCandidate(input: Readonly<{
             throw new Error("Task Runtime authority is no longer current");
           }
           try {
-            const opened = await input.dependencies.recipients.withOpenedGrant({
+            const opened = await input.recipients.withOpenedGrant({
               requestId: request.requestId,
               workId: request.workId,
               recipientGeneration: request.recipientGeneration,
@@ -1560,15 +1740,20 @@ function createCandidate(input: Readonly<{
               currentNamespaceRequirements: authority.namespaceRequirements,
               result: input.result,
               operation: async (domains, signal, evidence) => {
-                const transientInput = await input.plan.openTransientInput({
+                const transientInput = await input.openTransientInput({
                   occurrence,
                   record: current,
+                  reference: input.reference,
                   domains,
                   evidence,
                   signal,
                 });
                 signal.throwIfAborted();
-                const runningAt = input.dependencies.now?.() ?? Date.now();
+                const runningAt = executionTimestamp(
+                  input.now,
+                  0,
+                  "Task Runtime execution clock is invalid",
+                );
                 const runningRecord: BackgroundAuthorizationTaskRuntimeRecordV3 = {
                   ...current,
                   snapshot: markBackgroundAuthorizationRunning(
@@ -1576,7 +1761,7 @@ function createCandidate(input: Readonly<{
                     runningAt,
                   ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
                 };
-                const running = await input.dependencies.repository.compareAndSwap({
+                const running = await input.repository.compareAndSwap({
                   expectedRequestRevision: current.snapshot.requestRevision,
                   next: runningRecord,
                 });
@@ -1592,42 +1777,75 @@ function createCandidate(input: Readonly<{
                 ) {
                   throw new Error("Task Runtime execution start could not be recorded");
                 }
-                let publicationCalls = 0;
-                let publicationCompleted = false;
-                let publicationOpen = true;
-                const pendingPublications: Promise<void>[] = [];
-                const publication = Object.freeze({
+                let settlementCalls = 0;
+                let settlementCompleted = false;
+                let settlementOpen = true;
+                let settlementKind: "published" | "parked" | null = null;
+                let parkedAt: number | null = null;
+                const pendingSettlements: Promise<void>[] = [];
+                const settlement = Object.freeze({
                   publish: (payload: TaskRunResultPayloadV1): Promise<void> => {
-                    if (!publicationOpen || publicationCalls !== 0) {
-                      throw new Error("Task Runtime result publication is one-use");
+                    if (!settlementOpen || settlementCalls !== 0) {
+                      throw new Error("Task Runtime execution settlement is one-use");
                     }
-                    publicationCalls += 1;
+                    settlementCalls += 1;
+                    settlementKind = "published";
                     signal.throwIfAborted();
-                    const pending = input.plan.publishResult({
+                    const pending = input.publishResult({
                       occurrence,
                       record: storedRunning,
+                      reference: input.reference,
                       payload,
                       domains,
                       evidence,
                       signal,
                     }).then(() => {
-                      publicationCompleted = true;
+                      settlementCompleted = true;
                     });
-                    pendingPublications.push(pending);
+                    pendingSettlements.push(pending);
                     return pending;
                   },
-                  awaitPublished: async (): Promise<boolean> => {
-                    await Promise.all(pendingPublications);
-                    return publicationCalls === 1 && publicationCompleted;
+                  park: (
+                    settle: (parkedAt: number) => Promise<boolean>,
+                  ): Promise<void> => {
+                    if (!settlementOpen || settlementCalls !== 0
+                      || typeof settle !== "function") {
+                      throw new Error("Task Runtime execution settlement is one-use");
+                    }
+                    settlementCalls += 1;
+                    settlementKind = "parked";
+                    signal.throwIfAborted();
+                    parkedAt = executionTimestamp(
+                      input.now,
+                      runningAt,
+                      "Task Runtime park clock is invalid",
+                    );
+                    const timestamp = parkedAt;
+                    const pending = (async () => {
+                      if (!await settle(timestamp)) {
+                        throw new Error("Task Runtime park settlement was rejected");
+                      }
+                      settlementCompleted = true;
+                    })();
+                    pendingSettlements.push(pending);
+                    return pending;
+                  },
+                  awaitSettled: async (): Promise<boolean> => {
+                    await Promise.all(pendingSettlements);
+                    return settlementCalls === 1 && settlementCompleted;
                   },
                 });
                 try {
                   workInvoked = true;
-                  const result = await work(transientInput, signal, publication);
-                  await Promise.all(pendingPublications);
-                  signal.throwIfAborted();
-                  if (publicationCalls === 1) {
-                    const completedAt = input.dependencies.now?.() ?? Date.now();
+                  const result = await work(transientInput, signal, settlement);
+                  await Promise.all(pendingSettlements);
+                  if (settlementKind !== "parked") signal.throwIfAborted();
+                  if (settlementCalls === 1 && settlementCompleted) {
+                    const completedAt = parkedAt ?? executionTimestamp(
+                      input.now,
+                      runningAt,
+                      "Task Runtime completion clock is invalid",
+                    );
                     const completedRecord:
                       BackgroundAuthorizationTaskRuntimeRecordV3 = {
                         ...storedRunning,
@@ -1637,9 +1855,19 @@ function createCandidate(input: Readonly<{
                         ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
                         finishedAt: completedAt,
                       };
+                    const isExactSettlementSuccessor = (
+                      current: BackgroundAuthorizationRecord | null,
+                    ): boolean => isExactCompletedTaskRuntimeSuccessor(
+                      current,
+                      storedRunning,
+                    ) && (settlementKind !== "parked" || (
+                      current !== null
+                      && current.snapshot.updatedAt === completedAt
+                      && current.finishedAt === completedAt
+                    ));
                     let completionRecorded = false;
                     try {
-                      const completed = await input.dependencies.repository
+                      const completed = await input.repository
                         .compareAndSwap({
                           expectedRequestRevision:
                             storedRunning.snapshot.requestRevision,
@@ -1650,18 +1878,12 @@ function createCandidate(input: Readonly<{
                             completed.record,
                             completedRecord,
                           )
-                        : isExactCompletedTaskRuntimeSuccessor(
-                            completed.current,
-                            storedRunning,
-                          );
+                        : isExactSettlementSuccessor(completed.current);
                     } catch {
-                      const current = await input.dependencies.repository.get(
+                      const current = await input.repository.get(
                         storedRunning.snapshot.requestId,
                       );
-                      completionRecorded = isExactCompletedTaskRuntimeSuccessor(
-                        current,
-                        storedRunning,
-                      );
+                      completionRecorded = isExactSettlementSuccessor(current);
                     }
                     if (!completionRecorded) {
                       throw new Error(
@@ -1671,10 +1893,10 @@ function createCandidate(input: Readonly<{
                   }
                   return result;
                 } catch (error) {
-                  await Promise.allSettled(pendingPublications);
+                  await Promise.allSettled(pendingSettlements);
                   throw error;
                 } finally {
-                  publicationOpen = false;
+                  settlementOpen = false;
                 }
               },
             });
@@ -1698,11 +1920,11 @@ function createCandidate(input: Readonly<{
       }
     },
     deferBeforeExecution(jobId: string): Promise<boolean> {
-      if (state !== "finished" || startInput === null
-        || startInput.jobId !== jobId || input.plan.deferBeforeExecution === undefined) {
+      if (state !== "finished" || startedJobId !== jobId
+        || input.deferBeforeExecution === undefined) {
         return Promise.resolve(false);
       }
-      deferral ??= input.plan.deferBeforeExecution(startInput);
+      deferral ??= input.deferBeforeExecution(jobId);
       return deferral;
     },
     onIneligible(): void {
@@ -1983,13 +2205,220 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       if (!isTaskRuntimeRecord(claimed.record)) {
         throw new TypeError("Task Runtime claim changed credential family");
       }
-      const candidate = createCandidate({
+      let startInput: StartProtectedTaskRunInput | null = null;
+      const candidate = createTaskRuntimeExecutionCandidate({
         occurrence,
         claimed: claimed.record,
-        plan,
-        dependencies: this.dependencies,
+        reference: plan.reference,
+        repository: this.dependencies.repository,
+        recipients: this.dependencies.recipients,
+        withCurrentAuthority: this.dependencies.withCurrentAuthority,
+        now: this.#now,
         claimId,
         result,
+        start: (jobId) => {
+          startInput = {
+            taskId: occurrence.task.id,
+            taskRunId: occurrence.run.id,
+            graphThreadId: occurrence.run.graphThreadId,
+            jobId,
+            contentRepresentation: occurrence.task.contentRepresentation,
+            contentNamespaceId: occurrence.task.contentNamespaceId,
+            contentRevision: occurrence.task.contentRevision,
+            cryptoObjectId: occurrence.task.cryptoObjectId,
+            cryptoAccessRevision: occurrence.task.cryptoAccessRevision,
+            cryptoRequiredNamespaceFingerprint:
+              occurrence.task.cryptoRequiredNamespaceFingerprint.slice(),
+            jobReference: plan.reference,
+          };
+          return plan.startProtectedTaskRun(startInput);
+        },
+        ...(plan.deferBeforeExecution === undefined
+          ? {}
+          : {
+              deferBeforeExecution: (jobId: string) => {
+                const exact = startInput;
+                if (exact === null || exact.jobId !== jobId) {
+                  return Promise.resolve(false);
+                }
+                return plan.deferBeforeExecution!(exact);
+              },
+            }),
+        openTransientInput: plan.openTransientInput,
+        publishResult: plan.publishResult,
+      });
+      const dispatch: ClaimedProtectedTaskOccurrence = Object.freeze({
+        reference: plan.reference,
+        scheduling: plan.scheduling,
+        executor: plan.executor,
+        candidate,
+        ...(plan.modelAttribution === undefined
+          ? {}
+          : { modelAttribution: plan.modelAttribution }),
+      });
+      return Object.freeze({ status: "claimed" as const, dispatch });
+    } finally {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    }
+  }
+}
+
+/** Claims only an already prepared continuation request for one parked run. */
+class ParkedTaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
+  readonly #now: () => number;
+  readonly #claimId: () => string;
+
+  constructor(
+    private readonly dependencies: ParkedTaskRuntimeGrantClaimDependencies,
+  ) {
+    this.#now = dependencies.now ?? Date.now;
+    this.#claimId = dependencies.claimId ?? randomUUID;
+  }
+
+  async prepareOrClaimExact(
+    observed: ProtectedTaskOccurrence,
+  ): Promise<ClaimProtectedTaskOccurrenceResult> {
+    const occurrence = copyOccurrence(observed);
+    const plan = await this.dependencies.plan(occurrence);
+    if (plan === null) {
+      return Object.freeze({ status: "awaiting_authorization" as const });
+    }
+    const scopeMemory = plan.scopeMemory === undefined
+      ? undefined
+      : copyTaskScopeMemoryBinding(plan.scopeMemory);
+    const result = assertParkedPlan(occurrence, plan, scopeMemory);
+    const loaded = await this.dependencies.repository.get(
+      plan.initialRecord.snapshot.requestId,
+    );
+    if (loaded === null) {
+      return Object.freeze({ status: "awaiting_authorization" as const });
+    }
+    if (!isTaskRuntimeRecord(loaded)
+      || !exactOccurrenceRecord(occurrence, loaded)) {
+      throw new TypeError("Parked Task Runtime durable record was substituted");
+    }
+    if (!sameTaskRuntimeAuthorityPlan(loaded, plan.initialRecord)
+      || loaded.idempotencyKey
+        !== taskRuntimeStableIdempotencyKey(plan.stableIdentity)) {
+      throw new TypeError("Parked Task Runtime durable authority was substituted");
+    }
+    if (loaded.snapshot.state === "claimed"
+      || loaded.snapshot.state === "running") {
+      return Object.freeze({ status: "already_claimed" as const });
+    }
+    if (loaded.snapshot.state === "awaiting_recipient"
+      || loaded.snapshot.state === "awaiting_device") {
+      return Object.freeze({ status: "awaiting_authorization" as const });
+    }
+    if (loaded.snapshot.state !== "grant_ready"
+      || loaded.acceptedMaterial === null
+      || loaded.snapshot.recipient === null) {
+      return Object.freeze({ status: "inactive" as const });
+    }
+    const now = executionTimestamp(
+      this.#now,
+      0,
+      "Parked Task Runtime claim clock is invalid",
+    );
+    if (now >= loaded.snapshot.recipient.expiresAt
+      || now >= loaded.acceptedMaterial.authorizationExpiresAt
+      || !activeRecipient(this.dependencies.recipients, loaded)) {
+      return Object.freeze({ status: "awaiting_authorization" as const });
+    }
+
+    const request = requestFromRecord(loaded);
+    if (request === null) return Object.freeze({ status: "inactive" as const });
+    const recipient = loaded.snapshot.recipient;
+    const acceptedMaterial = loaded.acceptedMaterial;
+    const claimId = this.#claimId();
+    try {
+      const claimed = await this.dependencies.withCurrentClaimAuthority({
+        occurrence,
+        record: loaded,
+        request,
+        now: this.#now,
+        use: async (authority, repository, claimedAt, claimExpiresAt) => {
+          const expectedClaimExpiresAt = Math.min(
+            request.deadlineAt,
+            recipient.expiresAt,
+            acceptedMaterial.authorizationExpiresAt,
+            claimedAt + BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
+          );
+          if (!Number.isSafeInteger(claimedAt)
+            || claimedAt < now
+            || claimedAt >= acceptedMaterial.authorizationExpiresAt
+            || claimExpiresAt !== expectedClaimExpiresAt
+            || claimExpiresAt <= claimedAt
+            || !currentMatchesRequest(authority.foreground, request)
+            || !currentMatchesResult(result, loaded, authority)) return null;
+          const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+            ...loaded,
+            snapshot: claimBackgroundAuthorizationRequest(
+              loaded.snapshot,
+              claimId,
+              claimedAt,
+              claimExpiresAt,
+            ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+          };
+          return repository.compareAndSwap({
+            expectedRequestRevision: loaded.snapshot.requestRevision,
+            next,
+          });
+        },
+      });
+      if (claimed === null) return Object.freeze({ status: "inactive" as const });
+      if (claimed.status === "stale") return staleClaimResult(claimed.current);
+      if (!isTaskRuntimeRecord(claimed.record)
+        || claimed.record.snapshot.state !== "claimed"
+        || claimed.record.snapshot.claimId !== claimId
+        || !exactOccurrenceRecord(occurrence, claimed.record)
+        || !sameTaskRuntimeAuthorityPlan(claimed.record, plan.initialRecord)
+        || claimed.record.idempotencyKey
+          !== taskRuntimeStableIdempotencyKey(plan.stableIdentity)) {
+        throw new TypeError("Parked Task Runtime claim changed exact authority");
+      }
+
+      const claimedRecord = claimed.record;
+      let startInput: ParkedTaskRuntimeExecutionStartInput | null = null;
+      const candidate = createTaskRuntimeExecutionCandidate({
+        occurrence,
+        claimed: claimedRecord,
+        reference: plan.reference,
+        repository: this.dependencies.repository,
+        recipients: this.dependencies.recipients,
+        withCurrentAuthority: this.dependencies.withCurrentAuthority,
+        now: this.#now,
+        claimId,
+        result,
+        start: (jobId) => {
+          if (jobId === occurrence.run.jobId) {
+            throw new TypeError(
+              "Parked Task Runtime continuation requires a fresh Job",
+            );
+          }
+          const exact: ParkedTaskRuntimeExecutionStartInput = Object.freeze({
+            occurrence,
+            claimed: claimedRecord,
+            claimId,
+            jobId,
+            reference: plan.reference,
+          });
+          startInput = exact;
+          return plan.start(exact);
+        },
+        ...(plan.deferBeforeExecution === undefined
+          ? {}
+          : {
+              deferBeforeExecution: (jobId: string) => {
+                const exact = startInput;
+                if (exact === null || exact.jobId !== jobId) {
+                  return Promise.resolve(false);
+                }
+                return plan.deferBeforeExecution!(exact);
+              },
+            }),
+        openTransientInput: plan.openTransientInput,
+        publishResult: plan.publishResult,
       });
       const dispatch: ClaimedProtectedTaskOccurrence = Object.freeze({
         reference: plan.reference,
@@ -2011,4 +2440,10 @@ export function createTaskRuntimeGrantClaim(
   dependencies: TaskRuntimeGrantClaimDependencies,
 ): TaskRuntimeGrantClaim {
   return new TaskRuntimeGrantClaim(dependencies);
+}
+
+export function createParkedTaskRuntimeGrantClaim(
+  dependencies: ParkedTaskRuntimeGrantClaimDependencies,
+): ProtectedTaskOccurrenceClaimPort {
+  return new ParkedTaskRuntimeGrantClaim(dependencies);
 }

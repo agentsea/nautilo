@@ -23,7 +23,8 @@ const THREAD_ID = `subagent:${TASK_ID}:${RUN_ID}`;
 
 const publication = Object.freeze({
   publish: async () => {},
-  awaitPublished: async () => false,
+  park: async () => {},
+  awaitSettled: async () => false,
 });
 const startProtectedTaskJob = async () => "started" as const;
 const settleProtectedTaskJobTerminal = async (
@@ -183,7 +184,8 @@ describe("JobManager protected Task worker settlement", () => {
       },
       candidate(undefined, Object.freeze({
         publish: async () => {},
-        awaitPublished: async () => true,
+        park: async () => {},
+        awaitSettled: async () => true,
       })),
     );
     await waitFor(() => executorCalls === 1);

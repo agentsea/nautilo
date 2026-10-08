@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { RunScopeSubagentOpts } from "@nautilo/agent";
+import { protectedTaskSemanticAuthorityRequirementsDigest } from "@nautilo/db";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 
 import {
@@ -291,6 +292,71 @@ describe("protected Task native runner", () => {
     expect(abortedResult).toEqual({ status: "aborted" });
     expect(calls).toBe(1);
     expect(aborted.published).toEqual([]);
+  });
+
+  test("extracts one detached pre-effect additional-authority continuation", async () => {
+    const { awaitReply: _awaitReply, ...continuedExecution } =
+      fixture().input.execution;
+    const scenario = fixture({
+      execution: {
+        ...continuedExecution,
+        continueFromCheckpoint: true,
+      },
+    });
+    const requestDigest = new Uint8Array(32).fill(11);
+    const semanticAuthorityRequirements = [{
+      namespaceId: NAMESPACE_ID,
+      operations: ["decrypt"] as const,
+    }];
+    const requiredAuthorityDigest =
+      protectedTaskSemanticAuthorityRequirementsDigest(
+        semanticAuthorityRequirements,
+      );
+    const result = await runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async options => {
+        expect(options.continueFromCheckpoint).toBe(true);
+        return {
+          status: "interrupted",
+          threadId: GRAPH_THREAD_ID,
+          interrupt: { type: "protected_task_additional_authority" },
+          interruptCoordinates: [{
+            id: "interrupt-1",
+            kind: "additional_authority",
+            requestId: "task-runtime-request-2",
+            effectDisposition: "not_started_v1",
+            operationId: "memory-operation-1",
+            requestDigest,
+            requiredAuthorityDigest,
+            semanticAuthorityRequirements,
+          }],
+        };
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "interrupted",
+      interruptCoordinates: [{
+        id: "interrupt-1",
+        kind: "additional_authority",
+        requestId: "task-runtime-request-2",
+      }],
+      additionalAuthority: {
+        kind: "pre_effect_interrupt_v1",
+        reason: "additional_authority",
+        effectDisposition: "not_started_v1",
+        interruptId: "interrupt-1",
+        operationId: "memory-operation-1",
+      },
+    });
+    expect("interrupt" in result).toBe(false);
+    if (!("additionalAuthority" in result)
+      || result.additionalAuthority === undefined) {
+      throw new Error("expected additional authority continuation");
+    }
+    expect(result.additionalAuthority.requestDigest).toEqual(requestDigest);
+    expect(result.additionalAuthority.requestDigest).not.toBe(requestDigest);
+    expect(result.additionalAuthority.requiredAuthorityDigest)
+      .not.toBe(requiredAuthorityDigest);
   });
 
   test("rejects a protected interruption without content-free coordinates", async () => {

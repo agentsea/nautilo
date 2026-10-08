@@ -346,6 +346,7 @@ describe("protected Task pre-execution recovery discovery", () => {
     };
     const query = {
       innerJoin: () => query,
+      leftJoin: () => query,
       where: (condition: Parameters<PgDialect["sqlToQuery"]>[0]) => {
         whereSql = condition;
         return query;
@@ -377,6 +378,7 @@ describe("protected Task pre-execution recovery discovery", () => {
     expect(selectedLimit).toBe(7);
     expect(result).toEqual({
       candidates: [{
+        route: "initial",
         input: input(),
         jobStatus: "queued",
         cursor: {
@@ -391,6 +393,8 @@ describe("protected Task pre-execution recovery discovery", () => {
     expect(rendered.sql).toContain('"task_runs"."status" =');
     expect(rendered.sql).toContain('"task_runs"."model_id" is null');
     expect(rendered.sql).toContain('"jobs"."started_at" is null');
+    expect(rendered.sql).toContain("case");
+    expect(rendered.sql).toContain("::bigint <= 2147483647");
     expect(rendered.sql).toContain('"jobs"."created_at" <');
     expect(rendered.sql).toContain('"jobs"."created_at" >');
     expect(rendered.params).toContain("queued");
@@ -414,6 +418,7 @@ describe("protected Task pre-execution recovery discovery", () => {
     let whereSql: Parameters<PgDialect["sqlToQuery"]>[0] | undefined;
     const query = {
       innerJoin: () => query,
+      leftJoin: () => query,
       where: (condition: Parameters<PgDialect["sqlToQuery"]>[0]) => {
         whereSql = condition;
         return query;
@@ -445,6 +450,7 @@ describe("protected Task pre-execution recovery discovery", () => {
     let page = 0;
     const query = {
       innerJoin: () => query,
+      leftJoin: () => query,
       where: () => query,
       orderBy: () => query,
       limit: async () => {

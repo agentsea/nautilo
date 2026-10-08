@@ -82,9 +82,9 @@ export type JobExecutor = (
   signal: AbortSignal
 ) => AsyncGenerator<ServerEvent>;
 
-/** Result barrier supplied only by the protected Task execution candidate. */
-export type ProtectedTaskResultBarrier = Readonly<{
-  awaitPublished(): Promise<boolean>;
+/** Durable segment-settlement barrier supplied by protected Task authority. */
+export type ProtectedTaskSettlementBarrier = Readonly<{
+  awaitSettled(): Promise<boolean>;
 }>;
 
 export class ProtectedTaskJobStartNotOwnedError extends Error {
@@ -247,18 +247,18 @@ export class Job {
   async executeProtectedTask(
     input: Record<string, unknown>,
     authorizationSignal?: AbortSignal,
-    resultBarrier?: ProtectedTaskResultBarrier,
+    settlementBarrier?: ProtectedTaskSettlementBarrier,
   ): Promise<void> {
     if (this.config.durableInputReference?.kind !== "protected_task_run_v1") {
       throw new TypeError("Protected Task execution requires its durable Job reference");
     }
-    return this.executeWithInput(input, authorizationSignal, resultBarrier);
+    return this.executeWithInput(input, authorizationSignal, settlementBarrier);
   }
 
   private async executeWithInput(
     executorInput: Record<string, unknown>,
     authorizationSignal?: AbortSignal,
-    resultBarrier?: ProtectedTaskResultBarrier,
+    settlementBarrier?: ProtectedTaskSettlementBarrier,
   ): Promise<void> {
     if (!this._id) throw new Error("Must call persist() before execute()");
     // A delayed foreground candidate must never revive a cancelled Job.
@@ -314,10 +314,10 @@ export class Job {
       if (turnId) {
         await runWithTurn(turnId, () => this.runExecutor(
           executorInput,
-          resultBarrier,
+          settlementBarrier,
         ));
       } else {
-        await this.runExecutor(executorInput, resultBarrier);
+        await this.runExecutor(executorInput, settlementBarrier);
       }
     } finally {
       this.abortController.signal.removeEventListener("abort", failProtectedCancellation);
@@ -373,7 +373,7 @@ export class Job {
    */
   private async runExecutor(
     executorInput: Record<string, unknown>,
-    resultBarrier?: ProtectedTaskResultBarrier,
+    settlementBarrier?: ProtectedTaskSettlementBarrier,
   ): Promise<void> {
     const id = this._id;
     const abortController = this.abortController;
@@ -445,12 +445,12 @@ export class Job {
 
       if (this._status === "cancelled") return;
       if (this.config.durableInputReference?.kind === "protected_task_run_v1") {
-        if (resultBarrier === undefined) {
-          throw new TypeError("Protected Task result publication barrier is missing");
+        if (settlementBarrier === undefined) {
+          throw new TypeError("Protected Task settlement barrier is missing");
         }
-        // A graph interruption or abandoned output is not a completed Job.
-        // Its durable TaskRun remains running until resume/recovery resolves it.
-        if (!await resultBarrier.awaitPublished()) return;
+        // A graph interruption is complete only after its durable park commits.
+        // An abandoned output remains running until resume/recovery resolves it.
+        if (!await settlementBarrier.awaitSettled()) return;
         abortController.signal.throwIfAborted();
       }
       await this.setStatus("completed");

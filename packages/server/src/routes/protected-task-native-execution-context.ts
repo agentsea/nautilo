@@ -296,7 +296,7 @@ function currentTaskAndRun(
   predispatch: ProtectedTaskPredispatchPlan,
   task: OperationalTask,
   run: OperationalRun,
-  expectedModelId: string | null,
+  expectedModelId: string | null | undefined,
 ): boolean {
   const expectedTaskStatus = task.scheduleKind === "cron"
     ? "pending"
@@ -332,7 +332,9 @@ function currentTaskAndRun(
     && run.graphThreadId === occurrence.run.graphThreadId
     && run.status === "running"
     && run.startedAt.getTime() === occurrence.run.startedAt.getTime()
-    && run.modelId === expectedModelId
+    && (expectedModelId === undefined
+      ? run.modelId !== null
+      : run.modelId === expectedModelId)
     && run.fundingBinding === null
     && run.fundingPredecessorRunId === null
     && run.completedAt === null
@@ -491,13 +493,21 @@ export function createProductionProtectedTaskNativeExecutionContext(
         input.occurrence.task.requestorId,
       ),
     ]);
-    if (!task || !run || !job
-      || !currentTaskAndRun(input.occurrence, input.predispatch, task, run, null)) {
+    if (!task || !run || !job) {
       throw new TypeError("Protected Task execution is no longer current");
     }
     const reference = currentJob(input.occurrence, task, job);
     if (reference === null) {
       throw new TypeError("Protected Task execution Job is no longer current");
+    }
+    if (!currentTaskAndRun(
+      input.occurrence,
+      input.predispatch,
+      task,
+      run,
+      reference.executionSegment === 1 ? null : undefined,
+    )) {
+      throw new TypeError("Protected Task execution is no longer current");
     }
 
     if ((task.fundingMode ?? "legacy_server") !== "legacy_server") {

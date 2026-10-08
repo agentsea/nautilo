@@ -1,4 +1,10 @@
 import { log } from "@nautilo/logger";
+import { createDedicatedEncryptedCheckpointPool } from "@nautilo/agent";
+import { createProtectedTaskRuntimeParkedContinuation } from "./protected-task-runtime-parked-continuation";
+import { createProtectedTaskParkedAuthorizationSettlement } from "./protected-task-parked-authorization-settlement";
+import { createProtectedTaskParkedPreexecutionRecovery } from "./protected-task-parked-preexecution-recovery";
+import { createProtectedTaskRuntimeParkedPreparation } from "./protected-task-runtime-parked-preparation";
+import { createProtectedTaskRuntimeParkedDeviceAuthorization } from "./protected-task-runtime-parked-device-authorization";
 import { createProtectedTaskPublishedResultRecovery } from
   "./protected-task-published-result-recovery";
 import { createProtectedTaskUnmappedResultRecovery } from
@@ -274,8 +280,11 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
   const repository = new PostgresBackgroundAuthorizationRepository(
     cryptoHandle,
   );
-  const recovery = createProtectedTaskPreexecutionRecovery({
+  const parkedRecovery = createProtectedTaskParkedPreexecutionRecovery({
     db: input.db, repository, now,
+  });
+  const recovery = createProtectedTaskPreexecutionRecovery({
+    db: input.db, repository, now, recoverParked: parkedRecovery.recoverDiscovered,
   });
   let recoveryCursor: ProtectedTaskPreexecutionRecoveryPageCursor | undefined;
   const cancellation = createProtectedTaskCancellationRecovery({
@@ -415,6 +424,22 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     withCurrentClaimAuthority,
     now,
   });
+  const parked = createProtectedTaskRuntimeParkedContinuation({
+    db: input.db, restricted, crypto, serverScope, resolver: input.resolver,
+    recipients: input.recipients, repository, withCurrentAuthority,
+    prepareExecution: nativeExecution.prepareExecution,
+    publishResult: nativeExecution.publishResult,
+    createDedicatedPool: input.createDedicatedPool ?? createDedicatedEncryptedCheckpointPool,
+    recoverUnstarted: parkedRecovery,
+    now,
+  });
+  const parkedSettlement = createProtectedTaskParkedAuthorizationSettlement({
+    db: input.db, repository, recipients: input.recipients,
+  });
+  const prepareParked = createProtectedTaskRuntimeParkedPreparation({
+    resolver: input.resolver, recipients: input.recipients,
+  }, { db: input.db, crypto, serverScope, now,
+    restricted: () => restricted, productContext: dependencies.productContext });
   const recipientAuthority = createProtectedTaskRuntimeRecipientAuthorityPort({
     db: input.db,
     crypto,
@@ -430,8 +455,25 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     withRecipientAuthority: recipientAuthority,
     now,
   });
+  const parkedHooks = createProtectedTaskRuntimeParkedDeviceAuthorization({
+    resolver: input.resolver, recipients: input.recipients,
+  }, { db: input.db, crypto, serverScope, now,
+    productContext: dependencies.productContext });
+  const isInitialRequest = (record: Parameters<DeviceHooks["isTaskRecipientActive"]>[0]) =>
+    record.snapshot.requestId === `task-run-authorization:${record.snapshot.workId}`;
   const coordinator = createProtectedTaskOccurrenceCoordinator({
-    authorization: claim,
+    authorization: {
+      prepareOrClaimExact: async occurrence => {
+        if (occurrence.run.jobId === null) return claim.prepareOrClaimExact(occurrence);
+        const settled = await parkedSettlement.settle(occurrence);
+        if (settled !== "settled") {
+          return Object.freeze({ status: settled === "inactive"
+            ? "inactive" as const : "awaiting_authorization" as const });
+        }
+        await prepareParked(occurrence);
+        return parked.prepareOrClaimExact(occurrence);
+      },
+    },
     recoverBeforeObservation: async limit => {
       const cancelled = await cancellation.recoverPage({
         limit,
@@ -462,7 +504,12 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
   });
   return Object.freeze({
     coordinator,
-    ...hooks,
+    bindTaskRecipient: operation => (isInitialRequest(operation.record) ? hooks : parkedHooks)
+      .bindTaskRecipient(operation),
+    withTaskAuthority: operation => (isInitialRequest(operation.record) ? hooks : parkedHooks)
+      .withTaskAuthority(operation),
+    isTaskRecipientActive: record => (isInitialRequest(record) ? hooks : parkedHooks)
+      .isTaskRecipientActive(record),
     wakeProtectedTask: () => coordinator.authorizationAccepted(),
   });
 }

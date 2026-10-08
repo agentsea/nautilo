@@ -18,6 +18,7 @@ import {
   createPostgresJsBridgeConnection,
   cryptoDomains,
   cryptoObjects,
+  discoverParkedProtectedTaskAdditionalAuthority,
   domainKeyEnvelopeAcknowledgements,
   domainKeyHeads,
   domainKeyPublicationOperations,
@@ -54,6 +55,7 @@ import {
   objectCryptoAccessManifests,
   objectCryptoNamespaceEnvelopes,
   protectedTaskRunOutputBindings,
+  protectedTaskSemanticAuthorityRequirementsDigest,
   resolveAppDatabaseConnectionString,
   roomMembers,
   rooms,
@@ -178,7 +180,7 @@ import {
   InMemoryLaneLock,
   JobManager,
   createTaskRuntimeDomainMemoryCryptoSession,
-  withNativeProtectedTaskCheckpointSaver,
+  withNativeProtectedTaskCheckpointManifest,
 } from "@nautilo/runtime";
 import {
   PersonalPolicyResolver,
@@ -2248,6 +2250,7 @@ async function waitForConnectedCompletion(
   base: BaseFixture,
   taskRunId: string,
   terminalStatus: Promise<void>,
+  expectedExecutionSegment?: number,
 ): Promise<Readonly<{
   run: typeof taskRuns.$inferSelect;
   job: typeof jobs.$inferSelect;
@@ -2263,13 +2266,24 @@ async function waitForConnectedCompletion(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-  const [run] = await base.admin.select().from(taskRuns)
-    .where(eq(taskRuns.id, taskRunId));
-  const [job] = run?.jobId ? await base.admin.select().from(jobs)
-    .where(eq(jobs.id, run.jobId)) : [];
-  if (run !== undefined && job !== undefined
-    && ["completed", "failed", "cancelled", "timed_out"].includes(job.status)) {
-    return Object.freeze({ run, job });
+  const deadline = Date.now() + 10_000;
+  let run: typeof taskRuns.$inferSelect | undefined;
+  let job: typeof jobs.$inferSelect | undefined;
+  while (Date.now() < deadline) {
+    [run] = await base.admin.select().from(taskRuns)
+      .where(eq(taskRuns.id, taskRunId));
+    [job] = run?.jobId ? await base.admin.select().from(jobs)
+      .where(eq(jobs.id, run.jobId)) : [];
+    const reference = job?.input as Partial<ProtectedTaskJobReferenceV1>
+      | undefined;
+    if (run !== undefined && job !== undefined
+      && ["completed", "failed", "cancelled", "timed_out"].includes(job.status)
+      && (expectedExecutionSegment === undefined
+        || reference?.executionSegment === expectedExecutionSegment
+          && run.completedAt !== null)) {
+      return Object.freeze({ run, job });
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, 10));
   }
   throw new Error(`Connected protected Task did not settle: ${JSON.stringify({
     runStatus: run?.status, resultRevision: run?.resultRevision,
@@ -2438,7 +2452,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
     }
   }, 60_000);
 
-  test.each(["result", "attachment recovery", "publication recovery", "unmapped recovery", "unmapped expired grant recovery", "missing ciphertext recovery", "pre-execution recovery", "cancellation recovery", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
+  test.each(["result", "parked continuation", "attachment recovery", "publication recovery", "unmapped recovery", "unmapped expired grant recovery", "missing ciphertext recovery", "pre-execution recovery", "cancellation recovery", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
     const base = await createBaseFixture({ connectedExecution: true });
     const recipients = new TaskRuntimeRecipientRegistry(base.crypto, {
       now: () => NOW,
@@ -2453,6 +2467,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
       typeof createConnectedProtectedTask
     >> | null = null;
     let connectedJobId: string | null = null;
+    let parkedPriorJobId: string | null = null;
     let jobManager: JobManager | null = null;
     try {
       connected = await createConnectedProtectedTask(base, {
@@ -2460,11 +2475,20 @@ describePostgres("sealed protected Task Memory object writer", () => {
           || unmappedRecovery
           || missingCiphertextRecovery,
       });
+      const activeConnected = connected;
       const segmentCalls: Array<Readonly<{
         taskId: string;
         taskRunId: string;
         graphThreadId: string;
       }>> = [];
+      const segmentContinuationModes: boolean[] = [];
+      let controlledEffectExecutions = 0;
+      const continuationAuthorizationRequestId =
+        `task-run-authorization:${activeConnected.taskRunId}:segment:2`;
+      const continuationRequirements = Object.freeze([Object.freeze({
+        namespaceId: base.namespaceValue,
+        operations: Object.freeze(["decrypt" as const, "encrypt" as const]),
+      })]);
       const nativeErrors: Array<Readonly<{
         stage:
           | "prepare"
@@ -2553,7 +2577,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
           const result = await settleProtectedTaskJobTerminalWithDatabase(
             base.productDb, jobId, reference, requested, policy,
           );
-          if (jobId === connectedJobId && result.kind !== "rejected") notifyTerminal();
+          if (jobId === connectedJobId && result.kind !== "rejected"
+            && (scenario !== "parked continuation"
+              || reference.executionSegment === 2)) notifyTerminal();
           return result;
         },
       });
@@ -2635,7 +2661,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
                 ),
                 withCheckpointSaver: checkpoint => traceNative(
                   "checkpoint",
-                  () => withNativeProtectedTaskCheckpointSaver(checkpoint),
+                  () => withNativeProtectedTaskCheckpointManifest(checkpoint),
                 ),
                 runSegment: async segment => {
                   segment.signal.throwIfAborted();
@@ -2646,6 +2672,62 @@ describePostgres("sealed protected Task Memory object writer", () => {
                     taskRunId: segment.taskRunId,
                     graphThreadId: segment.graphThreadId,
                   }));
+                  segmentContinuationModes.push(
+                    segment.execution.continueFromCheckpoint === true,
+                  );
+                  if (scenario === "parked continuation"
+                    && segment.execution.continueFromCheckpoint !== true) {
+                    await segment.checkpointSaver.put({
+                      configurable: {
+                        thread_id: segment.graphThreadId,
+                        checkpoint_ns: "",
+                      },
+                    }, {
+                      v: 4,
+                      id: randomUUID(),
+                      ts: new Date(NOW).toISOString(),
+                      channel_values: {
+                        protected_task_state: {
+                          phase: "awaiting_additional_authority",
+                        },
+                      },
+                      channel_versions: { protected_task_state: 1 },
+                      versions_seen: {},
+                    }, {
+                      source: "loop",
+                      step: 1,
+                      parents: {},
+                    }, { protected_task_state: 1 });
+                    const requiredAuthorityDigest =
+                      protectedTaskSemanticAuthorityRequirementsDigest(
+                        continuationRequirements,
+                      );
+                    return Object.freeze({
+                      status: "interrupted" as const,
+                      threadId: segment.graphThreadId,
+                      interruptCoordinates: Object.freeze([Object.freeze({
+                        id: "additional-authority-1",
+                        kind: "additional_authority" as const,
+                        requestId: continuationAuthorizationRequestId,
+                      })]),
+                      additionalAuthority: Object.freeze({
+                        kind: "pre_effect_interrupt_v1" as const,
+                        reason: "additional_authority" as const,
+                        effectDisposition: "not_started_v1" as const,
+                        interruptId: "additional-authority-1",
+                        operationId: "connected-protected-memory-operation-1",
+                        requestDigest: digest(
+                          `connected-protected-memory-operation:${activeConnected.taskRunId}`,
+                        ),
+                        requiredAuthorityDigest,
+                        semanticAuthorityRequirements: continuationRequirements,
+                      }),
+                    });
+                  }
+                  if (scenario === "parked continuation") {
+                    expect(segment.execution.continueFromCheckpoint).toBe(true);
+                    controlledEffectExecutions += 1;
+                  }
                   return Object.freeze({
                     formatVersion: 1 as const,
                     resultText: "Connected protected result",
@@ -2759,66 +2841,78 @@ describePostgres("sealed protected Task Memory object writer", () => {
           expiresAt: NOW + 60_000,
         }),
       });
-      const page = await deviceService.list(subject, {});
-      expect(recipients.size).toBe(1);
-      let selected: ReturnType<
-        typeof decodeTaskRuntimeBackgroundAuthorizationRequestV1
-      > = null;
-      let selectedBytes: Uint8Array | null = null;
-      for (const candidate of page.requests) {
-        const decoded = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
-          candidate.requestBytes,
+      const grantConnectedRequest = async (
+        expectedRequestId: string,
+      ): Promise<void> => {
+        const page = await deviceService.list(subject, {});
+        let selected: ReturnType<
+          typeof decodeTaskRuntimeBackgroundAuthorizationRequestV1
+        > = null;
+        let selectedBytes: Uint8Array | null = null;
+        for (const candidate of page.requests) {
+          const decoded = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+            candidate.requestBytes,
+          );
+          if (decoded?.workId === activeConnected.taskRunId
+            && decoded.requestId === expectedRequestId) {
+            selected = decoded;
+            selectedBytes = candidate.requestBytes;
+            break;
+          }
+          if (decoded !== null) {
+            destroyTaskRuntimeBackgroundAuthorizationRequestV1(decoded);
+          }
+        }
+        if (selected === null || selectedBytes === null) {
+          throw new Error(
+            "Connected protected Task device request was unavailable",
+          );
+        }
+        const plan = parseDomainForegroundAuthorizationPlanV2(
+          selected.authorizationPlanBytes,
         );
-        if (decoded?.workId === connected.taskRunId) {
-          selected = decoded;
-          selectedBytes = candidate.requestBytes;
-          break;
+        if (plan === null) {
+          destroyTaskRuntimeBackgroundAuthorizationRequestV1(selected);
+          throw new Error(
+            "Connected protected Task authorization plan was invalid",
+          );
         }
-        if (decoded !== null) {
-          destroyTaskRuntimeBackgroundAuthorizationRequestV1(decoded);
-        }
-      }
-      if (selected === null || selectedBytes === null) {
-        throw new Error("Connected protected Task device request was unavailable");
-      }
-      const plan = parseDomainForegroundAuthorizationPlanV2(
-        selected.authorizationPlanBytes,
-      );
-      if (plan === null) {
-        destroyTaskRuntimeBackgroundAuthorizationRequestV1(selected);
-        throw new Error("Connected protected Task authorization plan was invalid");
-      }
-      let responseBytes: Uint8Array | null = null;
-      const domains = await loadConnectedDomainSecrets(
-        base,
-        selected.requestId,
-      );
-      try {
-        const authorization = await mintDomainForegroundAuthorization(
-          base.crypto,
-          {
-            plan,
-            domains,
-            committerDeviceSigningPrivateKey: base.signingPrivateKey,
-            recipientEncryptionPublicKey: selected.recipientPublicKey,
-          },
+        let responseBytes: Uint8Array | null = null;
+        const domains = await loadConnectedDomainSecrets(
+          base,
+          selected.requestId,
         );
         try {
-          responseBytes = serializeDomainForegroundAuthorizationV2(
-            authorization,
+          const authorization = await mintDomainForegroundAuthorization(
+            base.crypto,
+            {
+              plan,
+              domains,
+              committerDeviceSigningPrivateKey: base.signingPrivateKey,
+              recipientEncryptionPublicKey: selected.recipientPublicKey,
+            },
           );
-          expect(await deviceService.respond(subject, { responseBytes }))
-            .toEqual({ status: "accepted" });
+          try {
+            responseBytes = serializeDomainForegroundAuthorizationV2(
+              authorization,
+            );
+            expect(await deviceService.respond(subject, { responseBytes }))
+              .toEqual({ status: "accepted" });
+          } finally {
+            destroyDomainForegroundAuthorizationV2(authorization);
+          }
         } finally {
-          destroyDomainForegroundAuthorizationV2(authorization);
+          responseBytes?.fill(0);
+          selectedBytes.fill(0);
+          destroyConnectedDomainSecrets(domains);
+          destroyDomainForegroundAuthorizationPlanV2(plan);
+          destroyTaskRuntimeBackgroundAuthorizationRequestV1(selected);
         }
-      } finally {
-        responseBytes?.fill(0);
-        selectedBytes.fill(0);
-        destroyConnectedDomainSecrets(domains);
-        destroyDomainForegroundAuthorizationPlanV2(plan);
-        destroyTaskRuntimeBackgroundAuthorizationRequestV1(selected);
-      }
+      };
+      await grantConnectedRequest(
+        `task-run-authorization:${connected.taskRunId}`,
+      );
+      expect(recipients.size).toBe(1);
       expect(kicks).toBe(1);
 
       if (scenario === "cancellation recovery") {
@@ -2897,6 +2991,63 @@ describePostgres("sealed protected Task Memory object writer", () => {
         throw new Error("Accepted protected Task occurrence was unavailable");
       }
       await composition.coordinator.observeProtectedTaskOccurrence(claimable);
+      if (scenario === "parked continuation") {
+        const deadline = Date.now() + 10_000;
+        let parked = null as Awaited<ReturnType<
+          typeof discoverParkedProtectedTaskAdditionalAuthority
+        >>;
+        let parkedReady = false;
+        while (Date.now() < deadline) {
+          parked = await discoverParkedProtectedTaskAdditionalAuthority(
+            base.productDb,
+            { taskRunId: connected.taskRunId },
+          );
+          if (parked !== null && connectedJobId !== null) {
+            const [priorJob] = await base.admin.select({
+              status: jobs.status,
+              startedAt: jobs.startedAt,
+              completedAt: jobs.completedAt,
+            }).from(jobs).where(eq(jobs.id, connectedJobId));
+            if (priorJob?.status === "completed"
+              && priorJob.startedAt !== null
+              && priorJob.completedAt !== null) {
+              parkedReady = true;
+              break;
+            }
+          }
+          await new Promise<void>(resolve => setTimeout(resolve, 10));
+        }
+        if (!parkedReady || parked === null || connectedJobId === null) {
+          throw new Error("Connected protected Task did not durably park");
+        }
+        parkedPriorJobId = connectedJobId;
+        expect(parked.authorizationRequestId)
+          .toBe(continuationAuthorizationRequestId);
+        expect(parked.occurrence.run.id).toBe(connected.taskRunId);
+        expect(parked.occurrence.run.graphThreadId)
+          .toBe(connected.graphThreadId);
+        expect(parked.proof.segment.expectedCheckpointCount)
+          .toBeGreaterThanOrEqual(1);
+        expect(controlledEffectExecutions).toBe(0);
+        expect(segmentContinuationModes).toEqual([false]);
+
+        await composition.coordinator.observeProtectedTaskOccurrence(
+          parked.occurrence,
+        );
+        await grantConnectedRequest(continuationAuthorizationRequestId);
+        expect(kicks).toBe(2);
+        const preparedContinuation =
+          await discoverParkedProtectedTaskAdditionalAuthority(
+            base.productDb,
+            { taskRunId: connected.taskRunId },
+          );
+        if (preparedContinuation === null) {
+          throw new Error("Connected protected Task continuation disappeared");
+        }
+        await composition.coordinator.observeProtectedTaskOccurrence(
+          preparedContinuation.occurrence,
+        );
+      }
       if (scenario === "linked cancellation") {
         const deadline = Date.now() + 10_000;
         while (Date.now() < deadline) {
@@ -2980,6 +3131,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
         base,
         connected.taskRunId,
         terminalStatus,
+        scenario === "parked continuation" ? 2 : undefined,
       );
       if (missingCiphertextRecovery) {
         expect(terminal.job.status).toBe("failed");
@@ -3233,7 +3385,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
         }
         await waitForConnectedRelease(
           base,
-          `task-run-authorization:${connected.taskRunId}`,
+          scenario === "parked continuation"
+            ? continuationAuthorizationRequestId
+            : `task-run-authorization:${connected.taskRunId}`,
           recipients,
         );
         const [settledBinding] = await base.admin.select({
@@ -3251,30 +3405,40 @@ describePostgres("sealed protected Task Memory object writer", () => {
           // Message/wake delivery is a separate unfinished owner.
           expect(settledBinding?.completedAt).toBeNull();
         }
-        expect(terminal.job.input).toEqual({
+        const terminalReference = terminal.job.input as
+          ProtectedTaskJobReferenceV1;
+        expect(terminalReference).toMatchObject({
           kind: "protected_task_run_v1",
           taskId: connected.taskId,
           taskRunId: connected.taskRunId,
           inputObjectId: connected.inputObjectId,
           resultObjectId: connected.resultObjectId,
-          authorizationRequestId:
-            `task-run-authorization:${connected.taskRunId}`,
+          authorizationRequestId: scenario === "parked continuation"
+            ? continuationAuthorizationRequestId
+            : `task-run-authorization:${connected.taskRunId}`,
           policyRevision: base.policyRevision,
-          executionSegment: 1,
+          executionSegment: scenario === "parked continuation" ? 2 : 1,
         });
+        if (scenario === "parked continuation") {
+          expect("resumeContinuationFingerprint" in terminalReference)
+            .toBe(true);
+        } else {
+          expect(terminalReference).toEqual({
+            kind: "protected_task_run_v1",
+            taskId: connected.taskId,
+            taskRunId: connected.taskRunId,
+            inputObjectId: connected.inputObjectId,
+            resultObjectId: connected.resultObjectId,
+            authorizationRequestId:
+              `task-run-authorization:${connected.taskRunId}`,
+            policyRevision: base.policyRevision,
+            executionSegment: 1,
+          });
+        }
         expect(terminal.job.message).toBeNull();
         expect(terminal.job.result).toBeNull();
         // A delayed process cannot overwrite the completed durable result.
-        const expectedReference = {
-          kind: "protected_task_run_v1" as const,
-          taskId: connected.taskId,
-          taskRunId: connected.taskRunId,
-          inputObjectId: connected.inputObjectId,
-          resultObjectId: connected.resultObjectId,
-          authorizationRequestId: `task-run-authorization:${connected.taskRunId}`,
-          policyRevision: base.policyRevision,
-          executionSegment: 1,
-        };
+        const expectedReference = terminalReference;
         for (const requested of ["failed", "cancelled"] as const) {
           expect(await settleProtectedTaskJobTerminalWithDatabase(
             base.productDb, terminal.job.id, expectedReference, requested,
@@ -3308,7 +3472,18 @@ describePostgres("sealed protected Task Memory object writer", () => {
         const exactJobs = await base.admin.select({ id: jobs.id })
           .from(jobs).where(eq(jobs.laneKey, `task:${connected.taskId}`));
         expect(exactRuns).toEqual([{ id: connected.taskRunId }]);
-        expect(exactJobs).toEqual([{ id: terminal.job.id }]);
+        if (scenario === "parked continuation") {
+          expect(parkedPriorJobId).not.toBeNull();
+          expect(terminal.job.id).not.toBe(parkedPriorJobId);
+          expect(exactJobs.map(job => job.id).sort()).toEqual([
+            parkedPriorJobId!,
+            terminal.job.id,
+          ].sort());
+          expect(controlledEffectExecutions).toBe(1);
+          expect(segmentContinuationModes).toEqual([false, true]);
+        } else {
+          expect(exactJobs).toEqual([{ id: terminal.job.id }]);
+        }
         const [terminalTask] = await base.admin.select({
           status: tasks.status,
           prompt: tasks.prompt,
@@ -3321,11 +3496,14 @@ describePostgres("sealed protected Task Memory object writer", () => {
           expectedOutput: null,
           lastError: null,
         });
-        expect(segmentCalls).toEqual([{
-          taskId: connected.taskId,
-          taskRunId: connected.taskRunId,
-          graphThreadId: connected.graphThreadId,
-        }]);
+        expect(segmentCalls).toEqual(Array.from(
+          { length: scenario === "parked continuation" ? 2 : 1 },
+          () => ({
+            taskId: activeConnected.taskId,
+            taskRunId: activeConnected.taskRunId,
+            graphThreadId: activeConnected.graphThreadId,
+          }),
+        ));
         expect(await objectRowCounts(base, connected.resultObjectId)).toEqual({
           payload: 1,
           head: 1,

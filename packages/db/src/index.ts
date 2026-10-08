@@ -952,3 +952,7 @@ export {
   type ProtectedTaskPreexecutionRecoveryCursor,
   type ProtectedTaskPreexecutionRecoveryCandidate,
 } from "./queries/protected-task-preexecution";
+export {
+  recoverUnstartedParkedProtectedTaskRun,
+  type ParkedProtectedTaskPreexecutionRecoveryResult,
+} from "./queries/protected-task-parked-preexecution";

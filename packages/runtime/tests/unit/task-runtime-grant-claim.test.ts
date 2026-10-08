@@ -42,6 +42,7 @@ import {
 } from "../../src/protected-execution/background-authorization/repository";
 import {
   attachExactTaskRuntimeRecipient,
+  createParkedTaskRuntimeGrantClaim,
   createTaskRuntimeGrantClaim,
   prepareUnclaimedParkedTaskRuntimeAuthority,
   rotateExpiredTaskRuntimeRecipient,
@@ -51,6 +52,8 @@ import {
   type TaskRuntimeRecipientDeviceBinding,
   type TaskRuntimeRecipientCurrentAuthority,
   type TaskRuntimeGrantClaimPlan,
+  type ParkedTaskRuntimeExecutionStartInput,
+  type ParkedTaskRuntimeGrantClaimPlan,
 } from "../../src/protected-execution/background-authorization/task-runtime-grant-claim";
 import type {
   ProtectedTaskAuthorityOccurrence,
@@ -518,8 +521,8 @@ async function fixture() {
         deadlineAt: attempt.expiresAt,
       });
     },
-    openTransientInput: async ({ occurrence: currentOccurrence, domains,
-      evidence, signal }) => {
+    openTransientInput: async ({ occurrence: currentOccurrence, reference,
+      domains, evidence, signal }) => {
       expect(authorityLocksHeld).toBe(false);
       signal.throwIfAborted();
       openedOccurrences.push(currentOccurrence);
@@ -527,16 +530,18 @@ async function fixture() {
       expect(domains[0]!.domainKey).toEqual(bytes(9));
       expect(evidence.result.taskId).toBe(TASK);
       expect(evidence.result.taskRunId).toBe(RUN);
+      expect(reference.taskRunId).toBe(RUN);
       expect(evidence.namespaceRequirements).toEqual(currentNamespaceRequirements);
       return { message: SENTINEL };
     },
-    publishResult: async ({ occurrence: currentOccurrence, payload, domains,
-      evidence, signal }) => {
+    publishResult: async ({ occurrence: currentOccurrence, reference, payload,
+      domains, evidence, signal }) => {
       expect(authorityLocksHeld).toBe(false);
       signal.throwIfAborted();
       publishedOccurrences.push(currentOccurrence);
       expect(domains).toHaveLength(1);
       expect(evidence.result.taskRunId).toBe(RUN);
+      expect(reference.taskRunId).toBe(RUN);
       if (payload.resultText !== null) publishedResults.push(payload.resultText);
     },
   };
@@ -723,6 +728,170 @@ async function prepareAndBind(value: Fixture): Promise<void> {
   expect(await value.bindRecipient()).not.toBeNull();
 }
 
+async function parkedClaimFixture(
+  options: Readonly<{ scopeWithSemanticExtra?: boolean }> = {},
+) {
+  const value = await fixture();
+  const discovered = parkedPreparation();
+  const base = value.plan(discovered.occurrence);
+  const parkedScope = options.scopeWithSemanticExtra
+    ? scopeBinding([SCOPE_ORIGIN])
+    : undefined;
+  const stableIdentity = parkedScope === undefined
+    ? discovered.stableIdentity
+    : Object.freeze({
+        ...discovered.stableIdentity,
+        memoryMode: "scope" as const,
+        scopeId: parkedScope.scopeId,
+      });
+  const namespaceRequirements = parkedScope === undefined
+    ? discovered.initialRecord.authoritySet.namespaceRequirements
+    : Object.freeze([
+        discovered.initialRecord.authoritySet.namespaceRequirements[0]!,
+        Object.freeze({
+          ordinal: 1,
+          namespaceId: SCOPE_ORIGIN,
+          domainId: DOMAIN,
+          operations: Object.freeze(["decrypt", "encrypt"] as const),
+          expectedAccessRevision: 4,
+          expectedPolicyRevision: 7,
+        }),
+        Object.freeze({
+          ordinal: 2,
+          namespaceId: SCOPE_FOREIGN_READ,
+          domainId: DOMAIN,
+          operations: Object.freeze(["decrypt"] as const),
+          expectedAccessRevision: 5,
+          expectedPolicyRevision: 7,
+        }),
+      ]);
+  const prepared = Object.freeze({
+    occurrence: discovered.occurrence,
+    stableIdentity,
+    initialRecord: Object.freeze({
+      ...discovered.initialRecord,
+      idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity),
+      authoritySet: Object.freeze({
+        ...discovered.initialRecord.authoritySet,
+        namespaceRequirements,
+      }),
+    }),
+  });
+  expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+    ...prepared,
+    repository: value.trackedRepository,
+    recipients: value.recipients,
+    now: () => NOW,
+  })).toEqual({ status: "created" });
+  const selected = requiredTaskRuntimeRecord(
+    await value.repository.get(REQUEST),
+  );
+  const attached = await attachExactTaskRuntimeRecipient({
+    occurrence: prepared.occurrence,
+    selected,
+    plan: {
+      initialRecord: prepared.initialRecord,
+      ...(parkedScope === undefined ? {} : { scopeMemory: parkedScope }),
+      recipientAttempt: base.recipientAttempt,
+      buildRequest: base.buildRequest,
+    },
+    binding: value.binding,
+    authority: Object.freeze({
+      ...value.recipientAuthority(parkedScope),
+      namespaceRequirements,
+    }),
+    repository: value.trackedRepository,
+    recipients: value.recipients,
+    now: () => NOW,
+  });
+  if (attached === null) throw new Error("parked recipient was not attached");
+  attached.requestBytes.fill(0);
+  await acceptGrant(value);
+
+  const starts: ParkedTaskRuntimeExecutionStartInput[] = [];
+  let deferrals = 0;
+  let clock = NOW + 3;
+  const fingerprint = prepared.stableIdentity.resumeContinuationFingerprint;
+  if (fingerprint === null) throw new Error("parked fingerprint missing");
+  const plan: ParkedTaskRuntimeGrantClaimPlan = Object.freeze({
+    stableIdentity: prepared.stableIdentity,
+    initialRecord: prepared.initialRecord,
+    reference: Object.freeze({
+      kind: "protected_task_run_v1",
+      taskId: TASK,
+      taskRunId: RUN,
+      inputObjectId: INPUT_OBJECT,
+      resultObjectId: RESULT_OBJECT,
+      authorizationRequestId: REQUEST,
+      policyRevision: 7,
+      executionSegment: 2,
+      resumeContinuationFingerprint: fingerprint,
+    }),
+    scheduling: base.scheduling,
+    executor: base.executor,
+    ...(parkedScope === undefined ? {} : { scopeMemory: parkedScope }),
+    start: async (input: ParkedTaskRuntimeExecutionStartInput) => {
+      starts.push(input);
+      return { status: "started" as const };
+    },
+    deferBeforeExecution: async (
+      input: ParkedTaskRuntimeExecutionStartInput,
+    ) => {
+      expect(input).toBe(starts[0]!);
+      deferrals += 1;
+      return true;
+    },
+    openTransientInput: base.openTransientInput,
+    publishResult: base.publishResult,
+  });
+  const currentAuthority = () => {
+    const current = value.getCurrent();
+    if (current === null) throw new Error("parked current authority missing");
+    return current;
+  };
+  const currentNamespaces = prepared.initialRecord.authoritySet.namespaceRequirements;
+  const coordinator = createParkedTaskRuntimeGrantClaim({
+    repository: value.trackedRepository,
+    recipients: value.recipients,
+    plan: () => plan,
+    now: () => clock,
+    claimId: () => "parked-task-runtime-claim",
+    withCurrentClaimAuthority: async ({ now, use }) => {
+      const borrowed = copyAuthority(currentAuthority());
+      try {
+        return await use({
+          foreground: borrowed,
+          namespaceRequirements: currentNamespaces,
+        }, {
+          compareAndSwap: input => value.repository.compareAndSwap(input),
+        }, now(), NOW + 60_000);
+      } finally {
+        destroyAuthority(borrowed);
+      }
+    },
+    withCurrentAuthority: async ({ use }) => {
+      const borrowed = copyAuthority(currentAuthority());
+      try {
+        return await use({
+          foreground: borrowed,
+          namespaceRequirements: currentNamespaces,
+        });
+      } finally {
+        destroyAuthority(borrowed);
+      }
+    },
+  });
+  return {
+    ...value,
+    prepared,
+    plan,
+    coordinator,
+    starts,
+    deferrals: () => deferrals,
+    setParkedClock: (next: number) => { clock = next; },
+  };
+}
+
 describe("parked Task Runtime authority preparation", () => {
   test("creates once and recognizes an exact unclaimed replay", async () => {
     const input = parkedPreparation();
@@ -842,6 +1011,140 @@ describe("parked Task Runtime authority preparation", () => {
       recipients,
       now: () => NOW,
     })).rejects.toThrow("preparation is invalid");
+  });
+});
+
+describe("parked Task Runtime grant claim", () => {
+  test("waits for authorization when no parked plan is available", async () => {
+    const value = await parkedClaimFixture();
+    const coordinator = createParkedTaskRuntimeGrantClaim({
+      repository: value.trackedRepository,
+      recipients: value.recipients,
+      plan: () => null,
+      now: () => NOW,
+      claimId: () => "unused-parked-task-runtime-claim",
+      withCurrentClaimAuthority: async () => {
+        throw new Error("unexpected claim authority");
+      },
+      withCurrentAuthority: async () => {
+        throw new Error("unexpected execution authority");
+      },
+    });
+
+    expect(await coordinator.prepareOrClaimExact(value.prepared.occurrence))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(value.starts).toEqual([]);
+  });
+
+  test("loads and claims one prepared continuation without creating a request", async () => {
+    const value = await parkedClaimFixture();
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
+    const newJobId = "parked-continuation-job";
+    expect(await claimed.dispatch.candidate.start(newJobId))
+      .toEqual({ status: "started" });
+    expect(value.starts).toHaveLength(1);
+    expect(value.starts[0]).toMatchObject({
+      occurrence: {
+        run: { jobId: JOB, status: "awaiting" },
+      },
+      claimId: "parked-task-runtime-claim",
+      jobId: newJobId,
+      reference: {
+        executionSegment: 2,
+        resumeContinuationFingerprint:
+          value.prepared.stableIdentity.resumeContinuationFingerprint,
+      },
+    });
+
+    await claimed.dispatch.candidate.run(async (input, _signal, settlement) => {
+      expect(input).toEqual({ message: SENTINEL });
+      await settlement.publish({
+        formatVersion: 1,
+        resultText: "parked continuation result",
+        lastError: null,
+      });
+    });
+    expect(value.publishedResults).toEqual(["parked continuation result"]);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("completed");
+    expect(value.openedOccurrences[0]?.run.jobId).toBe(newJobId);
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("lets only one parked claimant win the held grant CAS", async () => {
+    const value = await parkedClaimFixture();
+    const results = await Promise.all([
+      value.coordinator.prepareOrClaimExact(value.prepared.occurrence),
+      value.coordinator.prepareOrClaimExact(value.prepared.occurrence),
+    ]);
+    expect(results.map(result => result.status).sort())
+      .toEqual(["already_claimed", "claimed"]);
+    const winner = results.find(result => result.status === "claimed");
+    if (winner?.status !== "claimed") throw new Error("parked claim race had no winner");
+    winner.dispatch.candidate.onIneligible();
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("rejects reusing the prior parked Job for a continuation", async () => {
+    const value = await parkedClaimFixture();
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.start(JOB))
+      .rejects.toThrow("requires a fresh Job");
+    expect(value.starts).toEqual([]);
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("does not claim an expired parked recipient", async () => {
+    const value = await parkedClaimFixture();
+    value.setParkedClock(NOW + 60_000);
+    expect(await value.coordinator.prepareOrClaimExact(value.prepared.occurrence))
+      .toEqual({ status: "awaiting_authorization" });
+    expect((await value.repository.get(REQUEST))?.snapshot.state)
+      .toBe("grant_ready");
+  });
+
+  test("allows immutable semantic Namespaces beyond the current Scope base", async () => {
+    const value = await parkedClaimFixture({ scopeWithSemanticExtra: true });
+    expect(value.plan.scopeMemory?.readableNamespaceIds)
+      .toEqual([SCOPE_ORIGIN]);
+    expect(value.plan.initialRecord.authoritySet.namespaceRequirements.map(
+      requirement => requirement.namespaceId,
+    )).toEqual([NAMESPACE, SCOPE_ORIGIN, SCOPE_FOREIGN_READ]);
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    expect(claimed.status).toBe("claimed");
+    if (claimed.status === "claimed") claimed.dispatch.candidate.onIneligible();
+  });
+
+  test("rejects initial identity and never creates a missing parked request", async () => {
+    const value = await parkedClaimFixture();
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+      .rejects.toThrow("Parked Task Runtime grant plan disagrees");
+
+    const empty = new InMemoryBackgroundAuthorizationRepository();
+    const missing = createParkedTaskRuntimeGrantClaim({
+      repository: empty,
+      recipients: value.recipients,
+      plan: () => value.plan,
+      withCurrentClaimAuthority: async () => {
+        throw new Error("missing request reached claim authority");
+      },
+      withCurrentAuthority: async () => {
+        throw new Error("missing request reached execution authority");
+      },
+    });
+    expect(await missing.prepareOrClaimExact(value.prepared.occurrence))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(await empty.get(REQUEST)).toBeNull();
+    value.recipients.close();
   });
 });
 
@@ -1768,6 +2071,112 @@ describe("Task Runtime grant claim", () => {
     expect(durable?.descriptorBytes).toBeNull();
     expect(durable?.acceptedMaterial).toBeNull();
     restartedRecipients.close();
+  });
+
+  test("parks product state before completing the grant with one timestamp", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-parked"))
+      .toEqual({ status: "started" });
+    const parkedAt = NOW + 9;
+    const ordering: string[] = [];
+    value.setClock(parkedAt);
+    value.setCompletionCas(async (input, repository) => {
+      ordering.push("grant");
+      expect(input.next.finishedAt).toBe(parkedAt);
+      return repository.compareAndSwap(input);
+    });
+
+    await claimed.dispatch.candidate.run(async (_input, _signal, settlement) => {
+      await settlement.park(async (timestamp) => {
+        ordering.push("product");
+        expect(timestamp).toBe(parkedAt);
+        expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("running");
+        return true;
+      });
+      expect(await settlement.awaitSettled()).toBe(true);
+    });
+
+    expect(ordering).toEqual(["product", "grant"]);
+    const durable = await value.repository.get(REQUEST);
+    expect(durable?.snapshot.state).toBe("completed");
+    expect(durable?.finishedAt).toBe(parkedAt);
+    expect(value.publishedResults).toEqual([]);
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("rejects a parked completion winner with a different timestamp", async () => {
+    for (const response of ["stale", "lost"] as const) {
+      const value = await fixture();
+      await prepareAndBind(value);
+      await acceptGrant(value);
+      const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+      if (claimed.status !== "claimed") throw new Error("grant not claimed");
+      expect(await claimed.dispatch.candidate.start(
+        `protected-job-park-${response}`,
+      )).toEqual({ status: "started" });
+      const parkedAt = NOW + 9;
+      value.setClock(parkedAt);
+      value.setCompletionCas(async (input, repository) => {
+        const proposed = input.next as BackgroundAuthorizationTaskRuntimeRecordV3;
+        const other = {
+          ...proposed,
+          snapshot: {
+            ...proposed.snapshot,
+            updatedAt: parkedAt + 1,
+          },
+          finishedAt: parkedAt + 1,
+        } as BackgroundAuthorizationTaskRuntimeRecordV3;
+        if (response === "stale") {
+          return { status: "stale" as const, current: other };
+        }
+        expect(await repository.compareAndSwap({
+          expectedRequestRevision: input.expectedRequestRevision,
+          next: other,
+        })).toMatchObject({ status: "updated" });
+        throw new Error("completion response lost");
+      });
+
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(claimed.dispatch.candidate.run(
+        async (_input, _signal, settlement) => {
+          await settlement.park(async timestamp => timestamp === parkedAt);
+        },
+      )).rejects.toThrow(
+        "Task Runtime execution completion could not be recorded",
+      );
+      expect(value.publishedResults).toEqual([]);
+      expect(value.recipients.size).toBe(0);
+    }
+  });
+
+  test("a rejected park leaves the running grant noncompleted", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-park-rejected"))
+      .toEqual({ status: "started" });
+    let completionCasCalls = 0;
+    value.setCompletionCas(async (input, repository) => {
+      completionCasCalls += 1;
+      return repository.compareAndSwap(input);
+    });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.run(
+      async (_input, _signal, settlement) => {
+        await settlement.park(async () => false);
+      },
+    )).rejects.toThrow("park settlement was rejected");
+    expect(completionCasCalls).toBe(0);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("running");
+    expect(value.publishedResults).toEqual([]);
+    expect(value.recipients.size).toBe(0);
   });
 
   test("a no-publication interrupt stays nonterminal and cannot redispatch", async () => {

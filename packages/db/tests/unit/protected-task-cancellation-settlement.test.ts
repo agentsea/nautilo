@@ -24,6 +24,8 @@ const ids = {
 };
 const inputObjectId = `task-definition:v1:${"b".repeat(64)}`;
 const authorizationRequestId = "task-run-authorization:cancelled-run";
+const continuationAuthorizationRequestId =
+  "task-run-authorization:cancelled-run:segment:2";
 
 function reference(
   overrides: Partial<ProtectedTaskDurableJobReference> = {},
@@ -39,6 +41,18 @@ function reference(
     executionSegment: 1,
     ...overrides,
   };
+}
+
+function continuationReference(
+  overrides: Partial<ProtectedTaskDurableJobReference> = {},
+): ProtectedTaskDurableJobReference {
+  return reference({
+    authorizationRequestId: continuationAuthorizationRequestId,
+    policyRevision: 8,
+    executionSegment: 2,
+    resumeContinuationFingerprint: `${"b".repeat(42)}A`,
+    ...overrides,
+  });
 }
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -120,9 +134,36 @@ function fixture(options: FixtureOptions = {}) {
         if (table === taskRuns) return [runRow];
         if (table === jobs) {
           if (!predicate) throw new Error("expected Job predicate");
-          const params = new PgDialect().sqlToQuery(predicate).params;
-          const row = jobRows.find(candidate => candidate.id === params[0]);
-          return row ? [{
+          const rendered = new PgDialect().sqlToQuery(predicate);
+          const selected = rendered.sql.includes('"jobs"."id" =')
+            ? jobRows.filter(candidate => candidate.id === rendered.params[0])
+            : jobRows.filter(candidate => {
+              const reference = candidate.input as Record<string, unknown>;
+              return candidate.id !== runRow.jobId
+                && candidate.ownerId === ids.human
+                && candidate.requestorId === ids.human
+                && candidate.laneKey === `task:${ids.task}`
+                && candidate.type === "foreground"
+                && candidate.status === "queued"
+                && candidate.startedAt === null
+                && candidate.completedAt === null
+                && candidate.result === null
+                && candidate.message === null
+                && reference["kind"] === "protected_task_run_v1"
+                && reference["taskId"] === ids.task
+                && reference["taskRunId"] === ids.run
+                && reference["inputObjectId"] === inputObjectId
+                && reference["resultObjectId"]
+                  === protectedTaskRunResultObjectId(ids.task, ids.run)
+                && reference["authorizationRequestId"]
+                  === continuationAuthorizationRequestId
+                && reference["policyRevision"] === 8
+                && Object.hasOwn(
+                  reference,
+                  "resumeContinuationFingerprint",
+                );
+            }).sort((left, right) => left.id.localeCompare(right.id));
+          return selected.map(row => ({
             id: row.id,
             ownerId: row.ownerId,
             requestorId: row.requestorId,
@@ -134,10 +175,11 @@ function fixture(options: FixtureOptions = {}) {
             messageIsNull: row.message === null,
             startedAt: row.startedAt,
             completedAt: row.completedAt,
-          }] : [];
+          }));
         }
         throw new Error("unexpected table");
       },
+      orderBy: () => query,
     };
     return query;
   };
@@ -247,7 +289,7 @@ describe("cancelled protected Task authorization settlement", () => {
     )).toBe(true);
     expect(callbackLocks.map(entry => (
       entry as { table: unknown }
-    ).table)).toEqual([tasks, taskRuns, jobs]);
+    ).table)).toEqual([tasks, taskRuns, jobs, jobs]);
   });
 
   test("denies non-cancelled or wrong-namespace product state before callback", async () => {
@@ -348,6 +390,77 @@ describe("cancelled protected Task authorization settlement", () => {
       "queued",
       JSON.stringify(reference()),
     ]);
+  });
+
+  test("cancels exact queued additional-authority continuation orphans", async () => {
+    const continuationOrphans = [
+      job({
+        id: ids.secondOrphan,
+        status: "queued",
+        startedAt: null,
+        completedAt: null,
+        input: continuationReference(),
+      }),
+      job({
+        id: ids.orphan,
+        status: "queued",
+        startedAt: null,
+        completedAt: null,
+        input: continuationReference(),
+      }),
+    ];
+    const testFixture = fixture({
+      jobs: [job({ status: "completed" }), ...continuationOrphans],
+    });
+
+    expect(await settleCancelledProtectedTaskRunAuthorization(
+      testFixture.database,
+      {
+        ...settlementInput,
+        authorizationRequestId: continuationAuthorizationRequestId,
+        policyRevision: 8,
+      },
+      async () => true,
+    )).toBe(true);
+    expect(testFixture.jobs().map(row => ({ id: row.id, status: row.status })))
+      .toEqual([
+        { id: ids.job, status: "completed" },
+        { id: ids.secondOrphan, status: "cancelled" },
+        { id: ids.orphan, status: "cancelled" },
+      ]);
+    const cancellationIds = testFixture.writes
+      .filter(({ predicate }) =>
+        new PgDialect().sqlToQuery(predicate).sql.includes('"jobs"."id" ='))
+      .map(({ predicate }) =>
+        new PgDialect().sqlToQuery(predicate).params[0]);
+    expect(cancellationIds).toEqual([ids.orphan, ids.secondOrphan]);
+  });
+
+  test("does not cancel a substituted continuation reference", async () => {
+    const substituted = job({
+      id: ids.orphan,
+      status: "queued",
+      startedAt: null,
+      completedAt: null,
+      input: continuationReference({
+        resumeContinuationFingerprint: "not-canonical",
+      }),
+    });
+    const testFixture = fixture({
+      jobs: [job({ status: "completed" }), substituted],
+    });
+
+    expect(await settleCancelledProtectedTaskRunAuthorization(
+      testFixture.database,
+      {
+        ...settlementInput,
+        authorizationRequestId: continuationAuthorizationRequestId,
+        policyRevision: 8,
+      },
+      async () => true,
+    )).toBe(true);
+    expect(testFixture.jobs().find(row => row.id === ids.orphan)?.status)
+      .toBe("queued");
   });
 
   test("a rejected cancellation callback leaves linked and orphan Jobs unchanged", async () => {

@@ -25,6 +25,18 @@ export class ProtectedTaskExecutionDidNotBeginError extends Error {
 }
 
 /**
+ * One durable outcome for a protected Task execution segment. A terminal
+ * result and a clean checkpoint park are mutually exclusive. `park` supplies
+ * the product owner with the single timestamp later used to close the Runtime
+ * grant, so product custody always settles first.
+ */
+export type ProtectedTaskExecutionSettlement = Readonly<{
+  publish(payload: TaskRunResultPayloadV1): Promise<void>;
+  park(settle: (parkedAt: number) => Promise<boolean>): Promise<void>;
+  awaitSettled(): Promise<boolean>;
+}>;
+
+/**
  * One process-local accepted authority. Implementations open the protected
  * Task definition inside `run`, release all plaintext and capability material
  * before it returns, and cannot be reconstructed from the durable reference.
@@ -39,10 +51,7 @@ export interface ProtectedTaskExecutionCandidate {
     work: (
       transientInput: Record<string, unknown>,
       authorizationSignal: AbortSignal,
-      publication: Readonly<{
-        publish(payload: TaskRunResultPayloadV1): Promise<void>;
-        awaitPublished(): Promise<boolean>;
-      }>,
+      settlement: ProtectedTaskExecutionSettlement,
     ) => Promise<T>,
   ): Promise<T>;
   /** Reconcile only after the exact durable Job is proved cancelled and unstarted. */

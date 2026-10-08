@@ -4,6 +4,7 @@ import type {
   DirectDatabase,
   ProtectedTaskPreexecutionRecoveryCursor,
   StartProtectedTaskRunInput,
+  StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
 } from "@nautilo/db";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import {
@@ -540,8 +541,8 @@ describe("protected Task pre-execution recovery", () => {
         boundary: async () => through,
         list: async () => ({
           candidates: [
-            { input: broken, jobStatus: "cancelled", cursor: continuation },
-            { input: valid, jobStatus: "cancelled", cursor: continuation },
+            { route: "initial", input: broken, jobStatus: "cancelled", cursor: continuation },
+            { route: "initial", input: valid, jobStatus: "cancelled", cursor: continuation },
           ],
           continuation,
         }),
@@ -564,4 +565,34 @@ describe("protected Task pre-execution recovery", () => {
     });
     expect(resetCalls).toBe(1);
   });
+
+  test("routes cancelled parked candidates to their recovery owner without initial reset", async () => {
+    const start = startInput("parked") as StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput;
+    const cursor = { createdAt: "2026-01-01T00:00:00.000000", jobId: start.jobId };
+    const calls: unknown[] = [];
+    const recovery = createProtectedTaskPreexecutionRecovery({
+      db: database,
+      repository: {
+        get: () => { throw new Error("initial authority must not run"); },
+        deferUnstartedTaskRuntimeRequest: () => { throw new Error("initial deferral must not run"); },
+      },
+      now: () => START,
+      recoverParked: (value, options) => {
+        calls.push({ value, options });
+        return Promise.resolve({ cancelled: true, reset: true, failed: false });
+      },
+      dependencies: {
+        boundary: () => Promise.resolve(cursor),
+        list: () => Promise.resolve({ candidates: [{ route: "parked_additional_authority",
+          input: start, jobStatus: "cancelled", lifecycle: "linked", cursor }], continuation: undefined }),
+        cancel: () => { throw new Error("initial cancellation must not run"); },
+        reset: () => { throw new Error("initial reset must not run"); },
+      },
+    });
+    expect(await recovery.recoverPage({ limit: 1 })).toEqual({
+      attempted: 1, cancelledJobs: 1, resetRuns: 1, failures: 0,
+    });
+    expect(calls).toEqual([{ value: start, options: { immediate: true } }]);
+  });
+
 });

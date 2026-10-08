@@ -3,6 +3,11 @@ import {
   type RunScopeSubagentOpts,
   type RunScopeSubagentResult,
 } from "@nautilo/agent";
+import {
+  canonicalProtectedTaskSemanticAuthorityRequirements,
+  protectedTaskSemanticAuthorityRequirementsDigest,
+  type ProtectedTaskSemanticAuthorityRequirements,
+} from "@nautilo/db";
 import type { TaskRunResultPayloadV1 } from "@nautilo/lattice-bridge";
 
 type TaskRunCheckpointSaver = NonNullable<
@@ -78,11 +83,34 @@ export type ProtectedTaskNativeSegmentResult =
       status: "interrupted";
       threadId: string;
       interrupt: Record<string, unknown>;
-      interruptCoordinates: NonNullable<
-        Extract<RunScopeSubagentResult, { status: "interrupted" }>["interruptCoordinates"]
-      >;
+      interruptCoordinates: readonly ProtectedTaskNativeInterruptCoordinate[];
+      additionalAuthority?: never;
+    }>
+  | Readonly<{
+      status: "interrupted";
+      threadId: string;
+      interruptCoordinates: readonly ProtectedTaskNativeInterruptCoordinate[];
+      additionalAuthority: ProtectedTaskNativeAdditionalAuthorityContinuation;
     }>
   | Readonly<{ status: "aborted" }>;
+
+export type ProtectedTaskNativeInterruptCoordinate = Readonly<{
+  id: string;
+  kind: "approval" | "prove_it" | "identity" | "await_reply"
+    | "additional_authority";
+  requestId?: string;
+}>;
+
+export type ProtectedTaskNativeAdditionalAuthorityContinuation = Readonly<{
+  kind: "pre_effect_interrupt_v1";
+  reason: "additional_authority";
+  effectDisposition: "not_started_v1";
+  interruptId: string;
+  operationId: string;
+  requestDigest: Uint8Array;
+  requiredAuthorityDigest: Uint8Array;
+  semanticAuthorityRequirements: ProtectedTaskSemanticAuthorityRequirements;
+}>;
 
 export interface ProtectedTaskNativeRunnerDependencies {
   runScopeSubagent(
@@ -142,28 +170,83 @@ function completedPayload(resultText: string): TaskRunResultPayloadV1 {
   });
 }
 
-type ProtectedInterruptCoordinates = NonNullable<
-  Extract<RunScopeSubagentResult, { status: "interrupted" }>["interruptCoordinates"]
->;
+type ExactInterruptCoordinates = Readonly<{
+  coordinates: readonly ProtectedTaskNativeInterruptCoordinate[];
+  additionalAuthority?: ProtectedTaskNativeAdditionalAuthorityContinuation;
+}>;
+
+function exactAdditionalAuthority(
+  coordinate: Record<string, unknown>,
+  id: string,
+): ProtectedTaskNativeAdditionalAuthorityContinuation {
+  if (Object.keys(coordinate).sort().join(",") !== [
+    "id",
+    "kind",
+    "effectDisposition",
+    "operationId",
+    "requestDigest",
+    "requestId",
+    "requiredAuthorityDigest",
+    "semanticAuthorityRequirements",
+  ].sort().join(",")) {
+    throw new TypeError("Protected native Task interruption has invalid coordinates");
+  }
+  const operationId = coordinate["operationId"];
+  const effectDisposition = coordinate["effectDisposition"];
+  const requestDigest = coordinate["requestDigest"];
+  const requiredAuthorityDigest = coordinate["requiredAuthorityDigest"];
+  const requirements = coordinate["semanticAuthorityRequirements"];
+  if (effectDisposition !== "not_started_v1"
+    || typeof operationId !== "string" || operationId.trim().length === 0
+    || !(requestDigest instanceof Uint8Array) || requestDigest.length !== 32
+    || !(requiredAuthorityDigest instanceof Uint8Array)
+    || requiredAuthorityDigest.length !== 32) {
+    throw new TypeError("Protected native Task interruption has invalid coordinates");
+  }
+  let semanticAuthorityRequirements: ProtectedTaskSemanticAuthorityRequirements;
+  try {
+    semanticAuthorityRequirements =
+      canonicalProtectedTaskSemanticAuthorityRequirements(requirements);
+    const digest = protectedTaskSemanticAuthorityRequirementsDigest(
+      semanticAuthorityRequirements,
+    );
+    const matches = digest.length === requiredAuthorityDigest.length
+      && digest.every((byte, index) => byte === requiredAuthorityDigest[index]);
+    digest.fill(0);
+    if (!matches) throw new TypeError("authority digest mismatch");
+  } catch {
+    throw new TypeError("Protected native Task interruption has invalid coordinates");
+  }
+  return Object.freeze({
+    kind: "pre_effect_interrupt_v1" as const,
+    reason: "additional_authority" as const,
+    effectDisposition,
+    interruptId: id,
+    operationId,
+    requestDigest: requestDigest.slice(),
+    requiredAuthorityDigest: requiredAuthorityDigest.slice(),
+    semanticAuthorityRequirements,
+  });
+}
 
 function exactInterruptCoordinates(
   value: unknown,
-): ProtectedInterruptCoordinates {
+): ExactInterruptCoordinates {
   if (!Array.isArray(value) || value.length === 0) {
     throw new TypeError(
       "Protected native Task interruption requires durable coordinates",
     );
   }
   const seenIds = new Set<string>();
-  const coordinates: Array<ProtectedInterruptCoordinates[number]> = [];
+  const coordinates: ProtectedTaskNativeInterruptCoordinate[] = [];
+  let additionalAuthority:
+    | ProtectedTaskNativeAdditionalAuthorityContinuation
+    | undefined;
   for (const candidate of value) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
       throw new TypeError("Protected native Task interruption has invalid coordinates");
     }
     const coordinate = candidate as Record<string, unknown>;
-    if (Object.keys(coordinate).some((key) => key !== "id" && key !== "kind" && key !== "requestId")) {
-      throw new TypeError("Protected native Task interruption has invalid coordinates");
-    }
     const id = coordinate["id"];
     const kind = coordinate["kind"];
     const requestId = coordinate["requestId"];
@@ -176,6 +259,7 @@ function exactInterruptCoordinates(
         && kind !== "prove_it"
         && kind !== "identity"
         && kind !== "await_reply"
+        && kind !== "additional_authority"
       )
       || (
         requestId !== undefined
@@ -183,7 +267,18 @@ function exactInterruptCoordinates(
       )
       || (kind === "approval" && requestId === undefined)
       || ((kind === "prove_it" || kind === "await_reply") && requestId !== undefined)
+      || (kind === "additional_authority" && requestId === undefined)
     ) {
+      throw new TypeError("Protected native Task interruption has invalid coordinates");
+    }
+    if (kind === "additional_authority") {
+      if (additionalAuthority !== undefined) {
+        throw new TypeError("Protected native Task interruption has invalid coordinates");
+      }
+      additionalAuthority = exactAdditionalAuthority(coordinate, id);
+    } else if (Object.keys(coordinate).some((key) =>
+      key !== "id" && key !== "kind" && key !== "requestId"
+    )) {
       throw new TypeError("Protected native Task interruption has invalid coordinates");
     }
     seenIds.add(id);
@@ -194,7 +289,10 @@ function exactInterruptCoordinates(
     }));
   }
   coordinates.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
-  return Object.freeze(coordinates);
+  return Object.freeze({
+    coordinates: Object.freeze(coordinates),
+    ...(additionalAuthority === undefined ? {} : { additionalAuthority }),
+  });
 }
 
 function runnerOptions(
@@ -295,15 +393,22 @@ export async function runProtectedTaskNativeSegment(
     return createProtectedTaskFailurePayload();
   }
   if (result.status === "interrupted") {
-    const interruptCoordinates = exactInterruptCoordinates(
+    const interruption = exactInterruptCoordinates(
       result.interruptCoordinates,
     );
-    return Object.freeze({
-      status: "interrupted",
-      threadId: result.threadId,
-      interrupt: result.interrupt,
-      interruptCoordinates,
-    });
+    return interruption.additionalAuthority === undefined
+      ? Object.freeze({
+          status: "interrupted" as const,
+          threadId: result.threadId,
+          interrupt: result.interrupt,
+          interruptCoordinates: interruption.coordinates,
+        })
+      : Object.freeze({
+          status: "interrupted" as const,
+          threadId: result.threadId,
+          interruptCoordinates: interruption.coordinates,
+          additionalAuthority: interruption.additionalAuthority,
+        });
   }
 
   return completedPayload(result.finalResponseText);

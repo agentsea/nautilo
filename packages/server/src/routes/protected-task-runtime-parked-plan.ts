@@ -150,13 +150,7 @@ export function createParkedTaskRuntimeAuthorizationRecord(
     executionSegment: expected.nextExecutionSegment,
     resumeContinuationFingerprint: expected.continuationFingerprint,
   });
-  const initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3 = Object.freeze({
-    snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
-      requestId: expected.authorizationRequestId, workId: occurrence.run.id,
-      namespaceId: occurrence.task.contentNamespaceId, now,
-    }),
-    idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity),
-    workIdentityHash: createHash("sha256").update(JSON.stringify({
+  const scopeWorkIdentity = JSON.stringify({
       taskId: occurrence.task.id, taskRunId: occurrence.run.id,
       scheduleKind: occurrence.task.scheduleKind,
       sourceRoomId: facts.sourceRoomId, targetRoomId: facts.targetRoomId,
@@ -173,7 +167,14 @@ export function createParkedTaskRuntimeAuthorizationRecord(
       namespaces: authority.namespaces, domains: authority.domains,
       executionSegment: expected.nextExecutionSegment,
       resumeContinuationFingerprint: expected.continuationFingerprint,
-    })).digest(),
+    });
+  const initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3 = Object.freeze({
+    snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
+      requestId: expected.authorizationRequestId, workId: occurrence.run.id,
+      namespaceId: occurrence.task.contentNamespaceId, now,
+    }),
+    idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity),
+    workIdentityHash: createHash("sha256").update(scopeWorkIdentity).digest(),
     workKind: "task.execute", purpose: "task.execute", domainId: content.domainId,
     processorAuthorizationRevision: null, expectedDomainEpoch: contentDomain.expectedEpoch,
     expectedNamespaceAccessRevision: content.expectedAccessRevision,
@@ -182,5 +183,5 @@ export function createParkedTaskRuntimeAuthorizationRecord(
     authoritySet: Object.freeze({ namespaceRequirements: authority.namespaces,
       domainRequirements: authority.domains }),
   });
-  return Object.freeze({ stableIdentity, initialRecord, authority });
+  return Object.freeze({ stableIdentity, initialRecord, authority, scopeWorkIdentity });
 }

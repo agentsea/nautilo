@@ -24,7 +24,8 @@ const RUN_ID = "60000000-0000-4000-8000-000000000006";
 const THREAD_ID = `subagent:${TASK_ID}:${RUN_ID}`;
 const publication = Object.freeze({
   publish: async () => {},
-  awaitPublished: async () => true,
+  park: async () => {},
+  awaitSettled: async () => true,
 });
 const startProtectedTaskJob = async () => "started" as const;
 const settleProtectedTaskJobTerminal = async (
@@ -657,7 +658,8 @@ describe("JobManager protected Task execution", () => {
             new AbortController().signal,
             Object.freeze({
               publish: async () => {},
-              awaitPublished: async () => false,
+              park: async () => {},
+              awaitSettled: async () => false,
             }),
           );
           throw new ProtectedTaskJobStartNotOwnedError("rejected");

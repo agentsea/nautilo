@@ -78,12 +78,17 @@ function claimed(
         signal: AbortSignal,
         publication: Readonly<{
           publish(payload: import("@nautilo/lattice-bridge").TaskRunResultPayloadV1): Promise<void>;
-          awaitPublished(): Promise<boolean>;
+          park(settle: (parkedAt: number) => Promise<boolean>): Promise<void>;
+          awaitSettled(): Promise<boolean>;
         }>,
       ) => Promise<T>) => work(
         { message: "transient" },
         new AbortController().signal,
-        { publish: async () => {}, awaitPublished: async () => true },
+        {
+          publish: async () => {},
+          park: async () => {},
+          awaitSettled: async () => true,
+        },
       ),
       onIneligible,
     }),

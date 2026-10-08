@@ -6,6 +6,7 @@ import {
   type DirectDatabase,
   type ProtectedTaskPreexecutionRecoveryCursor,
   type StartProtectedTaskRunInput,
+  type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
 } from "@nautilo/db";
 import {
   isTaskRuntimeStableIdempotencyKey,
@@ -187,11 +188,27 @@ function activeGrantExpired(
       || now >= authorizationExpiresAt);
 }
 
+/** Shared metadata-only classification for initial and continuation recovery. */
+export function classifyProtectedTaskPreexecutionAuthorization(
+  start: StartProtectedTaskRunInput,
+  record: BackgroundAuthorizationRecord,
+  now: number,
+): "active" | "expired" | "deferred" | null {
+  if (!validTime(now) || !exactTaskRuntimeRecord(start, record)) return null;
+  if (recoverableDeferredGrant(record)) return "deferred";
+  if (!activeGrant(record)) return null;
+  return activeGrantExpired(record, now) ? "expired" : "active";
+}
+
 export function createProtectedTaskPreexecutionRecovery(input: Readonly<{
   db: DirectDatabase;
   repository: AuthorizationRepository;
   now?: () => number;
   dependencies?: Partial<Dependencies>;
+  recoverParked?(start: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+    options: Readonly<{ immediate: boolean }>): Promise<Readonly<{
+      cancelled: boolean; reset: boolean; failed: boolean;
+    }>>;
 }>) {
   const dependencies: Dependencies = {
     ...productionDependencies,
@@ -330,9 +347,11 @@ export function createProtectedTaskPreexecutionRecovery(input: Readonly<{
       let failures = 0;
       for (const candidate of page.candidates) {
         try {
-          const result = await recoverDetailed(candidate.input, {
-            immediate: candidate.jobStatus === "cancelled",
-          });
+          const recoveryOptions = { immediate: candidate.jobStatus === "cancelled" };
+          const result = candidate.route === "parked_additional_authority"
+            ? await input.recoverParked?.(candidate.input, recoveryOptions)
+            : await recoverDetailed(candidate.input, recoveryOptions);
+          if (result === undefined) continue;
           if (result.cancelled) cancelledJobs += 1;
           if (result.reset) resetRuns += 1;
           if (result.failed) failures += 1;

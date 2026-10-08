@@ -4,13 +4,16 @@ import {
   EmbeddingProviderError,
 } from "@nautilo/agent";
 import { MEMORY_EMBEDDING_DIMENSIONS } from "@nautilo/lattice-bridge";
-import type { DirectDatabase, PostgresJsBridgeConnection } from "@nautilo/db";
+import {
+  sealAndParkProtectedTaskRun,
+  type DirectDatabase,
+  type PostgresJsBridgeConnection,
+} from "@nautilo/db";
 import type { LatticeCrypto } from "@nautilo/lattice-crypto";
 import type {
   EncryptionDataOperationOwner,
   ProtectedAgentMemoryEmbeddingPort,
 } from "@nautilo/lattice-bridge";
-import type { TaskRuntimeGrantClaimPlan } from "@nautilo/runtime";
 
 import { createHumanProductTransactionContext } from "./human-message-product-store";
 import { createForegroundProductTransactionContext } from "./foreground-message-product-store";
@@ -30,6 +33,7 @@ type Dependencies = Readonly<{
   transcriptPublisher: typeof createProtectedTaskNativeTranscriptPublisher;
   segment: typeof createProtectedTaskNativeFixedMemorySegment;
   result: typeof createProtectedTaskNativeResultPublication;
+  sealAndPark: typeof sealAndParkProtectedTaskRun;
 }>;
 
 export type ProductionProtectedTaskNativeExecutionInput = Readonly<{
@@ -60,6 +64,7 @@ export function createProductionProtectedTaskNativeExecution(
     transcriptPublisher: createProtectedTaskNativeTranscriptPublisher,
     segment: createProtectedTaskNativeFixedMemorySegment,
     result: createProtectedTaskNativeResultPublication,
+    sealAndPark: sealAndParkProtectedTaskRun,
     ...overrides,
   };
   const resolveExecutionContext = dependencies.executionContext({ db: input.db });
@@ -100,6 +105,10 @@ export function createProductionProtectedTaskNativeExecution(
         owner: input.owner,
         embedding,
         createDedicatedPool,
+        parkSegment: async park => {
+          const result = await dependencies.sealAndPark(input.db, park);
+          return result.status === "parked" || result.status === "exact_replay";
+        },
         resolveExecutionContext,
         createTranscriptPublisher: dependencies.transcriptPublisher({ product }),
         ...(input.now === undefined ? {} : { now: input.now }),
@@ -109,18 +118,8 @@ export function createProductionProtectedTaskNativeExecution(
       const product = await dependencies.productContext(
         publication.occurrence.task.requestorId, input.db,
       );
-      const reference: TaskRuntimeGrantClaimPlan["reference"] = {
-        kind: "protected_task_run_v1",
-        taskId: publication.occurrence.task.id,
-        taskRunId: publication.occurrence.run.id,
-        inputObjectId: publication.occurrence.task.cryptoObjectId,
-        resultObjectId: publication.evidence.result.objectId,
-        authorizationRequestId: publication.evidence.requestId,
-        policyRevision: publication.evidence.policyRevision,
-        executionSegment: 1,
-      };
       await dependencies.result({
-        reference,
+        reference: publication.reference,
         db: input.db,
         restricted: input.restricted,
         crypto: input.crypto,

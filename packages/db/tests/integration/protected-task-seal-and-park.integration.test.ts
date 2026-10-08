@@ -9,14 +9,18 @@ import {
   cryptoObjects,
   eq,
   jobs,
+  getUnstartedProtectedTaskRunRecoveryBoundary,
+  listUnstartedProtectedTaskRunRecoveryCandidates,
   namespaces,
   protectedTaskContinuationReceipts,
   protectedTaskAdditionalAuthorityContinuationFingerprint,
   protectedTaskSemanticAuthorityRequirementsDigest,
   protectedTaskExecutionSegmentReceipts,
   readParkedProtectedTaskAdditionalAuthority,
+  recoverUnstartedParkedProtectedTaskRun,
   resolveAppDatabaseConnectionString,
   sealAndParkProtectedTaskRun,
+  settleCancelledProtectedTaskRunAuthorization,
   startParkedProtectedTaskRunAdditionalAuthoritySegment,
   sql,
   taskDefinitionCryptoRevisions,
@@ -645,6 +649,127 @@ test("cancellation and additional-authority start serialize on the Task", async 
         protectedTaskContinuationReceipts.taskRunId,
         fixture.taskRunId,
       ))).toHaveLength(1);
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+
+for (const linked of [false, true]) {
+  test(`product-role recovery restores an unstarted ${linked ? "linked" : "unlinked"} continuation`, async () => {
+    const fixture = await createFixture();
+    try {
+      await admin.update(taskRuns).set({ modelId: "test:selected-model" })
+        .where(eq(taskRuns.id, fixture.taskRunId));
+      expect(await sealAndParkProtectedTaskRun(productA, input(fixture)))
+        .toMatchObject({ status: "parked" });
+      await insertAdditionalAuthorityJob(fixture);
+      const start = additionalAuthorityStartInput(fixture);
+      if (linked) {
+        expect(await startParkedProtectedTaskRunAdditionalAuthoritySegment(productA, start))
+          .toEqual({ status: "started" });
+      }
+      const discover = async () => {
+        const through = await getUnstartedProtectedTaskRunRecoveryBoundary(productA);
+        expect(through).toBeDefined();
+        const page = await listUnstartedProtectedTaskRunRecoveryCandidates(productA, {
+          limit: 100, through: through!,
+        });
+        return page.candidates.find(candidate => candidate.input.jobId === fixture.nextJobId);
+      };
+      expect(await discover()).toMatchObject({ route: "parked_additional_authority",
+        lifecycle: linked ? "linked" : "parked", jobStatus: "queued",
+        input: { taskRunId: fixture.taskRunId, jobId: fixture.nextJobId } });
+      const recoveredAt = new Date(start.parkedAt.getTime() + 1);
+      const deferred = await recoverUnstartedParkedProtectedTaskRun(
+        productA, start, recoveredAt, async () => {
+          const [job] = await productB.select({ status: jobs.status, startedAt: jobs.startedAt })
+            .from(jobs).where(eq(jobs.id, fixture.nextJobId));
+          expect(job).toEqual({ status: "cancelled", startedAt: null });
+          return false;
+        },
+      );
+      expect(deferred).toEqual({ status: "cancelled" });
+      expect(await discover()).toMatchObject({ route: "parked_additional_authority",
+        lifecycle: linked ? "linked" : "parked", jobStatus: "cancelled" });
+      const [beforeRetry] = await productA.select({ status: taskRuns.status, jobId: taskRuns.jobId })
+        .from(taskRuns).where(eq(taskRuns.id, fixture.taskRunId));
+      expect(beforeRetry).toEqual({ status: linked ? "running" : "awaiting",
+        jobId: linked ? fixture.nextJobId : fixture.jobId });
+      expect(await recoverUnstartedParkedProtectedTaskRun(
+        productA, start, new Date(recoveredAt.getTime() + 1), () => Promise.resolve(true),
+      )).toEqual({ status: linked ? "recovered" : "exact_replay" });
+      const [run] = await productA.select({ status: taskRuns.status, jobId: taskRuns.jobId,
+        graphThreadId: taskRuns.graphThreadId, modelId: taskRuns.modelId }).from(taskRuns)
+        .where(eq(taskRuns.id, fixture.taskRunId));
+      expect(run).toEqual({ status: "awaiting", jobId: fixture.jobId,
+        graphThreadId: fixture.graphThreadId, modelId: "test:selected-model" });
+      await insertAdditionalAuthorityJob(fixture, fixture.alternateNextJobId);
+      expect(await startParkedProtectedTaskRunAdditionalAuthoritySegment(
+        productA, additionalAuthorityStartInput(fixture, fixture.alternateNextJobId),
+      )).toEqual({ status: "started" });
+      expect(await productA.select().from(protectedTaskExecutionSegmentReceipts)
+        .where(eq(protectedTaskExecutionSegmentReceipts.taskRunId, fixture.taskRunId)))
+        .toHaveLength(1);
+    } finally {
+      await cleanupFixture(fixture);
+    }
+  });
+}
+
+test("product-role recovery never resets a continuation after its Job started", async () => {
+  const fixture = await createFixture();
+  try {
+    expect(await sealAndParkProtectedTaskRun(productA, input(fixture)))
+      .toMatchObject({ status: "parked" });
+    await insertAdditionalAuthorityJob(fixture);
+    const start = additionalAuthorityStartInput(fixture);
+    expect(await startParkedProtectedTaskRunAdditionalAuthoritySegment(productA, start))
+      .toEqual({ status: "started" });
+    await admin.update(jobs).set({ status: "running", startedAt: new Date(start.parkedAt.getTime() + 1) })
+      .where(eq(jobs.id, fixture.nextJobId));
+    let deferrals = 0;
+    expect(await recoverUnstartedParkedProtectedTaskRun(productA, start,
+      new Date(start.parkedAt.getTime() + 2), () => {
+        deferrals += 1;
+        return Promise.resolve(true);
+      })).toEqual({ status: "stale" });
+    expect(deferrals).toBe(0);
+    const [run] = await productA.select({ status: taskRuns.status, jobId: taskRuns.jobId })
+      .from(taskRuns).where(eq(taskRuns.id, fixture.taskRunId));
+    expect(run).toEqual({ status: "running", jobId: fixture.nextJobId });
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+
+test("terminal grant settlement cancels an unlinked continuation Job after Stop", async () => {
+  const fixture = await createFixture();
+  try {
+    expect(await sealAndParkProtectedTaskRun(productA, input(fixture)))
+      .toMatchObject({ status: "parked" });
+    await insertAdditionalAuthorityJob(fixture);
+    const start = additionalAuthorityStartInput(fixture);
+    const cancelledAt = new Date(start.parkedAt.getTime() + 1);
+    expect(await transitionTaskLifecycleTerminal(productA, {
+      taskId: fixture.taskId, taskStatus: "cancelled", taskPatch: { cancelledAt },
+      runId: fixture.taskRunId, runStatus: "cancelled", runPatch: { completedAt: cancelledAt },
+    })).toMatchObject({ transitioned: true });
+    const settlement = {
+      taskRunId: fixture.taskRunId, contentNamespaceId: fixture.namespaceId,
+      authorizationRequestId: start.jobReference.authorizationRequestId,
+      policyRevision: start.jobReference.policyRevision,
+    };
+    expect(await settleCancelledProtectedTaskRunAuthorization(productA, settlement,
+      () => Promise.resolve(true))).toBe(true);
+    expect(await productA.select({ id: jobs.id, status: jobs.status, startedAt: jobs.startedAt })
+      .from(jobs).where(eq(jobs.id, fixture.nextJobId)))
+      .toEqual([{ id: fixture.nextJobId, status: "cancelled", startedAt: null }]);
+    expect(await settleCancelledProtectedTaskRunAuthorization(productA, settlement,
+      () => Promise.resolve(true))).toBe(true);
+    expect(await productA.select({ status: jobs.status }).from(jobs)
+      .where(eq(jobs.id, fixture.jobId))).toEqual([{ status: "completed" }]);
   } finally {
     await cleanupFixture(fixture);
   }

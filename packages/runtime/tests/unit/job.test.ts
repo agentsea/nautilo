@@ -199,7 +199,7 @@ describe("Job", () => {
     });
 
     await job.executeProtectedTask(job.input, undefined, {
-      awaitPublished: async () => true,
+      awaitSettled: async () => true,
     });
     expect(executedMessage).toBe("protected-task-input-sentinel");
   });
@@ -233,7 +233,7 @@ describe("Job", () => {
       });
       await job.persist();
       await job.executeProtectedTask({}, undefined, {
-        awaitPublished: async () => published,
+        awaitSettled: async () => published,
       });
       expect(job.status).toBe(published ? "completed" : "running");
       expect(updates).toEqual([]);
@@ -531,7 +531,7 @@ describe("Job", () => {
       });
       await job.persist();
       const execution = job.executeProtectedTask({}, undefined, {
-        awaitPublished: async () => false,
+        awaitSettled: async () => false,
       });
       const signal = await executorEntered.promise;
       const cancellation = job.cancel();

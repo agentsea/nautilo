@@ -353,6 +353,7 @@ function compositionInput(
     createDedicatedPool: () => Object.freeze({}) as ReturnType<
       ProtectedTaskNativeFixedMemorySegmentInput["createDedicatedPool"]
     >,
+    parkSegment: async () => true,
     resolveExecutionContext: async () => ({
       assistantName: "Protected Genie",
       soulFile: "",
@@ -391,6 +392,11 @@ function executorInput(
         calls?.push("result-publish");
         published.push(payload);
       },
+      park: async (settle: (parkedAt: number) => Promise<boolean>) => {
+        calls?.push("result-park");
+        if (!await settle(NOW)) throw new Error("park rejected");
+      },
+      awaitSettled: async () => true,
     },
   };
 }
@@ -405,7 +411,7 @@ async function consume(
 
 function overrides(
   calls: string[],
-  outcome: "complete" | "throw" | "interrupt" = "complete",
+  outcome: "complete" | "throw" | "interrupt" | "additional-authority" = "complete",
   protectedMetadata: TaskPayloadV1["protectedMetadata"] = {},
   onDefinitionClose?: () => void,
 ) {
@@ -495,11 +501,27 @@ function overrides(
       execute(value: unknown): Promise<unknown>;
     }) => {
       calls.push("checkpoint-open");
-      try { return await input.execute(Object.freeze({})); }
+      try {
+        return {
+          value: await input.execute(Object.freeze({})),
+          manifest: Object.freeze({
+            contract: "encrypted_langgraph_v1" as const,
+            expectedCheckpointCount: 1,
+            checkpointOrderedDigest: bytes(21),
+            expectedBlobCount: 0,
+            blobOrderedDigest: bytes(22),
+            expectedPendingWriteCount: 0,
+            pendingWriteOrderedDigest: bytes(23),
+          }),
+        };
+      }
       finally { calls.push("checkpoint-close"); }
     },
     createTranscriptPort: () => Object.freeze({
-      quiesce: async () => ({ failedPublicationCount: 0 }),
+      quiesce: async () => {
+        calls.push("transcript-quiesce");
+        return { failedPublicationCount: 0 };
+      },
       publishBatch: async () => undefined,
     }),
     runSegment: async (input: {
@@ -519,6 +541,31 @@ function overrides(
           interrupt: {},
           interruptCoordinates: [{ id: "approval-1", kind: "approval" as const,
             requestId: "request-1" }],
+        };
+      }
+      if (outcome === "additional-authority") {
+        return {
+          status: "interrupted" as const,
+          threadId: `subagent:task:${TASK}:${RUN}`,
+          interrupt: {},
+          interruptCoordinates: [{
+            id: "additional-authority-1",
+            kind: "additional_authority" as const,
+            requestId: `task-run-authorization:${RUN}:segment:2`,
+          }],
+          additionalAuthority: {
+            kind: "pre_effect_interrupt_v1" as const,
+            reason: "additional_authority" as const,
+            effectDisposition: "not_started_v1" as const,
+            interruptId: "additional-authority-1",
+            operationId: "memory-operation-1",
+            requestDigest: bytes(31),
+            requiredAuthorityDigest: bytes(32),
+            semanticAuthorityRequirements: [{
+              namespaceId: OTHER_NAMESPACE,
+              operations: ["decrypt" as const],
+            }],
+          },
         };
       }
       const payload = {
@@ -563,6 +610,7 @@ async function executeScenario(
       });
       const transient = await prepared.openTransientInput({
         occurrence: value.runningOccurrence,
+        reference: value.reference,
         record: value.record,
         domains: value.domains,
         evidence,
@@ -606,6 +654,7 @@ async function withScenario<Value>(
       });
       const transient = await prepared.openTransientInput({
         occurrence: value.runningOccurrence,
+        reference: value.reference,
         record: value.record,
         domains: value.domains,
         evidence,
@@ -671,6 +720,7 @@ describe("protected Task native fixed Memory segment", () => {
         });
         const transient = await prepared.openTransientInput({
           occurrence: value.runningOccurrence,
+          reference: value.reference,
           record: value.record,
           domains: value.domains,
           evidence,
@@ -708,6 +758,7 @@ describe("protected Task native fixed Memory segment", () => {
           `repository-open:${JOB}:${mode}`,
           "checkpoint-open",
           "runner",
+          "transcript-quiesce",
           "checkpoint-close",
           "repository-close",
           "signer-close",
@@ -835,6 +886,7 @@ describe("protected Task native fixed Memory segment", () => {
           });
           const transient = await prepared.openTransientInput({
             occurrence: value.runningOccurrence,
+            reference: value.reference,
             record: value.record,
             domains: value.domains,
             evidence,
@@ -918,6 +970,7 @@ describe("protected Task native fixed Memory segment", () => {
         });
         const transient = await prepared.openTransientInput({
           occurrence: value.runningOccurrence,
+          reference: value.reference,
           record: value.record,
           domains: value.domains,
           evidence,
@@ -992,7 +1045,8 @@ describe("protected Task native fixed Memory segment", () => {
             stableRoutingDigest: value.stableRoutingDigest,
           });
           const transient = await prepared.openTransientInput({
-            occurrence: value.runningOccurrence, record: value.record,
+            occurrence: value.runningOccurrence, reference: value.reference,
+            record: value.record,
             domains: value.domains, evidence, signal: new AbortController().signal,
           });
           const execution = consume(prepared.executor(
@@ -1069,6 +1123,7 @@ describe("protected Task native fixed Memory segment", () => {
         });
         const transient = await prepared.openTransientInput({
           occurrence: value.runningOccurrence,
+          reference: value.reference,
           record: value.record,
           domains: value.domains,
           evidence,
@@ -1130,6 +1185,104 @@ describe("protected Task native fixed Memory segment", () => {
     }
   });
 
+  test("continues from the immutable checkpoint and parks only after every plaintext owner closes", async () => {
+    const value = await fixture("namespace");
+    const calls: string[] = [];
+    const published: unknown[] = [];
+    const parked: unknown[] = [];
+    const reference: TaskRuntimeGrantClaimPlan["reference"] = Object.freeze({
+      ...value.reference,
+      executionSegment: 2,
+      resumeContinuationFingerprint: "A".repeat(43),
+    });
+    let continued = false;
+    const baseOverrides = overrides(calls, "additional-authority");
+    if (baseOverrides === undefined) {
+      throw new TypeError("Test overrides are unavailable");
+    }
+    const baseRunSegment = baseOverrides.runSegment!;
+    const prepare = createProtectedTaskNativeFixedMemorySegment({
+      ...compositionInput(value.crypto, runner()),
+      parkSegment: async input => {
+        parked.push(input);
+        expect(calls.indexOf("transcript-quiesce"))
+          .toBeLessThan(calls.indexOf("checkpoint-close"));
+        expect(calls.indexOf("checkpoint-close"))
+          .toBeLessThan(calls.indexOf("repository-close"));
+        expect(calls.indexOf("repository-close"))
+          .toBeLessThan(calls.indexOf("signer-close"));
+        expect(calls.indexOf("signer-close"))
+          .toBeLessThan(calls.indexOf("definition-close"));
+        expect(calls.indexOf("definition-close"))
+          .toBeLessThan(calls.indexOf("result-park"));
+        return true;
+      },
+    }, {
+      ...baseOverrides,
+      runSegment: async segment => {
+        continued = segment.execution.continueFromCheckpoint === true;
+        return baseRunSegment(segment);
+      },
+    });
+    await withTaskRuntimeExecutionEvidenceV1({
+      evidence: value.evidenceInput,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      execute: async evidence => {
+        const prepared = await prepare({
+          occurrence: value.occurrence,
+          predispatch: value.predispatch,
+          policy: value.policy,
+          reference,
+          stableRoutingDigest: value.stableRoutingDigest,
+        });
+        const transient = await prepared.openTransientInput({
+          occurrence: value.runningOccurrence,
+          reference,
+          record: value.record,
+          domains: value.domains,
+          evidence,
+          signal: new AbortController().signal,
+        });
+        await consume(prepared.executor(
+          executorInput(value.occurrence, transient, published, calls),
+          JOB,
+          `task:${TASK}`,
+          new AbortController().signal,
+        ));
+      },
+    });
+    expect(continued).toBe(true);
+    expect(published).toEqual([]);
+    expect(parked).toHaveLength(1);
+    expect(parked[0]).toMatchObject({
+      park: {
+        taskId: TASK,
+        taskRunId: RUN,
+        jobId: JOB,
+        generation: 2,
+        executionSegment: 2,
+        jobReference: reference,
+      },
+      segment: {
+        route: "native_langgraph_v1",
+        checkpoint: {
+          contract: "encrypted_langgraph_v1",
+          expectedCheckpointCount: 1,
+        },
+      },
+      continuation: {
+        kind: "pre_effect_interrupt_v1",
+        reason: "additional_authority",
+        effectDisposition: "not_started_v1",
+        interruptId: "additional-authority-1",
+        operationId: "memory-operation-1",
+      },
+    });
+    expect((parked[0] as { continuation: { stableRoutingDigest: Uint8Array } })
+      .continuation.stableRoutingDigest).toEqual(value.stableRoutingDigest);
+  });
+
   test("does not publish a terminal result after Job cancellation during owner close", async () => {
     const job = new AbortController();
     await withScenario("namespace", "throw", async scenario => {
@@ -1177,6 +1330,8 @@ describe("protected Task native fixed Memory segment", () => {
             attemptedPayload = payload;
             throw new Error("terminal publication failed");
           },
+          park: async () => { throw new Error("unexpected park"); },
+          awaitSettled: async () => false,
         };
         const failure = await consume(scenario.prepared.executor(
           scenario.input,
@@ -1250,6 +1405,7 @@ describe("protected Task native fixed Memory segment", () => {
         const terminal: unknown[] = [];
         const transient = await prepared.openTransientInput({
           occurrence: value.runningOccurrence,
+          reference: value.reference,
           record: value.record,
           domains: value.domains,
           evidence,
@@ -1317,6 +1473,7 @@ describe("protected Task native fixed Memory segment", () => {
         });
         const transient = await prepared.openTransientInput({
           occurrence: value.runningOccurrence,
+          reference: value.reference,
           record: value.record,
           domains: value.domains,
           evidence,

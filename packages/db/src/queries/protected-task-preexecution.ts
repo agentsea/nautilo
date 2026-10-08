@@ -13,6 +13,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 
 import type { DirectDatabase } from "../config/direct-database";
 import { jobs } from "../schema/jobs";
@@ -27,6 +28,10 @@ import { tasks } from "../schema/tasks";
 import { acquireEncryptionConsumptionFence } from
   "../utils/encryption-transition-queries";
 import {
+  projectParkedProtectedTaskRecoveryCandidate,
+  type ParkedProtectedTaskRecoveryCandidateRow,
+} from "./protected-task-parked-recovery-candidate";
+import {
   protectedTaskRunMessageOperationId,
   protectedTaskRunOutputBindingId,
   protectedTaskRunResultObjectId,
@@ -38,6 +43,7 @@ import {
   PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY,
   PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY,
   type ProtectedTaskDurableJobReference,
+  type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
   type StartProtectedTaskRunInput,
 } from "./tasks";
 
@@ -51,11 +57,20 @@ export type ProtectedTaskPreexecutionRecoveryCursor = Readonly<{
   jobId: string;
 }>;
 
-export type ProtectedTaskPreexecutionRecoveryCandidate = Readonly<{
-  input: StartProtectedTaskRunInput;
-  jobStatus: "queued" | "cancelled";
-  cursor: ProtectedTaskPreexecutionRecoveryCursor;
-}>;
+export type ProtectedTaskPreexecutionRecoveryCandidate =
+  | Readonly<{
+      route: "initial";
+      input: StartProtectedTaskRunInput;
+      jobStatus: "queued" | "cancelled";
+      cursor: ProtectedTaskPreexecutionRecoveryCursor;
+    }>
+  | Readonly<{
+      route: "parked_additional_authority";
+      input: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput;
+      jobStatus: "queued" | "cancelled";
+      lifecycle: "linked" | "parked";
+      cursor: ProtectedTaskPreexecutionRecoveryCursor;
+    }>;
 
 export type ProtectedTaskPreexecutionRecoveryPage = Readonly<{
   candidates: ProtectedTaskPreexecutionRecoveryCandidate[];
@@ -129,6 +144,126 @@ const jobProjection = Object.freeze({
     sql<boolean>`NOT (${jobs.metadata} ? ${PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY})`,
   )!.mapWith(Boolean),
 });
+
+const priorJobs = alias(jobs, "protected_task_preexecution_prior_jobs");
+const priorJobProjection = Object.freeze({
+  id: priorJobs.id,
+  ownerId: priorJobs.ownerId,
+  requestorId: priorJobs.requestorId,
+  laneKey: priorJobs.laneKey,
+  type: priorJobs.type,
+  status: priorJobs.status,
+  reference: priorJobs.input,
+  startedAt: priorJobs.startedAt,
+  completedAt: priorJobs.completedAt,
+  parkReceipt:
+    sql<unknown>`${priorJobs.metadata} -> ${PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY}`,
+  pristine: and(
+    isNull(priorJobs.result),
+    isNull(priorJobs.message),
+    sql<boolean>`NOT (${priorJobs.metadata} ? ${PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY})`,
+  )!.mapWith(Boolean),
+});
+
+const segmentProjection = Object.freeze({
+  taskRunId: protectedTaskExecutionSegmentReceipts.taskRunId,
+  executionSegment: protectedTaskExecutionSegmentReceipts.executionSegment,
+  jobId: protectedTaskExecutionSegmentReceipts.jobId,
+  route: protectedTaskExecutionSegmentReceipts.route,
+  transcriptContract: protectedTaskExecutionSegmentReceipts.transcriptContract,
+  expectedTranscriptAssociationCount:
+    protectedTaskExecutionSegmentReceipts.expectedTranscriptAssociationCount,
+  transcriptAssociationDigest:
+    protectedTaskExecutionSegmentReceipts.transcriptAssociationDigest,
+  checkpointContract: protectedTaskExecutionSegmentReceipts.checkpointContract,
+  expectedCheckpointCount:
+    protectedTaskExecutionSegmentReceipts.expectedCheckpointCount,
+  checkpointDigest: protectedTaskExecutionSegmentReceipts.checkpointDigest,
+  expectedCheckpointBlobCount:
+    protectedTaskExecutionSegmentReceipts.expectedCheckpointBlobCount,
+  checkpointBlobDigest:
+    protectedTaskExecutionSegmentReceipts.checkpointBlobDigest,
+  expectedPendingWriteCount:
+    protectedTaskExecutionSegmentReceipts.expectedPendingWriteCount,
+  pendingWriteDigest: protectedTaskExecutionSegmentReceipts.pendingWriteDigest,
+  sealedAt: protectedTaskExecutionSegmentReceipts.sealedAt,
+});
+
+const continuationProjection = Object.freeze({
+  taskRunId: protectedTaskContinuationReceipts.taskRunId,
+  executionSegment: protectedTaskContinuationReceipts.executionSegment,
+  jobId: protectedTaskContinuationReceipts.jobId,
+  kind: protectedTaskContinuationReceipts.kind,
+  reason: protectedTaskContinuationReceipts.reason,
+  effectDisposition: protectedTaskContinuationReceipts.effectDisposition,
+  interruptId: protectedTaskContinuationReceipts.interruptId,
+  operationId: protectedTaskContinuationReceipts.operationId,
+  requestDigest: protectedTaskContinuationReceipts.requestDigest,
+  requiredAuthorityDigest:
+    protectedTaskContinuationReceipts.requiredAuthorityDigest,
+  stableRoutingDigest: protectedTaskContinuationReceipts.stableRoutingDigest,
+  semanticAuthorityRequirements:
+    protectedTaskContinuationReceipts.semanticAuthorityRequirements,
+  sealedAt: protectedTaskContinuationReceipts.sealedAt,
+});
+
+const referencedTaskRunId =
+  sql<string>`${jobs.input} ->> 'taskRunId'`;
+const referencedExecutionSegment =
+  sql<number>`case
+    when ${jobs.input} ->> 'executionSegment' ~ '^[1-9][0-9]{0,9}$'
+    then case
+      when (${jobs.input} ->> 'executionSegment')::bigint <= 2147483647
+      then (${jobs.input} ->> 'executionSegment')::integer
+      else null
+    end
+    else null
+  end`;
+const referencedPriorExecutionSegment =
+  sql<number>`(${referencedExecutionSegment}) - 1`;
+
+function recoveryLifecycleCondition() {
+  return or(
+    and(
+      eq(taskRuns.status, "running"),
+      eq(taskRuns.jobId, jobs.id),
+      or(
+        and(eq(tasks.scheduleKind, "cron"), eq(tasks.status, "pending")),
+        and(ne(tasks.scheduleKind, "cron"), eq(tasks.status, "running")),
+      ),
+    ),
+    and(
+      eq(taskRuns.status, "awaiting"),
+      sql`${referencedExecutionSegment} > 1`,
+      or(
+        and(eq(tasks.scheduleKind, "cron"), eq(tasks.status, "pending")),
+        and(ne(tasks.scheduleKind, "cron"), eq(tasks.status, "awaiting")),
+      ),
+    ),
+  );
+}
+
+function recoveryJobCondition() {
+  return and(
+    inArray(tasks.contentRepresentation, ["dual", "protected"]),
+    eq(tasks.cryptoMappingState, "verified"),
+    recoveryLifecycleCondition(),
+    or(
+      and(eq(referencedExecutionSegment, 1), isNull(taskRuns.modelId)),
+      sql`${referencedExecutionSegment} > 1`,
+    ),
+    inArray(jobs.status, ["queued", "cancelled"]),
+    isNull(jobs.startedAt),
+    or(
+      and(eq(jobs.status, "queued"), isNull(jobs.completedAt)),
+      and(eq(jobs.status, "cancelled"), isNotNull(jobs.completedAt)),
+    ),
+    sql`${jobs.input} ->> 'kind' = 'protected_task_run_v1'`,
+    sql`${jobs.input} ->> 'taskRunId' = ${taskRuns.id}::text`,
+    sql`${jobs.input} ->> 'taskId' = ${tasks.id}::text`,
+    sql`${jobs.input} ->> 'executionSegment' ~ '^[1-9][0-9]{0,9}$'`,
+  );
+}
 
 function sameBytes(left: Uint8Array | null, right: Uint8Array): boolean {
   if (left === null || left.length !== right.length) return false;
@@ -349,22 +484,10 @@ export async function getUnstartedProtectedTaskRunRecoveryBoundary(
     createdAt: sql<string>`${jobs.createdAt}::text`,
     jobId: jobs.id,
   }).from(jobs)
-    .innerJoin(taskRuns, eq(taskRuns.jobId, jobs.id))
+    .innerJoin(taskRuns, eq(sql`${taskRuns.id}::text`, referencedTaskRunId))
     .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
-    .where(and(
-      inArray(tasks.contentRepresentation, ["dual", "protected"]),
-      or(
-        and(eq(tasks.scheduleKind, "cron"), eq(tasks.status, "pending")),
-        and(ne(tasks.scheduleKind, "cron"), eq(tasks.status, "running")),
-      ),
-      eq(taskRuns.status, "running"),
-      inArray(jobs.status, ["queued", "cancelled"]),
-      isNull(jobs.startedAt),
-      or(
-        and(eq(jobs.status, "queued"), isNull(jobs.completedAt)),
-        and(eq(jobs.status, "cancelled"), isNotNull(jobs.completedAt)),
-      ),
-    )).orderBy(desc(jobs.createdAt), desc(jobs.id)).limit(1);
+    .where(recoveryJobCondition())
+    .orderBy(desc(jobs.createdAt), desc(jobs.id)).limit(1);
   return row;
 }
 
@@ -387,25 +510,37 @@ export async function listUnstartedProtectedTaskRunRecoveryCandidates(
     task: taskProjection,
     run: runProjection,
     job: jobProjection,
+    priorJob: priorJobProjection,
+    segment: segmentProjection,
+    continuation: continuationProjection,
     cursorCreatedAt: sql<string>`${jobs.createdAt}::text`,
   }).from(jobs)
-    .innerJoin(taskRuns, eq(taskRuns.jobId, jobs.id))
+    .innerJoin(taskRuns, eq(sql`${taskRuns.id}::text`, referencedTaskRunId))
     .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
+    .leftJoin(protectedTaskExecutionSegmentReceipts, and(
+      eq(protectedTaskExecutionSegmentReceipts.taskRunId, taskRuns.id),
+      eq(
+        protectedTaskExecutionSegmentReceipts.executionSegment,
+        referencedPriorExecutionSegment,
+      ),
+    ))
+    .leftJoin(protectedTaskContinuationReceipts, and(
+      eq(protectedTaskContinuationReceipts.taskRunId, taskRuns.id),
+      eq(
+        protectedTaskContinuationReceipts.executionSegment,
+        referencedPriorExecutionSegment,
+      ),
+      eq(
+        protectedTaskContinuationReceipts.jobId,
+        protectedTaskExecutionSegmentReceipts.jobId,
+      ),
+    ))
+    .leftJoin(priorJobs, eq(
+      priorJobs.id,
+      protectedTaskExecutionSegmentReceipts.jobId,
+    ))
     .where(and(
-      inArray(tasks.contentRepresentation, ["dual", "protected"]),
-      eq(tasks.cryptoMappingState, "verified"),
-      or(
-        and(eq(tasks.scheduleKind, "cron"), eq(tasks.status, "pending")),
-        and(ne(tasks.scheduleKind, "cron"), eq(tasks.status, "running")),
-      ),
-      eq(taskRuns.status, "running"),
-      isNull(taskRuns.modelId),
-      inArray(jobs.status, ["queued", "cancelled"]),
-      isNull(jobs.startedAt),
-      or(
-        and(eq(jobs.status, "queued"), isNull(jobs.completedAt)),
-        and(eq(jobs.status, "cancelled"), isNotNull(jobs.completedAt)),
-      ),
+      recoveryJobCondition(),
       or(
         lt(jobs.createdAt, sql`${options.through.createdAt}::timestamp`),
         and(
@@ -430,7 +565,30 @@ export async function listUnstartedProtectedTaskRunRecoveryCandidates(
       || row.task.contentNamespaceId === null
       || row.task.cryptoObjectId === null
       || row.task.cryptoRequiredNamespaceFingerprint === null
-      || (row.job.status !== "queued" && row.job.status !== "cancelled")
+      || (row.job.status !== "queued" && row.job.status !== "cancelled")) {
+      continue;
+    }
+    const cursor = { createdAt: row.cursorCreatedAt, jobId: row.job.id };
+    if (reference.executionSegment !== 1) {
+      const parked = projectParkedProtectedTaskRecoveryCandidate({
+        task: row.task,
+        run: row.run,
+        nextJob: row.job,
+        priorJob: row.priorJob,
+        segment: row.segment,
+        continuation: row.continuation,
+      } as ParkedProtectedTaskRecoveryCandidateRow);
+      if (parked !== null) candidates.push({
+        route: "parked_additional_authority",
+        input: parked.input,
+        jobStatus: row.job.status,
+        lifecycle: parked.lifecycle,
+        cursor,
+      });
+      continue;
+    }
+    if (row.run.status !== "running" || row.run.jobId !== row.job.id
+      || row.run.modelId !== null
       || !exactReference(row.job.reference, reference)) continue;
     const input: StartProtectedTaskRunInput = {
       taskId: row.task.id,
@@ -452,9 +610,10 @@ export async function listUnstartedProtectedTaskRunRecoveryCandidates(
       continue;
     }
     candidates.push({
+      route: "initial",
       input,
       jobStatus: row.job.status,
-      cursor: { createdAt: row.cursorCreatedAt, jobId: row.job.id },
+      cursor,
     });
   }
   const lastRaw = rows.at(-1);

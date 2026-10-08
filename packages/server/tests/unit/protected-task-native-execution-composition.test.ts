@@ -20,6 +20,7 @@ function setup() {
   const segments: Parameters<NonNullable<Overrides["segment"]>>[0][] = [];
   const results: Parameters<NonNullable<Overrides["result"]>>[0][] = [];
   const publications: Publication[] = [];
+  const parks: unknown[] = [];
   const context = async () => { throw new Error("not executed by preparation"); };
   const overrides: Overrides = {
     productContext: async (userId, db) => {
@@ -46,8 +47,13 @@ function setup() {
       results.push(options);
       return async publication => { publications.push(publication); };
     },
+    sealAndPark: async (db, park) => {
+      expect(db).toBe(input.db);
+      parks.push(park);
+      return { status: "parked" as const };
+    },
   };
-  return { input, identities, products, segments, results, publications, context, overrides };
+  return { input, identities, products, segments, results, publications, parks, context, overrides };
 }
 
 function preparation(requestorId: string, agentId: string): Preparation {
@@ -76,6 +82,12 @@ describe("native protected Task execution composition", () => {
     const publication = {
       occurrence: { task: { id: "task-a", requestorId: "requester-a", cryptoObjectId: "input-object" }, run: { id: "run-a" } },
       evidence: { result: { objectId: "result-object" }, requestId: "request-a", policyRevision: 8 },
+      reference: {
+        kind: "protected_task_run_v1", taskId: "task-a", taskRunId: "run-a",
+        inputObjectId: "input-object", resultObjectId: "result-object",
+        authorizationRequestId: "request-a", policyRevision: 8,
+        executionSegment: 1,
+      },
       domains: [], signal: new AbortController().signal,
     } as unknown as Publication;
     await execution.publishResult(publication);
@@ -102,5 +114,45 @@ describe("native protected Task execution composition", () => {
     expect(result).toMatchObject({ message: "Agent role unavailable" });
     expect(f.segments).toEqual([]);
     expect(f.publications).toEqual([]);
+  });
+
+  test("adapts the fixed segment park callback to one atomic database seal", async () => {
+    const f = setup();
+    const execution = createProductionProtectedTaskNativeExecution(f.input, f.overrides);
+    await execution.prepareExecution(preparation("requester-a", "agent-a"));
+    const park = { park: {}, segment: {}, continuation: {} } as never;
+    expect(await f.segments[0]!.parkSegment(park)).toBe(true);
+    expect(f.parks).toEqual([park]);
+  });
+
+  test("publishes a continued segment with its exact admitted reference", async () => {
+    const f = setup();
+    const execution = createProductionProtectedTaskNativeExecution(f.input, f.overrides);
+    const reference = {
+      kind: "protected_task_run_v1",
+      taskId: "task-a",
+      taskRunId: "run-a",
+      inputObjectId: "input-object",
+      resultObjectId: "result-object",
+      authorizationRequestId: "request-b",
+      policyRevision: 8,
+      executionSegment: 2,
+      resumeContinuationFingerprint: "A".repeat(43),
+    } as const;
+    const publication = {
+      occurrence: {
+        task: { id: "task-a", requestorId: "requester-a" },
+        run: { id: "run-a" },
+      },
+      evidence: {},
+      reference,
+      domains: [],
+      signal: new AbortController().signal,
+    } as unknown as Publication;
+
+    await execution.publishResult(publication);
+
+    expect(f.results[0]!.reference).toBe(reference);
+    expect(f.publications[0]).toBe(publication);
   });
 });
