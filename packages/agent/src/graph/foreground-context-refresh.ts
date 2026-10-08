@@ -202,6 +202,7 @@ export function foregroundContextRefreshInput(
     ordinaryContentAccessRejectedToolCallIds: [],
     computerUseInvocationBindings: {},
     fullMacInvocationBindings: {},
+    delegatedLocalExecutionBindings: {},
     githubInvocationBindings: {},
     humanTerminalInvocationBindings: {},
     requiredHostRelays: {},

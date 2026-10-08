@@ -273,3 +273,31 @@ describe("shared managed execution observation", () => {
     expect(f.unsubscribe).toHaveBeenCalledTimes(1);
   });
 });
+
+test("native read can recover a settled archive but ordinary published results cannot", async () => {
+  const f = fixture();
+  const archived = snapshot({ archived: true, state: "completed", exitCode: 0, resources: "released" });
+  const watcher = f.watch();
+  watcher.publish(archived);
+  expect(f.values.at(-1)?.snapshot).toBeNull();
+  f.set(archived);
+  await flush();
+  expect(f.values.at(-1)).toMatchObject({ snapshot: archived, unconfirmed: false, replaceOutput: true });
+  clearLocalExecutionHistoryOverlays(f.api);
+  expect(f.values.at(-1)?.snapshot).toBeNull();
+  watcher.unsubscribe();
+});
+test("native archived read cannot replace another execution or contradict a known terminal outcome", async () => {
+  const f = fixture();
+  f.set(snapshot({ archived: true, state: "completed", exitCode: 0, resources: "released", generation: "foreign" }));
+  const watcher = f.watch();
+  await flush();
+  expect(f.values.at(-1)?.snapshot).toBeNull();
+  expect(f.values.at(-1)?.unconfirmed).toBe(true);
+  const completed = snapshot({ state: "completed", exitCode: 0, resources: "released" });
+  watcher.publish(completed);
+  watcher.publish({ ...completed, archived: true, exitCode: 7 }, true);
+  expect(f.values.at(-1)?.snapshot?.exitCode).toBe(0);
+  expect(f.values.at(-1)?.snapshot?.archived).not.toBe(true);
+  watcher.unsubscribe();
+});

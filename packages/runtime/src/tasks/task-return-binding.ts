@@ -893,7 +893,7 @@ export function registerTaskReturnBinding(
     return false;
   }
   // The diagnostic above proves context is present. Keep the narrowed alias so
-  // the stored binding remains structurally identical to the pre-D574 shape.
+  // the stored binding remains structurally identical to its existing shape.
   const captured = context!;
   const relaySessionId = relay.getRelaySessionId(captured.relayId)!;
   const browserSessionId = captured.browserSessionId;
@@ -924,7 +924,7 @@ export function taskReturnBindingRegistrationFailure(
   relay: RelayView,
   now = Date.now(),
 ): TaskReturnBindingRegistrationFailure | null {
-  if (!context || !taskId) return "context_unavailable";
+  if (!context || !taskId || !context.currentFolder) return "context_unavailable";
   if (
     !bindings.has(taskId)
     && !liveMiniAppBindings.has(taskId)

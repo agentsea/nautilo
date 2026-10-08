@@ -40,6 +40,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     callingRoomId: ids.callingRoom,
     metadata: {},
     fundingMode: "legacy_server",
+    localExecutionDelegation: null,
     ...overrides,
   } as Task;
 }
@@ -102,7 +103,13 @@ const db = {} as DirectDatabase;
 describe("Task Memory-envelope resolution", () => {
   test("creates and persists a scope with the existing plaintext-purpose behavior", async () => {
     const createdScopes: Array<Record<string, unknown>> = [];
-    const updates: Array<{ id: string; scopeId: string | null | undefined }> = [];
+    const memoizedCoordinates: Array<{
+      db: DirectDatabase;
+      task: Task;
+      coordinates: Parameters<NonNullable<
+        TaskMemoryEnvelopeResolutionDependencies["memoizeTaskExecutionCoordinates"]
+      >>[2];
+    }> = [];
     const longPrompt = "p".repeat(240);
     const result = await resolveTaskMemoryEnvelope(
       {
@@ -118,9 +125,9 @@ describe("Task Memory-envelope resolution", () => {
           createdScopes.push(params);
           return { scopeId: ids.scope, name: params.name };
         },
-        updateTask: async (_db, id, patch) => {
-          updates.push({ id, scopeId: patch.scopeId });
-          return undefined;
+        memoizeTaskExecutionCoordinates: async (memoDb, task, coordinates) => {
+          memoizedCoordinates.push({ db: memoDb, task, coordinates });
+          return { ...task, ...coordinates };
         },
       }),
     );
@@ -134,7 +141,11 @@ describe("Task Memory-envelope resolution", () => {
       name: `task:${ids.task}`,
       purpose: longPrompt.slice(0, 200),
     }]);
-    expect(updates).toEqual([{ id: ids.task, scopeId: ids.scope }]);
+    expect(memoizedCoordinates).toEqual([{
+      db,
+      task: makeTask({ useScope: true, preset: "in_scope", prompt: longPrompt }),
+      coordinates: { scopeId: ids.scope },
+    }]);
     expect(result.envelope).toMatchObject({
       memoryMode: "scope",
       scopeId: ids.scope,

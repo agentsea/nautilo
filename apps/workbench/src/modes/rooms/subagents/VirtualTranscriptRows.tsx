@@ -2,7 +2,7 @@ import { memo, useCallback, useRef, type ReactElement, type Ref } from "react";
 import { TranscriptWindow, type TranscriptWindowHandle } from "../../../components/transcript-window";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 import { ToolCard } from "../../../components/tool-card/tool-card";
-import type { ToolActivityEvent } from "../../../adapters/runtime-contexts";
+import { ToolActivityContext, type ToolActivityEvent } from "../../../adapters/runtime-contexts";
 import { isToolRow, type TranscriptMessageVM } from "./transcript-vm";
 
 /** Reuse the chat's measured window without competing with its scroll owner. */
@@ -45,9 +45,19 @@ export const TranscriptRow = memo(function TranscriptRow({
   if (isToolRow(message)) {
     const toolName = message.toolName ?? "tool";
     const args = message.args ?? {};
-    // Synthetic complete event so the decoupled ToolCard renders from static
-    // props (no live useToolActivity match needed). createdAt drives a stable
-    // start time; we don't have a real duration in the fixture.
+    if (message.resultText === undefined) {
+      // A recorded call is not an execution receipt. Isolate this saved row
+      // from live activity with a coincident call ID and expose no controls.
+      return <ToolActivityContext.Provider value={[]}>
+        <ToolCard readOnly toolName={toolName}
+          toolCallId={message.toolCallId ?? `transcript-${index}`} args={args}
+          status={{ type: "pending" }} stateOverride="pending"
+          defaultExpanded={expanded ?? true} savedExpansionChoice={expanded}
+          onExpandedChange={onExpandedChange} />
+      </ToolActivityContext.Provider>;
+    }
+    // A durable result supplies transport completion; its receipt remains
+    // authoritative for the actual process state and outcome.
     const startedAt = Date.parse(message.createdAt);
     const syntheticEvent: ToolActivityEvent = {
       toolCallId: message.toolCallId ?? `transcript-${index}`,

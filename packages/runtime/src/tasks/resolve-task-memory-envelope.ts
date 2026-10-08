@@ -1,5 +1,6 @@
 import {
   updateTask,
+  memoizeTaskExecutionCoordinates,
   type DirectDatabase,
   type Task,
 } from "@nautilo/db";
@@ -64,6 +65,7 @@ export type TaskMemoryEnvelopeResolutionDependencies = Readonly<{
   createScopeMemoryEnvelopeWithOrigin: typeof createScopeMemoryEnvelopeWithOrigin;
   getRoomWithAccess: typeof getRoomWithAccess;
   updateTask: typeof updateTask;
+  memoizeTaskExecutionCoordinates?: typeof memoizeTaskExecutionCoordinates;
   log: typeof log;
 }>;
 
@@ -74,6 +76,7 @@ const productionDependencies: TaskMemoryEnvelopeResolutionDependencies = {
   createScope,
   createScopeMemoryEnvelopeWithOrigin,
   getRoomWithAccess,
+  memoizeTaskExecutionCoordinates,
   updateTask,
   log,
 };
@@ -133,7 +136,12 @@ export async function resolveTaskMemoryEnvelope(
         );
       }
       scopeId = scope.scopeId;
-      await dependencies.updateTask(db, task.id, { scopeId });
+      if (dependencies.memoizeTaskExecutionCoordinates) {
+        await dependencies.memoizeTaskExecutionCoordinates(db, task, { scopeId });
+      } else {
+        if (task.localExecutionDelegation) throw new Error("Delegated Task scope cache authority is unavailable");
+        await dependencies.updateTask(db, task.id, { scopeId });
+      }
       provenance = "scope_created_from_plaintext_prompt";
     }
     const canInheritOrigin = baseEnvelope.memoryMode === "namespace"

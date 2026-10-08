@@ -1,3 +1,6 @@
+import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
+import { bindDelegatedLocalExecution } from "./local-execution/admission";
+import type { DelegatedLocalExecutionPort } from "../runtime/local-execution-delegation";
 import { parseGitHubCapability, parseGitHubInvocationBinding, parseGitHubOperation, parseGitHubPreparedOperation, sameGitHubOwner, githubPublishing, type GitHubInvocationBinding } from "@nautilo/types";
 import { RELAY_GITHUB_PROTOCOL_VERSION } from "@nautilo/relay";
 import { isRelayLocalExecutionSearchAllowed } from "@nautilo/relay";
@@ -483,6 +486,7 @@ export type ToolRelayRegistry = {
    * row id; null when not connected or never carried).
    */
   getPairingGeneration?(relayId: string): string | null | undefined;
+  isRelayHeartbeatFresh?(relayId: string): boolean;
   /**
    * the relay's validated advisory Workstation Profile binding snapshot
    * (null when none advertised / not connected). Advisory binding data only;
@@ -559,8 +563,10 @@ export type ToolRelayRegistry = {
        * it to the wire `relay:dispatch` message.
        */
       workstationShellBinding?: RelayWorkstationShellBinding | undefined;
+      localExecutionDelegationCapture?: import("@nautilo/relay").RelayLocalExecutionDelegationCapture | undefined;
       localExecutionBinding?: RelayLocalExecutionBinding | undefined;
       localExecutionActivationSignal?: AbortSignal | undefined;
+      retainLocalExecutionSource?: (() => () => void) | undefined;
       localExecutionHistoryBinding?: RelayLocalExecutionHistoryBindingV1 | undefined;
       humanTerminalBinding?: RelayHumanTerminalBinding | undefined;
       githubBinding?: GitHubInvocationBinding | undefined;
@@ -1010,6 +1016,7 @@ export type ServerToolInvocationContextOptions = Readonly<{
   readonly fullEncryptionOnly?: boolean;
   /** Exact invocation-bound organized Room recall capability. */
   readonly recallRecordsPort?: RecallRecordsPort;
+  readonly delegatedLocalExecutionPort?: DelegatedLocalExecutionPort;
   readonly localExecutionHistoryPort?: LocalExecutionHistoryPort;
   readonly humanTerminalAdmissionPort?: HumanTerminalAdmissionPort;
   /** Process-local protected Memory capability for this invocation only. */
@@ -1033,6 +1040,7 @@ class ServerToolInvocationContext implements NautiloToolInvocationServerContext 
     | ProtectedAgentMemoryScopeLifecyclePort
     | undefined;
   readonly #recallRecordsPort: RecallRecordsPort | undefined;
+  readonly delegatedLocalExecutionPort: DelegatedLocalExecutionPort | undefined;
   readonly localExecutionHistoryPort: LocalExecutionHistoryPort | undefined;
   readonly humanTerminalAdmissionPort: HumanTerminalAdmissionPort | undefined;
   readonly #fullEncryptionOnly: boolean;
@@ -1055,6 +1063,7 @@ class ServerToolInvocationContext implements NautiloToolInvocationServerContext 
       ...(options.personalOnlyTaskModelIds ?? []),
     ]);
     this.#recallRecordsPort = options.recallRecordsPort;
+    this.delegatedLocalExecutionPort = options.delegatedLocalExecutionPort;
     this.localExecutionHistoryPort = options.localExecutionHistoryPort;
     this.humanTerminalAdmissionPort = options.humanTerminalAdmissionPort;
     this.#fullEncryptionOnly = options.fullEncryptionOnly === true;
@@ -1397,11 +1406,21 @@ export function createNautiloToolInvocationSession(
   const taskCreationBrowserSessionId = taskCreationRelayId === null
     ? null
     : _relayRegistry?.getCapabilities(taskCreationRelayId)?.browserSessionId;
-  const taskCreationReturnContext = taskCreationReturnContextForState(
+  const taskLocalSourceEligible = Boolean(trustedContext.humanTerminalAdmissionPort && taskCreationRelayId
+    && _relayRegistry?.getCapabilities(taskCreationRelayId)?.canDelegateLocalExecution === true
+    && (_relayRegistry.getProtocolVersion?.(taskCreationRelayId) ?? 0) >= RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION);
+  const taskCreationReturnBase = taskCreationReturnContextForState(
     state,
     taskCreationRelaySessionId,
     taskCreationBrowserSessionId,
+    { allowWorkspaceSource: taskLocalSourceEligible },
   );
+  const taskCreationReturnContext = taskCreationReturnBase && trustedContext.humanTerminalAdmissionPort
+    && taskLocalSourceEligible
+    ? { ...taskCreationReturnBase, localExecutionSource: {
+      roomId: state.roomId, conversationId: state.currentThreadId || state.langgraphThreadId, agentId: state.agentId,
+      withAdmission: trustedContext.humanTerminalAdmissionPort.withAdmission.bind(trustedContext.humanTerminalAdmissionPort),
+    } } : taskCreationReturnBase;
   const taskCreationLiveMiniAppContext = taskCreationLiveMiniAppContextForState(state);
   const taskCreationBackgroundTaskProvenance = taskCreationBackgroundTaskProvenanceForState(state);
   const taskCreationInvocationProvenance = taskCreationInvocationProvenanceForState(state);
@@ -1603,8 +1622,15 @@ export function createNautiloToolInvocationSession(
       });
       if (!localResearchContext && !localResearchHandoff && effectiveHostScope === "required" && !isSupportedComputerUseToolName(tc.name)) {
         const requiredRelayId = tc.id ? state.requiredHostRelays?.[tc.id] : undefined;
+        const delegatedPin = tc.id ? state.delegatedLocalExecutionBindings?.[tc.id] : undefined;
+        const delegatedSource = trustedContext.delegatedLocalExecutionPort;
+        const hasDelegatedTarget = isLocalExecutionTool(tc.name) && state.trustedExecutionEntrypoint === "background.task"
+          && delegatedSource !== undefined && delegatedPin?.version === 4 && !delegatedSource.signal.aborted
+          && delegatedSource.taskId === state.currentTaskId && delegatedSource.taskRunId === state.currentTaskRunId
+          && delegatedPin.authority.taskId === delegatedSource.taskId && delegatedPin.authority.taskRunId === delegatedSource.taskRunId
+          && delegatedPin.owner.relayId === requiredRelayId;
         if (
-          (!state.verifiedOrdinaryOrigin
+          (!state.verifiedOrdinaryOrigin && !hasDelegatedTarget
             && !hasAvailableTaskReportBackContinuation(state.taskReportBackContinuation))
           || !requiredRelayId
         ) {
@@ -1685,6 +1711,7 @@ export function createNautiloToolInvocationSession(
         } else if (policy.executor === "relay") {
           const relayResult = await executeViaRelayRaw(tc, policy, state, {
             toolCallId, fullEncryptionOnly,
+            ...(trustedContext.delegatedLocalExecutionPort === undefined ? {} : { delegatedLocalExecutionPort: trustedContext.delegatedLocalExecutionPort }),
             ...(trustedContext.localExecutionHistoryPort === undefined ? {} : { localExecutionHistoryPort: trustedContext.localExecutionHistoryPort }),
             ...(trustedContext.humanTerminalAdmissionPort === undefined ? {} : { humanTerminalAdmissionPort: trustedContext.humanTerminalAdmissionPort }),
             // provenance must retain the actual Task-selected model.
@@ -3476,7 +3503,8 @@ async function executeViaRelayRaw(
   policy: ExecutionPolicy,
   state: NautiloState,
   opts: {
-    readonly localExecutionHistoryPort?: LocalExecutionHistoryPort;
+    readonly delegatedLocalExecutionPort?: DelegatedLocalExecutionPort;
+  readonly localExecutionHistoryPort?: LocalExecutionHistoryPort;
     readonly humanTerminalAdmissionPort?: HumanTerminalAdmissionPort;
     readonly extraNetworkAllowRules?: readonly NetworkAllowRule[];
     /** Stable lifecycle id generated before dispatch, including tc.id-less calls. */
@@ -3592,6 +3620,77 @@ async function executeViaRelayRaw(
       return { ok: false, errorMessage: operation.action !== "read"
         ? "Human terminal input outcome is unknown. Do not retry it; ask the Human to inspect the terminal."
         : "Human terminal source authority is unavailable. No terminal output was released." };
+    }
+  }
+  if (isLocalExecutionTool(tc.name) && state.trustedExecutionEntrypoint === "background.task") {
+    const port = opts.delegatedLocalExecutionPort;
+    const operation = localExecutionOperation(tc.name, tc.args);
+    const humanId = causalHumanForExecution(state.causalHumanUserId);
+    if (!port || !humanId || !tc.id || !state.agentId || !state.currentTaskId || !state.currentTaskRunId
+      || port.taskId !== state.currentTaskId || port.taskRunId !== state.currentTaskRunId
+      || !(state.currentThreadId || state.langgraphThreadId)
+      || !(tc.name === "exec_command" ? execCommandSchema : writeStdinSchema).safeParse(tc.args).success) {
+      return { ok: false, errorMessage: "This Task has no current local project authority. Recreate it from the intended computer and project; no command was sent." };
+    }
+    const registry = _relayRegistry;
+    let sent = false;
+    let received = false;
+    let dispatchedBinding: import("@nautilo/relay").RelayLocalExecutionBindingV4 | undefined;
+    try {
+      return await port.withAdmission(operation, async source => {
+        const delegation = source.delegation;
+        const relayId = delegation.target.relayId;
+        const caps = registry.getCapabilities(relayId);
+        const contract = parseRelayLocalExecutionCapability(caps?.localExecution);
+        const desktopSessionId = registry.getDesktopSessionId?.(relayId);
+        const pairingGeneration = registry.getLocalExecutionPairingGeneration?.(relayId);
+        const isCurrent = () => registry === _relayRegistry && registry.getUserId?.(relayId) === humanId
+          && registry.getPairingGeneration?.(relayId) === delegation.target.pairingGeneration
+          && registry.getDesktopSessionId?.(relayId) === desktopSessionId
+          && registry.getLocalExecutionPairingGeneration?.(relayId) === pairingGeneration
+          && parseRelayLocalExecutionCapability(registry.getCapabilities(relayId)?.localExecution)?.generation === contract?.generation
+          && registry.getCapabilities(relayId)?.canDelegateLocalExecution === true;
+        if (!contract || contract.capacity > LOCAL_EXECUTION_MAX_IDENTITIES || !desktopSessionId || !pairingGeneration
+          || caps?.profile !== "desktop-agent" || caps.canExecuteLocal !== true
+          || (registry.getProtocolVersion?.(relayId) ?? 0) < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION
+          || delegation.humanUserId !== humanId || delegation.agentId !== state.agentId
+          || delegation.target.instanceId !== resolveInstance().instanceId || !isCurrent()
+          || (tc.args["tty"] === true && !contract.pty)
+          || !isRelayLocalExecutionSearchAllowed(tc.name, tc.args, caps, registry.getProtocolVersion?.(relayId) ?? 0)) {
+          return { ok: false as const, relayUnavailable: true,
+            errorMessage: "The Task's original computer is offline or its local execution authority changed. Bring that same computer online; no alternate computer or command replay was attempted." };
+        }
+        const previous = state.delegatedLocalExecutionBindings?.[tc.id!];
+        const binding = previous && bindDelegatedLocalExecution({ registry, source, state,
+          invocationId: tc.id!, operation, previous,
+          ...(typeof tc.args["session_id"] === "string" ? { executionId: tc.args["session_id"] } : {}) });
+        if (!binding) return { ok: false as const,
+          errorMessage: "The original Task command binding changed. No command was restarted or rebound to another computer generation." };
+        source.signal.throwIfAborted();
+        if (!isCurrent()) throw new Error("TASK_LOCAL_EXECUTION_AUTHORITY_UNAVAILABLE");
+        sent = true;
+        dispatchedBinding = binding;
+        const result = await registry.dispatch(relayId, { toolName: tc.name, args: tc.args, localExecutionBinding: binding,
+          impact: operation === "read" ? "read-only" : "high", approvalObtained: true,
+          ...(port.retain ? { retainLocalExecutionSource: () => port.retain!() } : {}),
+          signal: opts.signal ? AbortSignal.any([source.signal, opts.signal]) : source.signal });
+        received = true;
+        if (!isCurrent()) throw new Error("TASK_LOCAL_EXECUTION_AUTHORITY_UNAVAILABLE");
+        return result.status === "ok"
+          ? { ok: true as const, rawContent: typeof result.result === "string" ? result.result : JSON.stringify(result.result) }
+          : { ok: false as const, errorMessage: result.error ?? "The exact delegated project refused this operation. Do not replay uncertain commands." };
+      });
+    } catch (error) {
+      const localExecutionUncertainty: RelayLocalExecutionUncertaintyV1 | undefined = dispatchedBinding
+        && operation !== "read" && (received || isRunShellOutcomeUnknown(error))
+        ? { version: 1, kind: "local_execution_outcome_unknown", generation: dispatchedBinding.generation,
+          executionId: dispatchedBinding.executionId, session_id: dispatchedBinding.executionId,
+          operation, outcome: "unknown", recovery: "read_or_cancel_same_execution",
+          message: "Task command outcome is unconfirmed. Read or stop this same execution; do not relaunch or resend input." }
+        : undefined;
+      return { ok: false, ...(localExecutionUncertainty ? { localExecutionUncertainty } : {}), errorMessage: sent && operation !== "read"
+        ? "The delegated command outcome is unknown after authority or transport changed. Do not replay it; inspect its retained execution receipt."
+        : "Task local execution authority is no longer current. No result content was released; recreate the Task from its intended computer and project if its definition or grant changed." };
     }
   }
   const capability = policy.relayCapability ?? "canReadWorkspace";

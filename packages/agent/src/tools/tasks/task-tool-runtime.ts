@@ -2,10 +2,10 @@ import { getTaskById, type DirectDatabase, type NewTask, type Task } from "@naut
 import type { SelectionProfile, ComboSpec, TaskHarnessActivity } from "@nautilo/types";
 
 /**
- * M143 — dependency-injection seam for the `task` tool.
+ * Dependency-injection seam for the `task` tool.
  *
  * The `task` tool lives in `@nautilo/agent`, but its `create` command must
- * reach the M142 runtime `createTask` (depth-cap + `next_fire_at` compute +
+ * reach the runtime `createTask` (depth-cap + `next_fire_at` compute +
  * `observer.kick()`), which lives in `@nautilo/runtime`. `@nautilo/agent`
  * cannot import `@nautilo/runtime` (runtime depends on agent — that would be
  * a cycle). Mirroring the existing module-singleton pattern
@@ -25,7 +25,7 @@ export interface TaskToolCreateInput {
   prompt: string;
   expectedOutput?: string | undefined;
   scheduleKind?: "now" | "one_shot" | "cron";
-  /** M145 — scheduling fields. `one_shot` sets runAt; `cron` sets cron;
+  /** Scheduling fields. `one_shot` sets runAt; `cron` sets cron;
    *  timezone interprets cron occurrences. runAt is a Date (shortcut parses
    *  the ISO string) so it stays assignable to the runtime TaskCreateInput. */
   runAt?: Date;
@@ -41,9 +41,9 @@ export interface TaskToolCreateInput {
   useScope?: boolean;
   awaitResponse?: boolean;
   depth?: number;
-  // Phase 3 (M144) — scoping-preset fields. Optional so M143's generic
-  // `task create` keeps its minimal shape; the intent shortcuts set them.
-  /** Telemetry + Phase-10 attribution; mirrors the `tasks.preset` enum. */
+  // Scoping-preset fields. Optional so generic `task create` keeps its
+  // minimal shape; the intent shortcuts set them.
+  /** Attribution; mirrors the `tasks.preset` enum. */
   preset?:
     | "task"
     | "in_scope"
@@ -53,28 +53,28 @@ export interface TaskToolCreateInput {
     | "ask_peer"
     | "ping"
     | "repo_docs";
-  /** Namespace-target users (today: requester-only; multi-user is Phase 5/7). */
+  /** Users targeted in the namespace. */
   targetUserIds?: string[];
   /** Pre-existing scope to reuse; null/omitted → dispatch mints an ephemeral one. */
   scopeId?: string | null;
   /** Mirrors the `tasks.metadata jsonb` column. `in_private_namespace`
    *  stores `{ bringBack }` here so the dispatch seam can read it. */
   metadata?: Record<string, unknown>;
-  /** M146 — Tier-2 parent linkage (`tasks.parent_task_id`); the runtime
+  /** Parent linkage (`tasks.parent_task_id`); the runtime
    *  `createTask` derives/enforces the depth cap from `depth`. */
   parentTaskId?: string | null;
-  /** M147 — max wall-clock seconds before the watchdog auto-pauses a run. */
+  /** Maximum wall-clock seconds before the watchdog pauses a run. */
   timeLimitSeconds?: number | null;
-  /** M152 — named selection intent (Tier-1). Defaults to `balanced`. */
+  /** Named selection intent. Defaults to `balanced`. */
   selectionProfile?: SelectionProfile;
-  /** M152 — explicit {band?, objective} selection override (Tier-2). */
+  /** Explicit {band?, objective} selection override. */
   selectionSpec?: ComboSpec | null;
   /**
-   * D429 Phase 3 — exact model pin. Mutually exclusive with
+   * Exact model pin. Mutually exclusive with
    * {@link selectionProfile} / {@link selectionSpec}. Null/omitted = no pin
-   * (the dispatch seam falls back to the M152 profile/spec resolver). A
-   * strict pin: same-model retries only, no cross-model fallback (Phase 4
-   * enforces the latter). Only curated ids are valid in v1.
+   * (the dispatch seam falls back to the profile/spec resolver). A strict
+   * pin: retries use the same model, with no cross-model fallback. Only
+   * curated ids are valid in v1.
    */
   requestedModelId?: string | null;
 }
@@ -191,7 +191,7 @@ export interface TaskToolHarnessInspection {
 }
 
 /**
- * M147 — result of a lifecycle command, mirroring the runtime
+ * Result of a lifecycle command, mirroring the runtime
  * `TaskLifecycleResult` without importing `@nautilo/runtime` (cycle).
  */
 export interface TaskToolLifecycleResult {
@@ -235,6 +235,7 @@ export async function resolveTaskToolCreateLineage(input: {
 }
 
 export interface TaskToolRuntime {
+  onDefinitionChanged?(task: Pick<Task, "id" | "ownerId" | "status">): void;
   db: DirectDatabase;
   /** Production policy fence until Agent Task content publication and reads are wired. */
   canUseLegacyTaskContent?(): Promise<boolean>;
@@ -267,12 +268,12 @@ export interface TaskToolRuntime {
   }>): Promise<void>;
   /** Server-published opt-in. Omitted runtimes retain the legacy tool surface. */
   readonly claudeCodeTasksEnabled?: true;
-  /** Bound to the M142 runtime `createTask({ db, observer }, input)`. */
+  /** Bound to runtime `createTask({ db, observer }, input)`. */
   createTask(
     input: TaskToolCreateInput,
   ): Promise<{ taskId: string; status: string; nextFireAt?: Date | undefined }>;
   /**
-   * D453 — server-owned harness admission. Optional during bootstrap/test
+   * Server-owned harness admission. Optional during bootstrap/test
    * wiring so legacy Native task callers retain their established seam.
    */
   createHarnessTask?(
@@ -303,7 +304,7 @@ export interface TaskToolRuntime {
     readonly roomId: string;
   }): Promise<TaskToolHarnessInspection | null>;
   /**
-   * M146 — bound to the runtime `computeNextFireAt`. `@nautilo/agent` cannot
+   * Bound to runtime `computeNextFireAt`. `@nautilo/agent` cannot
    * import `@nautilo/runtime` (cycle), so the `update` command reaches the
    * shared schedule compute through this seam (same pattern as `createTask`).
    */
@@ -315,7 +316,7 @@ export interface TaskToolRuntime {
     now?: Date,
   ): Date;
   /**
-   * M147 (Phase 6) — lifecycle, bound to the runtime `pauseTask`/`unpauseTask`/
+   * Lifecycle operations, bound to runtime `pauseTask`/`unpauseTask`/
    * `stopTask` (same cycle-avoidance DI pattern as `createTask`). The
    * dispatcher does the owner check BEFORE calling these.
    */

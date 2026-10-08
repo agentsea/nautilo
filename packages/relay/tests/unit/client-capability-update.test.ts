@@ -158,7 +158,7 @@ describe("createRelayClient capability updates", () => {
   afterEach(() => {});
 
   test("keeps Claude execution as an exact v18 Desktop-only capability", () => {
-    expect(RELAY_PROTOCOL_VERSION).toBe(27);
+    expect(RELAY_PROTOCOL_VERSION).toBe(28);
     const execution: RelayCapabilities = {
       profile: "desktop-agent",
       claudeExecution: { version: 2 },

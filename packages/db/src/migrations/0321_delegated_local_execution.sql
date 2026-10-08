@@ -1,0 +1,1 @@
+ALTER TABLE "tasks" ADD COLUMN "local_execution_delegation" jsonb;

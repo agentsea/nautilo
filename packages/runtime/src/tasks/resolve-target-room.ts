@@ -12,7 +12,7 @@ import {
   rooms,
   roomMembers,
   privateNamespaceBoundarySql,
-  updateTask,
+  memoizeTaskExecutionCoordinates,
   type DirectDatabase,
   type Task,
 } from "@nautilo/db";
@@ -39,6 +39,8 @@ export interface ResolveTargetRoomDeps {
 }
 
 export interface ResolvedTargetRoom {
+  /** Canonical row returned by this resolution's memoization CAS, if any. */
+  readonly memoizedTask?: Task;
   /** The room the run's transcript is anchored to. */
   roomId: string;
   /** The LangGraph thread the run executes on. */
@@ -66,7 +68,7 @@ function humanMembersOfCreatedRoom(room: RoomDetailPayload): HumanRoomMember[] {
 }
 
 /**
- * D453 — an internal, server-authored execution descriptor for a native-Genie
+ * A server-authored execution descriptor for a native-Genie
  * harness Task. This is intentionally not a public `target_chat` value: the
  * generic task API remains unaware of provider routing. Require the exact
  * shape so unrelated task metadata can never select this behavior.
@@ -191,11 +193,8 @@ function harnessExecutionDescriptor(task: Task): HarnessExecutionDescriptor | nu
 }
 
 /**
- * M142 (spec §5.3) — resolve the room + graph thread a task run targets.
- *
- * 2a implements `orphan` + the namespace targets only. The `*_dm` branch is a
- * Phase-7 seam that throws explicitly. Room creation reuses the trust helpers
- * rather than re-implementing namespace/room SQL.
+ * Resolve the Room and graph thread for a Task run. Supported destinations
+ * reuse the existing trust helpers for Room creation and membership.
  */
 export async function resolveTargetRoom(
   task: Task,
@@ -261,9 +260,9 @@ async function resolveOrphan(
   });
 
   // Persist the room id back so later fires (and `task read`) reuse it.
-  await updateTask(db, task.id, { targetRoomId: roomId });
+  const memoizedTask = await memoizeTaskExecutionCoordinates(db, task, { targetRoomId: roomId });
 
-  return { roomId, graphThreadId: orphanRunThreadId(task) };
+  return { roomId, graphThreadId: orphanRunThreadId(task), memoizedTask };
 }
 
 /** Resolve the user-actor ids (`actors.kind='user'`) for the task's targets. */
@@ -278,10 +277,10 @@ async function resolveTargetUserActorIds(
     .where(
       and(
         eq(actors.kind, "user"),
-        // M145: `inArray` over the uuid[] target list. The previous
+        // `inArray` over the uuid[] target list. The previous
         // `ANY(${task.targetUserIds}::uuid[])` form bound the array as a bare
         // scalar param → Postgres "malformed array literal". `last_in_namespace`
-        // was unexercised until M145's `schedule` shortcut became its first
+        // is first exercised by the `schedule` shortcut
         // consumer; the early `length === 0` guard keeps the empty case safe.
         inArray(actors.ownerId, task.targetUserIds),
       ),
@@ -384,9 +383,9 @@ async function resolveNewInNamespace(
   }
 
   // The owner's own user actor MUST be a member — `createRoomFromMembers`
-  // rejects a member set that doesn't contain `ownerActorId`. M144's
+  // rejects a member set that does not contain `ownerActorId`.
   // `in_background` only ever used `target_chat:"orphan"`, so this
-  // `new_in_namespace` path was unexercised until M146 made it reachable from
+  // `new_in_namespace` path is reachable from
   // the low-level `task create`; a requester-only task has an empty
   // `targetUserIds`, so prepend the owner explicitly (deduped).
   const memberUserIds = task.targetUserIds.includes(task.ownerId)
@@ -412,7 +411,7 @@ async function resolveNewInNamespace(
 }
 
 /**
- * M151 (Phase 7b, spec §5.3) — resolve (or create) the DM room shared by the
+ * Resolve or create the DM Room shared by the
  * requesting agent + the peer named by `target_chat_handle`. The run executes
  * on the DM's bot thread so its messages are VISIBLE to the peer. Persists the
  * resolved peer into `tasks.target_user_ids` (deduped, requester stays element
@@ -474,11 +473,12 @@ async function resolveDm(
     const existing = await findExistingDmRoom(db, task.agentId, peer.id,
       pinnedActorId === undefined ? undefined : { actorId: pinnedActorId });
     if (existing) {
-      await updateTask(db, task.id, {
+      const memoizedTask = await memoizeTaskExecutionCoordinates(db, task, {
         targetRoomId: existing,
         targetUserIds,
       });
       return {
+        memoizedTask,
         roomId: existing,
         graphThreadId: botThreadId(existing, task.agentId),
       };
@@ -518,11 +518,12 @@ async function resolveDm(
       { kind: "user", id: peer.id },
     ],
   });
-  await updateTask(db, task.id, {
+  const memoizedTask = await memoizeTaskExecutionCoordinates(db, task, {
     targetRoomId: room.id,
     targetUserIds,
   });
   return {
+    memoizedTask,
     roomId: room.id,
     graphThreadId: botThreadId(room.id, task.agentId),
     createdHumanRoomMembers: humanMembersOfCreatedRoom(room),

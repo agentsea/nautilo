@@ -1,3 +1,4 @@
+import { eventBus } from "@nautilo/runtime";
 import type {
   ActiveRoomSilenceDto,
   HumanPresenceStatus,
@@ -773,6 +774,7 @@ export function publishRoomMembersChanged(
   event: RoomMembershipSystemEventPayload,
   recipientSyncNamespaceId?: string,
 ): void {
+  eventBus.invalidateTaskLocalExecutionSources();
   broadcast({
     type: "room_members_changed",
     roomId,

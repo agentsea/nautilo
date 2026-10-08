@@ -1,6 +1,6 @@
 import { parseGitHubCapability, parseGitHubInvocationBinding, sameGitHubDesktopIdentity, type GitHubInvocationBinding } from "../../types/src/github-invocation";
 import { parseHumanTerminalOwner, type HumanTerminalOwner } from "../../types/src/human-terminal";
-import { isLocalExecutionReadArgs } from "@nautilo/types";
+import { parseLocalExecutionDelegation, type LocalExecutionDelegation, isLocalExecutionReadArgs } from "@nautilo/types";
 import type { RelaySecurityScanProgressMessage, SecurityScanProgress } from "./security-scan-progress";
 import {
   DESKTOP_FILESYSTEM_ACCESS_OPERATIONS,
@@ -168,7 +168,7 @@ import type {
  * from shadowing a built-in dispatch lane.
  */
 // v20 adds owner-private Claude permission detail; never sent to older peers.
-export const RELAY_PROTOCOL_VERSION = 27;
+export const RELAY_PROTOCOL_VERSION = 28;
 export const RELAY_GITHUB_PROTOCOL_VERSION = 27;
 export function isRelayGitHubDispatch(toolName: string, args: unknown, bindingValue: unknown, capabilities: RelayCapabilities, protocol: number): boolean {
   const binding = parseGitHubInvocationBinding(bindingValue, args), capability = parseGitHubCapability(capabilities.github);
@@ -243,6 +243,7 @@ export function projectRelayCapabilitiesForProtocol(
   protocolVersion: number,
 ): RelayCapabilities {
   const compatible = { ...capabilities };
+  if (protocolVersion < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION) delete compatible.canDelegateLocalExecution;
   if (protocolVersion < RELAY_GITHUB_PROTOCOL_VERSION) { delete compatible.canUseGitHub; delete compatible.github; }
   if (protocolVersion < RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION) delete compatible.canSearchLocalExecutionOutput;
   if (protocolVersion < RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION) delete compatible.canExecuteFullMacOneShot;
@@ -933,6 +934,7 @@ export type RelayDispatchMessage = {
    * Additive optional field on protocol v7 — no version bump.
    */
   workstationShellBinding?: RelayWorkstationShellBinding | undefined;
+  localExecutionDelegationCapture?: RelayLocalExecutionDelegationCapture | undefined;
   localExecutionBinding?: RelayLocalExecutionBinding | undefined;
   localExecutionHistoryBinding?: RelayLocalExecutionHistoryBindingV1 | undefined;
   githubBinding?: GitHubInvocationBinding | undefined;
@@ -1192,6 +1194,7 @@ export type RelayDispatchRequest = {
   desktopFilesystemGrantRequest?: RelayDesktopFilesystemGrantRequest | undefined;
   /** See `RelayDispatchMessage.workstationShellBinding` (task 3.1.3b). */
   workstationShellBinding?: RelayWorkstationShellBinding | undefined;
+  localExecutionDelegationCapture?: RelayLocalExecutionDelegationCapture | undefined;
   localExecutionBinding?: RelayLocalExecutionBinding | undefined;
   localExecutionHistoryBinding?: RelayLocalExecutionHistoryBindingV1 | undefined;
   githubBinding?: GitHubInvocationBinding | undefined;
@@ -3853,7 +3856,38 @@ export interface RelayLocalExecutionBindingV3 extends Omit<RelayLocalExecutionBi
   readonly version: 3;
   readonly authority: { readonly kind: "full_mac"; readonly activationId: string; readonly roomId: string };
 }
-export type RelayLocalExecutionBinding = RelayLocalExecutionBindingV1 | RelayLocalExecutionBindingV2 | RelayLocalExecutionBindingV3;
+/** Durable Task locator plus exact occurrence. The Desktop resolves the grant;
+ * this variant never carries a caller-selected root or Full Mac activation. */
+export interface RelayLocalExecutionBindingV4 extends Omit<RelayLocalExecutionBindingV1, "version"> {
+  readonly version: 4;
+  readonly authority: {
+    readonly kind: "delegated";
+    readonly taskId: string;
+    readonly taskRunId: string;
+    readonly roomId: string;
+    readonly delegation: LocalExecutionDelegation;
+  };
+}
+export interface RelayLocalExecutionDelegationCapture {
+  readonly version: 1;
+  readonly invocationId: string;
+  readonly desktopSessionId: string;
+  readonly pairingGeneration: string;
+  readonly source: Omit<LocalExecutionDelegation, "projectGrantId" | "target"> & { readonly target: Omit<LocalExecutionDelegation["target"], "serverOrigin" | "serverFingerprint"> };
+}
+export function parseRelayLocalExecutionDelegationCapture(value: unknown): RelayLocalExecutionDelegationCapture | null {
+  if (!isRecord(value) || Object.keys(value).length !== 5
+    || Object.keys(value).some(key => !["version", "invocationId", "desktopSessionId", "pairingGeneration", "source"].includes(key))
+    || value["version"] !== 1 || !["invocationId", "desktopSessionId", "pairingGeneration"].every(key =>
+      typeof value[key] === "string" && value[key].length > 0 && value[key].trim() === value[key])
+    || !isRecord(value["source"]) || "projectGrantId" in value["source"]
+    || !isRecord(value["source"]["target"]) || Object.keys(value["source"]["target"]).length !== 3
+    || !parseLocalExecutionDelegation({ ...value["source"], projectGrantId: "pending",
+      target: { ...value["source"]["target"], serverOrigin: "https://capture.invalid", serverFingerprint: "capture" } })) return null;
+  return structuredClone(value) as unknown as RelayLocalExecutionDelegationCapture;
+}
+export const RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION = 28;
+export type RelayLocalExecutionBinding = RelayLocalExecutionBindingV1 | RelayLocalExecutionBindingV2 | RelayLocalExecutionBindingV3 | RelayLocalExecutionBindingV4;
 export const RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION = 25;
 export const RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION = 26;
 /** Feature admission only; the existing read binding still supplies ownership. */
@@ -3897,7 +3931,7 @@ export const LOCAL_EXECUTION_MAX_IDENTITIES = 1024;
 export function parseRelayLocalExecutionBinding(value: unknown): RelayLocalExecutionBinding | null {
   if (!isRecord(value) || Object.keys(value).length !== (value["version"] !== 1 ? 7 : 6)
     || Object.keys(value).some(k => !["version", "generation", "invocationId", "executionId", "operation", "owner", ...(value["version"] !== 1 ? ["authority"] : [])].includes(k))
-    || (value["version"] !== 1 && value["version"] !== 2 && value["version"] !== 3) || typeof value["operation"] !== "string" || !["start", "read", "input", "cancel"].includes(value["operation"])
+    || (value["version"] !== 1 && value["version"] !== 2 && value["version"] !== 3 && value["version"] !== 4) || typeof value["operation"] !== "string" || !["start", "read", "input", "cancel"].includes(value["operation"])
     || !["generation", "invocationId", "executionId"].every(k => typeof value[k] === "string" && value[k].length > 0)
     || !isRecord(value["owner"])) return null;
   const o = value["owner"];
@@ -3931,6 +3965,19 @@ export function parseRelayLocalExecutionBinding(value: unknown): RelayLocalExecu
       || !["activationId", "roomId"].every(key => typeof authority[key] === "string" && authority[key].trim() === authority[key] && authority[key].length > 0)
       || value["operation"] === "input" || o["profileId"] !== null || o["profileRevision"] !== null
       || o["grantRevision"] !== null || o["grantIds"].length !== 0) return null;
+  }
+  if (value["version"] === 4) {
+    const authority = value["authority"];
+    if (!isRecord(authority) || Object.keys(authority).length !== 5
+      || Object.keys(authority).some(key => !["kind", "taskId", "taskRunId", "roomId", "delegation"].includes(key))
+      || authority["kind"] !== "delegated"
+      || !["taskId", "taskRunId", "roomId"].every(key => typeof authority[key] === "string" && authority[key].length > 0 && authority[key].trim() === authority[key])) return null;
+    const delegation = parseLocalExecutionDelegation(authority["delegation"]);
+    if (!delegation || delegation.humanUserId !== o["humanUserId"] || delegation.agentId !== o["agentId"]
+      || delegation.target.instanceId !== o["instanceId"] || delegation.target.relayId !== o["relayId"]
+      || authority["taskRunId"] !== o["runId"] || o["profileId"] !== (delegation.profile?.id ?? null)
+      || o["profileRevision"] !== (delegation.profile?.revision ?? null)
+      || o["grantIds"].length !== 1 || o["grantIds"][0] !== delegation.projectGrantId) return null;
   }
   return value as unknown as RelayLocalExecutionBinding;
 }

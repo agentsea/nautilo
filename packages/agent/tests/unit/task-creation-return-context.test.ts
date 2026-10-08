@@ -26,7 +26,7 @@ function state(overrides: Partial<NautiloState> = {}): NautiloState {
   } as NautiloState;
 }
 
-describe("M286 Task creation return context", () => {
+describe("Task creation return context", () => {
   test("captures only a direct Human Desktop turn with an exact Current Folder relay", () => {
     expect(taskCreationReturnContextForState(state(), "socket-1", "browser-1")).toEqual({
       ownerId: "owner-1",
@@ -73,4 +73,19 @@ describe("M286 Task creation return context", () => {
     }
     expect(taskCreationReturnContextForState(fork, null)).toBeNull();
   });
+});
+
+
+test("Workspace source capture remains explicit and never invents a Current Folder", () => {
+  const workspace = state({ currentFolder: "", currentFolderRelayId: "" });
+  expect(taskCreationReturnContextForState(workspace, "socket-1")).toBeNull();
+  expect(taskCreationReturnContextForState(workspace, "socket-1", null, { allowWorkspaceSource: true }))
+    .toMatchObject({ currentFolder: "", workspacePath: "/workspace", relayId: "relay-1", desktopSessionId: "desktop-1" });
+  for (const override of [
+    { trustedExecutionEntrypoint: "background.task" as const },
+    { currentFolderRelayId: "another-relay" },
+    { verifiedOrdinaryOrigin: null },
+    { userId: "other-human" },
+  ]) expect(taskCreationReturnContextForState({ ...workspace, ...override }, "socket-1", null, { allowWorkspaceSource: true })).toBeNull();
+  expect(taskCreationReturnContextForState(workspace, null, null, { allowWorkspaceSource: true })).toBeNull();
 });

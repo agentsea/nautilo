@@ -83,6 +83,7 @@ describe("streamForegroundGraph", () => {
       pendingApproval: [],
       computerUseInvocationBindings: {},
       fullMacInvocationBindings: {},
+      delegatedLocalExecutionBindings: {},
       githubInvocationBindings: {},
       humanTerminalInvocationBindings: {},
       foregroundContextRefresh: null,

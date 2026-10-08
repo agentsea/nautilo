@@ -25,6 +25,11 @@ const listAwaiting = mock(async (
   _batch: number,
   _after?: ProtectedAwaitingTaskRunCursor,
 ): Promise<Array<{ task: Task; run: TaskRun }>> => []);
+// These occurrence fixtures contain no delegated executions waiting for a Mac.
+const listOfflineWaits = mock(async (
+  _db: DirectDatabase,
+  _input: { limit: number; afterTaskId?: string },
+): ReturnType<typeof database.listTaskLocalExecutionOfflineWaits> => []);
 const prepareProtected = mock(async (
   _db: DirectDatabase,
   _input: PrepareClaimedProtectedTaskOccurrenceInput,
@@ -59,6 +64,7 @@ mock.module("@nautilo/db", () => ({
   claimDueTasks: claimPlain,
   claimDueProtectedTasks: claimProtected,
   listProtectedAwaitingTaskRunsForAuthorization: listAwaiting,
+  listTaskLocalExecutionOfflineWaits: listOfflineWaits,
   prepareClaimedProtectedTaskOccurrence: prepareProtected,
   rescheduleCron: reschedule,
   findTimedOutRunningTasks: timedOut,
@@ -161,6 +167,7 @@ beforeEach(() => {
     claimPlain,
     claimProtected,
     listAwaiting,
+    listOfflineWaits,
     prepareProtected,
     reschedule,
     timedOut,
@@ -175,6 +182,7 @@ beforeEach(() => {
   claimPlain.mockImplementation(async () => []);
   claimProtected.mockImplementation(async () => []);
   listAwaiting.mockImplementation(async () => []);
+  listOfflineWaits.mockImplementation(async () => []);
   prepareProtected.mockImplementation(async () => ({ status: "stale" as const }));
   timedOut.mockImplementation(async () => []);
   pause.mockImplementation(async () => {});
@@ -291,6 +299,7 @@ test("without a protected port the ordinary observer is unchanged", async () => 
 
   expect(ordinaryDispatch).toHaveBeenCalledTimes(1);
   expect(ordinaryDispatch.mock.calls[0]?.[0]).toBe(ordinary);
+  expect(listOfflineWaits).toHaveBeenCalledTimes(1);
   expect(claimProtected).not.toHaveBeenCalled();
   expect(listAwaiting).not.toHaveBeenCalled();
   expect(prepareProtected).not.toHaveBeenCalled();
