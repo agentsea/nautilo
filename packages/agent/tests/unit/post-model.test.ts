@@ -14,6 +14,7 @@ import type { PolicyResolver, ToolAccessDecision } from "@nautilo/trust";
 import type { PostModelDeps } from "../../src/nodes/post-model";
 import { clearToolCatalog, initToolCatalog, ToolCatalog } from "@nautilo/catalog";
 import { registerAllTools } from "../../src/tools/register-all";
+import { createRunShellTool } from "../../src/tools/shell/run-shell";
 import type { ProjectionSnapshot } from "../../src/tools/memory/projection-sharing";
 import { setOrdinaryHostResolver } from "../../src/runtime/ordinary-host-resolver";
 
@@ -1587,6 +1588,22 @@ describe("verified ordinary-origin host resolution precedes approval", () => {
   function pairedState() {
     const catalog = new ToolCatalog();
     registerAllTools(catalog);
+    // Explicitly exercise retained host admission independently of agent exposure.
+    const shell = catalog.get("run_shell")!;
+    catalog.register({
+      name: shell.name,
+      factory: createRunShellTool,
+      category: shell.category,
+      executor: shell.executor,
+      trustTier: shell.trustTier,
+      impact: shell.impact,
+      exposure: shell.exposure,
+      requiredCapabilities: [...(shell.requiredCapabilities ?? [])],
+      relayCapabilities: shell.relayCapabilities ?? [],
+      requiresApproval: true,
+      approvalLevel: "prove_it",
+      resultScanPolicy: shell.resultScanPolicy,
+    });
     initToolCatalog(catalog);
     const state = makeState([
       new AIMessage({

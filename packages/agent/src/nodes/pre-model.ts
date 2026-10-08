@@ -882,14 +882,13 @@ export async function preModelNode(
     ? "\n\nFor contained build, diagnostics, and dev-server commands on the initiating Desktop, use exec_command and write_stdin; discover them when needed. A yielded running receipt refers to the same process: retrieve output with its session_id and cursor, and stop it with write_stdin cancel:true. Never relaunch after an unknown delivery outcome or report stopped without confirmed cleanup. "
       + (relayCapabilities["canReplaceLegacyShellTools"] === true
         ? "Use local_git for supported typed local Git, read_shell_output for earlier retained shell output, and human_terminal for an exact Human terminal handoff when available. Authenticated GitHub operations remain unavailable until their admitted account capability is enabled; do not bypass this with shell credentials."
-        : "Existing typed Git, log, and Human terminal handoff operations retain run_shell and terminal.")
+        : "Discover local_git and read_shell_output for supported Git and retained output operations. Use terminal for an existing terminal handoff only when offered. Unavailable tools have no shell fallback.")
     : "";
   const stableSystemPrefix = buildSystemPrompt({
     assistantName: state.assistantName || "Genie",
     tools,
     isGuest,
     explicitlySelected: state.explicitlySelected,
-    useManagedLocalExecution: relayCapabilities["canReplaceLegacyShellTools"] === true,
   }) + activeComputerUseModelGuidanceForBoundTools(tools) + localExecutionGuidance;
   let systemPrompt = stableSystemPrefix;
 
