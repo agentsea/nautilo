@@ -1,4 +1,5 @@
 import { resolveInstance } from "@nautilo/config";
+import { RELAY_GITHUB_PROTOCOL_VERSION } from "@nautilo/relay";
 import { afterEach, expect, test } from "bun:test";
 import { digestGitHubPreparation, type GitHubInvocationOwner, type GitHubPreparedOperation } from "@nautilo/types";
 const owner: GitHubInvocationOwner = { instanceId: resolveInstance().instanceId, humanUserId: "human", agentId: "agent", roomId: "room", conversationId: "thread", runId: "turn", relayId: "relay", desktopSessionId: "desktop", pairingGeneration: "opaque-pair", serverOrigin: "https://server.example", serverFingerprint: "fingerprint", profileId: "profile", profileRevision: 1, grantRevision: 1, protectedPolicyVersion: 1 };
@@ -23,7 +24,7 @@ afterEach(() => { clearToolCatalog(); setRelayRegistry(null); setOrdinaryHostRes
 async function fixture() {
   const prepared = await preparation(); let current = true, source = true, after = true; const sent: Parameters<ToolRelayRegistry["dispatch"]>[1][] = [];
   const catalog = new ToolCatalog(); catalog.register({ name: "local_github", factory: createGitHubTool, executor: "relay", category: "development", trustTier: "admin", impact: "destructive", exposure: "core", requiredCapabilities: ["use_workstation"], relayCapabilities: ["canUseGitHub"], resultScanPolicy: "never" }); initToolCatalog(catalog);
-  setRelayRegistry({ findByCapabilityForUser: () => ["relay"], getUserId: () => "human", getDesktopSessionId: () => "desktop", getPairingGeneration: () => "raw-pair", getLocalExecutionPairingGeneration: () => "opaque-pair", getProtocolVersion: () => 27, getCapabilityRevision: () => 1,
+  setRelayRegistry({ findByCapabilityForUser: () => ["relay"], getUserId: () => "human", getDesktopSessionId: () => "desktop", getPairingGeneration: () => "raw-pair", getLocalExecutionPairingGeneration: () => "opaque-pair", getProtocolVersion: () => RELAY_GITHUB_PROTOCOL_VERSION, getCapabilityRevision: () => 1,
     getActiveWorkstationSession: () => ({ userId: "human", relayId: "relay", desktopSessionId: "desktop", capabilityRevision: 1 }),
     getWorkstationProfileSnapshot: () => ({ profileId: "profile", profileRevision: 1, protectedPolicyVersion: 1, grantIds: [], networkMode: "isolated", capabilities: [] }),
     getCapabilities: () => ({ profile: "desktop-agent", canUseGitHub: true, github: { ...capability, generation: current ? "generation" : "replacement" } }),

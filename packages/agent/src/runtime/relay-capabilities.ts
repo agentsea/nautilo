@@ -1,3 +1,5 @@
+import { RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION } from "@nautilo/relay";
+import { resolveServerPosture } from "@nautilo/config";
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseGitHubCapability } from "@nautilo/types";
 import { RELAY_GITHUB_PROTOCOL_VERSION } from "@nautilo/relay";
@@ -5,7 +7,7 @@ import { RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseRelayHumanTerminalCapability, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseRelayBasicExecutionCapability, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION, isRelayLocalGitCapability } from "@nautilo/relay";
-import { LOCAL_EXECUTION_MAX_IDENTITIES, parseRelayLocalExecutionCapability, RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION } from "@nautilo/relay";
+import { LOCAL_EXECUTION_MAX_IDENTITIES, parseRelayLocalExecutionCapability, RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION } from "@nautilo/relay";
 import type { ToolRelayRegistry } from "../nodes/tools";
 import {
   COMPUTER_USE_SEMANTIC_VERSION,
@@ -75,7 +77,6 @@ export function buildRuntimeCapabilityTokens(
     .concat(registry.findByCapabilityForUser("canControlDesktop", userId))
     .concat(registry.findByCapabilityForUser("canSeeDesktop", userId))
     .concat(registry.findByCapabilityForUser("canControlBrowser", userId))
-    .concat(registry.findByCapabilityForUser("canUseTerminal", userId))
     .concat(registry.findByCapabilityForUser("canUseHumanTerminal", userId))
     .concat(registry.findByCapabilityForUser("canUseGoogleWorkspace", userId))
     .concat(registry.findByCapabilityForUser("canControlHue", userId))
@@ -107,14 +108,15 @@ export function buildRuntimeCapabilityTokens(
       if (selected.canUseLocalGit === true && isRelayLocalGitCapability(selected.localGit)) tokens["canUseLocalGit"] = true;
       if (selected.canReadShellOutput === true) tokens["canReadShellOutput"] = true;
     }
+    const unrestrictedLocalNetwork = (resolveServerPosture().localNetworkPolicy ?? { mode: "host" }).mode === "host";
     const github = parseGitHubCapability(selected?.github);
-    if (github && selected?.profile === "desktop-agent" && selected.canUseGitHub === true
+    if (unrestrictedLocalNetwork && github && selected?.profile === "desktop-agent" && selected.canUseGitHub === true
       && github.identity.humanUserId === userId && github.identity.relayId === selectedRelayId
       && github.identity.desktopSessionId === registry.getDesktopSessionId?.(selectedRelayId)
       && github.identity.pairingGeneration === registry.getLocalExecutionPairingGeneration?.(selectedRelayId)
       && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_GITHUB_PROTOCOL_VERSION) tokens["canUseGitHub"] = true;
     const humanTerminal = parseRelayHumanTerminalCapability(selected?.humanTerminal);
-    if (selected?.profile === "desktop-agent" && selected.canUseHumanTerminal === true && humanTerminal
+    if (unrestrictedLocalNetwork && selected?.profile === "desktop-agent" && selected.canUseHumanTerminal === true && humanTerminal
       && humanTerminal.owner.humanUserId === userId && humanTerminal.owner.agentId === currentAgentId
       && humanTerminal.owner.relayId === selectedRelayId
       && humanTerminal.owner.desktopSessionId === registry.getDesktopSessionId?.(selectedRelayId)
@@ -122,15 +124,15 @@ export function buildRuntimeCapabilityTokens(
       && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION) tokens["canUseHumanTerminal"] = true;
     const localExecution = parseRelayLocalExecutionCapability(selected?.localExecution);
     if (selected?.profile === "desktop-agent" && selected.canExecuteLocal === true
-      && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION
+      && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION
       && (selected.basicExecution === undefined || selected.workstationProfileSnapshot !== undefined
         || ((registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_BASIC_EXECUTION_PROTOCOL_VERSION
           && parseRelayBasicExecutionCapability(selected.basicExecution) !== null))
-      && localExecution !== null && localExecution.capacity <= LOCAL_EXECUTION_MAX_IDENTITIES) {
+      && localExecution !== null && localExecution.localNetworkPolicy === true && localExecution.capacity <= LOCAL_EXECUTION_MAX_IDENTITIES) {
       tokens["canExecuteLocal"] = true;
       tokens["canDelegateLocalExecution"] = selected.canDelegateLocalExecution === true
         && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION;
-      // Exposure only: older or incomplete replacement peers retain their tools.
+      // Execution requires the replacement contract; legacy tools remain retired.
       tokens["canReplaceLegacyShellTools"] = localExecution.pty === true
         && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION
         && tokens["canUseLocalGit"] === true && tokens["canReadShellOutput"] === true;
@@ -163,17 +165,6 @@ export function buildRuntimeCapabilityTokens(
       //     against browser_* `requiredCapabilities` (register-all.ts).
       tokens["canControlBrowser"] = true;
       tokens["control_browser"] = true;
-    }
-    if (caps.canUseTerminal) {
-      // Terminal registration names canUseTerminal explicitly, so runtime
-      // availability never impersonates the Human's use_workstation grant.
-      tokens["canUseTerminal"] = true;
-      // Presence only: the exact PTY remains Electron-local while a
-      // session-less terminal operation binds to it. This token automatically
-      // makes that tool callable and injects the pending-handoff instruction.
-      if (caps.hasPendingTerminalHandoff === true) {
-        tokens["hasPendingTerminalHandoff"] = true;
-      }
     }
     if (caps.canReadStructuredSshOutput) {
       tokens["canReadStructuredSshOutput"] = true;

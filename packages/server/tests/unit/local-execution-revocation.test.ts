@@ -3,7 +3,8 @@ import Fastify from "fastify";
 import type { ChallengeProvider } from "@nautilo/trust";
 import { InMemoryRelayRegistry, InMemoryWorkstationSessionRegistry, FULL_WORKSTATION_AGENT_SCOPE,
   type FullWorkstationBinding } from "@nautilo/runtime";
-import type { RelayLocalExecutionBindingV1, RelayServerMessage, RelayWorkstationShellBinding } from "@nautilo/relay";
+import { RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION,
+  type RelayLocalExecutionBindingV1, type RelayServerMessage, type RelayWorkstationShellBinding } from "@nautilo/relay";
 import { createWorkstationManagedExecutionRevoker, createWorkstationAuthorityReconciler, reconcileWorkstationEffectiveAuthority,
   workstationAccessRoutes } from "../../src/routes/workstation-access";
 
@@ -12,7 +13,8 @@ const session: FullWorkstationBinding = { userId: "human-fixture", instanceId: "
   agentScope: FULL_WORKSTATION_AGENT_SCOPE, profileId: "profile-fixture", profileRevision: 1,
   grantIds: ["grant-a", "grant-b"], capabilityRevision: 1 };
 const capabilities = { profile: "desktop-agent" as const, canExecuteLocal: true,
-  localExecution: { version: 1 as const, generation: "generation-fixture", pipe: true as const, pty: true, capacity: 8 } };
+  localExecution: { version: 1 as const, generation: "generation-fixture", pipe: true as const, pty: true,
+    localNetworkPolicy: true as const, capacity: 8 } };
 async function fixture(holdStarts = false) {
   const sent: RelayServerMessage[] = [];
   const relay = new InMemoryRelayRegistry();
@@ -21,7 +23,8 @@ async function fixture(holdStarts = false) {
     if (message.type === "relay:dispatch" && !holdStarts) relay.resolveDispatch(message.correlationId,
       { status: "ok", result: { state: "running", resources: "owned", session_id: message.localExecutionBinding?.executionId } });
   };
-  await relay.register(session.relayId, session.userId, capabilities, receive, 20, session.desktopSessionId,
+  await relay.register(session.relayId, session.userId, capabilities, receive,
+    RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION, session.desktopSessionId,
     session.capabilityRevision, session.pairingGeneration);
   const registry = new InMemoryWorkstationSessionRegistry({ onAuthorityRevoked: createWorkstationManagedExecutionRevoker(() => relay) });
   registry.activate(session, session);
@@ -31,7 +34,8 @@ async function fixture(holdStarts = false) {
       profileId, profileRevision: session.profileRevision, grantIds: grants, capabilityRevision: 1, currentFolder: "/fixture/project",
       grantRevision: 1, protectedPolicyVersion: 1, subject: { userId: session.userId, instanceId: session.instanceId,
         relayId: session.relayId, agentScope: session.agentScope }, operation: "execute", executionClass: "profile_bound_sandbox" };
-    const binding: RelayLocalExecutionBindingV1 = { version: 1, generation: capabilities.localExecution.generation,
+    const binding: RelayLocalExecutionBindingV1 = { version: 1, localNetworkPolicy: { mode: "host" },
+      generation: capabilities.localExecution.generation,
       executionId, invocationId: shell.toolCallId, operation: "start", owner: { instanceId: session.instanceId, humanUserId: session.userId,
         agentId: "agent-fixture", runId: "run-fixture", conversationId: "conversation-fixture", relayId: session.relayId,
         desktopSessionId: session.desktopSessionId, pairingGeneration: relay.getLocalExecutionPairingGeneration(session.relayId)!,
@@ -101,9 +105,10 @@ describe("production managed Workstation revocation", () => {
     expect(stops(sent)).toHaveLength(0);
     registry.disable(session.userId);
     await relay.register(session.relayId, session.userId, { profile: "desktop-agent", canRunShell: true }, receive,
-      20, session.desktopSessionId, 2, session.pairingGeneration);
+      RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION, session.desktopSessionId, 2, session.pairingGeneration);
     expect(stops(sent)).toHaveLength(0);
-    await relay.register(session.relayId, session.userId, capabilities, receive, 20, session.desktopSessionId, 3, session.pairingGeneration);
+    await relay.register(session.relayId, session.userId, capabilities, receive,
+      RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION, session.desktopSessionId, 3, session.pairingGeneration);
     await new Promise<void>(resolve => setTimeout(resolve, 0));
     expect(stops(sent)).toHaveLength(1);
   });

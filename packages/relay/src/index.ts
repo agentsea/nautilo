@@ -651,7 +651,7 @@ export { readTextWindow, type TextWindow, type TextWindowSource } from "./text-w
 export { isSecurityScanProgress, securityScanProgressText, type SecurityScanProgress, type RelaySecurityScanProgressMessage } from "./security-scan-progress";
 
 export { parseRelayLocalExecutionCapability, type RelayLocalExecutionCapability } from "./types";
-export { parseRelayLocalExecutionBinding, RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION, LOCAL_EXECUTION_MAX_IDENTITIES,
+export { parseRelayLocalExecutionBinding, RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION, RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION, LOCAL_EXECUTION_MAX_IDENTITIES,
   type RelayLocalExecutionBindingV1, type RelayLocalExecutionOwnerV1 } from "./protocol";
 
 export { parseRelayLocalExecutionUncertainty, type RelayLocalExecutionUncertaintyV1 } from "./protocol";
@@ -670,7 +670,8 @@ export { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION, type RelayLocalExecutionBind
 
 export { RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION, isRelayLocalExecutionSearchAllowed } from "./protocol";
 
-export { RELAY_GITHUB_PROTOCOL_VERSION, isRelayGitHubDispatch } from "./protocol";
+export { RELAY_GITHUB_PROTOCOL_VERSION, isRelayGitHubDispatch, parseRelayGitHubInvocationBinding, matchesGitHubWorkstationBinding,
+  type RelayGitHubInvocationBinding } from "./protocol";
 
 export { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, type RelayLocalExecutionBindingV4 } from "./protocol";
 

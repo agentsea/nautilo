@@ -102,6 +102,27 @@ describe("buildPassthrough — hardened env defaults", () => {
 });
 
 describe("buildPassthrough — env taxonomy enforcement", () => {
+  test("prepared Development environment is exact and ignores every ambient or command addition", () => {
+    const prior = process.env["AMBIENT_SECRET"];
+    process.env["AMBIENT_SECRET"] = "must-not-leak";
+    try {
+      const preparedEnvironment = Object.freeze({
+        HOME: "/approved/home",
+        PATH: "/approved/bin:/usr/bin",
+        LANG: "en_US.UTF-8",
+      });
+      const env = buildPassthrough(baseOpts({
+        preparedEnvironment,
+        config: { mode: "disabled", writablePaths: [], projectPaths: [], passthroughEnv: ["AMBIENT_SECRET"] },
+        commandEnv: { UNAPPROVED_VALUE: "must-not-enter-prepared-environment" },
+      })).env as Record<string, string>;
+      expect(env).toEqual(preparedEnvironment);
+    } finally {
+      if (prior === undefined) delete process.env["AMBIENT_SECRET"];
+      else process.env["AMBIENT_SECRET"] = prior;
+    }
+  });
+
   test("passthroughEnv forwards user-configured names, skips RESERVED", () => {
     const prior = process.env["MY_TEST_VAR"];
     process.env["MY_TEST_VAR"] = "hello";

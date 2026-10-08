@@ -5,9 +5,6 @@ import {
   handleFsDispatch,
   LOCAL_FILE_EXECUTION_UNSUPPORTED,
   RelayAuthenticationRequiredError,
-  admitRunShellTimeoutMs,
-  knownRunShellSecretValues,
-  redactRunShellOutputText,
   type OpenHueExecutor,
   type RelayDispatchRequest,
   type RelayDispatchResult,
@@ -17,15 +14,6 @@ import { createRelayMcpHost } from "@nautilo/mcp-client";
 import { applyInstanceArgFromArgv, stripInstancePairFromArgv } from "@nautilo/config";
 import { randomUUID } from "node:crypto";
 import { accessSync, constants } from "node:fs";
-import {
-  Sandbox,
-  resolveRelayDispatchSandbox,
-  spawnSandboxed,
-  type RelayDispatchSandboxFactory,
-  hasSandboxCwdFailure,
-  sandboxCurrentFolderError,
-  unusableCurrentFolderError,
-} from "@nautilo/sandbox";
 import { log, warn, error } from "@nautilo/logger";
 import * as path from "node:path";
 import {
@@ -226,44 +214,9 @@ export function createHeadlessTerminationCoordinator(
   };
 }
 
-/**
- * D060 Sprint 1 G5.4.c — headless relay dispatch handler.
- *
- * Per-request sandbox resolution:
- *   1. If `req.sandboxProfile` is present → `Sandbox.create(profile)` and
- *      run `run_shell` through `spawnSandboxed()`. This is the normal
- *      path once the server\u0027s Policy Resolver ships envelopes.
- *   2. If absent AND release build (`NODE_ENV === "production"`) →
- *      REFUSE the dispatch with an explicit error. Ship plan v3 §5.4:
- *      "relay is dumb — if the server didn\u0027t tell me how to sandbox,
- *      I don\u0027t execute."
- *   3. If absent AND development build → log a clear warning and run
- *      through a disabled-mode (passthrough) `Sandbox` on the SAME
- *      `spawnSandboxed()` path (D275-D4). No second `execAsync` executor;
- *      the warning makes sure nobody mistakes the dev passthrough for
- *      real containment.
- *
- * Exported for unit testing — tests build a mock guard + drive the
- * handler with synthetic dispatch requests (including ones that carry
- * an envelope, and ones that don\u0027t to exercise every branch).
- */
+/** Headless relays intentionally expose no generic local execution surface. */
 export interface DispatchHandlerOptions {
-  /**
-   * Injected mostly for tests: overrides `process.env["NODE_ENV"]`
-   * when present. Allows a test to exercise the release-build
-   * refusal path without mutating env in-process.
-   */
-  readonly isProduction?: boolean;
-  /**
-   * Test hook: overrides the envelope-to-Sandbox factory so tests
-   * can verify the handler passes the envelope through without
-   * actually invoking backend detection.
-   */
-  readonly createSandbox?: RelayDispatchSandboxFactory;
-  /**
-   * Injected for focused dispatch tests. Production provides the shared
-   * typed OpenHue handler built at startup.
-   */
+  /** Injected for focused dispatch tests. */
   readonly hueHandler?: (
     args: Record<string, unknown>,
   ) => Promise<RelayDispatchResult>;
@@ -273,8 +226,6 @@ export function makeDispatchHandler(
   baseGuard: WorkspaceGuard,
   options: DispatchHandlerOptions = {},
 ) {
-  const isProduction =
-    options.isProduction ?? process.env["NODE_ENV"] === "production";
   const hueHandler =
     options.hueHandler ??
     createOpenHueHandler({
@@ -284,12 +235,11 @@ export function makeDispatchHandler(
 
   return async function handleDispatch(
     req: RelayDispatchRequest,
-    signal?: AbortSignal,
+    _signal?: AbortSignal,
   ): Promise<RelayDispatchResult> {
-    // D418 — the headless relay has no Electron local desktop-filesystem-grant store,
-    // so it can never validate a `desktopFilesystemGrantRequest`. Reject it before
-    // touching `allowedRoots`: it must NEVER union server-provided request
-    // roots into filesystem authority. Fail closed with a stable code.
+    // The headless relay has no Electron local desktop-filesystem-grant store,
+    // so it can never validate a desktop-local grant or widen authority from
+    // request-provided roots.
     if (req.desktopFilesystemGrantRequest !== undefined) {
       return {
         status: "error",
@@ -323,9 +273,6 @@ export function makeDispatchHandler(
       };
     }
 
-    // D417 — this constrained ffmpeg operation is desktop-only. Return a
-    // truthful, specific error rather than silently falling through to the
-    // generic shell/unknown-tool paths.
     if (
       req.toolName === "extract_audio_from_video" ||
       req.toolName === "media_extract_start" ||
@@ -342,119 +289,22 @@ export function makeDispatchHandler(
       };
     }
 
-    // Hue dispatch is a fixed OpenHue action schema, not generic shell
-    // execution. Resolve it before constructing a sandbox: OpenHue owns its
-    // relay-local configuration under ~/.nautilo and receives no raw argv.
     if (req.toolName === "hue_lights") {
       return await hueHandler(req.args);
     }
 
-    // Per-request Sandbox resolution. For non-shell tools this is
-    // unused but we still validate the release-build contract so
-    // a dispatch without envelope is always a hard no in production.
-    const sandboxResolution = await resolveRelayDispatchSandbox({
-      envelope: req.sandboxProfile,
-      isProduction,
-      developmentRoot: process.cwd(),
-      toolName: req.toolName,
-      ...(options.createSandbox !== undefined ? { createSandbox: options.createSandbox } : {}),
-      reportWarning: warn,
-    });
-    if (!sandboxResolution.ok) return { status: "error", error: sandboxResolution.error };
-    const sandbox: Sandbox = sandboxResolution.sandbox;
-
-    try {
-      // M088B — `read_file` / `write_file` / `list_directory` legacy
-      // relay branches were removed. The unified `file` tool dispatches
-      // those operations server-side; relay only handles `run_shell`.
-      switch (req.toolName) {
-      case "run_shell": {
-        const commandArg = req.args["command"];
-        const command = typeof commandArg === "string" ? commandArg : "";
-        if (!command) {
-          return { status: "error", error: "No command provided" };
-        }
-        if (req.impact === "destructive" && !req.approvalObtained) {
-          return {
-            status: "error",
-            error: "run_shell requires approval for destructive operations",
-          };
-        }
-        // Shell commands run at the server-selected sandbox workspace. In
-        // desktop two-path mode this is the per-turn Current Folder, not
-        // necessarily the relay's boot-time registered root.
-        const cwd = req.sandboxProfile?.workspace ?? guard.roots[0] ?? process.cwd();
-        const cwdError = unusableCurrentFolderError(cwd);
-        if (cwdError) {
-          return { status: "error", error: cwdError };
-        }
-        const timeoutMs = admitRunShellTimeoutMs(req.timeout);
-        const knownSecrets = knownRunShellSecretValues();
-
-        // run_shell always runs through the single `spawnSandboxed` path:
-        // a real server-provided profile when present, else a disabled-mode
-        // passthrough Sandbox (built during resolution above). The
-        // `sandbox !== null` guard is defensive — production refused the
-        // no-envelope case before reaching here.
-        if (sandbox !== null) {
-          try {
-            const r = await spawnSandboxed(sandbox, "/bin/sh", ["-c", command], {
-              cwd,
-              timeoutMs,
-              ...(signal === undefined ? {} : { abortSignal: signal }),
-            });
-            if (hasSandboxCwdFailure(r.stderr)) {
-              return { status: "error", error: sandboxCurrentFolderError(cwd) };
-            }
-            if (r.timedOut) {
-              return {
-                status: "error",
-                error: `run_shell timed out after ${timeoutMs}ms`,
-              };
-            }
-            if (r.exitCode !== 0) {
-              const networkDenials = sandbox.consumeNetworkDeniedDestinations();
-              const stderr = redactRunShellOutputText(r.stderr, knownSecrets);
-              return {
-                status: "error",
-                error: `run_shell exit ${r.exitCode ?? "signal"}: ${stderr.trim()}`,
-                ...(networkDenials.length > 0
-                  ? { networkDeniedDestination: networkDenials[networkDenials.length - 1] }
-                  : {}),
-              };
-            }
-            // Large output is bounded to head+tail with an inline
-            // "re-run with head/tail/sed" marker already embedded in r.stdout.
-            return {
-              status: "ok",
-              result: {
-                stdout: redactRunShellOutputText(r.stdout, knownSecrets).trim(),
-                stderr: redactRunShellOutputText(r.stderr, knownSecrets).trim(),
-              },
-            };
-          } catch (err) {
-            return {
-              status: "error",
-              error: err instanceof Error ? err.message : String(err),
-            };
-          }
-        }
-
-        // Unreachable: every path that reaches run_shell now has a Sandbox —
-        // production refused the no-envelope case above, and dev builds get a
-        // disabled passthrough Sandbox. Defensive only (no second executor).
-        return {
-          status: "error",
-          error: "internal: run_shell reached without a sandbox",
-        };
-      }
-
-        default:
-          return { status: "error", error: `Unknown tool: ${req.toolName}` };
-      }
-    } finally {
-      await sandbox?.close();
+    if (req.toolName === "run_shell" || req.toolName === "terminal") {
+      return {
+        status: "error",
+        errorCode: "LOCAL_EXECUTION_DESKTOP_UPGRADE_REQUIRED",
+        error:
+          "This legacy local execution interface has been retired. " +
+          "Connect an up-to-date Nautilo Desktop and use exec_command and write_stdin. " +
+          "No command or terminal action was run.",
+      };
     }
+
+    return { status: "error", error: `Unknown tool: ${req.toolName}` };
   };
 }
 
@@ -582,7 +432,6 @@ async function main() {
       profile: "desktop-agent",
       canReadWorkspace: true,
       canWriteWorkspace: true,
-      canRunShell: true,
       workspaceRoot: guard.roots[0],
       ...(hueAvailable
         ? { canDiscoverHue: true, canControlHue: true }

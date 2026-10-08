@@ -1,6 +1,7 @@
 import { digestGitHubPreparation, githubFailure, parseGitHubInvocationOwner, parseGitHubOperation, parseGitHubPreparedOperation,
   type GitHubAccount, type GitHubBrokerResult, type GitHubFailureCode, type GitHubInvocationOwner,
   type GitHubOperation, type GitHubPullRequestPreparation, type GitHubPreparedOperation, type GitHubRepository, type GitHubResource } from "../../../../packages/types/src/github-broker";
+import type { GitHubPreparedPublication } from "../../../../packages/types/src/github-invocation";
 import type { GitHubApiClient, GitHubCredentialProvider } from "./credentials";
 import { GitHubPreparations, type GitHubPreparationResult } from "./preparations";
 
@@ -37,7 +38,7 @@ export interface GitHubBrokerPorts {
   readonly isCurrentNow: (owner: GitHubInvocationOwner) => boolean;
   /** Trusted admission owner verifies the durable exact Human reply. Never a
    * model flag, standing shell approval or an Auto-Approve bypass. */
-  readonly isPublishingApproved: (owner: GitHubInvocationOwner, prepared: GitHubPreparedOperation, approval: GitHubPublishingApproval) => Promise<boolean>;
+  readonly isPublishingApproved: (owner: GitHubInvocationOwner, prepared: GitHubPreparedPublication, approval: GitHubPublishingApproval) => Promise<boolean>;
 }
 
 export class GitHubBroker {

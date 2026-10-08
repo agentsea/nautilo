@@ -515,22 +515,6 @@ export function buildSkillBodyBlock(skill: { name: string; body: string }): stri
   return `${SKILL_BODY_HEADER_PREFIX}${skill.name}\n\n${skill.body}`;
 }
 
-const TERMINAL_HANDOFF_HEADER = "\n\n## Human terminal handoff\n\n";
-
-/** Presence-only Desktop notification. The exact PTY id stays local and the
- * first session-less terminal operation binds to it deterministically. */
-export function buildPendingTerminalHandoffBlock(): string {
-  return TERMINAL_HANDOFF_HEADER +
-    "The Human has explicitly selected **Let Genie drive** for an existing terminal. " +
-    "This is authoritative current UI state, not a suggestion inferred from chat. " +
-    "The `terminal` tool is already callable and already bound to that exact window. " +
-    "Call `terminal` with `action=\"run\"`, `action=\"read\"`, or `action=\"write\"`; `session_id` " +
-    "may be omitted while Genie retains control. Desktop resolves every session-less call to the " +
-    "handed-over terminal and also returns its id. Begin with the requested terminal operation; terminal discovery, " +
-    "activation, listing, and spawning are unnecessary for this handoff. If the direct operation " +
-    "returns a genuine unavailable or ambiguous-session error, use the ordinary terminal recovery flow.\n";
-}
-
 /**
  * two-path file-surface block.
  *

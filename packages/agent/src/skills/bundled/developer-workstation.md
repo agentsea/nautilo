@@ -106,12 +106,13 @@ including read operations and explicitly authorized worktree management. For
 `git worktree remove`, prove the exact target first, avoid `--force`, and verify
 both registration and directory state afterward.
 
-When `local_git` is actually available, it offers only typed `status`, `diff`,
+When `local_git` is actually available, it offers typed `status`, `diff`,
 `add`, `commit`, `worktree-add`, and safe broker-created `worktree-remove`.
-It disables hooks, signing, credential helpers, external filters, and network
-Git. Respect its `sideEffectStarted` and `retrySafe` result. Use it when that
-narrow contract fits; use Development execution for other admitted local Git
-behavior. Never treat the typed broker as proof of GitHub authentication.
+When the exact authenticated GitHub capability is also available, it adds
+GitHub clone, fetch, fast-forward-only pull, and a separately reviewed exact
+push. It disables hooks, signing, arbitrary credential helpers, external
+filters, redirects, force options, and model-selected remotes. Respect its
+`sideEffectStarted` and `retrySafe` result. Never retry an uncertain push.
 
 ## Write workstation commands portably
 
@@ -211,12 +212,10 @@ confirms cleanup. After a restart, saved final history may be read through
 If the optional `read_shell_output` tool is offered, use it only for older
 retained shell evidence, not for managed session continuation.
 
-The legacy `terminal` tool may remain on an older Desktop. Use it only when it
-is offered and a persistent shared legacy PTY is actually helpful. A legacy
-session is independent of managed execution and is not evidence for Current
-Folder, Basic, Development, or Full Mac admission. If the Human explicitly
-hands over their existing terminal and `human_terminal` is offered, follow its
-exact read/run/write receipts and never retry uncertain input.
+For an interactive local process, request a managed PTY through `exec_command`
+and continue it with `write_stdin`. If the Human explicitly hands over their
+existing terminal and `human_terminal` is offered, follow its exact
+read/run/write receipts and never retry uncertain input.
 
 ## Denial and remediation map
 

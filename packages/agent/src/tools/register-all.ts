@@ -37,7 +37,10 @@ import { createGenerateRepoDocsTool } from "./tasks/shortcuts/generate-repo-docs
 import { createRunWebSearchTool } from "./utilities/web-search";
 import { createReadWebpageTool } from "./utilities/read-webpage";
 import { createFileTool } from "./file/file-tool";
-import { createRunShellTool } from "./shell/run-shell";
+import {
+  createRetiredRunShellTool,
+  RETIRED_LOCAL_EXECUTION_MESSAGE,
+} from "./shell/run-shell";
 import {
   createStructuredSshAuthTool,
   createStructuredSshCopyDownloadTool,
@@ -45,7 +48,7 @@ import {
   createStructuredSshExecTool,
   createStructuredSshOutputTool,
 } from "./structured-ssh/structured-ssh";
-import { createTerminalTool } from "./terminal/terminal";
+import { createRetiredTerminalTool } from "./terminal/terminal";
 import { createComputerHostContractTool } from "./computer/computer-host-contract";
 import { activeComputerUseHostToolDefinitions } from "../config/computer-use-catalogue/host-tool-admission";
 import { createBrowserSnapshotTool } from "./browser/browser-snapshot";
@@ -167,13 +170,8 @@ function isOfficeToolingEnabled(): boolean {
   return fromRuntimeConfig().nautilo_office_enabled;
 }
 
-const legacyShellUnavailable: NonNullable<ToolRegistration["unavailableInContext"]> = context => {
-  const capabilities = context?.["relayCapabilities"] as Readonly<Record<string, boolean>> | undefined;
-  return capabilities?.["canReplaceLegacyShellTools"] === true
-    && capabilities["canExecuteLocal"] === true && capabilities["canObserveLocalExecution"] === true
-    ? "Use the managed execution, typed Git, retained output, or Human terminal tools on this Desktop."
-    : null;
-};
+const retiredLocalExecutionUnavailable: NonNullable<ToolRegistration["unavailableInContext"]> =
+  () => RETIRED_LOCAL_EXECUTION_MESSAGE;
 
 /** options for tool registration (test seams). */
 export interface RegisterAllToolsOptions {
@@ -598,9 +596,10 @@ export function registerAllTools(
   // Runs locally via child_process. Relay dispatch comes from dj-electron-v1.
   catalog.register({
     name: "run_shell",
-    factory: () => createRunShellTool(),
-    // Retain the executor and historical contracts without offering this tool to agents.
-    unavailableInContext: () => "This legacy command tool is unavailable. Discover the tools supported in this conversation.",
+    factory: () => createRetiredRunShellTool(),
+    // Retain only a no-effect tombstone so persisted calls receive a clear
+    // upgrade path without restoring a legacy execution schema.
+    unavailableInContext: retiredLocalExecutionUnavailable,
     category: "development",
     executor: "relay",
     trustTier: "admin",
@@ -727,8 +726,8 @@ export function registerAllTools(
 
   catalog.register({
     name: "terminal",
-    factory: () => createTerminalTool(),
-    unavailableInContext: legacyShellUnavailable,
+    factory: () => createRetiredTerminalTool(),
+    unavailableInContext: retiredLocalExecutionUnavailable,
     category: "development",
     executor: "relay",
     trustTier: "admin",

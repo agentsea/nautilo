@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
 import { InMemoryRelayRegistry, InMemoryWorkstationSessionRegistry, InMemoryWorkstationDispatchPlanRegistry } from "@nautilo/runtime";
 import { createWorkstationApprovalOverrideResolver, type WorkstationOverrideResolverRequest } from "../../src/routes/workstation-access";
-import type { RelayCapabilities } from "@nautilo/relay";
-async function fixture(protocol = 23) {
+import { RELAY_BASIC_EXECUTION_PROTOCOL_VERSION, RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION,
+  type RelayCapabilities } from "@nautilo/relay";
+async function fixture(protocol = RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION) {
   const relayRegistry = new InMemoryRelayRegistry(); const registry = new InMemoryWorkstationSessionRegistry();
   const planRegistry = new InMemoryWorkstationDispatchPlanRegistry();
   const caps: RelayCapabilities = { profile: "desktop-agent", canExecuteLocal: true,
-    localExecution: { version: 1, generation: "gen", pipe: true, pty: true, capacity: 8 },
+    localExecution: { version: 1, generation: "gen", pipe: true, pty: true, localNetworkPolicy: true, capacity: 8 },
     basicExecution: { version: 1, currentFolder: "/tmp/basic", serverBindingId: "server", protectedPolicyVersion: 1 },
     desktopFilesystemGrantSnapshot: { revision: 0, instanceId: "", agentScope: "all_owned_agents", grants: [] } };
   await relayRegistry.register("relay", "human", caps, () => {}, protocol, "desktop", 3, "raw-pair");
@@ -25,7 +26,8 @@ test("Basic no-PIN admission requires exact foreground origin and produces a rea
   }
 });
 test("old peer and critical/elevation commands cannot obtain Basic automatic admission", async () => {
-  const old = await fixture(22); expect(old.resolver(old.request).override).toBe("none");
+  const old = await fixture(RELAY_BASIC_EXECUTION_PROTOCOL_VERSION - 1);
+  expect(old.resolver(old.request).override).toBe("none");
   const f = await fixture();
   for (const cmd of ["sudo id", "rm -rf /"]) expect(f.resolver({ ...f.request, toolCall: { ...f.request.toolCall, args: { cmd } } }).override).toBe("none");
 });

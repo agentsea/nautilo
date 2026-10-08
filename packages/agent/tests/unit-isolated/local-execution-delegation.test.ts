@@ -28,9 +28,9 @@ test("approval pins retain the original generation and never borrow a new recurr
   let generation = "generation-a";
   let pairing = "raw-pairing";
   const registry = { getCapabilities: () => ({ profile: "desktop-agent", canExecuteLocal: true, canDelegateLocalExecution: true,
-    localExecution: { version: 1, generation, pipe: true, pty: true, capacity: 1 } }),
+    localExecution: { version: 1, generation, pipe: true, pty: true, localNetworkPolicy: true, capacity: 1 } }),
     getDesktopSessionId: () => "desktop", getLocalExecutionPairingGeneration: () => "opaque-pairing",
-    getPairingGeneration: () => pairing, getProtocolVersion: () => 28, getUserId: () => "human",
+    getPairingGeneration: () => pairing, getProtocolVersion: () => 29, getUserId: () => "human",
   } as unknown as ToolRelayRegistry;
   const input = { registry, source, state, invocationId: "call", operation: "start" as const };
   const pinned = bindDelegatedLocalExecution(input)!;
@@ -109,11 +109,11 @@ function makeState(overrides: Partial<NautiloState>): NautiloState {
 
 test("qualified delegated catalog uses managed commands without borrowing foreground authority", async () => {
   const catalog = new ToolCatalog(); registerAllTools(catalog, { decisionModelsAvailable: () => true }); initToolCatalog(catalog);
-  let protocol = 28;
+  let protocol = 29;
   const registry = { findByCapabilityForUser: () => ["relay"], getUserId: () => "human",
     getCapabilities: () => ({ profile: "desktop-agent", canRunShell: true, canUseTerminal: true,
       canExecuteLocal: true, canDelegateLocalExecution: true, canUseLocalGit: true, localGit: { version: 1 }, canReadShellOutput: true,
-      localExecution: { version: 1, generation: "generation", pipe: true, pty: true, capacity: 1 } }),
+      localExecution: { version: 1, generation: "generation", pipe: true, pty: true, localNetworkPolicy: true, capacity: 1 } }),
     getProtocolVersion: () => protocol, getPairingGeneration: () => "raw-pairing", getDesktopSessionId: () => "desktop",
     getLocalExecutionPairingGeneration: () => "opaque", dispatch: async () => { throw new Error("No execution in discovery test"); },
   } as ToolRelayRegistry;

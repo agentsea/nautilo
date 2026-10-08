@@ -159,3 +159,66 @@ describe("PostureEditModal", () => {
     });
   });
 });
+
+test("local-computer ceiling changes leave the server network policy untouched", async () => {
+  reapplyHappyDomGlobals();
+  const view = render(<PostureEditModal posture={{ ...posture, localNetworkPolicy: { mode: "host" } }}
+    canManageServerSecurity canManageUncontainedHostCommands={false}
+    onClose={() => undefined} onUpdated={async () => undefined} />);
+  fireEvent.change(view.getByLabelText("Local-computer network ceiling"), { target: { value: "isolated" } });
+  fireEvent.click(view.getByRole("button", { name: "Confirm with PIN" }));
+  fireEvent.click(view.getByRole("button", { name: "Submit test PIN" }));
+  await waitFor(() => expect(updateSecurityPosture).toHaveBeenCalledWith({
+    localNetworkPolicy: { mode: "isolated" }, pin: "246810",
+  }));
+});
+
+test("an unrelated posture update leaves an existing local proxy policy untouched", async () => {
+  reapplyHappyDomGlobals();
+  const view = render(<PostureEditModal posture={{ ...posture, localNetworkPolicy: {
+    mode: "proxy-allowlist", allow: [{ type: "domain", host: "existing.example" }], defaultPort: 8443,
+  } }} canManageServerSecurity canManageUncontainedHostCommands={false}
+    onClose={() => undefined} onUpdated={async () => undefined} />);
+
+  fireEvent.change(view.getByLabelText("Security level"), { target: { value: "permissive" } });
+  fireEvent.click(view.getByRole("button", { name: "Confirm with PIN" }));
+  fireEvent.click(view.getByRole("button", { name: "Submit test PIN" }));
+
+  await waitFor(() => expect(updateSecurityPosture).toHaveBeenCalledWith({
+    securityLevel: "permissive",
+    pin: "246810",
+  }));
+});
+
+test("editing a local proxy rule preserves its existing default port", async () => {
+  reapplyHappyDomGlobals();
+  const view = render(<PostureEditModal posture={{ ...posture, localNetworkPolicy: {
+    mode: "proxy-allowlist", allow: [{ type: "domain", host: "existing.example" }], defaultPort: 8443,
+  } }} canManageServerSecurity canManageUncontainedHostCommands={false}
+    onClose={() => undefined} onUpdated={async () => undefined} />);
+
+  const { default: userEvent } = await import("@testing-library/user-event");
+  const user = userEvent.setup({ document });
+  const allowlist = view.getByLabelText("Local-computer allowlist");
+  await user.clear(allowlist);
+  await user.type(allowlist, "domain replacement.example");
+  fireEvent.click(view.getByRole("button", { name: "Confirm with PIN" }));
+  fireEvent.click(view.getByRole("button", { name: "Submit test PIN" }));
+
+  await waitFor(() => expect(updateSecurityPosture).toHaveBeenCalledWith({
+    localNetworkPolicy: {
+      mode: "proxy-allowlist",
+      allow: [{ type: "domain", host: "replacement.example" }],
+      defaultPort: 8443,
+    },
+    pin: "246810",
+  }));
+});
+
+test("older servers cannot advertise an editable local restriction", () => {
+  reapplyHappyDomGlobals();
+  const view = render(<PostureEditModal posture={posture} canManageServerSecurity
+    canManageUncontainedHostCommands={false} onClose={() => undefined} onUpdated={async () => undefined} />);
+  expect((view.getByLabelText("Local-computer network ceiling") as HTMLSelectElement).disabled).toBe(true);
+  expect(view.getByText(/Upgrade the server to manage this restriction/)).toBeTruthy();
+});

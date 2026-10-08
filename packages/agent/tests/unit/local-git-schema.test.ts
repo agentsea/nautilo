@@ -9,11 +9,15 @@ describe("local Git ingress", () => {
     { operation: "add", paths: ["src/example.ts"] }, { operation: "commit", message: "Update example" },
     { operation: "worktree-add", target: "/synthetic/granted/worktree", ref: "HEAD" },
     { operation: "worktree-remove", target: "/synthetic/granted/worktree" },
+    { operation: "fetch", repository: "fixture/project", branch: "main" },
+    { operation: "clone", repository: "fixture/project", branch: "main", directory: "project" },
+    { operation: "pull", repository: "fixture/project", branch: "main" },
+    { operation: "push", repository: "fixture/project", sourceBranch: "topic", destinationBranch: "topic" },
   ];
-  test("admits exactly the existing typed broker operations", () => {
+  test("admits local and authenticated GitHub broker operations", () => {
     for (const operation of operations) {
       expect(localGitSchema.parse(operation)).toEqual(operation);
-      expect(parseRelayRunShellGitOperation(operation).ok).toBe(true);
+      if (!["fetch", "clone", "pull", "push"].includes(operation.operation)) expect(parseRelayRunShellGitOperation(operation).ok).toBe(true);
     }
   });
   test("rejects privilege selectors and shell or account payloads for every operation", () => {

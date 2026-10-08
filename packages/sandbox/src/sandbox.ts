@@ -43,6 +43,8 @@ export interface SandboxCreateOptions {
   readonly allowWorkspaceGovernanceWrites?: boolean;
   /** Locally owned scratch HOME; never accepted from a wire envelope. */
   readonly managedHome?: string;
+  /** Exact locally prepared Development environment; never accepted from wire. */
+  readonly preparedEnvironment?: Readonly<Record<string, string>>;
   /**
    * The active workspace root — the directory the user considers
    * "their drawer". Always writable when mode=enabled.
@@ -85,6 +87,7 @@ export interface SandboxCreateOptions {
 export class Sandbox {
   private readonly workspace: string;
   private readonly managedHome: string | undefined;
+  private readonly preparedEnvironment: Readonly<Record<string, string>> | undefined;
   private readonly dataDir: string;
   private readonly toolsBin: string;
   private readonly backend: SandboxBackend;
@@ -96,6 +99,12 @@ export class Sandbox {
   constructor(opts: SandboxCreateOptions) {
     this.workspace = canonicalize(opts.workspace);
     this.managedHome = opts.managedHome === undefined ? undefined : canonicalize(opts.managedHome);
+    this.preparedEnvironment = opts.preparedEnvironment === undefined
+      ? undefined
+      : Object.freeze({ ...opts.preparedEnvironment });
+    if (this.managedHome !== undefined && this.preparedEnvironment !== undefined) {
+      throw new Error("[sandbox] managedHome and preparedEnvironment are mutually exclusive");
+    }
     this.dataDir = canonicalize(opts.dataDir);
     this.toolsBin = canonicalize(opts.toolsBin);
     this.backend = opts.backend;
@@ -400,6 +409,7 @@ export class Sandbox {
       return buildPassthrough({
         workspace: this.workspace,
         toolsBin: this.toolsBin,
+        ...(this.preparedEnvironment === undefined ? {} : { preparedEnvironment: this.preparedEnvironment }),
         config,
         cwd,
         commandEnv,
@@ -416,6 +426,7 @@ export class Sandbox {
         return buildBubblewrap({
           workspace: this.workspace,
           ...(this.managedHome === undefined ? {} : { managedHome: this.managedHome }),
+          ...(this.preparedEnvironment === undefined ? {} : { preparedEnvironment: this.preparedEnvironment }),
           dataDir: this.dataDir,
           toolsBin: this.toolsBin,
           procSupported: this.backend.procSupported,
@@ -434,6 +445,7 @@ export class Sandbox {
         return buildSandboxExec({
           workspace: this.workspace,
           ...(this.managedHome === undefined ? {} : { managedHome: this.managedHome }),
+          ...(this.preparedEnvironment === undefined ? {} : { preparedEnvironment: this.preparedEnvironment }),
           dataDir: this.dataDir,
           toolsBin: this.toolsBin,
           config,
@@ -462,6 +474,7 @@ export class Sandbox {
         return buildPassthrough({
           workspace: this.workspace,
           toolsBin: this.toolsBin,
+          ...(this.preparedEnvironment === undefined ? {} : { preparedEnvironment: this.preparedEnvironment }),
           config,
           cwd,
           commandEnv,

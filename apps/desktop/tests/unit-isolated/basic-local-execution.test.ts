@@ -74,6 +74,7 @@ function fixture(tty = false, protectedPolicy: "valid" | "missing" | "mismatch" 
     impact: "destructive", approvalObtained: true,
     runShellOwnerBinding: { instanceId: "instance-a", userId: "human-a", relayId: "relay-a", desktopSessionId: "desktop-a" },
     localExecutionBinding: { version: 2, authority: { kind: "basic", roomId: "room-fixture", currentFolder: root, capabilityRevision: 1, protectedPolicyVersion: 1 }, generation: host.hostGeneration, invocationId: "call-a", executionId: "execution-a", operation: "start",
+      localNetworkPolicy: { mode: "host" },
       owner: { instanceId: "instance-a", humanUserId: "human-a", agentId: "agent-a", runId: "run-a", conversationId: "conversation-a",
         relayId: "relay-a", desktopSessionId: "desktop-a", pairingGeneration: "pair-a", serverBindingId: "server-a",
         profileId: null, profileRevision: null, grantIds: [], grantRevision: null, protectedPolicyVersion: 1 } },
@@ -133,12 +134,15 @@ test("Basic continuation rejects a changed Room or wire downgrade at the Desktop
   const original = f.request.localExecutionBinding!;
   if (original.version !== 2) throw new Error("Expected Basic fixture");
   for (const operation of ["read", "input"] as const) {
-    for (const changed of [
-      { ...original, authority: { ...original.authority, roomId: "another-room" } },
-      { version: 1 as const, generation: original.generation, invocationId: original.invocationId, executionId: original.executionId, operation: original.operation, owner: original.owner },
-    ]) {
+    for (const [changed, downgraded] of [
+      [{ ...original, authority: { ...original.authority, roomId: "another-room" } }, false],
+      [{ version: 1 as const, generation: original.generation, invocationId: original.invocationId, executionId: original.executionId, operation: original.operation, owner: original.owner }, true],
+    ] as const) {
       const result = await f.handler({ ...f.request, toolName: "write_stdin", args: { session_id: original.executionId, ...(operation === "input" ? { chars: "must not write" } : {}) }, localExecutionBinding: { ...changed, operation } });
-      expect(result.status).toBe("error"); expect(result.errorCode).toBe("LOCAL_EXECUTION_AUTHORITY_MISMATCH");
+      expect(result.status).toBe("error");
+      expect(result.errorCode).toBe(downgraded && operation === "input"
+        ? "LOCAL_EXECUTION_UPGRADE_REQUIRED"
+        : "LOCAL_EXECUTION_AUTHORITY_MISMATCH");
     }
   }
   expect(f.counts().spawnCount).toBe(1);
