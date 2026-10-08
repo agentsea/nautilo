@@ -29,6 +29,7 @@ import {
   type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
+  createProtectedTaskFailurePayload,
   createProtectedTaskTranscriptPort,
   runProtectedTaskNativeSegment,
   withNativeProtectedTaskCheckpointSaver,
@@ -742,6 +743,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
           try {
             exactRequest({ occurrence: runningOccurrence, reference,
               evidence: grant.evidence, request });
+            const publication = resultPublication(transientInput);
             const current: ProtectedTaskMemoryAuthorityInput = Object.freeze({
               runner: input.product.canonicalRunner,
               restricted: input.restricted,
@@ -781,158 +783,173 @@ export function createProtectedTaskNativeFixedMemorySegment(
                 );
               }
             };
-            const terminalPayload = await dependencies.openDefinition({
-              restricted: input.restricted,
-              crypto: input.crypto,
-              serverScope: input.serverScope,
-              evidence: grant.evidence,
-              domains: grant.domains,
-              signal,
-              loadCurrentOccurrence: () => loadDefinition(current),
-              execute: async payload => {
-                assertNativeProtectedMetadata(payload.protectedMetadata);
-                const context = exactExecutionContext(
-                  await input.resolveExecutionContext({
-                    occurrence: runningOccurrence,
-                    predispatch,
-                    protectedMetadata: payload.protectedMetadata,
-                  }),
-                );
-                const humanTurnId = runningOccurrence.run.id;
-                return dependencies.withSigner({
-                  restricted: input.restricted,
-                  crypto: input.crypto,
-                  evidence: grant.evidence,
-                  domains: grant.domains,
-                  use: async (signer, history) => {
-                    const publish = await input.createTranscriptPublisher({
+            const outcome = await Promise.resolve().then(() =>
+              dependencies.openDefinition({
+                restricted: input.restricted,
+                crypto: input.crypto,
+                serverScope: input.serverScope,
+                evidence: grant.evidence,
+                domains: grant.domains,
+                signal,
+                loadCurrentOccurrence: () => loadDefinition(current),
+                execute: async payload => {
+                  assertNativeProtectedMetadata(payload.protectedMetadata);
+                  const context = exactExecutionContext(
+                    await input.resolveExecutionContext({
                       occurrence: runningOccurrence,
-                      record: grant.record,
-                      request,
-                      current,
-                      humanTurnId,
-                      assertCurrentTaskAuthority,
-                      domains: grant.domains,
-                      signer,
-                      resolveHistoricalSignerPublicationManager: history,
-                    });
-                    const transcriptPort = dependencies.createTranscriptPort({
-                      identity: {
-                        taskId: runningOccurrence.task.id,
-                        taskRunId: runningOccurrence.run.id,
-                        graphThreadId: runningOccurrence.run.graphThreadId,
-                        roomId: predispatch.scheduling.roomId,
+                      predispatch,
+                      protectedMetadata: payload.protectedMetadata,
+                    }),
+                  );
+                  const humanTurnId = runningOccurrence.run.id;
+                  return dependencies.withSigner({
+                    restricted: input.restricted,
+                    crypto: input.crypto,
+                    evidence: grant.evidence,
+                    domains: grant.domains,
+                    use: async (signer, history) => {
+                      const publish = await input.createTranscriptPublisher({
+                        occurrence: runningOccurrence,
+                        record: grant.record,
+                        request,
+                        current,
                         humanTurnId,
-                        agentId: runningOccurrence.task.agentId,
-                      },
-                      signal,
-                      publish,
-                    });
-                    return dependencies.withMemoryRepository({
-                      authority,
-                      policy,
-                      current,
-                      domains: grant.domains,
-                      signer,
-                      resolveHistoricalSignerPublicationManager: history,
-                      product: input.product,
-                      agentProduct: input.agentProduct,
-                      owner: input.owner,
-                      embedding: input.embedding,
-                      execute: repository => dependencies.withCheckpointSaver({
-                        restricted: input.restricted,
-                        crypto: input.crypto,
-                        serverScope: input.serverScope,
-                        evidence: grant.evidence,
+                        assertCurrentTaskAuthority,
+                        domains: grant.domains,
+                        signer,
+                        resolveHistoricalSignerPublicationManager: history,
+                      });
+                      const transcriptPort = dependencies.createTranscriptPort({
                         identity: {
                           taskId: runningOccurrence.task.id,
                           taskRunId: runningOccurrence.run.id,
-                          sourceRoomId: request.sourceRoomId,
-                          namespaceId:
-                            grant.evidence.result.namespace.namespaceId,
-                          domainId: grant.evidence.result.namespace.domainId,
-                          expectedAccessRevision:
-                            grant.evidence.result.namespace
-                              .expectedAccessRevision,
-                          expectedPolicyRevision: policy.revision,
                           graphThreadId: runningOccurrence.run.graphThreadId,
+                          roomId: predispatch.scheduling.roomId,
+                          humanTurnId,
+                          agentId: runningOccurrence.task.agentId,
                         },
-                        domains: grant.domains,
                         signal,
-                        now,
-                        assertCurrentTaskAuthority,
-                        createDedicatedPool: input.createDedicatedPool,
-                        execute: async checkpointSaver => {
-                          const memoryHandoff: MemoryHandoff = Object.freeze({
-                            search: repository,
-                            repository,
-                            fullEncryptionOnly:
-                              policy.mode === "encrypted_only",
-                          });
-                          const segment: RunProtectedTaskNativeSegmentInput = {
-                            mode: "native",
-                            taskId: runningOccurrence.task.id,
-                            taskRunId: runningOccurrence.run.id,
-                            graphThreadId: runningOccurrence.run.graphThreadId,
+                        publish,
+                      });
+                      const segmentOutcome = await Promise.resolve().then(() =>
+                        dependencies.withMemoryRepository({
+                          authority,
+                          policy,
+                          current,
+                          domains: grant.domains,
+                          signer,
+                          resolveHistoricalSignerPublicationManager: history,
+                          product: input.product,
+                          agentProduct: input.agentProduct,
+                          owner: input.owner,
+                          embedding: input.embedding,
+                          execute: repository => dependencies.withCheckpointSaver({
+                            restricted: input.restricted,
+                            crypto: input.crypto,
+                            serverScope: input.serverScope,
+                            evidence: grant.evidence,
+                            identity: {
+                              taskId: runningOccurrence.task.id,
+                              taskRunId: runningOccurrence.run.id,
+                              sourceRoomId: request.sourceRoomId,
+                              namespaceId:
+                                grant.evidence.result.namespace.namespaceId,
+                              domainId: grant.evidence.result.namespace.domainId,
+                              expectedAccessRevision:
+                                grant.evidence.result.namespace
+                                  .expectedAccessRevision,
+                              expectedPolicyRevision: policy.revision,
+                              graphThreadId: runningOccurrence.run.graphThreadId,
+                            },
+                            domains: grant.domains,
                             signal,
-                            checkpointSaver,
-                            transcriptPort,
-                            memoryHandoff,
-                            transientInput,
-                            execution: Object.freeze({
-                              ...context,
-                              parentThreadId:
-                                runningOccurrence.task.callingRoomId === null
-                                  ? `task:${runningOccurrence.task.id}`
-                                  : `room:${runningOccurrence.task.callingRoomId}`,
-                              parentTurnId: runningOccurrence.run.id,
-                              parentOwnerId: runningOccurrence.task.ownerId,
-                              causalHumanUserId:
-                                runningOccurrence.task.requestorId,
-                              brief: payload.prompt,
-                              ...(payload.expectedOutput === null
-                                ? {}
-                                : { expectedOutput: payload.expectedOutput }),
-                              subEnvelope: predispatch.memory.envelope,
-                              actorRole: "owner",
-                              roomId: predispatch.scheduling.roomId,
-                              ...(runningOccurrence.task.callingRoomId === null
-                                ? {}
-                                : {
-                                    callingRoomId:
-                                      runningOccurrence.task.callingRoomId,
-                                  }),
-                            }),
-                          };
-                          const outcome = await Promise.resolve()
-                            .then(() => dependencies.runSegment(segment))
-                            .then(
-                              value => ({ status: "fulfilled", value } as const),
-                              (error: unknown) => ({ status: "rejected", error } as const),
-                            );
-                          const transcriptClose = await transcriptPort.quiesce();
-                          if (outcome.status === "rejected") throw outcome.error;
-                          if (transcriptClose.failedPublicationCount !== 0) {
-                            throw new Error(
-                              "Protected Task transcript publication did not complete",
-                            );
-                          }
-                          const result = outcome.value;
-                          if ("status" in result) {
-                            throw new TypeError(
-                              "Protected Task fixed Memory continuation is unavailable",
-                            );
-                          }
-                          return result;
-                        },
-                      }),
-                    });
-                  },
-                });
-              },
-            });
+                            now,
+                            assertCurrentTaskAuthority,
+                            createDedicatedPool: input.createDedicatedPool,
+                            execute: async checkpointSaver => {
+                              const memoryHandoff: MemoryHandoff = Object.freeze({
+                                search: repository,
+                                repository,
+                                fullEncryptionOnly:
+                                  policy.mode === "encrypted_only",
+                              });
+                              const segment: RunProtectedTaskNativeSegmentInput = {
+                                mode: "native",
+                                taskId: runningOccurrence.task.id,
+                                taskRunId: runningOccurrence.run.id,
+                                graphThreadId:
+                                  runningOccurrence.run.graphThreadId,
+                                signal,
+                                checkpointSaver,
+                                transcriptPort,
+                                memoryHandoff,
+                                transientInput,
+                                execution: Object.freeze({
+                                  ...context,
+                                  parentThreadId:
+                                    runningOccurrence.task.callingRoomId === null
+                                      ? `task:${runningOccurrence.task.id}`
+                                      : `room:${runningOccurrence.task.callingRoomId}`,
+                                  parentTurnId: runningOccurrence.run.id,
+                                  parentOwnerId: runningOccurrence.task.ownerId,
+                                  causalHumanUserId:
+                                    runningOccurrence.task.requestorId,
+                                  brief: payload.prompt,
+                                  ...(payload.expectedOutput === null
+                                    ? {}
+                                    : { expectedOutput: payload.expectedOutput }),
+                                  subEnvelope: predispatch.memory.envelope,
+                                  actorRole: "owner",
+                                  roomId: predispatch.scheduling.roomId,
+                                  ...(runningOccurrence.task.callingRoomId === null
+                                    ? {}
+                                    : {
+                                        callingRoomId:
+                                          runningOccurrence.task.callingRoomId,
+                                      }),
+                                }),
+                              };
+                              return dependencies.runSegment(segment);
+                            },
+                          }),
+                        })).then(
+                        value => ({ status: "fulfilled", value } as const),
+                        (error: unknown) =>
+                          ({ status: "rejected", error } as const),
+                      );
+                      const transcriptClose = await transcriptPort.quiesce();
+                      if (transcriptClose.failedPublicationCount !== 0) {
+                        throw new Error(
+                          "Protected Task transcript publication did not complete",
+                        );
+                      }
+                      if (segmentOutcome.status === "rejected") {
+                        throw segmentOutcome.error;
+                      }
+                      return segmentOutcome.value;
+                    },
+                  });
+                },
+              })).then(
+              value => ({ status: "fulfilled", value } as const),
+              (error: unknown) => ({ status: "rejected", error } as const),
+            );
+            if (outcome.status === "rejected") {
+              signal.throwIfAborted();
+              await publication.publish(createProtectedTaskFailurePayload());
+              return;
+            }
+            const terminalPayload = outcome.value;
+            if ("status" in terminalPayload) {
+              if (terminalPayload.status === "aborted") {
+                signal.throwIfAborted();
+              }
+              throw new TypeError(
+                "Protected Task fixed Memory continuation is unavailable",
+              );
+            }
             signal.throwIfAborted();
-            await resultPublication(transientInput).publish(terminalPayload);
+            await publication.publish(terminalPayload);
           } finally {
             dependencies.destroyRequest(request);
           }

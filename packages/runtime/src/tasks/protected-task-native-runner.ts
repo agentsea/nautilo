@@ -126,7 +126,7 @@ function exactIdentity(input: RunProtectedTaskNativeSegmentInput): void {
   }
 }
 
-function failedPayload(): TaskRunResultPayloadV1 {
+export function createProtectedTaskFailurePayload(): TaskRunResultPayloadV1 {
   return Object.freeze({
     formatVersion: 1,
     resultText: null,
@@ -287,12 +287,12 @@ export async function runProtectedTaskNativeSegment(
     result = await dependencies.runScopeSubagent(runnerOptions(input));
   } catch {
     if (input.signal.aborted) return Object.freeze({ status: "aborted" });
-    return failedPayload();
+    return createProtectedTaskFailurePayload();
   }
 
   if (input.signal.aborted) return Object.freeze({ status: "aborted" });
   if (result.threadId !== input.graphThreadId) {
-    return failedPayload();
+    return createProtectedTaskFailurePayload();
   }
   if (result.status === "interrupted") {
     const interruptCoordinates = exactInterruptCoordinates(

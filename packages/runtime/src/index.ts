@@ -373,6 +373,7 @@ export {
   type ParkedProtectedTaskOccurrenceCoordinatorDeps,
 } from "./tasks/protected-task-occurrence-coordinator";
 export {
+  createProtectedTaskFailurePayload,
   runProtectedTaskNativeSegment,
   type ProtectedTaskNativeExecution,
   type ProtectedTaskNativeRunnerDependencies,

@@ -578,6 +578,7 @@ async function withScenario<Value>(
   outcome: "complete" | "throw" | "interrupt",
   use: (scenario: Awaited<ReturnType<typeof executeScenario>>) => Promise<Value>,
   onDefinitionClose?: () => void,
+  grantSignal: AbortSignal = new AbortController().signal,
 ): Promise<Value> {
   const value = await fixture(mode);
   const calls: string[] = [];
@@ -607,7 +608,7 @@ async function withScenario<Value>(
         record: value.record,
         domains: value.domains,
         evidence,
-        signal: new AbortController().signal,
+        signal: grantSignal,
       });
       const input = executorInput(value.occurrence, transient, published, calls);
       return use({ value, calls, published, prepared, transient, input });
@@ -687,6 +688,116 @@ describe("protected Task native fixed Memory segment", () => {
     expect(scenario.calls).toEqual([]);
   });
 
+  test("publishes one generic failure after each protected setup owner unwinds", async () => {
+    for (const stage of [
+      "definition",
+      "context",
+      "signer",
+      "transcript",
+      "memory",
+      "checkpoint",
+    ] as const) {
+      const value = await fixture();
+      const calls: string[] = [];
+      const terminal: unknown[] = [];
+      const sentinel = `raw ${stage} failure`;
+      let fixedInput = compositionInput(value.crypto, runner());
+      let fixedOverrides = overrides(calls);
+      if (stage === "definition") {
+        fixedOverrides = {
+          ...fixedOverrides,
+          openDefinition: async () => {
+            calls.push("definition-open", "definition-close");
+            throw new Error(sentinel);
+          },
+        };
+      } else if (stage === "context") {
+        fixedInput = {
+          ...fixedInput,
+          resolveExecutionContext: async () => { throw new Error(sentinel); },
+        };
+      } else if (stage === "signer") {
+        fixedOverrides = {
+          ...fixedOverrides,
+          withSigner: async () => {
+            calls.push("signer-open", "signer-close");
+            throw new Error(sentinel);
+          },
+        };
+      } else if (stage === "transcript") {
+        fixedOverrides = {
+          ...fixedOverrides,
+          createTranscriptPort: () => { throw new Error(sentinel); },
+        };
+      } else if (stage === "memory") {
+        fixedOverrides = {
+          ...fixedOverrides,
+          withMemoryRepository: async () => {
+            calls.push("repository-open", "repository-close");
+            throw new Error(sentinel);
+          },
+        };
+      } else {
+        fixedOverrides = {
+          ...fixedOverrides,
+          withCheckpointSaver: async () => {
+            calls.push("checkpoint-open", "checkpoint-close");
+            throw new Error(sentinel);
+          },
+        };
+      }
+      const prepare = createProtectedTaskNativeFixedMemorySegment(
+        fixedInput,
+        fixedOverrides,
+      );
+      await withTaskRuntimeExecutionEvidenceV1({
+        evidence: value.evidenceInput,
+        signal: new AbortController().signal,
+        now: () => NOW,
+        execute: async evidence => {
+          const prepared = await prepare({
+            occurrence: value.occurrence,
+            predispatch: value.predispatch,
+            policy: value.policy,
+            reference: value.reference,
+            stableRoutingDigest: value.stableRoutingDigest,
+          });
+          const transient = await prepared.openTransientInput({
+            occurrence: value.runningOccurrence,
+            record: value.record,
+            domains: value.domains,
+            evidence,
+            signal: new AbortController().signal,
+          });
+          await consume(prepared.executor(
+            executorInput(value.occurrence, transient, terminal, calls),
+            JOB,
+            `task:${TASK}`,
+            new AbortController().signal,
+          ));
+        },
+      });
+      expect(terminal).toEqual([{
+        formatVersion: 1,
+        resultText: null,
+        lastError: "Protected Task execution failed",
+      }]);
+      expect(JSON.stringify(terminal)).not.toContain(sentinel);
+      const finalOwnerClose = stage === "definition" || stage === "context"
+        ? "definition-close"
+        : stage === "signer" || stage === "transcript"
+          ? "signer-close"
+          : stage === "memory"
+            ? "repository-close"
+            : "checkpoint-close";
+      expect(calls).toContain(finalOwnerClose);
+      expect(calls.indexOf(finalOwnerClose))
+        .toBeLessThan(calls.indexOf("result-publish"));
+      expect(calls.at(-2)).toBe("result-publish");
+      expect(calls.at(-1)).toBe("request-destroy");
+    }
+  });
+
   test("constructs the transcript publisher under the signer owner and cleans up construction failure", async () => {
     const value = await fixture();
     const calls: string[] = [];
@@ -722,8 +833,7 @@ describe("protected Task native fixed Memory segment", () => {
       },
     });
 
-    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
-    await expect(withTaskRuntimeExecutionEvidenceV1({
+    await withTaskRuntimeExecutionEvidenceV1({
       evidence: value.evidenceInput,
       signal: new AbortController().signal,
       now: () => NOW,
@@ -749,16 +859,22 @@ describe("protected Task native fixed Memory segment", () => {
           new AbortController().signal,
         ));
       },
-    })).rejects.toThrow("publisher construction failed");
+    });
 
     expect(signerOwnerOpen).toBe(false);
-    expect(terminal).toEqual([]);
+    expect(terminal).toEqual([{
+      formatVersion: 1,
+      resultText: null,
+      lastError: "Protected Task execution failed",
+    }]);
+    expect(JSON.stringify(terminal)).not.toContain("publisher construction failed");
     expect(calls).toEqual([
       "definition-open",
       "signer-open",
       "publisher-build",
       "signer-close",
       "definition-close",
+      "result-publish",
       "request-destroy",
     ]);
   });
@@ -813,20 +929,24 @@ describe("protected Task native fixed Memory segment", () => {
             JOB, `task:${TASK}`, new AbortController().signal,
           ));
           await started.promise;
-          expect(calls).not.toContain("checkpoint-close");
           expect(terminal).toEqual([]);
           release.resolve();
           if (fails) {
-            // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
-            await expect(execution).rejects.toThrow("transcript publication did not complete");
-            expect(terminal).toEqual([]);
+            await execution;
+            expect(terminal).toEqual([{
+              formatVersion: 1,
+              resultText: null,
+              lastError: "Protected Task execution failed",
+            }]);
           } else {
             await execution;
             expect(terminal).toHaveLength(1);
             expect(calls.indexOf("transcript-stored"))
-              .toBeLessThan(calls.indexOf("checkpoint-close"));
+              .toBeLessThan(calls.indexOf("signer-close"));
           }
           expect(calls).toContain("definition-close");
+          expect(calls.indexOf("definition-close"))
+            .toBeLessThan(calls.indexOf("result-publish"));
         },
       });
     });
@@ -905,67 +1025,111 @@ describe("protected Task native fixed Memory segment", () => {
     );
   });
 
-  test("closes callback owners on runner failure and rejects unsupported continuation", async () => {
+  test("settles runner failure after closing owners and rejects unsupported continuation", async () => {
     for (const outcome of ["throw", "interrupt"] as const) {
       await withScenario("namespace", outcome, async scenario => {
-        // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
-        await expect(consume(scenario.prepared.executor(
+        const execution = consume(scenario.prepared.executor(
           scenario.input,
           JOB,
           `task:${TASK}`,
           new AbortController().signal,
-        ))).rejects.toThrow(outcome === "throw"
-          ? "runner failed"
-          : "continuation is unavailable");
-        expect(scenario.calls.slice(-5)).toEqual([
-          "checkpoint-close",
-          "repository-close",
-          "signer-close",
-          "definition-close",
-          "request-destroy",
-        ]);
+        ));
+        if (outcome === "interrupt") {
+          const failure = await execution.then(
+            () => null,
+            (error: unknown) => error,
+          );
+          expect(failure).toBeInstanceOf(Error);
+          if (!(failure instanceof Error)) throw failure;
+          expect(failure.message).toContain("continuation is unavailable");
+          expect(scenario.published).toEqual([]);
+        } else {
+          await execution;
+          expect(scenario.published).toEqual([{
+            formatVersion: 1,
+            resultText: null,
+            lastError: "Protected Task execution failed",
+          }]);
+          expect(JSON.stringify(scenario.published)).not.toContain("runner failed");
+          expect(scenario.calls.indexOf("definition-close"))
+            .toBeLessThan(scenario.calls.indexOf("result-publish"));
+        }
+        expect(scenario.calls.at(-1)).toBe("request-destroy");
       });
     }
   });
 
   test("does not publish a terminal result after Job cancellation during owner close", async () => {
     const job = new AbortController();
-    await withScenario("namespace", "complete", async scenario => {
-      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
-      await expect(consume(scenario.prepared.executor(
+    await withScenario("namespace", "throw", async scenario => {
+      const failure = await consume(scenario.prepared.executor(
         scenario.input,
         JOB,
         `task:${TASK}`,
         job.signal,
-      ))).rejects.toThrow();
+      )).then(() => null, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      if (!(failure instanceof Error)) throw failure;
+      expect(failure.message).not.toContain("runner failed");
       expect(scenario.published).toEqual([]);
       expect(scenario.calls).not.toContain("result-publish");
       expect(scenario.calls).toContain("definition-close");
     }, () => { job.abort(); });
   });
 
-  test("awaits terminal publication failure after all protected owners close", async () => {
-    await withScenario("namespace", "complete", async scenario => {
-      let attempts = 0;
-      scenario.input["protectedTaskResultPublication"] = {
-        publish: async () => {
-          attempts += 1;
-          throw new Error("terminal publication failed");
-        },
-      };
-      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
-      await expect(consume(scenario.prepared.executor(
+  test("does not publish a terminal result after grant cancellation during owner close", async () => {
+    const grant = new AbortController();
+    await withScenario("namespace", "throw", async scenario => {
+      const failure = await consume(scenario.prepared.executor(
         scenario.input,
         JOB,
         `task:${TASK}`,
         new AbortController().signal,
-      ))).rejects.toThrow("terminal publication failed");
-      expect(attempts).toBe(1);
-      expect(scenario.calls.slice(-2)).toEqual([
-        "definition-close",
-        "request-destroy",
-      ]);
-    });
+      )).then(() => null, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      if (!(failure instanceof Error)) throw failure;
+      expect(failure.message).not.toContain("runner failed");
+      expect(scenario.published).toEqual([]);
+      expect(scenario.calls).not.toContain("result-publish");
+      expect(scenario.calls).toContain("definition-close");
+    }, () => { grant.abort(); }, grant.signal);
+  });
+
+  test("propagates one terminal publication failure after all protected owners close", async () => {
+    for (const outcome of ["complete", "throw"] as const) {
+      await withScenario("namespace", outcome, async scenario => {
+        let attempts = 0;
+        let attemptedPayload: unknown;
+        scenario.input["protectedTaskResultPublication"] = {
+          publish: async (payload: unknown) => {
+            attempts += 1;
+            attemptedPayload = payload;
+            throw new Error("terminal publication failed");
+          },
+        };
+        const failure = await consume(scenario.prepared.executor(
+          scenario.input,
+          JOB,
+          `task:${TASK}`,
+          new AbortController().signal,
+        )).then(() => null, (error: unknown) => error);
+        expect(failure).toBeInstanceOf(Error);
+        if (!(failure instanceof Error)) throw failure;
+        expect(failure.message).toContain("terminal publication failed");
+        expect(attempts).toBe(1);
+        if (outcome === "throw") {
+          expect(attemptedPayload).toEqual({
+            formatVersion: 1,
+            resultText: null,
+            lastError: "Protected Task execution failed",
+          });
+        }
+        expect(scenario.calls.slice(-2)).toEqual([
+          "definition-close",
+          "request-destroy",
+        ]);
+      });
+    }
   });
 
   test("snapshots admitted identity and prohibits initial-segment resume context", async () => {
@@ -1012,6 +1176,7 @@ describe("protected Task native fixed Memory segment", () => {
       signal: new AbortController().signal,
       now: () => NOW,
       execute: async (evidence: TaskRuntimeExecutionEvidence) => {
+        const terminal: unknown[] = [];
         const transient = await prepared.openTransientInput({
           occurrence: value.runningOccurrence,
           record: value.record,
@@ -1019,13 +1184,17 @@ describe("protected Task native fixed Memory segment", () => {
           evidence,
           signal: new AbortController().signal,
         });
-        // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
-        await expect(consume(prepared.executor(
-          executorInput(value.occurrence, transient, []),
+        await consume(prepared.executor(
+          executorInput(value.occurrence, transient, terminal),
           JOB,
           `task:${TASK}`,
           new AbortController().signal,
-        ))).rejects.toThrow("execution context is invalid");
+        ));
+        expect(terminal).toEqual([{
+          formatVersion: 1,
+          resultText: null,
+          lastError: "Protected Task execution failed",
+        }]);
       },
     });
   });
@@ -1067,6 +1236,7 @@ describe("protected Task native fixed Memory segment", () => {
       signal: new AbortController().signal,
       now: () => NOW,
       execute: async evidence => {
+        const terminal: unknown[] = [];
         const prepared = await prepare({
           occurrence: value.occurrence,
           predispatch: value.predispatch,
@@ -1081,13 +1251,17 @@ describe("protected Task native fixed Memory segment", () => {
           evidence,
           signal: new AbortController().signal,
         });
-        // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
-        await expect(consume(prepared.executor(
-          executorInput(value.occurrence, transient, []),
+        await consume(prepared.executor(
+          executorInput(value.occurrence, transient, terminal),
           JOB,
           `task:${TASK}`,
           new AbortController().signal,
-        ))).rejects.toThrow("requires a specialized route");
+        ));
+        expect(terminal).toEqual([{
+          formatVersion: 1,
+          resultText: null,
+          lastError: "Protected Task execution failed",
+        }]);
       },
     });
     expect(contextResolutions).toBe(0);
