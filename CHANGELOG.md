@@ -16,6 +16,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Unanswered Surplus chat, research and decision calls fall back within the same
   payer even when marketplace charges are unresolved. Each attempt keeps its
   own costs; cancellation and delivered text or tool calls stop fallback.
+  Surplus streaming accepts usage-metering adjustments while preserving provider
+  and inference-setting checks.
 - Reflection allows up to ten minutes per poll, preserves completed batch results
   when repair runs out of time, and gives other eligible records a turn after
   timed-out work yields.

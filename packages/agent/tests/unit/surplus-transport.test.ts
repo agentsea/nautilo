@@ -404,15 +404,18 @@ describe("Surplus wire boundary", () => {
     )).not.toThrow();
   });
 
-  test("accepts only the cache routing hint while preserving provider and inference guards", () => {
+  test("accepts cache and stream metering hints while preserving provider and inference guards", () => {
     const receipt = { providerFamily: "venice", truncated: false };
-    expect(() => assertSuccessfulSurplusProviderReceipt(
-      VENICE_ROUTE, { ...receipt, adaptedParameters: " prompt_cache_key " }, 200,
-    )).not.toThrow();
+    for (const adaptation of [" prompt_cache_key ", "stream_options", "stream_options, prompt_cache_key"]) {
+      expect(() => assertSuccessfulSurplusProviderReceipt(
+        VENICE_ROUTE, { ...receipt, adaptedParameters: adaptation }, 200,
+      )).not.toThrow();
+    }
     for (const adaptation of [
       "model", "reasoning_effort", "max_completion_tokens", "response_format",
       "prompt_cache_retention", "session_id", "unknown_setting", "PROMPT_CACHE_KEY",
       "prompt_cache_key,reasoning_effort", "prompt_cache_key,", ",prompt_cache_key",
+      "stream_options,reasoning_effort", "stream_options,", "STREAM_OPTIONS",
     ]) {
       expect(() => assertSuccessfulSurplusProviderReceipt(
         VENICE_ROUTE, { ...receipt, adaptedParameters: adaptation }, 200,
@@ -423,7 +426,7 @@ describe("Surplus wire boundary", () => {
     )).toThrow(SurplusProviderRouteMismatchError);
   });
 
-  test("cache-hint adaptation consumes the streamed completion and its terminal usage once", async () => {
+  test.each(["prompt_cache_key", "stream_options", "prompt_cache_key,stream_options"])("benign adaptation %s retains the complete answer and terminal usage once", async (adaptation) => {
     const route = { ...QUALIFIED_OPENROUTER_ROUTE, catalogModelId: "openai:gpt-5.6-luna", surplusModelId: "gpt-5.6-luna", providerPin: "openai" as const };
     const chunks = [{
       id: "chatcmpl-surplus-cache-hint", object: "chat.completion.chunk", created: 1, model: "gpt-5.6-luna",
@@ -441,15 +444,15 @@ describe("Surplus wire boundary", () => {
         requests++;
         return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", {
           status: 200, headers: { "content-type": "text/event-stream", "x-request-id": "request-cache-hint",
-            "x-si-provider-family": "openai", "x-si-adapted-params": "prompt_cache_key" },
+            "x-si-provider-family": "openai", "x-si-adapted-params": adaptation },
         });
       }) as unknown as typeof fetch,
     });
     const response = await model.invoke([new HumanMessage("Extract the journal")]) as AIMessage;
     expect(response.content).toBe('{"operations":[]}');
     expect(() => assertCompleteSurplusResponse(receipt, response)).not.toThrow();
-    expect(readSurplusResponseUsage(response)).toMatchObject({ inputTokens: 50, outputTokens: 7, totalTokens: 57 });
-    expect(receipt?.adaptedParameters).toBe("prompt_cache_key");
+    expect(readSurplusResponseUsage(response)).toMatchObject({ inputTokens: 50, outputTokens: 7, totalTokens: 57, buyerCostMicro: 91 });
+    expect(receipt?.adaptedParameters).toBe(adaptation);
     expect(requests).toBe(1);
     expect(classifySurplusFailedAttempt({
       error: new Error("connection lost"), cancelled: false, responseStatus: 200, receipt, deliveredOutput: false,

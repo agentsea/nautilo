@@ -116,10 +116,14 @@ export function canUseQualifiedSurplusChatRoute(input: {
 
 function hasUnsupportedSurplusAdaptation(adaptedParameters: string | undefined): boolean {
   const adapted = adaptedParameters?.trim();
-  // This key only chooses a prompt cache bucket. It does not change the prompt,
-  // model, output budget, or reasoning controls. Other or mixed adaptations
-  // still fail closed; cache retention and session affinity are not exempt.
-  return Boolean(adapted && adapted !== "prompt_cache_key");
+  // Surplus may choose a cache bucket and overwrite stream_options with
+  // include_usage:true for metering, which our adapter already requests.
+  // Neither changes inference semantics. Reject every other adaptation,
+  // including malformed lists and mixtures with inference-changing settings.
+  return Boolean(adapted && adapted.split(",").some((parameter) => {
+    const name = parameter.trim();
+    return name !== "prompt_cache_key" && name !== "stream_options";
+  }));
 }
 
 /** A successful marketplace response must preserve the provider and inference settings. */
