@@ -256,7 +256,7 @@ describe("share_memory projection contract", () => {
     expect(JSON.stringify(eventArgs)).not.toContain("sealed-preparation-one");
   });
 
-  test("protected execution rejects actor changes and subagent runs before publish", async () => {
+  test("protected execution binds foreground Human or exact Task causal requester before publish", async () => {
     const now = Date.now();
     const protectedSnapshot = bindProtectedProjectionReference({
       referenceVersion: 1,
@@ -318,6 +318,30 @@ describe("share_memory projection contract", () => {
       )).toMatchObject({ status: "stale" });
     }
     expect(publishes).toBe(0);
+    const taskState = {
+      ...base,
+      userId: "canonical-task-recipient",
+      causalHumanUserId: "user-1",
+      taskRun: true,
+      subagentRun: true,
+      trustedExecutionEntrypoint: "background.task",
+      currentTaskId: "task-1",
+      currentTaskRunId: "task-run-1",
+      currentThreadId: "task-thread-1",
+      langgraphThreadId: "task-thread-1",
+    } as NautiloState;
+    expect(await executeTrustedProjection(
+      protectedSnapshot,
+      taskState,
+      port,
+    )).toMatchObject({ status: "success" });
+    expect(publishes).toBe(1);
+    expect(await executeTrustedProjection(
+      protectedSnapshot,
+      { ...taskState, causalHumanUserId: "substituted-requester" },
+      port,
+    )).toMatchObject({ status: "stale" });
+    expect(publishes).toBe(1);
     expect(await executeTrustedProjection(protectedSnapshot, base, {
       ...port,
       publish: async () => ({ status: "unavailable", reason: "integrity_failure" }),
@@ -419,6 +443,103 @@ describe("share_memory projection contract", () => {
     expect(checkpoint).not.toContain("approved projection text");
     expect(projectionApprovalPreview(result.snapshots[0]!)?.projection.content)
       .toBe("approved projection text");
+  });
+
+  test("protected Task preflight uses the causal requester independently of its canonical recipient", async () => {
+    const now = Date.now();
+    const sourceId = "550e8400-e29b-41d4-a716-446655440001";
+    const preparedRequesterIds: string[] = [];
+    const state = {
+      messages: [new ToolMessage({
+        name: "search_memory",
+        tool_call_id: "search-1",
+        content: `Memory search results v2 (1 result)\n1. [fact] (id: ${sourceId}, tier: 1) private`,
+        additional_kwargs: { nautilo_tool_status: "success" },
+      })],
+      userId: "canonical-task-recipient",
+      causalHumanUserId: "causal-requester",
+      taskRun: true,
+      subagentRun: true,
+      trustedExecutionEntrypoint: "background.task",
+      currentTaskId: "task-1",
+      currentTaskRunId: "task-run-1",
+      currentThreadId: "task-thread-1",
+      langgraphThreadId: "task-thread-1",
+      memoryAccessEnvelope: {
+        memoryMode: "namespace",
+        ownerId: "causal-requester",
+        actorId: "causal-actor",
+        agentId: "agent-1",
+        roomId: "room-1",
+        readableNamespaces: ["namespace-1"],
+        mutableNamespaces: ["namespace-1"],
+        writableNamespaces: ["namespace-1"],
+        toolPolicy: {},
+      },
+    } as unknown as NautiloState;
+    const result = await preflightProtectedProjectionShareCalls(state, [{
+      id: "projection-task-call",
+      name: "share_memory",
+      type: "tool_call",
+      args: {
+        mode: "project",
+        source_memory_ids: [sourceId],
+        proposed_content: "approved Task projection",
+        target_room_name: "team",
+      },
+    }], {
+      prepare: async ({ authority }) => {
+        preparedRequesterIds.push(authority.subjectUserId);
+        return { status: "success", value: {
+          kind: "prepared",
+          reference: {
+            referenceVersion: 1,
+            referenceId: "task-projection-reference",
+            toolCallId: "projection-task-call",
+            requesterUserId: "causal-requester",
+            requesterActorId: "causal-actor",
+            agentId: "agent-1",
+            createdAt: now,
+            expiresAt: now + 60_000,
+          },
+          preview: {
+            proposedContent: "approved Task projection",
+            roomLabel: "Team",
+            roomKind: "group",
+            memberCount: 3,
+          },
+        } };
+      },
+      publish: async () => ({
+        status: "unavailable",
+        reason: "authorization_required",
+      }),
+    });
+    expect(preparedRequesterIds).toEqual(["causal-requester"]);
+    expect(result.rejectedToolCallIds).toEqual([]);
+    expect(result.snapshots[0]).toMatchObject({
+      requesterUserId: "causal-requester",
+      requesterActorId: "causal-actor",
+    });
+
+    const rejected = await preflightProtectedProjectionShareCalls({
+      ...state,
+      causalHumanUserId: "substituted-requester",
+    } as NautiloState, [{
+      id: "projection-task-call",
+      name: "share_memory",
+      type: "tool_call",
+      args: {
+        mode: "project",
+        source_memory_ids: [sourceId],
+        proposed_content: "approved Task projection",
+        target_room_name: "team",
+      },
+    }], {
+      prepare: async () => { throw new Error("must not prepare"); },
+      publish: async () => { throw new Error("must not publish"); },
+    });
+    expect(rejected.rejectedToolCallIds).toEqual(["projection-task-call"]);
   });
 
   test("protected preflight node removes proposal plaintext and provenance from model tool args", async () => {

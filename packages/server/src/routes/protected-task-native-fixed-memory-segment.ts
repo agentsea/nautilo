@@ -956,7 +956,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                           agentProduct: input.agentProduct,
                           owner: input.owner,
                           embedding: input.embedding,
-                          execute: repository => dependencies.withCheckpointSaver({
+                          execute: (repository, projection) => dependencies.withCheckpointSaver({
                             restricted: input.restricted,
                             crypto: input.crypto,
                             serverScope: input.serverScope,
@@ -983,6 +983,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                               const memoryHandoff: MemoryHandoff = Object.freeze({
                                 search: repository,
                                 repository,
+                                projection,
                                 fullEncryptionOnly:
                                   policy.mode === "encrypted_only",
                               });

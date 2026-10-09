@@ -17,6 +17,10 @@ const SCOPE_ID = "scope-1";
 const SCOPE_ROOM_ID = "scope-room-1";
 const ORIGIN_NAMESPACE_ID = "namespace-origin-1";
 const TURN_ID = "turn-1";
+const PROJECTION_REQUIREMENTS = Object.freeze([Object.freeze({
+  namespaceId: "550e8400-e29b-41d4-a716-446655440000",
+  operations: Object.freeze(["encrypt" as const]),
+})]);
 
 const unavailable = async () => Object.freeze({
   status: "unavailable" as const,
@@ -40,7 +44,18 @@ function handoff(
     access: Object.freeze({ change: unavailable }),
     projection: Object.freeze({
       prepare: unavailable,
-      publish: unavailable,
+      restore: unavailable,
+      planPublication: async () => ({
+        status: "success" as const,
+        value: Object.freeze({
+          planVersion: 1 as const,
+          kind: "current_v1" as const,
+          operationId: "projection-operation",
+          requestDigest: new Uint8Array(32).fill(1),
+          semanticAuthorityRequirements: PROJECTION_REQUIREMENTS,
+        }),
+      }),
+      publishAuthorized: unavailable,
     }),
     fullEncryptionOnly,
   });
@@ -158,8 +173,10 @@ describe("protected Task Memory graph handoff", () => {
         .toBe(expectedHandoff.repository);
       expect(deps.protectedMemoryAccessPortForState?.(current))
         .toBe(expectedHandoff.access);
-      expect(deps.protectedMemoryProjectionPortForState?.(current))
-        .toBe(expectedHandoff.projection);
+      const projection = deps.protectedMemoryProjectionPortForState?.(current);
+      expect(projection).toBeDefined();
+      expect(projection).not.toBe(expectedHandoff.projection);
+      expect(typeof projection?.publish).toBe("function");
       expect(deps.fullEncryptionOnlyForState?.(current))
         .toBe(fullEncryptionOnly);
     }
@@ -202,7 +219,13 @@ describe("protected Task Memory graph handoff", () => {
       const resolver = field === "access"
         ? deps.protectedMemoryAccessPortForState
         : deps.protectedMemoryProjectionPortForState;
-      expect(resolver?.(current)).toBe(expectedPort);
+      const resolved = resolver?.(current);
+      if (field === "access") {
+        expect(resolved).toBe(expectedPort);
+      } else {
+        expect(resolved).not.toBe(expectedPort);
+        expect("publish" in (resolved ?? {})).toBe(true);
+      }
       expect(absentField in deps).toBe(false);
     }
   });
@@ -224,8 +247,10 @@ describe("protected Task Memory graph handoff", () => {
       .toBe(original.repository);
     expect(deps.protectedMemoryAccessPortForState?.(current))
       .toBe(original.access);
-    expect(deps.protectedMemoryProjectionPortForState?.(current))
-      .toBe(original.projection);
+    const projection = deps.protectedMemoryProjectionPortForState?.(current);
+    expect(projection).toBeDefined();
+    expect(projection).not.toBe(original.projection);
+    expect(projection).not.toBe(replacement.projection);
     expect(deps.fullEncryptionOnlyForState?.(current)).toBe(false);
   });
 

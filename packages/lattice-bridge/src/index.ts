@@ -263,6 +263,11 @@ export type {
   AgentEntityNamespaceAuthority,
 } from "./object/agent-entity-crypto.ts";
 export {
+  createAgentMemoryProjectionContinuationCapsule,
+  type AgentMemoryProjectionContinuationCapsule,
+  type AgentMemoryProjectionContinuationIdentityV1,
+} from "./memory/projection-continuation-capsule.ts";
+export {
   createAgentObjectProtector,
   type AgentObjectPreparationSource,
   type AgentObjectProtectionNamespace,

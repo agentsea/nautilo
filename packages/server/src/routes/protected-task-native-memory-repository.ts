@@ -1,4 +1,5 @@
 import type { DomainForegroundSecretEntry } from "@nautilo/lattice-crypto";
+import type { ProtectedTaskMemoryProjectionHandoff } from "@nautilo/agent";
 import type {
   ResolveHistoricalAgentRuntimeSignerPublicationManager,
 } from "@nautilo/lattice-crypto";
@@ -53,6 +54,9 @@ import {
 } from "./foreground-memory-repository";
 
 import { createProtectedTaskMemoryOrdinaryFallback } from "./protected-task-memory-ordinary-fallback";
+import {
+  createProtectedTaskMemoryProjection,
+} from "./protected-task-memory-projection";
 
 type ProductContext = Readonly<{
   handle: ConversationProductPostgresHandle;
@@ -71,7 +75,10 @@ export type ProtectedTaskNativeMemoryRepositoryInput<Value> = Readonly<{
   agentProduct: ProductContext;
   owner: EncryptionDataOperationOwner;
   embedding: ProtectedAgentMemoryEmbeddingPort;
-  execute(repository: ProtectedAgentMemoryRepository): Promise<Value>;
+  execute(
+    repository: ProtectedAgentMemoryRepository,
+    projection: ProtectedTaskMemoryProjectionHandoff,
+  ): Promise<Value>;
 }>;
 
 type Dependencies = Readonly<{
@@ -86,6 +93,7 @@ type Dependencies = Readonly<{
   createSession: typeof createTaskRuntimeDomainMemoryCryptoSession;
   createBoundaries: typeof createProtectedTaskMemoryBoundaries;
   createRepository: typeof createProtectedTaskMemoryRepository;
+  createProjection: typeof createProtectedTaskMemoryProjection;
   persistObject: typeof persistProtectedTaskMemoryObject;
   requireHeldWriterAuthority:
     typeof requireHeldProtectedTaskMemoryWriterAuthority;
@@ -114,6 +122,7 @@ const productionDependencies: Dependencies = Object.freeze({
   createSession: createTaskRuntimeDomainMemoryCryptoSession,
   createBoundaries: createProtectedTaskMemoryBoundaries,
   createRepository: createProtectedTaskMemoryRepository,
+  createProjection: createProtectedTaskMemoryProjection,
   persistObject: persistProtectedTaskMemoryObject,
   requireHeldWriterAuthority:
     requireHeldProtectedTaskMemoryWriterAuthority,
@@ -232,6 +241,13 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
   if (representation.write === "ordinary_only") {
     throw new TypeError("Protected native Task Memory policy is unavailable");
   }
+  const protectedPolicy = Object.freeze({
+    mode: policy.mode === "shadow_encryption"
+      ? "shadow_encryption" as const
+      : "encrypted_only" as const,
+    shadowBehavior: policy.shadowBehavior,
+    revision: policy.revision,
+  });
 
   const assertCurrentTaskAuthority = async (): Promise<void> => {
     const result = await dependencies.withCurrentAuthority(
@@ -316,7 +332,7 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
       });
       const boundaries = dependencies.createBoundaries({
         authority,
-        policy,
+        policy: protectedPolicy,
         current: scopedCurrent,
         ...(representation.write === "ordinary_and_protected"
           ? { readPreparedPayload: session.readPreparedPayload }
@@ -452,7 +468,18 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
             }),
         signal: entities.signal,
       });
-      return execute(repository);
+      const projection = dependencies.createProjection({
+        authority: boundaries.authority,
+        policy: protectedPolicy,
+        current: scopedCurrent,
+        agentAuthorizationRevision: signer.agentAuthorizationRevision,
+        entities,
+        session,
+        sourceProduct: mutationProduct,
+        product: agentProductContext,
+        embedding,
+      });
+      return execute(repository, projection);
     },
   });
 }

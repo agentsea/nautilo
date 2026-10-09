@@ -50,7 +50,9 @@ function memoryHandoff(): NonNullable<
     access: Object.freeze({ change: unavailable }),
     projection: Object.freeze({
       prepare: unavailable,
-      publish: unavailable,
+      restore: unavailable,
+      planPublication: unavailable,
+      publishAuthorized: unavailable,
     }),
     fullEncryptionOnly: false,
   });

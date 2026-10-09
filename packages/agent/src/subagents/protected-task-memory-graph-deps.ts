@@ -1,6 +1,5 @@
 import type {
   ProtectedAgentMemoryAccessPort,
-  ProtectedAgentMemoryProjectionPort,
   ProtectedAgentMemoryRepository,
   ProtectedAgentMemorySearchPort,
 } from "@nautilo/lattice-bridge";
@@ -14,6 +13,10 @@ import {
 
 import type { NautiloGraphDeps } from "../agent/graph";
 import type { NautiloState } from "../agent/state";
+import {
+  createProtectedTaskMemoryProjectionPort,
+  type ProtectedTaskMemoryProjectionHandoff,
+} from "../tools/memory/protected-task-projection-authority";
 
 export type ProtectedTaskMemoryGraphIdentity = Readonly<{
   taskId: string;
@@ -35,7 +38,7 @@ export type ProtectedTaskMemoryGraphHandoff = Readonly<{
   search: ProtectedAgentMemorySearchPort;
   repository: ProtectedAgentMemoryRepository;
   access?: ProtectedAgentMemoryAccessPort;
-  projection?: ProtectedAgentMemoryProjectionPort;
+  projection?: ProtectedTaskMemoryProjectionHandoff;
   /** Trusted policy-owner decision. This adapter never derives a mode. */
   fullEncryptionOnly: boolean;
 }>;
@@ -80,7 +83,12 @@ function validateHandoff(handoff: ProtectedTaskMemoryGraphHandoff): void {
     requiredMethod(handoff.access, "change", "access port");
   }
   if (handoff?.projection !== undefined) {
-    for (const method of ["prepare", "publish"] as const) {
+    for (const method of [
+      "prepare",
+      "restore",
+      "planPublication",
+      "publishAuthorized",
+    ] as const) {
       requiredMethod(handoff.projection, method, "projection port");
     }
   }
@@ -234,13 +242,16 @@ export function createProtectedTaskMemoryGraphDeps(
 ): ProtectedTaskMemoryGraphDeps | NoProtectedTaskMemoryGraphDeps {
   if (handoff === undefined) return Object.freeze({});
   validateHandoff(handoff);
+  const projection = handoff.projection === undefined
+    ? undefined
+    : createProtectedTaskMemoryProjectionPort(handoff.projection);
   const boundHandoff = Object.freeze({
     search: handoff.search,
     repository: handoff.repository,
     ...(handoff.access === undefined ? {} : { access: handoff.access }),
-    ...(handoff.projection === undefined
+    ...(projection === undefined
       ? {}
-      : { projection: handoff.projection }),
+      : { projection }),
     fullEncryptionOnly: handoff.fullEncryptionOnly,
   });
   for (const [name, value] of [

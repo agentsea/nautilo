@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { AIMessage } from "@langchain/core/messages";
 
+import type { ProtectedTaskMemoryProjectionHandoff } from "@nautilo/agent";
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
 import { bindEncryptionDataOperationOwner, type TaskPayloadV1 } from "@nautilo/lattice-bridge";
 import {
@@ -421,6 +422,12 @@ function overrides(
     replace: async () => ({ status: "unavailable" as const, reason: "authorization_required" as const }),
     setTier: async () => ({ status: "unavailable" as const, reason: "authorization_required" as const }),
   });
+  const projection: ProtectedTaskMemoryProjectionHandoff = Object.freeze({
+    prepare: async () => ({ status: "unavailable" as const, reason: "authorization_required" as const }),
+    restore: async () => ({ status: "unavailable" as const, reason: "authorization_required" as const }),
+    planPublication: async () => ({ status: "unavailable" as const, reason: "authorization_required" as const }),
+    publishAuthorized: async () => ({ status: "unavailable" as const, reason: "authorization_required" as const }),
+  });
   return {
     decodeRequest: decodeTaskRuntimeBackgroundAuthorizationRequestV1,
     destroyRequest: () => { calls.push("request-destroy"); },
@@ -489,12 +496,12 @@ function overrides(
       assertCurrent: async () => undefined,
     }),
     withMemoryRepository: async (input: {
-      execute(value: typeof repository): Promise<unknown>;
+      execute(value: typeof repository, projection: ProtectedTaskMemoryProjectionHandoff): Promise<unknown>;
       current: { jobId: string };
       authority: { mode: string };
     }) => {
       calls.push(`repository-open:${input.current.jobId}:${input.authority.mode}`);
-      try { return await input.execute(repository); }
+      try { return await input.execute(repository, projection); }
       finally { calls.push("repository-close"); }
     },
     withCheckpointSaver: async (input: {
@@ -530,9 +537,11 @@ function overrides(
       calls.push("runner");
       expect(Object.keys(input.memoryHandoff).sort()).toEqual([
         "fullEncryptionOnly",
+        "projection",
         "repository",
         "search",
       ]);
+      expect(input.memoryHandoff["projection"]).toBe(projection);
       if (outcome === "throw") throw new Error("runner failed");
       if (outcome === "interrupt" || outcome === "prove_it"
         || outcome === "identity" || outcome === "await_reply") {
@@ -688,7 +697,7 @@ describe("protected Task native fixed Memory segment", () => {
           ...envelope,
           readableNamespaces: [OTHER_NAMESPACE, NAMESPACE],
           mutableNamespaces: [OTHER_NAMESPACE, NAMESPACE],
-          writableNamespaces,
+          writableNamespaces: [...writableNamespaces],
         }),
       }),
     });

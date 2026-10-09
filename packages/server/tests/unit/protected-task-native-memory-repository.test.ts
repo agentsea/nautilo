@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { ProtectedTaskMemoryProjectionHandoff } from "@nautilo/agent";
 import type {
   ProtectedAgentMemoryRepository,
   ProtectedMemoryAuthority,
@@ -115,6 +116,7 @@ function assemblyOverrides(
     type: "fact",
   });
   const entitySignal = suppliedEntitySignal ?? new AbortController().signal;
+  const projection = Object.freeze({}) as ProtectedTaskMemoryProjectionHandoff;
   return {
     withCurrentAuthority: (async (_, use) => {
       events.push("authority");
@@ -166,6 +168,11 @@ function assemblyOverrides(
       expect(repositoryInput.read.handle).toBe(input.product.handle);
       expect(repositoryInput.signal).toBe(entitySignal);
       return repository;
+    },
+    createProjection: projectionInput => {
+      expect(projectionInput.current.signal).toBe(entitySignal);
+      expect(projectionInput.sourceProduct).toBeDefined();
+      return projection;
     },
   } as Overrides;
 }
@@ -361,9 +368,13 @@ describe("protected native Task Memory repository", () => {
       const events: string[] = [];
       const input = {
         ...fixtureInput,
-        execute: async (repository: ProtectedAgentMemoryRepository) => {
+        execute: async (
+          repository: ProtectedAgentMemoryRepository,
+          projection: ProtectedTaskMemoryProjectionHandoff,
+        ) => {
           events.push("execute");
           expect(repository).toBeDefined();
+          expect(projection).toBeDefined();
           return "assembled";
         },
       };
