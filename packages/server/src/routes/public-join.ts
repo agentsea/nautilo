@@ -98,22 +98,31 @@ export function publicJoinRoutes(app: FastifyInstance, options: PublicJoinRouteO
     if (!options.services) await importLegacySelection(options.legacyInviteToken);
     return services.readSelection();
   };
+  const currentEligibleToken = async (): Promise<string | null> => {
+    try {
+      const selection = await current();
+      if (!selection.inviteId || !(await options.isEnrollmentOpen())) return null;
+      return await services.eligibleToken(selection.inviteId);
+    } catch {
+      // Availability is public, so authority outages must fail closed without
+      // disclosing which backing check failed.
+      return null;
+    }
+  };
   app.get("/join", async (_request, reply) => {
     reply.header("cache-control", "no-store");
     reply.header("referrer-policy", "no-referrer");
     reply.header("x-robots-tag", "noindex, nofollow");
-    let token: string | null = null;
-    try {
-      const selection = await current();
-      if (selection.inviteId && await options.isEnrollmentOpen()) {
-        token = await services.eligibleToken(selection.inviteId);
-      }
-    } catch { /* Authority outages cannot accept new members. */ }
+    const token = await currentEligibleToken();
     // Browser navigation has no Workbench bearer header. Let the client decide
     // whether an existing session enters the app or a guest needs this invite.
     return reply.redirect(token
       ? `/join/continue?invite=${encodeURIComponent(token)}`
       : "/join/continue", 302);
+  });
+  app.get("/api/public-join", async (_request, reply) => {
+    reply.header("cache-control", "no-store");
+    return { available: (await currentEligibleToken()) !== null };
   });
   app.get("/api/admin/public-join", async (request, reply) => {
     reply.header("cache-control", "no-store");

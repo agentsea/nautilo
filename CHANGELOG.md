@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- The sign-in screen offers Join when the server has an active selected public
+  invitation and enrollment is open. Join follows the server's existing `/join`
+  address; personal invitation links remain available through I have an invite.
+
 - Desktop relays recover when the server expires their heartbeat registration
   while the connection remains open. A later heartbeat triggers authenticated
   reconnection so local tools can become available again; interrupted commands
