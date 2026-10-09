@@ -10,7 +10,7 @@ import type {
 } from "@nautilo/lattice-bridge/server";
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
-  ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 
 import {
@@ -123,7 +123,7 @@ function evidence(): TaskRuntimeExecutionEvidence {
   }) as unknown as TaskRuntimeExecutionEvidence;
 }
 
-function occurrence(): ProtectedTaskOccurrence {
+function occurrence(): ProtectedTaskRunningOccurrence {
   return Object.freeze({
     task: Object.freeze({
       id: ids.task,
@@ -144,7 +144,7 @@ function occurrence(): ProtectedTaskOccurrence {
       taskId: ids.task,
       jobId: ids.job,
       graphThreadId,
-      status: "awaiting" as const,
+      status: "running" as const,
       startedAt: new Date(createdAt - 1_000),
     }),
   });
@@ -440,6 +440,8 @@ function runner(rows: unknown[]): ConversationProductCanonicalTransactionRunner 
             where: () => chain,
             limit: () => chain,
             for: () => Promise.resolve(row === undefined ? [] : [row]),
+            then: (resolve: (rows: unknown[]) => unknown) =>
+              Promise.resolve(row === undefined ? [] : [row]).then(resolve),
           };
           return chain;
         },

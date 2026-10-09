@@ -31,8 +31,17 @@ export type {
 // the runtime package.
 export type { RuntimePolicyContext } from "@nautilo/trust";
 export {
+  createDomainMemoryCryptoSession,
+  type DomainMemoryObjectProtectionRequest,
+  type DomainMemoryObjectProtector,
+} from "./memory/domain-memory-crypto-session";
+export {
   createForegroundDomainMemoryCryptoSession,
 } from "./memory/foreground-domain-memory-crypto-session";
+export {
+  createTaskRuntimeDomainMemoryCryptoSession,
+  type TaskRuntimeDomainMemoryCryptoSessionInput,
+} from "./memory/task-runtime-domain-memory-crypto-session";
 
 export { eventBus } from "./event-bus";
 export {
@@ -184,6 +193,8 @@ export {
   type CreateForegroundJobResult,
   type ForegroundExecutionRoute,
   type AbortReason,
+  type ProtectedTaskRunQuiescenceRequest,
+  type ProtectedTaskRunQuiescenceResult,
   type ExecutableJobWorkSummary,
   type WorkAcceptanceSinks,
   type MaintenanceCancellationResult,
@@ -339,6 +350,8 @@ export {
   TaskObserver,
   type TaskObserverDeps,
   type ProtectedTaskOccurrence,
+  type ProtectedTaskRunningOccurrence,
+  type ProtectedTaskAuthorityOccurrence,
 } from "./tasks/task-observer";
 export {
   isCurrentProtectedTaskRunForGrant,
@@ -348,18 +361,28 @@ export {
   type ProtectedTaskPredispatchPlan,
 } from "./tasks/protected-task-predispatch";
 export {
+  ParkedProtectedTaskOccurrenceCoordinator,
   ProtectedTaskOccurrenceCoordinator,
+  createParkedProtectedTaskOccurrenceCoordinator,
   createProtectedTaskOccurrenceCoordinator,
   type ClaimedProtectedTaskOccurrence,
   type ClaimProtectedTaskOccurrenceResult,
   type ProtectedTaskOccurrenceClaimPort,
   type ProtectedTaskOccurrenceCoordinatorDeps,
   type ProtectedTaskOccurrenceJobManager,
+  type ParkedProtectedTaskOccurrenceCoordinatorDeps,
 } from "./tasks/protected-task-occurrence-coordinator";
+export type {
+  ProtectedTaskExecutionCandidate,
+  ProtectedTaskExecutionSettlement,
+  ProtectedTaskExecutionStartResult,
+  ProtectedTaskJobSchedulingFacts,
+} from "./tasks/protected-task-execution-candidate";
 export {
+  createProtectedTaskFailurePayload,
   runProtectedTaskNativeSegment,
+  type ProtectedTaskNativeAdditionalAuthorityResume,
   type ProtectedTaskNativeExecution,
-  type ProtectedTaskNativeResultPublicationPort,
   type ProtectedTaskNativeRunnerDependencies,
   type ProtectedTaskNativeSegmentMode,
   type ProtectedTaskNativeSegmentResult,
@@ -389,9 +412,13 @@ export type {
 export {
   withProtectedTaskCheckpointSaver,
   withNativeProtectedTaskCheckpointSaver,
+  withNativeProtectedTaskCheckpointManifest,
+  readProtectedTaskCheckpointPhysicalManifest,
+  type NativeProtectedTaskCheckpointManifestResult,
 } from "./tasks/protected-task-checkpoint-saver";
 export {
   dispatchTaskRun,
+  resolveToolWhitelist,
   type DispatchTaskRunDeps,
   type TaskExecutionRouteFacts,
   type TaskExecutionRouteSelector,
@@ -481,7 +508,10 @@ export {
   getTaskRunJobManager,
   type TaskRunJobManager,
 } from "./tasks/task-runtime-context";
-export { taskRunExecutor } from "./tasks/task-run-executor";
+export {
+  computeTaskRelayCapabilities,
+  taskRunExecutor,
+} from "./tasks/task-run-executor";
 export {
   finalizeTaskExternalReviewAcceptedReceipt,
   settleTaskWriterReviewAfterModel,
@@ -655,6 +685,7 @@ export {
   FOREGROUND_AUTHORIZATION_MAX_CHILD_VIEWS,
   FOREGROUND_AUTHORIZATION_MAX_SESSIONS,
   MAX_FOREGROUND_AUTHORIZATION_OPERATIONS,
+  TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
   ForegroundAuthorizationSessionRegistry,
   createForegroundAuthorizationCapabilityPort,
   type ForegroundAuthorizationBinding,
@@ -717,6 +748,10 @@ export { recoverMemoryReviewTurnsAtStartup, readOrdinaryMemoryReviewCheckpoint }
 
 export { canResumeSecurityResearchContextFailure } from "./tasks/security-report-recovery";
 
+export {
+  assertProtectedTaskJobReferenceV1,
+  type ProtectedTaskJobReferenceV1,
+} from "./tasks/protected-task-job-reference";
 export { foregroundHumanTerminalAdmissionPort } from "./conversation/human-terminal-admission";
 
 export { createDelegatedLocalExecutionPort, readTaskLocalExecutionLineage, type TaskLocalExecutionSource, type DelegatedTaskIdentity } from "./tasks/local-execution-delegation";

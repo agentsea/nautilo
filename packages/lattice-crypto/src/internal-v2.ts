@@ -409,6 +409,16 @@ export {
   prepareAgentObjectAccessManifestUpdateSetV3,
   prepareAgentMemoryDeletionV1,
 } from "./object/agent-access-manifest-set.ts";
+export {
+  assertAuthenticPreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1,
+  prepareTaskRuntimeAgentObjectAccessManifestGenesisSetV1,
+} from "./object/task-runtime-agent-access-manifest-set-v1.ts";
+export type {
+  PreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1,
+  PrepareTaskRuntimeAgentObjectAccessManifestGenesisSetInputV1,
+  TaskRuntimeAgentNamespaceAuthorityV1,
+  TaskRuntimeAgentObjectAccessGenesisSetAuthorityContextV1,
+} from "./object/task-runtime-agent-access-manifest-set-v1.ts";
 export type {
   AgentMemoryDeletionAuthorityContextV1,
   AgentObjectAccessGenesisSetAuthorityContextV3,
@@ -490,6 +500,13 @@ export {
   persistPreparedAgentObjectAccessManifestGenesisV3,
   persistPreparedDeviceWrappedLiveShadowAgentObjectAccessManifestGenesisV1,
 } from "./object/agent-storage-coordinator.ts";
+export {
+  persistPreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1,
+} from "./object/task-runtime-agent-storage-coordinator-v1.ts";
+export type {
+  CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorizationV1,
+  WithCurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorizationV1,
+} from "./object/task-runtime-agent-storage-coordinator-v1.ts";
 export type {
   AgentObjectAccessGenesisAuthorizationDecisionV3,
   DeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorizationDecisionV1,

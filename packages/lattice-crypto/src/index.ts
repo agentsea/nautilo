@@ -977,6 +977,22 @@ export {
   prepareDeviceWrappedAgentObjectAccessManifestGenesisSetV1
     as prepareDeviceWrappedAgentObjectAccessManifestGenesisSet,
 } from "./object/device-wrapped-agent-access-manifest-set-v1.ts";
+export {
+  assertAuthenticPreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1
+    as assertAuthenticPreparedTaskRuntimeAgentObjectAccessManifestGenesisSet,
+  prepareTaskRuntimeAgentObjectAccessManifestGenesisSetV1
+    as prepareTaskRuntimeAgentObjectAccessManifestGenesisSet,
+} from "./object/task-runtime-agent-access-manifest-set-v1.ts";
+export type {
+  PreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1
+    as PreparedTaskRuntimeAgentObjectAccessManifestGenesisSet,
+  PrepareTaskRuntimeAgentObjectAccessManifestGenesisSetInputV1
+    as PrepareTaskRuntimeAgentObjectAccessManifestGenesisSetInput,
+  TaskRuntimeAgentNamespaceAuthorityV1
+    as TaskRuntimeAgentNamespaceAuthority,
+  TaskRuntimeAgentObjectAccessGenesisSetAuthorityContextV1
+    as TaskRuntimeAgentObjectAccessGenesisSetAuthorityContext,
+} from "./object/task-runtime-agent-access-manifest-set-v1.ts";
 export type {
   DeviceWrappedAgentEnvelopeAuthorityV1
     as DeviceWrappedAgentEnvelopeAuthority,
@@ -1144,6 +1160,16 @@ export {
   persistPreparedDeviceWrappedLiveShadowAgentObjectAccessManifestGenesisV1
     as persistPreparedDeviceWrappedLiveShadowAgentObjectAccessManifestGenesis,
 } from "./object/agent-storage-coordinator.ts";
+export {
+  persistPreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1
+    as persistPreparedTaskRuntimeAgentObjectAccessManifestGenesisSet,
+} from "./object/task-runtime-agent-storage-coordinator-v1.ts";
+export type {
+  CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorizationV1
+    as CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorization,
+  WithCurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorizationV1
+    as WithCurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorization,
+} from "./object/task-runtime-agent-storage-coordinator-v1.ts";
 export type {
   AgentObjectAccessGenesisAuthorizationDecisionV3
     as AgentObjectAccessGenesisAuthorizationDecision,

@@ -65,6 +65,10 @@ import type {
   DeviceWrappedAgentNamespaceAuthorityV1,
   DeviceWrappedAgentObjectAccessGenesisSetAuthorityContextV1,
 } from "../object/device-wrapped-agent-access-manifest-set-v1.ts";
+import type {
+  TaskRuntimeAgentNamespaceAuthorityV1,
+  TaskRuntimeAgentObjectAccessGenesisSetAuthorityContextV1,
+} from "../object/task-runtime-agent-access-manifest-set-v1.ts";
 import { assertV2Limit, V2_LIMITS } from "../v2-types/limits.ts";
 import {
   assertOpaqueBytes,
@@ -806,6 +810,266 @@ export function assertObjectAccessAuthorizationExpectation(
         "Agent object access signer publication expectation is inconsistent",
       );
     }
+    return;
+  }
+  if (expectation.kind === "task-runtime-agent-genesis-set") {
+    assertExactFields(
+      "Task Runtime Agent object access set authorization expectation",
+      expectation,
+      [
+        "kind",
+        "context",
+        "signerPublication",
+        "signerPublicationHash",
+        "signerPublicKeyHash",
+        "managerSigningPublicKeyHash",
+      ],
+    );
+    const context = expectation.context;
+    assertExactFields(
+      "Task Runtime Agent object access set authorization context",
+      context,
+      [
+        "purpose",
+        "objectId",
+        "payloadHash",
+        "envelopes",
+        "operationId",
+        "requestId",
+        "workId",
+        "claimId",
+        "authorizationDigest",
+        "claimExpiresAt",
+        "recipientExpiresAt",
+        "expiresAt",
+        "recipientGeneration",
+        "recipientKeyId",
+        "policyRevision",
+        "episodeId",
+        "sourceRoomId",
+        "hostAuthorizationRevision",
+        "recipientAuthorizationRevision",
+        "taskId",
+        "taskRunId",
+        "namespaces",
+        "domains",
+        "agentAuthorizationRevision",
+        "agentId",
+        "runtimeGeneration",
+        "signerKeyId",
+      ],
+    );
+    if (
+      context.purpose
+        !== "persist-task-runtime-agent-object-access-genesis-set"
+      || !Array.isArray(context.envelopes)
+      || !Array.isArray(context.namespaces)
+      || !Array.isArray(context.domains)
+      || context.envelopes.length < 1
+      || context.envelopes.length > V2_LIMITS.namespaceEnvelopesPerManifest
+      || context.envelopes.length !== context.namespaces.length
+      || context.domains.length < 1
+      || context.domains.length > context.namespaces.length
+      || context.expiresAt
+        !== Math.min(context.claimExpiresAt, context.recipientExpiresAt)
+      || context.taskRunId !== context.workId
+    ) throw new TypeError("Task Runtime Agent object access set is invalid");
+    const setContext = context as unknown as
+      TaskRuntimeAgentObjectAccessGenesisSetAuthorityContextV1;
+    objectId(context.objectId);
+    assertPortableId("Task Runtime Agent operation ID", context.operationId);
+    assertPortableId("Task Runtime request ID", context.requestId);
+    assertPortableId("Task Runtime work ID", context.workId);
+    assertPortableId("Task Runtime claim ID", context.claimId);
+    assertPortableId("Task Runtime recipient key ID", context.recipientKeyId);
+    assertPortableId("Task Runtime episode ID", context.episodeId);
+    assertPortableId("Task Runtime source Room ID", context.sourceRoomId);
+    assertPortableId("Task Runtime Task ID", context.taskId);
+    assertPortableId("Task Runtime Task Run ID", context.taskRunId);
+    assertHash("Task Runtime Agent payload hash", context.payloadHash);
+    assertHash(
+      "Task Runtime authorization digest",
+      context.authorizationDigest,
+    );
+    [
+      context.claimExpiresAt,
+      context.recipientExpiresAt,
+      context.expiresAt,
+      context.recipientGeneration,
+      context.policyRevision,
+      context.hostAuthorizationRevision,
+      context.recipientAuthorizationRevision,
+    ].forEach((value) => assertU64Counter("Task Runtime counter", value));
+    authorizationRevision(context.agentAuthorizationRevision);
+    agentId(context.agentId);
+    agentRuntimeGeneration(context.runtimeGeneration);
+    assertPortableId("Task Runtime Agent signer key ID", context.signerKeyId);
+    for (const [index, namespace] of setContext.namespaces.entries()) {
+      assertExactFields("Task Runtime Agent Namespace authority", namespace, [
+        "namespaceId",
+        "accessRevision",
+        "keyGeneration",
+        "domainId",
+        "domainKeyGeneration",
+        "domainAuthorizationRevision",
+        "domainHeadDigest",
+        "headDigest",
+        "publicationDigest",
+        "publicationSetDigest",
+        "audienceFingerprint",
+        "operations",
+        "expectedPolicyRevision",
+      ]);
+      const namespaceAuthority = namespace as unknown as
+        TaskRuntimeAgentNamespaceAuthorityV1;
+      namespaceId(namespaceAuthority.namespaceId);
+      accessRevision(namespaceAuthority.accessRevision);
+      namespaceGeneration(namespaceAuthority.keyGeneration);
+      cryptoDomainId(namespaceAuthority.domainId);
+      assertU64Counter(
+        "Task Runtime Agent Domain key generation",
+        namespaceAuthority.domainKeyGeneration,
+      );
+      authorizationRevision(namespaceAuthority.domainAuthorizationRevision);
+      authorizationRevision(namespaceAuthority.expectedPolicyRevision);
+      [
+        namespaceAuthority.domainHeadDigest,
+        namespaceAuthority.headDigest,
+        namespaceAuthority.publicationDigest,
+        namespaceAuthority.publicationSetDigest,
+        namespaceAuthority.audienceFingerprint,
+      ].forEach((value) => assertHash("Task Runtime Agent authority digest", value));
+      if (
+        !Array.isArray(namespaceAuthority.operations)
+        || !namespaceAuthority.operations.includes("encrypt")
+        || namespaceAuthority.expectedPolicyRevision !== context.policyRevision
+        || namespaceAuthority.operations.some((operation, operationIndex) =>
+          (operation !== "decrypt" && operation !== "encrypt")
+          || (operationIndex > 0
+            && namespaceAuthority.operations[operationIndex - 1]! >= operation)
+        )
+        || (index > 0
+          && setContext.namespaces[index - 1]!.namespaceId
+            >= namespaceAuthority.namespaceId)
+      ) throw new TypeError("Task Runtime Agent Namespace authority is invalid");
+    }
+    for (const [index, envelope] of setContext.envelopes.entries()) {
+      assertExactFields("Task Runtime Agent object envelope context", envelope, [
+        "objectId",
+        "namespaceId",
+        "keyClass",
+        "keyGeneration",
+        "bindingRevisionAtWrap",
+        "envelopeHash",
+      ]);
+      const envelopeAuthority = envelope as unknown as
+        DeviceWrappedAgentEnvelopeAuthorityV1;
+      const namespace = setContext.namespaces[index]!;
+      objectId(envelopeAuthority.objectId);
+      namespaceId(envelopeAuthority.namespaceId);
+      namespaceGeneration(envelopeAuthority.keyGeneration);
+      accessRevision(envelopeAuthority.bindingRevisionAtWrap);
+      assertHash(
+        "Task Runtime Agent Namespace envelope hash",
+        envelopeAuthority.envelopeHash,
+      );
+      if (
+        envelopeAuthority.objectId !== context.objectId
+        || envelopeAuthority.namespaceId !== namespace.namespaceId
+        || envelopeAuthority.keyClass !== "ai"
+        || envelopeAuthority.keyGeneration !== namespace.keyGeneration
+        || envelopeAuthority.bindingRevisionAtWrap !== namespace.accessRevision
+      ) throw new TypeError("Task Runtime Agent envelope authority is invalid");
+    }
+    const domainIds = new Set<string>();
+    for (const [index, domain] of setContext.domains.entries()) {
+      assertExactFields("Task Runtime Agent Domain authority", domain, [
+        "domainId",
+        "sourceNamespaceId",
+        "participantDigest",
+        "participantCount",
+        "keyClass",
+        "domainKeyGeneration",
+        "authorizationRevision",
+        "headDigest",
+        "activeNamespaceBindingSetDigest",
+        "activeNamespaceBindingCount",
+      ]);
+      cryptoDomainId(domain.domainId);
+      namespaceId(domain.sourceNamespaceId);
+      assertHash("Task Runtime Domain participant digest", domain.participantDigest);
+      assertHash("Task Runtime Domain head digest", domain.headDigest);
+      assertHash(
+        "Task Runtime Domain binding-set digest",
+        domain.activeNamespaceBindingSetDigest,
+      );
+      assertU64Counter("Task Runtime Domain participant count", domain.participantCount);
+      assertU64Counter("Task Runtime Domain key generation", domain.domainKeyGeneration);
+      authorizationRevision(domain.authorizationRevision);
+      assertU64Counter(
+        "Task Runtime Domain binding count",
+        domain.activeNamespaceBindingCount,
+      );
+      if (
+        domain.keyClass !== "ai"
+        || domainIds.has(domain.domainId)
+        || (index > 0
+          && setContext.domains[index - 1]!.domainId >= domain.domainId)
+      ) {
+        throw new TypeError("Task Runtime Agent Domain authority is invalid");
+      }
+      domainIds.add(domain.domainId);
+    }
+    const selectedDomainIds = new Set(
+      setContext.namespaces.map((namespace) => namespace.domainId),
+    );
+    if (
+      selectedDomainIds.size !== domainIds.size
+      || [...domainIds].some((domainId) => !selectedDomainIds.has(domainId))
+      || setContext.namespaces.some((namespace) => {
+      const domain = setContext.domains.find((entry) =>
+        entry.domainId === namespace.domainId
+      );
+      return domain === undefined
+        || namespace.domainKeyGeneration !== domain.domainKeyGeneration
+        || namespace.domainAuthorizationRevision !== domain.authorizationRevision
+        || !equalBytes(namespace.domainHeadDigest, domain.headDigest);
+      })
+    ) throw new TypeError("Task Runtime Agent Domain set is not exact");
+    const publication = decodeAgentRuntimeSignerPublicationV1(
+      encodeAgentRuntimeSignerPublicationV1(expectation.signerPublication),
+    );
+    assertHash(
+      "Task Runtime Agent signer publication hash",
+      expectation.signerPublicationHash,
+    );
+    assertHash(
+      "Task Runtime Agent signer public key hash",
+      expectation.signerPublicKeyHash,
+    );
+    assertHash(
+      "Task Runtime Agent manager signing public key hash",
+      expectation.managerSigningPublicKeyHash,
+    );
+    if (
+      publication.agentId !== context.agentId
+      || publication.authorizationRevision
+        !== context.agentAuthorizationRevision
+      || publication.runtimeGeneration !== context.runtimeGeneration
+      || publication.signerKeyId !== context.signerKeyId
+      || !equalBytes(
+        sha256(encodeAgentRuntimeSignerPublicationV1(publication)),
+        expectation.signerPublicationHash,
+      )
+      || !equalBytes(
+        sha256(publication.signerPublicKey),
+        expectation.signerPublicKeyHash,
+      )
+      || !equalBytes(
+        publication.managerSigningPublicKeyHash,
+        expectation.managerSigningPublicKeyHash,
+      )
+    ) throw new TypeError("Task Runtime Agent signer expectation is invalid");
     return;
   }
   if (expectation.kind === "device-wrapped-live-shadow-agent-genesis-set") {

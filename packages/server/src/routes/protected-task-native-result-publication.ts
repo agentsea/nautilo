@@ -1,8 +1,4 @@
 import {
-  and,
-  eq,
-  humanCryptoDevices,
-  inArray,
   recordProtectedTaskRunResultAttached,
   type DirectDatabase,
   type PostgresJsBridgeConnection,
@@ -17,8 +13,6 @@ import {
   PostgresHumanDeviceSignerHistory,
   PostgresLatticeStorage,
   createPostgresTaskContentRepositoryV1,
-  cryptoTypedDb,
-  executeTypedCryptoQuery,
   prepareNativeTaskRuntimeRunResult,
   verifyCryptoPostgresHandle,
   type ConversationProductCanonicalTransactionRunner,
@@ -44,6 +38,9 @@ import {
   createProtectedTaskResultPhaseAuthorityResolver,
 } from "./protected-task-result-phase-authority";
 import {
+  createProtectedTaskHistoricalHumanDeviceSigningKeyResolver,
+} from "./protected-task-historical-human-device-signing-key";
+import {
   withProtectedTaskResultSignerHistory,
 } from "./protected-task-result-signer-history";
 import {
@@ -60,6 +57,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const TASK_DEFINITION_OBJECT_ID = /^task-definition:v1:[0-9a-f]{64}$/u;
 const TASK_RUN_RESULT_OBJECT_ID = /^task-run-result:v1:[0-9a-f]{64}$/u;
 const PORTABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u;
+const SHA256_BASE64URL = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u;
 const encoder = new TextEncoder();
 
 export type ProtectedTaskNativeResultPublicationInput = Readonly<{
@@ -132,11 +130,19 @@ function sameAuthority(
 function assertExactReference(reference: ProtectedTaskJobReferenceV1): void {
   const resumed = Number.isSafeInteger(reference.executionSegment)
     && reference.executionSegment > 1;
+  const raw = reference as Readonly<Record<string, unknown>>;
+  const hasAcceptance = Object.hasOwn(raw, "resumeAcceptanceId");
+  const hasContinuation = Object.hasOwn(
+    raw,
+    "resumeContinuationFingerprint",
+  );
+  const expectedKeys = resumed
+    ? hasAcceptance
+      ? "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,resumeAcceptanceId,taskId,taskRunId"
+      : "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,resumeContinuationFingerprint,taskId,taskRunId"
+    : "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,taskId,taskRunId";
   if (
-    Object.keys(reference).sort().join(",")
-      !== (resumed
-        ? "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,resumeAcceptanceId,taskId,taskRunId"
-        : "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,taskId,taskRunId")
+    Object.keys(reference).sort().join(",") !== expectedKeys
     || reference.kind !== "protected_task_run_v1"
     || !UUID.test(reference.taskId)
     || !UUID.test(reference.taskRunId)
@@ -149,11 +155,18 @@ function assertExactReference(reference: ProtectedTaskJobReferenceV1): void {
     || reference.policyRevision < 1
     || !Number.isSafeInteger(reference.executionSegment)
     || reference.executionSegment < 1
-    || (resumed && (
-      typeof reference.resumeAcceptanceId !== "string"
-      || !PORTABLE_ID.test(reference.resumeAcceptanceId)
-      || encoder.encode(reference.resumeAcceptanceId).length
+    || (resumed
+      ? hasAcceptance === hasContinuation
+      : hasAcceptance || hasContinuation)
+    || (hasAcceptance && (
+      typeof raw["resumeAcceptanceId"] !== "string"
+      || !PORTABLE_ID.test(raw["resumeAcceptanceId"])
+      || encoder.encode(raw["resumeAcceptanceId"]).length
         > BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES
+    ))
+    || (hasContinuation && (
+      typeof raw["resumeContinuationFingerprint"] !== "string"
+      || !SHA256_BASE64URL.test(raw["resumeContinuationFingerprint"])
     ))
   ) throw new TypeError("Protected Task result reference is invalid");
 }
@@ -180,34 +193,6 @@ function matchingResultDomain(input: Readonly<{
     );
   }
   return domain;
-}
-
-function humanDeviceSigningKeyResolver(handle: CryptoPostgresHandle) {
-  return async (context: Readonly<{
-    subjectHumanId: string;
-    committerDeviceId: string;
-    hostAuthorizationRevision: number;
-  }>): Promise<Uint8Array | null> => {
-    const rows = await executeTypedCryptoQuery(
-      handle,
-      cryptoTypedDb.select({
-        human_id: humanCryptoDevices.humanId,
-        signing_public_key: humanCryptoDevices.signingPublicKey,
-        revision: humanCryptoDevices.revision,
-      }).from(humanCryptoDevices).where(and(
-        eq(humanCryptoDevices.deviceId, context.committerDeviceId),
-        eq(humanCryptoDevices.humanId, context.subjectHumanId),
-        inArray(humanCryptoDevices.state, ["active", "revoked"]),
-      )).limit(2),
-    );
-    const row = rows[0];
-    return rows.length === 1
-        && row !== undefined
-        && row.revision >= context.hostAuthorizationRevision
-        && row.signing_public_key instanceof Uint8Array
-      ? row.signing_public_key.slice()
-      : null;
-  };
 }
 
 /**
@@ -411,7 +396,7 @@ export function createProtectedTaskNativeResultPublication(
           resolveHistoricalAgentSignerAuthority:
             history.resolveAgentRuntimeSignerManager,
           resolveHistoricalHumanDeviceSigningPublicKey:
-            humanDeviceSigningKeyResolver(handle),
+            createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(handle),
         },
         content: {
           prepareProtected: () => Promise.reject(new ClassifiedDataOperationError(

@@ -1,6 +1,8 @@
 import type { Task, TaskRun } from "@nautilo/db";
 
-import type { ProtectedTaskOccurrence } from "./task-observer";
+import type {
+  ProtectedTaskAuthorityOccurrence,
+} from "./task-observer";
 
 type CurrentTask = Pick<Task,
   | "id" | "ownerId" | "requestorId" | "agentId" | "callingRoomId"
@@ -28,7 +30,7 @@ function sameBytes(left: Uint8Array | null, right: Uint8Array): boolean {
  * model execution.
  */
 export function isCurrentProtectedTaskRunForGrant(input: Readonly<{
-  occurrence: ProtectedTaskOccurrence;
+  occurrence: ProtectedTaskAuthorityOccurrence;
   task: CurrentTask;
   run: CurrentRun;
   requestorUserId: string;
@@ -66,8 +68,13 @@ export function isCurrentProtectedTaskRunForGrant(input: Readonly<{
     && run.id === occurrence.run.id
     && run.taskId === task.id
     && run.graphThreadId === occurrence.run.graphThreadId
+    && occurrence.run.status === input.phase
     && run.status === input.phase
-    && (input.phase === "awaiting" ? run.jobId === null : run.jobId !== null)
+    && run.jobId === occurrence.run.jobId
+    && (input.phase === "awaiting"
+      ? occurrence.run.jobId === null
+      : typeof occurrence.run.jobId === "string"
+        && occurrence.run.jobId.length > 0)
     && run.resultRepresentation === "ordinary"
     && run.resultContentNamespaceId === null
     && run.resultRevision === 0

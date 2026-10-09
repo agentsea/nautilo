@@ -28,7 +28,7 @@ export type NativeTaskMessageCoordinates = ConversationRevisionCoordinates & Rea
   role: Exclude<MessagePayloadV2["role"], "user">;
 }>;
 
-type NativeNamespaceSource = Omit<Parameters<typeof withOpenedDomainNamespaceBundle>[1], "operation" | "expectedBindingDigest"> & Readonly<{
+export type NativeTaskNamespaceSource = Omit<Parameters<typeof withOpenedDomainNamespaceBundle>[1], "operation" | "expectedBindingDigest"> & Readonly<{
   expectedBindingDigest: Uint8Array;
 }>;
 
@@ -71,7 +71,7 @@ export type PrepareNativeTaskMessageInput = Readonly<{
   mode: NativeTaskMessageAuthority["mode"];
   payload: MessagePayloadV2;
   createdAt: number;
-  namespace: NativeNamespaceSource;
+  namespace: NativeTaskNamespaceSource;
   runtime: AgentRuntimeKeyGeneration;
   signerPublication: AgentRuntimeSignerPublication;
   agentAuthorizationRevision: number;
@@ -176,7 +176,7 @@ export async function prepareNativeTaskMessage(input: PrepareNativeTaskMessageIn
     const plaintext = encodeMessagePayloadV2(input.payload);
     owned.push(plaintext);
     const runtime = Object.freeze({ ...input.runtime, key: copy(input.runtime.key) });
-    const namespace: NativeNamespaceSource = { bindingBytes: copy(source.bindingBytes), expectedBindingDigest: copy(source.expectedBindingDigest),
+    const namespace: NativeTaskNamespaceSource = { bindingBytes: copy(source.bindingBytes), expectedBindingDigest: copy(source.expectedBindingDigest),
       issuerSigningPublicKey: copy(source.issuerSigningPublicKey), domainKey: copy(source.domainKey),
       current: { ...current, participantDigest: copy(current.participantDigest), domainHeadDigest: copy(current.domainHeadDigest),
         retainedAuthoritySetDigest: copy(current.retainedAuthoritySetDigest) } };

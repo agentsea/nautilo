@@ -239,12 +239,38 @@ export {
   type DeviceWrappedAgentObjectNamespaceMaterial,
   type PreparedDeviceWrappedAgentObject,
 } from "./object/device-wrapped-agent-object-crypto.ts";
+export {
+  prepareTaskRuntimeAgentObject,
+  readPreparedTaskRuntimeAgentObjectSnapshot,
+  type PreparedTaskRuntimeAgentObject,
+  type TaskRuntimeAgentObjectNamespaceMaterial,
+} from "./object/task-runtime-agent-object-crypto.ts";
+export {
+  createTaskRuntimeAgentObjectRepairer,
+  type TaskRuntimeAgentMemoryObjectProtectionRequest,
+  type TaskRuntimeAgentObjectRepairer,
+} from "./object/task-runtime-agent-object-repair.ts";
 export type {
   ForegroundAgentEntityCryptoInvocation,
   ForegroundAgentEntityCryptoOperation,
   ForegroundAgentEntityCryptoResult,
   ForegroundAgentEntityNamespaceAuthority,
 } from "./object/foreground-agent-entity-crypto.ts";
+export type {
+  AgentEntityCryptoInvocation,
+  AgentEntityCryptoOperation,
+  AgentEntityCryptoResult,
+  AgentEntityNamespaceAuthority,
+} from "./object/agent-entity-crypto.ts";
+export {
+  createAgentObjectProtector,
+  type AgentObjectPreparationSource,
+  type AgentObjectProtectionNamespace,
+  type AgentObjectProtectionResult,
+  type AgentObjectProtectionSource,
+  type AgentObjectProtector,
+  type VerifiedAgentObject,
+} from "./object/agent-object-protector.ts";
 export {
   createForegroundAgentObjectRepairer,
   type ForegroundAgentObjectRepairResult,

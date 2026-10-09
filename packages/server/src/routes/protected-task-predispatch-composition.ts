@@ -1,5 +1,6 @@
 import {
   actors,
+  agentScopes,
   and,
   eq,
   getTaskById,
@@ -10,6 +11,8 @@ import {
   roomMembers,
   rooms,
   memoizeTaskExecutionCoordinates,
+  taskRuns,
+  tasks,
   type DirectDatabase,
   type Task,
   type TaskRun,
@@ -29,6 +32,12 @@ import {
   assertCanUseServerProviderCredentials,
   type PolicyResolver,
 } from "@nautilo/trust";
+
+import { prepareProtectedTaskScope } from "./protected-task-scope-creation";
+import {
+  createProtectedTaskRequesterPrivateRoomResolver,
+  type ProtectedTaskRequesterPrivateRoomResolver,
+} from "./protected-task-requester-private-room";
 
 type ReadTask = (db: DirectDatabase, taskId: string) => Promise<Task | undefined>;
 type ReadTaskRun = (
@@ -59,9 +68,107 @@ export type ProductionProtectedTaskPredispatchDependencies = Readonly<{
   validateMemoizedNamespaceTarget?: ValidateMemoizedNamespaceTarget;
   resolveTargetRoom?: ResolveTarget;
   resolveTaskMemoryEnvelope?: ResolveMemory;
+  findAgentOwnerPrivateRoom?: ProtectedTaskRequesterPrivateRoomResolver;
   assertCanInvokeAgent?: typeof assertCanInvokeAgent;
   assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+  ensureInitialScope?: typeof ensureProtectedTaskPredispatchScope;
 }>;
+
+/** Create and attach a content-free Scope under the canonical Task→Run lock. */
+export async function ensureProtectedTaskPredispatchScope(
+  db: DirectDatabase,
+  occurrence: ProtectedTaskOccurrence,
+): Promise<string> {
+  return db.transaction(async transaction => {
+    const [task] = await transaction.select({
+      id: tasks.id,
+      requestorId: tasks.requestorId,
+      agentId: tasks.agentId,
+      scopeId: tasks.scopeId,
+    }).from(tasks).where(and(
+      eq(tasks.id, occurrence.task.id),
+      eq(tasks.ownerId, occurrence.task.ownerId),
+      eq(tasks.requestorId, occurrence.task.requestorId),
+      eq(tasks.agentId, occurrence.task.agentId),
+      occurrence.task.callingRoomId === null
+        ? isNull(tasks.callingRoomId)
+        : eq(tasks.callingRoomId, occurrence.task.callingRoomId),
+      eq(tasks.scheduleKind, occurrence.task.scheduleKind),
+      eq(tasks.contentRepresentation, occurrence.task.contentRepresentation),
+      eq(tasks.contentNamespaceId, occurrence.task.contentNamespaceId),
+      eq(tasks.contentRevision, occurrence.task.contentRevision),
+      eq(tasks.cryptoObjectId, occurrence.task.cryptoObjectId),
+      eq(tasks.cryptoAccessRevision, occurrence.task.cryptoAccessRevision),
+      eq(
+        tasks.cryptoRequiredNamespaceFingerprint,
+        occurrence.task.cryptoRequiredNamespaceFingerprint,
+      ),
+      eq(tasks.cryptoMappingState, "verified"),
+      inArray(tasks.status, ["pending", "awaiting", "running"]),
+      eq(tasks.useScope, true),
+    )).limit(2).for("update");
+    const [run] = await transaction.select({ id: taskRuns.id })
+      .from(taskRuns).where(and(
+        eq(taskRuns.id, occurrence.run.id),
+        eq(taskRuns.taskId, occurrence.task.id),
+        isNull(taskRuns.jobId),
+        eq(taskRuns.graphThreadId, occurrence.run.graphThreadId),
+        eq(taskRuns.status, "awaiting"),
+        eq(taskRuns.startedAt, occurrence.run.startedAt),
+        isNull(taskRuns.modelId),
+        isNull(taskRuns.resultText),
+        isNull(taskRuns.completedAt),
+        isNull(taskRuns.lastError),
+        eq(taskRuns.resultRepresentation, "ordinary"),
+        isNull(taskRuns.resultContentNamespaceId),
+        eq(taskRuns.resultRevision, 0),
+        isNull(taskRuns.resultCryptoObjectId),
+        eq(taskRuns.resultCryptoAccessRevision, 0),
+        isNull(taskRuns.resultCryptoRequiredNamespaceFingerprint),
+        eq(taskRuns.resultCryptoMappingState, "unmapped"),
+      )).limit(2).for("update");
+    if (task === undefined || run === undefined) {
+      throw new TypeError("Protected Task Scope creation is no longer current");
+    }
+    if (task.scopeId !== null) {
+      await prepareProtectedTaskScope(transaction, {
+        taskId: task.id,
+        requesterUserId: task.requestorId,
+        agentId: task.agentId,
+        scopeId: task.scopeId,
+      });
+      return task.scopeId;
+    }
+    const scopeId = await prepareProtectedTaskScope(transaction, {
+      taskId: task.id,
+      requesterUserId: task.requestorId,
+      agentId: task.agentId,
+      scopeId: null,
+    });
+    const [updated] = await transaction.update(tasks).set({ scopeId }).where(and(
+      eq(tasks.id, task.id),
+      eq(tasks.useScope, true),
+      isNull(tasks.scopeId),
+    )).returning({ scopeId: tasks.scopeId });
+    if (updated === undefined || updated.scopeId !== scopeId) {
+      throw new TypeError("Protected Task Scope attachment conflicted");
+    }
+    // The Scope row is already held by insertion or the exact conflict read.
+    // Verify the returned Task references that same still-open owner.
+    const [scope] = await transaction.select({ id: agentScopes.id })
+      .from(agentScopes).where(and(
+        eq(agentScopes.id, scopeId),
+        eq(agentScopes.parentAgentId, task.agentId),
+        eq(agentScopes.speakerUserId, task.requestorId),
+        eq(agentScopes.name, `task:${task.id}`),
+        eq(agentScopes.lifecycleState, "open"),
+      )).limit(2).for("share");
+    if (scope === undefined) {
+      throw new TypeError("Protected Task Scope attachment is unavailable");
+    }
+    return scopeId;
+  });
+}
 
 async function validateMemoizedNamespaceTarget(
   task: Task,
@@ -218,19 +325,58 @@ export function createProductionProtectedTaskPredispatch(
     ?? validateMemoizedNamespaceTarget;
   const memoryResolver = dependencies.resolveTaskMemoryEnvelope
     ?? resolveTaskMemoryEnvelope;
+  const resolveRequesterPrivateRoom = dependencies.findAgentOwnerPrivateRoom
+    ?? createProtectedTaskRequesterPrivateRoomResolver(dependencies.db);
   const assertInvocation = dependencies.assertCanInvokeAgent
     ?? assertCanInvokeAgent;
   const assertFunding = dependencies.assertCanUseServerProviderCredentials
     ?? assertCanUseServerProviderCredentials;
+  const ensureInitialScope = dependencies.ensureInitialScope
+    ?? ensureProtectedTaskPredispatchScope;
+  const assertOperationalAuthority = async (authority: Readonly<{
+    taskId: string;
+    requestorId: string;
+    agentId: string;
+    memoizedRoomId: string | null;
+  }>): Promise<void> => {
+    await assertInvocation({
+      humanUserId: authority.requestorId,
+      origin: "task_dispatch",
+      taskId: authority.taskId,
+      agentId: authority.agentId,
+      ...(authority.memoizedRoomId
+        ? { roomId: authority.memoizedRoomId }
+        : {}),
+    });
+    await assertFunding(authority.requestorId, "task_dispatch");
+  };
 
   return async occurrence => {
-    const [task, run] = await Promise.all([
+    const [loadedTask, run] = await Promise.all([
       readTask(dependencies.db, occurrence.task.id),
       readRun(dependencies.db, occurrence.task.id, occurrence.run.id),
     ]);
-    if (task === undefined || run === undefined
-      || !isExactAwaitingOccurrence(occurrence, task, run)) {
+    if (loadedTask === undefined || run === undefined
+      || !isExactAwaitingOccurrence(occurrence, loadedTask, run)) {
       throw new TypeError("Protected Task occurrence is no longer current");
+    }
+
+    let task = loadedTask;
+    if (loadedTask.useScope && loadedTask.scopeId === null) {
+      await assertOperationalAuthority({
+        taskId: loadedTask.id,
+        requestorId: loadedTask.requestorId,
+        agentId: loadedTask.agentId,
+        memoizedRoomId: loadedTask.targetRoomId,
+      });
+      task = {
+        ...loadedTask,
+        scopeId: await ensureInitialScope(dependencies.db, occurrence),
+      };
+    }
+    if (!isExactAwaitingOccurrence(occurrence, task, run)
+      || task.useScope && task.scopeId === null) {
+      throw new TypeError("Protected Task Scope creation changed its occurrence");
     }
 
     let currentTask = task;
@@ -239,18 +385,7 @@ export function createProductionProtectedTaskPredispatch(
       task,
       run,
       ports: {
-        assertCurrentAuthority: async authority => {
-          await assertInvocation({
-            humanUserId: authority.requestorId,
-            origin: "task_dispatch",
-            taskId: authority.taskId,
-            agentId: authority.agentId,
-            ...(authority.memoizedRoomId
-              ? { roomId: authority.memoizedRoomId }
-              : {}),
-          });
-          await assertFunding(authority.requestorId, "task_dispatch");
-        },
+        assertCurrentAuthority: assertOperationalAuthority,
         resolveTargetRoom: async () => {
           if (targetResolved) {
             throw new TypeError("Protected Task target was resolved more than once");
@@ -328,14 +463,68 @@ export function createProductionProtectedTaskPredispatch(
           if (!targetResolved) {
             throw new TypeError("Protected Task target is unresolved");
           }
-          return memoryResolver({
+          let sessionRoomId = input.sessionRoomId;
+          let scopeOrigin: Readonly<{
+            roomId: string;
+            namespaceId: string;
+          }> | null = null;
+          if (currentTask.useScope
+            && currentTask.targetChat === "orphan"
+            && sessionRoomId.length === 0) {
+            if (currentTask.contentNamespaceId === null) {
+              throw new TypeError(
+                "Protected Task Scope Memory origin is unavailable",
+              );
+            }
+            scopeOrigin = await resolveRequesterPrivateRoom(
+              currentTask.requestorId,
+              currentTask.agentId,
+              currentTask.contentNamespaceId,
+            );
+            if (scopeOrigin === null
+              || scopeOrigin.namespaceId !== currentTask.contentNamespaceId) {
+              throw new TypeError(
+                "Protected Task Scope Memory origin is unavailable",
+              );
+            }
+            sessionRoomId = scopeOrigin.roomId;
+          }
+          const resolved = await memoryResolver({
             task: currentTask,
             db: dependencies.db,
             resolver: dependencies.resolver,
             laneKey: input.laneKey,
-            sessionRoomId: input.sessionRoomId,
+            sessionRoomId,
             targetUserIds: input.targetUserIds,
           });
+          if (scopeOrigin !== null
+            && (resolved.envelope.memoryMode !== "scope"
+              || resolved.envelope.roomId !== scopeOrigin.roomId
+              || !("originWritableNamespaceId" in resolved.envelope)
+              || resolved.envelope.originWritableNamespaceId
+                !== scopeOrigin.namespaceId)) {
+            throw new TypeError(
+              "Protected Task Scope Memory origin changed",
+            );
+          }
+          const [refreshedTask, refreshedRun] = await Promise.all([
+            readTask(dependencies.db, occurrence.task.id),
+            readRun(dependencies.db, occurrence.task.id, occurrence.run.id),
+          ]);
+          if (refreshedTask === undefined || refreshedRun === undefined
+            || !isExactAwaitingOccurrence(
+              occurrence,
+              refreshedTask,
+              refreshedRun,
+            )
+            || !sameTargetAndMemoryInputs(
+              currentTask,
+              refreshedTask,
+              currentTask.targetRoomId!,
+            )) {
+            throw new TypeError("Protected Task Memory resolution drifted");
+          }
+          return resolved;
         },
       },
     });

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { RunScopeSubagentOpts } from "@nautilo/agent";
+import { protectedTaskSemanticAuthorityRequirementsDigest } from "@nautilo/db";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 
 import {
@@ -31,6 +32,30 @@ function envelope(): MemoryAccessEnvelope {
   };
 }
 
+function memoryHandoff(): NonNullable<
+  RunScopeSubagentOpts["protectedTaskMemoryHandoff"]
+> {
+  const unavailable = async () => ({
+    status: "unavailable" as const,
+    reason: "authorization_required" as const,
+  });
+  return Object.freeze({
+    search: Object.freeze({ search: unavailable }),
+    repository: Object.freeze({
+      search: unavailable,
+      save: unavailable,
+      replace: unavailable,
+      setTier: unavailable,
+    }),
+    access: Object.freeze({ change: unavailable }),
+    projection: Object.freeze({
+      prepare: unavailable,
+      publish: unavailable,
+    }),
+    fullEncryptionOnly: false,
+  });
+}
+
 function fixture(
   overrides: Partial<RunProtectedTaskNativeSegmentInput> = {},
 ) {
@@ -44,6 +69,7 @@ function fixture(
       published.push(payload);
     },
   });
+  const protectedMemory = memoryHandoff();
   const input = {
     mode: "native" as const,
     taskId: TASK_ID,
@@ -52,6 +78,7 @@ function fixture(
     signal: new AbortController().signal,
     checkpointSaver: checkpointSaver as never,
     transcriptPort,
+    memoryHandoff: protectedMemory,
     transientInput: {
       taskId: TASK_ID,
       currentTaskId: TASK_ID,
@@ -94,6 +121,7 @@ function fixture(
     checkpointSaver,
     transcriptPort,
     resultPublication,
+    protectedMemory,
     published,
   };
 }
@@ -111,7 +139,7 @@ async function expectRejected(
 }
 
 describe("protected Task native runner", () => {
-  test("passes the exact protected Task authority and publishes only the canonical result", async () => {
+  test("passes the exact protected Task authority and returns the canonical result without terminalizing", async () => {
     const scenario = fixture();
     let captured: RunScopeSubagentOpts | undefined;
     const dependencies: ProtectedTaskNativeRunnerDependencies = {
@@ -136,7 +164,7 @@ describe("protected Task native runner", () => {
       resultText: "Protected result",
       lastError: null,
     });
-    expect(scenario.published).toEqual([result]);
+    expect(scenario.published).toEqual([]);
     expect(captured).toBeDefined();
     expect(captured).toMatchObject({
       parentThreadId: `task:${TASK_ID}`,
@@ -163,6 +191,9 @@ describe("protected Task native runner", () => {
     expect(captured?.protectedTaskTranscriptPort).toBe(
       scenario.transcriptPort,
     );
+    expect(captured?.protectedTaskMemoryHandoff).toBe(
+      scenario.protectedMemory,
+    );
     expect(captured?.signal).toBe(scenario.input.signal);
     expect("invocationCheckpointSaver" in captured!).toBe(false);
     expect("assistantArtifactExternalIds" in captured!).toBe(false);
@@ -170,7 +201,51 @@ describe("protected Task native runner", () => {
     expect("deferAssistantOutputToReportBack" in captured!).toBe(false);
   });
 
-  test("publishes a protected error payload without ordinary report-back", async () => {
+  test("runs with identity-only transient input and leaves publication to the closing owner", async () => {
+    const scenario = fixture();
+    const { protectedTaskResultPublication: _publication, ...identityOnly } = scenario.input.transientInput;
+    const result = await runProtectedTaskNativeSegment({ ...scenario.input, transientInput: identityOnly }, {
+      runScopeSubagent: async () => ({
+        status: "completed", threadId: GRAPH_THREAD_ID,
+        finalText: "internal", finalResponseText: "Complete",
+      }),
+    });
+    expect(result).toEqual({ formatVersion: 1, resultText: "Complete", lastError: null });
+    expect(scenario.published).toEqual([]);
+  });
+
+  test("carries an exact interrupt-keyed additional-authority resume", async () => {
+    const resume = Object.freeze({
+      "interrupt-exact": Object.freeze({
+        type: "protected_task_additional_authority_granted_v1" as const,
+        authorizationRequestId: `task-run-authorization:${RUN_ID}`,
+        effectDisposition: "not_started_v1" as const,
+        operationId: "memory-operation-exact",
+        requestDigest: new Uint8Array(32).fill(11),
+        requiredAuthorityDigest: new Uint8Array(32).fill(19),
+      }),
+    });
+    const scenario = fixture({
+      execution: { ...fixture().input.execution, resume },
+    });
+    let captured: RunScopeSubagentOpts | undefined;
+    await runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async options => {
+        captured = options;
+        return {
+          status: "completed",
+          threadId: GRAPH_THREAD_ID,
+          finalText: "internal transcript",
+          finalResponseText: "Protected result",
+        };
+      },
+    });
+
+    expect(captured?.resume).toBe(resume);
+    expect(captured?.continueFromCheckpoint).toBeUndefined();
+  });
+
+  test("returns a protected error payload without ordinary report-back", async () => {
     const scenario = fixture();
     const result = await runProtectedTaskNativeSegment(scenario.input, {
       runScopeSubagent: async () => {
@@ -183,10 +258,10 @@ describe("protected Task native runner", () => {
       resultText: null,
       lastError: "Protected Task execution failed",
     });
-    expect(scenario.published).toEqual([result]);
+    expect(scenario.published).toEqual([]);
   });
 
-  test("terminalizes a substituted graph result with a safe protected error", async () => {
+  test("returns a safe protected error for a substituted graph result", async () => {
     const scenario = fixture();
     const result = await runProtectedTaskNativeSegment(scenario.input, {
       runScopeSubagent: async () => ({
@@ -202,7 +277,7 @@ describe("protected Task native runner", () => {
       resultText: null,
       lastError: "Protected Task execution failed",
     });
-    expect(scenario.published).toEqual([result]);
+    expect(scenario.published).toEqual([]);
   });
 
   test("returns interruptions and aborts in memory without publishing a result", async () => {
@@ -248,6 +323,71 @@ describe("protected Task native runner", () => {
     expect(abortedResult).toEqual({ status: "aborted" });
     expect(calls).toBe(1);
     expect(aborted.published).toEqual([]);
+  });
+
+  test("extracts one detached pre-effect additional-authority continuation", async () => {
+    const { awaitReply: _awaitReply, ...continuedExecution } =
+      fixture().input.execution;
+    const scenario = fixture({
+      execution: {
+        ...continuedExecution,
+        continueFromCheckpoint: true,
+      },
+    });
+    const requestDigest = new Uint8Array(32).fill(11);
+    const semanticAuthorityRequirements = [{
+      namespaceId: NAMESPACE_ID,
+      operations: ["decrypt"] as const,
+    }];
+    const requiredAuthorityDigest =
+      protectedTaskSemanticAuthorityRequirementsDigest(
+        semanticAuthorityRequirements,
+      );
+    const result = await runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async options => {
+        expect(options.continueFromCheckpoint).toBe(true);
+        return {
+          status: "interrupted",
+          threadId: GRAPH_THREAD_ID,
+          interrupt: { type: "protected_task_additional_authority" },
+          interruptCoordinates: [{
+            id: "interrupt-1",
+            kind: "additional_authority",
+            requestId: "task-runtime-request-2",
+            effectDisposition: "not_started_v1",
+            operationId: "memory-operation-1",
+            requestDigest,
+            requiredAuthorityDigest,
+            semanticAuthorityRequirements,
+          }],
+        };
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "interrupted",
+      interruptCoordinates: [{
+        id: "interrupt-1",
+        kind: "additional_authority",
+        requestId: "task-runtime-request-2",
+      }],
+      additionalAuthority: {
+        kind: "pre_effect_interrupt_v1",
+        reason: "additional_authority",
+        effectDisposition: "not_started_v1",
+        interruptId: "interrupt-1",
+        operationId: "memory-operation-1",
+      },
+    });
+    expect("interrupt" in result).toBe(false);
+    if (!("additionalAuthority" in result)
+      || result.additionalAuthority === undefined) {
+      throw new Error("expected additional authority continuation");
+    }
+    expect(result.additionalAuthority.requestDigest).toEqual(requestDigest);
+    expect(result.additionalAuthority.requestDigest).not.toBe(requestDigest);
+    expect(result.additionalAuthority.requiredAuthorityDigest)
+      .not.toBe(requiredAuthorityDigest);
   });
 
   test("rejects a protected interruption without content-free coordinates", async () => {
@@ -326,20 +466,15 @@ describe("protected Task native runner", () => {
     expect(graphStarted).toBe(false);
     expect(conflicting.published).toEqual([]);
 
-    const missingPublicationBase = fixture();
-    const {
-      protectedTaskResultPublication: _publication,
-      ...identityOnlyInput
-    } = missingPublicationBase.input.transientInput;
-    const missingPublication = fixture({ transientInput: identityOnlyInput });
-    await expectRejected(runProtectedTaskNativeSegment(missingPublication.input, {
+    const missingMemory = fixture({ memoryHandoff: undefined as never });
+    await expectRejected(runProtectedTaskNativeSegment(missingMemory.input, {
       runScopeSubagent: async () => {
         graphStarted = true;
         throw new Error("must not run");
       },
-    }), "result publication authority");
+    }), "exact supported segment");
     expect(graphStarted).toBe(false);
-    expect(missingPublication.published).toEqual([]);
+    expect(missingMemory.published).toEqual([]);
 
     const disguisedResearch = fixture({
       execution: {
