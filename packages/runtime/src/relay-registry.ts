@@ -3994,11 +3994,12 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     return results;
   }
 
-  updatePresence(relayId: string): void {
+  /** Refresh liveness only for the exact authenticated socket generation. */
+  updatePresence(relayId: string, send: RelaySendFn): boolean {
     const entry = this.relays.get(relayId);
-    if (entry) {
-      entry.lastSeen = Date.now();
-    }
+    if (!entry || entry.send !== send) return false;
+    entry.lastSeen = Date.now();
+    return true;
   }
 
   /**

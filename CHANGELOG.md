@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Desktop relays recover when the server expires their heartbeat registration
+  while the connection remains open. A later heartbeat triggers authenticated
+  reconnection so local tools can become available again; interrupted commands
+  are not automatically replayed.
+
 - Members can choose personal models for research and decisions independently
   of the server defaults. Personal Tavily and model keys fund supported research,
   native decisions, and ordinary tools under the administrator's funding policy.

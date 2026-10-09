@@ -62,6 +62,12 @@ Human, pairing, Desktop session, profile and grant bindings. Disconnect clears
 acknowledged readiness without clearing the sequence floor or saved consent.
 A new Electron process has a new Desktop session identity.
 
+If heartbeat expiry removes a relay registration while its socket stays open,
+the next heartbeat closes that obsolete socket with a retryable transport
+error. The client reconnects and authenticates a fresh registration; a late
+heartbeat cannot refresh or retire a replacement connection. This recovery
+does not replay interrupted commands.
+
 The server's workstation status uses the same live binding check as shell
 admission. A retained but incoherent session is not reported ready; a coherent
 reconnect can recover without revoking consent. Revision rollback remains a
