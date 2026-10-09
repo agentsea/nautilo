@@ -1541,7 +1541,8 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
         ${table.workKind} in (
           'task.dispatch',
           'task.execute',
-          'task.await_reply_resume'
+          'task.await_reply_resume',
+          'task.approval_resume'
         )
         and ${table.purpose} = ${table.workKind}
         and ${table.formatVersion} = 3

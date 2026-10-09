@@ -25,7 +25,8 @@ export const TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V1 =
 export type TaskRuntimeBackgroundAuthorizationWorkV1 =
   | "task.dispatch"
   | "task.execute"
-  | "task.await_reply_resume";
+  | "task.await_reply_resume"
+  | "task.approval_resume";
 
 const REQUEST_DOMAIN =
   "nautilo/lattice-crypto/task-runtime-background-authorization-request/v1";
@@ -108,6 +109,7 @@ function taskWork(
     value !== "task.dispatch"
     && value !== "task.execute"
     && value !== "task.await_reply_resume"
+    && value !== "task.approval_resume"
   ) {
     throw new TypeError(`${label} is unsupported`);
   }

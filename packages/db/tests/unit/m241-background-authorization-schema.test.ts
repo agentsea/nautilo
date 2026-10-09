@@ -62,7 +62,7 @@ function normalizedSql(value: string): string {
 }
 
 describe("M241 background authorization durable schema", () => {
-  test("admits await-reply resume only as an exact Runtime V3 Task pair", () => {
+  test("admits Task resume work only as exact Runtime V3 pairs", () => {
     const workKindSql = checkSql(
       backgroundCryptoAuthorizationRequests,
       "background_crypto_authorization_requests_work_kind",
@@ -77,9 +77,11 @@ describe("M241 background authorization durable schema", () => {
     ));
 
     expect(workKindSql).toContain("'task.await_reply_resume'");
+    expect(workKindSql).toContain("'task.approval_resume'");
     expect(purposeSql).toContain("'task.await_reply_resume'");
+    expect(purposeSql).toContain("'task.approval_resume'");
     expect(workSubjectSql).toContain(
-      '"background_crypto_authorization_requests"."work_kind" in ( \'task.dispatch\', \'task.execute\', \'task.await_reply_resume\' ) and "background_crypto_authorization_requests"."purpose" = "background_crypto_authorization_requests"."work_kind" and "background_crypto_authorization_requests"."format_version" = 3 and "background_crypto_authorization_requests"."credential_subject_kind" = \'runtime\'',
+      '"background_crypto_authorization_requests"."work_kind" in ( \'task.dispatch\', \'task.execute\', \'task.await_reply_resume\', \'task.approval_resume\' ) and "background_crypto_authorization_requests"."purpose" = "background_crypto_authorization_requests"."work_kind" and "background_crypto_authorization_requests"."format_version" = 3 and "background_crypto_authorization_requests"."credential_subject_kind" = \'runtime\'',
     );
   });
 
