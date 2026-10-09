@@ -1387,6 +1387,8 @@ export {
   createDeepResearchAgent,
   createDeepResearchGraph,
   fromDeepResearchConfig,
+  fromAdmittedDeepResearchModelPlan,
+  runWithDeepResearchFunding,
   DeepResearchUnavailableError,
   deepResearchModelPlanFromConfiguration,
   resolveDeepResearchModelPlan,
@@ -1399,8 +1401,11 @@ export {
   type DeepResearchAgentState,
 } from "./subagents/deep-research/index";
 export {
+  admittedDeepResearchTaskMetadata,
   deepResearchTaskMetadata,
+  parseDeepResearchTaskMetadataValue,
   readDeepResearchTaskMetadata,
+  type AdmittedDeepResearchTaskMetadata,
   type DeepResearchTaskMetadata,
 } from "./subagents/deep-research/shared/task-metadata";
 
@@ -1440,6 +1445,15 @@ export { listSpeechModels, getServerSpeechModel, estimateSpeechCostUsd, type Spe
 export { surplusCredentialFingerprint, fetchSurplusSettlement } from "./providers/surplus-reconciliation";
 
 export { normalizeGatewayBaseUrl } from "./providers/universal";
+
+export { getCapabilityFundingSession, runWithCapabilityFundingSession, type CapabilityFundingSession, type PersonalCapabilityRole } from "./runtime/capability-funding";
+
+export { isSupportedPersonalTool } from "./runtime/personal-tool-readiness";
+
+export { resolveSurplusDecisionServingAvailability, resolveQualifiedSurplusDecisionRoute } from "./providers/surplus-decision-route";
+
+export { runWithForegroundFundingSession, type ForegroundFundingSnapshot } from "./runtime/foreground-chat-funding";
+export { readForegroundFundingForThread } from "./graph/turn-id";
 export type { LocalExecutionHistoryPort, LocalExecutionHistoryReference } from "./tools/local-execution/history";
 
 export { runWithLocalExecutionDelegation, getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort, type DelegatedLocalExecutionAdmission, type DelegatedLocalExecutionOperation } from "./runtime/local-execution-delegation";

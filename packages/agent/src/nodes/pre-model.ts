@@ -1,3 +1,5 @@
+import { getCapabilityFundingSession } from "../runtime/capability-funding";
+import { personalToolReady } from "../runtime/personal-tool-readiness";
 import { getCurrentLocalExecutionDelegation } from "../runtime/local-execution-delegation";
 import { causalHumanForExecution } from "../runtime/causal-human-context";
 import { deepResearchReturnContextForState } from "../runtime/deep-research-return-context";
@@ -784,7 +786,7 @@ export async function preModelNode(
   // Whenever its presence-only relay token is live, bind `terminal` on this
   // very model step even if the progressive intent pack was already applied.
   // Normal catalog eligibility still enforces actor policy + live PTY relay.
-  const activatedToolNames = personalFunding
+  const activatedToolNames = personalFunding && !getCapabilityFundingSession()
     ? personalTaskControls ? [...PERSONAL_TASK_CONTROL_TOOL_NAMES] : []
     : !isGuest && relayCapabilities?.["canUseHumanTerminal"] === true
       ? mergeEligibleActivatedToolNames(ordinaryActivatedToolNames, ["human_terminal"], eligibleToolNameSet)
@@ -846,7 +848,7 @@ export async function preModelNode(
           verifiedOrdinaryOrigin: state.verifiedOrdinaryOrigin,
           taskReportBackContinuation: state.taskReportBackContinuation,
           initiatingClientSurface,
-          personalTaskControls,
+          personalTaskControls: personalTaskControls && !getCapabilityFundingSession(),
           personalTaskRunnableModelIds,
           personalOnlyTaskModelIds,
           ...recallRecordsContext,
@@ -856,7 +858,7 @@ export async function preModelNode(
         relayCapabilities: relayCapabilities ?? undefined,
         readableNamespaces: envelopeReadableNamespaces(state.memoryAccessEnvelope),
         activeModelCapabilities,
-        toolNameWhitelist: personalFunding && personalTaskControls
+        toolNameWhitelist: personalFunding && personalTaskControls && !getCapabilityFundingSession()
           ? PERSONAL_TASK_CONTROL_TOOL_NAMES
           : state.toolWhitelist,
         activatedToolNames: selectedActivatedToolNamesForActor(state.actorRole, activatedToolNames),
@@ -876,7 +878,7 @@ export async function preModelNode(
   // Post-model and tools-node fences remain the execution authority for stale
   // or directly injected calls.
   const availableTools = personalFunding
-    ? personalTaskControls ? filterPersonalTaskControlTools(rawTools) : []
+    ? getCapabilityFundingSession() ? rawTools.filter((tool) => personalToolReady(tool.name)) : personalTaskControls ? filterPersonalTaskControlTools(rawTools) : []
     : withholdSkipForExplicitSelection(rawTools, state.explicitlySelected);
   const tools = projectSecurityResearchConsolidationTools(availableTools, consolidating);
   const progressiveToolExposure = measureProgressiveToolExposure({

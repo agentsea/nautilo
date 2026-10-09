@@ -8,6 +8,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export type UsageCallType =
   | "chat"
   | "subagent"
+  | "decision"
+  | "deep_research"
   | "conductor"
   | "room_stenographer"
   | "room_reflection"

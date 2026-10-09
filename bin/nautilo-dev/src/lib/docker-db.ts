@@ -165,6 +165,9 @@ export const DATA_TABLES = [
   // user/agent preference rows that reference them.
   "public.codex_account_profiles",
   "public.codex_user_preferences",
+  // Human-owned optional research and decision model choices reference only
+  // their owning user and must survive instance backup and restore.
+  "public.personal_capability_preferences",
   // Owned photo metadata first, then selection history that may point
   // at those entries, followed by the owner/agent-scoped operation ledger.
   "public.owned_photo_entries",

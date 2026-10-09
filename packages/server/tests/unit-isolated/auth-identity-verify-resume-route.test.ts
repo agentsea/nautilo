@@ -217,6 +217,7 @@ describe("POST /api/auth/identity-verify-resume", () => {
       resumeThreadMembershipForUser: async () => true,
       resumeThreadScopeForUser: async () => ({ roomId, kind: "direct" }),
       resumeCausalHumanUserIdForThread: async () => OWNER_ID,
+      resumeFundingForThread: async () => null,
       resumeAgentIdForThread: async () => options?.protectedResume === undefined
         ? null
         : "resumed-agent",

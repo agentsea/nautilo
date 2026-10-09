@@ -29,6 +29,7 @@ import type { ResolvedCatalogModel } from "@nautilo/trust";
 import {
   listResolvedCatalogModels,
 } from "../../config/resolved-catalog";
+import { getCapabilityFundingSession } from "../../runtime/capability-funding";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 20;
@@ -155,7 +156,7 @@ function matchesCapabilityFilters(
   return true;
 }
 
-function resolveCatalogRows(context?: DiscoverModelsContext): ResolvedCatalogModel[] {
+async function resolveCatalogRows(context?: DiscoverModelsContext): Promise<ResolvedCatalogModel[]> {
   // includeUnavailable: true so Genie can see the full curated catalog and
   // learn which rows are selectable vs missing credentials / routing-filtered.
   // listResolvedCatalogModels iterates only signed catalog rows across all
@@ -167,9 +168,20 @@ function resolveCatalogRows(context?: DiscoverModelsContext): ResolvedCatalogMod
   if (context?.allowChinaUpstream !== undefined) options.allowChinaUpstream = context.allowChinaUpstream;
   const rows = listResolvedCatalogModels(options);
   const runnable = new Set(context?.personalTaskRunnableModelIds ?? []);
-  const callerRunnableRows = rows.map((row) => runnable.has(row.id)
+  const capabilityFunding = getCapabilityFundingSession();
+  const personalDecisionIds = new Set<string>();
+  if (capabilityFunding) {
+    await Promise.all(rows.flatMap((row) => row.workload !== "decision" ? [] : [
+      capabilityFunding.resolveModel("decision", row.id)
+        .then((selection) => {
+          if (selection.modelId === row.id) personalDecisionIds.add(row.id);
+        })
+        .catch(() => {}),
+    ]));
+  }
+  const callerRunnableRows = rows.map((row) => (runnable.has(row.id)
     && row.workload === "chat"
-    && row.output.includes("text")
+    && row.output.includes("text")) || personalDecisionIds.has(row.id)
     ? ({
       ...row,
       availability: "selectable" as const,
@@ -303,9 +315,8 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
     schema: context?.personalTaskControls === true
       ? personalDiscoverModelsSchema
       : discoverModelsSchema,
-    // LangChain DynamicStructuredTool requires func to return Promise<string>;
-    // this handler is synchronous (queries local/cache-backed catalog rows).
-    // eslint-disable-next-line @typescript-eslint/require-await
+    // LangChain DynamicStructuredTool requires func to return Promise<string>.
+    // Personal capability projection can perform request-local funding reads.
     func: async (input): Promise<string> => {
       const fullInput = input as z.infer<typeof discoverModelsSchema>;
       const command = fullInput.command as DiscoverModelsCommand;
@@ -328,7 +339,7 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
         // selectable/missing_credentials, so membership is checked against
         // the curated list (which iterates only ASSISTANT_MODELS) rather than
         // relying on the availability state.
-        const curated = resolveCatalogRows(context);
+        const curated = await resolveCatalogRows(context);
         const row = curated.find((candidate) => candidate.id === modelId);
         if (!row) {
           const notFound: GetNotFoundResponse = {
@@ -361,7 +372,7 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
         requiresReferenceRole: fullInput.requires_reference_role,
       };
 
-      const rows = resolveCatalogRows(context).filter((row) => {
+      const rows = (await resolveCatalogRows(context)).filter((row) => {
         if (query && !matchesQuery(row, query)) return false;
         if (provider && !matchesProvider(row, provider)) return false;
         if (!matchesCapabilityFilters(row, filters)) return false;

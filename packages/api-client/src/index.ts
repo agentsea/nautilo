@@ -45,6 +45,15 @@ export type {
 export type {
   PersonalCostsRangeKey,
   PersonalCostsSummary,
+  PersonalCapabilityFundingPreference,
+  PersonalCapabilityFundingSource,
+  PersonalCapabilityModelOption,
+  PersonalCapabilityModelReadiness,
+  PersonalCapabilityPreferenceOverrides,
+  PersonalCapabilityPreferenceProjection,
+  PersonalCapabilityPreferencesResponse,
+  PersonalCapabilityRole,
+  ReplacePersonalCapabilityPreferencesRequest,
 } from "@nautilo/types";
 export type {
   EventFeedErrorCode,

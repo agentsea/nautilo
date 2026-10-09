@@ -1,3 +1,4 @@
+import { getCapabilityFundingSession } from "../../runtime/capability-funding";
 import type { TaskReadPendingPage } from "./read-projection";
 import type { BaseMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
@@ -112,7 +113,7 @@ export function createTaskTool(context?: unknown) {
             : { selectionSpec: args.model_selection_spec }),
         });
       const personalOnlyCreate = exactPersonalOnlyCreate || resolvedPersonalOnlyCreate;
-      const callerFundedToolFree = personalTaskControls || personalOnlyCreate;
+      const callerFundedToolFree = !getCapabilityFundingSession() && (personalTaskControls || personalOnlyCreate);
 
       if (personalTaskControls && taskCtx.currentTaskId) {
         return "Personal Task controls are available only from the foreground parent chat.";

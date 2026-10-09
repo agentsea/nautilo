@@ -12,7 +12,10 @@ export function createDeepResearchAgent(config?: DeepResearchAgentConfig) {
 }
 
 export { createDeepResearchGraph } from "./agent/graph";
-export { fromRuntimeConfig as fromDeepResearchConfig } from "./shared/config";
+export {
+  fromRuntimeConfig as fromDeepResearchConfig,
+  fromAdmittedDeepResearchModelPlan,
+} from "./shared/config";
 export type {
   Configuration as DeepResearchConfiguration,
   DeepResearchRuntimeConfigOptions,
@@ -26,3 +29,4 @@ export {
   type DeepResearchModelPlan,
 } from "./shared/model-plan";
 export type { AgentState as DeepResearchAgentState } from "./agent/state";
+export { runWithDeepResearchFunding } from "./shared/funding";

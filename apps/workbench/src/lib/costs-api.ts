@@ -1,6 +1,10 @@
 import { apiClient } from "./api";
 import { workbenchFetch } from "./admission-fetch";
-import type { PersonalCostsRecoverySummary } from "@nautilo/types";
+import type {
+  PersonalCostsRecoverySummary,
+  ServiceCostOperationsSummary,
+  ServiceCostRecoverySummary,
+} from "@nautilo/types";
 
 /**
  * Costs dashboard (D405) — client types + fetch. Declared locally (Skills /
@@ -100,6 +104,8 @@ export interface CostsSummary {
   byUser: CostsByUserRow[];
   timeSeries: CostsTimeSeriesPoint[];
   recovery?: PersonalCostsRecoverySummary;
+  serviceOperations?: ServiceCostOperationsSummary;
+  serviceRecovery?: ServiceCostRecoverySummary;
 }
 
 function authHeaders(): HeadersInit {

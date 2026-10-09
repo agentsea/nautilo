@@ -242,7 +242,7 @@ describe("invokeOpenRouterChoice", () => {
     expect(usage.records).toHaveLength(1);
     expect(usage.records[0]).toMatchObject({
       model: JEV_ID,
-      callType: "subagent",
+      callType: "decision",
       userId: "user-safe",
       roomId: ROOM_ID,
       inputTokens: 324,
@@ -283,7 +283,7 @@ describe("invokeOpenRouterChoice", () => {
     expect(usage.records).toHaveLength(1);
     expect(usage.records[0]).toMatchObject({
       model: JEV_ID,
-      callType: "other",
+      callType: "decision",
       inputTokens: 8,
       outputTokens: 2,
       totalTokens: 10,
@@ -599,10 +599,10 @@ describe("invokeOpenRouterChoice", () => {
     expect(JSON.stringify(usage.records[0])).not.toContain(API_KEY);
   });
 
-  test("accepts the provider's required model string without a local slug whitelist", async () => {
+  test("rejects an OpenRouter response for a different model identity", async () => {
     const usage = usageRecorder();
     const providerModel = "routing-layer/model@2026.09";
-    const result = await invokeOpenRouterChoice(input(), {
+    const error = await failureOf(invokeOpenRouterChoice(input(), {
       apiKey: API_KEY,
       fetch: fetchJson(successPayload({
         model: providerModel,
@@ -610,12 +610,9 @@ describe("invokeOpenRouterChoice", () => {
         provider: "TypeSafe (routed)",
       })),
       recordUsage: usage.recordUsage,
-    });
+    }));
 
-    expect(result.selectedId).toBe("open");
-    expect(result.resolvedModelId).toBe(providerModel);
-    expect(result.responseId).toBe("decision_[route]@2026");
-    expect(result.provider).toBe("TypeSafe (routed)");
+    expectSafeFailure(error, { code: "invalid_response", status: null, retryable: false });
     expect(usage.records[0]?.model).toBe(JEV_ID);
     expect(usage.records[0]?.metadata).toMatchObject({
       operation: "choice",
@@ -625,17 +622,16 @@ describe("invokeOpenRouterChoice", () => {
     });
   });
 
-  test("redacts a credential-bearing model string without discarding an in-set choice", async () => {
+  test("redacts and rejects a credential-bearing model identity", async () => {
     const usage = usageRecorder();
     const unsafeModel = `typesafe/jev-1.13-${API_KEY}`;
-    const result = await invokeOpenRouterChoice(input(), {
+    const error = await failureOf(invokeOpenRouterChoice(input(), {
       apiKey: API_KEY,
       fetch: fetchJson(successPayload({ model: unsafeModel })),
       recordUsage: usage.recordUsage,
-    });
+    }));
 
-    expect(result.selectedId).toBe("open");
-    expect(result.resolvedModelId).toBeNull();
+    expectSafeFailure(error, { code: "invalid_response", status: null, retryable: false });
     expect(usage.records).toHaveLength(1);
     expect(usage.records[0]?.model).toBe(JEV_ID);
     expect(usage.records[0]?.metadata).not.toHaveProperty("resolvedProviderModel");
