@@ -814,6 +814,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     if (input.coordinate.kind === "definition") {
       const rows = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.select({
         owner_id: tasks.ownerId,
+        requestor_id: tasks.requestorId,
         task_status: sql<string>`${tasks.status}`.as("task_status"),
         fire_lock_id: tasks.fireLockId,
         content_namespace_id: tasks.contentNamespaceId,
@@ -824,7 +825,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       }).from(tasks).where(eq(tasks.id, input.coordinate.taskId)).for("update").limit(2));
       const row = oneOrNone(rows, "Task predecessor lookup");
       if (input.coordinate.contentRevision === 1) {
-        return row === null || (text(row, "owner_id") === requesterOwnerId
+        return row === null || (text(row, "requestor_id") === requesterOwnerId
           && inAllowedDefinitionStatus(row)
           && nullableText(row, "fire_lock_id") === null
           && integer(row, "content_revision") === 0
@@ -832,6 +833,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
           && text(row, "content_representation") === "ordinary");
       }
       return row !== null && text(row, "owner_id") === requesterOwnerId
+        && text(row, "requestor_id") === requesterOwnerId
         && inAllowedDefinitionStatus(row)
         && nullableText(row, "fire_lock_id") === null
         && nullableText(row, "content_namespace_id") === input.namespaceId
@@ -850,12 +852,14 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       result_crypto_mapping_state: taskRuns.resultCryptoMappingState,
       run_status: sql<string>`${taskRuns.status}`.as("run_status"),
       owner_id: tasks.ownerId,
+      requestor_id: tasks.requestorId,
       task_status: sql<string>`${tasks.status}`.as("task_status"),
       parent_namespace_id: sql<string | null>`${tasks.contentNamespaceId}`.as("parent_namespace_id"),
     }).from(taskRuns).innerJoin(tasks, eq(tasks.id, taskRuns.taskId)).where(eq(taskRuns.id, input.coordinate.taskRunId)).for("update", { of: taskRuns }).limit(2));
     const row = oneOrNone(rows, "Task result predecessor lookup");
     if (row === null || text(row, "task_id") !== input.coordinate.taskId
       || text(row, "owner_id") !== requesterOwnerId
+      || text(row, "requestor_id") !== requesterOwnerId
       || nullableText(row, "parent_namespace_id") !== input.namespaceId
       || text(row, "task_status") === "cancelled"
       || text(row, "run_status") === "cancelled") return false;
@@ -873,7 +877,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
 
   async #productRow(transaction: ConversationProductPostgresTransaction, coordinate: TaskContentCoordinateV1, lock: boolean): Promise<ConversationProductDatabaseRow | null> {
     const query = coordinate.kind === "definition"
-      ? conversationProductTypedDb.select({ task_id: sql<string>`${tasks.id}`.as("task_id"), owner_id: tasks.ownerId, task_status: sql<string>`${tasks.status}`.as("task_status"), prompt: tasks.prompt, expected_output: tasks.expectedOutput, last_error: tasks.lastError, metadata_json: sql<string>`${tasks.metadata}::text`.as("metadata_json"), content_revision: tasks.contentRevision, content_namespace_id: tasks.contentNamespaceId, content_representation: tasks.contentRepresentation, crypto_object_id: tasks.cryptoObjectId, crypto_access_revision: tasks.cryptoAccessRevision, crypto_required_namespace_fingerprint: tasks.cryptoRequiredNamespaceFingerprint, crypto_mapping_state: tasks.cryptoMappingState }).from(tasks).where(eq(tasks.id, coordinate.taskId)).limit(2)
+      ? conversationProductTypedDb.select({ task_id: sql<string>`${tasks.id}`.as("task_id"), owner_id: tasks.ownerId, requestor_id: tasks.requestorId, task_status: sql<string>`${tasks.status}`.as("task_status"), prompt: tasks.prompt, expected_output: tasks.expectedOutput, last_error: tasks.lastError, metadata_json: sql<string>`${tasks.metadata}::text`.as("metadata_json"), content_revision: tasks.contentRevision, content_namespace_id: tasks.contentNamespaceId, content_representation: tasks.contentRepresentation, crypto_object_id: tasks.cryptoObjectId, crypto_access_revision: tasks.cryptoAccessRevision, crypto_required_namespace_fingerprint: tasks.cryptoRequiredNamespaceFingerprint, crypto_mapping_state: tasks.cryptoMappingState }).from(tasks).where(eq(tasks.id, coordinate.taskId)).limit(2)
       : conversationProductTypedDb.select({ task_id: taskRuns.taskId, task_run_id: sql<string>`${taskRuns.id}`.as("task_run_id"), run_status: sql<string>`${taskRuns.status}`.as("run_status"), result_revision: taskRuns.resultRevision, result_content_namespace_id: taskRuns.resultContentNamespaceId, result_representation: taskRuns.resultRepresentation, crypto_object_id: sql<string | null>`${taskRuns.resultCryptoObjectId}`.as("crypto_object_id"), crypto_access_revision: sql<number>`${taskRuns.resultCryptoAccessRevision}`.as("crypto_access_revision"), crypto_required_namespace_fingerprint: sql<Uint8Array | null>`${taskRuns.resultCryptoRequiredNamespaceFingerprint}`.as("crypto_required_namespace_fingerprint"), crypto_mapping_state: sql<string>`${taskRuns.resultCryptoMappingState}`.as("crypto_mapping_state") }).from(taskRuns).where(and(eq(taskRuns.id, coordinate.taskRunId), eq(taskRuns.taskId, coordinate.taskId))).limit(2);
     return oneOrNone(await executeTypedConversationProductQuery(transaction, lock ? query.for("update") : query), "Task content product lookup");
   }
@@ -915,7 +919,9 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     if (coordinate.kind !== "definition") throw new Error("Definition mapping kind mismatch");
     const row = await this.#productRow(transaction, coordinate, true);
     if (row === null) return "missing";
-    if (integer(row, "content_revision") === coordinate.contentRevision
+    if (text(row, "owner_id") === requesterOwnerId
+      && text(row, "requestor_id") === requesterOwnerId
+      && integer(row, "content_revision") === coordinate.contentRevision
       && nullableText(row, "crypto_object_id") === lifecycle.cryptoObjectId
       && nullableText(row, "content_namespace_id") === lifecycle.namespaceId
       && text(row, "content_representation") === lifecycle.representation
@@ -935,6 +941,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     )) return "wrong_authority";
     const expected = coordinate.contentRevision - 1;
     const updated = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.update(tasks).set({
+      ...(expected === 0 ? { ownerId: requesterOwnerId } : {}),
       contentRepresentation: lifecycle.representation, contentNamespaceId: lifecycle.namespaceId,
       contentRevision: coordinate.contentRevision, cryptoObjectId: lifecycle.cryptoObjectId,
       cryptoAccessRevision: 0, cryptoRequiredNamespaceFingerprint: lifecycle.requiredNamespaceFingerprint,
@@ -948,9 +955,9 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         lifecycle.representation === "protected" ? { lastError: null } : {},
       )),
       updatedAt: sql`CURRENT_TIMESTAMP`,
-    }).where(and(eq(tasks.id, coordinate.taskId), eq(tasks.ownerId, requesterOwnerId), inArray(tasks.status, ["pending", "paused"]), isNull(tasks.fireLockId), eq(tasks.contentRevision, expected), expected === 0
+    }).where(and(eq(tasks.id, coordinate.taskId), eq(tasks.requestorId, requesterOwnerId), inArray(tasks.status, ["pending", "paused"]), isNull(tasks.fireLockId), eq(tasks.contentRevision, expected), expected === 0
       ? and(isNull(tasks.contentNamespaceId), eq(tasks.contentRepresentation, "ordinary"))
-      : and(eq(tasks.contentNamespaceId, lifecycle.namespaceId), inArray(tasks.contentRepresentation, ["protected", "dual"]), eq(tasks.cryptoMappingState, "verified")))).returning({ task_id: tasks.id }));
+      : and(eq(tasks.ownerId, requesterOwnerId), eq(tasks.contentNamespaceId, lifecycle.namespaceId), inArray(tasks.contentRepresentation, ["protected", "dual"]), eq(tasks.cryptoMappingState, "verified")))).returning({ task_id: tasks.id }));
     return oneOrNone(updated, "Task definition mapping CAS") === null ? "stale" : "applied";
   }
 
@@ -973,7 +980,12 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     if (coordinate.kind !== "run_result") throw new Error("Result mapping kind mismatch");
     if (locked === null) throw new Error("Result mapping product lock is missing");
     const { parent, run: row } = locked;
-    if (parent === null || text(parent, "owner_id") !== requesterOwnerId || nullableText(parent, "namespace_id") !== lifecycle.namespaceId) return "stale";
+    if (parent === null
+      || text(parent, "owner_id") !== requesterOwnerId
+      || text(parent, "requestor_id") !== requesterOwnerId
+      || nullableText(parent, "namespace_id") !== lifecycle.namespaceId) {
+      return "stale";
+    }
     if (row === null) return "missing";
     if (integer(row, "result_revision") === coordinate.contentRevision
       && nullableText(row, "crypto_object_id") === lifecycle.cryptoObjectId
@@ -1012,6 +1024,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       transaction,
       conversationProductTypedDb.select({
         owner_id: tasks.ownerId,
+        requestor_id: tasks.requestorId,
         namespace_id: sql<string | null>`${tasks.contentNamespaceId}`.as("namespace_id"),
         task_status: sql<string>`${tasks.status}`.as("task_status"),
       }).from(tasks)

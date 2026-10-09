@@ -113,6 +113,7 @@ export const tasks = pgTable(
     }).onDelete("restrict"),
     check("tasks_content_revision_nonnegative", sql`${t.contentRevision} >= 0`),
     check("tasks_crypto_access_revision_nonnegative", sql`${t.cryptoAccessRevision} >= 0`),
+    check("tasks_protected_requester_owns_content", sql`${t.contentRepresentation} = 'ordinary' or ${t.ownerId} = ${t.requestorId}`),
     check("tasks_crypto_mapping_coherent", sql`(
       ${t.contentRepresentation} = 'ordinary'
       and ${t.contentNamespaceId} is null

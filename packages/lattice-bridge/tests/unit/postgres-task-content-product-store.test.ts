@@ -29,6 +29,7 @@ const NAMESPACE_ID = "10000000-0000-4000-8000-000000000004";
 const DOMAIN_ID = "10000000-0000-4000-8000-000000000005";
 const LEASE_ID = "10000000-0000-4000-8000-000000000006";
 const OWNER_ID = "10000000-0000-4000-8000-000000000007";
+const FOREIGN_OWNER_ID = "10000000-0000-4000-8000-000000000008";
 const NOW = new Date("2026-09-22T12:00:00.000Z");
 
 const authority = Object.freeze({
@@ -296,7 +297,7 @@ describe("PostgresTaskContentProductStore", () => {
       { contains: 'from "task_definition_crypto_revisions"', rows: [] },
       requesterOwner,
       { contains: 'from "tasks"', rows: [{
-        owner_id: OWNER_ID, task_status: "pending", fire_lock_id: null,
+        owner_id: OWNER_ID, requestor_id: OWNER_ID, task_status: "pending", fire_lock_id: null,
         content_namespace_id: NAMESPACE_ID,
         content_revision: 1, content_representation: "protected",
         crypto_object_id: deriveTaskContentCryptoObjectIdV1(definition()),
@@ -305,7 +306,7 @@ describe("PostgresTaskContentProductStore", () => {
       }] },
       { contains: 'insert into "task_definition_crypto_revisions"', rows: [updateRow] },
       { contains: 'from "tasks"', rows: [{
-        task_id: TASK_ID, owner_id: OWNER_ID, content_revision: 1,
+        task_id: TASK_ID, owner_id: OWNER_ID, requestor_id: OWNER_ID, content_revision: 1,
         content_namespace_id: NAMESPACE_ID, content_representation: "protected",
         crypto_object_id: deriveTaskContentCryptoObjectIdV1(definition()),
         crypto_access_revision: 0,
@@ -325,7 +326,7 @@ describe("PostgresTaskContentProductStore", () => {
         result_representation: "ordinary", result_crypto_object_id: null,
         result_crypto_required_namespace_fingerprint: null,
         result_crypto_mapping_state: "unmapped",
-        run_status: "running", owner_id: OWNER_ID,
+        run_status: "running", owner_id: OWNER_ID, requestor_id: OWNER_ID,
         task_status: "running", parent_namespace_id: NAMESPACE_ID,
       }] },
       { contains: 'insert into "task_run_result_crypto_revisions"', rows: [runRow] },
@@ -346,7 +347,7 @@ describe("PostgresTaskContentProductStore", () => {
       { contains: 'from "task_definition_crypto_revisions"', rows: [] },
       requesterOwner,
       { contains: 'from "tasks"', rows: [{
-        owner_id: OWNER_ID, task_status: "pending", fire_lock_id: RUN_ID,
+        owner_id: OWNER_ID, requestor_id: OWNER_ID, task_status: "pending", fire_lock_id: RUN_ID,
         content_namespace_id: NAMESPACE_ID,
         content_revision: 1, content_representation: "protected",
         crypto_object_id: deriveTaskContentCryptoObjectIdV1(definition()),
@@ -417,14 +418,14 @@ describe("PostgresTaskContentProductStore", () => {
     })).toEqual({ status: "authority_unavailable" });
   });
 
-  test("completes and maps a definition with exact authority and product CAS", async () => {
+  test("maps a foreign-owned ordinary definition to its requester in the protected content CAS", async () => {
     const coordinate = definition();
     const pending = lifecycleRow(coordinate, { lease_is_live: true });
     const complete = lifecycleRow(coordinate, {
       completion: "complete", crypto_completed_at: NOW, lease_is_live: true,
     });
     const product = {
-      task_id: TASK_ID, owner_id: OWNER_ID, content_revision: 0,
+      task_id: TASK_ID, owner_id: FOREIGN_OWNER_ID, requestor_id: OWNER_ID, content_revision: 0,
       task_status: "paused",
       prompt: "plaintext-canary", expected_output: "expected-canary",
       last_error: "error-canary", metadata_json: '{"mode":"update","secret":"metadata-canary"}',
@@ -450,6 +451,13 @@ describe("PostgresTaskContentProductStore", () => {
         contains: 'update "tasks"',
         rows: [{ task_id: TASK_ID }],
         inspect(parameters, statement) {
+          const [assignments, predicate] = statement.split(" where ");
+          expect(assignments).toContain('"owner_id" =');
+          expect(assignments).toContain('"content_representation" =');
+          expect(predicate).toContain('"tasks"."requestor_id"');
+          expect(predicate).not.toContain('"tasks"."owner_id"');
+          expect(parameters).toContain(OWNER_ID);
+          expect(parameters).not.toContain(FOREIGN_OWNER_ID);
           expect(statement).toContain('"prompt"');
           expect(statement).toContain('"expected_output"');
           expect(statement).toContain('"last_error"');
@@ -480,6 +488,80 @@ describe("PostgresTaskContentProductStore", () => {
     expect(connection.steps).toHaveLength(0);
   });
 
+  test("rejects initial protected reservation by the old owner when the requester differs", async () => {
+    const coordinate = definition();
+    const { store, connection } = await setup([
+      ...emptyOperations,
+      { contains: 'from "task_definition_crypto_revisions"', rows: [] },
+      requesterOwner,
+      { contains: 'from "tasks"', rows: [{
+        owner_id: OWNER_ID,
+        requestor_id: FOREIGN_OWNER_ID,
+        task_status: "pending",
+        fire_lock_id: null,
+        content_namespace_id: null,
+        content_revision: 0,
+        content_representation: "ordinary",
+        crypto_object_id: null,
+        crypto_required_namespace_fingerprint: null,
+        crypto_mapping_state: "unmapped",
+      }] },
+    ]);
+
+    expect(await store.reserveRevision(reservation(coordinate))).toEqual({ status: "stale" });
+    expect(connection.steps).toHaveLength(0);
+  });
+
+  test("rejects an inconsistent protected owner on later revision reservation", async () => {
+    const coordinate = definition(2);
+    const { store, connection } = await setup([
+      ...emptyOperations,
+      { contains: 'from "task_definition_crypto_revisions"', rows: [] },
+      requesterOwner,
+      { contains: 'from "tasks"', rows: [{
+        owner_id: FOREIGN_OWNER_ID,
+        requestor_id: OWNER_ID,
+        task_status: "pending",
+        fire_lock_id: null,
+        content_namespace_id: NAMESPACE_ID,
+        content_revision: 1,
+        content_representation: "protected",
+        crypto_object_id: deriveTaskContentCryptoObjectIdV1(definition()),
+        crypto_required_namespace_fingerprint: fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
+        crypto_mapping_state: "verified",
+      }] },
+    ]);
+
+    expect(await store.reserveRevision(reservation(coordinate))).toEqual({ status: "stale" });
+    expect(connection.steps).toHaveLength(0);
+  });
+
+  test("rejects result reservation when the protected parent owner and requester differ", async () => {
+    const coordinate = result();
+    const { store, connection } = await setup([
+      ...emptyOperations,
+      { contains: 'from "task_run_result_crypto_revisions"', rows: [] },
+      requesterOwner,
+      { contains: 'inner join "tasks"', rows: [{
+        task_id: TASK_ID,
+        owner_id: FOREIGN_OWNER_ID,
+        requestor_id: OWNER_ID,
+        result_revision: 0,
+        result_content_namespace_id: null,
+        result_representation: "ordinary",
+        result_crypto_object_id: null,
+        result_crypto_required_namespace_fingerprint: null,
+        result_crypto_mapping_state: "unmapped",
+        run_status: "running",
+        task_status: "running",
+        parent_namespace_id: NAMESPACE_ID,
+      }] },
+    ]);
+
+    expect(await store.reserveRevision(reservation(coordinate))).toEqual({ status: "stale" });
+    expect(connection.steps).toHaveLength(0);
+  });
+
   test("initial protected mapping preserves captured consent but a new definition removes it atomically", async () => {
     for (const revision of [1, 2]) {
       const coordinate = definition(revision);
@@ -492,7 +574,7 @@ describe("PostgresTaskContentProductStore", () => {
         { contains: "for update", rows: [complete] },
         requesterOwner,
         { contains: 'from "tasks"', rows: [{
-          task_id: TASK_ID, owner_id: OWNER_ID, content_revision: revision - 1,
+          task_id: TASK_ID, owner_id: OWNER_ID, requestor_id: OWNER_ID, content_revision: revision - 1,
           task_status: "paused", prompt: "", expected_output: null, last_error: null,
           metadata_json: '{}', content_namespace_id: revision === 1 ? null : NAMESPACE_ID,
           content_representation: revision === 1 ? "ordinary" : "protected",
@@ -519,7 +601,8 @@ describe("PostgresTaskContentProductStore", () => {
           }
           // The definition transition and consent removal share this exact CAS.
           expect(statement).toContain('"tasks"."content_revision" =');
-          expect(statement).toContain('"tasks"."owner_id" =');
+          if (revision === 1) expect(statement.split(" where ")[0]).toContain('"owner_id" =');
+          else expect(statement.split(" where ")[1]).toContain('"tasks"."owner_id" =');
         } },
         { contains: 'update "task_definition_crypto_revisions"', rows: [{ ...complete, disposition: "mapped" }] },
       ]);
@@ -539,7 +622,7 @@ describe("PostgresTaskContentProductStore", () => {
     const complete = lifecycleRow(coordinate, { completion: "complete", crypto_completed_at: NOW, lease_is_live: true });
     const { store, connection } = await setup([
       { contains: "for update", rows: [complete] }, requesterOwner,
-      { contains: 'from "tasks"', rows: [{ task_id: TASK_ID, owner_id: OWNER_ID,
+      { contains: 'from "tasks"', rows: [{ task_id: TASK_ID, owner_id: OWNER_ID, requestor_id: OWNER_ID,
         task_status: "paused", content_revision: 2, content_namespace_id: NAMESPACE_ID,
         content_representation: "protected", crypto_object_id: deriveTaskContentCryptoObjectIdV1(coordinate),
         crypto_mapping_state: "verified", crypto_required_namespace_fingerprint: fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
@@ -553,6 +636,47 @@ describe("PostgresTaskContentProductStore", () => {
       expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
       expectedRepresentation: "protected", leaseToken: null })).toBe("duplicate");
     // No Task write or automatic re-enrollment occurs on replay.
+    expect(connection.steps).toHaveLength(0);
+  });
+
+  test("does not accept a protected definition duplicate with a mismatched owner", async () => {
+    const coordinate = definition(2);
+    const complete = lifecycleRow(coordinate, {
+      completion: "complete", crypto_completed_at: NOW, lease_is_live: true,
+    });
+    const { store, connection } = await setup([
+      { contains: "for update", rows: [complete] },
+      requesterOwner,
+      { contains: 'from "tasks"', rows: [{
+        task_id: TASK_ID,
+        owner_id: FOREIGN_OWNER_ID,
+        requestor_id: OWNER_ID,
+        task_status: "paused",
+        content_revision: 2,
+        content_namespace_id: NAMESPACE_ID,
+        content_representation: "protected",
+        crypto_object_id: deriveTaskContentCryptoObjectIdV1(coordinate),
+        crypto_mapping_state: "verified",
+        crypto_required_namespace_fingerprint: fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
+        prompt: "",
+        expected_output: null,
+        last_error: null,
+        metadata_json: '{"mode":"update","publish":"branch"}',
+      }] },
+      protectedPublicationPolicy,
+      { contains: 'update "tasks"', rows: [] },
+      { contains: 'update "task_definition_crypto_revisions"', rows: [{
+        ...complete, disposition: "stale_mapping", failure_code: "mapping_conflict",
+      }] },
+    ]);
+
+    expect(await store.compareAndSwapCryptoMapping({
+      coordinate,
+      cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
+      expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
+      expectedRepresentation: "protected",
+      leaseToken: null,
+    })).toBe("stale");
     expect(connection.steps).toHaveLength(0);
   });
 
@@ -605,7 +729,7 @@ describe("PostgresTaskContentProductStore", () => {
       {
         contains: 'from "tasks"',
         rows: [{
-          owner_id: OWNER_ID, namespace_id: NAMESPACE_ID,
+          owner_id: OWNER_ID, requestor_id: OWNER_ID, namespace_id: NAMESPACE_ID,
           task_status: "completed",
         }],
         inspect(parameters, statement) {
@@ -674,7 +798,7 @@ describe("PostgresTaskContentProductStore", () => {
       { contains: 'for update', rows: [complete] },
       requesterOwner,
       { contains: 'from "tasks"', rows: [{
-        task_id: TASK_ID, owner_id: OWNER_ID, task_status: "cancelled",
+        task_id: TASK_ID, owner_id: OWNER_ID, requestor_id: OWNER_ID, task_status: "cancelled",
         content_revision: 0, prompt: "cancelled", expected_output: null,
         last_error: null, metadata_json: '{}', content_namespace_id: null,
         content_representation: "ordinary", crypto_object_id: null,
@@ -706,7 +830,7 @@ describe("PostgresTaskContentProductStore", () => {
       completion: "complete", crypto_completed_at: NOW, lease_is_live: true,
     });
     const product = {
-      task_id: TASK_ID, owner_id: OWNER_ID, content_revision: 0,
+      task_id: TASK_ID, owner_id: OWNER_ID, requestor_id: OWNER_ID, content_revision: 0,
       task_status: "paused", prompt: "", expected_output: null,
       last_error: null, metadata_json: '{}', content_namespace_id: null,
       content_representation: "ordinary", crypto_object_id: null,
@@ -754,7 +878,7 @@ describe("PostgresTaskContentProductStore", () => {
       { contains: 'for update', rows: [complete] },
       requesterOwner,
       { contains: 'from "tasks"', rows: [{
-        task_id: TASK_ID, owner_id: OWNER_ID, content_revision: 0,
+        task_id: TASK_ID, owner_id: OWNER_ID, requestor_id: OWNER_ID, content_revision: 0,
         task_status: "paused", prompt: "ordinary", expected_output: null,
         last_error: null, metadata_json: '{}', content_namespace_id: null,
         content_representation: "ordinary", crypto_object_id: null,
@@ -789,7 +913,7 @@ describe("PostgresTaskContentProductStore", () => {
       completion: "complete", crypto_completed_at: NOW, lease_is_live: true,
     });
     const parent = {
-      owner_id: OWNER_ID, namespace_id: NAMESPACE_ID,
+      owner_id: OWNER_ID, requestor_id: OWNER_ID, namespace_id: NAMESPACE_ID,
       task_status: "completed",
     };
     const stalePolicy: Step = {
@@ -873,7 +997,7 @@ describe("PostgresTaskContentProductStore", () => {
       },
       protectedPublicationPolicy,
       { contains: 'from "tasks"', rows: [{
-        owner_id: OWNER_ID, namespace_id: NAMESPACE_ID,
+        owner_id: OWNER_ID, requestor_id: OWNER_ID, namespace_id: NAMESPACE_ID,
         task_status: "running",
       }], inspect(_parameters, statement) {
         expect(statement).toContain("for update");
@@ -917,7 +1041,7 @@ describe("PostgresTaskContentProductStore", () => {
       { contains: 'from "task_run_result_crypto_revisions"', rows: [observed] },
       protectedPublicationPolicy,
       { contains: 'from "tasks"', rows: [{
-        owner_id: OWNER_ID, namespace_id: NAMESPACE_ID,
+        owner_id: OWNER_ID, requestor_id: OWNER_ID, namespace_id: NAMESPACE_ID,
         task_status: "completed",
       }] },
       { contains: 'from "task_runs"', rows: [{
