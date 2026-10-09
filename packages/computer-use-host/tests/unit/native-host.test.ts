@@ -8,7 +8,6 @@ import { createNativeCuaHost } from "../../src/native-host.ts";
 import * as nativeRuntime from "../../src/native-runtime.ts";
 import { createNativeComputerUseScopeFactory } from "../../src/native-contract-runtime.ts";
 import { COMPUTER_USE_HOST_VERSION } from "../../src/version.ts";
-import classificationReview from "../../reviews/0.1.29.json";
 
 function checkedPort(): CuaCheckedContextPort {
   return {
@@ -73,6 +72,9 @@ test("native Host owns lifecycle startup, checked generation, contracts, invalid
     left.contractId.localeCompare(right.contractId)
     || left.contractNamespace.localeCompare(right.contractNamespace)
     || left.contractVersion - right.contractVersion);
+  const classificationReview = await Bun.file(
+    new URL(`../../reviews/${COMPUTER_USE_HOST_VERSION}.json`, import.meta.url),
+  ).json();
   expect(classificationReview.hostVersion).toBe(COMPUTER_USE_HOST_VERSION);
   expect(classificationReview.contracts).toEqual(readyContracts);
   const closeNative = spyOn(runtime.adapter, "close");
