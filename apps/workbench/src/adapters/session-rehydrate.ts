@@ -401,16 +401,17 @@ function consumePendingToolCall(
   if (toolCallId === undefined) return undefined;
   const candidates = pending.filter((call) => call.id === toolCallId
     && (authorAgentId === undefined || call.authorAgentId === authorAgentId));
-  // Same-id resumed rows belong to one author. Cross-Agent duplicates without
-  // a result author cannot establish which call supplied the displayed args.
+  // Legacy provider IDs cannot distinguish a resumed row from a fresh call.
+  // Keep an ambiguous result visible without borrowing either call's args.
   if (new Set(candidates.map((call) => call.authorAgentId)).size > 1) return undefined;
-  const matched = candidates[0];
-  if (matched === undefined) return undefined;
+  const candidate = candidates[0];
+  if (candidate === undefined) return undefined;
+  const matched = candidates.length === 1 ? candidate : undefined;
   for (let index = pending.length - 1; index >= 0; index -= 1) {
     if (pending[index]?.id === toolCallId
-      && pending[index]?.authorAgentId === matched.authorAgentId) pending.splice(index, 1);
+      && pending[index]?.authorAgentId === candidate.authorAgentId) pending.splice(index, 1);
   }
-  return toolName === undefined || matched.name === toolName ? matched : undefined;
+  return toolName === undefined || matched?.name === toolName ? matched : undefined;
 }
 
 function parseCanonicalArgs(raw: unknown): Readonly<

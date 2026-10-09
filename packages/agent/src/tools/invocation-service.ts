@@ -698,8 +698,8 @@ function resolveExactTaskContinuationCapabilities(input: {
 /**
  * Structural view of `WorkstationDispatchPlan` read by the tools node. Only
  * the binding fields the tools node re-validates + the `relayId` it pins.
- * `executionClass` additionally fences the typed Git lane. Admission timing
- * remains owned by the registry.
+ * `executionClass` preserves the admitted command containment class. Admission
+ * timing remains owned by the registry.
  */
 export interface WorkstationDispatchPlanView {
   readonly executionClass?: "basic_sandbox" | "profile_bound_sandbox" | "real_workstation";

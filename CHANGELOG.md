@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Separate Genie tool calls keep their own arguments, results, and history even
+  when a model provider reuses call IDs. Approval resumes and repeated delivery
+  continue to use the original invocation identity.
+
 - Personal Browser Use and CloudConvert keys can fund website work and file
   conversion under the administrator's credential policy. Existing browser
   profiles and submitted conversions retain their creating account through
@@ -121,9 +125,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Compatible Desktop versions retain supported execution capabilities when
   reconnecting to an older server. Pure output reads retain actor permission
   checks without asking to reactivate Development access.
-  Typed local Git operations are available through `local_git`, and retained
-  shell output can be paged or searched through `read_shell_output`, without
-  launching another shell command.
+  Git runs through ordinary managed commands. Retained shell output can be
+  paged or searched through `read_shell_output` without launching another
+  shell command.
   Basic commands can use installed utilities inside the selected project without
   activating Development access. They use a private temporary home, isolated
   networking, and the existing chat, encryption, and approval checks. Continuing

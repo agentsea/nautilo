@@ -8,6 +8,7 @@ import { createManageMemoryTool } from "../tools/memory/manage-memory";
 import { createSearchMemoryTool, formatSearchMemoryResults } from "../tools/memory/search-memory";
 import { SOUL_FILE_HEADER } from "../prompts/templates";
 import { resolveModelRole } from "../config/model-role-resolution";
+import { normalizeModelToolCallIdentity } from "../nodes/model-tool-call-identity";
 import { createOrdinaryMemoryReviewStaging, type PreparedMemoryReview } from "./memory-review-publication";
 import { MemoryReviewError, type MemoryReviewMutation } from "./memory-review-staging";
 
@@ -106,14 +107,15 @@ async function prepareMemoryReviewWithUsage(messages: BaseMessage[], options: Me
       const response = await invoke({ modelId, messages: conversation, tools, ...(options.signal ? { signal: options.signal } : {}) });
       if (options.signal?.aborted) throw new MemoryReviewError("cancelled");
       if (!AIMessage.isInstance(response)) throw new MemoryReviewError("invalid_proposal");
-      conversation.push(response);
-      if (response.invalid_tool_calls?.length) throw new MemoryReviewError("invalid_proposal");
-      if (!response.tool_calls?.length) {
+      const admittedResponse = normalizeModelToolCallIdentity(response);
+      conversation.push(admittedResponse);
+      if (admittedResponse.invalid_tool_calls?.length) throw new MemoryReviewError("invalid_proposal");
+      if (!admittedResponse.tool_calls?.length) {
         const proposal = staging.prepared();
-        if (proposal.operations.length === 0 && (typeof response.content !== "string" || response.content.trim() !== "Nothing to save.")) throw new MemoryReviewError("invalid_proposal");
+        if (proposal.operations.length === 0 && (typeof admittedResponse.content !== "string" || admittedResponse.content.trim() !== "Nothing to save.")) throw new MemoryReviewError("invalid_proposal");
         return { status: "prepared", proposal, turns, modelId };
       }
-      for (const [index, call] of response.tool_calls.entries()) {
+      for (const [index, call] of admittedResponse.tool_calls.entries()) {
         const tool = tools.find((candidate) => candidate.name === call.name);
         if (!tool) throw new MemoryReviewError("invalid_proposal");
         let result: unknown;
