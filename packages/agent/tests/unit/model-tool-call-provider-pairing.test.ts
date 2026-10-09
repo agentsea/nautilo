@@ -60,6 +60,28 @@ async function captureOpenAIResponsesRequest(
   return capture.request();
 }
 
+async function captureOpenAIResponsesProjectionError(messages: BaseMessage[]): Promise<Error> {
+  const model = new OpenAIUsageResponses({
+    apiKey: "test-only",
+    model: "gpt-test",
+    streaming: false,
+  });
+  const boundary = new Error("request boundary reached");
+  (model as unknown as {
+    completionWithRetry: () => Promise<never>;
+  }).completionWithRetry = async () => {
+    throw boundary;
+  };
+  try {
+    await model.invoke(messages);
+    throw new Error("expected projection to fail");
+  } catch (error) {
+    expect(error).not.toBe(boundary);
+    if (!(error instanceof Error)) throw error;
+    return error;
+  }
+}
+
 describe("canonical tool-call provider pairing", () => {
   test("Anthropic sends one canonical tool_use/tool_result pair without changing signed thinking", async () => {
     const signature = "opaque-anthropic-thinking-signature";
@@ -325,7 +347,12 @@ describe("canonical tool-call provider pairing", () => {
     });
   });
 
-  test("OpenAI Responses projects native custom/computer calls without rebinding opaque item IDs", async () => {
+  test("OpenAI Responses restores native computer provider bindings only on outgoing wire", async () => {
+    const safetyChecks = [{
+      id: "opaque-safety-check-id",
+      code: "fixture_policy",
+      message: "Opaque provider safety detail",
+    }];
     const message = normalizeModelToolCallIdentity(convertResponsesMessageToAIMessage(response({
       id: "response-id",
       object: "response",
@@ -358,7 +385,7 @@ describe("canonical tool-call provider pairing", () => {
           id: "computer-item-id",
           call_id: "shared-provider-call",
           action: { type: "screenshot" },
-          pending_safety_checks: [],
+          pending_safety_checks: safetyChecks,
           status: "completed",
         },
       ],
@@ -380,9 +407,7 @@ describe("canonical tool-call provider pairing", () => {
     });
 
     const sourceOutput = message.response_metadata["output"] as Array<Record<string, unknown>>;
-    const request = await captureOpenAIResponsesRequest([message, customResult, computerResult]);
-    const wire = request["input"];
-    expect(wire).toMatchObject([
+    const expectedWire = [
         {
           type: "reasoning",
           id: "reasoning-item-id",
@@ -403,21 +428,35 @@ describe("canonical tool-call provider pairing", () => {
         },
         {
           type: "computer_call",
-          call_id: computerId,
+          id: "computer-item-id",
+          call_id: "shared-provider-call",
           action: { type: "screenshot" },
-          pending_safety_checks: [],
+          pending_safety_checks: safetyChecks,
           status: "completed",
         },
         { type: "custom_tool_call_output", call_id: customId, output: "custom result" },
         {
           type: "computer_call_output",
-          call_id: computerId,
+          call_id: "shared-provider-call",
           output: { type: "input_image", image_url: "data:image/png;base64,AA==" },
         },
-      ]);
-    expect((wire as Array<Record<string, unknown>>)[1]).toHaveProperty("id", "assistant-item-id");
-    expect((wire as Array<Record<string, unknown>>)[2]).not.toHaveProperty("id");
-    expect((wire as Array<Record<string, unknown>>)[3]).not.toHaveProperty("id");
+      ];
+    for (const streaming of [false, true]) {
+      const request = await captureOpenAIResponsesRequest(
+        [message, customResult, computerResult],
+        streaming,
+      );
+      const wire = request["input"] as Array<Record<string, unknown>>;
+      expect(wire).toMatchObject(expectedWire);
+      expect(wire[1]).toHaveProperty("id", "assistant-item-id");
+      expect(wire[2]).not.toHaveProperty("id");
+      expect(wire[3]).toMatchObject({
+        id: "computer-item-id",
+        call_id: "shared-provider-call",
+        status: "completed",
+        pending_safety_checks: safetyChecks,
+      });
+    }
     expect(sourceOutput[0]).toMatchObject({
       id: "reasoning-item-id",
       encrypted_content: "opaque-encrypted-reasoning",
@@ -425,6 +464,13 @@ describe("canonical tool-call provider pairing", () => {
     expect(sourceOutput[1]).toMatchObject({ id: "assistant-item-id" });
     expect(sourceOutput[2]).toMatchObject({ id: "custom-item-id", call_id: customId });
     expect(sourceOutput[3]).toMatchObject({ id: "computer-item-id", call_id: computerId });
+    expect(message.tool_calls?.[1]).toMatchObject({
+      id: computerId,
+      call_id: "computer-item-id",
+      status: "completed",
+      pending_safety_checks: safetyChecks,
+    });
+    expect(computerResult.tool_call_id).toBe(computerId);
 
     const responseMetadataWithoutRawOutput = { ...message.response_metadata };
     delete responseMetadataWithoutRawOutput["output"];
@@ -435,18 +481,115 @@ describe("canonical tool-call provider pairing", () => {
       additional_kwargs: message.additional_kwargs,
       response_metadata: responseMetadataWithoutRawOutput,
     });
-    const reconstructedRequest = await captureOpenAIResponsesRequest([
-      reconstructed,
-      customResult,
-      computerResult,
-    ]);
-    const reconstructedWire = reconstructedRequest["input"] as Array<Record<string, unknown>>;
-    const reconstructedCustom = reconstructedWire.find((item) => item["type"] === "custom_tool_call");
-    const reconstructedComputer = reconstructedWire.find((item) => item["type"] === "computer_call");
-    expect(reconstructedCustom).toMatchObject({ call_id: customId, name: "custom_fixture" });
-    expect(reconstructedComputer).toMatchObject({ call_id: computerId, action: { type: "screenshot" } });
-    expect(reconstructedCustom).not.toHaveProperty("id");
-    expect(reconstructedComputer).not.toHaveProperty("id");
+    for (const streaming of [false, true]) {
+      const reconstructedRequest = await captureOpenAIResponsesRequest([
+        reconstructed,
+        customResult,
+        computerResult,
+      ], streaming);
+      const reconstructedWire = reconstructedRequest["input"] as Array<Record<string, unknown>>;
+      const reconstructedCustom = reconstructedWire.find((item) => item["type"] === "custom_tool_call");
+      const reconstructedComputer = reconstructedWire.find((item) => item["type"] === "computer_call");
+      const reconstructedOutput = reconstructedWire.find((item) => item["type"] === "computer_call_output");
+      expect(reconstructedCustom).toMatchObject({ call_id: customId, name: "custom_fixture" });
+      expect(reconstructedComputer).toMatchObject({
+        id: "computer-item-id",
+        call_id: "shared-provider-call",
+        action: { type: "screenshot" },
+        pending_safety_checks: safetyChecks,
+        status: "completed",
+      });
+      expect(reconstructedOutput).toMatchObject({ call_id: "shared-provider-call" });
+      expect(reconstructedCustom).not.toHaveProperty("id");
+    }
+  });
+
+  test("OpenAI Responses fails closed when native computer provider binding is missing or ambiguous", async () => {
+    const missingProviderId = normalizeModelToolCallIdentity(convertResponsesMessageToAIMessage(response({
+      id: "response-id",
+      object: "response",
+      created_at: 1,
+      status: "completed",
+      model: "gpt-test",
+      output: [{
+        type: "computer_call",
+        id: "computer-item-id",
+        call_id: "provider-call",
+        action: { type: "screenshot" },
+        pending_safety_checks: [],
+        status: "completed",
+      }],
+    })));
+    const identity = missingProviderId.additional_kwargs["nautilo_tool_invocations"] as {
+      version: number;
+      responseId: string;
+      calls: Array<{ id: string; providerId: string | null }>;
+    };
+    const malformed = new AIMessage({
+      content: missingProviderId.content,
+      ...(missingProviderId.tool_calls === undefined
+        ? {}
+        : { tool_calls: missingProviderId.tool_calls }),
+      additional_kwargs: {
+        ...missingProviderId.additional_kwargs,
+        nautilo_tool_invocations: {
+          ...identity,
+          calls: identity.calls.map((call) => ({ ...call, providerId: null })),
+        },
+      },
+      response_metadata: missingProviderId.response_metadata,
+    });
+    const missingError = await captureOpenAIResponsesProjectionError([malformed]);
+    expect(missingError.message).toBe("Admitted OpenAI computer call is missing its provider call ID");
+
+    const sourceCall = missingProviderId.tool_calls?.[0];
+    if (!sourceCall) throw new Error("expected native computer call");
+    const responseMetadataWithoutRawOutput = { ...missingProviderId.response_metadata };
+    delete responseMetadataWithoutRawOutput["output"];
+    const missingRequiredMetadata = [
+      { ...sourceCall, call_id: undefined },
+      { ...sourceCall, status: undefined },
+      { ...sourceCall, pending_safety_checks: undefined },
+    ];
+    for (const toolCall of missingRequiredMetadata) {
+      const incomplete = new AIMessage({
+        content: missingProviderId.content,
+        tool_calls: [toolCall],
+        additional_kwargs: missingProviderId.additional_kwargs,
+        response_metadata: responseMetadataWithoutRawOutput,
+      });
+      const metadataError = await captureOpenAIResponsesProjectionError([incomplete]);
+      expect(metadataError.message)
+        .toBe("Admitted OpenAI computer call is missing required provider metadata");
+    }
+
+    const ambiguous = normalizeModelToolCallIdentity(convertResponsesMessageToAIMessage(response({
+      id: "response-id",
+      object: "response",
+      created_at: 1,
+      status: "completed",
+      model: "gpt-test",
+      output: [
+        {
+          type: "computer_call",
+          id: "computer-item-one",
+          call_id: "shared-provider-call",
+          action: { type: "screenshot" },
+          pending_safety_checks: [],
+          status: "completed",
+        },
+        {
+          type: "computer_call",
+          id: "computer-item-two",
+          call_id: "shared-provider-call",
+          action: { type: "wait" },
+          pending_safety_checks: [],
+          status: "completed",
+        },
+      ],
+    })));
+    const ambiguousError = await captureOpenAIResponsesProjectionError([ambiguous]);
+    expect(ambiguousError.message).toBe("Ambiguous admitted OpenAI computer call provider ID");
   });
 
   test("OpenAI Responses removes returned function item IDs from raw and reconstructed wire calls", async () => {
@@ -578,6 +721,51 @@ describe("canonical tool-call provider pairing", () => {
       id: "legacy-function-item",
       call_id: "legacy-provider-call",
     }]);
+
+    const legacyComputer = convertResponsesMessageToAIMessage(response({
+      id: "legacy-computer-response-id",
+      object: "response",
+      created_at: 1,
+      status: "completed",
+      model: "gpt-test",
+      output: [{
+        type: "computer_call",
+        id: "legacy-computer-item",
+        call_id: "legacy-computer-call",
+        action: { type: "screenshot" },
+        pending_safety_checks: [{
+          id: "legacy-safety-check",
+          code: "legacy_policy",
+          message: "Legacy opaque safety detail",
+        }],
+        status: "completed",
+      }],
+    }));
+    const legacyComputerResult = new ToolMessage({
+      content: "data:image/png;base64,AA==",
+      name: "computer_use",
+      tool_call_id: "legacy-computer-call",
+      additional_kwargs: { type: "computer_call_output" },
+    });
+    const legacyComputerRequest = await captureOpenAIResponsesRequest([
+      legacyComputer,
+      legacyComputerResult,
+    ]);
+    expect(legacyComputerRequest["input"]).toMatchObject([
+      {
+        type: "computer_call",
+        id: "legacy-computer-item",
+        call_id: "legacy-computer-call",
+        status: "completed",
+        pending_safety_checks: [{
+          id: "legacy-safety-check",
+          code: "legacy_policy",
+          message: "Legacy opaque safety detail",
+        }],
+      },
+      { type: "computer_call_output", call_id: "legacy-computer-call" },
+    ]);
+    expect(legacyComputer.additional_kwargs).not.toHaveProperty("nautilo_tool_invocations");
   });
 
   test("OpenAI Responses admits an aggregated stream only after its call is complete", async () => {
