@@ -439,7 +439,10 @@ function HarnessExecutionToolCard({
     taskStatus,
     displayedFundingFailure,
   );
-  const { messages, error } = useSubagentTranscript(taskResult.taskId, { enabled: true });
+  const { messages, error } = useSubagentTranscript(taskResult.taskId, {
+    enabled: true,
+    taskRunId: protectedTaskRunId,
+  });
   const transcriptTools = messages.filter(isToolRow);
   const lastLiveActivity = useRef<{ scopeKey: string; activity: readonly TaskHarnessActivity[] } | null>(null);
   // Durable Task truth wins over a lagging process-local activity overlay.

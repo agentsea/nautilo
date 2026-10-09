@@ -1,6 +1,8 @@
 import {
+  createAuthorizedHumanTaskRunTranscriptReaderV1,
   createBrowserHumanTaskClient,
   createBrowserHumanTaskRunResultReader,
+  createBrowserRoomHistoryShadowMessageReader,
 } from
   "@nautilo/lattice-bridge/client/browser";
 import {
@@ -12,6 +14,7 @@ import type {
   TaskContentSummaryV1,
   TaskDetail,
   TaskOperationRunResultReadV1,
+  TaskOperationRunTranscriptReadV1,
   TaskOperationalCreateV1,
   TaskOperationalUpdateV1,
   TaskRunSummaryV1,
@@ -42,6 +45,13 @@ export interface WorkbenchProtectedHumanTaskController {
     taskRunId: string;
     agentId: string;
   }>): Promise<TaskOperationRunResultReadV1>;
+  openTranscript(input: Readonly<{
+    taskId: string;
+    taskRunId: string;
+    agentId: string;
+    cursor?: string;
+    limit?: number;
+  }>): Promise<TaskOperationRunTranscriptReadV1>;
 }
 
 export type ProtectedScheduledTaskProjection =
@@ -244,6 +254,20 @@ export function createWorkbenchProtectedHumanTaskController(input: Readonly<{
           && response.operation === "open_result"
           ? response.data : unavailable();
       },
+      async openTranscript(intent: Readonly<{
+        taskId: string;
+        taskRunId: string;
+        agentId: string;
+        cursor?: string;
+        limit?: number;
+      }>) {
+        const response = await operate({
+          version: 1, operation: "open_transcript", ...intent,
+        });
+        return response.status === "ready"
+          && response.operation === "open_transcript"
+          ? response.data : unavailable();
+      },
     });
   }
 
@@ -264,6 +288,13 @@ export function createWorkbenchProtectedHumanTaskController(input: Readonly<{
   } as const;
   const taskClient = createBrowserHumanTaskClient(common);
   const resultReader = createBrowserHumanTaskRunResultReader(common);
+  const history = createBrowserRoomHistoryShadowMessageReader(common);
+  const transcriptReader = createAuthorizedHumanTaskRunTranscriptReaderV1({
+    api: apiClient,
+    owner: input.owner,
+    history,
+    createClientRequestKey: () => globalThis.crypto.randomUUID(),
+  });
   return Object.freeze({
     ...taskClient,
     openResult(intent: Readonly<{
@@ -272,6 +303,15 @@ export function createWorkbenchProtectedHumanTaskController(input: Readonly<{
       agentId: string;
     }>) {
       return resultReader.read(intent);
+    },
+    openTranscript(intent: Readonly<{
+      taskId: string;
+      taskRunId: string;
+      agentId: string;
+      cursor?: string;
+      limit?: number;
+    }>) {
+      return transcriptReader.read(intent);
     },
   });
 }

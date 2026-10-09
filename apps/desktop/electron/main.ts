@@ -8524,6 +8524,19 @@ ipcMain.handle("foregroundShadow:task:operateV1", async (e, raw: unknown) => {
           agentId: request.agentId,
         }),
       });
+    case "open_transcript":
+      return Object.freeze({
+        version: 1 as const,
+        status: "ready" as const,
+        operation: "open_transcript" as const,
+        data: await controller.taskOpenTranscript({
+          taskId: request.taskId,
+          taskRunId: request.taskRunId,
+          agentId: request.agentId,
+          ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+          ...(request.limit === undefined ? {} : { limit: request.limit }),
+        }),
+      });
     case "create":
       return Object.freeze({
         version: 1 as const,

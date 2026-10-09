@@ -217,6 +217,19 @@ describe("ElectronForegroundShadowController", () => {
     const controller = createElectronForegroundShadowController(controllerInput({
       api: {
         setToken: () => undefined,
+        readProtectedTaskRunTranscriptV1: async (input: Readonly<{
+          taskId: string; taskRunId: string; agentId: string;
+        }>) => {
+          calls.push("open_transcript");
+          return {
+            readVersion: 1 as const,
+            status: "waiting" as const,
+            taskId: input.taskId,
+            taskRunId: input.taskRunId,
+            agentId: input.agentId,
+            reason: "transcript_not_mapped" as const,
+          };
+        },
         admin: { encryptionTransition: { getPolicy: async () => ({
           policy: { mode: "encrypted_only", shadowBehavior: "strict",
             revision: 7, updatedAt: "2026-09-01T00:00:00.000Z" },
@@ -244,9 +257,14 @@ describe("ElectronForegroundShadowController", () => {
     })).toEqual({ status: "ready", payload: { formatVersion: 1,
       resultText: '{"taskId":"task-1","taskRunId":"run-1","agentId":"agent-1"}',
       lastError: null } });
+    expect(await controller.taskOpenTranscript({
+      taskId: "task-1", taskRunId: "run-1", agentId: "agent-1",
+    })).toEqual({ status: "waiting", reason: "transcript_not_mapped" });
     expect((await controller.taskCreate({} as never)).taskId).toBe("task-1");
     expect((await controller.taskUpdate(summary as never, {} as never)).id).toBe("task-1");
-    expect(calls).toEqual(["list", "open", "open_result", "create", "update"]);
+    expect(calls).toEqual([
+      "list", "open", "open_result", "open_transcript", "create", "update",
+    ]);
   });
 
   test("rejects a stale result sender and preserves unavailable outcomes", async () => {
@@ -323,6 +341,70 @@ describe("ElectronForegroundShadowController", () => {
       }),
     );
     const viewerRead = viewerController.taskOpenResult(request);
+    await viewerReadStarted.promise;
+    viewerCurrent = false;
+    viewerGate.resolve();
+    expect(await rejected(viewerRead))
+      .toBeInstanceOf(ElectronForegroundShadowControllerUnavailableError);
+  });
+
+  test("withholds a transcript page after mid-read policy or viewer changes", async () => {
+    const request = {
+      taskId: "task-1", taskRunId: "run-1", agentId: "agent-1",
+    };
+    const transcriptResponse = {
+      readVersion: 1 as const,
+      status: "waiting" as const,
+      ...request,
+      reason: "transcript_not_mapped" as const,
+    };
+
+    const policyGate = deferred();
+    const policyReadStarted = deferred();
+    let policyRevision = 1;
+    const policyController = createElectronForegroundShadowController(
+      controllerInput({
+        api: {
+          setToken: () => undefined,
+          readProtectedTaskRunTranscriptV1: async () => {
+            policyReadStarted.resolve();
+            await policyGate.promise;
+            return transcriptResponse;
+          },
+          admin: { encryptionTransition: { getPolicy: async () => ({
+            policy: { mode: "encrypted_only", shadowBehavior: "strict",
+              revision: policyRevision, updatedAt: "2026-09-01T00:00:00.000Z" },
+          }) } },
+        } as unknown as ElectronForegroundShadowApi,
+      }),
+    );
+    const policyRead = policyController.taskOpenTranscript(request);
+    await policyReadStarted.promise;
+    policyRevision = 2;
+    policyGate.resolve();
+    expect(await rejected(policyRead)).toBeInstanceOf(ClassifiedDataOperationError);
+
+    const viewerGate = deferred();
+    const viewerReadStarted = deferred();
+    let viewerCurrent = true;
+    const viewerController = createElectronForegroundShadowController(
+      controllerInput({
+        isAccountCurrent: () => viewerCurrent,
+        api: {
+          setToken: () => undefined,
+          readProtectedTaskRunTranscriptV1: async () => {
+            viewerReadStarted.resolve();
+            await viewerGate.promise;
+            return transcriptResponse;
+          },
+          admin: { encryptionTransition: { getPolicy: async () => ({
+            policy: { mode: "encrypted_only", shadowBehavior: "strict",
+              revision: 1, updatedAt: "2026-09-01T00:00:00.000Z" },
+          }) } },
+        } as unknown as ElectronForegroundShadowApi,
+      }),
+    );
+    const viewerRead = viewerController.taskOpenTranscript(request);
     await viewerReadStarted.promise;
     viewerCurrent = false;
     viewerGate.resolve();

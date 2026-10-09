@@ -1247,6 +1247,9 @@ export {
   type VaultRoomHistoryShadowRecordResultV1,
 } from "./client/message/vault-room-history-shadow-message-reader.ts";
 export {
+  createAuthorizedHumanTaskRunTranscriptReaderV1,
+} from "./client/task/authorized-human-task-run-transcript.ts";
+export {
   encodeLiveShadowDurableEventEvidenceV1,
   liveShadowDurableEventDigestV1,
   type LiveShadowDurableEventEvidenceV1,

@@ -1031,6 +1031,10 @@ export function createBrowserHumanTaskRunResultReader(
   );
 }
 
+export {
+  createAuthorizedHumanTaskRunTranscriptReaderV1,
+} from "../task/authorized-human-task-run-transcript.ts";
+
 /** Public, secret-free coordinate used to bind browser resume approvals. */
 export function deriveBrowserCryptoDeviceId(input: Readonly<{
   serverScope: string;

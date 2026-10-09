@@ -1,7 +1,11 @@
 import type { NautiloApiClient, ProtectedMemoryProjectionV1 } from "@nautilo/api-client";
-import type { TaskOperationRunResultReadV1 } from "@nautilo/types";
+import type {
+  TaskOperationRunResultReadV1,
+  TaskOperationRunTranscriptReadV1,
+} from "@nautilo/types";
 import { bindEncryptionDataOperationOwner,
-  ClassifiedDataOperationError } from "@nautilo/lattice-bridge";
+  ClassifiedDataOperationError,
+  createAuthorizedHumanTaskRunTranscriptReaderV1 } from "@nautilo/lattice-bridge";
 import {
   createElectronHumanPeerLiveShadowMessageReceiver,
   createElectronBackgroundAuthorizationClientV2,
@@ -58,6 +62,9 @@ type HumanMemoryClient = ReturnType<typeof createElectronHumanMemoryClient>;
 type HumanTaskClient = ReturnType<typeof createElectronHumanTaskClient>;
 type HumanTaskRunResultReader = ReturnType<
   typeof createElectronHumanTaskRunResultReader
+>;
+type HumanTaskRunTranscriptReader = ReturnType<
+  typeof createAuthorizedHumanTaskRunTranscriptReaderV1
 >;
 type MessageBackfillClient = ReturnType<
   typeof createElectronMessageBackfillClient
@@ -125,7 +132,7 @@ export type ElectronForegroundShadowApi =
   & ElectronMessageBackfillClientInput["api"]
   & ElectronHumanMemoryClientInput["api"]
   & ElectronBackgroundAuthorizationClientInput["api"]
-  & Pick<NautiloApiClient, "setToken">
+  & Pick<NautiloApiClient, "setToken" | "readProtectedTaskRunTranscriptV1">
   & Readonly<{ admin: Pick<NautiloApiClient["admin"], "encryptionTransition"> }>;
 
 type SendRoomMessage = ElectronLiveShadowMessageClientInput["api"][
@@ -244,6 +251,7 @@ export class ElectronForegroundShadowController {
   readonly #humanMemory: HumanMemoryClient;
   readonly #humanTask: HumanTaskClient;
   readonly #humanTaskRunResult: HumanTaskRunResultReader;
+  readonly #humanTaskRunTranscript: HumanTaskRunTranscriptReader;
   readonly #messageBackfill: MessageBackfillClient;
   readonly #backgroundAuthorization: BackgroundAuthorizationClient;
   readonly #backgroundAuthorizationSweeps:
@@ -357,6 +365,13 @@ export class ElectronForegroundShadowController {
       dataOperationOwner,
       resolveDeviceAdmissionStatus: () => api.deviceAdmission.status(),
     });
+    this.#humanTaskRunTranscript =
+      createAuthorizedHumanTaskRunTranscriptReaderV1({
+        api,
+        owner: dataOperationOwner,
+        history: this.#historyReader,
+        createClientRequestKey: this.#createId,
+      });
     this.#messageBackfill = factories.createMessageBackfill({
       ...clientInput,
       dataOperationOwner,
@@ -567,6 +582,19 @@ export class ElectronForegroundShadowController {
   ): Promise<TaskOperationRunResultReadV1> {
     return this.#runMemory(
       () => this.#humanTaskRunResult.read(request),
+      { revalidateAccountAfterOperation: true },
+    );
+  }
+
+  taskOpenTranscript(request: Readonly<{
+    taskId: string;
+    taskRunId: string;
+    agentId: string;
+    cursor?: string;
+    limit?: number;
+  }>): Promise<TaskOperationRunTranscriptReadV1> {
+    return this.#runMemory(
+      () => this.#humanTaskRunTranscript.read(request),
       { revalidateAccountAfterOperation: true },
     );
   }

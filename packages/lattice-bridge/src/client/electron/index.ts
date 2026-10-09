@@ -539,6 +539,10 @@ export function createElectronHumanTaskRunResultReader(
   );
 }
 
+export {
+  createAuthorizedHumanTaskRunTranscriptReaderV1,
+} from "../task/authorized-human-task-run-transcript.ts";
+
 /** Electron-main foreground sender with file-backed private custody. */
 export function createElectronLiveShadowMessageClient(
   input: ElectronLiveShadowMessageClientInput,
