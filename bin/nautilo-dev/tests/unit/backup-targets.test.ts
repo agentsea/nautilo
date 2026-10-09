@@ -24,6 +24,13 @@ describe("backup restore target allowlists", () => {
     expect(DATA_TABLES.indexOf("public.users"))
       .toBeLessThan(DATA_TABLES.indexOf("public.soul_generation_attempts"));
   });
+  test("restores personal capability preferences after their Human", () => {
+    const preferences = "public.personal_capability_preferences";
+    expect(DATA_TABLES.indexOf(preferences)).toBeGreaterThan(
+      DATA_TABLES.indexOf("public.users"),
+    );
+    expect(RESTORE_DATA_TABLES.has(preferences)).toBe(true);
+  });
   test("restores the public join selection after its Invite and Human", () => {
     const child = DATA_TABLES.indexOf("public.server_public_join");
     expect(DATA_TABLES.indexOf("public.users")).toBeLessThan(child);

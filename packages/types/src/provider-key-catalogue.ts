@@ -18,8 +18,11 @@ export interface ProviderKeyCatalogueEntry {
   readonly formatHint?: string;
 }
 
+export const PERSONAL_PROVIDER_CAPABILITIES = ["chat", "research", "decision"] as const;
+export type PersonalProviderCapability = (typeof PERSONAL_PROVIDER_CAPABILITIES)[number];
+
 export interface PersonalProviderKeyCatalogueEntry extends ProviderKeyCatalogueEntry {
-  readonly personalCapabilities: readonly "chat"[];
+  readonly personalCapabilities: readonly PersonalProviderCapability[];
   readonly destination?: string | null;
 }
 
@@ -54,19 +57,56 @@ const PERSONAL_CHAT_PROVIDER_IDS = new Set([
   "surplus",
 ]);
 
+const PERSONAL_RESEARCH_PROVIDER_IDS = new Set([
+  ...PERSONAL_CHAT_PROVIDER_IDS,
+  "tavily",
+]);
+
+const PERSONAL_DECISION_PROVIDER_IDS = new Set([
+  "typesafe",
+  "openrouter",
+  "venice",
+  "surplus",
+]);
+
 export const PERSONAL_PROVIDER_KEY_CATALOGUE: readonly PersonalProviderKeyCatalogueEntry[] = PROVIDER_KEY_CATALOGUE
   .filter(({ id }) => id !== "gateway")
   .map((entry) => ({
     ...entry,
     purpose: entry.id === "surplus"
-      ? "Marketplace serving for qualified personal model routes"
+      ? "Marketplace serving for qualified personal chat and research routes; decisions require a pilot-enabled Surplus account"
       : entry.id === "openai"
         ? "OpenAI text models; embeddings remain server-managed"
         : entry.purpose,
-    personalCapabilities: PERSONAL_CHAT_PROVIDER_IDS.has(entry.id)
-      ? ["chat"] as const
-      : [] as const,
+    personalCapabilities: [
+      ...(PERSONAL_CHAT_PROVIDER_IDS.has(entry.id) ? ["chat" as const] : []),
+      ...(PERSONAL_RESEARCH_PROVIDER_IDS.has(entry.id) ? ["research" as const] : []),
+      ...(PERSONAL_DECISION_PROVIDER_IDS.has(entry.id) ? ["decision" as const] : []),
+    ],
   }));
+
+const PERSONAL_PROVIDER_CAPABILITY_LABELS: Record<PersonalProviderCapability, string> = {
+  chat: "personal chat and native text Tasks",
+  research: "Research",
+  decision: "Decisions",
+};
+
+export function personalProviderCapabilitySummary(
+  provider: Pick<PersonalProviderKeyCatalogueEntry, "id" | "personalCapabilities">,
+): string {
+  if (provider.personalCapabilities.length === 0) {
+    return "Not used by delivered personal workflows in this release.";
+  }
+  const labels = provider.personalCapabilities.map((capability) =>
+    PERSONAL_PROVIDER_CAPABILITY_LABELS[capability]);
+  const joined = labels.length === 1
+    ? labels[0]
+    : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
+  const entitlement = provider.id === "surplus" && provider.personalCapabilities.includes("decision")
+    ? " Surplus Decisions also require a pilot-enabled account; saving a key does not grant that entitlement."
+    : "";
+  return `Eligible for ${joined}.${entitlement}`;
+}
 
 const KEY_DISPLAY_ORDER = [
   "venice",

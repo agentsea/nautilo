@@ -41,11 +41,12 @@ function validateAnswer(question: DecisionQuestion, raw: unknown): DecisionAnswe
 
 /** Full typed results; incomplete batches are failures, never partial successes. */
 export async function invokeDecision(input: DecisionInput, deps: DecisionDependencies = {}): Promise<DecisionResult> {
-  const response = await requestDecisions(input, deps);
-  const parsed = z.record(z.string(), z.unknown()).safeParse(response.answers);
-  if (!response.hasResponseModel || !parsed.success || !sameKeys(response.questions, parsed.data))
-    throw new ChoiceRequestError("invalid_response");
-  const answers = Object.fromEntries(Object.entries(response.questions).map(([id, question]) =>
-    [id, validateAnswer(question, parsed.data[id])]));
-  return { ...response.receipt, answers };
+  return requestDecisions(input, deps, (response) => {
+    const parsed = z.record(z.string(), z.unknown()).safeParse(response.answers);
+    if (!response.hasResponseModel || !parsed.success || !sameKeys(response.questions, parsed.data))
+      throw new ChoiceRequestError("invalid_response");
+    const answers = Object.fromEntries(Object.entries(response.questions).map(([id, question]) =>
+      [id, validateAnswer(question, parsed.data[id])]));
+    return { ...response.receipt, answers };
+  });
 }

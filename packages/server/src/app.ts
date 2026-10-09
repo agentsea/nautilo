@@ -285,6 +285,7 @@ import { serverIconRoutes } from "./routes/server-icon";
 import { serverModelsRoutes } from "./routes/server-models";
 import { serverContextRoutes } from "./routes/server-context";
 import { serverProviderPolicyRoutes } from "./routes/server-provider-policy";
+import { personalCapabilityPreferenceRoutes } from "./routes/personal-capability-preferences";
 import { personalProviderCredentialRoutes } from "./routes/personal-provider-credentials";
 import { encryptionTransitionRoutes } from "./routes/encryption-transition";
 import { personalEncryptionCoverageRoutes } from "./routes/personal-encryption-coverage";
@@ -3030,6 +3031,7 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   serverProviderPolicyRoutes(app);
+  personalCapabilityPreferenceRoutes(app);
   personalProviderCredentialRoutes(app, {
     auditEvent: (request, event) => {
       try {

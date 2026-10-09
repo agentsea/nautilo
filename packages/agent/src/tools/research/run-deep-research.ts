@@ -1,6 +1,7 @@
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import { warn } from "@nautilo/logger";
+import { getCapabilityFundingSession, type CapabilityFundingSession } from "../../runtime/capability-funding";
 import { getDeepResearchReturnContext } from "../../runtime/deep-research-return-context";
 import { getTaskToolRuntime, type TaskToolCreateInput } from "../tasks/task-tool-runtime";
 import {
@@ -8,7 +9,11 @@ import {
   deepResearchModelPlanFromConfiguration,
 } from "../../subagents/deep-research/shared/model-plan";
 import { fromRuntimeConfig } from "../../subagents/deep-research/shared/config";
-import { deepResearchTaskMetadata } from "../../subagents/deep-research/shared/task-metadata";
+import {
+  admittedDeepResearchTaskMetadata,
+  deepResearchTaskMetadata,
+  type AdmittedDeepResearchTaskMetadata,
+} from "../../subagents/deep-research/shared/task-metadata";
 
 function unavailableMessage(error: unknown): string | null {
   if (!(error instanceof DeepResearchUnavailableError)) return null;
@@ -30,6 +35,52 @@ interface DeepResearchToolDependencies {
   createTask?: (
     input: TaskToolCreateInput,
   ) => Promise<{ taskId: string; status: string; nextFireAt?: Date | undefined }>;
+  getCapabilityFundingSession?: () => CapabilityFundingSession | undefined;
+}
+
+async function admitPersonalDeepResearch(
+  session: CapabilityFundingSession,
+  reportLanguage: string,
+  invokingModelId: string | null,
+): Promise<Record<string, unknown>> {
+  const definitions = [
+    ["supervisor", "deepResearchSupervisor"],
+    ["research", "deepResearchResearcher"],
+    ["summarization", "deepResearchSummarization"],
+    ["compression", "deepResearchCompression"],
+    ["finalReport", "deepResearchFinalReport"],
+  ] as const;
+  const selections = await Promise.all(definitions.map(([, role]) => session.resolveModel(role)));
+  const admitted = await Promise.all(selections.map((selection) =>
+    session.openModel(selection.modelId, "research")));
+  const [supervisor, research, summarization, compression, finalReport] = selections;
+  const [supervisorFunding, researchFunding, summarizationFunding, compressionFunding, finalReportFunding] = admitted;
+  if (!supervisor || !research || !summarization || !compression || !finalReport
+    || !supervisorFunding || !researchFunding || !summarizationFunding
+    || !compressionFunding || !finalReportFunding) {
+    throw new DeepResearchAdmissionError("Deep Research could not admit all required model lanes.");
+  }
+  const tavily = await session.openService("tavily");
+  const modelPlan = {
+    version: 1 as const,
+    supervisorModel: supervisor.modelId,
+    researchModel: research.modelId,
+    summarizationModel: summarization.modelId,
+    compressionModel: compression.modelId,
+    finalReportModel: finalReport.modelId,
+  };
+  const preferenceRevisions: AdmittedDeepResearchTaskMetadata["preferenceRevisions"] = {
+    supervisor: supervisor.preferenceRevision, research: research.preferenceRevision,
+    summarization: summarization.preferenceRevision, compression: compression.preferenceRevision,
+    finalReport: finalReport.preferenceRevision,
+  };
+  const modelFunding: AdmittedDeepResearchTaskMetadata["modelFunding"] = {
+    supervisor: supervisorFunding.binding, research: researchFunding.binding,
+    summarization: summarizationFunding.binding, compression: compressionFunding.binding,
+    finalReport: finalReportFunding.binding,
+  };
+  return admittedDeepResearchTaskMetadata({ reportLanguage, invokingModelId, modelPlan,
+    preferenceRevisions, modelFunding, tavilyFunding: tavily.binding });
 }
 
 export function createRunDeepResearchTool(
@@ -38,6 +89,7 @@ export function createRunDeepResearchTool(
   const resolveConfiguration = dependencies.resolveConfiguration ?? fromRuntimeConfig;
   const createTask = dependencies.createTask ?? ((input: TaskToolCreateInput) =>
     getTaskToolRuntime().createTask(input));
+  const resolveCapabilityFunding = dependencies.getCapabilityFundingSession ?? getCapabilityFundingSession;
   return new DynamicStructuredTool({
     name: "run_deep_research",
     description: `Invoke the Deep Research Agent for comprehensive, multi-step research.
@@ -59,25 +111,27 @@ IMPORTANT: After receiving the report from this tool, do NOT run additional web 
     func: async (
       { research_brief, report_language }: { research_brief: string; report_language?: string },
     ) => {
-      if (!(dependencies.hasSearchCredential ?? (() => Boolean(process.env["TAVILY_API_KEY"]?.trim())))()) {
-        throw new DeepResearchAdmissionError(
-          "Deep research is unavailable because Tavily is not configured. Ask a server operator to configure Tavily, then try again.",
-        );
-      }
       const language = report_language || "English";
-      let researchConfiguration: ReturnType<typeof fromRuntimeConfig>;
-      try {
-        researchConfiguration = resolveConfiguration();
-      } catch (error) {
-        const message = unavailableMessage(error);
-        if (message) throw new DeepResearchAdmissionError(message, { cause: error });
-        warn(`[deep-research] Model configuration admission failed: ${error instanceof Error ? error.message : String(error)}`);
-        throw new DeepResearchAdmissionError(
-          "Deep research model configuration could not be validated. Ask a server operator to review the configured research models, then try again.",
-          { cause: error },
-        );
+      const capabilityFunding = resolveCapabilityFunding();
+      let legacyModelPlan: ReturnType<typeof deepResearchModelPlanFromConfiguration> | undefined;
+      if (!capabilityFunding) {
+        if (!(dependencies.hasSearchCredential ?? (() => Boolean(process.env["TAVILY_API_KEY"]?.trim())))()) {
+          throw new DeepResearchAdmissionError(
+            "Deep research is unavailable because Tavily is not configured. Ask a server operator to configure Tavily, then try again.",
+          );
+        }
+        try {
+          legacyModelPlan = deepResearchModelPlanFromConfiguration(resolveConfiguration());
+        } catch (error) {
+          const message = unavailableMessage(error);
+          if (message) throw new DeepResearchAdmissionError(message, { cause: error });
+          warn(`[deep-research] Model configuration admission failed: ${error instanceof Error ? error.message : String(error)}`);
+          throw new DeepResearchAdmissionError(
+            "Deep research model configuration could not be validated. Ask a server operator to review the configured research models, then try again.",
+            { cause: error },
+          );
+        }
       }
-      const modelPlan = deepResearchModelPlanFromConfiguration(researchConfiguration);
 
       try {
         const returnContext = getDeepResearchReturnContext();
@@ -85,6 +139,21 @@ IMPORTANT: After receiving the report from this tool, do NOT run additional web 
           throw new DeepResearchAdmissionError(
             "Deep Research requires an active foreground Room. Start it from the Room where you want the report delivered.",
           );
+        }
+        let metadata: Record<string, unknown>;
+        if (capabilityFunding) {
+          if (capabilityFunding.humanUserId !== returnContext.requestorId) {
+            throw new DeepResearchAdmissionError("Deep Research funding authority does not match the requesting Human.");
+          }
+          metadata = await admitPersonalDeepResearch(
+            capabilityFunding,
+            language,
+            returnContext.modelId,
+          );
+        } else {
+          metadata = deepResearchTaskMetadata({ reportLanguage: language,
+            modelPlan: legacyModelPlan!,
+            invokingModelId: returnContext.modelId });
         }
         const task = await createTask({
           ownerId: returnContext.ownerId,
@@ -102,11 +171,7 @@ IMPORTANT: After receiving the report from this tool, do NOT run additional web 
           toolsMode: "none",
           depth: 0,
           ...(returnContext.modelId ? { requestedModelId: returnContext.modelId } : {}),
-          metadata: deepResearchTaskMetadata({
-            reportLanguage: language,
-            modelPlan,
-            invokingModelId: returnContext.modelId,
-          }),
+          metadata,
         });
         return `I've started deep research on "${research_brief.slice(0, 80)}${research_brief.length > 80 ? "..." : ""}" in the background. You can keep chatting — I'll share the results when they're ready. (Task ID: ${task.taskId})`;
       } catch (e) {

@@ -1,3 +1,5 @@
+import { parseTaskFundingBinding } from "@nautilo/types";
+import type { ForegroundFundingSnapshot } from "../runtime/foreground-chat-funding";
 import { randomUUID } from "node:crypto";
 import { getPolicyResolver } from "@nautilo/trust";
 import { createNautiloGraph } from "../agent/graph";
@@ -182,4 +184,23 @@ export async function readConnectedWebActionResumeBindingForThread(
   } catch {
     return null;
   }
+}
+
+
+/** Only safe funding facts are read; current execution authority is checked by the caller. */
+export async function readForegroundFundingForThread(
+  threadId: string,
+  invocationCheckpointSaver?: EncryptedCheckpointSaver,
+): Promise<ForegroundFundingSnapshot | null> {
+  const graph = createNautiloGraph(
+    invocationCheckpointSaver ?? createCheckpointSaver(),
+    getPolicyResolver(),
+  );
+  const state = await graph.getState({ configurable: { thread_id: threadId } });
+  const snapshot = state?.values["foregroundFundingSnapshot"];
+  if (snapshot === undefined || snapshot === null) return null;
+  if (typeof snapshot !== "object" || Array.isArray(snapshot)) throw new Error("Invalid saved funding snapshot");
+  const value = snapshot as Record<string, unknown>;
+  if (Object.keys(value).length !== 2 || typeof value["modelId"] !== "string" || !value["modelId"].trim()) throw new Error("Invalid saved funding snapshot");
+  return { modelId: value["modelId"], binding: parseTaskFundingBinding(value["binding"]) };
 }

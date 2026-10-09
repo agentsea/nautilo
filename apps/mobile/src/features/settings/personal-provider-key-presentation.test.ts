@@ -2,6 +2,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { CredentialMetadata } from "@nautilo/api-client/browser";
+import { personalProviderCapabilitySummary } from "@nautilo/types";
 import { personalProviderKeyRows } from "./personal-provider-key-presentation";
 
 const legacy: CredentialMetadata = {
@@ -25,6 +26,9 @@ describe("personal provider key presentation", () => {
     expect(ids.indexOf("surplus")).toBe(ids.indexOf("openrouter") + 1);
     expect(ids).not.toContain("gateway");
     expect(rows.every((row) => !row.available)).toBeTrue();
+    expect(personalProviderCapabilitySummary(rows.find((row) => row.id === "tavily")!)).toBe("Eligible for Research.");
+    expect(personalProviderCapabilitySummary(rows.find((row) => row.id === "surplus")!)).toContain("saving a key does not grant that entitlement");
+    expect(personalProviderCapabilitySummary(rows.find((row) => row.id === "browser-use")!)).toBe("Not used by delivered personal workflows in this release.");
   });
 
   test("adds a saved legacy gateway only as an unavailable delete-only row", () => {

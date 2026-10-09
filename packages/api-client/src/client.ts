@@ -4,8 +4,10 @@ import type {
   ModerationCommand,
   PersonalCostsRangeKey,
   PersonalCostsSummary,
+  PersonalProviderCapability,
   ServerModerationPolicy,
 } from "@nautilo/types";
+import { PERSONAL_PROVIDER_CAPABILITIES } from "@nautilo/types";
 import { moderationPolicySchema, moderationPolicyUpdateSchema, moderationPersonSchema, moderationReceiptSchema,
   enrollmentStatusSchema, enrollmentPageSchema, moderationPeopleSchema } from "./schemas/moderation";
 import {
@@ -75,6 +77,14 @@ import {
   avatarRefSchema,
   type SetupStatusResponse,
 } from "./schemas/setup-status";
+import {
+  personalCapabilityPreferencesResponseSchema,
+  replacePersonalCapabilityPreferencesRequestSchema,
+} from "./schemas/personal-capability-preferences";
+import type {
+  PersonalCapabilityPreferencesResponse,
+  ReplacePersonalCapabilityPreferencesRequest,
+} from "@nautilo/types";
 import {
   listGroupsResponseSchema,
   listGroupMembersResponseSchema,
@@ -2295,7 +2305,7 @@ export interface PersonalProviderCatalogEntry {
   readonly purpose: string;
   readonly signupUrl?: string | undefined;
   readonly formatHint?: string | undefined;
-  readonly personalCapabilities: readonly "chat"[];
+  readonly personalCapabilities: readonly PersonalProviderCapability[];
   /** Fixed server-owned destination. Humans cannot supply or edit this value. */
   readonly destination: string | null;
 }
@@ -2345,7 +2355,10 @@ const personalProviderCatalogEntrySchema: z.ZodType<PersonalProviderCatalogEntry
   purpose: z.string().min(1),
   signupUrl: z.string().min(1).optional(),
   formatHint: z.string().min(1).optional(),
-  personalCapabilities: z.array(z.literal("chat")),
+  personalCapabilities: z.array(z.string()).transform((values) => values.filter(
+    (value): value is PersonalProviderCapability =>
+      (PERSONAL_PROVIDER_CAPABILITIES as readonly string[]).includes(value),
+  )),
   destination: z.string().min(1).nullable().optional().default(null),
 }).strict();
 
@@ -2374,7 +2387,32 @@ const deleteProviderCredentialResponseSchema = z.object({
 
 const personalCostsMoneySchema = z.number().finite().nonnegative();
 const personalCostsCountSchema = z.number().int().nonnegative();
+const personalServiceOperationsSchema = z.object({
+  operations: personalCostsCountSchema,
+  succeeded: personalCostsCountSchema,
+  failed: personalCostsCountSchema,
+  cancelled: personalCostsCountSchema,
+  interrupted: personalCostsCountSchema,
+  unknown: personalCostsCountSchema,
+  legacy: personalCostsCountSchema,
+}).strict();
+const personalServiceRecoverySchema = z.object({
+  attempts: z.array(z.object({
+    provider: z.string().min(1),
+    operation: z.string().min(1),
+    workload: z.string().min(1).nullable(),
+    attemptOutcome: z.enum(["succeeded", "failed", "cancelled", "interrupted", "unknown"]).nullable(),
+    failureCode: z.string().regex(/^[a-z0-9_]+$/).nullable(),
+    requestReference: z.string().regex(/^req_[0-9a-f]{12}$/).nullable().optional().default(null),
+    taskId: z.uuid().nullable(),
+    runId: z.uuid().nullable(),
+    jobId: z.uuid().nullable(),
+    occurredAt: z.string().min(1),
+  }).strict()),
+}).strict();
 const personalCostsSummarySchema: z.ZodType<PersonalCostsSummary> = z.object({
+  serviceOperations: personalServiceOperationsSchema.optional(),
+  serviceRecovery: personalServiceRecoverySchema.optional(),
   currency: z.literal("USD"),
   range: z.object({
     key: z.enum(["7d", "30d", "90d"]),
@@ -2436,6 +2474,8 @@ const personalCostsSummarySchema: z.ZodType<PersonalCostsSummary> = z.object({
   byTask: z.array(z.object({
     taskId: z.uuid(),
     calls: personalCostsCountSchema,
+    providerOperations: personalCostsCountSchema.optional().default(0),
+    unknownProviderOperations: personalCostsCountSchema.optional().default(0),
     estimatedCostUsd: personalCostsMoneySchema,
     actualCostUsd: personalCostsMoneySchema,
     totalCostUsd: personalCostsMoneySchema,
@@ -5942,6 +5982,35 @@ export class NautiloApiClient {
       body: input,
       schema: deleteProviderCredentialResponseSchema,
       statusErrors: providerCredentialStatusErrors,
+    });
+  }
+
+  /** Read the authenticated Human's sparse capability choices and live projection. */
+  async getPersonalCapabilityPreferences(
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<PersonalCapabilityPreferencesResponse> {
+    return this.request({
+      path: "/api/account/capability-preferences",
+      auth: "session-fresh",
+      schema: personalCapabilityPreferencesResponseSchema,
+      defaultErrorPrefix: "GET /api/account/capability-preferences",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  /** Replace the complete sparse map with an exact revision fence. */
+  async replacePersonalCapabilityPreferences(
+    input: ReplacePersonalCapabilityPreferencesRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<PersonalCapabilityPreferencesResponse> {
+    return this.request({
+      method: "PUT",
+      path: "/api/account/capability-preferences",
+      auth: "session-fresh",
+      body: replacePersonalCapabilityPreferencesRequestSchema.parse(input),
+      schema: personalCapabilityPreferencesResponseSchema,
+      defaultErrorPrefix: "PUT /api/account/capability-preferences",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }
 

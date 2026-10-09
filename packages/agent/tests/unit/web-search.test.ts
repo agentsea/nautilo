@@ -18,12 +18,20 @@ import {
   mergeSearchResults,
   readWebSearchPages,
   validateSynthesisCitations,
+  webSearchSynthesisUsageContext,
   WebSearchUnavailableError,
   type SearchResults,
 } from "../../src/tools/utilities/web-search";
 import type { BrowserResearchExecutionPort } from "../../src/tools/utilities/browser-research-execution";
 import { clearAgentTurnContextByKey } from "../../src/runtime/turn-context";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
+import { PROVIDER_TOOL_PRICING_VERSION } from "@nautilo/db";
+import type { ProviderCostReceipt, ProviderCostRecorder } from "../../src/usage/provider-cost-recorder";
+import { getUsageContext, runWithUsageContext, type UsageContext } from "../../src/usage/usage-context";
+import {
+  runWithCapabilityFundingSession,
+  type CapabilityFundingSession,
+} from "../../src/runtime/capability-funding";
 
 describe("web-search", () => {
   const desktopSearchPort = (onSearch?: () => void): BrowserResearchExecutionPort => ({
@@ -57,6 +65,102 @@ describe("web-search", () => {
     expect(tool.name).toBe("run_web_search");
     expect(tool.description).not.toContain("Report the returned provider receipt");
     expect(tool.description).toContain("successful recovery details are internal");
+  });
+
+  test("personal synthesis admission projects trusted Task identity over stale ambient metadata", async () => {
+    let captured: UsageContext | undefined;
+    const capability: CapabilityFundingSession = {
+      humanUserId: "human-web-search",
+      async resolveModel() {
+        return { modelId: "openai:gpt-5.6-sol", preferenceRevision: 7 };
+      },
+      async openModel() {
+        return {
+          binding: {
+            kind: "personal",
+            providerRoute: "openai",
+            credentialId: "11111111-1111-4111-8111-111111111111",
+            credentialRevision: 3,
+          },
+          fundingSession: {
+            kind: "personal",
+            workload: "research",
+            async recheckAttempt() {},
+            async runAttempt() { throw new Error("injected synthesis must not dispatch"); },
+          },
+        };
+      },
+      async openService() { throw new Error("unused"); },
+    };
+    const context = {
+      causalHumanUserId: "human-web-search",
+      roomId: "trusted-room",
+      agentId: "trusted-agent",
+      turnId: "trusted-turn",
+      currentTaskId: "trusted-task",
+      currentTaskRunId: "trusted-run",
+      jobId: "trusted-job",
+      browserResearchExecutionPort: desktopSearchPort(),
+    };
+    const tool = createRunWebSearchTool(context, {
+      getRuntimeConfig: () => toolRuntimeConfig({
+        nautilo_search_provider: "duckduckgo_html",
+        nautilo_search_trusted_domains: [],
+        nautilo_web_search_model: "openai:gpt-5.6-sol",
+      }),
+      createSearchFetcher: () => async (query) => ({
+        provider: "duckduckgo_html",
+        query,
+        items: [{ url: "https://example.org/article", title: "Example" }],
+      }),
+      invokeChatModelWithFallback: async () => {
+        captured = getUsageContext();
+        return { response: { content: "Supported answer [1]" } as never, modelUsed: "openai:gpt-5.6-sol" };
+      },
+    });
+
+    await runWithUsageContext({
+      callType: "other",
+      userId: "stale-user",
+      roomId: "stale-room",
+      metadata: { taskId: "stale-task", taskRunId: "stale-run", jobId: "stale-job" },
+    }, () => runWithCapabilityFundingSession(capability, () => tool.invoke({ query: "trusted context" })));
+
+    expect(captured).toMatchObject({
+      callType: "web_search",
+      userId: "human-web-search",
+      roomId: "trusted-room",
+      metadata: {
+        turnId: "trusted-turn",
+        agentId: "trusted-agent",
+        taskId: "trusted-task",
+        taskRunId: "trusted-run",
+        jobId: "trusted-job",
+        tool: "run_web_search",
+      },
+    });
+  });
+
+  test("server synthesis context carries Task and run identity without ambient ALS", () => {
+    const context = webSearchSynthesisUsageContext({
+      roomId: "trusted-room",
+      currentTaskId: "trusted-task",
+      currentTaskRunId: "trusted-run",
+      jobId: "trusted-job",
+    }, "human-web-search");
+    const observed = runWithUsageContext(context, () => getUsageContext());
+
+    expect(observed).toMatchObject({
+      callType: "web_search",
+      userId: "human-web-search",
+      roomId: "trusted-room",
+      metadata: {
+        taskId: "trusted-task",
+        taskRunId: "trusted-run",
+        jobId: "trusted-job",
+        tool: "run_web_search",
+      },
+    });
   });
 
   test("hard-times out a hanging provider and aborts its shared turn signal", async () => {
@@ -834,7 +938,82 @@ describe("web-search", () => {
       receiptId: "tavily-request-1",
       estimatedCostUsd: "0.02400000",
       evidenceState: "estimated",
+      attemptOutcome: "succeeded",
+      pricingVersion: PROVIDER_TOOL_PRICING_VERSION,
+      measuredUnits: 3,
+      unitType: "credit",
     }]);
+  });
+
+  test("opens paid Tavily attempts before dispatch and settles success, cancellation, failure, and lost response", async () => {
+    const run = async (
+      fetchImpl: typeof fetch,
+      signal?: AbortSignal,
+    ): Promise<Array<{ phase: string; value: Record<string, unknown> }>> => {
+      const events: Array<{ phase: string; value: Record<string, unknown> }> = [];
+      const settlement = Object.assign(async (receipt: ProviderCostReceipt) => {
+        events.push({ phase: "settle", value: receipt });
+      }, { attemptStarted: true as const });
+      const recorder = Object.assign(async (_receipt: ProviderCostReceipt) => {}, {
+        beginAttempt: async (admission: { provider: string; operation: string }) => {
+          events.push({ phase: "begin", value: admission });
+          return settlement;
+        },
+      }) as ProviderCostRecorder;
+      const search = buildTavilySearchFetcher({
+        apiKey: "test-key",
+        beforeProviderDispatch: async () => {},
+        fetchImpl,
+        recordProviderCost: recorder,
+      });
+      await search("lifecycle", signal ? { signal } : {});
+      return events;
+    };
+
+    const success = await run((async () => new Response(JSON.stringify({
+      request_id: "fractional-credit",
+      usage: { credits: 0.5 },
+      results: [],
+    }), { status: 200 })) as unknown as typeof fetch);
+    expect(success.map(({ phase }) => phase)).toEqual(["begin", "settle"]);
+    expect(success[1]?.value).toMatchObject({
+      attemptOutcome: "succeeded",
+      evidenceState: "estimated",
+      estimatedCostUsd: "0.00400000",
+      measuredUnits: 0.5,
+      unitType: "credit",
+      pricingVersion: PROVIDER_TOOL_PRICING_VERSION,
+    });
+
+    const cancelledController = new AbortController();
+    cancelledController.abort();
+    const cancelled = await run((async () => {
+      throw new Error("must not dispatch");
+    }) as unknown as typeof fetch, cancelledController.signal);
+    expect(cancelled[1]?.value).toMatchObject({
+      attemptOutcome: "cancelled",
+      evidenceState: "unknown",
+      failureCode: "request_cancelled",
+    });
+
+    const failed = await run((async () => new Response("upstream rejected", {
+      status: 429,
+    })) as unknown as typeof fetch);
+    expect(failed[1]?.value).toMatchObject({
+      attemptOutcome: "failed",
+      evidenceState: "unknown",
+      failureCode: "provider_http_error",
+    });
+
+    const lost = await run((async () => {
+      throw new Error("secret upstream transport detail");
+    }) as unknown as typeof fetch);
+    expect(lost[1]?.value).toMatchObject({
+      attemptOutcome: "unknown",
+      evidenceState: "unknown",
+      failureCode: "provider_transport_unknown",
+    });
+    expect(JSON.stringify(lost)).not.toContain("secret upstream transport detail");
   });
 
   test("normalizes local domain policy once and applies exact-host/subdomain semantics", () => {

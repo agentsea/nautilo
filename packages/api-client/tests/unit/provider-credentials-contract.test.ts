@@ -24,7 +24,7 @@ const providers = [{
   purpose: "GPT models + embeddings",
   signupUrl: "https://platform.openai.com/api-keys",
   formatHint: "sk-proj-...",
-  personalCapabilities: ["chat" as const],
+  personalCapabilities: ["chat" as const, "research" as const],
   destination: "https://api.openai.com/v1",
 }, {
   id: "tavily",
@@ -32,7 +32,7 @@ const providers = [{
   purpose: "Web search — enables internet access",
   signupUrl: "https://app.tavily.com/home",
   formatHint: "tvly-...",
-  personalCapabilities: [],
+  personalCapabilities: ["research" as const],
   destination: null,
 }];
 
@@ -146,6 +146,19 @@ describe("personal provider credentials client contract", () => {
       credentials: [credential],
       providers: [],
     });
+  });
+
+  test("keeps known provider capabilities and ignores future rolling-upgrade values", async () => {
+    globalThis.fetch = (() => Promise.resolve(json(200, {
+      credentials: [],
+      providers: [{
+        ...providers[0],
+        personalCapabilities: ["chat", "research", "future-capability"],
+      }],
+    }))) as unknown as typeof fetch;
+
+    const result = await new NautiloApiClient(BASE).listProviderCredentials();
+    expect(result.providers[0]?.personalCapabilities).toEqual(["chat", "research"]);
   });
 
   test("defaults a missing masked preview from an older server to null", async () => {

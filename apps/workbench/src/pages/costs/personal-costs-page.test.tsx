@@ -137,13 +137,36 @@ test("separates personal payer costs and preserves unresolved receipt states", a
     ),
   ).toBeTruthy();
   expect(view.getByText("Provider routes and services")).toBeTruthy();
-  expect(view.getByText("Surplus · Chat")).toBeTruthy();
+  const providerRow = view.getByText("Surplus · Chat").closest("tr");
+  expect(providerRow?.textContent).toContain("$0.02");
+  expect(providerRow?.textContent).toContain("$0.01");
+  expect(providerRow?.textContent).toContain("$0.03");
+  expect(view.getByText("Current estimate")).toBeTruthy();
   expect(view.queryByText("By user")).toBeNull();
   expect(
     view.getByText(
       /Server-funded work stays in the separate administrator dashboard/,
     ),
   ).toBeTruthy();
+});
+
+test("shows actual-zero and estimate-only provider evidence explicitly", async () => {
+  summary = {
+    ...summary,
+    byProvider: [{
+      provider: "tavily",
+      operation: "search",
+      operations: 1,
+      unknownOperations: 0,
+      actualCostUsd: 0,
+      estimatedCostUsd: 0.004,
+      totalCostUsd: 0.004,
+    }],
+  };
+  const view = render(<MemoryRouter><PersonalCostsPage /></MemoryRouter>);
+  const providerRow = (await view.findByText("Tavily · Search")).closest("tr");
+  expect(providerRow?.textContent).toContain("$0.00");
+  expect(providerRow?.textContent).toContain("<$0.01");
 });
 
 test("clears the prior range and ignores a late range response", async () => {

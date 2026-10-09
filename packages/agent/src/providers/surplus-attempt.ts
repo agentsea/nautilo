@@ -32,12 +32,15 @@ export interface SurplusChatAttemptInput {
   readonly apiKey: string;
   readonly messages: BaseMessage[];
   readonly tools: readonly StructuredTool[];
+  readonly toolBindingOptions?: Record<string, unknown>;
   readonly config: RunnableConfig;
   readonly maxOutputTokens: number;
   readonly reasoningEffort?: ReasoningEffort;
   readonly reasoningOutput?: boolean;
   readonly openrouterSessionId?: string;
   readonly funding: UsageFundingProvenance;
+  /** True only after this attempt delivered text or an executable action outside the provider buffer. */
+  readonly hasDeliveredOutput: () => boolean;
   readonly invokeModel: InvokeModel;
 }
 
@@ -113,10 +116,14 @@ export function canUseQualifiedSurplusChatRoute(input: {
 
 function hasUnsupportedSurplusAdaptation(adaptedParameters: string | undefined): boolean {
   const adapted = adaptedParameters?.trim();
-  // This key only chooses a prompt cache bucket. It does not change the prompt,
-  // model, output budget, or reasoning controls. Other or mixed adaptations
-  // still fail closed; cache retention and session affinity are not exempt.
-  return Boolean(adapted && adapted !== "prompt_cache_key");
+  // Surplus may choose a cache bucket and overwrite stream_options with
+  // include_usage:true for metering, which our adapter already requests.
+  // Neither changes inference semantics. Reject every other adaptation,
+  // including malformed lists and mixtures with inference-changing settings.
+  return Boolean(adapted && adapted.split(",").some((parameter) => {
+    const name = parameter.trim();
+    return name !== "prompt_cache_key" && name !== "stream_options";
+  }));
 }
 
 /** A successful marketplace response must preserve the provider and inference settings. */
@@ -151,6 +158,32 @@ export function assertCompleteSurplusResponse(
   if (receipt?.truncated || typeof finishReason !== "string" || !TERMINAL_FINISH_REASONS.has(finishReason)) {
     throw new SurplusIncompleteResponseError();
   }
+  // A provider-enforced content filter is a valid terminal answer even when it
+  // deliberately carries no text. Every other successful terminal must give
+  // Nautilo something useful to deliver or execute.
+  if (finishReason !== "content_filter" && !hasUsableSurplusResponse(response)) {
+    throw new SurplusIncompleteResponseError();
+  }
+}
+
+function hasUsableSurplusResponse(response: AIMessage): boolean {
+  const hasText = (value: unknown): boolean => typeof value === "string"
+    ? value.trim().length > 0
+    : Array.isArray(value) && value.some((part) => {
+        if (typeof part === "string") return part.trim().length > 0;
+        const block = record(part);
+        if (!block) return false;
+        if (typeof block["text"] === "string" && block["text"].trim().length > 0) return true;
+        return typeof block["type"] === "string"
+          && ["tool_use", "tool_call", "function_call"].includes(block["type"])
+          && typeof block["name"] === "string" && block["name"].trim().length > 0;
+      });
+  if (hasText(response.content)) return true;
+  if (Array.isArray(response.tool_calls) && response.tool_calls.length > 0) return true;
+  const additional = record(response.additional_kwargs);
+  if (Array.isArray(additional?.["tool_calls"]) && additional["tool_calls"].length > 0) return true;
+  const functionCall = record(additional?.["function_call"]);
+  return typeof functionCall?.["name"] === "string" && functionCall["name"].trim().length > 0;
 }
 
 /** Content-free terminal classification shared by persistence and isolated tests. */
@@ -159,6 +192,7 @@ export function classifySurplusFailedAttempt(input: {
   readonly cancelled: boolean;
   readonly responseStatus: number | undefined;
   readonly receipt: SurplusWireReceipt | undefined;
+  readonly deliveredOutput: boolean;
   readonly terminalUsage?: ReturnType<typeof readSurplusResponseUsage>;
 }): SurplusFailedAttemptDisposition {
   const safe = !input.cancelled
@@ -204,7 +238,11 @@ export function classifySurplusFailedAttempt(input: {
       ? { actualCostUsd: (knownCostMicro ?? 0) / 1_000_000 }
       : {}),
     failureCode,
-    directFallback: safe,
+    // Product policy prefers producing a result even when the marketplace may
+    // already have charged. Financial uncertainty remains on this attempt; it
+    // does not prohibit one admitted same-model direct attempt when nothing was
+    // delivered. Cancellation and delivered output remain terminal.
+    directFallback: !input.cancelled && !input.deliveredOutput,
   };
 }
 
@@ -330,7 +368,7 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
       ...(input.openrouterSessionId === undefined ? {} : { openrouterSessionId: input.openrouterSessionId }),
       onResponse,
     });
-    const bound = input.tools.length > 0 ? model.bindTools?.([...input.tools]) : model;
+    const bound = input.tools.length > 0 ? model.bindTools?.([...input.tools], input.toolBindingOptions) : model;
     if (!bound) throw new Error("The selected Surplus route cannot bind tools.");
     const response = await input.invokeModel(
       bound as { invoke(messages: BaseMessage[], options?: RunnableConfig): Promise<unknown> },
@@ -373,6 +411,7 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
       cancelled,
       responseStatus,
       receipt,
+      deliveredOutput: input.hasDeliveredOutput(),
       ...(terminalUsage === undefined ? {} : { terminalUsage }),
     });
     try {

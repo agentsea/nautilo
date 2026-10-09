@@ -126,6 +126,26 @@ describe("trusted model funding", () => {
     expect(resolveServerFundingRoute(route.catalogModelId, { ...input, surplusKeyConfigured: false })).toBeNull();
   });
 
+  test("Prefer Surplus wins an eligible server route even when direct credentials exist", () => {
+    const route = {
+      catalogModelId: "venice:openai-gpt-55",
+      surplusModelId: "gpt-5.5",
+      providerPin: "venice" as const,
+      supportsTools: true,
+      supportsVision: false,
+      supportsReasoning: false,
+      maxContextTokens: 100_000,
+      maxOutputTokens: 8_000,
+    };
+    const env = { VENICE_API_KEY: "direct" };
+    expect(resolveServerFundingRoute(route.catalogModelId, {
+      env, preferSurplus: true, surplusKeyConfigured: true, routes: [route],
+    })).toBe("surplus");
+    expect(resolveServerFundingRoute(route.catalogModelId, {
+      env, preferSurplus: false, surplusKeyConfigured: true, routes: [route],
+    })).toBe("venice");
+  });
+
   test("native text Tasks admit independently and pin their own source", async () => {
     const h = harness();
     h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
@@ -277,6 +297,71 @@ describe("trusted model funding", () => {
     expect((await resolveModelFunding(request(ALICE), h.deps)).kind).toBe("personal");
     expect((await resolveModelFunding({ ...request(ALICE), priorDecision: server }, h.deps)).kind)
       .toBe("server");
+  });
+
+  test("server attempts preserve the admitted transport and expose only an explicit direct fallback", async () => {
+    const h = harness();
+    h.setFundingPreference("server_first");
+    h.capabilities.set(ALICE, ["use_server_provider_credentials"]);
+    let ordinaryRoute: string | null = "surplus";
+    let surplusRoute: string | null = "surplus";
+    let directRoute: string | null = "openrouter";
+    const calls: Array<string | undefined> = [];
+    const deps: ModelFundingDeps = {
+      ...h.deps,
+      serverRoute: (_modelId, _workload, transport) => {
+        calls.push(transport);
+        return transport === "surplus" ? surplusRoute
+          : transport === "direct" ? directRoute : ordinaryRoute;
+      },
+    };
+
+    const admitted = await resolveModelFunding(request(ALICE), deps);
+    expect(admitted).toMatchObject({ kind: "server", providerRoute: "surplus" });
+
+    // A global preference change does not move an admitted operation while
+    // the pinned marketplace route remains available.
+    ordinaryRoute = "openrouter";
+    const retry = await resolveModelFunding({
+      ...request(ALICE), priorDecision: admitted,
+    }, deps);
+    expect(retry).toMatchObject({ kind: "server", providerRoute: "surplus" });
+
+    // Only a caller's definitive-refusal path may request the direct rail.
+    const fallback = await resolveModelFunding({
+      ...request(ALICE), priorDecision: admitted, transport: "direct",
+    }, deps);
+    expect(fallback).toMatchObject({ kind: "server", providerRoute: "openrouter" });
+    expect(calls).toEqual([undefined, "surplus", "direct"]);
+
+    directRoute = null;
+    expect(await code(resolveModelFunding({
+      ...request(ALICE), priorDecision: admitted, transport: "direct",
+    }, deps))).toBe("provider_credentials_missing");
+    surplusRoute = null;
+    expect(await code(resolveModelFunding({
+      ...request(ALICE), priorDecision: admitted,
+    }, deps))).toBe("provider_credentials_missing");
+  });
+
+  test("a direct server binding cannot silently move onto Surplus", async () => {
+    const h = harness();
+    h.setFundingPreference("server_first");
+    h.capabilities.set(ALICE, ["use_server_provider_credentials"]);
+    const admitted = await resolveModelFunding(request(ALICE), h.deps);
+    expect(admitted).toMatchObject({ kind: "server", providerRoute: "openrouter" });
+
+    const deps: ModelFundingDeps = {
+      ...h.deps,
+      // Simulate an implementation that ignores the requested pinned rail.
+      serverRoute: () => "surplus",
+    };
+    expect(await code(resolveModelFunding({
+      ...request(ALICE), priorDecision: admitted,
+    }, deps))).toBe("funding_source_changed");
+    expect(await code(resolveModelFunding({
+      ...request(ALICE), priorDecision: admitted, transport: "surplus",
+    }, deps))).toBe("funding_source_changed");
   });
 
   test("a server admission cannot cross to a personal-only fallback after priority or authority changes", async () => {

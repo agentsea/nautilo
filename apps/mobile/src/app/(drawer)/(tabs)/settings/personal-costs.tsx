@@ -21,8 +21,13 @@ import {
   formatPersonalCostUsd,
   personalCostCallTypeRows,
   personalCostDayRows,
+  personalCostProviderEvidence,
+  personalCostTaskRows,
   personalCostsForRequestedRange,
   personalUnknownProviderOperations,
+  personalServiceOperations,
+  personalServiceOutcomeText,
+  personalServiceRecoveryAttempts,
 } from "@/features/settings/personal-costs-presentation";
 import { settingsScopeForVerifiedViewer } from "@/features/settings/settings-data-state";
 import { getApiClient } from "@/lib/api";
@@ -81,6 +86,8 @@ export default function PersonalCostsScreen() {
   const unknownPaidOperations = data
     ? personalUnknownProviderOperations(data)
     : 0;
+  const serviceOperations = data ? personalServiceOperations(data) : null;
+  const serviceRecovery = data ? personalServiceRecoveryAttempts(data) : [];
   const goBack = (): void =>
     router.canGoBack()
       ? router.back()
@@ -207,6 +214,49 @@ export default function PersonalCostsScreen() {
                 removed or replaced key may remain unresolved.
               </Text>
             ) : null}
+            {serviceOperations && serviceOperations.operations > 0 ? (
+              <View style={styles.card}>
+                <Text style={styles.title}>Paid service outcomes</Text>
+                <Text style={styles.help}>
+                  {personalServiceOutcomeText(serviceOperations)}
+                </Text>
+                {serviceOperations.legacy > 0 ? (
+                  <Text style={styles.help}>
+                    Older service activity predates outcome and Task
+                    attribution tracking, so no outcome is inferred and some
+                    spend may appear only in provider totals.
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+            {serviceRecovery.length > 0 ? (
+              <>
+                <Text style={styles.sectionLabel}>RECENT UNRESOLVED PAID SERVICES</Text>
+                <Text style={styles.help}>
+                  Showing up to 100 newest unresolved operations. Older unresolved operations remain included in the totals.
+                </Text>
+                {serviceRecovery.map((attempt, index) => (
+                  <View
+                    key={`${attempt.provider}:${attempt.operation}:${attempt.occurredAt}:${index}`}
+                    style={styles.card}
+                  >
+                    <Text style={styles.title}>
+                      {attempt.provider} · {attempt.operation}
+                      {attempt.workload ? ` · ${attempt.workload.replaceAll("_", " ")}` : ""}
+                    </Text>
+                    <Text style={styles.help}>
+                      Outcome {attempt.attemptOutcome ?? "older unclassified"}
+                      {attempt.failureCode ? ` · Failure ${attempt.failureCode.replaceAll("_", " ")}` : ""}
+                    </Text>
+                    {attempt.taskId ? <Text selectable style={styles.help}>Task {attempt.taskId}</Text> : null}
+                    {attempt.requestReference ? <Text selectable style={styles.help}>Request {attempt.requestReference}</Text> : null}
+                    {attempt.runId ? <Text selectable style={styles.help}>Run {attempt.runId}</Text> : null}
+                    {attempt.jobId ? <Text selectable style={styles.help}>Job {attempt.jobId}</Text> : null}
+                    <Text style={styles.help}>Observed {new Date(attempt.occurredAt).toLocaleString()}</Text>
+                  </View>
+                ))}
+              </>
+            ) : null}
             {(data.recovery.attempts ?? []).length > 0 ? (
               <>
                 <Text style={styles.sectionLabel}>RECENT UNRESOLVED ATTEMPTS</Text>
@@ -231,13 +281,23 @@ export default function PersonalCostsScreen() {
                 ))}
               </>
             ) : null}
-            {(data.byTask ?? []).length > 0 ? (
+            {personalCostTaskRows(data).length > 0 ? (
               <>
                 <Text style={styles.sectionLabel}>BY TASK</Text>
-                {(data.byTask ?? []).map((row) => (
+                <Text style={styles.help}>
+                  Paid-service attribution is available for newly recorded
+                  service activity. Older service costs may remain only in
+                  provider totals.
+                </Text>
+                {personalCostTaskRows(data).map((row) => (
                   <View key={row.taskId} style={styles.card}>
                     <Text selectable style={styles.title}>Task {row.taskId}</Text>
-                    <Text style={styles.help}>{integer(row.calls)} attempts · {formatPersonalCostUsd(row.totalCostUsd)} known spend · {integer(row.pendingAttempts + row.unknownAttempts)} unresolved</Text>
+                    <Text style={styles.help}>
+                      {integer(row.modelAttempts)} model attempts · {integer(row.paidOperations)} paid operations
+                    </Text>
+                    <Text style={styles.help}>
+                      {formatPersonalCostUsd(row.actualCostUsd)} actual · {formatPersonalCostUsd(row.currentEstimateUsd)} current estimate · {formatPersonalCostUsd(row.knownCostUsd)} known spend · {integer(row.unresolved)} unresolved
+                    </Text>
                   </View>
                 ))}
               </>
@@ -336,8 +396,7 @@ export default function PersonalCostsScreen() {
               </Text>
             ) : (
               data.byProvider.map((row) => {
-                const costPending =
-                  row.totalCostUsd === 0 && row.unknownOperations > 0;
+                const evidence = personalCostProviderEvidence(row);
                 return (
                   <View
                     key={`${row.provider}:${row.operation}`}
@@ -350,22 +409,19 @@ export default function PersonalCostsScreen() {
                         </Text>
                         <Text style={styles.help}>
                           {integer(row.operations)} operations
-                          {row.unknownOperations > 0
-                            ? ` · ${integer(row.unknownOperations)} unresolved`
+                          {evidence.unresolvedOperations > 0
+                            ? ` · ${integer(evidence.unresolvedOperations)} unresolved`
                             : ""}
                         </Text>
                       </View>
                       <Text style={styles.cost}>
-                        {costPending ? "Cost pending" : formatPersonalCostUsd(row.totalCostUsd)}
+                        {evidence.costPending ? "Cost pending" : formatPersonalCostUsd(evidence.knownCostUsd)}
                       </Text>
                     </View>
                     <Text style={styles.help}>
-                      {costPending
+                      {evidence.costPending
                         ? "Unknown or pending receipt"
-                        : `${formatPersonalCostUsd(row.actualCostUsd)} actual · ${formatPersonalCostUsd(row.estimatedCostUsd)} estimated`}
-                      {row.unknownOperations > 0
-                        ? " · unresolved charges excluded"
-                        : ""}
+                        : evidence.detail}
                     </Text>
                   </View>
                 );

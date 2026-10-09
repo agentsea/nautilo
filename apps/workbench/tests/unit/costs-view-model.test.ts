@@ -5,9 +5,11 @@ import {
   MODEL_BADGE_PENDING,
   MODEL_BADGE_UNKNOWN,
   buildModelBarRows,
+  callTypeLabel,
   modelRowBadges,
   modelRowTitle,
   normalizeAdminCosts,
+  normalizePersonalCosts,
   type CostsModelBarInput,
 } from "../../src/pages/costs/costs-view-model";
 import type { CostsSummary } from "../../src/lib/costs-api";
@@ -205,10 +207,60 @@ test("admin headlines derive the current estimate without double-counting histor
     },
     byModel: [],
     byCallType: [],
-    byProvider: [],
+    byProvider: [{
+      provider: "tavily",
+      operation: "search",
+      operations: 3,
+      unknownOperations: 1,
+      estimatedCostUsd: 1,
+      actualCostUsd: 2,
+      totalCostUsd: 3,
+    }],
     byUser: [],
     timeSeries: [],
   } as unknown as CostsSummary;
   expect(normalizeAdminCosts(data).totals.estimatedCostUsd).toBe(1);
+  expect(normalizeAdminCosts(data).byProvider[0]).toMatchObject({
+    unknownOperations: 1,
+    estimatedCostUsd: 1,
+    actualCostUsd: 2,
+    totalCostUsd: 3,
+  });
   expect(data.totals.estimatedCostUsd).toBe(5);
+});
+
+test("labels research and decision workloads", () => {
+  expect(callTypeLabel("decision")).toBe("Decision");
+  expect(callTypeLabel("deep_research")).toBe("Deep research");
+  expect(callTypeLabel("future_workload")).toBe("future_workload");
+});
+
+test("provider normalization retains evidence buckets and safely defaults legacy fields", () => {
+  const data = {
+    totals: {
+      calls: 0, providerOperations: 2, inputTokens: 0, cachedInputTokens: 0,
+      outputTokens: 0, totalTokens: 0, estimatedCostUsd: 0.02,
+      actualCostUsd: 0, totalCostUsd: 0.02,
+    },
+    byModel: [], byCallType: [], byTask: [], timeSeries: [],
+    byProvider: [
+      { provider: "tavily", operation: "search", operations: 1,
+        unknownOperations: 0, actualCostUsd: 0, estimatedCostUsd: 0.02,
+        totalCostUsd: 0.02 },
+      { provider: "legacy", operation: "read", operations: 1,
+        totalCostUsd: 0 },
+    ],
+    recovery: {
+      pendingAttempts: 0, unknownAttempts: 0, retryableAttempts: 0,
+      blockedAttempts: 0, attempts: [],
+    },
+  } as unknown as Parameters<typeof normalizePersonalCosts>[0];
+  expect(normalizePersonalCosts(data).byProvider).toEqual([
+    { provider: "tavily", operation: "search", operations: 1,
+      unknownOperations: 0, actualCostUsd: 0, estimatedCostUsd: 0.02,
+      totalCostUsd: 0.02 },
+    { provider: "legacy", operation: "read", operations: 1,
+      unknownOperations: 0, actualCostUsd: 0, estimatedCostUsd: 0,
+      totalCostUsd: 0 },
+  ]);
 });
