@@ -1,8 +1,6 @@
 import { getCapabilityFundingSession } from "../runtime/capability-funding";
 import { personalToolUnavailable } from "../runtime/personal-tool-readiness";
-import { createGitHubTool } from "./github/github";
 import { createHumanTerminalTool } from "./terminal/human-terminal";
-import { createLocalGitTool } from "./local-git/local-git";
 import { createReadShellOutputTool } from "./shell/read-shell-output";
 import { createExecCommandTool, createWriteStdinTool } from "./local-execution/local-execution";
 /**
@@ -590,10 +588,6 @@ export function registerAllTools(
       relayCapabilities: [name === "exec_command" ? "canExecuteLocal" : "canObserveLocalExecution"], resultScanPolicy: "on-suspicious" });
   }
 
-  register({ name: "local_git", factory: () => createLocalGitTool(), category: "development",
-    executor: "relay", trustTier: "admin", impact: "destructive", exposure: "discoverable",
-    tags: ["git", "repository", "commit", "worktree"], requiresApproval: true, approvalLevel: "prove_it",
-    requiredCapabilities: ["use_workstation"], relayCapabilities: ["canUseLocalGit"], resultScanPolicy: "on-suspicious" });
   register({ name: "read_shell_output", factory: () => createReadShellOutputTool(), category: "development",
     executor: "relay", trustTier: "admin", impact: "read-only", exposure: "discoverable",
     tags: ["output", "logs", "search", "shell"], requiresApproval: false,
@@ -722,10 +716,6 @@ export function registerAllTools(
   // allow: impact "high" (not "destructive") + requiresApproval:false →
   // `allow` for actors holding `use_workstation`. Runtime relay availability
   // remains a separate `canUseTerminal` requirement.
-  register({ name: "local_github", factory: () => createGitHubTool(), category: "development",
-    executor: "relay", trustTier: "admin", impact: "destructive", exposure: "discoverable",
-    tags: ["github", "issues", "pull-requests"], requiresApproval: true,
-    fullEncryptionSupport: "supported", requiredCapabilities: ["use_workstation"], relayCapabilities: ["canUseGitHub"], resultScanPolicy: "on-suspicious" });
   register({ name: "human_terminal", factory: () => createHumanTerminalTool(), category: "development",
     executor: "relay", trustTier: "admin", impact: "high", exposure: "discoverable",
     tags: ["terminal", "human", "handoff", "interactive"], requiresApproval: false,

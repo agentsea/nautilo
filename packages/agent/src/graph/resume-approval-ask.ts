@@ -15,7 +15,7 @@ import {
   GraphExecutionMetrics,
   toGraphBudgetOutcome,
 } from "./execution-policy";
-import { requireGitHubApprovalEcho, requirePendingApprovalAskInterrupt } from "./interrupt-mapping";
+import { hasPendingRetiredBrokerApprovalInterrupt, isRetiredBrokerApprovalInterrupt, requirePendingApprovalAskInterrupt } from "./interrupt-mapping";
 import { streamForegroundGraph } from "./foreground-context-refresh";
 
 /**
@@ -57,7 +57,6 @@ export async function resumeGraphWithAskReply(
   liveShadowToolBoundaryForState?: () => LiveShadowToolBoundary | undefined,
   invocationMemoryDeps?: NautiloGraphDeps,
   expectedApprovalId?: string,
-  githubEcho?: { approvalId: string; digest: string; laneKey: string },
 ): Promise<void> {
   const checkpointSaver =
     invocationCheckpointSaver ?? createCheckpointSaver();
@@ -91,16 +90,19 @@ export async function resumeGraphWithAskReply(
   };
 
   const approved = verb !== "deny";
-  const preResumeCheckpoint = expectedApprovalId === undefined
-    ? undefined
-    : await graph.getState({ configurable: { thread_id: threadId } });
+  const preResumeCheckpoint = await graph.getState({ configurable: { thread_id: threadId } });
+  if (expectedApprovalId === undefined && verb !== "deny" && hasPendingRetiredBrokerApprovalInterrupt(
+    preResumeCheckpoint as { tasks?: Array<Record<string, unknown>> } | undefined,
+  )) {
+    throw Object.assign(new Error("This retired broker approval is no longer available."), { code: "approval_request_stale" });
+  }
   if (expectedApprovalId !== undefined) {
     const pending = requirePendingApprovalAskInterrupt(
       preResumeCheckpoint as { tasks?: Array<Record<string, unknown>> } | undefined,
       expectedApprovalId,
     );
-    if (expectedApprovalId.startsWith("github-publish:") || githubEcho) {
-      requireGitHubApprovalEcho(pending, githubEcho, laneKey, verb);
+    if ((isRetiredBrokerApprovalInterrupt(pending.value) || expectedApprovalId.startsWith("github-publish:")) && verb !== "deny") {
+      throw Object.assign(new Error("This retired broker approval is no longer available."), { code: "approval_request_stale" });
     }
   }
 
@@ -120,7 +122,6 @@ export async function resumeGraphWithAskReply(
       const resumePayload = {
         approved,
         verb,
-        ...(githubEcho ? { githubApprovalId: githubEcho.approvalId, githubDigest: githubEcho.digest, githubLaneKey: githubEcho.laneKey } : {}),
         ...(localMcpInstallApprovalId !== undefined
           ? { localMcpInstallApprovalId }
           : {}),
@@ -144,15 +145,22 @@ export async function resumeGraphWithAskReply(
           : {}),
       };
       let resume: typeof resumePayload | Record<string, typeof resumePayload> = resumePayload;
+      const currentCheckpoint = await graph.getState({
+        configurable: { thread_id: threadId },
+      });
+      if (expectedApprovalId === undefined && verb !== "deny" && hasPendingRetiredBrokerApprovalInterrupt(
+        currentCheckpoint as { tasks?: Array<Record<string, unknown>> } | undefined,
+      )) {
+        throw Object.assign(new Error("This retired broker approval is no longer available."), { code: "approval_request_stale" });
+      }
       if (expectedApprovalId !== undefined) {
-        const currentCheckpoint = await graph.getState({
-          configurable: { thread_id: threadId },
-        });
         const pending = requirePendingApprovalAskInterrupt(
           currentCheckpoint as { tasks?: Array<Record<string, unknown>> } | undefined,
           expectedApprovalId,
         );
-        if (expectedApprovalId.startsWith("github-publish:") || githubEcho) requireGitHubApprovalEcho(pending, githubEcho, laneKey, verb);
+        if ((isRetiredBrokerApprovalInterrupt(pending.value) || expectedApprovalId.startsWith("github-publish:")) && verb !== "deny") {
+          throw Object.assign(new Error("This retired broker approval is no longer available."), { code: "approval_request_stale" });
+        }
         if (pending.id !== undefined) resume = { [pending.id]: resumePayload };
       }
       for await (const ev of streamForegroundGraph(

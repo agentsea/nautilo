@@ -212,6 +212,7 @@ describe("workstation profile review IPC — redacted return shapes", () => {
     expect(helperStart).toBeGreaterThan(-1);
     const helper = main.slice(helperStart, helperStart + 600);
     expect(helper).toContain("environmentKeys: [...profile.environmentKeys]");
+    expect(helper).toContain('profile.capabilities.includes("user_environment")');
     expect(helper).toContain("capabilities: redactProfileCapabilities(profile)");
     expect(helper).not.toContain("profile.roots");
     expect(helper).not.toContain("executableRules");

@@ -197,12 +197,18 @@ The served Workbench feature-detects the Desktop bridge for reads, Stop and
 Human-clicked loopback previews. A URL in output is an unverified suggestion,
 not proof of readiness or port ownership. Preview uses the existing Browser
 surface. The capability is not advertised by headless Relay or older peers.
-On the exact initiating Desktop, protocol 26 or later with managed pipe/PTY,
-typed local Git and retained-output support hides `run_shell` and `terminal`
-from model binding, discovery and activation. The registered handlers remain
-available to older or incomplete peers. `local_git`, `read_shell_output` and
-explicit `human_terminal` handoff preserve the separate supported operations;
-active handoff consent is not a prerequisite for hiding the legacy tools.
+Legacy Agent `run_shell` and `terminal` handlers are retired. Commands use the
+managed `exec_command` / `write_stdin` path; retained output and explicit
+`human_terminal` handoff remain separate operations. Git and GitHub run as ordinary
+commands. There is no typed Git/GitHub account-operation lane or approval binding.
+
+A locally validated Development profile with `user_environment` adds the native
+HOME, user package prefixes, authentication helper paths and login-shell environment
+only to managed command preparation. It does not create whole-HOME filesystem
+grants. Credentials are usable by commands and dependency scripts; they are not
+non-exportable. Nautilo's internal state masks, current execution identity and
+grants, revocation, and the administrator networking ceiling still apply. Old or
+custom profiles without this capability retain their existing authority.
 
 ## Fixed Desktop dispatch order
 

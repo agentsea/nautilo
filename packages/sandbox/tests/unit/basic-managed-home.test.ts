@@ -8,7 +8,7 @@ for (const kind of ["sandbox-exec", "bubblewrap"] as const) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "basic-home-")));
     const workspace = join(root, "project"); const managedHome = join(root, "managed"); mkdirSync(workspace); mkdirSync(managedHome);
     try {
-      const sandbox = new Sandbox({ workspace, managedHome, dataDir: join(root, "private"), toolsBin: "/usr/bin", backend: kind === "sandbox-exec" ? { kind } : { kind, procSupported: true },
+      const sandbox = new Sandbox({ workspace, managedHome, dataDir: join(root, "private"), toolsBin: "/usr/bin", backend: kind === "sandbox-exec" ? { kind } : { kind, executable: "/usr/bin/bwrap", procSupported: true },
         config: { mode: "enabled", writablePaths: [], projectPaths: [], passthroughEnv: [], networkPolicy: { mode: "isolated" } } });
       const wrapped = sandbox.wrap("/bin/sh", ["-c", "printf fixture"], workspace, { HOME: workspace });
       if (kind === "sandbox-exec") {
@@ -29,7 +29,7 @@ for (const kind of ["sandbox-exec", "bubblewrap"] as const) {
       const preparedEnvironment = Object.freeze({ HOME: home, PATH: "/approved/bin:/usr/bin", LANG: "en_US.UTF-8",
         TMPDIR: "/tmp", CI: "true", DEBIAN_FRONTEND: "noninteractive", NPM_CONFIG_CACHE: join(home, ".npm") });
       const sandbox = new Sandbox({ workspace, preparedEnvironment, dataDir: join(root, "private"), toolsBin: "/usr/bin",
-        backend: kind === "sandbox-exec" ? { kind } : { kind, procSupported: true },
+        backend: kind === "sandbox-exec" ? { kind } : { kind, executable: "/usr/bin/bwrap", procSupported: true },
         config: { mode: "enabled", writablePaths: [], projectPaths: [], passthroughEnv: ["GH_TOKEN"], networkPolicy: { mode: "isolated" } } });
       const wrapped = sandbox.wrap("/bin/sh", ["-c", "printf fixture"], workspace, {
         BASH_ENV: "/untrusted",
@@ -41,10 +41,9 @@ for (const kind of ["sandbox-exec", "bubblewrap"] as const) {
         expect(wrapped.env?.["UNAPPROVED_VALUE"]).toBeUndefined();
       } else {
         const args = wrapped.args;
-        for (const [name, value] of Object.entries(preparedEnvironment)) {
-          const index = args.findIndex((entry, offset) => entry === "--setenv" && args[offset + 1] === name);
-          expect(args[index + 2]).toBe(value);
-        }
+        expect(wrapped.env).toEqual(preparedEnvironment);
+        expect(args).not.toContain("--clearenv");
+        expect(args).not.toContain("--setenv");
         expect(args).not.toContain("GH_TOKEN"); expect(args).not.toContain("BASH_ENV");
         expect(args).not.toContain("UNAPPROVED_VALUE");
       }

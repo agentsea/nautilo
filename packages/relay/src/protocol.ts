@@ -1,4 +1,3 @@
-import { parseGitHubCapability, parseGitHubInvocationBinding, sameGitHubDesktopIdentity, type GitHubInvocationBinding } from "../../types/src/github-invocation";
 import { parseHumanTerminalOwner, type HumanTerminalOwner } from "../../types/src/human-terminal";
 import { parseLocalExecutionDelegation, type LocalExecutionDelegation, isLocalExecutionReadArgs } from "@nautilo/types";
 import type { RelaySecurityScanProgressMessage, SecurityScanProgress } from "./security-scan-progress";
@@ -169,46 +168,10 @@ import type {
  */
 // v20 adds owner-private Claude permission detail; never sent to older peers.
 export const RELAY_PROTOCOL_VERSION = 29;
-export const RELAY_GITHUB_PROTOCOL_VERSION = 29;
 /** Minimum admission contract after retiring legacy Agent shell execution. */
 export const RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION = 29;
-export type RelayGitHubInvocationBinding = GitHubInvocationBinding & {
-  readonly localNetworkPolicy: RelayNetworkPolicy;
-};
-export function parseRelayGitHubInvocationBinding(value: unknown, args?: unknown): RelayGitHubInvocationBinding | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  const { localNetworkPolicy, ...base } = value as Record<string, unknown>;
-  const binding = parseGitHubInvocationBinding(base, args);
-  const policy = NetworkPolicySchema.safeParse(localNetworkPolicy);
-  return binding && policy.success ? { ...binding, localNetworkPolicy: policy.data } as RelayGitHubInvocationBinding : null;
-}
-export function isRelayGitHubDispatch(toolName: string, args: unknown, bindingValue: unknown, capabilities: RelayCapabilities, protocol: number): boolean {
-  const binding = parseRelayGitHubInvocationBinding(bindingValue, args), capability = parseGitHubCapability(capabilities.github);
-  const authenticatedGit = toolName === "local_git";
-  return (toolName === "local_github" || authenticatedGit) && binding !== null && capability !== null && capabilities.profile === "desktop-agent"
-    && capabilities.canUseGitHub === true && protocol >= RELAY_GITHUB_PROTOCOL_VERSION && binding.generation === capability.generation
-    && (!authenticatedGit || capability.authenticatedGit?.version === 1)
-    && sameGitHubDesktopIdentity(binding.owner, capability.identity);
-}
-/** Shared account/project facts must describe one reviewed operation. Pairing
- * has two representations: the server checks the shell's raw token generation,
- * while account topology carries the opaque authenticated generation reference. */
-export function matchesGitHubWorkstationBinding(account: RelayGitHubInvocationBinding, value: unknown): boolean {
-  const parsed = parseRelayWorkstationShellBinding(value);
-  if (!parsed.ok) return false;
-  const shell = parsed.binding, owner = account.owner;
-  return shell.toolCallId === account.toolCallId && shell.subject.userId === owner.humanUserId
-    && shell.subject.instanceId === owner.instanceId && shell.subject.relayId === owner.relayId
-    && shell.relayId === owner.relayId && shell.desktopSessionId === owner.desktopSessionId
-    && shell.profileId === owner.profileId && shell.profileRevision === owner.profileRevision
-    && shell.grantRevision === owner.grantRevision && shell.protectedPolicyVersion === owner.protectedPolicyVersion;
-}
-/** Typed Git and retained shell output are independent replacement surfaces. */
-export const RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION = 22;
-export function isRelayLocalGitCapability(value: unknown): value is { readonly version: 1 } {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    && Object.keys(value).length === 1 && (value as Record<string, unknown>)["version"] === 1;
-}
+/** Retained shell-output reads were introduced in protocol v22. */
+export const RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION = 22;
 /** Claude Connections discovery requires an exact v17 selected socket. */
 const CLAUDE_CONNECTION_DISCOVERY_PROTOCOL_VERSION = CLAUDE_CONNECTION_PROTOCOL_VERSION;
 /** Cua-only semantic Computer Use requires the complete v17 capability contract. */
@@ -269,14 +232,19 @@ export function projectRelayCapabilitiesForProtocol(
   capabilities: RelayCapabilities,
   protocolVersion: number,
 ): RelayCapabilities {
-  const compatible = { ...capabilities };
+  const compatible = { ...capabilities } as RelayCapabilities & Record<string, unknown>;
+  // Old peers may still carry these now-retired advertisements. Never forward
+  // them in any negotiated capability projection.
+  delete compatible["canUseGitHub"];
+  delete compatible["github"];
+  delete compatible["canUseLocalGit"];
+  delete compatible["localGit"];
   if (protocolVersion < RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION) {
     delete compatible.canExecuteLocal;
     delete compatible.localExecution;
     delete compatible.canDelegateLocalExecution;
     delete compatible.canExecuteFullMacOneShot;
   }
-  if (protocolVersion < RELAY_GITHUB_PROTOCOL_VERSION) { delete compatible.canUseGitHub; delete compatible.github; }
   if (protocolVersion < RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION) delete compatible.canSearchLocalExecutionOutput;
   if (protocolVersion < RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION) delete compatible.canExecuteFullMacOneShot;
   if (protocolVersion < RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION) {
@@ -289,11 +257,7 @@ export function projectRelayCapabilitiesForProtocol(
     }
     delete compatible.basicExecution;
   }
-  if (protocolVersion < RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION) {
-    delete compatible.canUseLocalGit;
-    delete compatible.localGit;
-    delete compatible.canReadShellOutput;
-  }
+  if (protocolVersion < RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION) delete compatible.canReadShellOutput;
   if (protocolVersion < RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION) delete compatible.canReadLocalExecutionHistory;
   if (protocolVersion < RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION) {
     delete compatible.localExecution;
@@ -969,7 +933,6 @@ export type RelayDispatchMessage = {
   localExecutionDelegationCapture?: RelayLocalExecutionDelegationCapture | undefined;
   localExecutionBinding?: RelayLocalExecutionBinding | undefined;
   localExecutionHistoryBinding?: RelayLocalExecutionHistoryBindingV1 | undefined;
-  githubBinding?: RelayGitHubInvocationBinding | undefined;
   humanTerminalBinding?: RelayHumanTerminalBinding | undefined;
   /** server-owned marker: this real-workstation dispatch was admitted by the live uncontained session resolver. */
   uncontainedHostCommandsSession?: true | undefined;
@@ -1229,7 +1192,6 @@ export type RelayDispatchRequest = {
   localExecutionDelegationCapture?: RelayLocalExecutionDelegationCapture | undefined;
   localExecutionBinding?: RelayLocalExecutionBinding | undefined;
   localExecutionHistoryBinding?: RelayLocalExecutionHistoryBindingV1 | undefined;
-  githubBinding?: RelayGitHubInvocationBinding | undefined;
   humanTerminalBinding?: RelayHumanTerminalBinding | undefined;
   /** See `RelayDispatchMessage.uncontainedHostCommandsSession`. */
   uncontainedHostCommandsSession?: true | undefined;
@@ -2739,128 +2701,6 @@ export function parseRelaySshApprovedRequestV1(
     return { ok: false, error: "structured SSH approved request exceeds the wire byte limit" };
   }
   return { ok: true, request };
-}
-
-// ── Phase 3 — structured Git operation variant for `run_shell` ─────
-//
-// `run_shell` admits exactly one of two mutually exclusive modes: a raw
-// `command` string (unchanged baseline path through the ordinary sandbox) or
-// a structured `git` operation. The structured variant is the only seam
-// through which the typed GitBroker is reached; a raw `command: "git ..."` is
-// NEVER parsed or allowlisted into the broker — it stays on the ordinary
-// sandboxed shell path and receives no metadata/template exception.
-//
-// This parser is the strict ingress gate the desktop relay calls before
-// constructing a `GitBroker`. It admits ONLY the six bounded operations the
-// broker owns, with explicit `paths` / `message` / `ref` / `target` fields per
-// operation. Anything else — extra keys, wrong types, pathspec magic, a
-// missing required field — fails closed with a stable error. The agent-side
-// Zod schema mirrors this shape for the model; the relay re-validates because
-// the wire is untrusted.
-
-export type RelayRunShellGitOperation =
-  | { readonly operation: "status" }
-  | { readonly operation: "diff"; readonly ref?: string | undefined }
-  | { readonly operation: "add"; readonly paths: readonly string[] }
-  | { readonly operation: "commit"; readonly message: string }
-  | { readonly operation: "worktree-add"; readonly target: string; readonly ref: string }
-  | { readonly operation: "worktree-remove"; readonly target: string };
-
-export type RelayRunShellGitOperationValidationResult =
-  | { readonly ok: true; readonly operation: RelayRunShellGitOperation }
-  | { readonly ok: false; readonly error: string };
-
-const RUN_SHELL_GIT_OPERATIONS = new Set([
-  "status",
-  "diff",
-  "add",
-  "commit",
-  "worktree-add",
-  "worktree-remove",
-]);
-
-/**
- * Reject pathspec magic defensively. The broker never accepts pathspecs that
- * could escape the granted target via Git's own magic (`:(...)`, `**`); the
- * relay rejects them at the ingress boundary so a malformed payload never
- * reaches the broker.
- */
-function isBareGitPath(value: string): boolean {
-  return value.length > 0 && !value.startsWith(":") && !value.includes("**") && !value.includes("\0");
-}
-
-export function parseRelayRunShellGitOperation(
-  value: unknown,
-): RelayRunShellGitOperationValidationResult {
-  if (!isRecord(value) || typeof value["operation"] !== "string") {
-    return { ok: false, error: "run_shell git operation must be a strict object with an `operation` discriminator" };
-  }
-  const operation = value["operation"];
-  if (!RUN_SHELL_GIT_OPERATIONS.has(operation)) {
-    return { ok: false, error: `run_shell git operation is not one of the bounded operations: ${operation}` };
-  }
-  if (operation === "status") {
-    if (!hasOnlyKeys(value, new Set(["operation"]))) {
-      return { ok: false, error: "run_shell git status admits only `operation`" };
-    }
-    return { ok: true, operation: { operation: "status" } };
-  }
-  if (operation === "diff") {
-    if (!hasOnlyKeys(value, new Set(["operation", "ref"]))) {
-      return { ok: false, error: "run_shell git diff admits only `operation` and optional `ref`" };
-    }
-    if (value["ref"] !== undefined) {
-      if (!isNonBlankString(value["ref"]) || !isBareGitPath(value["ref"])) {
-        return { ok: false, error: "run_shell git diff `ref` must be a bare ref/commit without pathspec magic" };
-      }
-      return { ok: true, operation: { operation: "diff", ref: value["ref"] } };
-    }
-    return { ok: true, operation: { operation: "diff" } };
-  }
-  if (operation === "add") {
-    if (!hasOnlyKeys(value, new Set(["operation", "paths"]))) {
-      return { ok: false, error: "run_shell git add admits only `operation` and `paths`" };
-    }
-    const paths = value["paths"];
-    if (!Array.isArray(paths) || paths.length === 0) {
-      return { ok: false, error: "run_shell git add `paths` must be a non-empty array" };
-    }
-    for (const p of paths) {
-      if (!isNonBlankString(p) || !isBareGitPath(p)) {
-        return { ok: false, error: "run_shell git add `paths` must be bare relative paths without pathspec magic" };
-      }
-    }
-    return { ok: true, operation: { operation: "add", paths: [...(paths as string[])] } };
-  }
-  if (operation === "commit") {
-    if (!hasOnlyKeys(value, new Set(["operation", "message"]))) {
-      return { ok: false, error: "run_shell git commit admits only `operation` and `message`" };
-    }
-    if (!isNonBlankString(value["message"])) {
-      return { ok: false, error: "run_shell git commit `message` must be a non-blank string" };
-    }
-    return { ok: true, operation: { operation: "commit", message: value["message"] } };
-  }
-  if (operation === "worktree-add") {
-    if (!hasOnlyKeys(value, new Set(["operation", "target", "ref"]))) {
-      return { ok: false, error: "run_shell git worktree-add admits only `operation`, `target`, and `ref`" };
-    }
-    if (!isNonBlankString(value["target"]) || !path.isAbsolute(value["target"])) {
-      return { ok: false, error: "run_shell git worktree-add `target` must be a non-blank absolute path" };
-    }
-    if (!isNonBlankString(value["ref"]) || !isBareGitPath(value["ref"])) {
-      return { ok: false, error: "run_shell git worktree-add `ref` must be a bare ref/commit without pathspec magic" };
-    }
-    return { ok: true, operation: { operation: "worktree-add", target: value["target"], ref: value["ref"] } };
-  }
-  // operation === "worktree-remove"
-  if (!hasOnlyKeys(value, new Set(["operation", "target"]))) {
-    return { ok: false, error: "run_shell git worktree-remove admits only `operation` and `target`" };
-  }
-  if (!isNonBlankString(value["target"]) || !path.isAbsolute(value["target"])) {
-    return { ok: false, error: "run_shell git worktree-remove `target` must be a non-blank absolute path" };
-  }
-  return { ok: true, operation: { operation: "worktree-remove", target: value["target"] } };
 }
 
 // ── advisory active-grant snapshot (RelayCapabilities) ──────────

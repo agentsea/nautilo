@@ -72,8 +72,6 @@ const TOOL_POLICIES: Record<string, ToolPolicyEntry> = {
   select_current_folder: { requiredCapability: "control_desktop",      impact: "high",        executor: "relay", relayCapability: "canRunShell", requiresApproval: true },
   exec_command: { requiredCapability: "use_workstation", impact: "destructive", executor: "relay", relayCapability: "canExecuteLocal", requiresApproval: true },
   write_stdin: { requiredCapability: "use_workstation", impact: "destructive", executor: "relay", relayCapability: "canExecuteLocal", requiresApproval: true },
-  local_github: { requiredCapability: "use_workstation", impact: "destructive", executor: "relay", relayCapability: "canUseGitHub", requiresApproval: true },
-  local_git: { requiredCapability: "use_workstation", impact: "destructive", executor: "relay", relayCapability: "canUseLocalGit", requiresApproval: true },
   read_shell_output: { requiredCapability: "use_workstation", impact: "read-only", executor: "relay", relayCapability: "canReadShellOutput", requiresApproval: false },
   run_shell:          { requiredCapability: "use_workstation",        impact: "destructive", executor: "relay", relayCapability: "canRunShell", requiresApproval: true },
   // interactive shared PTY. impact "high" + no requiresApproval →

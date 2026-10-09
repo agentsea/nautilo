@@ -257,80 +257,26 @@ describe("createRelayClient capability updates", () => {
     }
   });
 
-  test("requires the typed Local Git marker at dispatch time", async () => {
-    for (const localGit of [undefined, { version: 1, extra: true }]) {
-      let dispatchCount = 0;
-      const client = await connectClient({
-        desktopSessionId: "desktop-session-1",
-        protocolVersion: 22,
-        capabilities: { profile: "desktop-agent", canUseLocalGit: true, localGit } as RelayCapabilities,
-        onDispatch: async () => { dispatchCount += 1; return { status: "ok" }; },
-      });
-      try {
-        const ws = created[created.length - 1]!;
-        ws.triggerMessage(JSON.stringify({
-          type: "relay:dispatch",
-          correlationId: "local-git-call",
-          toolName: "local_git",
-          args: { operation: "status" },
-          impact: "destructive",
-          approvalObtained: true,
-        }));
-        await tick();
-        expect(dispatchCount).toBe(0);
-        const result = ws.sent.map((raw) => JSON.parse(raw) as { type: string; correlationId?: string; status?: string; errorCode?: string })
-          .find((message) => message.type === "relay:result" && message.correlationId === "local-git-call");
-        expect(result).toMatchObject({ status: "error", errorCode: "LOCAL_TOOL_UNAVAILABLE" });
-      } finally {
-        await client.disconnect();
-      }
-    }
-
-    let validDispatchCount = 0;
-    const validClient = await connectClient({
+  test("rejects retired local Git dispatch without invoking the handler", async () => {
+    let dispatchCount = 0;
+    const client = await connectClient({
       desktopSessionId: "desktop-session-1",
       protocolVersion: 22,
-      capabilities: { profile: "desktop-agent", canUseLocalGit: true, localGit: { version: 1 } },
-      onDispatch: async () => { validDispatchCount += 1; return { status: "ok" }; },
+      capabilities: { profile: "desktop-agent" },
+      onDispatch: async () => { dispatchCount += 1; return { status: "ok" }; },
     });
     try {
       const ws = created[created.length - 1]!;
       ws.triggerMessage(JSON.stringify({
-        type: "relay:dispatch",
-        correlationId: "local-git-call",
-        toolName: "local_git",
-        args: { operation: "status" },
-        impact: "destructive",
-        approvalObtained: true,
+        type: "relay:dispatch", correlationId: "local-git-call", toolName: "local_git",
+        args: { operation: "status" }, impact: "destructive", approvalObtained: true,
       }));
       await tick();
-      expect(validDispatchCount).toBe(1);
-    } finally {
-      await validClient.disconnect();
-    }
-
-    let missingBooleanDispatchCount = 0;
-    const missingBooleanClient = await connectClient({
-      desktopSessionId: "desktop-session-1",
-      protocolVersion: 22,
-      capabilities: { profile: "desktop-agent", localGit: { version: 1 } },
-      onDispatch: async () => { missingBooleanDispatchCount += 1; return { status: "ok" }; },
-    });
-    try {
-      const ws = created[created.length - 1]!;
-      ws.triggerMessage(JSON.stringify({
-        type: "relay:dispatch",
-        correlationId: "local-git-missing-flag",
-        toolName: "local_git",
-        args: { operation: "status" },
-        impact: "destructive",
-        approvalObtained: true,
-      }));
-      await tick();
-      expect(missingBooleanDispatchCount).toBe(0);
-    } finally {
-      await missingBooleanClient.disconnect();
-    }
+      expect(dispatchCount).toBe(0);
+      const result = ws.sent.map(raw => JSON.parse(raw) as { type: string; correlationId?: string; errorCode?: string })
+        .find(message => message.type === "relay:result" && message.correlationId === "local-git-call");
+      expect(result?.errorCode).toBe("LOCAL_TOOL_UNAVAILABLE");
+    } finally { await client.disconnect(); }
   });
 
   test("register carries desktopSessionId and the initial capability revision", async () => {
@@ -1243,36 +1189,31 @@ for (const protocolVersion of [25, 26]) test(`live and history search frames req
   } finally { await client.disconnect(); }
 });
 
-for (const protocolVersion of [28, 29]) test(`GitHub incoming frames require exact admitted v29 custody (peer ${protocolVersion})`, async () => {
+for (const protocolVersion of [28, 29]) test(`retired Git/GitHub broker frames never dispatch (peer ${protocolVersion})`, async () => {
   created.length = 0;
   const dispatched: import("../../src/protocol").RelayDispatchRequest[] = [];
-  const identity = { instanceId: "", humanUserId: "user-1", relayId: "relay-1", desktopSessionId: "desktop", pairingGeneration: "pairing-1", serverOrigin: "https://server.example", serverFingerprint: "fingerprint", profileId: "profile", profileRevision: 1, grantRevision: 1, protectedPolicyVersion: 1 };
-  const capabilities: RelayCapabilities = { profile: "desktop-agent", canUseLocalGit: true, localGit: { version: 1 }, canUseGitHub: true,
-    github: { version: 1, generation: "custody", identity, authenticatedGit: { version: 1 } } };
-  const client = await connectClient({ desktopSessionId: "desktop", protocolVersion, runShellOwnerInstanceId: "", capabilities,
+  const capabilities = {
+    profile: "desktop-agent",
+    canUseLocalGit: true,
+    localGit: { version: 1 },
+    canUseGitHub: true,
+    github: { version: 1, generation: "legacy" },
+  } as unknown as RelayCapabilities;
+  const client = await connectClient({ desktopSessionId: "desktop", protocolVersion, capabilities,
     onDispatch: async request => { dispatched.push(request); return { status: "ok" }; } });
   try {
     const ws = created[0]!;
-    const binding = { version: 1, generation: "custody", toolCallId: "call", stage: "read", owner: { ...identity, agentId: "agent", roomId: "room", conversationId: "thread", runId: "turn" }, localNetworkPolicy: { mode: "host" } };
-    const send = (githubBinding: unknown) => ws.triggerMessage(JSON.stringify({ type: "relay:dispatch", correlationId: "github", toolName: "local_github", args: { operation: "issue_read", repository: "fixture/project", number: 12 }, impact: "read-only", approvalObtained: false, githubBinding }));
-    send(binding); await tick(); expect(dispatched).toHaveLength(protocolVersion === 29 ? 1 : 0);
-    send({ ...binding, generation: "old" }); send({ ...binding, owner: { ...binding.owner, humanUserId: "other" } });
-    await tick(); expect(dispatched).toHaveLength(protocolVersion === 29 ? 1 : 0);
-    const workstationShellBinding = { version: 2, toolCallId: "call", relayId: "relay-1", desktopSessionId: "desktop",
-      serverBindingId: "server", pairingGeneration: "pairing-1", profileId: "profile", profileRevision: 1, grantIds: ["grant"],
-      capabilityRevision: 1, currentFolder: "/project", grantRevision: 1, protectedPolicyVersion: 1,
-      subject: { userId: "user-1", instanceId: "", relayId: "relay-1", agentScope: "all_owned_agents" },
-      operation: "execute", executionClass: "profile_bound_sandbox" };
-    ws.triggerMessage(JSON.stringify({ type: "relay:dispatch", correlationId: "git", toolName: "local_git",
-      args: { operation: "fetch", repository: "fixture/project", branch: "main" }, impact: "read-only", approvalObtained: false,
-      githubBinding: binding, workstationShellBinding }));
-    await tick(); expect(dispatched).toHaveLength(protocolVersion === 29 ? 2 : 0);
-    ws.triggerMessage(JSON.stringify({ type: "relay:dispatch", correlationId: "unbound-git", toolName: "local_git",
-      args: { operation: "fetch", repository: "fixture/project", branch: "main" }, impact: "read-only", approvalObtained: false,
-      githubBinding: binding }));
-    await tick(); expect(dispatched).toHaveLength(protocolVersion === 29 ? 2 : 0);
-    const registration = JSON.parse(ws.sent[0]!) as { capabilitiesByProtocolVersion: Record<string, RelayCapabilities> };
-    expect(registration.capabilitiesByProtocolVersion["28"]?.github).toBeUndefined();
-    expect(registration.capabilitiesByProtocolVersion["29"]?.github).toEqual(capabilities.github);
+    for (const [correlationId, toolName] of [["github", "local_github"], ["git", "local_git"]] as const) {
+      ws.triggerMessage(JSON.stringify({ type: "relay:dispatch", correlationId, toolName, args: {}, impact: "destructive", approvalObtained: true,
+        githubBinding: { version: 1, generation: "legacy" } }));
+    }
+    await tick();
+    expect(dispatched).toHaveLength(0);
+    const results = ws.sent.map(raw => JSON.parse(raw) as { type: string; errorCode?: string })
+      .filter(message => message.type === "relay:result");
+    expect(results.slice(-2).every(message => message.errorCode === "LOCAL_TOOL_UNAVAILABLE")).toBeTrue();
+    const registration = JSON.parse(ws.sent[0]!) as { capabilitiesByProtocolVersion: Record<string, Record<string, unknown>> };
+    expect(registration.capabilitiesByProtocolVersion[String(protocolVersion)]?.["github"]).toBeUndefined();
+    expect(registration.capabilitiesByProtocolVersion[String(protocolVersion)]?.["localGit"]).toBeUndefined();
   } finally { await client.disconnect(); }
 });

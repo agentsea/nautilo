@@ -1,5 +1,8 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import type { GitHubInstallation, GitHubInstallationInvocation } from "./github-broker/installation";
+import type {
+  GitHubCliInstallation,
+  GitHubCliInstallationInvocation,
+} from "./github-cli-installation";
 
 export const GITHUB_DEVICE_URL = "https://github.com/login/device";
 
@@ -11,7 +14,7 @@ export interface GitHubCliStatus {
   loginPending: boolean;
 }
 
-export interface GitHubCliInvocation extends GitHubInstallationInvocation {
+export interface GitHubCliInvocation extends GitHubCliInstallationInvocation {
   readonly argv: readonly string[];
 }
 function execInstalled(input: GitHubCliInvocation): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -33,7 +36,7 @@ function loginFrom(text: string): string | null {
 
 export function createAdmittedGitHubCliConnection(options: {
   readonly openExternal: (url: string) => Promise<void>;
-  readonly getInstallation: () => Promise<GitHubInstallation>;
+  readonly getInstallation: () => Promise<GitHubCliInstallation>;
   readonly subscribeAuthorityChanges: (listener: () => void) => () => void;
   readonly spawnProcess?: typeof spawn;
   readonly runCommand?: typeof execInstalled;
@@ -68,7 +71,7 @@ export function createAdmittedGitHubCliConnection(options: {
       if (attempt !== null) throw new Error("A GitHub sign-in is already in progress.");
       const ownAttempt = Symbol("GitHub sign-in");
       attempt = ownAttempt;
-      let invocation: GitHubInstallationInvocation;
+      let invocation: GitHubCliInstallationInvocation;
       try {
         const installation = await options.getInstallation();
         invocation = await installation.verify();

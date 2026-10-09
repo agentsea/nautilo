@@ -95,8 +95,7 @@ export function GitHubCliConnectionSection({
             <StatusPill tone={pill.tone}>{pill.label}</StatusPill>
           </div>
           <p className="mt-1 text-xs text-foreground-muted">
-            Let Genie check your account, read issues and pull requests, and clone,
-            fetch or pull repositories. Pushes, comments and new pull requests require review.
+            Sign in to GitHub CLI for ordinary Git and GitHub work in Development mode.
           </p>
           {status?.authenticated ? (
             <p className="mt-2 text-xs text-foreground-muted">
@@ -120,8 +119,9 @@ export function GitHubCliConnectionSection({
 
       <div id={disclosure.detailsId} hidden={!disclosure.expanded} className="px-4 pb-4">
       <p className="text-xs text-foreground-muted">
-        Contained commands cannot read GitHub CLI credentials or use authenticated <code>gh</code>.
-        Genie checks account readiness through this protected connection instead of running <code>gh auth status</code>.
+        After you approve the current Development profile, Genie can use ordinary <code>git</code> and <code>gh</code> commands
+        with your local credentials and check sign-in with <code>gh auth status</code>.
+        Existing command permissions and network restrictions apply.
       </p>
       {device && !status?.authenticated ? (
         <div className="mt-4 rounded-md border border-border bg-background px-3 py-3">

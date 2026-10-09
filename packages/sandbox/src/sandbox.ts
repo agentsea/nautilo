@@ -41,6 +41,8 @@ export interface SandboxCreateOptions {
    * supplied sandbox config cannot enable it.
    */
   readonly allowWorkspaceGovernanceWrites?: boolean;
+  /** Locally admitted developer access to user credential files; never wire policy. */
+  readonly allowUserCredentialFiles?: boolean;
   /** Locally owned scratch HOME; never accepted from a wire envelope. */
   readonly managedHome?: string;
   /** Exact locally prepared Development environment; never accepted from wire. */
@@ -94,6 +96,7 @@ export class Sandbox {
   private readonly networkProxy: NetworkProxy | undefined;
   private readonly networkDeniedDestinations: DeniedNetworkDestination[];
   private readonly allowWorkspaceGovernanceWrites: boolean;
+  private readonly allowUserCredentialFiles: boolean;
   private config: SandboxConfig;
 
   constructor(opts: SandboxCreateOptions) {
@@ -112,6 +115,7 @@ export class Sandbox {
     this.networkDeniedDestinations = opts.networkDeniedDestinations ?? [];
     this.allowWorkspaceGovernanceWrites =
       opts.allowWorkspaceGovernanceWrites === true;
+    this.allowUserCredentialFiles = opts.allowUserCredentialFiles === true;
     this.config = opts.config;
   }
 
@@ -424,6 +428,7 @@ export class Sandbox {
           `bubblewrap (procSupported=${this.backend.procSupported})`,
         );
         return buildBubblewrap({
+          bwrapExecutable: this.backend.executable,
           workspace: this.workspace,
           ...(this.managedHome === undefined ? {} : { managedHome: this.managedHome }),
           ...(this.preparedEnvironment === undefined ? {} : { preparedEnvironment: this.preparedEnvironment }),
@@ -455,6 +460,7 @@ export class Sandbox {
           args,
           allowWorkspaceGovernanceWrites:
             this.allowWorkspaceGovernanceWrites,
+          allowUserCredentialFiles: this.allowUserCredentialFiles,
           ...(config.networkPolicy?.mode === "isolated"
             ? { networkAccess: false }
             : {}),

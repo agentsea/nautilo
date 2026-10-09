@@ -2,7 +2,7 @@ import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 
 export const RETIRED_LOCAL_EXECUTION_MESSAGE =
-  "This legacy local execution interface has been retired. Update Nautilo Desktop and use exec_command, write_stdin, local_git, or read_shell_output. No command was run.";
+  "This legacy local execution interface has been retired. Update Nautilo Desktop and use exec_command, write_stdin, or read_shell_output. No command was run.";
 
 /**
  * run_shell timeout tiers.

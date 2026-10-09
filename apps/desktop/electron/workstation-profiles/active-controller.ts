@@ -48,6 +48,7 @@ import {
 import type { RelayWorkstationProfileSnapshot } from "@nautilo/relay";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
+import { normalize } from "node:path";
 
 import type { DesktopFilesystemGrantAuthority } from "../desktop-filesystem-grants/authority.ts";
 import {
@@ -92,6 +93,10 @@ export interface ActiveWorkstationExecutionEnvironment {
   readonly protectedPolicyVersion: number;
   readonly home: string;
   readonly environmentValues: Readonly<Record<string, string>>;
+  /** Explicit command-only authority from the locally activated profile. */
+  readonly userEnvironment?: boolean;
+  /** Canonical profile-declared package prefixes admitted for command writes. */
+  readonly userEnvironmentWritablePaths?: readonly string[];
   readonly executables: readonly {
     readonly capabilityId: string;
     readonly executable: string;
@@ -307,6 +312,21 @@ export class ActiveWorkstationProfileController {
           protectedPolicyVersion: profile.protectedPolicyVersion,
           home: this.homeDirectory,
           environmentValues: Object.freeze({ ...compiled.data.environmentValues }),
+          ...(profile.capabilities.includes("user_environment")
+            ? {
+                userEnvironment: true,
+                userEnvironmentWritablePaths: Object.freeze([
+                  ...new Set(profile.toolchainCapabilities.some((capability) =>
+                    capability.id === "cap-homebrew" &&
+                    (capability.operations.includes("install") || capability.operations.includes("upgrade"))
+                  )
+                    ? input.facts.roots
+                        .filter((root) => root.sourceProvider === "homebrew")
+                        .map((root) => normalize(root.path))
+                    : []),
+                ]),
+              }
+            : {}),
           executables: Object.freeze(compiled.data.capabilities.map((capability) => Object.freeze({
             capabilityId: capability.id,
             executable: capability.executable,

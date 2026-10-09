@@ -32,7 +32,7 @@ function binding(overrides: Partial<FullWorkstationBinding> = {}): FullWorkstati
   };
 }
 
-function plan(overrides: Partial<Extract<WorkstationDispatchPlan, { executionClass: "profile_bound_sandbox" | "typed_broker" | "real_workstation" }>> = {}): WorkstationDispatchPlan {
+function plan(overrides: Partial<Extract<WorkstationDispatchPlan, { executionClass: "profile_bound_sandbox" | "real_workstation" }>> = {}): WorkstationDispatchPlan {
   const b = binding();
   return {
     toolCallId: "tool-call-a",

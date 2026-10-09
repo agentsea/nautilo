@@ -25,7 +25,6 @@ function handlers(
     hue: handler("hue"), media: handler("media"), interactiveBrowser: handler("interactiveBrowser"),
     googleWorkspace: handler("googleWorkspace"), directLocalFile: handler("directLocalFile"),
     filesystem: handler("filesystem"), sandboxedLocalSearch: handler("sandboxedLocalSearch"),
-    localGit: handler("localGit"),
   };
 }
 
@@ -34,7 +33,7 @@ describe("fixed Desktop dispatch router", () => {
     expect(FIXED_DESKTOP_DISPATCH_ORDER).toEqual([
       "computerUse", "structuredSsh", "runShellOutput", "currentFolder", "browserResearch",
       "retiredAgentShell", "hue", "media", "interactiveBrowser", "googleWorkspace",
-      "directLocalFile", "filesystem", "sandboxedLocalSearch", "localGit",
+      "directLocalFile", "filesystem", "sandboxedLocalSearch",
     ]);
     expect(Object.isFrozen(FIXED_DESKTOP_DISPATCH_NOT_HANDLED)).toBe(true);
   });

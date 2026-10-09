@@ -1,17 +1,13 @@
-import { matchesGitHubWorkstationBinding } from "@nautilo/relay";
 import { RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION } from "@nautilo/relay";
-import { parseRelayGitHubInvocationBinding, type RelayGitHubInvocationBinding } from "@nautilo/relay";
 import { resolveServerPosture } from "@nautilo/config";
 import { parseRelayLocalExecutionDelegationCapture, type RelayLocalExecutionDelegationCapture } from "@nautilo/relay";
-import { parseGitHubCapability } from "../../types/src/github-invocation";
-import { RELAY_GITHUB_PROTOCOL_VERSION, isRelayGitHubDispatch } from "@nautilo/relay";
 import { isRelayLocalExecutionSearchAllowed } from "@nautilo/relay";
 import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseHumanTerminalOperation, sameHumanTerminalConsentOwner } from "../../types/src/human-terminal";
 import { parseRelayHumanTerminalBinding, parseRelayHumanTerminalCapability, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION, type RelayHumanTerminalBinding } from "@nautilo/relay";
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseRelayBasicExecutionCapability } from "@nautilo/relay";
-import { RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION, isRelayLocalGitCapability } from "@nautilo/relay";
+import { RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseRelayLocalExecutionHistoryBinding, isRelayLocalExecutionHistoryRead, RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION, type RelayLocalExecutionHistoryBindingV1 } from "@nautilo/relay";
 import { parseRelayLocalExecutionBinding, parseRelayLocalExecutionCapability, RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION,
   LOCAL_EXECUTION_MAX_IDENTITIES, type RelayLocalExecutionBinding } from "@nautilo/relay";
@@ -620,7 +616,7 @@ const CAPABILITY_BOOLEAN_KEYS = [
   "canReplayResearchConsent",
   "canRecoverResearchConsent",
   "canUseTerminal",
-  "canUseGitHub", "canUseHumanTerminal",
+  "canUseHumanTerminal",
   "hasPendingTerminalHandoff",
   "canUseGoogleWorkspace",
   "canSeeDesktop",
@@ -628,7 +624,6 @@ const CAPABILITY_BOOLEAN_KEYS = [
   "canWriteWorkspace",
   "canBrowsePairedFilesystem",
   "canRunShell",
-  "canUseLocalGit",
   "canReadShellOutput",
   "canExecuteLocal",
   "canDelegateLocalExecution",
@@ -694,16 +689,6 @@ function parseKnownCapabilityFields(
   protocolVersion: number,
 ): { ok: true; fields: Record<string, unknown> } | { ok: false; error: string } {
   const fields: Record<string, unknown> = {};
-  if (raw["localGit"] !== undefined) {
-    if (!isRelayLocalGitCapability(raw["localGit"]) || raw["profile"] !== "desktop-agent"
-      || protocolVersion < RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION) return { ok: false, error: "capabilities.localGit is invalid or unsupported" };
-    fields["localGit"] = raw["localGit"];
-  }
-  if (raw["github"] !== undefined) {
-    const github = parseGitHubCapability(raw["github"]);
-    if (!github || raw["profile"] !== "desktop-agent" || protocolVersion < RELAY_GITHUB_PROTOCOL_VERSION) return { ok: false, error: "capabilities.github is invalid or unsupported" };
-    fields["github"] = github;
-  }
   if (raw["humanTerminal"] !== undefined) {
     const capability = parseRelayHumanTerminalCapability(raw["humanTerminal"]);
     if (!capability || raw["profile"] !== "desktop-agent" || protocolVersion < RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION)
@@ -900,7 +885,6 @@ function parseCapabilityUpdate(value: unknown, protocolVersion: number): {
 }
 
 interface PendingDispatch {
-  githubBinding?: RelayGitHubInvocationBinding | undefined;
   humanTerminalBinding?: RelayHumanTerminalBinding | undefined;
   localExecutionBinding?: RelayLocalExecutionBinding | undefined;
   resolve: (result: RelayDispatchResult) => void;
@@ -1954,7 +1938,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     for (const record of matching) { record.cancelled = true; record.authorityRevoked = true; record.detach(); }
     for (const record of matching) this.deliverLocalExecutionCancellation(record.binding);
     for (const [id, pending] of this.pending) {
-      if (pending.githubBinding || pending.humanTerminalBinding) {
+      if (pending.humanTerminalBinding) {
         try { this.cancelDispatch(id); } catch { /* Frame loss retains the operation's unknown outcome. */ }
       }
     }
@@ -3022,7 +3006,6 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       localExecutionActivationSignal?: AbortSignal | undefined;
       retainLocalExecutionSource?: (() => () => void) | undefined;
       localExecutionHistoryBinding?: RelayLocalExecutionHistoryBindingV1 | undefined;
-      githubBinding?: RelayGitHubInvocationBinding | undefined;
       humanTerminalBinding?: RelayHumanTerminalBinding | undefined;
       /** server-owned marker for a live-session-admitted uncontained raw shell. */
       uncontainedHostCommandsSession?: true | undefined;
@@ -3085,6 +3068,9 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       && !isStructuredSshDispatch(request) && request.args["output_artifact"] === undefined))) {
       throw new Error("LOCAL_EXECUTION_UPGRADE_REQUIRED: Legacy Agent shell execution is retired; use exec_command and write_stdin.");
     }
+    if (request.toolName === "local_git" || request.toolName === "local_github" || "githubBinding" in request) {
+      throw new Error("LOCAL_TOOL_UNAVAILABLE");
+    }
 
     if (entry.capabilities.profile === "desktop-agent"
       && (resolveServerPosture().localNetworkPolicy ?? { mode: "host" }).mode !== "host"
@@ -3092,28 +3078,11 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       throw new Error("LOCAL_NETWORK_POLICY_UNSUPPORTED_EXECUTOR");
     }
 
-    if (request.toolName === "local_git" || request.toolName === "read_shell_output") {
-      const supported = entry.protocolVersion >= RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION
+    if (request.toolName === "read_shell_output") {
+      const supported = entry.protocolVersion >= RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION
         && entry.capabilities.profile === "desktop-agent"
-        && (request.toolName === "local_git"
-          ? entry.capabilities.canUseLocalGit === true && isRelayLocalGitCapability(entry.capabilities.localGit)
-          : entry.capabilities.canReadShellOutput === true);
+        && entry.capabilities.canReadShellOutput === true;
       if (!supported || request.hostedBy !== undefined) throw new Error("LOCAL_TOOL_UNAVAILABLE");
-    }
-    if (request.toolName === "local_github" || request.githubBinding !== undefined) {
-      const binding = parseRelayGitHubInvocationBinding(request.githubBinding, request.args);
-      if (!binding || !isRelayGitHubDispatch(request.toolName, request.args, binding, entry.capabilities, entry.protocolVersion)
-        || binding.owner.humanUserId !== entry.userId || binding.owner.relayId !== relayId
-        || binding.owner.desktopSessionId !== entry.desktopSessionId || binding.owner.pairingGeneration !== entry.pairingGenerationRef
-        || request.hostedBy !== undefined || request.humanTerminalBinding !== undefined || request.localExecutionBinding !== undefined
-        || request.localExecutionHistoryBinding !== undefined
-        || (request.toolName === "local_git" ? !matchesGitHubWorkstationBinding(binding, request.workstationShellBinding)
-          || request.workstationShellBinding?.pairingGeneration !== entry.pairingGeneration
-          : request.workstationShellBinding !== undefined)
-        || binding.localNetworkPolicy.mode !== "host"
-        || (resolveServerPosture().localNetworkPolicy ?? { mode: "host" }).mode !== "host"
-        || request.uncontainedHostCommandsSession === true
-        || (binding.stage === "publish" && request.approvalObtained !== true) || request.executionClass === "real_workstation") throw new Error("GITHUB_UNAVAILABLE");
     }
     if (request.toolName === "human_terminal" || request.humanTerminalBinding !== undefined) {
       const binding = parseRelayHumanTerminalBinding(request.humanTerminalBinding);
@@ -3298,7 +3267,6 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
         structuredSshTransferStarted: false,
         lastStructuredSshTransferBytes: 0,
         ...(request.localExecutionBinding ? { localExecutionBinding: request.localExecutionBinding } : {}),
-        ...(request.githubBinding ? { githubBinding: request.githubBinding } : {}),
         ...(request.humanTerminalBinding ? { humanTerminalBinding: request.humanTerminalBinding } : {}),
       };
       this.pending.set(correlationId, pending);
@@ -3327,7 +3295,6 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
             : {}),
           ...(request.localExecutionDelegationCapture !== undefined ? { localExecutionDelegationCapture: request.localExecutionDelegationCapture } : {}),
           ...(request.localExecutionBinding !== undefined ? { localExecutionBinding: request.localExecutionBinding } : {}),
-          ...(request.githubBinding ? { githubBinding: request.githubBinding } : {}),
           ...(request.humanTerminalBinding ? { humanTerminalBinding: request.humanTerminalBinding } : {}),
           ...(request.localExecutionHistoryBinding !== undefined ? { localExecutionHistoryBinding: request.localExecutionHistoryBinding } : {}),
           ...(request.workstationShellBinding !== undefined

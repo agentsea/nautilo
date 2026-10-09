@@ -78,20 +78,13 @@ const origin = {
 
 function relayFixture() {
   const live = { connected: true, owner: origin.userId as string, protocol: 29, managed: true, history: false, search: false,
-    localGit: false, shellOutput: false, delegation: false, github: false };
+    shellOutput: false, delegation: false };
   setRelayRegistry({
     findByCapabilityForUser: (_capability: string, userId: string) => live.connected && userId === live.owner ? [origin.relayId] : [],
     getUserId: (id: string) => live.connected && id === origin.relayId ? live.owner : undefined,
     getCapabilities: (id: string) => live.connected && id === origin.relayId ? {
       profile: "desktop-agent", canRunShell: true, canExecuteLocal: live.managed, canReadLocalExecutionHistory: live.history, canSearchLocalExecutionOutput: live.search,
-      canUseLocalGit: live.localGit, ...(live.localGit ? { localGit: { version: 1 } } : {}),
       canReadShellOutput: live.shellOutput, canDelegateLocalExecution: live.delegation,
-      canUseGitHub: live.github,
-      ...(live.github ? { github: { version: 1 as const, generation: "github-generation-fixture", identity: {
-        instanceId: "", humanUserId: origin.userId, relayId: origin.relayId, desktopSessionId: origin.desktopSessionId,
-        pairingGeneration: origin.pairingGeneration, serverOrigin: "https://server.example", serverFingerprint: "fingerprint-fixture",
-        profileId: "profile-fixture", profileRevision: 1, grantRevision: 1, protectedPolicyVersion: 1,
-      } } } : {}),
       ...(live.managed ? { localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, localNetworkPolicy: true, capacity: 1 } } : {}),
     } : undefined,
     getProtocolVersion: () => live.protocol,
@@ -140,24 +133,18 @@ async function activate(state: NautiloState): Promise<string[]> {
 
 describe("managed execution capability projection through graph state", () => {
   test("auxiliary guidance follows the fresh exact Desktop capabilities", async () => {
-    const live = relayFixture(); live.protocol = 29; live.localGit = true; live.shellOutput = true; live.github = true;
+    const live = relayFixture(); live.protocol = 29; live.shellOutput = true;
     let state = await project(executionState());
-    expect(projectedPrompt(state)).toContain("Use local_git for supported typed local Git.");
     expect(projectedPrompt(state)).toContain("Use read_shell_output for earlier retained shell output.");
     expect(projectedPrompt(state)).not.toContain("Use human_terminal for the exact Human terminal handoff.");
-    expect(projectedPrompt(state)).toContain("Use local_github account_status to check the admitted GitHub account");
-    expect(projectedPrompt(state)).toContain("exact repository access is checked per operation");
-    expect(projectedPrompt(state)).toContain("Do not test GitHub authentication with gh through exec_command");
-    live.localGit = false; live.shellOutput = false; live.github = false;
+    expect(projectedPrompt(state)).toContain("Use ordinary command-line tools, including git and gh, through exec_command");
+    live.shellOutput = false;
     state = await project(state);
-    expect(projectedPrompt(state)).not.toContain("Use local_git for supported typed local Git.");
     expect(projectedPrompt(state)).not.toContain("Use read_shell_output for earlier retained shell output.");
-    expect(projectedPrompt(state)).toContain("Authenticated GitHub operations remain unavailable");
-    expect(projectedPrompt(state)).toContain("Unavailable tools have no shell fallback.");
   });
 
   test("delegated worker guidance names only its admitted managed tools and preserves the original Mac", async () => {
-    const live = relayFixture(); live.protocol = 29; live.localGit = true; live.shellOutput = true; live.delegation = true;
+    const live = relayFixture(); live.protocol = 29; live.shellOutput = true; live.delegation = true;
     const signal = new AbortController().signal;
     const port: DelegatedLocalExecutionPort = { taskId: "task-fixture", taskRunId: "run-fixture", signal,
       withAdmission: async (_operation, work) => work({ taskId: "task-fixture", taskRunId: "run-fixture", signal,
@@ -169,13 +156,11 @@ describe("managed execution capability projection through graph state", () => {
       verifiedOrdinaryOrigin: null, trustedExecutionEntrypoint: "background.task", currentTaskId: port.taskId, currentTaskRunId: port.taskRunId })));
     expect(state.relayCapabilities?.["canExecuteLocal"]).toBeTrue();
     expect(state.relayCapabilities?.["canReplaceLegacyShellTools"]).toBeTrue();
-    expect(state.relayCapabilities?.["canUseLocalGit"]).toBeFalse();
     expect(state.relayCapabilities?.["canReadShellOutput"]).toBeFalse();
     expect(await discover(state)).toContain("exec_command");
     const prompt = projectedPrompt(state);
     expect(prompt).toContain("original Human's saved Mac and project");
     expect(prompt).toContain("never inherits Full Mac or a Human terminal handoff");
-    expect(prompt).not.toContain("Use local_git for supported typed local Git.");
     expect(prompt).not.toContain("Use read_shell_output for earlier retained shell output.");
     expect(prompt).not.toContain("Use human_terminal for the exact Human terminal handoff.");
     live.connected = false;

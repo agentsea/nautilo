@@ -27,6 +27,7 @@ function baseOpts(overrides: Partial<Parameters<typeof buildBubblewrap>[0]> = {}
   const workspace = mkTmp("bwrap-ws-");
   return {
     workspace,
+    bwrapExecutable: "/usr/bin/bwrap",
     dataDir: join(workspace, "..", "data"),
     toolsBin: join(workspace, "..", "tools"),
     procSupported: true,
@@ -45,9 +46,9 @@ function baseOpts(overrides: Partial<Parameters<typeof buildBubblewrap>[0]> = {}
 }
 
 describe("buildBubblewrap — output shape", () => {
-  test("program is 'bwrap' and spawn env is minimal", () => {
+  test("program is the pinned absolute bwrap executable and spawn env is minimal", () => {
     const r = buildBubblewrap(baseOpts());
-    expect(r.program).toBe("bwrap");
+    expect(r.program).toBe("/usr/bin/bwrap");
     expect(Object.keys(r.env ?? {})).toEqual(["PATH"]);
     expect((r.env as Record<string, string>)["LD_PRELOAD"]).toBeUndefined();
   });
@@ -588,6 +589,7 @@ describe("buildBubblewrap — integration-ish", () => {
     const dataDir = join(workspace, "..", "data");
     writeFileSync(join(toolsBin, "placeholder"), "");
     const args = buildBubblewrap({
+      bwrapExecutable: "/usr/bin/bwrap",
       workspace,
       dataDir,
       toolsBin,
@@ -626,4 +628,28 @@ describe("buildBubblewrap — integration-ish", () => {
       lastIdx = nextIdx;
     }
   });
+});
+
+
+test("locally prepared user credentials stay in the process environment, never argv", () => {
+  const preparedEnvironment = Object.freeze({ HOME: "/fixture/home", PATH: "/usr/bin:/bin", GH_TOKEN: "synthetic-user-credential" });
+  const wrapped = buildBubblewrap(baseOpts({ preparedEnvironment, commandEnv: { GH_TOKEN: "untrusted-command-value" } }));
+  expect(wrapped.env).toEqual(preparedEnvironment);
+  expect(wrapped.args).not.toContain("--clearenv");
+  expect(wrapped.args).not.toContain("--setenv");
+  expect(wrapped.args.join(" ")).not.toContain("synthetic-user-credential");
+  expect(wrapped.args.join(" ")).not.toContain("untrusted-command-value");
+});
+
+
+test("prepared native environment cannot inject code into the outer sandbox launcher", () => {
+  const result = buildBubblewrap({
+    bwrapExecutable: "/usr/bin/bwrap", workspace: "/workspace", dataDir: "/data", toolsBin: "/tools",
+    procSupported: false, cwd: "/workspace", program: "/bin/sh", args: ["-c", "true"], commandEnv: {},
+    config: { mode: "enabled", writablePaths: [], projectPaths: [], passthroughEnv: [] },
+    preparedEnvironment: { HOME: "/home/user", PATH: "/home/user/bin:/usr/bin", GH_TOKEN: "synthetic",
+      LD_AUDIT: "/home/user/audit.so", DYLD_FRAMEWORK_PATH: "/home/user/lib", GCONV_PATH: "/home/user/converters" },
+  });
+  expect(result.env).toEqual({ HOME: "/home/user", PATH: "/home/user/bin:/usr/bin", GH_TOKEN: "synthetic" });
+  expect(result.args).not.toContain("synthetic");
 });

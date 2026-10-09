@@ -72,7 +72,7 @@ function makeState(overrides: Partial<NautiloState>): NautiloState {
 const origin = { kind: "local_electron", userId: "fixture-human", actorId: "fixture-actor",
   relayId: "fixture-desktop", desktopSessionId: "fixture-session", pairingGeneration: "fixture-pairing", requestId: "fixture-request" } as const;
 function fixture() {
-  const live = { protocol: 29, connected: true, managed: true, pty: true, history: false, localGit: true, retainedReader: true, humanConsent: true,
+  const live = { protocol: 29, connected: true, managed: true, pty: true, history: false, retainedReader: true, humanConsent: true,
     profile: "desktop-agent" as "desktop-agent" | "headless-agent", owner: origin.userId as string };
   setRelayRegistry({
     findByCapabilityForUser: (_cap: string, human: string) => live.connected && human === live.owner ? [origin.relayId] : [],
@@ -86,7 +86,7 @@ function fixture() {
       canExecuteLocal: live.managed, canReadLocalExecutionHistory: live.history,
       localExecution: { version: 1, generation: "fixture-generation", pipe: true, pty: live.pty, capacity: 1,
         localNetworkPolicy: true },
-      canUseLocalGit: live.localGit, localGit: { version: 1 }, canReadShellOutput: live.retainedReader,
+      canReadShellOutput: live.retainedReader,
       canUseHumanTerminal: live.humanConsent, humanTerminal: { version: 1, generation: "fixture-handoff",
         owner: { humanUserId: origin.userId, agentId: "fixture-agent", roomId: "fixture-room", relayId: origin.relayId,
           desktopSessionId: origin.desktopSessionId, pairingGeneration: origin.pairingGeneration,
@@ -96,7 +96,7 @@ function fixture() {
   } as ToolRelayRegistry);
   const state = makeState({ userId: "fixture-agent-owner", causalHumanUserId: origin.userId, agentId: "fixture-agent", roomId: "fixture-room",
     verifiedOrdinaryOrigin: origin, trustedExecutionEntrypoint: "foreground.main", turnId: "fixture-turn",
-    activatedToolNames: ["run_shell", "terminal", "exec_command", "write_stdin", "local_git", "read_shell_output", "human_terminal"],
+    activatedToolNames: ["run_shell", "terminal", "exec_command", "write_stdin", "read_shell_output", "human_terminal"],
     relayCapabilities: { canRunShell: true, canUseTerminal: true, canReplaceLegacyShellTools: true } });
   return { live, state };
 }
@@ -124,7 +124,7 @@ test("capable exact Desktop removes legacy schemas, discovery and activation whi
   for (const name of ["run_shell", "terminal"]) {
     expect(next.toolNames).not.toContain(name); expect(next.activatedToolNames).not.toContain(name); expect(names).not.toContain(name);
   }
-  for (const name of ["exec_command", "write_stdin", "local_git", "read_shell_output", "human_terminal"]) expect(names).toContain(name);
+  for (const name of ["exec_command", "write_stdin", "read_shell_output", "human_terminal"]) expect(names).toContain(name);
   expect(await activateLegacy(next)).toEqual([]);
   const again = await project({ ...next, activatedToolNames: ["run_shell", "terminal"] });
   expect(again.toolNames).not.toContain("terminal"); expect(again.activatedToolNames).not.toContain("run_shell");
@@ -151,14 +151,13 @@ test("retirement requires the supported contract rather than active Human termin
   expect(await discover(next)).not.toContain("human_terminal");
   expect(next.toolNames).not.toContain("terminal"); expect(next.toolNames).not.toContain("run_shell");
 });
-for (const loss of ["old protocol", "replacement protocol 20", "replacement protocol 23", "replacement protocol 25", "no typed Git", "no retained reader", "pipe only", "headless", "no managed execution", "history only", "foreign Human", "foreign Relay owner", "other Desktop", "stale Desktop session", "stale pairing", "no origin"] as const) {
+for (const loss of ["old protocol", "replacement protocol 20", "replacement protocol 23", "replacement protocol 25", "no retained reader", "pipe only", "headless", "no managed execution", "history only", "foreign Human", "foreign Relay owner", "other Desktop", "stale Desktop session", "stale pairing", "no origin"] as const) {
   test(`${loss} cannot restore either retired local execution interface`, async () => {
     const { live, state } = fixture();
     if (loss === "old protocol") live.protocol = 19;
     else if (loss === "replacement protocol 20") live.protocol = 20;
     else if (loss === "replacement protocol 23") live.protocol = 23;
     else if (loss === "replacement protocol 25") live.protocol = 25;
-    else if (loss === "no typed Git") live.localGit = false;
     else if (loss === "no retained reader") live.retainedReader = false;
     else if (loss === "pipe only") live.pty = false;
     else if (loss === "headless") live.profile = "headless-agent";

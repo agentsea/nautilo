@@ -1,4 +1,3 @@
-import { gitHubReviewFromPendingApproval, parseGitHubPublishApproval } from "@nautilo/types";
 import { CompanionVoiceContext } from "../companion/companion-voice";
 import {
   useState,
@@ -2794,7 +2793,7 @@ export function NautiloRuntimeProvider({
     dispatchApprovalLifecycle(action);
   }, []);
   const approvalAskState: ApprovalAskState = useMemo(
-    () => ({ ...deriveApprovalAskView(approvalLifecycle), github: gitHubReviewFromPendingApproval(approvalLifecycle.pending) }),
+    () => deriveApprovalAskView(approvalLifecycle),
     [approvalLifecycle],
   );
   // Refs mirror the pending payload so the stable WS handler and the
@@ -5217,29 +5216,31 @@ export function NautiloRuntimeProvider({
           }
           approvalAskThreadIdRef.current = event.threadId;
           approvalAskLaneKeyRef.current = event.laneKey;
-          const parsedGitHub = parseGitHubPublishApproval(event.github);
-          const github = parsedGitHub?.approvalId === event.approvalId ? parsedGitHub : null;
-          const githubRequired = event.github !== undefined || event.tools.some(tool => tool.name === "local_github");
+          const retiredBrokerApproval = "github" in event || event.tools.some(tool => tool.name === "local_github" || tool.name === "local_git");
           const hasMediaGenerationField = event.mediaGeneration !== undefined;
-          const requiresExactReview = event.requiresExplicitReview === true || hasMediaGenerationField || githubRequired;
+          const requiresExactReview = event.requiresExplicitReview === true || hasMediaGenerationField || retiredBrokerApproval;
           const mediaGeneration = isMediaGenerationApproval(event.mediaGeneration)
             ? event.mediaGeneration
             : null;
-          const canRenderExactReview = (!githubRequired || github !== null) && (!requiresExactReview ||
+          const canRenderExactReview = !retiredBrokerApproval && (!requiresExactReview ||
             event.localMcpInstall !== undefined || event.structuredSsh !== undefined ||
-            mediaGeneration !== null || github !== null);
-          const askPayload: ApprovalAskPayload & Pick<ApprovalAskState, "github"> = {
+            mediaGeneration !== null);
+          const askPayload: ApprovalAskPayload = {
             ...(activeRoomIdRef.current ? { roomId: activeRoomIdRef.current } : {}),
             approvalId: event.approvalId,
             threadId: event.threadId,
             laneKey: event.laneKey,
-            tools: canRenderExactReview ? event.tools : [],
-            reason: canRenderExactReview
-              ? event.reason
-              : "This exact approval needs review details, but they were unavailable. It cannot be approved from this client.",
+            tools: canRenderExactReview || retiredBrokerApproval ? event.tools : [],
+            reason: retiredBrokerApproval
+              ? "This pending approval contains an unavailable legacy local action. Deny the whole batch to dismiss it and continue."
+              : canRenderExactReview
+                ? event.reason
+                : "This exact approval needs review details, but they were unavailable. It cannot be approved from this client.",
             reasonCode: event.reasonCode,
             network: event.network ?? null,
-            allowedVerbs: !canRenderExactReview
+            allowedVerbs: retiredBrokerApproval
+              ? ["deny"]
+              : !canRenderExactReview
               ? []
               : requiresExactReview
                 ? ["once", "deny"]
@@ -5248,7 +5249,7 @@ export function NautiloRuntimeProvider({
                   : ["once", "room", "always", "deny"],
             scopeInfo: event.scopeInfo ?? [],
             localMcpInstall: event.localMcpInstall ?? null,
-            mediaGeneration, github,
+            mediaGeneration,
             structuredSsh: event.structuredSsh ?? null,
             requiresExplicitReview: requiresExactReview,
           };
@@ -7950,12 +7951,12 @@ export function NautiloRuntimeProvider({
       });
       if (!threadId) return;
       if (
-        approvalAskState.requiresExplicitReview &&
+        approvalAskState.requiresExplicitReview && verb !== "deny" &&
         (!approvalAskState.approvalId ||
           (approvalAskState.localMcpInstall === null &&
             approvalAskState.mediaGeneration === null &&
-            approvalAskState.structuredSsh === null && !parseGitHubPublishApproval(approvalAskState.github)) ||
-          (verb !== "once" && verb !== "deny"))
+            approvalAskState.structuredSsh === null) ||
+          verb !== "once")
       ) {
         dispatchCurrentApprovalLifecycle({
           kind: "submitError",
@@ -7983,7 +7984,6 @@ export function NautiloRuntimeProvider({
             clientActionSessionId: currentClientActionSessionIdForResume(),
             authorizationDeviceId: liveShadowMessageClient?.deviceId,
           },
-          parseGitHubPublishApproval(approvalAskState.github)?.digest,
         );
         if (!isCurrentSubmission()) return;
         // Accepted — close the dock. We deliberately do NOT append a
@@ -8015,7 +8015,6 @@ export function NautiloRuntimeProvider({
       approvalAskState.localMcpInstall,
       approvalAskState.mediaGeneration,
       approvalAskState.requiresExplicitReview,
-      approvalAskState.github,
       approvalAskState.structuredSsh,
       dispatchCurrentApprovalLifecycle,
       liveShadowMessageClient?.deviceId,

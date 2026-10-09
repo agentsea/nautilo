@@ -112,7 +112,7 @@ test("qualified delegated catalog uses managed commands without borrowing foregr
   let protocol = 29;
   const registry = { findByCapabilityForUser: () => ["relay"], getUserId: () => "human",
     getCapabilities: () => ({ profile: "desktop-agent", canRunShell: true, canUseTerminal: true,
-      canExecuteLocal: true, canDelegateLocalExecution: true, canUseLocalGit: true, localGit: { version: 1 }, canReadShellOutput: true,
+      canExecuteLocal: true, canDelegateLocalExecution: true, canReadShellOutput: true,
       localExecution: { version: 1, generation: "generation", pipe: true, pty: true, localNetworkPolicy: true, capacity: 1 } }),
     getProtocolVersion: () => protocol, getPairingGeneration: () => "raw-pairing", getDesktopSessionId: () => "desktop",
     getLocalExecutionPairingGeneration: () => "opaque", dispatch: async () => { throw new Error("No execution in discovery test"); },

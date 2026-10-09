@@ -165,7 +165,7 @@ export function deriveDesktopFilesystemAccessOperation(
     }
     return null;
   }
-  if (req.toolName === "run_shell" || req.toolName === "exec_command" || req.toolName === "local_git") return "execute";
+  if (req.toolName === "run_shell" || req.toolName === "exec_command") return "execute";
   if (req.toolName === "write_stdin") return req.args["chars"] ? "execute" : "read";
   if (req.toolName === "terminal" && req.args["action"] === "spawn") return "execute";
   return null;

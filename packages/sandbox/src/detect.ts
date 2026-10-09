@@ -15,6 +15,8 @@
  */
 
 import { execFile } from "node:child_process";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 
 import type { SandboxBackend } from "./types";
 
@@ -93,9 +95,11 @@ export const realProber: Prober = (binary, args) =>
 export async function detectBackendCore(
   platform: NodeJS.Platform,
   prober: Prober,
+  bwrapExecutable = "/usr/bin/bwrap",
 ): Promise<SandboxBackend> {
   if (platform === "linux") {
-    const versionProbe = await prober("bwrap", ["--version"]);
+    if (!isAbsolute(bwrapExecutable)) return { kind: "none" };
+    const versionProbe = await prober(bwrapExecutable, ["--version"]);
     if (versionProbe.exitCode !== 0) {
       return { kind: "none" };
     }
@@ -105,7 +109,7 @@ export async function detectBackendCore(
     // non-zero (usually "no_new_privs failed" or "mount: Operation
     // not permitted"), we have bwrap but need to skip the --proc
     // arg in the builder.
-    const procProbe = await prober("bwrap", [
+    const procProbe = await prober(bwrapExecutable, [
       "--proc",
       "/proc",
       "--ro-bind",
@@ -118,7 +122,7 @@ export async function detectBackendCore(
     // --ro-bind of /usr/bin/true onto /usr/bin/false must make the latter
     // execute successfully. This proves the file-overmount primitive used
     // by guarded profiles without relying on /dev/null or exposing data.
-    const fileMaskProbe = await prober("bwrap", [
+    const fileMaskProbe = await prober(bwrapExecutable, [
       "--ro-bind",
       "/usr",
       "/usr",
@@ -130,6 +134,7 @@ export async function detectBackendCore(
     ]);
     return {
       kind: "bubblewrap",
+      executable: bwrapExecutable,
       procSupported: procProbe.exitCode === 0,
       fileMaskSupported: fileMaskProbe.exitCode === 0,
     };
@@ -155,5 +160,36 @@ export async function detectBackendCore(
  * use this; tests use `detectBackendCore` with a stub prober.
  */
 export async function detectBackend(): Promise<SandboxBackend> {
-  return detectBackendCore(process.platform, realProber);
+  if (process.platform !== "linux") return detectBackendCore(process.platform, realProber);
+  const executable = resolveBwrapExecutable(process.env["PATH"]);
+  if (executable === undefined) return { kind: "none" };
+  return detectBackendCore(process.platform, realProber, executable);
+}
+
+/** Resolve once from Electron/server startup PATH, then pin the canonical file. */
+export function resolveBwrapExecutable(pathValue: string | undefined): string | undefined {
+  for (const directory of (pathValue ?? "").split(delimiter)) {
+    if (!isAbsolute(directory)) continue;
+    try {
+      const candidate = realpathSync(join(directory, "bwrap"));
+      if (!isAbsolute(candidate) || !statSync(candidate).isFile()) continue;
+      accessSync(candidate, constants.X_OK);
+      if (!hasRootOwnedImmutableChain(candidate)) continue;
+      return candidate;
+    } catch {
+      // Continue through the trusted startup search path.
+    }
+  }
+  return undefined;
+}
+
+function hasRootOwnedImmutableChain(candidate: string): boolean {
+  let current = candidate;
+  for (;;) {
+    const stat = statSync(current);
+    if (stat.uid !== 0 || (stat.mode & 0o022) !== 0) return false;
+    const parent = dirname(current);
+    if (parent === current) return true;
+    current = parent;
+  }
 }

@@ -845,6 +845,10 @@ export function DesktopFilesystemAccessSection({
                 your network environment before enabling it.
               </p>
 
+              {seed?.userEnvironment === true ? <p className="text-xs font-medium text-foreground">
+                Your developer environment: Commands and package scripts can read and use credentials in your home folder and use your shell environment and credential helpers. They can also change or delete other files in your home folder and install or update tools there and in discovered Homebrew directories. Network restrictions still apply.
+              </p> : null}
+
               <p className="text-xs text-foreground-muted">
                 Capability status shown here can be stale. The server remains authoritative for
                 activation and this acknowledgement only records that you reviewed this profile

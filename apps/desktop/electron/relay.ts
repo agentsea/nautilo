@@ -1,12 +1,10 @@
-import { RELAY_GITHUB_PROTOCOL_VERSION, parseRelayGitHubInvocationBinding, matchesGitHubWorkstationBinding } from "@nautilo/relay";
 import { createLocalExecutionDelegationAuthority, type LocalExecutionDelegationAuthorityOptions, type LocalExecutionDelegationConnection } from "./local-execution-delegation";
 import { parseRelayLocalExecutionDelegationCapture, type RelayLocalExecutionDelegationCapture, type RelayLocalExecutionBindingV4 } from "@nautilo/relay";
 import {
   createFullMacExecutionEnvironment,
-  prepareDevelopmentExecutionEnvironment,
+  prepareDevelopmentExecutionEnvironment, developmentRuntimeWritablePaths,
   type LocalExecutionEnvironmentSource,
 } from "./local-execution-environment";
-import { dispatchAdmittedGitHub, type DesktopGitHubRuntime } from "./relay-dispatch/github";
 import { projectRelayCapabilitiesForProtocol } from "@nautilo/relay";
 import { parseRelayHumanTerminalBinding } from "@nautilo/relay";
 import { dispatchHumanTerminal } from "./relay-dispatch/human-terminal";
@@ -187,10 +185,6 @@ import {
 import {
   createHueDispatchHandler,
 } from "./relay-dispatch/local-applications.ts";
-import {
-  createWorkstationHandlers,
-  type RunShellGitBrokerFactory,
-} from "./relay-dispatch/workstation.ts";
 import { loginShellSpawnEnvBase } from "./augment-path";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -649,45 +643,6 @@ export interface DesktopFilesystemGrantAuthorityStore {
       }
     | { ok: false; code: string; message: string }
   >;
-}
-
-export async function resolveGitWritableGrantRoots(options: {
-  readonly store: DesktopFilesystemGrantAuthorityStore;
-  readonly expectedSubject: {
-    readonly userId: string;
-    readonly instanceId: string;
-    readonly relayId: string;
-    readonly agentScope: string;
-  };
-  readonly now?: () => Date;
-}): Promise<readonly string[]> {
-  const listed = await options.store.list({
-    userId: options.expectedSubject.userId,
-    includeHistory: false,
-  });
-  if (!listed.ok) return [];
-  const now = options.now?.() ?? new Date();
-  const roots: string[] = [];
-  for (const item of listed.data.grants) {
-    const grant = item.grant;
-    if (
-      item.status !== "active" ||
-      grant.revokedAt !== undefined ||
-      (grant.expiresAt !== undefined && new Date(grant.expiresAt) <= now) ||
-      grant.subject.userId !== options.expectedSubject.userId ||
-      grant.subject.instanceId !== options.expectedSubject.instanceId ||
-      grant.subject.relayId !== options.expectedSubject.relayId ||
-      grant.subject.agentScope !== options.expectedSubject.agentScope ||
-      !grant.access.includes("create_modify") ||
-      !grant.access.includes("delete") ||
-      grant.filesystemIdentity === undefined
-    ) {
-      continue;
-    }
-    const identity = await revalidateDesktopFilesystemGrantRootIdentity(grant.filesystemIdentity);
-    if (identity.ok) roots.push(grant.canonicalRoot);
-  }
-  return [...new Set(roots)].sort((a, b) => b.length - a.length);
 }
 
 export interface DesktopFilesystemGrantAuthorityResolverOptions {
@@ -1783,10 +1738,18 @@ const SANDBOX_PROTECTED_SYSTEM_PATHS = new Set([
  */
 export function selectSandboxProtectedPaths(
   policy: ProtectedPathPolicy | undefined,
+  userEnvironmentHome?: string,
 ): readonly string[] {
   if (policy === undefined) return [];
   const out: string[] = [];
   for (const descriptor of policy.descriptors) {
+    // Only the locally admitted user HOME loses its credential masks. Internal
+    // application/caller roots and system protections remain denied.
+    if (userEnvironmentHome !== undefined
+      && isContainedWorkstationPath(userEnvironmentHome, descriptor.canonicalPath)
+      && descriptor.origin !== "caller_supplied"
+      && !["nautilo_private", "nautilo_data", "nautilo_audit", "caller_root"].includes(descriptor.category)
+      && !SANDBOX_PROTECTED_SYSTEM_PATHS.has(descriptor.canonicalPath)) continue;
     if (
       !SANDBOX_COMPILED_PROTECTED_PATH_CATEGORIES.has(descriptor.category) &&
       !SANDBOX_PROTECTED_SYSTEM_PATHS.has(descriptor.canonicalPath)
@@ -1862,16 +1825,17 @@ export function buildShellBindingSandboxEnvelope(
   scratch = createGuardedShellScratch(),
   networkPolicy?: RelayNetworkPolicy,
   locallyAuthorizedWorkspace?: string,
+  userEnvironment?: { readonly home: string; readonly writablePaths: readonly string[]; readonly readOnlyPaths?: readonly string[] },
 ): RelaySandboxProfile {
-  const protectedPaths = selectSandboxProtectedPaths(protectedPathPolicy);
+  const protectedPaths = selectSandboxProtectedPaths(protectedPathPolicy, userEnvironment?.home);
   const nextConfig: RelaySandboxConfig = {
     // Do not retain any server-origin filesystem authority. The only
     // filesystem roots in this guarded envelope come from live local grants.
     mode: "enabled",
-    writablePaths: dedupePaths(grantRoots.writableRoots),
+    writablePaths: dedupePaths([...grantRoots.writableRoots, ...(userEnvironment ? [userEnvironment.home, ...userEnvironment.writablePaths] : [])]),
     projectPaths: [],
-    ...(grantRoots.readOnlyRoots.length > 0
-      ? { readOnlyPaths: dedupePaths(grantRoots.readOnlyRoots) }
+    ...((grantRoots.readOnlyRoots.length > 0 || userEnvironment?.readOnlyPaths?.length)
+      ? { readOnlyPaths: dedupePaths([...grantRoots.readOnlyRoots, ...(userEnvironment?.readOnlyPaths ?? [])]) }
       : {}),
     passthroughEnv: [],
     // REPLACE — never preserve — the server's network posture with the
@@ -2050,7 +2014,6 @@ export interface DispatchHandlerOptions {
     networkPolicy: RelayNetworkPolicy; authorityExpiresAt?: number; isCurrent(): boolean;
     developmentEnvironment?: LocalExecutionEnvironmentSource;
   }>) | undefined;
-  readonly githubRuntime?: (() => DesktopGitHubRuntime | null) | undefined;
   readonly localExecution?: LocalExecutionDispatch;
   readonly verifyHumanTerminal?: ((owner: HumanTerminalOwner) => Promise<boolean>) | undefined;
   readonly localExecutionHistoryReader?: StartRelayOptions["localExecutionHistoryReader"];
@@ -2162,22 +2125,8 @@ export interface DispatchHandlerOptions {
    * profile state.
    */
   readonly workstationProfileStateProvider?: RelayWorkstationProfileSnapshotProvider | undefined;
+  readonly getDevelopmentGitHubExecutable?: (() => Promise<string | undefined>) | undefined;
   readonly basicExecutionAuthority?: (() => { capability: RelayBasicExecutionCapability; capabilityRevision: number; dataDir: string } | null) | undefined;
-  /**
-   * test seam for the typed GitBroker the `run_shell` git
-   * variant constructs. Production leaves this undefined so the relay uses
-   * the real `GitBroker` with the fixed `/usr/bin/git` executable; tests
-   * inject a fake so the authority flow + disposition return path can be
-   * exercised without sandbox-exec or a live repository.
-   */
-  readonly createGitBroker?: RunShellGitBrokerFactory | undefined;
-  /**
-   * live acceptance — all independently revalidated local grants that
-   * carry both create/modify and delete authority. Structured Git keeps its
-   * repository pinned to the binding's Current Folder, but sibling worktree
-   * targets may use these separately reviewed exact roots.
-   */
-  readonly gitWritableGrantRootsProvider?: (() => Promise<readonly string[]>) | undefined;
   /**
    * Electron-owned pre-spawn check. The server never supplies this
    * fact: it verifies the relay-local owner tuple against the exact current
@@ -2263,12 +2212,6 @@ export function makeDispatchHandler(
   const isSessionClosed = options.isSessionClosed ?? (() => false);
   const isProduction =
     options.isProduction ?? process.env["NODE_ENV"] === "production";
-  const workstation = createWorkstationHandlers({
-    protectedPathPolicy: options.protectedPathPolicy,
-    createGitBroker: options.createGitBroker,
-    gitWritableGrantRootsProvider: options.gitWritableGrantRootsProvider,
-    selectSandboxProtectedPaths,
-  });
   const localFile = createLocalFileHandlers({
     relayId: options.relayId,
     baseRoots: baseGuard.roots,
@@ -2387,13 +2330,6 @@ export function makeDispatchHandler(
     req: RelayDispatchRequest,
     signal?: AbortSignal,
   ): Promise<RelayDispatchResult> {
-    if (req.toolName === "local_github" || req.githubBinding !== undefined) {
-      if (isSessionClosed() || req.hostedBy !== undefined || req.humanTerminalBinding !== undefined
-        || req.localExecutionBinding !== undefined || req.localExecutionHistoryBinding !== undefined || (req.workstationShellBinding !== undefined && req.toolName !== "local_git")
-        || req.uncontainedHostCommandsSession === true || (req.githubBinding?.stage === "publish" && req.approvalObtained !== true) || req.executionClass === "real_workstation")
-        return { status: "error", errorCode: "GITHUB_UNAVAILABLE", error: "The exact GitHub account owner is unavailable." };
-      if (req.toolName !== "local_git") return { status: "ok", result: await dispatchAdmittedGitHub(options.githubRuntime?.() ?? null, req.toolName, req.args, req.githubBinding, signal) };
-    }
     if (req.toolName === "human_terminal" || req.humanTerminalBinding !== undefined) {
       const binding = parseRelayHumanTerminalBinding(req.humanTerminalBinding);
       if (!binding || req.toolName !== "human_terminal" || !options.verifyHumanTerminal
@@ -2551,6 +2487,37 @@ export function makeDispatchHandler(
       return lowerDispatchPreparationPromise;
     };
 
+    const prepareDevelopmentEnvironment = async (source: LocalExecutionEnvironmentSource, expectedProfileId?: string, expectedProfileRevision?: number) => {
+      const nativeEnvironment = source.userEnvironment === true ? loginShellSpawnEnvBase() : undefined;
+      let fallbackDirectory: string | undefined;
+      if (nativeEnvironment !== undefined) {
+        try {
+          const executable = await options.getDevelopmentGitHubExecutable?.();
+          if (executable !== undefined) {
+            fallbackDirectory = path.dirname(fsSync.realpathSync(executable));
+            nativeEnvironment["PATH"] = [nativeEnvironment["PATH"], fallbackDirectory].filter(Boolean).join(path.delimiter);
+          }
+        } catch {
+          // The optional bundled CLI can disappear during an update. Preserve
+          // ordinary commands and the user's installed tools in that case.
+        }
+      }
+      const prepared = prepareDevelopmentExecutionEnvironment(source, {
+        trustedToolsBin: options.trustedToolsBin ?? resolveToolsBin(),
+        ...(nativeEnvironment === undefined ? {} : { nativeEnvironment }),
+        ...(expectedProfileId === undefined ? {} : { expectedProfileId }),
+        ...(expectedProfileRevision === undefined ? {} : { expectedProfileRevision }),
+      });
+      return { ...prepared,
+        ...(prepared.userEnvironment === true ? {
+          userEnvironmentWritablePaths: Object.freeze(dedupePaths([
+            ...(prepared.userEnvironmentWritablePaths ?? []), ...developmentRuntimeWritablePaths(prepared.environment),
+          ])),
+        } : {}),
+        readOnlyPaths: fallbackDirectory === undefined ? [] : [fallbackDirectory],
+      };
+    };
+
     const prepareRequestLocalPolicy = async (): Promise<LocalDispatchPolicyPreparation> => {
       const lower = await getLowerDispatchPreparation();
       if (!lower.ok) return lower;
@@ -2560,8 +2527,8 @@ export function makeDispatchHandler(
             lower.shellNetworkPolicy,
             req.localExecutionBinding?.localNetworkPolicy ?? { mode: "host" },
           );
-      let developmentEnvironment: ReturnType<typeof prepareDevelopmentExecutionEnvironment> | undefined;
-      if (lower.revalidatedShellBinding !== undefined) {
+      let developmentEnvironment: Awaited<ReturnType<typeof prepareDevelopmentEnvironment>> | undefined;
+      if (lower.revalidatedShellBinding !== undefined && req.toolName === "exec_command") {
         const source = await asRelayWorkstationExecutionEnvironmentProvider(
           options.workstationProfileStateProvider,
         )?.getExecutionEnvironment();
@@ -2569,11 +2536,8 @@ export function makeDispatchHandler(
           return { ok: false, result: { status: "error", errorCode: "LOCAL_EXECUTION_ENVIRONMENT_UNAVAILABLE",
             error: "The active Development environment is unavailable. Re-enable Development access and retry." } };
         }
-        developmentEnvironment = prepareDevelopmentExecutionEnvironment(source, {
-          trustedToolsBin: options.trustedToolsBin ?? resolveToolsBin(),
-          expectedProfileId: lower.revalidatedShellBinding.profileId,
-          expectedProfileRevision: lower.revalidatedShellBinding.profileRevision,
-        });
+        developmentEnvironment = await prepareDevelopmentEnvironment(source,
+          lower.revalidatedShellBinding.profileId, lower.revalidatedShellBinding.profileRevision);
       }
       const preparation = await prepareLocalDispatchPolicy({
         toolName: req.toolName,
@@ -2584,7 +2548,7 @@ export function makeDispatchHandler(
         requestHasShellBinding: req.workstationShellBinding !== undefined,
         checkUnboundRunShell: async () => {
           if (
-            (req.toolName !== "run_shell" && req.toolName !== "exec_command" && req.toolName !== "local_git") ||
+            (req.toolName !== "run_shell" && req.toolName !== "exec_command") ||
             req.workstationShellBinding !== undefined ||
             options.workstationProfileStateProvider === undefined
           ) return undefined;
@@ -2681,6 +2645,7 @@ export function makeDispatchHandler(
                 (options.createGuardedShellScratch ?? createGuardedShellScratch)(),
                 effectiveShellNetworkPolicy,
                 authorizedWorkspace,
+                developmentEnvironment?.userEnvironment === true ? { home: developmentEnvironment.environment["HOME"]!, writablePaths: developmentEnvironment.userEnvironmentWritablePaths ?? [], readOnlyPaths: developmentEnvironment.readOnlyPaths } : undefined,
               );
             } catch (error) {
               return {
@@ -2731,13 +2696,14 @@ export function makeDispatchHandler(
           return undefined;
         },
         resolveLocalAuthority: (locallyAuthorizedWorkspace) =>
-          (req.toolName === "run_shell" || req.toolName === "exec_command" || req.toolName === "local_git") &&
+          (req.toolName === "run_shell" || req.toolName === "exec_command") &&
           lower.revalidatedShellBinding !== undefined &&
           locallyAuthorizedWorkspace !== undefined &&
           path.normalize(locallyAuthorizedWorkspace) ===
             path.normalize(lower.revalidatedShellBinding.currentFolder)
             ? {
                 allowWorkspaceGovernanceWrites: true,
+                allowUserCredentialFiles: developmentEnvironment?.userEnvironment === true,
                 ...(developmentEnvironment === undefined
                   ? {}
                   : { preparedEnvironment: developmentEnvironment.environment }),
@@ -2898,19 +2864,6 @@ export function makeDispatchHandler(
         });
       },
 
-      localGit: async ({ request }) => {
-        if (request.toolName !== "local_git") return FIXED_DESKTOP_DISPATCH_NOT_HANDLED;
-        const preparation = await getLocalDispatchPolicy();
-        if (!preparation.ok) return { handled: true, result: preparation.result };
-        const policy = preparation.policy;
-        return await workstation.dispatchLocalGit({ request, policy: {
-          desktopFilesystemAuthority: policy.desktopFilesystemAuthority,
-          revalidatedShellBinding: policy.revalidatedShellBinding,
-          sandboxEnvelopeWorkspace: policy.sandboxEnvelope?.workspace,
-          locallyAuthorizedWorkspace: policy.locallyAuthorizedWorkspace,
-          shellNetworkPolicy: policy.shellNetworkPolicy,
-        } });
-      },
     };
 
     const routeDispatch = createFixedDesktopDispatchRouter(
@@ -2926,24 +2879,6 @@ export function makeDispatchHandler(
     );
 
     try {
-      if (req.githubBinding !== undefined) {
-        const binding = parseRelayGitHubInvocationBinding(req.githubBinding, req.args);
-        if (!binding || !matchesGitHubWorkstationBinding(binding, req.workstationShellBinding)) return {
-          status: "error", errorCode: "GITHUB_UNAVAILABLE", error: "The account and project authority no longer match.",
-        };
-        const preparation = await getLocalDispatchPolicy();
-        if (!preparation.ok) return preparation.result;
-        const policy = preparation.policy;
-        const broker = await workstation.resolveAuthenticatedGitBroker({ request: req, policy: {
-          desktopFilesystemAuthority: policy.desktopFilesystemAuthority,
-          revalidatedShellBinding: policy.revalidatedShellBinding,
-          sandboxEnvelopeWorkspace: policy.sandboxEnvelope?.workspace,
-          locallyAuthorizedWorkspace: policy.locallyAuthorizedWorkspace,
-          shellNetworkPolicy: policy.shellNetworkPolicy,
-        } });
-        return { status: "ok", result: await dispatchAdmittedGitHub(options.githubRuntime?.() ?? null,
-          req.toolName, req.args, req.githubBinding, signal, policy.revalidatedShellBinding, broker ?? undefined) };
-      }
       if (req.toolName === "__local_execution_delegate" || req.localExecutionDelegationCapture !== undefined) {
         const capture = parseRelayLocalExecutionDelegationCapture(req.localExecutionDelegationCapture);
         const owner = req.runShellOwnerBinding;
@@ -3074,21 +3009,15 @@ export function makeDispatchHandler(
                 const managedHome = fsSync.realpathSync(scratch.workspace);
                 const developmentEnvironment = delegation?.developmentEnvironment === undefined
                   ? undefined
-                  : prepareDevelopmentExecutionEnvironment(delegation.developmentEnvironment, {
-                      trustedToolsBin: options.trustedToolsBin ?? resolveToolsBin(),
-                      ...(delegated?.authority.delegation.profile?.id === undefined
-                        ? {}
-                        : { expectedProfileId: delegated.authority.delegation.profile.id }),
-                      ...(delegated?.authority.delegation.profile?.revision === undefined
-                        ? {}
-                        : { expectedProfileRevision: delegated.authority.delegation.profile.revision }),
-                    });
+                  : await prepareDevelopmentEnvironment(delegation.developmentEnvironment,
+                      delegated?.authority.delegation.profile?.id, delegated?.authority.delegation.profile?.revision);
                 const envelope = buildShellBindingSandboxEnvelope({
                   workspace: local.folder.workspace, dataDir: local.dataDir, toolsBin: options.trustedToolsBin ?? resolveToolsBin(),
                   mode: "desktop-locked", securityLevel: "paranoid", failIfNoBackend: true,
                   config: { mode: "enabled", writablePaths: [], projectPaths: [], passthroughEnv: [] },
                 }, { readOnlyRoots: delegation?.readOnlyRoots ?? [], writableRoots: delegation?.writableRoots ?? [] }, options.protectedPathPolicy,
-                options.trustedToolsBin ?? resolveToolsBin(), scratch, effectiveNetworkPolicy, local.folder.workspace);
+                options.trustedToolsBin ?? resolveToolsBin(), scratch, effectiveNetworkPolicy, local.folder.workspace,
+                  developmentEnvironment?.userEnvironment === true ? { home: developmentEnvironment.environment["HOME"]!, writablePaths: developmentEnvironment.userEnvironmentWritablePaths ?? [], readOnlyPaths: developmentEnvironment.readOnlyPaths } : undefined);
                 const result = await prepareLocalDispatchPolicy({
                   toolName: req.toolName, isProduction: true, desktopFilesystemAuthority: undefined,
                   revalidatedShellBinding: undefined, shellNetworkPolicy: effectiveNetworkPolicy, requestHasShellBinding: false,
@@ -3103,7 +3032,8 @@ export function makeDispatchHandler(
                   },
                   resolveLocalAuthority: () => developmentEnvironment === undefined
                     ? { managedHome }
-                    : { preparedEnvironment: developmentEnvironment.environment },
+                    : { preparedEnvironment: developmentEnvironment.environment, allowWorkspaceGovernanceWrites: true,
+                        allowUserCredentialFiles: developmentEnvironment.userEnvironment === true },
                   ...(options.createSandbox === undefined ? {} : { createSandbox: options.createSandbox }),
                 });
                 if (result.ok) sandbox = result.policy.sandbox;
@@ -3255,13 +3185,12 @@ export function deriveComputerUseServerBindingId(serverUrl: string): string | nu
 }
 
 export interface StartRelayOptions {
+  getDevelopmentGitHubExecutable?: (() => Promise<string | undefined>) | undefined;
   localExecutionDelegation?: {
     readonly grants: LocalExecutionDelegationAuthorityOptions["grants"];
     readConnection(): LocalExecutionDelegationConnection | null;
   } | undefined;
   /** Absent until the admitted account custody cutover is complete. */
-  githubRuntime?: DesktopGitHubRuntime | undefined;
-  createGitHubRuntime?: ((topology: AuthenticatedDesktopTopology, refreshCapabilities: (reason?: string) => Promise<boolean>) => Promise<DesktopGitHubRuntime | null>) | undefined;
   humanTerminalConsent?: (() => HumanTerminalConsent | null) | undefined;
   verifyHumanTerminal?: ((owner: HumanTerminalOwner) => Promise<boolean>) | undefined;
   localExecutionHistoryWriter?: ((owner: import("@nautilo/relay").RelayLocalExecutionOwnerV1, view: import("./relay-dispatch/local-execution").LocalExecutionView) => Promise<void>) | undefined;
@@ -3396,7 +3325,6 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       ? {}
       : { onStatusChange: options.onStatusChange }),
   });
-  if (options.githubRuntime) candidateSession.attachGitHubRuntime(options.githubRuntime);
   if (options.localExecutionHistoryWriter) candidateSession.localExecution.attachHistoryWriter(options.localExecutionHistoryWriter);
   let sessionClient: RelayClient | null = null;
   let candidatePublisher: RelayCapabilityPublisher | null = null;
@@ -3633,16 +3561,6 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     instanceId: desktopFilesystemGrantInstanceId,
     store: desktopFilesystemGrantStore,
   });
-  const gitWritableGrantRootsProvider = () =>
-    resolveGitWritableGrantRoots({
-      store: desktopFilesystemGrantStore,
-      expectedSubject: {
-        userId: options.userId,
-        instanceId: desktopFilesystemGrantInstanceId,
-        relayId,
-        agentScope: DESKTOP_FILESYSTEM_GRANT_AGENT_SCOPE,
-      },
-    });
   // capture the shared active-profile snapshot provider from the
   // single main-process controller BEFORE constructing the shell-binding
   // authority. Consumed directly from `options.workstationProfileController`
@@ -3893,8 +3811,6 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       hosted: hostedRelay.capabilities(),
     });
     const currentFolderRoot = currentFolderPathProvider?.();
-    const githubRuntime = candidateSession.githubRuntime;
-    const githubCapability = githubRuntime?.isCurrent() ? githubRuntime.capability : undefined;
     return {
       profile: "desktop-agent",
       // Non-authoritative schema marker for the current Computer Use contract.
@@ -3918,8 +3834,6 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       ),
       ...officeCaps,
       canRunShell: false,
-      canUseLocalGit: profileSnapshot !== undefined && process.platform !== "win32",
-      localGit: { version: 1 as const },
       canReadShellOutput: true,
       canSearchLocalExecutionOutput: process.platform !== "win32",
       canReadLocalExecutionHistory: options.localExecutionHistoryReader !== undefined,
@@ -3933,8 +3847,6 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
           capacity: LOCAL_EXECUTION_MAX_IDENTITIES },
       }),
       canUseTerminal: false,
-      canUseGitHub: githubCapability !== undefined,
-      ...(githubCapability ? { github: githubCapability } : {}),
       canUseHumanTerminal: options.humanTerminalConsent?.() != null,
       ...(options.humanTerminalConsent?.() ? { humanTerminal: { version: 1 as const, ...options.humanTerminalConsent()! } } : {}),
       canReadStructuredSshOutput: true,
@@ -4005,44 +3917,6 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     activeComputerUseRuntime = next;
     return requiresReconciliation;
   };
-  let githubTopologyEpoch = 0;
-  let githubPreparingTopology: string | null = null;
-  let githubRuntimeTopology: string | null = null;
-  const retireCandidateGitHub = () => {
-    githubTopologyEpoch += 1;
-    githubPreparingTopology = null;
-    githubRuntimeTopology = null;
-    candidateSession.retireGitHubRuntime();
-  };
-  const reconcileCandidateGitHub = async (topology: AuthenticatedDesktopTopology | null): Promise<void> => {
-    if (!options.createGitHubRuntime) return;
-    const key = topology === null ? null : JSON.stringify([topology.relayId, topology.desktopSessionId,
-      topology.pairingGeneration, topology.selectedProtocolVersion]);
-    if (key !== null && (githubPreparingTopology === key
-      || (githubRuntimeTopology === key && candidateSession.githubRuntime?.isCurrent()))) return;
-    retireCandidateGitHub();
-    if (!topology || topology.selectedProtocolVersion < RELAY_GITHUB_PROTOCOL_VERSION
-      || candidateSession.closed || activeRelaySession !== candidateSession) return;
-    const epoch = githubTopologyEpoch;
-    githubPreparingTopology = key;
-    let runtime: DesktopGitHubRuntime | null = null;
-    try {
-      runtime = await options.createGitHubRuntime(topology, refreshCandidateCapabilities);
-      if (epoch !== githubTopologyEpoch || candidateSession.closed || activeRelaySession !== candidateSession) {
-        runtime?.retire(); return;
-      }
-      if (runtime) {
-        candidateSession.attachGitHubRuntime(runtime);
-        githubRuntimeTopology = key;
-        await refreshCandidateCapabilities("Confirm authenticated account availability");
-      }
-    } catch {
-      runtime?.retire();
-      if (epoch === githubTopologyEpoch) candidateSession.retireGitHubRuntime();
-    } finally {
-      if (epoch === githubTopologyEpoch) githubPreparingTopology = null;
-    }
-  };
   const reconcileCandidateComputerUseTopology = (
     topology: AuthenticatedDesktopTopology | null,
   ): void => {
@@ -4053,7 +3927,6 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       if (topology !== null) pendingComputerUseTopologyReconciliation = true;
       return;
     }
-    void reconcileCandidateGitHub(topology);
     if (applyCandidateComputerUseTopology(topology)) {
       void options.onComputerUseTopologyChange?.(refreshCandidateCapabilities);
     }
@@ -4123,13 +3996,12 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       ...(workstationProfileProvider !== null
         ? { workstationProfileStateProvider: workstationProfileProvider }
         : {}),
-      gitWritableGrantRootsProvider,
       ...(options.verifyUncontainedHostCommands !== undefined
         ? { verifyUncontainedHostCommands: options.verifyUncontainedHostCommands }
         : {}),
       localExecution: candidateSession.localExecution,
+      getDevelopmentGitHubExecutable: options.getDevelopmentGitHubExecutable,
       localExecutionHistoryReader: options.localExecutionHistoryReader,
-      githubRuntime: () => candidateSession.githubRuntime,
       verifyHumanTerminal: options.verifyHumanTerminal,
       runShellOutputArtifactStore: candidateSession.runShellOutputArtifactStore,
       browserPageSnapshotStore: candidateSession.browserPageSnapshotStore,
@@ -4195,7 +4067,6 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
         candidatePublisher?.invalidateAcknowledgement();
         candidateSession.localExecution.fenceFullMac();
         candidateSession.localExecution.fenceDelegated();
-        retireCandidateGitHub();
         revokeCandidateHumanConsent();
       }
       candidateSession.statusCallback?.(status);
@@ -4211,7 +4082,6 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     onAcknowledged: () => {
       if (activeRelaySession === candidateSession && !candidateSession.closed) {
         options.onCapabilitiesAcknowledged?.();
-        void reconcileCandidateGitHub(candidateClient.getDesktopTopology());
       }
     },
   });
@@ -4232,7 +4102,6 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
   // the setup route unavailable if an older relay protocol omitted it.
   const topology = candidateClient.getDesktopTopology();
   const requiresComputerUseReconciliation = applyCandidateComputerUseTopology(topology);
-  await reconcileCandidateGitHub(topology);
   if (pendingComputerUseTopologyReconciliation) {
     pendingComputerUseTopologyReconciliation = false;
     if (requiresComputerUseReconciliation) {

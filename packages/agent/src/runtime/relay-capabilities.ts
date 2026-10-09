@@ -1,12 +1,10 @@
 import { RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION } from "@nautilo/relay";
 import { resolveServerPosture } from "@nautilo/config";
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
-import { parseGitHubCapability } from "@nautilo/types";
-import { RELAY_GITHUB_PROTOCOL_VERSION } from "@nautilo/relay";
 import { RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseRelayHumanTerminalCapability, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseRelayBasicExecutionCapability, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
-import { RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION, isRelayLocalGitCapability } from "@nautilo/relay";
+import { RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION } from "@nautilo/relay";
 import { LOCAL_EXECUTION_MAX_IDENTITIES, parseRelayLocalExecutionCapability, RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION } from "@nautilo/relay";
 import type { ToolRelayRegistry } from "../nodes/tools";
 import {
@@ -68,7 +66,6 @@ export function buildRuntimeCapabilityTokens(
   // desktop-agent profile that today's relay clients advertise.
   const relayIds = registry
     .findByCapabilityForUser("canRunShell", userId)
-    .concat(registry.findByCapabilityForUser("canUseLocalGit", userId))
     .concat(registry.findByCapabilityForUser("canReadShellOutput", userId))
     .concat(registry.findByCapabilityForUser("canExecuteLocal", userId))
     .concat(registry.findByCapabilityForUser("canReadLocalExecutionHistory", userId))
@@ -104,17 +101,10 @@ export function buildRuntimeCapabilityTokens(
   if (selectedRelayId !== undefined && registry.getUserId?.(selectedRelayId) === userId) {
     const selected = registry.getCapabilities(selectedRelayId);
     if (selected?.profile === "desktop-agent"
-      && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION) {
-      if (selected.canUseLocalGit === true && isRelayLocalGitCapability(selected.localGit)) tokens["canUseLocalGit"] = true;
+      && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION) {
       if (selected.canReadShellOutput === true) tokens["canReadShellOutput"] = true;
     }
     const unrestrictedLocalNetwork = (resolveServerPosture().localNetworkPolicy ?? { mode: "host" }).mode === "host";
-    const github = parseGitHubCapability(selected?.github);
-    if (unrestrictedLocalNetwork && github && selected?.profile === "desktop-agent" && selected.canUseGitHub === true
-      && github.identity.humanUserId === userId && github.identity.relayId === selectedRelayId
-      && github.identity.desktopSessionId === registry.getDesktopSessionId?.(selectedRelayId)
-      && github.identity.pairingGeneration === registry.getLocalExecutionPairingGeneration?.(selectedRelayId)
-      && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_GITHUB_PROTOCOL_VERSION) tokens["canUseGitHub"] = true;
     const humanTerminal = parseRelayHumanTerminalCapability(selected?.humanTerminal);
     if (unrestrictedLocalNetwork && selected?.profile === "desktop-agent" && selected.canUseHumanTerminal === true && humanTerminal
       && humanTerminal.owner.humanUserId === userId && humanTerminal.owner.agentId === currentAgentId
@@ -135,7 +125,7 @@ export function buildRuntimeCapabilityTokens(
       // Execution requires the replacement contract; legacy tools remain retired.
       tokens["canReplaceLegacyShellTools"] = localExecution.pty === true
         && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION
-        && tokens["canUseLocalGit"] === true && tokens["canReadShellOutput"] === true;
+        && tokens["canReadShellOutput"] === true;
     }
     if (selected?.profile === "desktop-agent" && selected.canReadLocalExecutionHistory === true
       && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION) tokens["canReadLocalExecutionHistory"] = true;

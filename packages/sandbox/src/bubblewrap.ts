@@ -38,6 +38,7 @@ import { debug, warn } from "@nautilo/logger";
 
 import {
   SAFE_ENV_VARS,
+  withoutNativeLoaderEnvironment,
   isDangerousEnvVar,
   isReservedEnvVar,
 } from "./env-vars";
@@ -46,6 +47,8 @@ import { LINUX_READ_ONLY_SYSTEM_PATHS } from "./system-paths";
 import type { SandboxConfig, SpawnArgs } from "./types";
 
 export interface BubblewrapBuildOptions {
+  /** Detector-proven absolute path used for the outer trusted launch. */
+  readonly bwrapExecutable: string;
   readonly workspace: string;
   readonly managedHome?: string;
   readonly preparedEnvironment?: Readonly<Record<string, string>>;
@@ -212,7 +215,7 @@ export function buildBubblewrap(opts: BubblewrapBuildOptions): SpawnArgs {
 
   // Step 9: --clearenv (default-deny).
   // Port: src/sandbox.rs:550.
-  bwrapArgs.push("--clearenv");
+  if (opts.preparedEnvironment === undefined) bwrapArgs.push("--clearenv");
 
   // Step 10: --chdir cwd.
   // Port: src/sandbox.rs:553.
@@ -222,11 +225,9 @@ export function buildBubblewrap(opts: BubblewrapBuildOptions): SpawnArgs {
   // PATH includes toolsBin prepended (Spacebot src/sandbox.rs:418-429).
   // Port: src/sandbox.rs:556-570.
   const parentPath = process.env["PATH"] ?? "";
-  if (opts.preparedEnvironment !== undefined) {
-    for (const [name, value] of Object.entries(opts.preparedEnvironment)) {
-      bwrapArgs.push("--setenv", name, value);
-    }
-  } else {
+  // A locally prepared environment may contain user credentials. Pass it as
+  // process environment, never expose its values in bubblewrap's argv.
+  if (opts.preparedEnvironment === undefined) {
     const path = parentPath.length > 0
       ? `${opts.toolsBin}${pathDelimiter}${parentPath}`
       : opts.toolsBin;
@@ -272,9 +273,9 @@ export function buildBubblewrap(opts: BubblewrapBuildOptions): SpawnArgs {
   bwrapArgs.push("--", opts.program, ...opts.args);
 
   return {
-    program: "bwrap",
+    program: opts.bwrapExecutable,
     args: bwrapArgs,
-    env: { PATH: parentPath },
+    env: opts.preparedEnvironment === undefined ? { PATH: parentPath } : withoutNativeLoaderEnvironment(opts.preparedEnvironment),
     cwd: opts.cwd,
   };
 }

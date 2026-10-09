@@ -283,6 +283,7 @@ export function createSandboxFromEnvelope(
   localAuthority?: Readonly<{
     /** Runtime-only; never accepted from the serialized envelope. */
     allowWorkspaceGovernanceWrites?: boolean;
+    allowUserCredentialFiles?: boolean;
     managedHome?: string;
     preparedEnvironment?: Readonly<Record<string, string>>;
   }>,
@@ -295,6 +296,7 @@ export function createSandboxFromEnvelope(
 
   return Sandbox.create({
     workspace: validated.workspace,
+    allowUserCredentialFiles: localAuthority?.allowUserCredentialFiles === true,
     ...(localAuthority?.managedHome !== undefined ? { managedHome: localAuthority.managedHome } : {}),
     ...(localAuthority?.preparedEnvironment !== undefined
       ? { preparedEnvironment: localAuthority.preparedEnvironment }

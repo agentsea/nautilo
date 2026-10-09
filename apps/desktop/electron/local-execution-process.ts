@@ -60,13 +60,6 @@ export const spawnLocalExecutionProcess: LocalExecutionSpawner = (prepared, tty,
   if (prepared.env === null || prepared.env === undefined) {
     throw new Error("LOCAL_EXECUTION_ENV_REQUIRED");
   }
-  // Preparation excludes account projection. Keep an independent guard at the
-  // last spawn seam against regression to the old GitHub-token injection lane.
-  for (const key of Object.keys(prepared.env)) {
-    if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN)$/i.test(key)) {
-      throw new Error("LOCAL_EXECUTION_CREDENTIAL_ENV_DENIED");
-    }
-  }
   if (tty) {
     const pty = spawnTerminalPty(prepared.program, [...prepared.args], {
       cwd: prepared.cwd,
