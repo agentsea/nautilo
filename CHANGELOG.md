@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Computer Use re-reads imprecise local-input clock samples instead of treating
+  subprocess delays as Human activity, and retains its input fence across small
+  timing changes. Unavailable samples still block actions without blaming input.
+
 - Computer Use Host exposes current native control state and descriptive layout
   evidence, preserves actionable failure details, and retains compatible native
   contracts for older clients. Native input settlement keeps confirmed effects

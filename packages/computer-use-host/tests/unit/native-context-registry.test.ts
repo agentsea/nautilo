@@ -69,7 +69,7 @@ function retainedSnapshotBytes(subject: ComputerUseContextRegistry, context: str
     .map((snapshot) => snapshot.record.pngBytes);
 }
 
-describe("D516 computer-use context registry", () => {
+describe("computer-use context registry", () => {
   test("settled actions preserve read anchors and the lease, but only fresh exact reads renew mutation authority", async () => {
     const subject = registry();
     const created = subject.create(scope);
@@ -112,6 +112,16 @@ describe("D516 computer-use context registry", () => {
     expect(subject.resolveObservationTarget(context, scope, first!.reference)).toEqual({ ok: false, code: "replay_forbidden" });
     await subject.close();
     expect(releases).toBe(1);
+  });
+
+  test("small epoch advances cannot ratchet a retained input baseline forward", () => {
+    const subject = registry();
+    const created = subject.create(scope);
+    if (!created.ok) throw new Error("expected context");
+    const context = created.data.context;
+    expect(subject.advanceHumanInputEpoch(context, scope, 1000, 100).ok).toBe(true);
+    expect(subject.advanceHumanInputEpoch(context, scope, 1060, 100).ok).toBe(true);
+    expect(subject.advanceHumanInputEpoch(context, scope, 1120, 100)).toEqual({ ok: false, code: "external_interference" });
   });
 
   test("fresh recovery establishes a read baseline but still fences Human input during that read", () => {

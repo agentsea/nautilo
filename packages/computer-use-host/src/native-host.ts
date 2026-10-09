@@ -4,7 +4,7 @@ import { createNativeRegistryWindowResolver, CuaBrowserRuntime } from "./browser
 import { CuaCheckedBrowserClient } from "./checked-browser-client.js";
 import { CuaNativeContractRuntime, createNativeComputerUseScopeFactory } from "./native-contract-runtime.js";
 import { CuaMainLifecycle, type CuaCheckedGenerationInvalidation, type CuaMainLifecycleOptions } from "./native-cua-lifecycle.js";
-import { CuaComputerUseAdapter, readMacosHidIdleNanoseconds, type CuaReadHidIdleNanoseconds } from "./native-runtime.js";
+import { CuaComputerUseAdapter, readMacosHidIdleNanoseconds, type CuaReadHidIdleNanoseconds, type CuaHidSampleDiagnostic } from "./native-runtime.js";
 import { ComputerUseHost } from "./runtime.js";
 import { ComputerUseResourceCoordinator } from "./resource-coordinator.js";
 
@@ -18,6 +18,7 @@ export type NativeCuaHostOptions = Readonly<{
   createLifecycle?: (options: CuaMainLifecycleOptions) => CuaMainLifecycle;
   /** Test seam; the executable always uses the local macOS input monitor. */
   readHidIdleNanoseconds?: CuaReadHidIdleNanoseconds;
+  onHidSample?: (sample: CuaHidSampleDiagnostic) => void;
 }>;
 
 export type NativeCuaHost = Readonly<{
@@ -62,6 +63,7 @@ export async function createNativeCuaHost(options: NativeCuaHostOptions): Promis
   const drain = port.awaitOutstandingOperations.bind(port);
   const driverGeneration = port.generation;
   const adapter = new CuaComputerUseAdapter({ port,
+    ...(options.onHidSample === undefined ? {} : { onHidSample: options.onHidSample }),
     readHidIdleNanoseconds: options.readHidIdleNanoseconds ?? readMacosHidIdleNanoseconds });
   const scopeForAuthority = createNativeComputerUseScopeFactory({ hostGeneration, driverGeneration });
   const coordinator = new ComputerUseResourceCoordinator();

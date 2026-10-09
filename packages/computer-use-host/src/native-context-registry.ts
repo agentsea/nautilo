@@ -658,7 +658,10 @@ export class ComputerUseContextRegistry {
       }
       return { ok: false, code: "external_interference" };
     }
-    found.data.humanInputEpochMilliseconds = currentEpochMilliseconds;
+    // Preserve the earliest compatible estimate. Repeated small advances must
+    // not move the fence forward until real input is silently accepted.
+    found.data.humanInputEpochMilliseconds = prior === null
+      ? currentEpochMilliseconds : Math.min(prior, currentEpochMilliseconds);
     return { ok: true, data: undefined };
   }
 

@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { Jimp, JimpMime } from "jimp";
-import { CuaComputerUseAdapter } from "../../src/native-runtime.ts";
+import { CuaComputerUseAdapter, type CuaHidSampleDiagnostic } from "../../src/native-runtime.ts";
 import { CuaNativeContractRuntime } from "../../src/native-contract-runtime.ts";
 import { ComputerUseHost } from "../../src/runtime.ts";
 import { ComputerUseContextRegistry, type ComputerUseContextScope } from "../../src/native-context-registry.ts";
@@ -5895,6 +5895,126 @@ describe("Cua semantic adapter foundation", () => {
     }).success).toBe(false);
     expect(uncertainPort.calls.filter((call) => call.name === "click")).toHaveLength(1);
     expect(JSON.stringify(clicked)).not.toMatch(/private-search-token|private tree|private note|Search/);
+  });
+
+  test("re-reads a delayed HID sample without falsely attributing unchanged input to the Human", async () => {
+    const checked = port([apps(), windows()]);
+    // The same input epoch (-1000) was sampled at 5, 1005 and 1420 ms.
+    // Delaying delivery of sample two until 1410 used to fabricate a 200 ms
+    // advance. Only the HID read is retried, never the provider operation.
+    const times = [0, 10, 1000, 1410, 1415, 1425];
+    const idle = [1_005_000_000, 2_005_000_000, 2_420_000_000];
+    const samples: CuaHidSampleDiagnostic[] = [];
+    const subject = new CuaComputerUseAdapter({
+      port: checked.value,
+      monotonicMilliseconds: () => times.shift()!,
+      readHidIdleNanoseconds: async () => idle.shift()!,
+      onHidSample: (sample) => { samples.push(sample); },
+    });
+    expect((await subject.observe({ scope, operation: "desktop_state" })).ok).toBe(true);
+    expect(samples).toEqual([
+      { status: "accepted", durationMilliseconds: 10 },
+      { status: "imprecise", durationMilliseconds: 410 },
+      { status: "accepted", durationMilliseconds: 10 },
+    ]);
+    expect(checked.calls.map((call) => call.name)).toEqual(["list_apps", "list_windows"]);
+    expect(checked.value.captureDesktopState).toHaveBeenCalledTimes(1);
+    expect(times).toEqual([]);
+    expect(idle).toEqual([]);
+    await subject.close();
+    expect(checked.leaseState.active).toBe(0);
+  });
+
+  test("still detects real input on the precise read after a delayed sample", async () => {
+    const checked = port([apps(), windows()]);
+    const times = [0, 10, 1000, 1410, 1415, 1425];
+    // Input occurred at 1300 during the delayed read, after its OS sample.
+    const idle = [1_005_000_000, 2_005_000_000, 120_000_000];
+    const subject = new CuaComputerUseAdapter({
+      port: checked.value,
+      monotonicMilliseconds: () => times.shift()!,
+      readHidIdleNanoseconds: async () => idle.shift()!,
+    });
+    await expect(subject.observe({ scope, operation: "desktop_state" })).resolves.toMatchObject({
+      ok: false, outcome: { externalInterference: "user_input" },
+    });
+    expect(checked.leaseState.active).toBe(0);
+    await subject.close();
+  });
+
+  test("persistent sampling delay fails closed without alleging input or replaying observation", async () => {
+    const checked = port([apps(), windows()]);
+    const times = [0, 10, 1000, 1410, 1415, 1825];
+    const idle = [1_005_000_000, 2_005_000_000, 2_420_000_000];
+    const subject = new CuaComputerUseAdapter({
+      port: checked.value,
+      monotonicMilliseconds: () => times.shift()!,
+      readHidIdleNanoseconds: async () => idle.shift()!,
+    });
+    const observed = await subject.observe({ scope, operation: "desktop_state" });
+    expect(observed).toMatchObject({ ok: false, code: "human_input_unavailable" });
+    expect(JSON.stringify(observed)).not.toContain("externalInterference");
+    expect(checked.calls).toHaveLength(2);
+    expect(checked.leaseState.active).toBe(0);
+    await subject.close();
+  });
+
+  test("imprecise mutation-boundary samples block dispatch without blaming the Human", async () => {
+    const checked = port([apps(), windows()]);
+    let now = 0;
+    let reads = 0;
+    const subject = new CuaComputerUseAdapter({
+      port: checked.value,
+      monotonicMilliseconds: () => now,
+      readHidIdleNanoseconds: async () => {
+        reads += 1;
+        const sampledAt = now + 5;
+        now += reads <= 2 ? 10 : 410;
+        return (sampledAt + 1000) * 1_000_000;
+      },
+    });
+    const observed = await subject.observe({ scope, operation: "desktop_state" });
+    if (!observed.ok) throw new Error("expected authority mint");
+    const typed = await subject.typeText({
+      scope, operation: { kind: "type_text", target: observed.observation.targets[0]!.target, text: "TEST" },
+    });
+    expect(typed).toMatchObject({ ok: false, outcome: { recovery: ["observe_again"] } });
+    expect(JSON.stringify(typed)).not.toContain("externalInterference");
+    expect(checked.calls.map((call) => call.name)).toEqual(["list_apps", "list_windows"]);
+    expect(reads).toBe(4);
+    await subject.close();
+  });
+
+  test("bounded midpoint errors cannot manufacture a takeover at the sampling boundary", async () => {
+    const checked = port([apps(), windows()]);
+    // Both true event epochs are -1000. OS samples at opposite extremes of
+    // the two 100 ms intervals produce the maximum permitted estimate jitter.
+    const times = [0, 100, 1000, 1100];
+    const idle = [1_100_000_000, 2_000_000_000];
+    const subject = new CuaComputerUseAdapter({
+      port: checked.value,
+      monotonicMilliseconds: () => times.shift()!,
+      readHidIdleNanoseconds: async () => idle.shift()!,
+      onHidSample: () => { throw new Error("diagnostic sink unavailable"); },
+    });
+    expect((await subject.observe({ scope, operation: "desktop_state" })).ok).toBe(true);
+    await subject.close();
+  });
+
+  test.each([NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1])("rejects invalid idle sample %s without provider dispatch", async (idle) => {
+    const checked = port([]);
+    let reads = 0;
+    const subject = new CuaComputerUseAdapter({
+      port: checked.value,
+      monotonicMilliseconds: () => 10_000,
+      readHidIdleNanoseconds: async () => { reads += 1; return idle; },
+    });
+    const observed = await subject.observe({ scope, operation: "desktop_state" });
+    expect(observed.ok).toBe(false);
+    expect(JSON.stringify(observed)).not.toContain("externalInterference");
+    expect(reads).toBe(2);
+    expect(checked.calls).toHaveLength(0);
+    await subject.close();
   });
 
   test("distinguishes measured Human input from an unavailable HID sample while minting desktop authority", async () => {

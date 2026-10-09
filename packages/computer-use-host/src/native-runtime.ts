@@ -30,6 +30,12 @@ const HUMAN_INPUT_EPOCH_TOLERANCE_MILLISECONDS = 100;
 /** The only physical-input fact used by this provider is macOS IOHIDSystem's idle clock. */
 export type CuaReadHidIdleNanoseconds = () => Promise<number>;
 
+/** Content-free sampling evidence; never includes input, targets, or idle epochs. */
+export type CuaHidSampleDiagnostic = Readonly<{
+  status: "accepted" | "imprecise" | "invalid" | "read_failed";
+  durationMilliseconds: number | null;
+}>;
+
 class CuaExternalInterferenceError extends Error {
   constructor() {
     super("Local mouse or keyboard input interrupted the desktop operation.");
@@ -64,6 +70,7 @@ export interface CuaComputerUseAdapterOptions {
   readonly readHidIdleNanoseconds?: CuaReadHidIdleNanoseconds;
   /** Test seam; separate from operation deadlines to remain monotonic. */
   readonly monotonicMilliseconds?: () => number;
+  readonly onHidSample?: (sample: CuaHidSampleDiagnostic) => void;
   readonly clock?: () => number;
   readonly sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 }
@@ -2221,6 +2228,7 @@ export class CuaComputerUseAdapter {
   private readonly readHidIdleNanoseconds: CuaReadHidIdleNanoseconds | null;
   private readonly clock: () => number;
   private readonly monotonicMilliseconds: () => number;
+  private readonly onHidSample: CuaComputerUseAdapterOptions["onHidSample"];
   private readonly sleep: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 
   constructor(options: CuaComputerUseAdapterOptions) {
@@ -2233,6 +2241,7 @@ export class CuaComputerUseAdapter {
     this.readHidIdleNanoseconds = options.readHidIdleNanoseconds ?? null;
     this.clock = options.clock ?? performance.now.bind(performance);
     this.monotonicMilliseconds = options.monotonicMilliseconds ?? performance.now.bind(performance);
+    this.onHidSample = options.onHidSample;
     this.sleep = options.sleep ?? ((milliseconds, signal) => new Promise<void>((resolve, reject) => {
       if (signal?.aborted) return reject(new Error("cancelled"));
       const timer = setTimeout(resolve, milliseconds);
@@ -2332,7 +2341,11 @@ export class CuaComputerUseAdapter {
     }
   }
 
-  /** Midpoint sampling makes the IOHID idle duration a monotonic epoch in ms. */
+  private reportHidSample(sample: CuaHidSampleDiagnostic): void {
+    try { this.onHidSample?.(sample); } catch { /* Diagnostics cannot change authority. */ }
+  }
+
+  /** Only a sufficiently precise idle read may become an input-epoch estimate. */
   private async readHumanInputEpoch(): Promise<number> {
     // The production main process always injects the monitor. Isolated
     // semantic adapters use this inert private baseline so they neither make
@@ -2342,10 +2355,31 @@ export class CuaComputerUseAdapter {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const beforeMilliseconds = this.monotonicMilliseconds();
       try {
-        const idleNanoseconds = await this.readHidIdleNanoseconds();
+        let idleNanoseconds: number;
+        try {
+          idleNanoseconds = await this.readHidIdleNanoseconds();
+        } catch (error) {
+          this.reportHidSample({ status: "read_failed", durationMilliseconds: null });
+          throw error;
+        }
         const afterMilliseconds = this.monotonicMilliseconds();
+        const durationMilliseconds = afterMilliseconds - beforeMilliseconds;
         const epoch = (beforeMilliseconds + afterMilliseconds) / 2 - idleNanoseconds / 1_000_000;
-        if (!Number.isFinite(epoch)) throw new Error("macOS human-input epoch was unavailable");
+        if (!Number.isSafeInteger(idleNanoseconds) || idleNanoseconds < 0
+          || !Number.isFinite(epoch) || !Number.isFinite(durationMilliseconds) || durationMilliseconds < 0) {
+          this.reportHidSample({ status: "invalid", durationMilliseconds: null });
+          throw new Error("macOS human-input epoch was unavailable");
+        }
+        // IOHIDSystem sampled somewhere between before and after, not necessarily
+        // at the midpoint. Bound each midpoint's error to half the existing
+        // comparison tolerance: two unchanged-event estimates then cannot differ
+        // by more than that tolerance. A delayed subprocess/event-loop delivery
+        // is measurement uncertainty, never evidence that the Human acted.
+        if (durationMilliseconds > HUMAN_INPUT_EPOCH_TOLERANCE_MILLISECONDS) {
+          this.reportHidSample({ status: "imprecise", durationMilliseconds });
+          throw new Error("macOS human-input sample timing was imprecise");
+        }
+        this.reportHidSample({ status: "accepted", durationMilliseconds });
         return epoch;
       } catch (error) {
         firstFailure ??= error;
@@ -2353,8 +2387,8 @@ export class CuaComputerUseAdapter {
     }
     // Re-reading the host's idle clock is observational and cannot replay a
     // Cua mutation. A successful fresh sample still exposes any Human input
-    // since the retained context baseline; only two failed host reads withdraw
-    // authority as unavailable.
+    // since the retained context baseline. Failed or imprecise reads withdraw
+    // authority as unavailable, without attributing the failure to Human input.
     throw firstFailure;
   }
 
@@ -2364,7 +2398,8 @@ export class CuaComputerUseAdapter {
     if (afterMilliseconds > beforeMilliseconds + HUMAN_INPUT_EPOCH_TOLERANCE_MILLISECONDS) {
       throw new CuaExternalInterferenceError();
     }
-    return afterMilliseconds;
+    // Do not ratchet the baseline forward through small measurement changes.
+    return Math.min(beforeMilliseconds, afterMilliseconds);
   }
 
   /** Semantic wire drift withdraws the Check token synchronously. */
@@ -4660,11 +4695,7 @@ export class CuaComputerUseAdapter {
         return { ok: false, receipt: receipt("not_completed", result), error: registryError(entry.code), outcome: result };
       }
       const assertUninterrupted = async (): Promise<void> => {
-        const current = await this.readHumanInputEpoch();
-        if (current > trustedHumanEpoch + HUMAN_INPUT_EPOCH_TOLERANCE_MILLISECONDS) {
-          throw new CuaExternalInterferenceError();
-        }
-        trustedHumanEpoch = current;
+        trustedHumanEpoch = await this.requireStableHumanInputEpoch(trustedHumanEpoch);
       };
       const baselineResult = await this.call(leases, request.scope, "list_windows", { pid: provider.pid }, request.signal);
       if (!baselineResult.ok || baselineResult.result.isError) {
