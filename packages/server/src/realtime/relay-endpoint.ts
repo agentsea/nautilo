@@ -353,6 +353,8 @@ export interface HandleRegisterResult {
   readonly capabilities?: RelayCapabilities;
 }
 
+type RegisteredRelaySend = (msg: unknown) => void;
+
 export interface RelayProtocolPolicy {
   readonly minimum: number;
   readonly maximum: number;
@@ -431,7 +433,7 @@ export async function handleRelayRegister(
     minimum: RELAY_MIN_SUPPORTED_PROTOCOL_VERSION,
     maximum: RELAY_PROTOCOL_VERSION,
   },
-  onRegistered?: (result: HandleRegisterResult) => void,
+  onRegistered?: (result: HandleRegisterResult, send: RegisteredRelaySend) => void,
 ): Promise<HandleRegisterResult> {
   const claimedVersion = (msg as { protocolVersion: unknown }).protocolVersion;
   const negotiatedVersion = negotiateRelayProtocolVersion(msg, protocolPolicy);
@@ -532,7 +534,7 @@ export async function handleRelayRegister(
         return { outcome: "connection-closed" };
       }
       onRegistered?.({ outcome: "registered", effectiveUserId,
-        protocolVersion: negotiatedVersion, capabilities: negotiatedCapabilities });
+        protocolVersion: negotiatedVersion, capabilities: negotiatedCapabilities }, send);
       if (socket.readyState === socket.OPEN) {
         const v8Ack = negotiatedVersion >= CODEX_RELAY_PROTOCOL_VERSION
           ? (registry as unknown as RelayCodexRegistryLike).getV8Acknowledgement?.(msg.relayId)
@@ -964,6 +966,9 @@ export function relayRoutes(
     // register. Capability updates are accepted only for this user.
     let registeredUserId: string | null = null;
     let registeredProtocolVersion: number | null = null;
+    // Exact closure installed in the registry for this authenticated socket.
+    // Relay ids can be reused, so the id alone is not a connection identity.
+    let registeredSend: RegisteredRelaySend | null = null;
     let registrationStarted = false;
     // D384 Phase 5 — serverNames this relay has advertised MCP tools for, so
     // we can unregister them from the catalog on disconnect/close.
@@ -1030,10 +1035,11 @@ export function relayRoutes(
             break;
           }
           registrationStarted = true;
-          void handleRelayRegister(socket, msg, registry, configuredRelayProtocolPolicy(), result => {
+          void handleRelayRegister(socket, msg, registry, configuredRelayProtocolPolicy(), (result, send) => {
             registeredRelayId = relayId;
             registeredUserId = result.effectiveUserId ?? null;
             registeredProtocolVersion = result.protocolVersion ?? null;
+            registeredSend = send;
             const previous = socketMap.get(relayId);
             socketMap.set(relayId, socket);
             if (previous !== undefined && previous !== socket) previous.close(1000, "Relay connection replaced");
@@ -1103,7 +1109,18 @@ export function relayRoutes(
             warn("[relay] heartbeat for a different or unregistered relay; ignoring");
             break;
           }
-          registry.updatePresence(msg.relayId);
+          // A stale sweep can remove the registry entry while its TCP socket
+          // remains open. Close that exact socket so RelayClient reconnects
+          // and authenticates again. The socket-map and send-closure checks
+          // also prevent an obsolete socket from refreshing or disturbing a
+          // replacement that reused the relay id.
+          if (
+            registeredSend === null ||
+            socketMap.get(msg.relayId) !== socket ||
+            !registry.updatePresence(msg.relayId, registeredSend)
+          ) {
+            socket.close(1012, "Relay registration expired");
+          }
           break;
         }
 
