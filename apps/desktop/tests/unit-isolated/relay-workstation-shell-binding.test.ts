@@ -1,5 +1,5 @@
 /**
- * Desktop revalidation of a profile-bound workstation authority reference.
+ * Desktop revalidation of a profile-bound Desktop filesystem authority reference.
  *
  * Validates:
  * Pure authority coverage remains relevant to managed execution and typed Git:
