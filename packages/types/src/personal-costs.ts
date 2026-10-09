@@ -61,11 +61,49 @@ export interface PersonalCostsByProviderRow {
 export interface PersonalCostsByTaskRow {
   taskId: string;
   calls: number;
+  providerOperations: number;
+  unknownProviderOperations: number;
   estimatedCostUsd: number;
   actualCostUsd: number;
   totalCostUsd: number;
   pendingAttempts: number;
   unknownAttempts: number;
+}
+
+export type ServiceCostAttemptOutcome =
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "interrupted"
+  | "unknown";
+
+export interface ServiceCostOperationsSummary {
+  operations: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  interrupted: number;
+  unknown: number;
+  /** Historical rows recorded before service lifecycle outcomes were persisted. */
+  legacy: number;
+}
+
+export interface ServiceCostRecoveryAttempt {
+  provider: string;
+  operation: string;
+  workload: string | null;
+  attemptOutcome: ServiceCostAttemptOutcome | null;
+  failureCode: string | null;
+  /** One-way, content-free reference for correlating a provider receipt. */
+  requestReference: string | null;
+  taskId: string | null;
+  runId: string | null;
+  jobId: string | null;
+  occurredAt: string;
+}
+
+export interface ServiceCostRecoverySummary {
+  attempts: ServiceCostRecoveryAttempt[];
 }
 
 export interface PersonalCostsTimeSeriesPoint {
@@ -118,4 +156,8 @@ export interface PersonalCostsSummary {
   byTask: PersonalCostsByTaskRow[];
   timeSeries: PersonalCostsTimeSeriesPoint[];
   recovery: PersonalCostsRecoverySummary;
+  /** Present when the server supports durable service-attempt lifecycle accounting. */
+  serviceOperations?: ServiceCostOperationsSummary | undefined;
+  /** Present when the server supports content-free service cost recovery diagnostics. */
+  serviceRecovery?: ServiceCostRecoverySummary | undefined;
 }

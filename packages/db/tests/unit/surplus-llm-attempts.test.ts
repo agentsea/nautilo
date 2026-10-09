@@ -11,6 +11,7 @@ import {
   reconcileSurplusLlmAttemptCost,
   requeueBlockedPersonalSurplusAttempts,
   requeueBlockedServerSurplusAttempts,
+  requeueBlockedSurplusDecisionAttempts,
   settlePersonalLlmAttempt,
   settleSurplusLlmAttempt,
   type SurplusPendingAttempt,
@@ -337,6 +338,25 @@ describe("Surplus durable LLM attempts", () => {
     expect(predicate.params).toContain("receipt_account_unproven");
     expect(predicate.params).toContain("receipt_read_unauthorized");
     expect(predicate.params).not.toContain("receipt_binding_invalid");
+  });
+
+  test("requeues only decisions blocked by the formerly unsupported receipt endpoint", async () => {
+    const fake = mutationDb({ returning: [{ id: ATTEMPT_ID }] });
+    __setLlmUsageDbForTests(fake.handle);
+    expect(await requeueBlockedSurplusDecisionAttempts()).toBe(1);
+    expect(fake.updated[0]).toMatchObject({
+      recoveryState: "retryable",
+      failureCode: null,
+    });
+    const predicate = new PgDialect().sqlToQuery(fake.updatePredicates[0]!);
+    expect(predicate.params).toContain("surplus");
+    expect(predicate.params).toContain("/v1/decisions");
+    expect(predicate.params).toContain("blocked_repair");
+    expect(predicate.params).toContain("receipt_endpoint_unsupported");
+    expect(predicate.params).toContain("pending");
+    expect(predicate.params).toContain("unknown");
+    expect(predicate.params).not.toContain("receipt_read_unauthorized");
+    expect(predicate.params).not.toContain("/v1/chat/completions");
   });
 
   test("terminal completion preserves recovered actual cost while retrying its observed request receipt", async () => {

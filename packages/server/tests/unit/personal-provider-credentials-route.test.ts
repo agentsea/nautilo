@@ -595,7 +595,7 @@ describe("personal provider credential routes", () => {
     expect(response.body).not.toContain("tiny");
   });
 
-  test("stores a canonical non-chat provider without leaking it or granting chat capability", async () => {
+  test("stores a canonical research-only provider without leaking it or granting chat capability", async () => {
     const harness = await makeHarness();
     const created = await harness.app.inject({
       method: "PUT", url: "/api/account/provider-credentials/tavily",
@@ -617,7 +617,7 @@ describe("personal provider credential routes", () => {
       expect.objectContaining({ provider: "tavily", validationStatus: "unverified" }),
     ]);
     expect((result["providers"] as Array<Record<string, unknown>>)
-      .find(({ id }) => id === "tavily")?.["personalCapabilities"]).toEqual([]);
+      .find(({ id }) => id === "tavily")?.["personalCapabilities"]).toEqual(["research"]);
   });
 
   test("saves Surplus inference readiness while warning separately about receipt access", async () => {

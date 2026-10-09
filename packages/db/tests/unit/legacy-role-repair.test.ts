@@ -90,6 +90,50 @@ describe("legacy-role-repair SQL builders", () => {
     );
   });
 
+  test("broad product-role repair restores guarded Task evidence FK privileges", () => {
+    const sql = buildAppRoleOwnershipRepairSql();
+    for (const table of [
+      "task_run_message_associations",
+      "protected_task_execution_segment_receipts",
+      "protected_task_continuation_receipts",
+    ]) {
+      const narrow = `REVOKE ALL PRIVILEGES ON TABLE public.${table} FROM nautilo`;
+      expect(sql).toContain(`to_regclass('public.${table}') IS NOT NULL`);
+      expect(sql).toContain(narrow);
+      expect(sql.indexOf(narrow)).toBeGreaterThan(
+        sql.indexOf("GRANT ALL PRIVILEGES ON ALL TABLES"),
+      );
+      expect(sql).toContain(`${table}_immutable_row`);
+      expect(sql).toContain(`${table}_immutable_table`);
+      expect(sql).toContain(
+        `GRANT SELECT, INSERT, DELETE ON TABLE public.${table} TO nautilo`,
+      );
+      // Before the corrective guard migration, startup repair remains closed.
+      expect(sql).toContain(
+        `GRANT SELECT, INSERT ON TABLE public.${table} TO nautilo`,
+      );
+    }
+    expect(sql).toContain(
+      "to_regprocedure('public.guard_task_execution_evidence()') IS NOT NULL",
+    );
+    expect(sql).toContain(
+      "tgfoid = to_regprocedure('public.guard_task_execution_evidence()')",
+    );
+    expect(sql).not.toContain(
+      "'public.guard_task_execution_evidence()'::regprocedure",
+    );
+    expect(sql).toContain("NOT tgisinternal AND tgenabled IN ('O', 'A')");
+    expect(sql).toContain(
+      "REVOKE UPDATE (task_run_id) ON TABLE public.protected_task_execution_segment_receipts FROM nautilo",
+    );
+    expect(sql).toContain(
+      "GRANT UPDATE (task_run_id) ON TABLE public.protected_task_execution_segment_receipts TO nautilo",
+    );
+    expect(sql).not.toContain(
+      "GRANT UPDATE (execution_segment) ON TABLE public.protected_task_execution_segment_receipts",
+    );
+  });
+
   test("probe SQL is read-only and targets ownership + essential select", () => {
     expect(PROBE_PUBLIC_OBJECTS_NOT_OWNED_SQL).toContain("count(*)::text");
     expect(PROBE_PUBLIC_OBJECTS_NOT_OWNED_SQL).toContain(

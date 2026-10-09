@@ -100,16 +100,17 @@ describe.serial("native Task funding", () => {
           ? await request.clone().text()
           : "{}";
       providerRequests.push({ authorization: headers.get("authorization"), body, url });
+      const providerResponseId = `chatcmpl-native-task-${providerRequests.length}`;
       const payload = JSON.parse(body) as { stream?: boolean };
       if (payload.stream) {
         const chunks = [
           {
-            id: "chatcmpl-native-task", object: "chat.completion.chunk", created: 1,
+            id: providerResponseId, object: "chat.completion.chunk", created: 1,
             model: "moonshotai/kimi-k3",
             choices: [{ index: 0, delta: { role: "assistant", content: "Synthetic Task response." }, finish_reason: null }],
           },
           {
-            id: "chatcmpl-native-task", object: "chat.completion.chunk", created: 1,
+            id: providerResponseId, object: "chat.completion.chunk", created: 1,
             model: "moonshotai/kimi-k3",
             choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
             usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
@@ -121,7 +122,7 @@ describe.serial("native Task funding", () => {
         );
       }
       return Response.json({
-        id: "chatcmpl-native-task",
+        id: providerResponseId,
         object: "chat.completion",
         created: 1,
         model: "moonshotai/kimi-k3",

@@ -95,10 +95,13 @@ function dependencies(input: Readonly<{
     loadTask: async () => input.task === undefined ? task() : input.task,
     loadRun: async () => input.run === undefined ? run() : input.run,
     resolveRequesterHuman: async () => ({ id: HUMAN }),
-    resolveRequesterPrivateRoom: async () => ({
-      roomId: ROOM,
-      namespaceId: CONTENT,
-    }),
+    resolveRequesterPrivateRoom: async (_userId, _agentId, namespaceId) => {
+      expect(namespaceId).toBe(CONTENT);
+      return {
+        roomId: ROOM,
+        namespaceId: CONTENT,
+      };
+    },
     createProductContext: async () => ({
       canonicalRunner: { marker: "runner" },
     } as never),
@@ -160,9 +163,11 @@ test("resolves current result repository authority after TaskRun terminalization
     agentId: AGENT,
     contentNamespaceId: CONTENT,
     sourceRoomId: ROOM,
-    namespaceIds: [CONTENT],
     expectedPolicyRevision: 11,
   });
+  expect(inspected).not.toHaveProperty("targetRoomId");
+  expect(inspected).not.toHaveProperty("scopeMemory");
+  expect(inspected).not.toHaveProperty("namespaceIds");
 });
 
 test("does not require a live execution grant or running TaskRun", async () => {

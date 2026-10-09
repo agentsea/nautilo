@@ -146,6 +146,8 @@ describe("Hive Reflection current V2 exact authority sets", () => {
       }});
   });
 
+  // The full-capacity signed round trip took 84s on a shared CI runner.
+  // Keep every Namespace and Domain covered; allow headroom only for this test.
   test("carries all16384 exact Namespaces and distinct Domains through a complete signed response", async () => {
     const f = await fixture(16_384, false, true);
     expect(f.input.descriptorBytes.length).toBeLessThanOrEqual(MAX_BACKGROUND_REFLECTION_WORK_DESCRIPTOR_WIRE_BYTES_V2);
@@ -156,5 +158,5 @@ describe("Hive Reflection current V2 exact authority sets", () => {
     await withOpenedReflectionBackgroundAuthorizationV2(f.crypto, {responseBytes, recipientPrivateKey: f.recipient.privateKey,
       now: () => f.descriptor.issuedAt + 1, resolveCurrentIssuer: () => f.device.publicKey,
       use: opened => {expect(opened.domainKeys).toHaveLength(16_384); expect(opened.domainKeys.at(-1)!.key).toEqual(f.domainKeys.at(-1)!.key);}});
-  }, 60_000);
+  }, 180_000);
 });

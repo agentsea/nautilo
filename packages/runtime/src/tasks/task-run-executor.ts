@@ -1,3 +1,4 @@
+import { runWithCapabilityFundingSession } from "@nautilo/agent";
 import { resolveTaskLocalExecutionPort, isTaskLocalExecutionTargetAvailable } from "./local-execution-delegation";
 import type { ServerEvent } from "@nautilo/types";
 import { parkTaskContentAccessRecovery } from "./ordinary-content-access-recovery";
@@ -43,7 +44,10 @@ import {
 import { replayTaskInterruptEvents, taskApprovalRecipient } from "./emit-task-interrupt";
 import { prepareRepoDocsWorkspace, type RepoDocsWorkspace } from "./repo-docs-task";
 import { settleTaskWriterReviewAfterModel } from "./writer-review-task-lifecycle";
-import { streamDeepResearchReport } from "../executors/deep-research-executor";
+import {
+  streamDeepResearchReport,
+  type DeepResearchUsageAttribution,
+} from "../executors/deep-research-executor";
 import {
   finalizeSecurityReportDelivery,
   assertSecurityReportTaskActive,
@@ -99,6 +103,38 @@ function str(input: Record<string, unknown>, key: string, fallback = ""): string
 function num(input: Record<string, unknown>, key: string, fallback: number): number {
   const v = input[key];
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+
+/** Recheck the server-authored durable tool mode before caller-funded work starts. */
+export function callerTaskToolIntentMatches(
+  task: Pick<Task, "toolsMode" | "toolsWhitelist">,
+  input: Readonly<Record<string, unknown>>,
+): boolean {
+  switch (task.toolsMode) {
+    case "auto":
+      return !Object.hasOwn(input, "toolWhitelist");
+    case "none":
+      return Array.isArray(input["toolWhitelist"])
+        && input["toolWhitelist"].length === 0;
+    case "whitelist":
+      return Array.isArray(input["toolWhitelist"])
+        && JSON.stringify(input["toolWhitelist"]) === JSON.stringify(task.toolsWhitelist);
+    default:
+      return false;
+  }
+}
+
+/** Attribute orphan Deep Research work to its canonical initiating/return Room. */
+export function deepResearchTaskUsageAttribution(
+  task: Pick<Task, "id" | "agentId" | "callingRoomId">,
+  run: Pick<TaskRun, "id">,
+): DeepResearchUsageAttribution {
+  return {
+    roomId: task.callingRoomId,
+    taskId: task.id,
+    taskRunId: run.id,
+    agentId: task.agentId,
+  };
 }
 
 /**
@@ -271,7 +307,7 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
       || str(input, "callingRoomId") !== task.callingRoomId
       || str(input, "currentTaskId") !== task.id
       || str(input, "roomId") !== (task.targetChat === "orphan" ? "" : task.targetRoomId ?? "")
-      || !Array.isArray(input["toolWhitelist"]) || input["toolWhitelist"].length !== 0
+      || !callerTaskToolIntentMatches(task, input)
       || input["awaitResponse"] === true || input["requiresLiveMiniApp"] === true
       || (Array.isArray(input["artifactRefs"]) && input["artifactRefs"].length > 0)
       || (Array.isArray(input["focusedResources"]) && input["focusedResources"].length > 0)
@@ -315,25 +351,38 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
           research_brief: str(input, "message"),
           report_language: deepResearch.reportLanguage,
           deep_research_model_plan: deepResearch.modelPlan,
+          ...(deepResearch.version === 2 ? { deep_research_funding: deepResearch } : {}),
         },
         taskRunId,
         signal,
-        str(input, "requestorId"),
+        task.requestorId,
+        deepResearchTaskUsageAttribution(task, run),
       );
       let resultText = "";
-      for (;;) {
-        const next = await stream.next();
-        if (next.done) {
-          resultText = next.value;
-          break;
+      let streamComplete = false;
+      try {
+        for (;;) {
+          const next = await runWithCapabilityFundingSession(fundingSession?.capabilityFunding, () => stream.next());
+          if (next.done) {
+            streamComplete = true;
+            resultText = next.value;
+            break;
+          }
+          yield {
+            type: "task.progress",
+            taskId,
+            taskRunId,
+            ownerId,
+            detail: next.value.detail ?? next.value.phase,
+          };
         }
-        yield {
-          type: "task.progress",
-          taskId,
-          taskRunId,
-          ownerId,
-          detail: next.value.detail ?? next.value.phase,
-        };
+      } finally {
+        if (!streamComplete) {
+          await runWithCapabilityFundingSession(
+            fundingSession?.capabilityFunding,
+            () => stream.return(""),
+          );
+        }
       }
       if (signal.aborted) {
         log(`[task-run] deep-research task=${taskId} run=${taskRunId} aborted — skipping report-back`);

@@ -7,6 +7,8 @@ import type { PolicyResolver } from "@nautilo/trust";
 import { z } from "zod";
 import type { ChatModel } from "../../src/providers/types";
 import type { RebuildForegroundContext } from "../../src/graph/foreground-context-refresh";
+import type { CapabilityFundingSession } from "../../src/runtime/capability-funding";
+import type { ForegroundChatFundingSession } from "../../src/runtime/foreground-chat-funding";
 
 // Exercise the compiled production graph and real tool node. Only persistent
 // preferences, provider credential admission, and model generation are
@@ -49,6 +51,7 @@ configureRuntimeModelCatalog({ catalogPointerUrl: null });
 
 const { createNautiloGraph } = await import("../../src/agent/graph");
 const { streamForegroundGraph } = await import("../../src/graph/foreground-context-refresh");
+const { getCapabilityFundingSession } = await import("../../src/runtime/capability-funding");
 const { __setStubModelForTests: setStubModel } = await import("../../src/providers/universal");
 const { _resetAgentTurnContextsForTests } = await import("../../src/runtime/turn-context");
 const previousTestMode = process.env["NAUTILO_TEST_MODE"];
@@ -326,6 +329,79 @@ test("compiled graph keeps more than one hundred visible text/tool segments boun
   expect(messages.filter((message) => message.id === "assistant-final")).toHaveLength(1);
   expect(checkpoint?.values["foregroundContextRefresh"]).toBeNull();
 }, 60_000);
+
+test("compiled graph preserves pinned capability funding across a context refresh", async () => {
+  const observed: string[] = [];
+  const capabilityFunding: CapabilityFundingSession = {
+    humanUserId: "refresh-owner",
+    parentFundingKind: "server",
+    async resolveModel() { throw new Error("unused"); },
+    async openModel() { throw new Error("unused"); },
+    async openService() { throw new Error("unused"); },
+  };
+  const fundingSession: ForegroundChatFundingSession = {
+    kind: "server",
+    admission: {
+      modelId: "openai:gpt-5.5-2026-04-23",
+      binding: { kind: "server", providerRoute: "openai" },
+    },
+    capabilityFunding,
+    async recheckAttempt() {},
+    async runAttempt(_modelId, run) {
+      expect(getCapabilityFundingSession()).toBe(capabilityFunding);
+      observed.push("attempt");
+      return run({
+        usageFunding: {
+          kind: "server",
+          humanUserId: "refresh-owner",
+          providerRoute: "openai",
+        },
+      });
+    },
+  };
+  installStepTool(() => {
+    expect(getCapabilityFundingSession()).toBe(capabilityFunding);
+    observed.push("tool");
+    return "completed";
+  });
+  let modelCalls = 0;
+  const model: ChatModel = {
+    bindTools: () => model,
+    invoke: async () => {
+      expect(getCapabilityFundingSession()).toBe(capabilityFunding);
+      modelCalls += 1;
+      observed.push(`model:${modelCalls}`);
+      return modelCalls === 1
+        ? new AIMessage({
+            id: "assistant-funded-step",
+            content: "Visible funded progress.",
+            tool_calls: [{ id: "funded-step", name: "fixture_step", args: { sequence: 1 } }],
+          })
+        : new AIMessage({ id: "assistant-funded-final", content: "Funded work complete." });
+    },
+  };
+  setStubModel(model);
+  const graph = createNautiloGraph(new MemorySaver(), policy, {
+    foregroundChatFundingSession: fundingSession,
+  });
+  const request = new HumanMessage({ id: "accepted-funded", content: "Run the funded step." });
+  let refreshes = 0;
+  await drainGraph(graph, graphInput(request), {
+    configurable: { thread_id: "foreground-refresh-funded" },
+    recursionLimit: 200,
+    version: "v2",
+  }, {
+    rebuildForegroundContext: async () => {
+      refreshes += 1;
+      return [request];
+    },
+  });
+
+  expect(refreshes).toBe(1);
+  expect(observed).toEqual(["attempt", "model:1", "tool", "attempt", "model:2"]);
+  const checkpoint = await graph.getState({ configurable: { thread_id: "foreground-refresh-funded" } });
+  expect(checkpoint?.values["foregroundFundingSnapshot"]).toEqual(fundingSession.admission);
+});
 
 test("compiled graph refreshes tool-only pressure before a doomed provider call", async () => {
   const providerCharacters: number[] = [];

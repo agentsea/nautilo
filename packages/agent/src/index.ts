@@ -70,6 +70,8 @@ export {
 } from "./graph/foreground-context-refresh";
 export {
   createEncryptedCheckpointSaver,
+  encryptedCheckpointShadowNamespaceId,
+  encryptedCheckpointShadowThreadId,
   ENCRYPTED_CHECKPOINT_LIST_DEFAULT_LIMIT,
   ENCRYPTED_CHECKPOINT_LIST_MAX_LIMIT,
   EncryptedCheckpointSaver,
@@ -91,7 +93,13 @@ export {
   type EncryptedCheckpointMaintenanceCoordinate,
   type EncryptedCheckpointMaintenanceOutcome,
   type EncryptedCheckpointSaverCloseOutcome,
+  type EncryptedCheckpointSaverQuiescence,
 } from "./checkpoints/encrypted-checkpoint-saver";
+export {
+  readEncryptedCheckpointPhysicalManifest,
+  type EncryptedCheckpointManifestPool,
+  type EncryptedCheckpointPhysicalManifest,
+} from "./checkpoints/encrypted-checkpoint-manifest";
 export {
   createDedicatedEncryptedCheckpointPool,
 } from "./checkpoints/checkpoint-saver";
@@ -115,6 +123,13 @@ export {
   interruptValueToServerEvent,
   collectPendingInterruptEvents,
 } from "./graph/interrupt-mapping";
+export {
+  PROTECTED_TASK_ADDITIONAL_AUTHORITY_GRANTED_V1,
+  assertProtectedTaskAdditionalAuthorityResumeAcknowledgementV1,
+  createProtectedTaskAdditionalAuthorityResumeMapV1,
+  type ProtectedTaskAdditionalAuthorityResumeAcknowledgementV1,
+  type ProtectedTaskAdditionalAuthorityResumeBindingV1,
+} from "./graph/protected-task-additional-authority-resume";
 export { readPendingInterruptEventsForThread } from "./graph/pending-interrupts";
 export { resumeGraphWithConnectedWebAction } from "./graph/resume-connected-web-action";
 export {
@@ -1080,6 +1095,7 @@ export { interpolate } from "./prompts/interpolate";
 // Memory stores
 export {
   commitForegroundMemoryOrdinaryFallback,
+  type ForegroundMemoryOrdinaryFallbackInput,
   saveMemory,
   searchMemory,
   replaceMemory,
@@ -1387,6 +1403,8 @@ export {
   createDeepResearchAgent,
   createDeepResearchGraph,
   fromDeepResearchConfig,
+  fromAdmittedDeepResearchModelPlan,
+  runWithDeepResearchFunding,
   DeepResearchUnavailableError,
   deepResearchModelPlanFromConfiguration,
   resolveDeepResearchModelPlan,
@@ -1399,8 +1417,11 @@ export {
   type DeepResearchAgentState,
 } from "./subagents/deep-research/index";
 export {
+  admittedDeepResearchTaskMetadata,
   deepResearchTaskMetadata,
+  parseDeepResearchTaskMetadataValue,
   readDeepResearchTaskMetadata,
+  type AdmittedDeepResearchTaskMetadata,
   type DeepResearchTaskMetadata,
 } from "./subagents/deep-research/shared/task-metadata";
 
@@ -1440,6 +1461,15 @@ export { listSpeechModels, getServerSpeechModel, estimateSpeechCostUsd, type Spe
 export { surplusCredentialFingerprint, fetchSurplusSettlement } from "./providers/surplus-reconciliation";
 
 export { normalizeGatewayBaseUrl } from "./providers/universal";
+
+export { getCapabilityFundingSession, runWithCapabilityFundingSession, type CapabilityFundingSession, type PersonalCapabilityRole } from "./runtime/capability-funding";
+
+export { isSupportedPersonalTool } from "./runtime/personal-tool-readiness";
+
+export { resolveSurplusDecisionServingAvailability, resolveQualifiedSurplusDecisionRoute } from "./providers/surplus-decision-route";
+
+export { runWithForegroundFundingSession, type ForegroundFundingSnapshot } from "./runtime/foreground-chat-funding";
+export { readForegroundFundingForThread } from "./graph/turn-id";
 export type { LocalExecutionHistoryPort, LocalExecutionHistoryReference } from "./tools/local-execution/history";
 
 export { runWithLocalExecutionDelegation, getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort, type DelegatedLocalExecutionAdmission, type DelegatedLocalExecutionOperation } from "./runtime/local-execution-delegation";

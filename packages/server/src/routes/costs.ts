@@ -159,6 +159,8 @@ export function costsRoutes(app: FastifyInstance, deps: CostsRoutesDeps = {}): v
       })),
       timeSeries: summary.timeSeries,
       recovery: summary.recovery,
+      serviceOperations: summary.serviceOperations,
+      serviceRecovery: summary.serviceRecovery,
     });
   });
 }

@@ -1,35 +1,97 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 import {
-  authorizationRevision,
-  createDomainForegroundAuthorizationPlan,
-  cryptoDeviceId,
-  humanId,
   type LatticeCrypto,
 } from "@nautilo/lattice-crypto";
 import {
-  createTaskRuntimeBackgroundAuthorizationRequestV1,
-} from "@nautilo/lattice-crypto/background";
-import {
-  DOMAIN_FOREGROUND_AUTHORIZATION_MAX_SECRET_BYTES_V2,
   DOMAIN_FOREGROUND_AUTHORIZATION_MAX_TTL_MS_V2,
-  destroyDomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+import {
+  copyTaskScopeMemoryBinding,
+  type ParkedTaskRuntimeCurrentRoutingFacts,
+  type TaskScopeMemoryBinding,
+} from "@nautilo/lattice-bridge/server";
 import type {
   AcceptProtectedTaskRunOutputBindingInput,
   AcceptProtectedTaskRunOutputBindingResult,
   ProtectedTaskRunOutputDestination,
+  ParkedProtectedTaskAdditionalAuthority,
+  ProtectedTaskRunOutputBinding,
 } from "@nautilo/db";
 import {
   createBackgroundAuthorizationTaskRuntimeRequestV3,
+  taskRuntimeStableIdempotencyKey,
+  taskRuntimeStableRoutingDigest,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
+  type ProtectedTaskNativeAdditionalAuthorityResume,
   type TaskRuntimeGrantClaimPlan,
+  type TaskRuntimeGrantStableIdentity,
   type ProtectedTaskPredispatchPlan,
   type ProtectedTaskOccurrence,
 } from "@nautilo/runtime";
+import type {
+  CurrentProtectedTaskMemoryPolicy,
+} from "./current-protected-task-memory-authority";
+import {
+  createProtectedTaskRuntimeRecipientRequestPlan,
+} from "./protected-task-runtime-recipient-request-plan";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/** Compare locked routing with durable park evidence, independently of old grants. */
+export function createParkedTaskRuntimeRoutingValidator(input: Readonly<{
+  expected: ParkedProtectedTaskAdditionalAuthority;
+  output: ProtectedTaskRunOutputBinding;
+  /** Current canonical Wide envelope's private write target, not content custody. */
+  widePrivateNamespaceId: string | null;
+}>): (facts: ParkedTaskRuntimeCurrentRoutingFacts) => boolean {
+  const { expected, output } = input;
+  const widePrivateNamespaceId = input.widePrivateNamespaceId;
+  const taskRunId = expected.occurrence.run.id;
+  const storedDigest = expected.proof.continuation.stableRoutingDigest;
+  if (!(storedDigest instanceof Uint8Array) || storedDigest.length !== 32
+    || (widePrivateNamespaceId !== null && !UUID.test(widePrivateNamespaceId))
+    || output.taskRunId !== taskRunId
+    || output.bindingId !== `task-run-output:${taskRunId}`
+    || output.resultOperationId !== `task-run-result:${taskRunId}`
+    || output.resultObjectId !== expected.priorJob.reference.resultObjectId
+    || output.destinationRoomId !== expected.occurrence.task.callingRoomId
+    || (output.destinationRoomId === null
+      ? output.deliveryMode !== "none" || output.destinationNamespaceId !== null
+      : output.deliveryMode === "none"
+        || output.destinationNamespaceId === null
+        || !UUID.test(output.destinationNamespaceId))) {
+    throw new TypeError("Parked Task original routing evidence is unavailable");
+  }
+  const digest = storedDigest.slice();
+  const outputRoomId = output.destinationRoomId;
+  const outputNamespaceId = output.destinationNamespaceId;
+  return facts => {
+    if (facts.taskRunId !== taskRunId
+      || (facts.memoryMode === "wide" && widePrivateNamespaceId === null)) return false;
+    const widePrimaryWriteNamespaceId = facts.memoryMode === "wide"
+      ? facts.wideBringBack && outputNamespaceId !== null
+        ? outputNamespaceId
+        : widePrivateNamespaceId
+      : null;
+    const current = taskRuntimeStableRoutingDigest({
+      ...facts,
+      startedAt: facts.startedAt.getTime(),
+      requiredNamespaceFingerprint: Buffer.from(
+        facts.requiredNamespaceFingerprint,
+      ).toString("base64url"),
+      outputRoomId,
+      outputNamespaceId,
+      widePrimaryWriteNamespaceId,
+    });
+    try {
+      return timingSafeEqual(digest, current);
+    } finally {
+      current.fill(0);
+    }
+  };
+}
 
 export type ProtectedTaskRuntimeNamespaceAuthorityFact = Readonly<{
   namespaceId: string;
@@ -40,20 +102,30 @@ export type ProtectedTaskRuntimeNamespaceAuthorityFact = Readonly<{
   expectedAuthorizationRevision: number;
 }>;
 
+export type ProtectedTaskRuntimeMemoryPolicy =
+  CurrentProtectedTaskMemoryPolicy;
+
 export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
   crypto: Pick<LatticeCrypto, "hash">;
   recipientTtlMs: number;
   predispatch(
     occurrence: ProtectedTaskOccurrence,
   ): Promise<ProtectedTaskPredispatchPlan>;
+  resolveScopeMemoryInventory?(input: Readonly<{
+    occurrence: ProtectedTaskOccurrence;
+    predispatch: ProtectedTaskPredispatchPlan;
+  }>): Promise<TaskScopeMemoryBinding>;
   resolveNamespaceAuthority(input: Readonly<{
     occurrence: ProtectedTaskOccurrence;
     predispatch: ProtectedTaskPredispatchPlan;
     namespaceIds: readonly string[];
+    scopeMemory?: TaskScopeMemoryBinding;
   }>): Promise<Readonly<{
     /** Current requester-private Room anchoring the protected Task definition. */
     sourceRoomId: string;
     sourceNamespaceId: string;
+    /** Process-local policy selected under the same revision fence. */
+    policy: ProtectedTaskRuntimeMemoryPolicy;
     facts: readonly ProtectedTaskRuntimeNamespaceAuthorityFact[];
   }>>;
   resolveOutputDestination(
@@ -65,12 +137,22 @@ export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
   prepareExecution(input: Readonly<{
     occurrence: ProtectedTaskOccurrence;
     predispatch: ProtectedTaskPredispatchPlan;
+    policy: ProtectedTaskRuntimeMemoryPolicy;
+    reference: TaskRuntimeGrantClaimPlan["reference"];
+    /** Server-derived original routing commitment for a later atomic park. */
+    stableRoutingDigest: Uint8Array;
+    /** Exact pending interrupt and immutable pre-effect proof for a parked run. */
+    additionalAuthorityResume?: ProtectedTaskNativeAdditionalAuthorityResume;
+    scopeMemory?: TaskScopeMemoryBinding;
+    /** Exact committed preimage; retained only for fixed Scope execution admission. */
+    scopeWorkIdentity?: string;
   }>): Promise<Readonly<{
     executor: TaskRuntimeGrantClaimPlan["executor"];
     openTransientInput: TaskRuntimeGrantClaimPlan["openTransientInput"];
     modelAttribution?: "external";
   }>>;
   startProtectedTaskRun: TaskRuntimeGrantClaimPlan["startProtectedTaskRun"];
+  deferBeforeExecution?: TaskRuntimeGrantClaimPlan["deferBeforeExecution"];
   publishResult: TaskRuntimeGrantClaimPlan["publishResult"];
   now?: () => number;
 }>;
@@ -80,7 +162,7 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
     && left.every((value, index) => value === right[index]);
 }
 
-function sameOccurrence(
+export function sameProtectedTaskRuntimeOccurrence(
   left: ProtectedTaskOccurrence,
   right: ProtectedTaskOccurrence,
 ): boolean {
@@ -107,9 +189,10 @@ function sameOccurrence(
     && left.run.startedAt.getTime() === right.run.startedAt.getTime();
 }
 
-function namespaceInventory(
-  plan: ProtectedTaskPredispatchPlan,
+export function protectedTaskRuntimeNamespaceInventory(
+  plan: Pick<ProtectedTaskPredispatchPlan, "memory" | "occurrence">,
   outputDestination: ProtectedTaskRunOutputDestination | null,
+  scopeMemory?: TaskScopeMemoryBinding,
 ): Readonly<{
   namespaceIds: readonly string[];
   operations(namespaceId: string): readonly ("decrypt" | "encrypt")[];
@@ -117,25 +200,25 @@ function namespaceInventory(
   const { envelope } = plan.memory;
   const contentNamespaceId = plan.occurrence.task.contentNamespaceId;
   if (envelope.memoryMode === "scope") {
-    // Scope records can retain additional Namespaces dynamically. They are not
-    // ambient authority for this initial grant: each read must acquire current
-    // operation-time authority. The envelope exposes only its proven origin,
-    // which is required here together with the protected Task definition.
-    const originNamespaceId = "originWritableNamespaceId" in envelope
-      ? envelope.originWritableNamespaceId
-      : null;
-    if (typeof originNamespaceId !== "string" || originNamespaceId.length === 0) {
-      throw new TypeError("Protected Task Scope Memory origin is unavailable");
+    if (scopeMemory === undefined) {
+      throw new TypeError("Protected Task Scope Memory inventory is unavailable");
     }
+    const readable = new Set(scopeMemory.readableNamespaceIds);
+    const encryptable = new Set([
+      scopeMemory.originWritableNamespaceId,
+      contentNamespaceId,
+      ...(outputDestination === null ? [] : [outputDestination.namespaceId]),
+    ]);
+    readable.add(contentNamespaceId);
+    if (outputDestination !== null) readable.add(outputDestination.namespaceId);
     return Object.freeze({
       namespaceIds: Object.freeze([...new Set([
-        contentNamespaceId,
-        originNamespaceId,
-        ...(outputDestination === null ? [] : [outputDestination.namespaceId]),
+        ...readable,
+        ...encryptable,
       ])].sort()),
-      operations: () => Object.freeze([
-        "decrypt" as const,
-        "encrypt" as const,
+      operations: (namespaceId: string) => Object.freeze([
+        ...(readable.has(namespaceId) ? ["decrypt" as const] : []),
+        ...(encryptable.has(namespaceId) ? ["encrypt" as const] : []),
       ]),
     });
   }
@@ -163,9 +246,9 @@ function namespaceInventory(
   });
 }
 
-function canonicalAuthority(input: Readonly<{
+export function canonicalProtectedTaskRuntimeAuthority(input: Readonly<{
   occurrence: ProtectedTaskOccurrence;
-  inventory: ReturnType<typeof namespaceInventory>;
+  inventory: ReturnType<typeof protectedTaskRuntimeNamespaceInventory>;
   facts: readonly ProtectedTaskRuntimeNamespaceAuthorityFact[];
 }>): Readonly<{
   policyRevision: number;
@@ -230,29 +313,6 @@ function canonicalAuthority(input: Readonly<{
   return Object.freeze({ policyRevision, namespaces, domains });
 }
 
-function sameRequirements(
-  current: readonly Readonly<{
-    ordinal: number;
-    namespaceId: string;
-    domainId: string;
-    operations: readonly ("decrypt" | "encrypt")[];
-    expectedAccessRevision: number;
-    expectedPolicyRevision: number;
-  }>[],
-  expected: BackgroundAuthorizationTaskRuntimeRecordV3["authoritySet"]["namespaceRequirements"],
-): boolean {
-  return current.length === expected.length && current.every((value, index) => {
-    const other = expected[index];
-    return other !== undefined
-      && value.ordinal === other.ordinal
-      && value.namespaceId === other.namespaceId
-      && value.domainId === other.domainId
-      && value.expectedAccessRevision === other.expectedAccessRevision
-      && value.expectedPolicyRevision === other.expectedPolicyRevision
-      && value.operations.join(",") === other.operations.join(",");
-  });
-}
-
 /**
  * Builds the exact V3 grant plan for one already-revalidated protected Task
  * occurrence. This composition is intentionally inert until its returned plan
@@ -290,7 +350,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       throw new TypeError("Protected Task definition coordinates are invalid");
     }
     const prepared = await dependencies.predispatch(occurrence);
-    if (!sameOccurrence(occurrence, prepared.occurrence)) {
+    if (!sameProtectedTaskRuntimeOccurrence(occurrence, prepared.occurrence)) {
       throw new TypeError("Protected Task predispatch substituted its occurrence");
     }
     if (prepared.scheduling.ownerId !== occurrence.task.ownerId
@@ -309,22 +369,87 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       )) {
       throw new TypeError("Protected Task output destination is invalid");
     }
-    const inventory = namespaceInventory(prepared, outputDestination);
+    let scopeMemory: TaskScopeMemoryBinding | undefined;
+    if (prepared.memory.envelope.memoryMode === "scope") {
+      const envelopeOrigin = "originWritableNamespaceId"
+        in prepared.memory.envelope
+        ? prepared.memory.envelope.originWritableNamespaceId
+        : null;
+      if (typeof envelopeOrigin !== "string") {
+        throw new TypeError("Protected Task Scope Memory origin is unavailable");
+      }
+      const expectedScope = Object.freeze({
+        taskId: occurrence.task.id,
+        taskRunId: occurrence.run.id,
+        requesterUserId: occurrence.task.requestorId,
+        agentId: occurrence.task.agentId,
+        contentNamespaceId: occurrence.task.contentNamespaceId,
+        scopeId: prepared.memory.envelope.scopeId,
+        memoryRoomId: prepared.memory.envelope.roomId,
+        originWritableNamespaceId: envelopeOrigin,
+      });
+      if (dependencies.resolveScopeMemoryInventory === undefined) {
+        throw new TypeError(
+          "Protected Task Scope Memory inventory resolver is unavailable",
+        );
+      }
+      scopeMemory = copyTaskScopeMemoryBinding(
+        await dependencies.resolveScopeMemoryInventory({
+          occurrence,
+          predispatch: prepared,
+        }),
+      );
+      if (scopeMemory.scopeId !== prepared.memory.envelope.scopeId
+        || scopeMemory.memoryRoomId !== prepared.memory.envelope.roomId
+        || scopeMemory.originWritableNamespaceId
+          !== envelopeOrigin
+        || occurrence.task.id !== expectedScope.taskId
+        || occurrence.run.id !== expectedScope.taskRunId
+        || occurrence.task.requestorId !== expectedScope.requesterUserId
+        || occurrence.task.agentId !== expectedScope.agentId
+        || occurrence.task.contentNamespaceId
+          !== expectedScope.contentNamespaceId
+        || prepared.memory.envelope.scopeId !== expectedScope.scopeId
+        || prepared.memory.envelope.roomId !== expectedScope.memoryRoomId
+        || ("originWritableNamespaceId" in prepared.memory.envelope
+          ? prepared.memory.envelope.originWritableNamespaceId
+          : null) !== expectedScope.originWritableNamespaceId) {
+        throw new TypeError("Protected Task Scope Memory inventory is not exact");
+      }
+    }
+    const inventory = protectedTaskRuntimeNamespaceInventory(
+      prepared,
+      outputDestination,
+      scopeMemory,
+    );
     const resolvedAuthority = await dependencies.resolveNamespaceAuthority({
       occurrence,
       predispatch: prepared,
       namespaceIds: inventory.namespaceIds,
+      ...(scopeMemory === undefined ? {} : { scopeMemory }),
     });
     if (!UUID.test(resolvedAuthority.sourceRoomId)
       || resolvedAuthority.sourceNamespaceId
-        !== occurrence.task.contentNamespaceId) {
+        !== occurrence.task.contentNamespaceId
+      || resolvedAuthority.policy.revision < 1
+      || !Number.isSafeInteger(resolvedAuthority.policy.revision)
+      || (resolvedAuthority.policy.shadowBehavior !== "fallback"
+        && resolvedAuthority.policy.shadowBehavior !== "strict")
+      || (resolvedAuthority.policy.mode === "shadow_encryption"
+        ? occurrence.task.contentRepresentation !== "dual"
+        : resolvedAuthority.policy.mode === "encrypted_only"
+          ? occurrence.task.contentRepresentation !== "protected"
+          : true)) {
       throw new TypeError("Protected Task source Room authority is unavailable");
     }
-    const authority = canonicalAuthority({
+    const authority = canonicalProtectedTaskRuntimeAuthority({
       occurrence,
       inventory,
       facts: resolvedAuthority.facts,
     });
+    if (resolvedAuthority.policy.revision !== authority.policyRevision) {
+      throw new TypeError("Protected Task policy authority is unavailable");
+    }
     const contentAuthority = authority.namespaces.find((entry) =>
       entry.namespaceId === occurrence.task.contentNamespaceId)!;
     const contentDomain = authority.domains.find((entry) =>
@@ -363,14 +488,53 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       || output.binding.acceptedPolicyRevision !== authority.policyRevision) {
       throw new TypeError("Protected Task output binding is unavailable");
     }
-    const initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3 = Object.freeze({
-      snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
-        requestId,
-        workId: occurrence.run.id,
-        namespaceId: occurrence.task.contentNamespaceId,
-        now: createdAt,
-      }),
-      workIdentityHash: createHash("sha256").update(JSON.stringify({
+    let widePrimaryWriteNamespaceId: string | null = null;
+    if (prepared.memory.mode === "wide") {
+      const envelope = prepared.memory.envelope;
+      const primary = envelope.memoryMode === "scope"
+        ? undefined
+        : envelope.writableNamespaces[0];
+      if (primary === undefined || !UUID.test(primary)
+        || !inventory.namespaceIds.includes(primary)) {
+        throw new TypeError(
+          "Protected Task wide Memory write target is unavailable",
+        );
+      }
+      widePrimaryWriteNamespaceId = primary;
+    }
+    const stableIdentity: TaskRuntimeGrantStableIdentity = Object.freeze({
+      taskId: occurrence.task.id,
+      taskRunId: occurrence.run.id,
+      executionSegment: 1,
+      resumeContinuationFingerprint: null,
+      ownerId: occurrence.task.ownerId,
+      requestorId: occurrence.task.requestorId,
+      agentId: occurrence.task.agentId,
+      callingRoomId: occurrence.task.callingRoomId,
+      scheduleKind: occurrence.task.scheduleKind,
+      graphThreadId: occurrence.run.graphThreadId,
+      startedAt: occurrence.run.startedAt.getTime(),
+      sourceRoomId: resolvedAuthority.sourceRoomId,
+      targetRoomId: prepared.target.roomId,
+      targetUserIds: Object.freeze(
+        [...prepared.target.targetUserIds].sort(),
+      ),
+      outputRoomId: outputDestination?.roomId ?? null,
+      outputNamespaceId: outputDestination?.namespaceId ?? null,
+      memoryMode: prepared.memory.mode,
+      scopeId: prepared.memory.envelope.memoryMode === "scope"
+        ? prepared.memory.envelope.scopeId
+        : null,
+      contentRepresentation: occurrence.task.contentRepresentation,
+      contentNamespaceId: occurrence.task.contentNamespaceId,
+      contentRevision: occurrence.task.contentRevision,
+      contentObjectId: occurrence.task.cryptoObjectId,
+      contentAccessRevision: occurrence.task.cryptoAccessRevision,
+      requiredNamespaceFingerprint: Buffer.from(
+        occurrence.task.cryptoRequiredNamespaceFingerprint,
+      ).toString("base64url"),
+    });
+    const workIdentity = JSON.stringify({
         taskId: occurrence.task.id,
         taskRunId: occurrence.run.id,
         scheduleKind: occurrence.task.scheduleKind,
@@ -388,10 +552,20 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
           occurrence.task.cryptoRequiredNamespaceFingerprint,
         ).toString("base64url"),
         policyRevision: authority.policyRevision,
+        ...(scopeMemory === undefined ? {} : { scopeMemory }),
+        ...(widePrimaryWriteNamespaceId === null ? {} : { widePrimaryWriteNamespaceId }),
         namespaces: authority.namespaces,
         domains: authority.domains,
-      })).digest(),
-      idempotencyKey: `task-run:${occurrence.run.id}`,
+      });
+    const initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3 = Object.freeze({
+      snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
+        requestId,
+        workId: occurrence.run.id,
+        namespaceId: occurrence.task.contentNamespaceId,
+        now: createdAt,
+      }),
+      workIdentityHash: createHash("sha256").update(workIdentity).digest(),
+      idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity),
       workKind: "task.execute",
       purpose: "task.execute",
       domainId: contentAuthority.domainId,
@@ -420,6 +594,13 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
     const execution = await dependencies.prepareExecution(Object.freeze({
       occurrence,
       predispatch: prepared,
+      policy: Object.freeze({ ...resolvedAuthority.policy }),
+      reference,
+      stableRoutingDigest: taskRuntimeStableRoutingDigest({
+        ...stableIdentity,
+        widePrimaryWriteNamespaceId,
+      }),
+      ...(scopeMemory === undefined ? {} : { scopeMemory, scopeWorkIdentity: workIdentity }),
     }));
     const executionKeys = execution !== null && typeof execution === "object"
       ? Object.keys(execution).sort().join(",")
@@ -434,114 +615,32 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
     }
     // A preparation dependency may perform async route admission, but it may
     // not replace the already-authorized occurrence or its resolved target.
-    if (!sameOccurrence(occurrence, prepared.occurrence)
+    if (!sameProtectedTaskRuntimeOccurrence(occurrence, prepared.occurrence)
       || prepared.scheduling.roomId !== prepared.target.roomId) {
       throw new TypeError("Protected Task execution preparation changed predispatch");
     }
+    const recipientRequest = createProtectedTaskRuntimeRecipientRequestPlan({
+      crypto: dependencies.crypto,
+      occurrence,
+      initialRecord,
+      sourceRoomId: resolvedAuthority.sourceRoomId,
+      authority,
+      createdAt,
+      recipientTtlMs: dependencies.recipientTtlMs,
+    });
 
     return Object.freeze({
+      stableIdentity,
       initialRecord,
       reference,
       scheduling: prepared.scheduling,
+      ...(scopeMemory === undefined ? {} : { scopeMemory }),
       executor: execution.executor,
       startProtectedTaskRun: dependencies.startProtectedTaskRun,
-      recipientAttempt: ({ record, now: attemptAt }) => {
-        if (record.snapshot.requestId !== requestId
-          || record.snapshot.workId !== occurrence.run.id
-          || record.expectedPolicyRevision !== authority.policyRevision
-          || record.idempotencyKey !== initialRecord.idempotencyKey
-          || !sameBytes(record.workIdentityHash, initialRecord.workIdentityHash)) {
-          throw new TypeError("Protected Task recipient record is not exact");
-        }
-        const expiresAt = attemptAt + dependencies.recipientTtlMs;
-        if (!Number.isSafeInteger(attemptAt) || attemptAt < createdAt
-          || !Number.isSafeInteger(expiresAt)) {
-          throw new TypeError("Protected Task recipient deadline is invalid");
-        }
-        return Object.freeze({
-          recipientKeyId:
-            `task-runtime:${occurrence.run.id}:${record.snapshot.recipientGeneration}`,
-          expiresAt,
-        });
-      },
-      buildRequest: ({ record, attempt, binding, authority: current }) => {
-        const issuedAt = attempt.expiresAt - dependencies.recipientTtlMs;
-        const currentDomains = [...current.domains]
-          .sort((left, right) => left.domainId.localeCompare(right.domainId));
-        if (record.snapshot.requestId !== requestId
-          || record.snapshot.workId !== occurrence.run.id
-          || record.idempotencyKey !== initialRecord.idempotencyKey
-          || !sameBytes(record.workIdentityHash, initialRecord.workIdentityHash)
-          || attempt.requestId !== requestId
-          || attempt.workId !== occurrence.run.id
-          || attempt.recipientGeneration !== record.snapshot.recipientGeneration
-          || attempt.recipientKeyId
-            !== `task-runtime:${occurrence.run.id}:${attempt.recipientGeneration}`
-          || binding.userId !== occurrence.task.requestorId
-          || current.device.userId !== binding.userId
-          || current.device.humanActorId !== binding.humanActorId
-          || current.device.deviceId !== binding.deviceId
-          || current.sourceRoomId !== resolvedAuthority.sourceRoomId
-          || current.policyRevision !== authority.policyRevision
-          || !sameRequirements(current.namespaceRequirements, authority.namespaces)
-          || currentDomains.length !== authority.domains.length
-          || currentDomains.some((domain, index) => {
-            const expected = authority.domains[index];
-            return expected === undefined
-              || domain.domainId !== expected.domainId
-              || domain.domainKeyGeneration !== expected.expectedEpoch
-              || domain.authorizationRevision
-                !== expected.expectedAuthorizationRevision;
-          })
-          || !Number.isSafeInteger(issuedAt)
-          || issuedAt < createdAt
-          || issuedAt >= attempt.expiresAt) {
-          throw new TypeError("Protected Task request authority is not exact");
-        }
-        const grant = createDomainForegroundAuthorizationPlan(
-          dependencies.crypto,
-          {
-            authorizationId: requestId,
-            policyRevision: authority.policyRevision,
-            sessionId: `task-run:${occurrence.run.id}`,
-            roomId: current.sourceRoomId,
-            subjectHumanId: humanId(binding.humanActorId),
-            committerDeviceId: cryptoDeviceId(binding.deviceId),
-            committerDeviceSigningGeneration: current.device.deviceGeneration,
-            hostAuthorizationRevision:
-              authorizationRevision(current.device.securityRevision),
-            recipientKind: "runtime",
-            recipientPrincipalId: "nautilo_task_runtime",
-            recipientAuthorizationRevision: authorizationRevision(0),
-            recipientRuntimeGeneration: attempt.recipientGeneration,
-            recipientKeyId: attempt.recipientKeyId,
-            operations: ["decrypt", "encrypt"],
-            issuedAt,
-            deadlineAt: attempt.expiresAt,
-            maximumSecretBytes:
-              DOMAIN_FOREGROUND_AUTHORIZATION_MAX_SECRET_BYTES_V2,
-            domains: currentDomains,
-          },
-        );
-        try {
-          return createTaskRuntimeBackgroundAuthorizationRequestV1({
-            requestId,
-            workId: occurrence.run.id,
-            workKind: "task.execute",
-            workPurpose: "task.execute",
-            recipientGeneration: attempt.recipientGeneration,
-            episodeId: grant.sessionId,
-            sourceRoomId: current.sourceRoomId,
-            recipientKeyId: attempt.recipientKeyId,
-            recipientPublicKey: attempt.recipientPublicKey,
-            authorizationPlan: grant,
-            issuedAt,
-            deadlineAt: attempt.expiresAt,
-          });
-        } finally {
-          destroyDomainForegroundAuthorizationPlanV2(grant);
-        }
-      },
+      ...(dependencies.deferBeforeExecution === undefined ? {} : {
+        deferBeforeExecution: dependencies.deferBeforeExecution,
+      }),
+      ...recipientRequest,
       openTransientInput: execution.openTransientInput,
       publishResult: dependencies.publishResult,
       ...(execution.modelAttribution === undefined

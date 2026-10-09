@@ -14,6 +14,8 @@ import {
 } from "../../task/task-content-repository.ts";
 import { encodeTaskRunResultPayloadV1 } from "../../task/task-payload-v1.ts";
 import type { PrepareTaskRuntimeRunResultInput } from "../../task/task-run-result-preparation.ts";
+import type { NativeTaskNamespaceSource } from
+  "./native-task-message-preparation.ts";
 import {
   PostgresDomainKeyAuthorityRepository,
   type DomainForegroundNamespaceAuthorityInspectionV2,
@@ -56,6 +58,195 @@ function sameAuthority(left: DomainForegroundNamespaceAuthorityInspectionV2, rig
     && sameBytes(left.bundleDigest, right.bundleDigest);
 }
 
+export type NativeTaskNamespaceSourceInput = Readonly<{
+  restricted: PostgresJsBridgeConnection;
+  crypto: PrepareNativeTaskRuntimeRunResultInput["crypto"];
+  serverScope: string;
+  evidence: PrepareNativeTaskRuntimeRunResultInput["evidence"];
+  domains: readonly DomainForegroundSecretEntry[];
+  namespaceId: string;
+  requiredOperations: readonly ("decrypt" | "encrypt")[];
+  signal: AbortSignal;
+  assertCurrentTaskAuthority(): Promise<void>;
+}>;
+
+/** Hold one exact live Task Namespace bundle only for the supplied callback. */
+export async function withNativeTaskNamespaceSource<Value>(
+  input: NativeTaskNamespaceSourceInput,
+  use: (source: NativeTaskNamespaceSource) => Promise<Value>,
+): Promise<Value> {
+  const assertActive = (): void => {
+    input.signal.throwIfAborted();
+    assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
+  };
+  assertActive();
+  const requirements = input.evidence.namespaceRequirements.filter(entry =>
+    entry.namespaceId === input.namespaceId);
+  const requirement = requirements[0];
+  if (requirements.length !== 1 || requirement === undefined
+    || input.requiredOperations.some(operation =>
+      !requirement.operations.includes(operation))) {
+    throw new TypeError("Native Task Namespace grant is unavailable");
+  }
+  const domainRequirements = input.evidence.domainRequirements.filter(entry =>
+    entry.domainId === requirement.domainId);
+  const domainRequirement = domainRequirements[0];
+  const domains = input.domains.filter(entry =>
+    entry.domainId === requirement.domainId);
+  const domain = domains[0];
+  if (domainRequirements.length !== 1 || domainRequirement === undefined
+    || domains.length !== 1 || domain === undefined
+    || domain.sourceNamespaceId !== domainRequirement.sourceNamespaceId
+    || domain.keyClass !== "ai"
+    || domain.domainKeyGeneration !== domainRequirement.domainKeyGeneration
+    || domain.authorizationRevision !== domainRequirement.authorizationRevision
+    || domain.participantCount !== domainRequirement.participantCount
+    || !sameBytes(domain.participantDigest, domainRequirement.participantDigest)
+    || !sameBytes(domain.headDigest, domainRequirement.headDigest)) {
+    throw new TypeError("Native Task Namespace Domain grant is unavailable");
+  }
+  let namespace: DomainForegroundNamespaceAuthorityInspectionV2 | undefined;
+  const owned: Uint8Array[] = [];
+  try {
+    await input.assertCurrentTaskAuthority();
+    assertActive();
+    const handle = await verifyCryptoPostgresHandle(input.restricted);
+    const repository = new PostgresDomainKeyAuthorityRepository(
+      input.restricted,
+      input.crypto,
+      input.serverScope,
+    );
+    const inspected = await repository.inspectForegroundNamespaceAuthority({
+      namespaceId: input.namespaceId,
+      keyClass: "ai",
+    });
+    if (inspected.status !== "ready") {
+      throw new TypeError("Native Task Namespace is unavailable");
+    }
+    namespace = inspected;
+    if (namespace.namespaceId !== input.namespaceId
+      || namespace.namespaceAccessRevision
+        !== requirement.expectedAccessRevision
+      || namespace.domainId !== domain.domainId
+      || namespace.domainKeyGeneration !== domain.domainKeyGeneration
+      || namespace.domainAuthorizationRevision !== domain.authorizationRevision
+      || !sameBytes(namespace.domainHeadDigest, domain.headDigest)) {
+      throw new TypeError("Native Task Namespace authority changed");
+    }
+    const assertCurrentDomain = async (): Promise<void> => {
+      const rows = await executeTypedCryptoQuery(handle, cryptoTypedDb.select({
+        domain_id: domainKeyHeads.domainId,
+        domain_key_generation: domainKeyHeads.domainKeyGeneration,
+        authorization_revision: domainKeyHeads.authorizationRevision,
+        head_digest: domainKeyHeads.headDigest,
+        participant_digest: domainKeyHeads.participantDigest,
+        participant_count: domainKeyHeads.participantCount,
+      }).from(domainKeyHeads).where(and(
+        eq(domainKeyHeads.domainId, domain.domainId),
+        eq(domainKeyHeads.keyClass, "ai"),
+      )).limit(2));
+      const head = rows[0];
+      assertActive();
+      if (rows.length !== 1 || head === undefined
+        || head.domain_id !== domain.domainId
+        || readCryptoStorageInteger(head, "domain_key_generation")
+          !== domain.domainKeyGeneration
+        || readCryptoStorageInteger(head, "authorization_revision")
+          !== domain.authorizationRevision
+        || readCryptoStorageInteger(head, "participant_count")
+          !== domain.participantCount
+        || !(head.head_digest instanceof Uint8Array)
+        || !sameBytes(head.head_digest, domain.headDigest)
+        || !(head.participant_digest instanceof Uint8Array)
+        || !sameBytes(head.participant_digest, domain.participantDigest)) {
+        throw new TypeError("Native Task Namespace Domain authority changed");
+      }
+    };
+    await assertCurrentDomain();
+    const rows = await executeTypedCryptoQuery(handle, cryptoTypedDb.select({
+      binding_bytes: namespaceDomainKeyBindings.bindingBytes,
+      binding_digest: namespaceDomainKeyBindings.bindingDigest,
+      signing_public_key: humanCryptoDevices.signingPublicKey,
+    }).from(namespaceDomainKeyHeads).innerJoin(namespaceDomainKeyBindings,
+      eq(namespaceDomainKeyBindings.operationId,
+        namespaceDomainKeyHeads.bindingOperationId))
+      .innerJoin(humanCryptoDevices, and(
+        eq(humanCryptoDevices.deviceId, namespaceDomainKeyBindings.issuerDeviceId),
+        eq(humanCryptoDevices.humanId, namespaceDomainKeyBindings.issuerHumanId),
+        eq(humanCryptoDevices.deviceGeneration,
+          namespaceDomainKeyBindings.issuerDeviceSigningGeneration),
+      )).where(and(
+        eq(namespaceDomainKeyHeads.namespaceId, namespace.namespaceId),
+        eq(namespaceDomainKeyHeads.keyClass, "ai"),
+        eq(namespaceDomainKeyHeads.bindingDigest, namespace.bundleDigest),
+        eq(namespaceDomainKeyHeads.domainId, domain.domainId),
+        eq(namespaceDomainKeyHeads.domainKeyGeneration,
+          domain.domainKeyGeneration),
+        eq(namespaceDomainKeyHeads.domainAuthorizationRevision,
+          domain.authorizationRevision),
+      )).limit(2));
+    const row = rows[0];
+    if (rows.length !== 1 || row === undefined
+      || !(row.binding_bytes instanceof Uint8Array)
+      || !(row.binding_digest instanceof Uint8Array)
+      || !(row.signing_public_key instanceof Uint8Array)
+      || !sameBytes(row.binding_digest, namespace.bundleDigest)) {
+      throw new TypeError("Native Task Namespace binding is unavailable");
+    }
+    const bindingBytes = row.binding_bytes.slice();
+    const signingKey = row.signing_public_key.slice();
+    owned.push(bindingBytes, signingKey);
+    const source: NativeTaskNamespaceSource = {
+      bindingBytes,
+      expectedBindingDigest: namespace.bundleDigest,
+      issuerSigningPublicKey: signingKey,
+      domainKey: domain.domainKey,
+      current: {
+        serverId: input.serverScope,
+        cryptoDomainId: cryptoDomainId(domain.domainId),
+        participantDigest: domain.participantDigest,
+        participantCount: domain.participantCount,
+        keyClass: "ai",
+        domainKeyGeneration: domain.domainKeyGeneration,
+        domainAuthorizationRevision:
+          authorizationRevision(domain.authorizationRevision),
+        domainHeadDigest: domain.headDigest,
+        namespaceId: namespaceId(namespace.namespaceId),
+        namespaceAccessRevision:
+          accessRevision(namespace.namespaceAccessRevision),
+        namespaceCurrentGeneration:
+          namespaceGeneration(namespace.namespaceKeyGeneration),
+        bundleRevision: namespace.bundleRevision,
+        retainedAuthoritySetDigest: namespace.namespaceHeadDigest,
+      },
+    };
+    assertActive();
+    const value = await use(source);
+    await input.assertCurrentTaskAuthority();
+    assertActive();
+    const current = await repository.inspectForegroundNamespaceAuthority({
+      namespaceId: input.namespaceId,
+      keyClass: "ai",
+    });
+    if (current.status !== "ready") {
+      throw new TypeError("Native Task Namespace is unavailable");
+    }
+    try {
+      if (!sameAuthority(namespace, current)) {
+        throw new TypeError("Native Task Namespace authority changed");
+      }
+    } finally {
+      destroyAuthority(current);
+    }
+    await assertCurrentDomain();
+    assertActive();
+    return value;
+  } finally {
+    owned.forEach(bytes => bytes.fill(0));
+    if (namespace !== undefined) destroyAuthority(namespace);
+  }
+}
+
 /** Prepare a native, Agent-signed Task result without storing plaintext or publishing it. */
 export async function prepareNativeTaskRuntimeRunResult(
   input: PrepareNativeTaskRuntimeRunResultInput,
@@ -93,97 +284,41 @@ export async function prepareNativeTaskRuntimeRunResult(
   }
   // Canonicalize and own the output before the first asynchronous boundary.
   const plaintext = encodeTaskRunResultPayloadV1(input.payload);
-  const owned: Uint8Array[] = [];
-  let namespace: DomainForegroundNamespaceAuthorityInspectionV2 | undefined;
   try {
-    await input.assertCurrentTaskAuthority();
-    assertActive();
-    const handle = await verifyCryptoPostgresHandle(input.restricted);
-    const repository = new PostgresDomainKeyAuthorityRepository(input.restricted, input.crypto, input.serverScope);
-    const inspected = await repository.inspectForegroundNamespaceAuthority({ namespaceId: target.namespaceId, keyClass: "ai" });
-    if (inspected.status !== "ready") throw new TypeError("Native Task result Namespace is unavailable");
-    namespace = inspected;
-    if (namespace.namespaceId !== target.namespaceId
-      || namespace.namespaceAccessRevision !== target.expectedAccessRevision
-      || namespace.domainId !== domain.domainId
-      || namespace.domainKeyGeneration !== domain.domainKeyGeneration
-      || namespace.domainAuthorizationRevision !== domain.authorizationRevision
-      || !sameBytes(namespace.domainHeadDigest, domain.headDigest)) {
-      throw new TypeError("Native Task result Namespace authority changed");
-    }
-    const assertCurrentDomain = async (): Promise<void> => {
-      const rows = await executeTypedCryptoQuery(handle, cryptoTypedDb.select({
-        domain_id: domainKeyHeads.domainId, domain_key_generation: domainKeyHeads.domainKeyGeneration,
-        authorization_revision: domainKeyHeads.authorizationRevision, head_digest: domainKeyHeads.headDigest,
-        participant_digest: domainKeyHeads.participantDigest, participant_count: domainKeyHeads.participantCount,
-      }).from(domainKeyHeads).where(and(eq(domainKeyHeads.domainId, domain.domainId), eq(domainKeyHeads.keyClass, "ai"))).limit(2));
-      const head = rows[0];
+    return await withNativeTaskNamespaceSource({
+      restricted: input.restricted,
+      crypto: input.crypto,
+      serverScope: input.serverScope,
+      evidence,
+      domains: input.domains,
+      namespaceId: target.namespaceId,
+      requiredOperations: ["encrypt"],
+      signal: input.signal,
+      assertCurrentTaskAuthority: input.assertCurrentTaskAuthority,
+    }, async namespace => {
       assertActive();
-      if (rows.length !== 1 || head === undefined || head.domain_id !== domain.domainId
-        || readCryptoStorageInteger(head, "domain_key_generation") !== domain.domainKeyGeneration
-        || readCryptoStorageInteger(head, "authorization_revision") !== domain.authorizationRevision
-        || readCryptoStorageInteger(head, "participant_count") !== domain.participantCount
-        || !(head.head_digest instanceof Uint8Array) || !sameBytes(head.head_digest, domain.headDigest)
-        || !(head.participant_digest instanceof Uint8Array) || !sameBytes(head.participant_digest, domain.participantDigest)) {
-        throw new TypeError("Native Task result Domain authority changed");
-      }
-    };
-    await assertCurrentDomain();
-    const rows = await executeTypedCryptoQuery(handle, cryptoTypedDb.select({
-      binding_bytes: namespaceDomainKeyBindings.bindingBytes,
-      binding_digest: namespaceDomainKeyBindings.bindingDigest,
-      signing_public_key: humanCryptoDevices.signingPublicKey,
-    }).from(namespaceDomainKeyHeads).innerJoin(namespaceDomainKeyBindings,
-      eq(namespaceDomainKeyBindings.operationId, namespaceDomainKeyHeads.bindingOperationId))
-      .innerJoin(humanCryptoDevices, and(
-        eq(humanCryptoDevices.deviceId, namespaceDomainKeyBindings.issuerDeviceId),
-        eq(humanCryptoDevices.humanId, namespaceDomainKeyBindings.issuerHumanId),
-        eq(humanCryptoDevices.deviceGeneration, namespaceDomainKeyBindings.issuerDeviceSigningGeneration),
-      )).where(and(
-        eq(namespaceDomainKeyHeads.namespaceId, namespace.namespaceId), eq(namespaceDomainKeyHeads.keyClass, "ai"),
-        eq(namespaceDomainKeyHeads.bindingDigest, namespace.bundleDigest),
-        eq(namespaceDomainKeyHeads.domainId, domain.domainId),
-        eq(namespaceDomainKeyHeads.domainKeyGeneration, domain.domainKeyGeneration),
-        eq(namespaceDomainKeyHeads.domainAuthorizationRevision, domain.authorizationRevision),
-      )).limit(2));
-    const row = rows[0];
-    if (rows.length !== 1 || row === undefined || !(row.binding_bytes instanceof Uint8Array)
-      || !(row.binding_digest instanceof Uint8Array) || !(row.signing_public_key instanceof Uint8Array)
-      || !sameBytes(row.binding_digest, namespace.bundleDigest)) {
-      throw new TypeError("Native Task result binding is unavailable");
-    }
-    const bindingBytes = row.binding_bytes.slice();
-    const signingKey = row.signing_public_key.slice();
-    owned.push(bindingBytes, signingKey);
-    assertActive();
-    const prepared = await prepareNativeTaskRuntimeResultObject(input.crypto, {
-      evidence, plaintext, objectType: TASK_RUN_RESULT_OBJECT_TYPE_V1, createdAt: input.createdAt,
-      agentAuthorizationRevision: input.agentAuthorizationRevision, runtime: input.runtime,
-      signerPublication: input.signerPublication,
-      resolveHistoricalSignerPublicationManager: input.resolveHistoricalSignerPublicationManager,
-      namespace: { bindingBytes, expectedBindingDigest: namespace.bundleDigest,
-        issuerSigningPublicKey: signingKey, domainKey: domain.domainKey,
-        current: { serverId: input.serverScope, cryptoDomainId: cryptoDomainId(domain.domainId),
-          participantDigest: domain.participantDigest, participantCount: domain.participantCount, keyClass: "ai",
-          domainKeyGeneration: domain.domainKeyGeneration, domainAuthorizationRevision: authorizationRevision(domain.authorizationRevision),
-          domainHeadDigest: domain.headDigest, namespaceId: namespaceId(namespace.namespaceId),
-          namespaceAccessRevision: accessRevision(namespace.namespaceAccessRevision),
-          namespaceCurrentGeneration: namespaceGeneration(namespace.namespaceKeyGeneration),
-          bundleRevision: namespace.bundleRevision, retainedAuthoritySetDigest: namespace.namespaceHeadDigest } },
+      const prepared = await prepareNativeTaskRuntimeResultObject(
+        input.crypto,
+        {
+          evidence,
+          plaintext,
+          objectType: TASK_RUN_RESULT_OBJECT_TYPE_V1,
+          createdAt: input.createdAt,
+          agentAuthorizationRevision: input.agentAuthorizationRevision,
+          runtime: input.runtime,
+          signerPublication: input.signerPublication,
+          resolveHistoricalSignerPublicationManager:
+            input.resolveHistoricalSignerPublicationManager,
+          namespace,
+        },
+      );
+      return createPreparedTaskRuntimeResultContentCryptoRevisionV1({
+        coordinate,
+        authority,
+        prepared,
+      });
     });
-    await input.assertCurrentTaskAuthority();
-    assertActive();
-    const current = await repository.inspectForegroundNamespaceAuthority({ namespaceId: target.namespaceId, keyClass: "ai" });
-    if (current.status !== "ready") throw new TypeError("Native Task result Namespace is unavailable");
-    try {
-      if (!sameAuthority(namespace, current)) throw new TypeError("Native Task result Namespace authority changed");
-    } finally { destroyAuthority(current); }
-    await assertCurrentDomain();
-    assertActive();
-    return createPreparedTaskRuntimeResultContentCryptoRevisionV1({ coordinate, authority, prepared });
   } finally {
     plaintext.fill(0);
-    owned.forEach((bytes) => bytes.fill(0));
-    if (namespace !== undefined) destroyAuthority(namespace);
   }
 }

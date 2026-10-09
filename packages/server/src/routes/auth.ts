@@ -1,3 +1,6 @@
+import { readForegroundFundingForThread, runWithForegroundFundingSession } from "@nautilo/agent";
+import { openForegroundChatFundingSession } from "../lib/foreground-chat-funding";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { parseGitHubApprovalEcho } from "@nautilo/types";
 import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -207,9 +210,12 @@ export interface AuthRouteDeps {
     threadId: string,
   ) => Promise<ProjectionResumeBinding>;
   /** Test seam for the canonical Agent identity stored on a paused graph. */
-  resumeAgentIdForThread?: (threadId: string) => Promise<string | null>;
+  resumeAgentIdForThread?: typeof readAgentIdForThread;
   /** Test seam for the causal Human identity stored on a paused graph. */
   resumeCausalHumanUserIdForThread?: typeof readCausalHumanUserIdForThread;
+  /** Test seams for restoring a safe funding binding from the admitted checkpoint. */
+  resumeFundingForThread?: typeof readForegroundFundingForThread;
+  openForegroundFundingSessionForResume?: typeof openForegroundChatFundingSession;
   /** Policy resolver for resume paths that rebuild guest policy context. */
   policyResolver?: PolicyResolver | null;
   /**
@@ -380,6 +386,12 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
       ? "protected resume failed"
       : error instanceof Error ? error.message : String(error);
 
+  type ResumeFundingScope = Parameters<typeof jobManager.runResumeJobLifecycle>[0];
+  const resumeFundingScope = new AsyncLocalStorage<Readonly<{
+    scope: ResumeFundingScope;
+    encryptedOnly: boolean;
+  }>>();
+
   async function runResumeJobLifecycleWithCurrentPolicy(
     scope: Parameters<typeof jobManager.runResumeJobLifecycle>[0],
     resume: Parameters<typeof jobManager.runResumeJobLifecycle>[1],
@@ -394,7 +406,10 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
       await jobManager.runResumeJobLifecycle({
         ...scope,
         ...(full ? { ephemeralSinkDisposition: "full" as const } : {}),
-      }, resume, invocation, maintenance);
+      }, (signal) => resumeFundingScope.run(
+        { scope, encryptedOnly: full },
+        () => resume(signal),
+      ), invocation, maintenance);
     } catch (error) {
       if (full) throw new FullResumeExecutionError(error);
       throw error;
@@ -668,6 +683,53 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
     const policy = await (
       deps.strictShadowPolicyReader ?? currentStrictShadowPolicy
     )();
+    const runWithFunding = async (
+      checkpointSaver?: EncryptedCheckpointSaver,
+    ): Promise<Value> => {
+      const context = resumeFundingScope.getStore();
+      // A legacy Full resume without fresh checkpoint custody preserves its
+      // existing behavior. Never probe the ordinary saver for a Full thread.
+      if (!context || (context.encryptedOnly && checkpointSaver === undefined)) {
+        return runWithForegroundFundingSession(null, () => input.work(checkpointSaver));
+      }
+      const { scope } = context;
+      const prior = await (deps.resumeFundingForThread
+        ?? readForegroundFundingForThread)(scope.graphThreadId, checkpointSaver);
+      if (!prior) {
+        return runWithForegroundFundingSession(null, () => input.work(checkpointSaver));
+      }
+      const fundingAgentId = await (
+        deps.resumeAgentIdForThread ?? readAgentIdForThread
+      )(scope.graphThreadId, checkpointSaver);
+      if (!fundingAgentId) throw new Error("Saved funding has no canonical Agent");
+      if (scope.authorAgentId && fundingAgentId !== scope.authorAgentId) {
+        throw new Error("Saved funding Agent changed");
+      }
+      const fundingHumanUserId = await readResumeCausalHumanUserId(
+        scope.graphThreadId,
+        checkpointSaver,
+      );
+      if (!fundingHumanUserId) {
+        throw new Error("Saved funding has no causal Human");
+      }
+      if (fundingHumanUserId !== scope.humanUserId) {
+        throw new Error("Saved funding Human changed");
+      }
+      const funding = await (deps.openForegroundFundingSessionForResume
+        ?? openForegroundChatFundingSession)({
+        humanUserId: fundingHumanUserId,
+        modelId: prior.modelId,
+        roomId: scope.roomId,
+        agentId: fundingAgentId,
+        entrypoint: "foreground.main",
+        prior,
+      });
+      if (!funding) throw new Error("Saved funding is unavailable");
+      return runWithForegroundFundingSession(
+        funding,
+        () => input.work(checkpointSaver),
+      );
+    };
     if (input.prepared.status === "ready") {
       const prepared = input.prepared;
       const composition = getProductionLiveShadowMessageComposition(
@@ -724,9 +786,9 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
               ? withLiveShadowCheckpointSaver({
                   logicalThreadId: prepared.graphThreadId,
                   session,
-                  work: input.work,
+                  work: runWithFunding,
                 })
-              : input.work(),
+              : runWithFunding(),
           }).catch((error: unknown) => {
             if (error instanceof Error && error.message === "protected_memory_approval_expired") {
               approvalFailure.value = new Error("protected_memory_approval_expired");
@@ -764,7 +826,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
     ) {
       throw new StrictShadowDispatchError(enforcement.result);
     }
-    return input.work();
+    return runWithFunding();
   }
 
   // Called inside runProtectedForegroundResume, after fresh custody admission.
@@ -1922,14 +1984,19 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
             turnId,
             authorAgentId: agentId,
           }, (signal) =>
-            resumeGraphWithHostChoice(
-              threadId,
-              { choiceId, selector },
-              processor,
-              effectiveLaneKey,
-              signal,
-            ).then(() => {
-              forkCoordinator.markForkCompletedByCheckpoint(threadId);
+            runProtectedForegroundResume({
+              request,
+              prepared: unavailableProtectedResume(false),
+              allowUnprotectedFallback: false,
+              work: async () => resumeGraphWithHostChoice(
+                threadId,
+                { choiceId, selector },
+                processor,
+                effectiveLaneKey,
+                signal,
+              ).then(() => {
+                forkCoordinator.markForkCompletedByCheckpoint(threadId);
+              }),
             }),
           accepted.invocation, accepted.maintenance)
           .catch((err) => {

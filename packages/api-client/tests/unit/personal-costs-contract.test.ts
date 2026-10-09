@@ -51,6 +51,31 @@ describe("personal costs client contract", () => {
     expect((await new NautiloApiClient(BASE).getPersonalCosts("30d")).totals.unknownProviderOperations).toBe(1);
   });
 
+  test("retains service outcomes and unresolved cost evidence without accepting payload data", async () => {
+    const serviceOperations = { operations: 3, succeeded: 1, failed: 0, cancelled: 1, interrupted: 0, unknown: 0, legacy: 1 };
+    const serviceRecovery = { attempts: [{ provider: "tavily", operation: "search", workload: "deep_research",
+      attemptOutcome: "cancelled" as const, failureCode: "cancelled", requestReference: "req_0123456789ab",
+      taskId: null, runId: null, jobId: null,
+      occurredAt: "2026-10-08T00:00:00.000Z" }] };
+    globalThis.fetch = (async () => Response.json({ ...summary, serviceOperations, serviceRecovery })) as unknown as typeof fetch;
+    const parsed = await new NautiloApiClient(BASE).getPersonalCosts("30d");
+    expect(parsed.serviceOperations).toEqual(serviceOperations);
+    expect(parsed.serviceRecovery).toEqual(serviceRecovery);
+    globalThis.fetch = (async () => Response.json({ ...summary, serviceRecovery: { attempts: [{
+      ...serviceRecovery.attempts[0], requestReference: undefined,
+    }] } })) as unknown as typeof fetch;
+    expect((await new NautiloApiClient(BASE).getPersonalCosts("30d")).serviceRecovery?.attempts[0]?.requestReference).toBeNull();
+    globalThis.fetch = (async () => Response.json({ ...summary, serviceRecovery: { attempts: [{ ...serviceRecovery.attempts[0], prompt: "private" }] } })) as unknown as typeof fetch;
+    const rejected = await new NautiloApiClient(BASE).getPersonalCosts("30d").catch((error: unknown) => error);
+    expect(rejected).toBeInstanceOf(Error);
+    globalThis.fetch = (async () => Response.json({ ...summary, serviceRecovery: { attempts: [{
+      ...serviceRecovery.attempts[0], requestReference: "raw-provider-request-id",
+    }] } })) as unknown as typeof fetch;
+    const invalidReference = await new NautiloApiClient(BASE).getPersonalCosts("30d")
+      .then(() => null, (error: unknown) => error);
+    expect(invalidReference).toBeInstanceOf(Error);
+  });
+
   test("accepts older server summaries without additive accounting fields", async () => {
     const { unknownProviderOperations: omitted, ...legacyTotals } = summary.totals;
     const { attempts: omittedAttempts, ...legacyRecovery } = summary.recovery;
@@ -78,6 +103,8 @@ describe("personal costs client contract", () => {
       byTask: [{
         taskId,
         calls: 1,
+        providerOperations: 2,
+        unknownProviderOperations: 1,
         estimatedCostUsd: 0,
         actualCostUsd: 0,
         totalCostUsd: 0,

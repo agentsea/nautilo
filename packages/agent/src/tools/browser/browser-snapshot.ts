@@ -3,6 +3,7 @@ import { z } from "zod";
 import { listResolvedCatalogModels } from "../../config/resolved-catalog";
 import { browserDecisionPlanSchema } from "../../graph/browser-decision";
 import { resolveChoiceDriver } from "../../providers/choice-driver";
+import { getCapabilityFundingSession } from "../../runtime/capability-funding";
 
 interface BrowserSnapshotContext {
   readonly turnId?: string | undefined;
@@ -15,7 +16,11 @@ export function resolveBrowserDecisionModel(context?: BrowserSnapshotContext, mo
   if (!context?.turnId || context.fullEncryptionOnly !== false) return null;
   // Reuse signed catalog ordering, release enablement, current credentials and
   // routing policy. An active episode revalidates its exact model, never switches.
-  return listResolvedCatalogModels().find((model) => (modelId === undefined || model.id === modelId)
+  const capabilityFunding = getCapabilityFundingSession();
+  const fundedModelId = modelId ?? capabilityFunding?.decisionModelId;
+  if (capabilityFunding && !fundedModelId) return null;
+  return listResolvedCatalogModels(capabilityFunding ? { includeUnavailable: true } : undefined)
+    .find((model) => (fundedModelId === undefined || model.id === fundedModelId)
     && model.workload === "decision" && resolveChoiceDriver(model.provider)
     && model.decision?.operations.includes("choice")) ?? null;
 }

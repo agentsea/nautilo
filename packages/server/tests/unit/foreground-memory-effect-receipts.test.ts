@@ -8,7 +8,7 @@ import type {
   ProtectedMemoryAuthority,
 } from "@nautilo/lattice-bridge";
 import type {
-  AgentMemoryPublicationBoundary,
+  AgentMemoryBeforeLocks,
   ConversationProductCanonicalTransactionRunner,
   HumanMemoryPublicationBoundary,
 } from "@nautilo/lattice-bridge/server";
@@ -129,7 +129,7 @@ function harness(input: Readonly<{
   const beforeLocks = mock(async ({ mutation }: { mutation: boolean }) => {
     expect(mutation).toBe(false);
     events.push("guard");
-  }) as unknown as AgentMemoryPublicationBoundary["beforeLocks"];
+  }) as unknown as AgentMemoryBeforeLocks;
   return { runner, beforeLocks, events };
 }
 

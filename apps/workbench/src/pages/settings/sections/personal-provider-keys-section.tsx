@@ -4,7 +4,13 @@ import {
   type CredentialMetadata,
   type PersonalProviderCatalogEntry,
 } from "@nautilo/api-client/browser";
-import { PERSONAL_PROVIDER_KEY_CATALOGUE, orderProviderKeys, type PersonalProviderKeyCatalogueEntry } from "@nautilo/types";
+import {
+  PERSONAL_PROVIDER_KEY_CATALOGUE,
+  orderProviderKeys,
+  personalProviderCapabilitySummary,
+  type PersonalProviderCapability,
+  type PersonalProviderKeyCatalogueEntry,
+} from "@nautilo/types";
 import { apiClient } from "../../../lib/api";
 import { ProviderKeyCoverageTable } from "../../../components/provider-key-coverage-table";
 import { PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT } from "../../../lib/caller-model-availability";
@@ -290,17 +296,26 @@ export function PersonalProviderKeysSection({
     return personalKeysDisabled ? rows.filter((provider) => byProvider.has(provider.id)) : rows;
   }, [byProvider, personalKeysDisabled, state]);
 
-  const personalChatProviders = useMemo(() => orderProviderKeys(providerRows)
-    .filter((provider) => provider.catalogued && provider.personalCapabilities.includes("chat"))
-    .map((provider) => [provider.id, provider.name] as const), [providerRows]);
+  const personalCapabilityProviders = useMemo(() => {
+    const ordered = orderProviderKeys(providerRows).filter((provider) => provider.catalogued);
+    const forCapability = (capability: PersonalProviderCapability) => ordered
+      .filter((provider) => provider.personalCapabilities.includes(capability))
+      .map((provider) => [provider.id, provider.name] as const);
+    return {
+      chat: forCapability("chat"),
+      research: forCapability("research"),
+      decision: forCapability("decision"),
+    };
+  }, [providerRows]);
 
-  const configuredChatProviderIds = useMemo(() => new Set(
+  const configuredPersonalProviderIds = useMemo(() => new Set(
     state.kind === "ready" ? state.credentials
       .filter((credential) => !credential.requiresReplacement
         && credential.validationStatus !== "rejected"
-        && personalChatProviders.some(([id]) => id === credential.provider))
+        && Object.values(personalCapabilityProviders).some((providers) =>
+          providers.some(([id]) => id === credential.provider)))
       .map((credential) => credential.provider) : [],
-  ), [personalChatProviders, state]);
+  ), [personalCapabilityProviders, state]);
 
   const setRowAction = (provider: string, action: RowAction) => {
     setRowActions((current) => ({ ...current, [provider]: action }));
@@ -425,7 +440,7 @@ export function PersonalProviderKeysSection({
     <SectionCard
       id="personal-provider-keys"
       title="Personal API keys"
-      description={personalKeysDisabled ? undefined : "Add your own provider keys to use supported models for personal chat and native tool-free text Tasks. Keys belong to your account on this Server; after saving, only a masked preview is shown."}
+      description={personalKeysDisabled ? undefined : "Add your own provider keys for supported personal chat, native text Tasks, Research and Decisions. Keys belong to your account on this Server; after saving, only a masked preview is shown."}
       actions={<a className="text-sm font-medium text-primary hover:underline" href="/account/costs">View your costs</a>}
     >
       <div>
@@ -449,17 +464,21 @@ export function PersonalProviderKeysSection({
           ) : null}
           {!personalKeysDisabled ? <><section className="mb-5 border-b border-border pb-5" aria-labelledby="personal-provider-key-coverage-title" data-testid="personal-provider-key-coverage">
             <h3 id="personal-provider-key-coverage-title" className="text-sm font-semibold">API key coverage</h3>
-            <p className="mt-1 text-xs text-foreground-muted">Shows which saved keys can fund personal chat. Provider and key status remain pending until the server confirms them.</p>
+            <p className="mt-1 text-xs text-foreground-muted">Shows which saved keys can fund personal chat, Research and Decisions. Provider and key status remain pending until the server confirms them.</p>
             <ProviderKeyCoverageTable
-              configuredProviderIds={configuredChatProviderIds}
-              rows={[{ functionality: "Chat", providers: personalChatProviders }]}
+              configuredProviderIds={configuredPersonalProviderIds}
+              rows={[
+                { functionality: "Chat", providers: personalCapabilityProviders.chat },
+                { functionality: "Research", providers: personalCapabilityProviders.research },
+                { functionality: "Decisions", providers: personalCapabilityProviders.decision },
+              ]}
               unknownStatusLabel={state.kind === "ready"
                 ? undefined
                 : state.kind === "loading" ? "Checking coverage…" : "Coverage unavailable"}
             />
           </section>
           <p className="mb-4 text-xs text-foreground-muted">
-            Provider capability details are shown in model selection. Saving a key here only makes it available for eligible personal requests.
+            Model readiness appears in the relevant model selector. Saving a key here only makes it available for eligible personal requests.
           </p></> : null}
           {providerRows.map((provider) => {
             const current = byProvider.get(provider.id);
@@ -604,20 +623,20 @@ export function PersonalProviderKeysSection({
                   {!personalKeysDisabled && savedProvider === provider.id ? (
                     <p role="status" className="text-xs text-foreground-muted">
                       Key saved and checked without making a paid request.{" "}
-                      {provider.catalogued
-                        ? provider.personalCapabilities.includes("chat") ? (
+                      {provider.catalogued ? <>
+                        {personalProviderCapabilitySummary(provider)}{" "}
+                        {provider.personalCapabilities.includes("chat") ? (
                           <a className="text-primary hover:underline" href="/settings#model">Choose a model for your Genie.</a>
-                        ) : (
-                          "Not used by personal chat or native tool-free text Tasks in this release."
-                        )
-                        : null}
+                        ) : null}{" "}
+                        {provider.personalCapabilities.some((capability) => capability === "research" || capability === "decision") ? (
+                          <a className="text-primary hover:underline" href="/settings#capability-models">Configure Research and Decision models.</a>
+                        ) : null}
+                      </> : null}
                     </p>
                   ) : null}
-                  {!personalKeysDisabled && provider.catalogued
-                    && !provider.personalCapabilities.includes("chat")
-                    && savedProvider !== provider.id ? (
+                  {!personalKeysDisabled && provider.catalogued && savedProvider !== provider.id ? (
                     <p className="text-xs text-foreground-muted">
-                      Not used by personal chat or native tool-free text Tasks in this release.
+                      {personalProviderCapabilitySummary(provider)}
                     </p>
                   ) : null}
                 </div>

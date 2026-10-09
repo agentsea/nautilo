@@ -1359,7 +1359,6 @@ const reviewedCryptoProductConsumerInventory = [
   "packages/server/src/routes/protected-task-result-signer-history.ts -> @nautilo/lattice-crypto",
   "packages/server/src/routes/protected-task-result-signer-history.ts -> @nautilo/lattice-crypto/wire",
   "packages/server/src/routes/protected-task-runtime-grant-plan.ts -> @nautilo/lattice-crypto",
-  "packages/server/src/routes/protected-task-runtime-grant-plan.ts -> @nautilo/lattice-crypto/background",
   "packages/server/src/routes/protected-task-runtime-grant-plan.ts -> @nautilo/lattice-crypto/wire",
   "packages/server/src/routes/protected-task-runtime-namespace-authority.ts -> @nautilo/lattice-crypto",
   "packages/server/src/routes/protected-task-runtime-recipient-authority.ts -> @nautilo/lattice-crypto",
@@ -1381,6 +1380,80 @@ const reviewedCryptoProductConsumerInventory = [
   "packages/server/tests/unit/protected-task-runtime-recipient-authority.test.ts -> @nautilo/lattice-crypto",
   "packages/server/tests/unit/task-runtime-current-authority.test.ts -> @nautilo/lattice-crypto",
   "packages/server/tests/unit/task-runtime-current-authority.test.ts -> @nautilo/lattice-crypto/background",
+  // Task Runtime memory keeps plaintext and opened key material invocation
+  // scoped. Server routes compose current authority, recipient custody and
+  // Lattice request/wire codecs through the reviewed public surfaces; durable
+  // object storage and transaction ownership remain in lattice-bridge and DB.
+  "packages/runtime/src/memory/task-runtime-domain-memory-crypto-session.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/current-protected-task-memory-authority.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/current-protected-task-memory-authority.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/src/routes/protected-task-cancellation-recovery.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-native-execution-composition.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-native-fixed-memory-segment.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-native-fixed-memory-segment.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/src/routes/protected-task-native-memory-repository.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-native-memory-repository.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-parked-authorization-settlement.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-published-result-recovery.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-runtime-initial-composition.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-runtime-initial-composition.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/protected-task-runtime-initial-device-authorization.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-runtime-initial-device-authorization.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/src/routes/protected-task-runtime-initial-device-authorization.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/protected-task-runtime-parked-claim-authority.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-runtime-parked-claim-authority.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/src/routes/protected-task-runtime-parked-claim-authority.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/protected-task-runtime-parked-continuation.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-runtime-parked-continuation.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/src/routes/protected-task-runtime-parked-device-authorization.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-runtime-parked-device-authorization.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/src/routes/protected-task-runtime-parked-device-authorization.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/protected-task-runtime-parked-preparation.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-runtime-recipient-authority.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/src/routes/protected-task-runtime-recipient-request-plan.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-runtime-recipient-request-plan.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/src/routes/protected-task-runtime-recipient-request-plan.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/protected-task-unmapped-result-recovery.ts -> @nautilo/lattice-crypto",
+  // Cross-package crypto tests use public surfaces plus explicit test-only
+  // leaf fixtures. They exercise the production authority and custody seams
+  // without adding a production import or alternate crypto implementation.
+  "packages/lattice-bridge/tests/unit/native-task-memory-entity-crypto.test.ts -> ../../../lattice-crypto/src/background/task-runtime-execution-evidence-v1.ts",
+  "packages/lattice-bridge/tests/unit/task-runtime-agent-object-crypto.test.ts -> ../../../lattice-crypto/src/background/task-runtime-execution-evidence-v1.ts",
+  "packages/lattice-bridge/tests/unit/task-runtime-agent-object-crypto.test.ts -> ../../../lattice-crypto/src/crypto/index.ts",
+  "packages/lattice-bridge/tests/unit/task-runtime-agent-object-crypto.test.ts -> ../../../lattice-crypto/src/object/authorized-write.ts",
+  "packages/lattice-bridge/tests/unit/task-runtime-agent-object-repair.test.ts -> ../../../lattice-crypto/tests/helpers/task-runtime-agent-object-set-fixture.ts",
+  "packages/lattice-bridge/tests/unit/task-runtime-agent-object-storage.test.ts -> ../../../lattice-crypto/tests/helpers/task-runtime-agent-object-set-fixture.ts",
+  "packages/runtime/tests/integration/task-authority-replacement.integration.test.ts -> @nautilo/lattice-crypto",
+  "packages/runtime/tests/integration/task-authority-replacement.integration.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/runtime/tests/integration/task-authority-replacement.integration.test.ts -> @nautilo/lattice-crypto/testing",
+  "packages/runtime/tests/integration/task-authority-replacement.integration.test.ts -> @nautilo/lattice-crypto/wire",
+  "packages/runtime/tests/unit/task-runtime-domain-memory-crypto-session.test.ts -> ../../../lattice-crypto/src/background/task-runtime-execution-evidence-v1.ts",
+  "packages/runtime/tests/unit/task-runtime-domain-memory-crypto-session.test.ts -> ../../../lattice-crypto/tests/helpers/task-runtime-agent-object-set-fixture.ts",
+  "packages/runtime/tests/unit/task-runtime-domain-memory-crypto-session.test.ts -> @nautilo/lattice-crypto",
+  "packages/runtime/tests/unit/task-runtime-domain-memory-crypto-session.test.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/tests/lattice-integration/protected-task-memory-object-writer.integration.test.ts -> ../../../lattice-crypto/src/background/task-runtime-execution-evidence-v1.ts",
+  "packages/server/tests/lattice-integration/protected-task-memory-object-writer.integration.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/lattice-integration/protected-task-memory-object-writer.integration.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/tests/lattice-integration/protected-task-memory-object-writer.integration.test.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/tests/unit/protected-task-cancellation-recovery.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-memory-object-writer.test.ts -> ../../../lattice-crypto/src/background/task-runtime-execution-evidence-v1.ts",
+  "packages/server/tests/unit/protected-task-memory-object-writer.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-memory-object-writer.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/tests/unit/protected-task-native-fixed-memory-segment.test.ts -> ../../../lattice-crypto/src/background/task-runtime-execution-evidence-v1",
+  "packages/server/tests/unit/protected-task-native-fixed-memory-segment.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-native-fixed-memory-segment.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/tests/unit/protected-task-published-result-recovery.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-runtime-initial-composition.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-runtime-initial-device-authorization.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-runtime-parked-claim-authority.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-runtime-parked-claim-authority.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/tests/unit/protected-task-runtime-parked-continuation.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-runtime-parked-continuation.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/tests/unit/protected-task-runtime-parked-device-authorization.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-runtime-parked-device-authorization.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/tests/unit/protected-task-runtime-parked-preparation.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-runtime-recipient-authority.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/tests/unit/protected-task-unmapped-result-recovery.test.ts -> @nautilo/lattice-crypto",
 ] as const;
 
 const allowedReviewedCryptoProductConsumers = new Set(
@@ -1854,6 +1927,7 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/runtime/src/protected-execution/background-authorization/task-runtime-grant-claim.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/protected-execution/background-authorization/task-runtime-grant-claim.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/protected-execution/background-authorization/task-runtime-grant-claim.ts -> @nautilo/lattice-bridge/server",
+  "packages/runtime/src/protected-execution/background-authorization/task-runtime-grant-claim.ts -> @nautilo/lattice-bridge/server",
   "packages/runtime/src/tasks/protected-task-checkpoint-saver.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/tasks/protected-task-checkpoint-saver.ts -> @nautilo/lattice-bridge/server",
   "packages/runtime/src/tasks/protected-task-execution-candidate.ts -> @nautilo/lattice-bridge",
@@ -1904,6 +1978,82 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/server/tests/unit/protected-task-runtime-recipient-authority.test.ts -> @nautilo/lattice-bridge/server",
   "packages/server/tests/unit/task-runtime-current-authority.test.ts -> @nautilo/lattice-bridge/server",
   "packages/server/tests/unit/task-runtime-current-authority.test.ts -> @nautilo/lattice-bridge/server",
+  // Protected Task memory and recovery consume bridge-owned contracts,
+  // classification, verified database handles and server repositories. Product
+  // modules keep orchestration and UI policy; crypto persistence and proof
+  // verification remain behind the public bridge surfaces.
+  "apps/workbench/src/pages/scheduled-tasks/use-scheduled-tasks.ts -> @nautilo/lattice-bridge",
+  "packages/agent/src/subagents/protected-task-memory-graph-deps.ts -> @nautilo/lattice-bridge",
+  "packages/runtime/src/memory/domain-memory-crypto-session.ts -> @nautilo/lattice-bridge",
+  "packages/runtime/src/memory/task-runtime-domain-memory-crypto-session.ts -> @nautilo/lattice-bridge",
+  "packages/runtime/src/memory/task-runtime-domain-memory-crypto-session.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/current-protected-task-memory-authority.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/current-protected-task-memory-authority.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-historical-human-device-signing-key.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-memory-boundaries.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-memory-boundaries.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-memory-composition.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-memory-composition.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-memory-object-writer.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-memory-object-writer.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-memory-ordinary-fallback.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-native-execution-composition.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-native-execution-composition.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-native-execution-context.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-native-fixed-memory-segment.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-native-fixed-memory-segment.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-native-memory-repository.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-native-memory-repository.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-native-transcript-composition.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-preexecution-recovery.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-runtime-grant-plan.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-runtime-initial-composition.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-runtime-initial-composition.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-runtime-initial-device-authorization.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-runtime-parked-claim-authority.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-runtime-parked-device-authorization.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-runtime-parked-memory-plan.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-runtime-parked-plan.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-runtime-parked-preparation.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-scope-memory-inventory.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-unmapped-result-recovery.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-unmapped-result-recovery.ts -> @nautilo/lattice-bridge/server",
+  // Focused unit and integration tests exercise those exact public seams;
+  // none introduces a new production bridge consumer or direct implementation.
+  "apps/workbench/tests/unit-isolated/use-scheduled-tasks.test.tsx -> @nautilo/lattice-bridge",
+  "packages/runtime/tests/integration/task-authority-replacement.integration.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/runtime/tests/unit/domain-memory-crypto-session.test.ts -> @nautilo/lattice-bridge",
+  "packages/runtime/tests/unit/task-runtime-domain-memory-crypto-session.test.ts -> @nautilo/lattice-bridge",
+  "packages/runtime/tests/unit/task-runtime-domain-memory-crypto-session.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/runtime/tests/unit/task-runtime-grant-claim.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/lattice-integration/protected-task-memory-object-writer.integration.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/lattice-integration/protected-task-memory-object-writer.integration.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/lattice-integration/task-memory-read-authority.integration.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/lattice-integration/task-memory-read-authority.integration.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/protected-task-memory-boundaries.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-memory-boundaries.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/protected-task-memory-composition.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-memory-composition.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/protected-task-memory-object-writer.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-memory-object-writer.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/protected-task-memory-ordinary-fallback.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-native-fixed-memory-segment.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-native-fixed-memory-segment.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/protected-task-native-memory-repository.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-native-memory-repository.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-native-memory-repository.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/protected-task-native-transcript-composition.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/protected-task-preexecution-recovery.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-runtime-initial-device-authorization.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-runtime-parked-claim-authority.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/protected-task-runtime-parked-continuation.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/protected-task-runtime-parked-device-authorization.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-runtime-parked-device-authorization.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/protected-task-runtime-parked-memory-plan.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/protected-task-runtime-parked-plan.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/protected-task-runtime-parked-preparation.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit/protected-task-scope-memory-inventory.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-unmapped-result-recovery.test.ts -> @nautilo/lattice-bridge/server",
 ] as const;
 
 const allowedBridgeProductConsumers = new Set(
@@ -1918,6 +2068,9 @@ const allowedRuntimeRootProtectedExecutionModules = new Set([
   "src/protected-execution/background-authorization/prepare-processor-recipient.ts",
   "src/protected-execution/background-authorization/processor-credential-claim-port.ts",
   "src/protected-execution/background-authorization/repository.ts",
+  // The root exports the pure exact-successor predicates shared by live Task
+  // execution and recovery; the module owns no key custody or crypto provider.
+  "src/protected-execution/background-authorization/task-runtime-completion.ts",
   // The root reaches this implementation only through a type-only plan export.
   "src/protected-execution/background-authorization/task-runtime-grant-claim.ts",
   "src/protected-execution/broker.ts",
@@ -2986,10 +3139,21 @@ describe("Lattice-crypto current package governance", () => {
       target === "src/object/authorized-write.ts"
     )).toHaveLength(1);
 
+    const backgroundTaskRecipient = manifest.scopes.find((scope) =>
+      scope.name === "background-task-recipient"
+    );
+    expect(backgroundTaskRecipient).toBeDefined();
+    expect(backgroundTaskRecipient!.mutate).toContain(
+      "src/object/task-runtime-agent-access-manifest-set-v1.ts",
+    );
+    expect(backgroundTaskRecipient!.mutate).toContain(
+      "src/object/task-runtime-agent-storage-coordinator-v1.ts",
+    );
+
     const mutationTargets = manifest.scopes.flatMap((scope) => scope.mutate);
-    expect(new Set(mutationTargets).size).toBe(130);
+    expect(new Set(mutationTargets).size).toBe(132);
     expect(mutationTargets).toContain("src/message/human-message-edit-v1.ts");
-    expect(eligibleTargets).toHaveLength(130);
+    expect(eligibleTargets).toHaveLength(132);
     expect(mutationTargets).toContain("src/message/human-ai-readable-live-shadow-core.ts");
     expect(mutationTargets).toContain("src/message/human-ai-readable-live-shadow-v2.ts");
     expect([...new Set(mutationTargets)].sort()).toEqual(eligibleTargets);

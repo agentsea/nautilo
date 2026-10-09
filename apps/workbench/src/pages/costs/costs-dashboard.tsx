@@ -169,6 +169,8 @@ export interface NormalizedCostsDashboard {
     operation: string;
     operations: number;
     unknownOperations: number;
+    estimatedCostUsd: number;
+    actualCostUsd: number;
     totalCostUsd: number;
   }>;
   timeSeries: Array<{ day: string; totalCostUsd: number }>;
@@ -233,7 +235,7 @@ export function CostsDashboard({
         <StatCard
           label="Operations"
           value={formatInt(totalOperations)}
-          sub={`${formatInt(totals.calls)} model attempts · ${formatInt(totals.providerOperations)} paid tool`}
+          sub={`${formatInt(totals.calls)} model attempts · ${formatInt(totals.providerOperations)} paid ${totals.providerOperations === 1 ? "operation" : "operations"}`}
         />
         <StatCard
           label="Top model"
@@ -451,6 +453,8 @@ function ProviderCostList({
             <th className="pb-2 font-medium">Provider / operation</th>
             <th className="pb-2 text-right font-medium">Operations</th>
             <th className="pb-2 text-right font-medium">Unknown</th>
+            <th className="pb-2 text-right font-medium">Actual</th>
+            <th className="pb-2 text-right font-medium">Current estimate</th>
             <th className="pb-2 text-right font-medium">Known spend</th>
           </tr>
         </thead>
@@ -468,6 +472,12 @@ function ProviderCostList({
               </td>
               <td className="py-1.5 text-right tabular-nums text-foreground-muted">
                 {formatInt(row.unknownOperations)}
+              </td>
+              <td className="py-1.5 text-right tabular-nums text-foreground-muted">
+                {formatUsd(row.actualCostUsd)}
+              </td>
+              <td className="py-1.5 text-right tabular-nums text-foreground-muted">
+                {formatUsd(row.estimatedCostUsd)}
               </td>
               <td className="py-1.5 text-right font-medium tabular-nums">
                 {formatUsd(row.totalCostUsd)}

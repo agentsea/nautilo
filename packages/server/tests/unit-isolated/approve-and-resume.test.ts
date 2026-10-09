@@ -47,6 +47,7 @@ beforeAll(async () => {
     resumeThreadMembershipForUser: async () => true,
     projectionResumeBindingForThread: async () => ({ kind: "none" }),
     resumeCausalHumanUserIdForThread: async () => OWNER_ID,
+    resumeFundingForThread: async () => null,
   });
 
   await app.ready();

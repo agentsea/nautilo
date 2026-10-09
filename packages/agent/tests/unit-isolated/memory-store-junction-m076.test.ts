@@ -163,6 +163,8 @@ function mockDbModule(opts: {
   currentDbHandle = dbHandle;
   mock.module("@nautilo/db", () => ({
     agentDb: dbHandle,
+    agentScopes: {},
+    memoryScopes: {},
     db: dbHandle,
     memories: { id: "id", type: "type", content: "content", importance: "importance", tier: "tier", createdAt: "created_at", embedding: "embedding", contentRevision: "content_revision" },
     memoryCryptoOperations: {},

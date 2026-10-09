@@ -8,9 +8,12 @@ import type {
   RoomActiveJobsResponse,
 } from "@nautilo/types";
 import {
+  assertProtectedTaskJobReferenceV1,
   createMaintenanceAcceptanceAuthority,
+  getTaskRunDb,
   getMaintenanceGate,
   jobManager,
+  stopTask,
 } from "@nautilo/runtime";
 import { getJobById } from "@nautilo/db";
 import {
@@ -115,15 +118,11 @@ export function jobRoutes(
     }
   );
 
-  // M147 (R8b) — the single general "stop any live job by id". Covers an
-  // ordinary foreground chat turn (D13b stop-mid-turn), an M085 fork, a task
-  // run, and a background job — all live in `jobManager.active` keyed by
-  // `jobId`. Owner-only, mirroring `GET /api/jobs/:id`: 401 when no subject,
-  // 404 (not 403) when the persisted `jobs.owner_id` (= the authenticated
-  // human / requestorId, M077) belongs to another owner — don't leak existence.
-  // `abortJob` returns `false` for an already-terminal / unknown-live id; that
-  // is still a 200 with `{ stopped: false }`. The aborted job emits its own
-  // room-scoped `job.status:cancelled` — no new event needed.
+  // The single general "stop a job by id" route. Owner-only,
+  // mirroring `GET /api/jobs/:id`: 401 when no subject, 404 (not 403) when the
+  // persisted `jobs.owner_id` belongs to another owner. A protected Task Job
+  // is stopped through its durable Task/Run lifecycle even when this process
+  // no longer tracks it; ordinary live Jobs retain the process-local abort.
   app.post<{ Params: { id: string } }>(
     "/api/jobs/:id/stop",
     async (request, reply) => {
@@ -133,9 +132,34 @@ export function jobRoutes(
         return reply.status(401).send({ error: "Authentication required" });
       }
 
-      const job = await getJobById(request.params.id);
-      if (!job || job.ownerId !== sessionUserId) {
+      const job = await getJobById(request.params.id, sessionUserId);
+      if (!job) {
         return reply.status(404).send({ error: "Job not found" });
+      }
+
+      if (job.input?.["kind"] === "protected_task_run_v1") {
+        try {
+          assertProtectedTaskJobReferenceV1(job.input);
+        } catch {
+          // A protected marker is never allowed to fall through to the
+          // process-local generic abort path. Its Task/Run authority cannot be
+          // reconstructed from a malformed durable reference.
+          const response: JobStopResponse = { stopped: false };
+          return reply.send(response);
+        }
+        const stopped = await stopTask(
+          { db: getTaskRunDb(), jobManager },
+          job.input.taskId,
+          {
+            humanUserId: sessionUserId,
+            taskRunId: job.input.taskRunId,
+            jobId: job.id,
+          },
+        );
+        const response: JobStopResponse = {
+          stopped: stopped.ok && stopped.status === "cancelled",
+        };
+        return reply.send(response);
       }
 
       const stopped = jobManager.abortJob(request.params.id);

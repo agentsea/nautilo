@@ -400,6 +400,21 @@ class CoordinateCheckingCrypto implements CheckpointCellCrypto {
   }
 }
 
+class ReentrantQuiescenceCrypto extends CoordinateCheckingCrypto {
+  onAdmission: (() => void) | undefined;
+
+  override executeAuthorizedOperation<Value>(input: {
+    operation: "read" | "write" | "delete" | "cleanup";
+    scope: CheckpointInvocationScope;
+    execute(
+      context: CheckpointAuthorizedOperationContext,
+    ): Promise<Value>;
+  }): Promise<Value> {
+    this.onAdmission?.();
+    return super.executeAuthorizedOperation(input);
+  }
+}
+
 class BlockingPgClient {
   readonly queries: Array<{ text: string; params?: unknown[] }> = [];
   releaseCalls = 0;
@@ -1438,6 +1453,10 @@ describe("EncryptedCheckpointSaver", () => {
     );
     expect(outcome.error.attempt).toBe("post_put");
     expect(outcome.error.cause).toBeInstanceOf(Error);
+    expect(await saver.quiesce()).toEqual({
+      rejectedOperationCount: 1,
+      pendingMaintenanceCount: 1,
+    });
   });
 
   it("accepts and compacts the first checkpoint without a parent checkpoint id", async () => {
@@ -1589,6 +1608,88 @@ describe("EncryptedCheckpointSaver", () => {
       "cleanup",
     ]);
     expect(endCalls).toBe(1);
+  });
+
+  it("quiesce closes admissions synchronously and drains accepted work", async () => {
+    const harness = saverHarness();
+    harness.crypto.sealGate = Promise.withResolvers<void>();
+    const pendingPut = harness.saver.put(
+      config(),
+      checkpoint(),
+      metadata(),
+      { messages: 2, optional_state: 1 },
+    );
+    await harness.crypto.sealStarted.promise;
+
+    const quiescence = harness.saver.quiesce();
+    let settled = false;
+    void quiescence.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBeFalse();
+    expect(harness.saver.putWrites(
+      checkpointConfig(),
+      [["messages", "late"]],
+      "task-late",
+    )).rejects.toThrow("saver is closing");
+
+    harness.crypto.sealGate.resolve();
+    await pendingPut;
+    expect(await quiescence).toEqual({
+      rejectedOperationCount: 0,
+      pendingMaintenanceCount: 0,
+    });
+    expect(await harness.saver.quiesce()).toEqual({
+      rejectedOperationCount: 0,
+      pendingMaintenanceCount: 0,
+    });
+    expect((await harness.saver.end()).status).toBe("closed");
+  });
+
+  it("quiesce reports operations rejected before they left the live set", async () => {
+    const harness = saverHarness();
+    harness.store.putWritesError = new Error("physical write rejected");
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun rejects matcher
+    await expect(harness.saver.putWrites(
+      checkpointConfig(),
+      [["messages", "private"]],
+      "task-1",
+    )).rejects.toThrow("physical write rejected");
+
+    expect(await harness.saver.quiesce()).toEqual({
+      rejectedOperationCount: 1,
+      pendingMaintenanceCount: 0,
+    });
+    await harness.saver.end();
+  });
+
+  it("registers an operation before its authority owner reenters quiescence", async () => {
+    const crypto = new ReentrantQuiescenceCrypto();
+    const harness = saverHarness(undefined, crypto);
+    let reentrantQuiescence:
+      | ReturnType<EncryptedCheckpointSaver["quiesce"]>
+      | undefined;
+    crypto.onAdmission = () => {
+      reentrantQuiescence = harness.saver.quiesce();
+    };
+
+    await harness.saver.deleteThread("room:room-1:bot:agent-1");
+    if (reentrantQuiescence === undefined) {
+      throw new Error("test authority owner did not reenter quiescence");
+    }
+    expect(await reentrantQuiescence).toEqual({
+      rejectedOperationCount: 0,
+      pendingMaintenanceCount: 0,
+    });
+    expect(harness.store.deleteCalls).toEqual([
+      "nautilo:encrypted-checkpoint-shadow:v1:cm9vbTpyb29tLTE6Ym90OmFnZW50LTE",
+    ]);
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun rejects matcher
+    await expect(harness.saver.getTuple(checkpointConfig())).rejects.toThrow(
+      "saver is closing",
+    );
+    await harness.saver.end();
   });
 
   it("rejects unbounded/invalid list limits and malformed cursors before authorization", () => {

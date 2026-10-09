@@ -9,6 +9,7 @@ import {
   DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT,
   reconcileSurplusLlmAttemptCost,
   requeueBlockedServerSurplusAttempts,
+  requeueBlockedSurplusDecisionAttempts,
 } from "@nautilo/db";
 import type {
   ListPendingSurplusAttemptsInput,
@@ -29,6 +30,7 @@ interface SurplusCostRecoveryDependencies {
   resolveCredential(row: SurplusPendingAttempt): Promise<RecoveryCredential> | RecoveryCredential;
   resolveServerCredential(): string | null;
   requeueBlockedServer(): Promise<number>;
+  requeueBlockedDecisions(): Promise<number>;
   fetchCost: typeof fetchSurplusSettlement;
   now(): number;
 }
@@ -59,12 +61,14 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
     resolveCredential: defaultCredential,
     resolveServerCredential: () => resolveProviderKey("surplus"),
     requeueBlockedServer: requeueBlockedServerSurplusAttempts,
+    requeueBlockedDecisions: requeueBlockedSurplusDecisionAttempts,
     fetchCost: fetchSurplusSettlement,
     now: Date.now,
     ...overrides,
   };
   const shutdown = new AbortController();
   let observedServerCredentialFingerprint: string | null | undefined;
+  let decisionEndpointUpgradeApplied = false;
 
   async function wakeBlockedServerAttemptsForCurrentCredential(): Promise<void> {
     const apiKey = deps.resolveServerCredential();
@@ -96,6 +100,10 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
 
   const pump = createReceiptRecoveryPump({
     async runPass(isStopped) {
+      if (!decisionEndpointUpgradeApplied) {
+        await deps.requeueBlockedDecisions();
+        decisionEndpointUpgradeApplied = true;
+      }
       await wakeBlockedServerAttemptsForCurrentCredential();
       if (isStopped()) return;
       const rows = await deps.list({
@@ -113,7 +121,7 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
           );
           continue;
         }
-        if (row.endpoint !== "/v1/chat/completions") {
+        if (row.endpoint !== "/v1/chat/completions" && row.endpoint !== "/v1/decisions") {
           await classify(row, "blocked_repair", "receipt_endpoint_unsupported");
           continue;
         }

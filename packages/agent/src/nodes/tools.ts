@@ -1,3 +1,4 @@
+import { getCapabilityFundingSession } from "../runtime/capability-funding";
 import { getCurrentLocalExecutionDelegation } from "../runtime/local-execution-delegation";
 import type { HumanTerminalAdmissionPort } from "../tools/terminal/admission";
 import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
@@ -48,7 +49,7 @@ import type {
   RecallRecordsPort,
   RecallRecordsPortForState,
 } from "../tools/memory/recall-records";
-import { isPersonalTaskControlCall } from "../runtime/personal-task-controls";
+import { personalToolCallSupported } from "../runtime/personal-tool-readiness";
 
 export {
   RelayUnavailableError,
@@ -78,7 +79,7 @@ type ApprovedToolCall = NonNullable<NautiloState["approvedToolCalls"]>[number];
 
 export const PERSONAL_FUNDING_TOOL_UNSUPPORTED_RESULT = JSON.stringify({
   error: "unsupported_workload",
-  message: "Personal funding supports text chat and bounded native Task controls only. No tool was executed.",
+  message: "Personal funding is not available for one or more requested workflows. No tool was executed.",
   recovery: "continue_without_tools",
 });
 
@@ -259,8 +260,7 @@ async function executeToolsNode(
   if (
     protectedComposition.personalFunding === true
     && (
-      protectedComposition.personalTaskControls !== true
-      || toolCalls.some((call) => !isPersonalTaskControlCall(call))
+      toolCalls.some((call) => !personalToolCallSupported(call, protectedComposition.personalTaskControls === true))
     )
   ) {
     return {
@@ -437,7 +437,7 @@ async function invokeToolCall(
       ...(protectedComposition.fullEncryptionOnly === true
         ? { fullEncryptionOnly: true }
         : {}),
-      ...(protectedComposition.personalTaskControls === true
+      ...(protectedComposition.personalTaskControls === true && !getCapabilityFundingSession()
         ? { personalTaskControls: true }
         : {}),
       ...(protectedComposition.personalTaskRunnableModelIds === undefined
@@ -664,7 +664,11 @@ export function createToolsNode(input: Readonly<{
   fullEncryptionOnlyForState?: (state: NautiloState) => boolean;
 }> = {}): typeof toolsNode {
   return async (state, config) => {
-    if (input.personalFunding === true) {
+    const capabilityFunding = getCapabilityFundingSession();
+    if (
+      input.personalFunding === true
+      && (capabilityFunding === undefined || capabilityFunding.parentFundingKind === "server")
+    ) {
       return executeToolsNode(state, config, {
         personalFunding: true,
         ...(input.personalTaskControls === true
@@ -688,6 +692,7 @@ export function createToolsNode(input: Readonly<{
     const projection = input.protectedMemoryProjectionPortForState?.(state);
     const fullEncryptionOnly = input.fullEncryptionOnlyForState?.(state) === true;
     return executeToolsNode(state, config, {
+      ...(input.personalFunding === true ? { personalFunding: true } : {}),
       delegatedLocalExecutionPort: input.delegatedLocalExecutionPortForState
         ? input.delegatedLocalExecutionPortForState(state) : getCurrentLocalExecutionDelegation(),
       ...(input.localExecutionHistoryPortForState === undefined ? {} : { localExecutionHistoryPort: input.localExecutionHistoryPortForState(state) }),

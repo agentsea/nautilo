@@ -1,5 +1,7 @@
 import {
   modelHasRunnableCredentials,
+  resolveCatalogModel,
+  resolveSurplusDecisionServingAvailability,
   PersonalDirectFundingUnavailableError,
   PersonalModelFundingUnavailableError,
   resolveProviderKey,
@@ -10,6 +12,7 @@ import {
 import {
   getCachedServerModelConfigRow,
   getPersonalProviderCredential,
+  listPersonalProviderCredentials,
   getServerProviderPolicy,
   type PersonalProviderCredentialRecord,
   type PersonalProviderId,
@@ -23,7 +26,12 @@ import { getUserCapabilities } from "@nautilo/trust";
 import { readPersonalProviderCustody } from "./personal-provider-custody";
 import { getServerDirectDb } from "./server-direct-db";
 
-export type ModelFundingWorkload = "foreground_text_chat" | "native_text_task" | "image_assistance";
+export type ModelFundingWorkload =
+  | "foreground_text_chat"
+  | "native_text_task"
+  | "research"
+  | "decision"
+  | "image_assistance";
 
 /** Runnable personal chat adapters; storing a service key never enables its paid path. */
 export const PERSONAL_CHAT_PROVIDER_IDS = [
@@ -85,8 +93,12 @@ export interface ModelFundingDeps {
   }>;
   getCapabilities: (humanUserId: string) => Promise<readonly string[]>;
   getCredential: (humanUserId: string, provider: PersonalProviderId) => Promise<PersonalProviderCredentialRecord | null>;
-  serverRoute: (modelId: string) => string | null;
-  personalSurplusRoute?: (modelId: string) => boolean;
+  serverRoute: (
+    modelId: string,
+    workload?: ModelFundingWorkload,
+    transport?: "direct" | "surplus",
+  ) => string | null;
+  personalSurplusRoute?: (modelId: string, workload?: ModelFundingWorkload) => boolean;
   readCustody: () => Promise<PersonalProviderCustody>;
   decrypt: typeof decryptPersonalProviderCredential;
 }
@@ -101,6 +113,28 @@ export function resolveServerFundingRoute(
   } = {},
 ): string | null {
   const env = input.env ?? process.env;
+  const decision = resolveCatalogModel(modelId, { env });
+  const preferSurplus = input.preferSurplus
+    ?? getCachedServerModelConfigRow()?.preferSurplus === true;
+  if (decision.workload === "decision") {
+    if (!["selectable", "missing_credentials"].includes(decision.availability)) return null;
+    const surplus = resolveSurplusDecisionServingAvailability({
+      catalogModelId: modelId,
+      policyEnabled: preferSurplus,
+      keyConfigured: input.surplusKeyConfigured ?? Boolean(input.env === undefined ? resolveProviderKey("surplus") : env["SURPLUS_API_KEY"]?.trim()),
+    });
+    if (surplus.status === "available") return "surplus";
+    return decision.availability === "selectable" ? decision.provider : null;
+  }
+  const surplus = resolveSurplusChatServingAvailability({
+    catalogModelId: modelId,
+    policyEnabled: preferSurplus,
+    keyConfigured: input.surplusKeyConfigured ?? (input.env === undefined
+      ? resolveProviderKey("surplus") !== null
+      : Boolean(env["SURPLUS_API_KEY"]?.trim())),
+    ...(input.routes === undefined ? {} : { routes: input.routes }),
+  });
+  if (surplus.status === "available") return "surplus";
   if (modelHasRunnableCredentials(modelId, env)) {
     if (modelId.toLowerCase().startsWith("openrouter:")) {
       try {
@@ -111,15 +145,7 @@ export function resolveServerFundingRoute(
     }
     return modelId.slice(0, modelId.indexOf(":"));
   }
-  const surplus = resolveSurplusChatServingAvailability({
-    catalogModelId: modelId,
-    policyEnabled: input.preferSurplus ?? getCachedServerModelConfigRow()?.preferSurplus === true,
-    keyConfigured: input.surplusKeyConfigured ?? (input.env === undefined
-      ? resolveProviderKey("surplus") !== null
-      : Boolean(env["SURPLUS_API_KEY"]?.trim())),
-    ...(input.routes === undefined ? {} : { routes: input.routes }),
-  });
-  return surplus.status === "available" ? "surplus" : null;
+  return null;
 }
 
 const DEFAULT_DEPS: ModelFundingDeps = {
@@ -127,8 +153,10 @@ const DEFAULT_DEPS: ModelFundingDeps = {
   getCapabilities: getUserCapabilities,
   getCredential: (humanUserId, provider) =>
     getPersonalProviderCredential(getServerDirectDb(), humanUserId, provider),
-  serverRoute: resolveServerFundingRoute,
-  personalSurplusRoute: (modelId) => resolveSurplusChatServingAvailability({
+  serverRoute: (modelId, _workload, transport) => resolveServerFundingRoute(modelId, {
+    ...(transport === undefined ? {} : { preferSurplus: transport === "surplus" }),
+  }),
+  personalSurplusRoute: (modelId, workload) => (workload === "decision" ? resolveSurplusDecisionServingAvailability : resolveSurplusChatServingAvailability)({
     catalogModelId: modelId,
     policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
     keyConfigured: true, fundingKind: "personal",
@@ -141,7 +169,7 @@ function directProvider(modelId: string): PersonalProviderId | null {
   const colon = modelId.indexOf(":");
   if (colon <= 0 || colon === modelId.length - 1) return null;
   const prefix = modelId.slice(0, colon).toLowerCase();
-  return prefix !== "surplus" && (PERSONAL_CHAT_PROVIDER_IDS as readonly string[]).includes(prefix)
+  return prefix !== "surplus" && (prefix === "typesafe" || (PERSONAL_CHAT_PROVIDER_IDS as readonly string[]).includes(prefix))
     ? prefix as PersonalProviderId
     : null;
 }
@@ -187,6 +215,7 @@ export async function resolveModelFunding(
   deps: ModelFundingDeps = DEFAULT_DEPS,
 ): Promise<ModelFundingDecision> {
   if (input.workload !== "foreground_text_chat" && input.workload !== "native_text_task"
+    && input.workload !== "research" && input.workload !== "decision"
     && input.workload !== "image_assistance") {
     throw new ModelFundingError("unsupported_workload");
   }
@@ -195,6 +224,7 @@ export async function resolveModelFunding(
   }
   if (!input.humanUserId.trim()) throw new ModelFundingError("server_credentials_forbidden");
   const provider = directProvider(input.modelId);
+  if (provider === "typesafe" && input.workload !== "decision") throw new ModelFundingError("unsupported_provider");
   if (!provider && !isServerOnlyGateway(input.modelId)) {
     throw new ModelFundingError("unsupported_provider");
   }
@@ -202,6 +232,9 @@ export async function resolveModelFunding(
     throw new ModelFundingError("unsupported_provider");
   }
   verifyPrior(input, provider);
+  if (input.transport && !input.priorDecision && input.workload !== "image_assistance") {
+    throw new ModelFundingError("funding_source_changed");
+  }
 
   const policy = await deps.getPolicy();
   const caps = await deps.getCapabilities(input.humanUserId);
@@ -220,11 +253,11 @@ export async function resolveModelFunding(
 
   // Priority applies only to fresh admissions. An eligible server-first route
   // needs neither a personal row lookup nor access to personal key custody.
-  const serverRoute = () => {
-    const route = deps.serverRoute(input.modelId);
+  const serverRoute = (transport: "direct" | "surplus" | undefined = input.transport) => {
+    const route = deps.serverRoute(input.modelId, input.workload, transport);
     // Image assistance uses the reviewed direct adapters. A text marketplace
     // mapping is not proof that the same route accepts image payloads.
-    return input.transport === "direct" && route === "surplus" ? null : route;
+    return input.workload === "image_assistance" && route === "surplus" ? null : route;
   };
   if (!prior && input.fundingKind !== "personal" && policy.fundingPreference === "server_first"
     && caps.includes("use_server_provider_credentials")) {
@@ -253,7 +286,8 @@ export async function resolveModelFunding(
 
   // Switch-off and admitted server operations never inspect personal rows.
   if (personalAllowed && provider && prior?.kind !== "server" && input.fundingKind !== "server") {
-    const surplusEligible = input.transport !== "direct" && deps.personalSurplusRoute?.(input.modelId) === true;
+    const surplusEligible = input.transport !== "direct"
+      && deps.personalSurplusRoute?.(input.modelId, input.workload) === true;
     const surplusCredential = surplusEligible
       ? prior?.kind === "personal" && prior.providerRoute === "surplus"
         ? priorCredential : await deps.getCredential(input.humanUserId, "surplus")
@@ -300,8 +334,25 @@ export async function resolveModelFunding(
       ? "personal_credential_missing"
       : "server_credentials_forbidden");
   }
-  const route = serverRoute();
+  const pinnedServerTransport = prior?.kind === "server"
+    ? prior.providerRoute === "surplus" ? "surplus" : "direct"
+    : undefined;
+  if (input.transport === "surplus" && pinnedServerTransport === "direct") {
+    throw new ModelFundingError("funding_source_changed");
+  }
+  const requestedServerTransport = input.transport ?? pinnedServerTransport;
+  const route = serverRoute(requestedServerTransport);
   if (!route) throw new ModelFundingError("provider_credentials_missing");
+  if (requestedServerTransport === "surplus" && route !== "surplus") {
+    throw new ModelFundingError("funding_source_changed");
+  }
+  if (requestedServerTransport === "direct" && route === "surplus") {
+    throw new ModelFundingError("funding_source_changed");
+  }
+  if (prior?.kind === "server" && prior.modelId === input.modelId
+    && prior.providerRoute !== "surplus" && route !== prior.providerRoute) {
+    throw new ModelFundingError("funding_source_changed");
+  }
   return {
     kind: "server", humanUserId: input.humanUserId,
     modelId: input.modelId, providerRoute: route, workload: input.workload,
@@ -348,4 +399,23 @@ export async function withAdmittedPersonalProviderKey<T>(
     throw new ModelFundingError("personal_credential_unavailable");
   }
   return useKey(apiKey);
+}
+
+
+/** Request-local, presence-only projection. Never use these dependencies to dispatch. */
+export async function createModelFundingSnapshot(humanUserId: string) {
+  const [policy, capabilities, credentials] = await Promise.all([
+    DEFAULT_DEPS.getPolicy(), DEFAULT_DEPS.getCapabilities(humanUserId),
+    listPersonalProviderCredentials(getServerDirectDb(), humanUserId),
+  ]);
+  const deps: ModelFundingDeps = {
+    ...DEFAULT_DEPS,
+    getPolicy: () => Promise.resolve(policy),
+    getCapabilities: (human) => Promise.resolve(human === humanUserId ? capabilities : []),
+    getCredential: (human, provider) => Promise.resolve(
+      human === humanUserId ? credentials.find((row) => row.provider === provider) ?? null : null,
+    ),
+    readCustody: () => Promise.reject(new Error("Funding projection cannot decrypt credentials")),
+  };
+  return { policy, deps };
 }

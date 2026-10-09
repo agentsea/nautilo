@@ -14,7 +14,10 @@ import type {DurableSleepSemanticPort} from "@nautilo/reflection/durable";
 import {createProductionReflectionAuthorityMaintenance} from "./reflection/protected-authority-composition";
 import { bindEncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 import { bindReflectionSemanticDataOperationPort, resolveReflectionSemanticStageAdmission, createPostgresStenographerAuthorizationWaitPort, createStenographerDataOperationPort, createStenographerCandidateDataOperationPort, readPostgresReflectionAuthorityStatus, readPostgresStenographerProtectionStatus, verifyCryptoPostgresHandle, type StenographerIntentAdapter } from "@nautilo/lattice-bridge/server";
-import { LatticeCrypto } from "@nautilo/lattice-crypto";
+import { LatticeCrypto, TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
+import { createParkedProtectedTaskOccurrenceCoordinator } from "@nautilo/runtime";
+import { createProtectedTaskRuntimeParkedPreparation } from "./routes/protected-task-runtime-parked-preparation";
+import { createProtectedTaskRuntimeParkedDeviceAuthorization } from "./routes/protected-task-runtime-parked-device-authorization";
 import {decodeBackgroundProcessorWorkDescriptorV2} from "@nautilo/lattice-crypto/background";
 import { createHmacProtectedStenographerRecordCommitmentPort, createHmacRecordSemanticCommitmentPort, verifyRecordProductPostgresHandle } from "@nautilo/reflection-bridge/server";
 import { createProductionProtectedStenographerComposition } from "./background/stenographer-composition";
@@ -285,6 +288,7 @@ import { serverIconRoutes } from "./routes/server-icon";
 import { serverModelsRoutes } from "./routes/server-models";
 import { serverContextRoutes } from "./routes/server-context";
 import { serverProviderPolicyRoutes } from "./routes/server-provider-policy";
+import { personalCapabilityPreferenceRoutes } from "./routes/personal-capability-preferences";
 import { personalProviderCredentialRoutes } from "./routes/personal-provider-credentials";
 import { encryptionTransitionRoutes } from "./routes/encryption-transition";
 import { personalEncryptionCoverageRoutes } from "./routes/personal-encryption-coverage";
@@ -3030,6 +3034,7 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   serverProviderPolicyRoutes(app);
+  personalCapabilityPreferenceRoutes(app);
   personalProviderCredentialRoutes(app, {
     auditEvent: (request, event) => {
       try {
@@ -3064,7 +3069,18 @@ export async function createApp(options?: CreateAppOptions) {
   });
   personalEncryptionCoverageRoutes(app);
   messageBackfillRoutes(app);
+  const taskRuntimeRecipients = policyResolver === null
+    ? null : new TaskRuntimeRecipientRegistry(new LatticeCrypto());
+  app.addHook("onClose", () => {
+    taskRuntimeRecipients?.close();
+    return Promise.resolve();
+  });
+  const parkedTaskDeviceAuthorization = policyResolver === null || taskRuntimeRecipients === null
+    ? {} : createProtectedTaskRuntimeParkedDeviceAuthorization({
+      resolver: policyResolver, recipients: taskRuntimeRecipients,
+    });
   backgroundAuthorizationRoutes(app, createProductionBackgroundAuthorizationComposition({
+    ...parkedTaskDeviceAuthorization,
     wakeProtectedTask: () => getTaskObserver()?.kick(),
   }));
   deviceAdmissionRoutes(app, {
@@ -3942,6 +3958,14 @@ export async function createApp(options?: CreateAppOptions) {
   // sealed server-authored harness descriptor; Native Tasks return undefined
   // and preserve their existing executor. Stopped on app close.
   let moderationEffectRecovery: ReturnType<typeof createModerationEffectRecovery> | null = null;
+  // Only already parked protected runs enter request preparation. Initial
+  // protected dispatch remains unavailable until the execution owner is complete.
+  const parkedTaskPreparation = policyResolver === null || taskRuntimeRecipients === null
+    ? undefined : createParkedProtectedTaskOccurrenceCoordinator({
+        prepare: createProtectedTaskRuntimeParkedPreparation({
+          resolver: policyResolver, recipients: taskRuntimeRecipients,
+        }),
+      });
   const taskObserver = new TaskObserver({
     db: getServerDirectDb(),
     jobManager,
@@ -3949,6 +3973,7 @@ export async function createApp(options?: CreateAppOptions) {
       "background.task.observer",
     ),
     executionRouteSelector: taskHarnessExecutionRouteSelector,
+    ...(parkedTaskPreparation === undefined ? {} : { protectedOccurrenceRecoveryPort: parkedTaskPreparation }),
     convergeCreatedRoomCatalog: convergeHumanRoomCatalogs,
     onMaintenance: async () => {
       liveMiniAppSessionRegistry.expire();

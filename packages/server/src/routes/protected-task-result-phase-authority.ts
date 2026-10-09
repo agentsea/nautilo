@@ -20,7 +20,7 @@ import type {
 } from "@nautilo/lattice-bridge/server";
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
-  ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 
 import { getServerDirectDb } from "../lib/server-direct-db";
@@ -48,7 +48,7 @@ type TaskResultAuthorityResolver = (
 type TaskResultPhase = "running" | "terminal" | "unavailable";
 
 export type ProtectedTaskResultPhaseAuthorityInput = Readonly<{
-  occurrence: ProtectedTaskOccurrence;
+  occurrence: ProtectedTaskRunningOccurrence;
   record: BackgroundAuthorizationTaskRuntimeRecordV3;
   request: TaskRuntimeBackgroundAuthorizationRequestV1;
   subject: TaskRuntimeAuthoritySubject;
@@ -78,6 +78,9 @@ function exactAcceptedCoordinates(
   const accepted = record.snapshot.acceptedResponse;
   return (
     coordinate.kind === "run_result" &&
+    occurrence.run.status === "running" &&
+    typeof occurrence.run.jobId === "string" &&
+    occurrence.run.jobId.length > 0 &&
     coordinate.taskId === occurrence.task.id &&
     coordinate.taskRunId === occurrence.run.id &&
     coordinate.contentRevision === 1 &&

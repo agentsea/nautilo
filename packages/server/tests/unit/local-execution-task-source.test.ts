@@ -43,7 +43,7 @@ function protectedProof(current: TaskLocalExecutionSourceRecord): ProtectedTaskL
     authority: { runner: {} as ProtectedTaskLocalExecutionSourceProof["authority"]["runner"],
       restricted: {} as ProtectedTaskLocalExecutionSourceProof["authority"]["restricted"], crypto: new LatticeCrypto(), serverScope: "https://server.example",
       taskId: current.id, requesterUserId: "human", requesterHumanId: "human-actor", agentId: "agent", contentNamespaceId: "content",
-      sourceRoomId: "private-definition-room", namespaceIds: ["content"], expectedPolicyRevision: 7, deviceId: "device",
+      sourceRoomId: "private-definition-room", targetRoomId: roomId, namespaceIds: ["content"], expectedPolicyRevision: 7, deviceId: "device",
       namespaceRequirements: [{ ordinal: 0, namespaceId: "content", domainId: "domain", operations: ["decrypt", "encrypt"], expectedAccessRevision: 2, expectedPolicyRevision: 7 }],
       domainRequirements: [{ ordinal: 0, domainId: "domain", expectedEpoch: 6, expectedAuthorizationRevision: 8 }], validateCurrentTaskRun: async () => true } };
 }
@@ -58,7 +58,7 @@ function held(proof: ProtectedTaskLocalExecutionSourceProof): InitialTaskRuntime
 function protectedFixture(run?: (proof: ProtectedTaskLocalExecutionSourceProof, input: Parameters<NonNullable<TaskLocalExecutionSourceAssertionDeps["withProtectedAuthority"]>>[0]) => Promise<void>) {
   let calls = 0;
   const f = fixture({ readProtectedSource: async () => proof,
-    withProtectedAuthority: async input => { calls++; await run?.(proof, input); return input.use(held(proof)); } });
+    withProtectedAuthority: async input => { calls++; await run?.(proof, input); return input.use(held(proof), input.restricted); } });
   f.current = { ...f.current, contentRepresentation: "protected", contentRevision: 1, contentNamespaceId: "content", cryptoObjectId: "definition-object",
     cryptoRequiredNamespaceFingerprint: new Uint8Array(32).fill(3), cryptoMappingState: "verified" };
   const proof = protectedProof(f.current); f.policy = proof.policy;
@@ -107,7 +107,7 @@ test("device, namespace, domain or policy drift refuses original proof", async (
         : drift === "namespace" ? { ...current, namespaceRequirements: current.namespaceRequirements.map(item => ({ ...item, expectedAccessRevision: 9 })) }
           : drift === "domain" ? { ...current, domains: current.domains.map(item => ({ ...item, authorizationRevision: authorizationRevision(9) })) }
             : { ...current, policyRevision: 8 };
-      return input.use(changed);
+      return input.use(changed, input.restricted);
     };
     await rejects(createTaskLocalExecutionSourceAssertion({ ...f.original.deps, withProtectedAuthority })(f.original.current), /SOURCE_UNAVAILABLE/);
   }

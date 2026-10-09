@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
+  BACKGROUND_AUTHORIZATION_MAX_GENERATION,
   BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT,
   BACKGROUND_AUTHORIZATION_MAX_TTL_MS,
   BACKGROUND_AUTHORIZATION_TERMINAL_REASONS,
@@ -13,12 +14,14 @@ import {
   createBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequestV2,
   createBackgroundAuthorizationTaskRuntimeRequestV3,
+  deferUnstartedTaskRuntimeRequestSnapshot,
   failBackgroundAuthorizationRequest,
   markBackgroundAuthorizationGrantReady,
   markBackgroundAuthorizationRunning,
   markBackgroundAuthorizationPublicationReconciliation,
   parseBackgroundAuthorizationRequestSnapshot,
   restartBackgroundAuthorizationAfterUncommittedPublication,
+  replaceBackgroundAuthorizationPreclaimAuthority,
   scheduleBackgroundAuthorizationPublicationRetry,
   type BackgroundAuthorizationCredentialSubject,
 } from "../../src/protected-execution/background-authorization/lifecycle";
@@ -86,6 +89,43 @@ function grantReady(
     recipientGeneration: 0,
     now,
   });
+}
+
+function claimedTaskRuntime() {
+  const initial = createBackgroundAuthorizationTaskRuntimeRequestV3({
+    requestId: "task-runtime-request-deferral",
+    workId: "10000000-0000-4000-8000-000000000908",
+    namespaceId: "task-runtime-namespace-deferral",
+    now: NOW,
+  });
+  const waiting = attachBackgroundAuthorizationRecipient(initial, {
+    recipientGeneration: 0,
+    recipientKeyId: "task-runtime-key-deferral",
+    recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+    descriptorDigest: DIGEST,
+    expiresAt: NOW + 60_000,
+    now: NOW + 1,
+  });
+  const ready = markBackgroundAuthorizationGrantReady(waiting, {
+    kind: "runtime",
+    requestId: waiting.requestId,
+    descriptorDigest: waiting.descriptorDigest!,
+    recipientKeyId: waiting.recipient!.recipientKeyId,
+    recipientPublicKey: waiting.recipient!.recipientPublicKey,
+    expiresAt: waiting.recipient!.expiresAt,
+    responseDigest: RESPONSE_DIGEST,
+    credentialDigest: CREDENTIAL_DIGEST,
+    issuingHumanId: "human-alice",
+    issuingDeviceId: "device-alice-1",
+    recipientGeneration: 0,
+    now: NOW + 2,
+  });
+  return claimBackgroundAuthorizationRequest(
+    ready,
+    "task-runtime-claim-deferral",
+    NOW + 3,
+    NOW + 30_000,
+  );
 }
 
 describe("Wave 10 background authorization lifecycle", () => {
@@ -352,6 +392,64 @@ describe("Wave 10 background authorization lifecycle", () => {
     }).retryCount).toBe(1);
   });
 
+  test("replaces only preclaim Task authority without spending retry history", () => {
+    const ready = grantReady();
+    const claimedWithRetry = claimBackgroundAuthorizationRequest(
+      ready,
+      "claim-before-retry",
+      NOW + 3,
+      NOW + 30_000,
+    );
+    const withRetryHistory = advanceBackgroundAuthorizationGeneration(
+      markBackgroundAuthorizationRunning(claimedWithRetry, NOW + 4),
+      {
+        reason: "provider_transient_failure",
+        now: NOW + 5,
+        nextAttemptAt: NOW + 6,
+      },
+    );
+    const replaced = replaceBackgroundAuthorizationPreclaimAuthority({
+      ...withRetryHistory,
+      formatVersion: 3,
+      credentialSubject: {
+        kind: "runtime",
+        runtimeKind: "task",
+        runtimeVersion: 1,
+      },
+    }, NOW + 6);
+    expect(replaced).toMatchObject({
+      state: "awaiting_recipient",
+      recipientGeneration: 2,
+      requestRevision: withRetryHistory.requestRevision + 1,
+      descriptorDigest: null,
+      recipient: null,
+      acceptedResponse: null,
+      claimId: null,
+      claimExpiresAt: null,
+      retryCount: 1,
+      lastRetryReason: "provider_transient_failure",
+      nextAttemptAt: NOW + 6,
+    });
+    const claimed = claimBackgroundAuthorizationRequest(
+      ready,
+      "claimed-before-replacement",
+      NOW + 3,
+      NOW + 30_000,
+    );
+    expect(() => replaceBackgroundAuthorizationPreclaimAuthority(
+      {
+        ...claimed,
+        formatVersion: 3,
+        credentialSubject: {
+          kind: "runtime",
+          runtimeKind: "task",
+          runtimeVersion: 1,
+        },
+      },
+      NOW + 4,
+    )).toThrow("illegal_transition");
+  });
+
   test("offline waiting preserves already spent retries without exhausting them", () => {
     const waiting = parseBackgroundAuthorizationRequestSnapshot({
       ...recipientReady(),
@@ -365,6 +463,89 @@ describe("Wave 10 background authorization lifecycle", () => {
     });
     expect(rotated.retryCount).toBe(BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT);
     expect(rotated.state).toBe("awaiting_recipient");
+  });
+
+  test("defers only an unstarted V3 Task Runtime grant without spending retries", () => {
+    const claimed = parseBackgroundAuthorizationRequestSnapshot({
+      ...claimedTaskRuntime(),
+      retryCount: BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT,
+      lastRetryReason: "provider_transient_failure",
+    });
+    const deferred = deferUnstartedTaskRuntimeRequestSnapshot(
+      markBackgroundAuthorizationRunning(claimed, NOW + 4),
+      NOW + 5,
+    );
+    expect(deferred).toMatchObject({
+      formatVersion: 3,
+      state: "awaiting_recipient",
+      recipientGeneration: claimed.recipientGeneration + 1,
+      requestRevision: claimed.requestRevision + 2,
+      descriptorDigest: null,
+      recipient: null,
+      acceptedResponse: null,
+      claimId: null,
+      claimExpiresAt: null,
+      retryCount: BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT,
+      lastRetryReason: "stale_authority",
+      nextAttemptAt: NOW + 5,
+      updatedAt: NOW + 5,
+    });
+    expect(() => advanceBackgroundAuthorizationGeneration(
+      markBackgroundAuthorizationRunning(claimed, NOW + 4),
+      {
+        reason: "provider_transient_failure",
+        now: NOW + 5,
+        nextAttemptAt: NOW + 5,
+      },
+    )).toThrow(new BackgroundAuthorizationTransitionError("counter_exhausted"));
+    expect(deferUnstartedTaskRuntimeRequestSnapshot(
+      claimedTaskRuntime(),
+      NOW + 4,
+    ).state).toBe("awaiting_recipient");
+  });
+
+  test("rejects non-Task and non-execution snapshots at the deferral boundary", () => {
+    const claimed = claimedTaskRuntime();
+    const v2 = createBackgroundAuthorizationRequestV2({
+      requestId: "request-v2-deferral",
+      workId: "work-v2-deferral",
+      namespaceId: "namespace-v2-deferral",
+      credentialSubject: {
+        kind: "agent",
+        agentId: "agent-v2-deferral",
+        runtimeGeneration: 1,
+        authorizationRevision: 1,
+      },
+      now: NOW,
+    });
+    for (const value of [initial(), v2]) {
+      expect(() => deferUnstartedTaskRuntimeRequestSnapshot(
+        value,
+        NOW + 5,
+      )).toThrow("requires a V3 Task request");
+    }
+    expect(() => deferUnstartedTaskRuntimeRequestSnapshot(
+      {
+        ...claimed,
+        state: "grant_ready",
+        claimId: null,
+        claimExpiresAt: null,
+      },
+      NOW + 5,
+    )).toThrow("illegal_transition");
+    expect(() => deferUnstartedTaskRuntimeRequestSnapshot(
+      claimed,
+      NOW + 2,
+    )).toThrow("timestamp_regression");
+    for (const snapshot of [
+      { ...claimed, recipientGeneration: BACKGROUND_AUTHORIZATION_MAX_GENERATION },
+      { ...claimed, requestRevision: BACKGROUND_AUTHORIZATION_MAX_GENERATION },
+    ]) {
+      expect(() => deferUnstartedTaskRuntimeRequestSnapshot(
+        snapshot,
+        NOW + 5,
+      )).toThrow("counter_exhausted");
+    }
   });
 
   test("requires expiry to be real and rejects backward or illegal transitions", () => {

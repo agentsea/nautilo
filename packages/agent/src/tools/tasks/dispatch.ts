@@ -1,3 +1,4 @@
+import { getCapabilityFundingSession } from "../../runtime/capability-funding";
 import type { TaskReadPendingPage } from "./read-projection";
 import type { BaseMessage } from "@langchain/core/messages";
 import { readTaskSection } from "./read";
@@ -399,7 +400,7 @@ export async function dispatchTaskCommand(
         // capability truth, mutual-exclusion conflict) and the
         // profile/spec bias. Reject an unsatisfiable selection with the
         // actionable message; do NOT insert.
-        const selectionError = ctx.personalTaskControls ? null : validateTaskModelSelectionForCreate({
+        const selectionError = ctx.personalTaskControls || getCapabilityFundingSession() ? null : validateTaskModelSelectionForCreate({
           requestedModelId: args.model_id,
           profile: args.model_selection_profile,
           spec: args.model_selection_spec,

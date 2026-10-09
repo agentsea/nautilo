@@ -1,3 +1,4 @@
+import { ProtectedTaskExecutionDidNotBeginError } from "../../src/tasks/protected-task-execution-candidate";
 import { createHash } from "node:crypto";
 
 import { describe, expect, test } from "bun:test";
@@ -23,26 +24,42 @@ import {
   type DomainForegroundAuthorizationPlanV2,
   type DomainForegroundAuthorizationPublicCurrentAuthorityV2,
 } from "@nautilo/lattice-crypto/wire";
-import type { StartProtectedTaskRunInput } from "@nautilo/db";
+import type { PersistJobPayload, StartProtectedTaskRunInput } from "@nautilo/db";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+import type { TaskScopeMemoryBinding } from "@nautilo/lattice-bridge/server";
 
 import type { JobExecutor } from "../../src/job";
 import {
+  completeBackgroundAuthorizationRequest,
   createBackgroundAuthorizationTaskRuntimeRequestV3,
 } from "../../src/protected-execution/background-authorization/lifecycle";
 import {
   InMemoryBackgroundAuthorizationRepository,
   type BackgroundAuthorizationCasResult,
   type BackgroundAuthorizationRecord,
-  type BackgroundAuthorizationRepository,
+  type BackgroundAuthorizationTaskRuntimeReplacementRepository,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
 } from "../../src/protected-execution/background-authorization/repository";
 import {
+  attachExactTaskRuntimeRecipient,
+  createParkedTaskRuntimeGrantClaim,
   createTaskRuntimeGrantClaim,
+  prepareUnclaimedParkedTaskRuntimeAuthority,
+  rotateExpiredTaskRuntimeRecipient,
+  sameTaskRuntimeAuthorityPlan,
+  taskRuntimeStableIdempotencyKey,
+  taskRuntimeStableRoutingDigest,
   type TaskRuntimeRecipientDeviceBinding,
+  type TaskRuntimeRecipientCurrentAuthority,
   type TaskRuntimeGrantClaimPlan,
+  type ParkedTaskRuntimeExecutionStartInput,
+  type ParkedTaskRuntimeGrantClaimPlan,
 } from "../../src/protected-execution/background-authorization/task-runtime-grant-claim";
-import type { ProtectedTaskOccurrence } from "../../src/tasks/task-observer";
+import type {
+  ProtectedTaskAuthorityOccurrence,
+  ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
+} from "../../src/tasks/task-observer";
 
 const NOW = 1_800_500_000_000;
 const OWNER = "10000000-0000-4000-8000-000000000001";
@@ -53,7 +70,14 @@ const PRIVATE_TASK_ROOM = "40000000-0000-4000-8000-000000000014";
 const OPEN_ROOM = "40000000-0000-4000-8000-000000000024";
 const TASK = "50000000-0000-4000-8000-000000000005";
 const RUN = "60000000-0000-4000-8000-000000000006";
-const NAMESPACE = "task-runtime-namespace";
+const JOB = "61000000-0000-4000-8000-000000000006";
+const NAMESPACE = "70000000-0000-4000-8000-000000000007";
+const SCOPE = "80000000-0000-4000-8000-000000000008";
+const MEMORY_ROOM = "90000000-0000-4000-8000-000000000009";
+const SCOPE_ORIGIN = "a0000000-0000-4000-8000-00000000000a";
+const SCOPE_SEED = "b0000000-0000-4000-8000-00000000000b";
+const SCOPE_FOREIGN_READ = "c0000000-0000-4000-8000-00000000000c";
+const OUTPUT_NAMESPACE = "d0000000-0000-4000-8000-00000000000d";
 const DOMAIN = "task-runtime-domain";
 const REQUEST = `task-run-authorization:${RUN}`;
 const INPUT_OBJECT = deriveTaskContentCryptoObjectIdV1({
@@ -132,6 +156,37 @@ function occurrence(callingRoomId: string | null = ROOM): ProtectedTaskOccurrenc
   });
 }
 
+function stableIdentity(value = occurrence()): TaskRuntimeGrantClaimPlan["stableIdentity"] {
+  return Object.freeze({
+    taskId: value.task.id,
+    taskRunId: value.run.id,
+    executionSegment: 1,
+    resumeContinuationFingerprint: null,
+    ownerId: value.task.ownerId,
+    requestorId: value.task.requestorId,
+    agentId: value.task.agentId,
+    callingRoomId: value.task.callingRoomId,
+    scheduleKind: value.task.scheduleKind,
+    graphThreadId: value.run.graphThreadId,
+    startedAt: value.run.startedAt.getTime(),
+    sourceRoomId: ROOM,
+    targetRoomId: ROOM,
+    targetUserIds: Object.freeze([value.task.requestorId]),
+    outputRoomId: value.task.callingRoomId,
+    outputNamespaceId: value.task.callingRoomId === null ? null : NAMESPACE,
+    memoryMode: "namespace",
+    scopeId: null,
+    contentRepresentation: value.task.contentRepresentation,
+    contentNamespaceId: value.task.contentNamespaceId,
+    contentRevision: value.task.contentRevision,
+    contentObjectId: value.task.cryptoObjectId,
+    contentAccessRevision: value.task.cryptoAccessRevision,
+    requiredNamespaceFingerprint: Buffer.from(
+      value.task.cryptoRequiredNamespaceFingerprint,
+    ).toString("base64url"),
+  });
+}
+
 function initialRecord(): BackgroundAuthorizationTaskRuntimeRecordV3 {
   return Object.freeze({
     snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
@@ -141,7 +196,7 @@ function initialRecord(): BackgroundAuthorizationTaskRuntimeRecordV3 {
       now: NOW,
     }),
     workIdentityHash: bytes(10),
-    idempotencyKey: `task-run:${RUN}`,
+    idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity()),
     workKind: "task.execute" as const,
     purpose: "task.execute" as const,
     domainId: DOMAIN,
@@ -171,7 +226,120 @@ function initialRecord(): BackgroundAuthorizationTaskRuntimeRecordV3 {
   });
 }
 
+function requiredTaskRuntimeRecord(
+  value: BackgroundAuthorizationRecord | null,
+): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const snapshot = value?.snapshot;
+  if (
+    value === null
+    || snapshot === undefined
+    || snapshot.formatVersion !== 3
+    || snapshot.credentialSubject.kind !== "runtime"
+    || snapshot.credentialSubject.runtimeKind !== "task"
+    || snapshot.credentialSubject.runtimeVersion !== 1
+    || value.authoritySet === undefined
+  ) {
+    throw new Error("selected Task Runtime record missing");
+  }
+  return value as BackgroundAuthorizationTaskRuntimeRecordV3;
+}
+
+function parkedPreparation() {
+  const initialOccurrence = occurrence();
+  const parkedOccurrence: ProtectedTaskOccurrence = Object.freeze({
+    task: initialOccurrence.task,
+    run: Object.freeze({ ...initialOccurrence.run, jobId: JOB }),
+  });
+  const stable = Object.freeze({
+    ...stableIdentity(parkedOccurrence),
+    executionSegment: 2,
+    resumeContinuationFingerprint:
+      Buffer.from(bytes(23)).toString("base64url"),
+  });
+  const initial = Object.freeze({
+    ...initialRecord(),
+    idempotencyKey: taskRuntimeStableIdempotencyKey(stable),
+  });
+  return { occurrence: parkedOccurrence, stableIdentity: stable, initialRecord: initial };
+}
+
+function parkedPersistPayload(
+  reference: ParkedTaskRuntimeGrantClaimPlan["reference"],
+): PersistJobPayload {
+  return {
+    ownerId: REQUESTOR,
+    requestorId: REQUESTOR,
+    laneKey: `task:${TASK}`,
+    roomId: ROOM,
+    type: "foreground",
+    input: reference,
+    publicationPolicy: {
+      expectedRevision: reference.policyRevision,
+      representation: "protected_only",
+    },
+  };
+}
+
+function scopeBinding(
+  readableNamespaceIds: readonly string[] = [SCOPE_ORIGIN],
+): TaskScopeMemoryBinding {
+  return Object.freeze({
+    scopeId: SCOPE,
+    memoryRoomId: MEMORY_ROOM,
+    originWritableNamespaceId: SCOPE_ORIGIN,
+    readableNamespaceIds: Object.freeze([...readableNamespaceIds]),
+  });
+}
+
+function scopePlan(
+  plan: TaskRuntimeGrantClaimPlan,
+  binding: TaskScopeMemoryBinding,
+  workIdentityFill: number,
+): TaskRuntimeGrantClaimPlan {
+  const stableIdentity = Object.freeze({
+    ...plan.stableIdentity,
+    memoryMode: "scope" as const,
+    scopeId: binding.scopeId,
+  });
+  const namespaceRequirements = Object.freeze([
+    plan.initialRecord.authoritySet.namespaceRequirements[0]!,
+    ...binding.readableNamespaceIds
+      .filter(namespaceId => namespaceId !== NAMESPACE)
+      .map((namespaceId, index) => Object.freeze({
+        ordinal: index + 1,
+        namespaceId,
+        domainId: DOMAIN,
+        operations: namespaceId === binding.originWritableNamespaceId
+          ? Object.freeze(["decrypt", "encrypt"] as const)
+          : Object.freeze(["decrypt"] as const),
+        expectedAccessRevision: 4 + index,
+        expectedPolicyRevision: 7,
+      })),
+  ]);
+  return Object.freeze({
+    ...plan,
+    stableIdentity,
+    scopeMemory: binding,
+    initialRecord: Object.freeze({
+      ...plan.initialRecord,
+      workIdentityHash: bytes(workIdentityFill),
+      idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity),
+      authoritySet: Object.freeze({
+        ...plan.initialRecord.authoritySet,
+        namespaceRequirements,
+      }),
+    }),
+  });
+}
+
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+type CasInput = Parameters<
+  BackgroundAuthorizationTaskRuntimeReplacementRepository["compareAndSwap"]
+>[0];
+type CompletionCas = (
+  input: CasInput,
+  repository: InMemoryBackgroundAuthorizationRepository,
+) => Promise<BackgroundAuthorizationCasResult>;
 
 async function fixture() {
   const crypto = new LatticeCrypto();
@@ -206,19 +374,26 @@ async function fixture() {
     .authoritySet.namespaceRequirements;
   let grantPlan: DomainForegroundAuthorizationPlanV2 | null = null;
   let claimCasCount = 0;
+  let recipientRotationCasCount = 0;
+  let replacementCasCount = 0;
   let recipientCasBarrier: ReturnType<typeof Promise.withResolvers<void>>
     | null = null;
   let recipientCasArrivals = 0;
   let authorityLocksHeld = false;
+  let beforeClaimAuthorityUse: (() => void) | null = null;
   let clock = NOW + 1;
   let substituteGet: ((record: BackgroundAuthorizationRecord) =>
     BackgroundAuthorizationRecord) | null = null;
   let substitutePlan: ((plan: TaskRuntimeGrantClaimPlan) =>
     TaskRuntimeGrantClaimPlan) | null = null;
+  let completionCas: CompletionCas | null = null;
   const startInputs: StartProtectedTaskRunInput[] = [];
   const publishedResults: string[] = [];
+  const openedOccurrences: ProtectedTaskRunningOccurrence[] = [];
+  const publishedOccurrences: ProtectedTaskRunningOccurrence[] = [];
+  const authorityOccurrences: ProtectedTaskAuthorityOccurrence[] = [];
   let startResult: "started" | "stale" = "started";
-  const trackedRepository: BackgroundAuthorizationRepository = {
+  const trackedRepository: BackgroundAuthorizationTaskRuntimeReplacementRepository = {
     create: (record) => repository.create(record),
     get: async (requestId) => {
       const record = await repository.get(requestId);
@@ -227,7 +402,13 @@ async function fixture() {
         : substituteGet(record);
     },
     compareAndSwap: async (input): Promise<BackgroundAuthorizationCasResult> => {
-      if (input.next.snapshot.state === "claimed") claimCasCount += 1;
+      if (input.next.snapshot.state === "claimed") {
+        throw new Error("claim CAS escaped its held repository");
+      }
+      if (input.next.snapshot.state === "awaiting_recipient"
+        && input.next.snapshot.lastRetryReason === "attempt_expired") {
+        recipientRotationCasCount += 1;
+      }
       if (
         input.next.snapshot.state === "awaiting_device"
         && recipientCasBarrier !== null
@@ -236,19 +417,40 @@ async function fixture() {
         if (recipientCasArrivals === 2) recipientCasBarrier.resolve();
         await recipientCasBarrier.promise;
       }
+      if (input.next.snapshot.state === "completed" && completionCas !== null) {
+        return completionCas(input, repository);
+      }
       return repository.compareAndSwap(input);
+    },
+    replaceUnclaimedTaskRuntimeAuthority: (input) => {
+      replacementCasCount += 1;
+      return repository.replaceUnclaimedTaskRuntimeAuthority(input);
     },
     acceptVerifiedResponse: (input) => repository.acceptVerifiedResponse(input),
     listEligible: (input) => repository.listEligible(input),
     listAwaitingDevicePage: (input) => repository.listAwaitingDevicePage(input),
     pruneTerminal: (input) => repository.pruneTerminal(input),
   };
+  const heldClaimRepository = {
+    compareAndSwap: async (input: Parameters<
+      BackgroundAuthorizationTaskRuntimeReplacementRepository["compareAndSwap"]
+    >[0]): Promise<BackgroundAuthorizationCasResult> => {
+      if (input.next.snapshot.state === "claimed") claimCasCount += 1;
+      return repository.compareAndSwap(input);
+    },
+  };
   const executor: JobExecutor = async function* () { yield* []; };
   const builtRecipientKeys: string[] = [];
   const basePlan = (
     value: ProtectedTaskOccurrence,
-  ): TaskRuntimeGrantClaimPlan => ({
-    initialRecord: initialRecord(),
+  ): TaskRuntimeGrantClaimPlan => {
+    const identity = stableIdentity(value);
+    return {
+    stableIdentity: identity,
+    initialRecord: Object.freeze({
+      ...initialRecord(),
+      idempotencyKey: taskRuntimeStableIdempotencyKey(identity),
+    }),
     reference: {
       kind: "protected_task_run_v1",
       taskId: TASK,
@@ -336,24 +538,31 @@ async function fixture() {
         deadlineAt: attempt.expiresAt,
       });
     },
-    openTransientInput: async ({ domains, evidence, signal }) => {
+    openTransientInput: async ({ occurrence: currentOccurrence, reference,
+      domains, evidence, signal }) => {
       expect(authorityLocksHeld).toBe(false);
       signal.throwIfAborted();
+      openedOccurrences.push(currentOccurrence);
       expect(domains).toHaveLength(1);
       expect(domains[0]!.domainKey).toEqual(bytes(9));
       expect(evidence.result.taskId).toBe(TASK);
       expect(evidence.result.taskRunId).toBe(RUN);
+      expect(reference.taskRunId).toBe(RUN);
       expect(evidence.namespaceRequirements).toEqual(currentNamespaceRequirements);
       return { message: SENTINEL };
     },
-    publishResult: async ({ payload, domains, evidence, signal }) => {
+    publishResult: async ({ occurrence: currentOccurrence, reference, payload,
+      domains, evidence, signal }) => {
       expect(authorityLocksHeld).toBe(false);
       signal.throwIfAborted();
+      publishedOccurrences.push(currentOccurrence);
       expect(domains).toHaveLength(1);
       expect(evidence.result.taskRunId).toBe(RUN);
+      expect(reference.taskRunId).toBe(RUN);
       if (payload.resultText !== null) publishedResults.push(payload.resultText);
     },
-  });
+  };
+  };
   const plan = (value: ProtectedTaskOccurrence): TaskRuntimeGrantClaimPlan => {
     const prepared = basePlan(value);
     return substitutePlan === null ? prepared : substitutePlan(prepared);
@@ -365,8 +574,25 @@ async function fixture() {
       plan,
       now: () => clock,
       claimId: () => "task-runtime-claim",
-      withCurrentAuthority: async ({ use }) => {
+      withCurrentClaimAuthority: async ({ now, use }) => {
         if (currentAuthority === null) return null;
+        const borrowed = copyAuthority(currentAuthority);
+        beforeClaimAuthorityUse?.();
+        const claimedAt = now();
+        authorityLocksHeld = true;
+        try {
+          return await use({
+            foreground: borrowed,
+            namespaceRequirements: currentNamespaceRequirements,
+          }, heldClaimRepository, claimedAt, NOW + 60_000);
+        } finally {
+          destroyAuthority(borrowed);
+          authorityLocksHeld = false;
+        }
+      },
+      withCurrentAuthority: async ({ occurrence: currentOccurrence, use }) => {
+        if (currentAuthority === null) return null;
+        authorityOccurrences.push(currentOccurrence);
         const borrowed = copyAuthority(currentAuthority);
         authorityLocksHeld = true;
         try {
@@ -381,31 +607,41 @@ async function fixture() {
       },
     });
   const coordinator = createCoordinator(recipients);
+  const recipientAuthority = (
+    currentScopeMemory?: TaskScopeMemoryBinding,
+  ): TaskRuntimeRecipientCurrentAuthority => ({
+    device: {
+      userId: binding.userId,
+      humanActorId: binding.humanActorId,
+      deviceId: binding.deviceId,
+      deviceGeneration: 2,
+      signingPublicKey: signing.publicKey,
+      serverInstanceId: "task-runtime-server",
+      lineageGeneration: 1,
+      epoch: 1,
+      securityRevision: 6,
+      headDigest: bytes(6),
+    },
+    domains: [domain],
+    namespaceRequirements: currentNamespaceRequirements,
+    policyRevision: 7,
+    sourceRoomId: provenSourceRoomId,
+    ...(currentScopeMemory === undefined
+      ? {}
+      : { scopeMemory: currentScopeMemory }),
+  });
   const bindRecipient = (
     owner = coordinator,
     currentBinding: TaskRuntimeRecipientDeviceBinding = binding,
     currentOccurrence: ProtectedTaskOccurrence = occurrence(),
+    currentScopeMemory?: TaskScopeMemoryBinding,
   ) => owner.bindAwaitingRecipientForDevice({
     occurrence: currentOccurrence,
     binding: currentBinding,
-    withCurrentAuthority: async ({ use }) => use({
-      device: {
-        userId: binding.userId,
-        humanActorId: binding.humanActorId,
-        deviceId: binding.deviceId,
-        deviceGeneration: 2,
-        signingPublicKey: signing.publicKey,
-        serverInstanceId: "task-runtime-server",
-        lineageGeneration: 1,
-        epoch: 1,
-        securityRevision: 6,
-        headDigest: bytes(6),
-      },
-      domains: [domain],
-      namespaceRequirements: currentNamespaceRequirements,
-      policyRevision: 7,
-      sourceRoomId: provenSourceRoomId,
-    }),
+    withCurrentAuthority: async ({ scopeMemory, targetRoomId, use }) => {
+      expect(targetRoomId).toBe(ROOM);
+      return use(recipientAuthority(currentScopeMemory ?? scopeMemory), trackedRepository);
+    },
   });
   return {
     crypto,
@@ -416,17 +652,26 @@ async function fixture() {
     coordinator,
     createCoordinator,
     binding,
+    recipientAuthority,
     bindRecipient,
     builtRecipientKeys,
     plan,
     getPlan: () => grantPlan,
     getCurrent: () => currentAuthority,
     claimCasCount: () => claimCasCount,
+    recipientRotationCasCount: () => recipientRotationCasCount,
+    replacementCasCount: () => replacementCasCount,
     authorityLocksHeld: () => authorityLocksHeld,
     startInputs,
     publishedResults,
+    openedOccurrences,
+    publishedOccurrences,
+    authorityOccurrences,
     setStartResult: (value: "started" | "stale") => { startResult = value; },
     setClock: (value: number) => { clock = value; },
+    setBeforeClaimAuthorityUse: (value: (() => void) | null) => {
+      beforeClaimAuthorityUse = value;
+    },
     setProvenSourceRoomId: (value: string) => { provenSourceRoomId = value; },
     enableRecipientCasBarrier: () => {
       recipientCasBarrier = Promise.withResolvers<void>();
@@ -439,6 +684,7 @@ async function fixture() {
       substitutePlan = value;
     },
     setSubstituteGet: (value: typeof substituteGet) => { substituteGet = value; },
+    setCompletionCas: (value: CompletionCas | null) => { completionCas = value; },
   };
 }
 
@@ -499,7 +745,768 @@ async function prepareAndBind(value: Fixture): Promise<void> {
   expect(await value.bindRecipient()).not.toBeNull();
 }
 
+async function parkedClaimFixture(
+  options: Readonly<{ scopeWithSemanticExtra?: boolean }> = {},
+) {
+  const value = await fixture();
+  const discovered = parkedPreparation();
+  const base = value.plan(discovered.occurrence);
+  const parkedScope = options.scopeWithSemanticExtra
+    ? scopeBinding([SCOPE_ORIGIN])
+    : undefined;
+  const stableIdentity = parkedScope === undefined
+    ? discovered.stableIdentity
+    : Object.freeze({
+        ...discovered.stableIdentity,
+        memoryMode: "scope" as const,
+        scopeId: parkedScope.scopeId,
+      });
+  const namespaceRequirements = parkedScope === undefined
+    ? discovered.initialRecord.authoritySet.namespaceRequirements
+    : Object.freeze([
+        discovered.initialRecord.authoritySet.namespaceRequirements[0]!,
+        Object.freeze({
+          ordinal: 1,
+          namespaceId: SCOPE_ORIGIN,
+          domainId: DOMAIN,
+          operations: Object.freeze(["decrypt", "encrypt"] as const),
+          expectedAccessRevision: 4,
+          expectedPolicyRevision: 7,
+        }),
+        Object.freeze({
+          ordinal: 2,
+          namespaceId: SCOPE_FOREIGN_READ,
+          domainId: DOMAIN,
+          operations: Object.freeze(["decrypt"] as const),
+          expectedAccessRevision: 5,
+          expectedPolicyRevision: 7,
+        }),
+      ]);
+  const prepared = Object.freeze({
+    occurrence: discovered.occurrence,
+    stableIdentity,
+    initialRecord: Object.freeze({
+      ...discovered.initialRecord,
+      idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity),
+      authoritySet: Object.freeze({
+        ...discovered.initialRecord.authoritySet,
+        namespaceRequirements,
+      }),
+    }),
+  });
+  expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+    ...prepared,
+    repository: value.trackedRepository,
+    recipients: value.recipients,
+    now: () => NOW,
+  })).toEqual({ status: "created" });
+  const selected = requiredTaskRuntimeRecord(
+    await value.repository.get(REQUEST),
+  );
+  const attached = await attachExactTaskRuntimeRecipient({
+    occurrence: prepared.occurrence,
+    selected,
+    plan: {
+      initialRecord: prepared.initialRecord,
+      ...(parkedScope === undefined ? {} : { scopeMemory: parkedScope }),
+      recipientAttempt: base.recipientAttempt,
+      buildRequest: base.buildRequest,
+    },
+    binding: value.binding,
+    authority: Object.freeze({
+      ...value.recipientAuthority(parkedScope),
+      namespaceRequirements,
+    }),
+    repository: value.trackedRepository,
+    recipients: value.recipients,
+    now: () => NOW,
+  });
+  if (attached === null) throw new Error("parked recipient was not attached");
+  attached.requestBytes.fill(0);
+  await acceptGrant(value);
+
+  const starts: ParkedTaskRuntimeExecutionStartInput[] = [];
+  const persistenceInputs: Parameters<
+    ParkedTaskRuntimeGrantClaimPlan["persistJob"]
+  >[0][] = [];
+  const recoveryInputs: Parameters<
+    ParkedTaskRuntimeGrantClaimPlan["recoverBeforeExecution"]
+  >[0][] = [];
+  let persistedJobId = "parked-continuation-job";
+  let persistenceError: Error | null = null;
+  let deferrals = 0;
+  let clock = NOW + 3;
+  const fingerprint = prepared.stableIdentity.resumeContinuationFingerprint;
+  if (fingerprint === null) throw new Error("parked fingerprint missing");
+  const plan: ParkedTaskRuntimeGrantClaimPlan = Object.freeze({
+    stableIdentity: prepared.stableIdentity,
+    initialRecord: prepared.initialRecord,
+    reference: Object.freeze({
+      kind: "protected_task_run_v1",
+      taskId: TASK,
+      taskRunId: RUN,
+      inputObjectId: INPUT_OBJECT,
+      resultObjectId: RESULT_OBJECT,
+      authorizationRequestId: REQUEST,
+      policyRevision: 7,
+      executionSegment: 2,
+      resumeContinuationFingerprint: fingerprint,
+    }),
+    scheduling: base.scheduling,
+    executor: base.executor,
+    ...(parkedScope === undefined ? {} : { scopeMemory: parkedScope }),
+    persistJob: async input => {
+      persistenceInputs.push(input);
+      if (persistenceError !== null) throw persistenceError;
+      return persistedJobId;
+    },
+    recoverBeforeExecution: async input => {
+      recoveryInputs.push(input);
+      return true;
+    },
+    start: async (input: ParkedTaskRuntimeExecutionStartInput) => {
+      starts.push(input);
+      return { status: "started" as const };
+    },
+    deferBeforeExecution: async (
+      input: ParkedTaskRuntimeExecutionStartInput,
+    ) => {
+      expect(input).toBe(starts[0]!);
+      deferrals += 1;
+      return true;
+    },
+    openTransientInput: base.openTransientInput,
+    publishResult: base.publishResult,
+  });
+  const currentAuthority = () => {
+    const current = value.getCurrent();
+    if (current === null) throw new Error("parked current authority missing");
+    return current;
+  };
+  const currentNamespaces = prepared.initialRecord.authoritySet.namespaceRequirements;
+  const coordinator = createParkedTaskRuntimeGrantClaim({
+    repository: value.trackedRepository,
+    recipients: value.recipients,
+    plan: () => plan,
+    now: () => clock,
+    claimId: () => "parked-task-runtime-claim",
+    withCurrentClaimAuthority: async ({ now, use }) => {
+      const borrowed = copyAuthority(currentAuthority());
+      try {
+        return await use({
+          foreground: borrowed,
+          namespaceRequirements: currentNamespaces,
+        }, {
+          compareAndSwap: input => value.repository.compareAndSwap(input),
+        }, now(), NOW + 60_000);
+      } finally {
+        destroyAuthority(borrowed);
+      }
+    },
+    withCurrentAuthority: async ({ use }) => {
+      const borrowed = copyAuthority(currentAuthority());
+      try {
+        return await use({
+          foreground: borrowed,
+          namespaceRequirements: currentNamespaces,
+        });
+      } finally {
+        destroyAuthority(borrowed);
+      }
+    },
+  });
+  return {
+    ...value,
+    prepared,
+    plan,
+    coordinator,
+    starts,
+    persistenceInputs,
+    recoveryInputs,
+    setPersistedJobId: (value: string) => { persistedJobId = value; },
+    setPersistenceError: (value: Error | null) => { persistenceError = value; },
+    deferrals: () => deferrals,
+    setParkedClock: (next: number) => { clock = next; },
+  };
+}
+
+describe("parked Task Runtime authority preparation", () => {
+  test("creates once and recognizes an exact unclaimed replay", async () => {
+    const input = parkedPreparation();
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const recipients = new TaskRuntimeRecipientRegistry(new LatticeCrypto());
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "created" });
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "exact_replay" });
+  });
+
+  test("replaces changed preclaim authority and clears only the winning recipient generation", async () => {
+    const input = parkedPreparation();
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const changed = Object.freeze({
+      ...input.initialRecord,
+      workIdentityHash: bytes(99),
+    });
+    await repository.create(changed);
+    const deleted: Array<readonly [string, number]> = [];
+    const recipients = {
+      delete(requestId: string, generation: number) {
+        deleted.push([requestId, generation]);
+        return true;
+      },
+    } as unknown as TaskRuntimeRecipientRegistry;
+
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "replaced" });
+    expect(deleted).toEqual([[changed.snapshot.requestId, 0]]);
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "exact_replay" });
+  });
+
+  test("classifies claimed and terminal records without mutation", async () => {
+    const input = parkedPreparation();
+    const records = [
+      { state: "claimed", status: "active" },
+      { state: "completed", status: "inactive" },
+    ] as const;
+    for (const entry of records) {
+      let replacements = 0;
+      const current = {
+        ...input.initialRecord,
+        snapshot: { ...input.initialRecord.snapshot, state: entry.state },
+      } as BackgroundAuthorizationTaskRuntimeRecordV3;
+      const repository = {
+        get: async () => current,
+        create: async () => ({ status: "existing" as const, record: current }),
+        replaceUnclaimedTaskRuntimeAuthority: async () => {
+          replacements += 1;
+          return { status: "replaced" as const, record: input.initialRecord };
+        },
+      } as unknown as BackgroundAuthorizationTaskRuntimeReplacementRepository;
+      expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+        ...input,
+        repository,
+        recipients: new TaskRuntimeRecipientRegistry(new LatticeCrypto()),
+        now: () => NOW,
+      })).toEqual({ status: entry.status });
+      expect(replacements).toBe(0);
+    }
+  });
+
+  test("reports a lost replacement race without deleting recipient custody", async () => {
+    const input = parkedPreparation();
+    const changed = Object.freeze({
+      ...input.initialRecord,
+      workIdentityHash: bytes(99),
+    });
+    const deleted: Array<readonly [string, number]> = [];
+    const repository = {
+      get: async () => changed,
+      create: async () => ({ status: "existing" as const, record: changed }),
+      replaceUnclaimedTaskRuntimeAuthority: async () => ({
+        status: "stale" as const,
+        current: input.initialRecord,
+      }),
+    } as unknown as BackgroundAuthorizationTaskRuntimeReplacementRepository;
+    const recipients = {
+      delete(requestId: string, generation: number) {
+        deleted.push([requestId, generation]);
+        return true;
+      },
+    } as unknown as TaskRuntimeRecipientRegistry;
+
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "stale" });
+    expect(deleted).toEqual([]);
+  });
+
+  test("rejects initial-segment and legacy-idempotency substitutions", async () => {
+    const input = parkedPreparation();
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const recipients = new TaskRuntimeRecipientRegistry(new LatticeCrypto());
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input,
+      stableIdentity: stableIdentity(input.occurrence),
+      repository,
+      recipients,
+      now: () => NOW,
+    })).rejects.toThrow("preparation is invalid");
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input,
+      initialRecord: {
+        ...input.initialRecord,
+        idempotencyKey: `task-run:${RUN}`,
+      },
+      repository,
+      recipients,
+      now: () => NOW,
+    })).rejects.toThrow("preparation is invalid");
+  });
+});
+
+describe("parked Task Runtime grant claim", () => {
+  test("waits for authorization when no parked plan is available", async () => {
+    const value = await parkedClaimFixture();
+    const coordinator = createParkedTaskRuntimeGrantClaim({
+      repository: value.trackedRepository,
+      recipients: value.recipients,
+      plan: () => null,
+      now: () => NOW,
+      claimId: () => "unused-parked-task-runtime-claim",
+      withCurrentClaimAuthority: async () => {
+        throw new Error("unexpected claim authority");
+      },
+      withCurrentAuthority: async () => {
+        throw new Error("unexpected execution authority");
+      },
+    });
+
+    expect(await coordinator.prepareOrClaimExact(value.prepared.occurrence))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(value.starts).toEqual([]);
+  });
+
+  test("loads and claims one prepared continuation without creating a request", async () => {
+    const value = await parkedClaimFixture();
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
+    const newJobId = "parked-continuation-job";
+    const payload = parkedPersistPayload(value.plan.reference);
+    expect(await claimed.dispatch.candidate.persistJob?.(payload)).toBe(newJobId);
+    expect(value.persistenceInputs).toHaveLength(1);
+    expect(value.persistenceInputs[0]).toMatchObject({
+      occurrence: value.prepared.occurrence,
+      claimId: "parked-task-runtime-claim",
+      reference: value.plan.reference,
+      payload,
+    });
+    expect(value.persistenceInputs[0]!.payload).not.toBe(payload);
+    expect(await claimed.dispatch.candidate.start(newJobId))
+      .toEqual({ status: "started" });
+    expect(value.starts).toHaveLength(1);
+    expect(value.starts[0]).toMatchObject({
+      occurrence: {
+        run: { jobId: JOB, status: "awaiting" },
+      },
+      claimId: "parked-task-runtime-claim",
+      jobId: newJobId,
+      reference: {
+        executionSegment: 2,
+        resumeContinuationFingerprint:
+          value.prepared.stableIdentity.resumeContinuationFingerprint,
+      },
+    });
+
+    await claimed.dispatch.candidate.run(async (input, _signal, settlement) => {
+      expect(input).toEqual({ message: SENTINEL });
+      await settlement.publish({
+        formatVersion: 1,
+        resultText: "parked continuation result",
+        lastError: null,
+      });
+    });
+    expect(value.publishedResults).toEqual(["parked continuation result"]);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("completed");
+    expect(value.openedOccurrences[0]?.run.jobId).toBe(newJobId);
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("lets only one parked claimant win the held grant CAS", async () => {
+    const value = await parkedClaimFixture();
+    const results = await Promise.all([
+      value.coordinator.prepareOrClaimExact(value.prepared.occurrence),
+      value.coordinator.prepareOrClaimExact(value.prepared.occurrence),
+    ]);
+    expect(results.map(result => result.status).sort())
+      .toEqual(["already_claimed", "claimed"]);
+    const winner = results.find(result => result.status === "claimed");
+    if (winner?.status !== "claimed") throw new Error("parked claim race had no winner");
+    winner.dispatch.candidate.onIneligible();
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("retains custody until uncertain persistence recovery settles once", async () => {
+    const value = await parkedClaimFixture();
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
+    value.setPersistenceError(new Error("persistence response unknown"));
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.persistJob?.(
+      parkedPersistPayload(value.plan.reference),
+    )).rejects.toThrow("persistence response unknown");
+    expect(value.recipients.size).toBe(1);
+    expect(await Promise.all([
+      claimed.dispatch.candidate.recoverBeforeExecution?.(),
+      claimed.dispatch.candidate.recoverBeforeExecution?.(),
+    ])).toEqual([true, true]);
+    expect(value.recoveryInputs).toHaveLength(1);
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("rejects reusing the prior parked Job for a continuation", async () => {
+    const value = await parkedClaimFixture();
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
+    value.setPersistedJobId(JOB);
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.persistJob?.(
+      parkedPersistPayload(value.plan.reference),
+    )).rejects.toThrow("persisted Job identity is invalid");
+    expect(await claimed.dispatch.candidate.recoverBeforeExecution?.()).toBe(true);
+    expect(value.starts).toEqual([]);
+    expect(value.recoveryInputs).toHaveLength(1);
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("does not claim an expired parked recipient", async () => {
+    const value = await parkedClaimFixture();
+    value.setParkedClock(NOW + 60_000);
+    expect(await value.coordinator.prepareOrClaimExact(value.prepared.occurrence))
+      .toEqual({ status: "awaiting_authorization" });
+    expect((await value.repository.get(REQUEST))?.snapshot.state)
+      .toBe("grant_ready");
+  });
+
+  test("allows immutable semantic Namespaces beyond the current Scope base", async () => {
+    const value = await parkedClaimFixture({ scopeWithSemanticExtra: true });
+    expect(value.plan.scopeMemory?.readableNamespaceIds)
+      .toEqual([SCOPE_ORIGIN]);
+    expect(value.plan.initialRecord.authoritySet.namespaceRequirements.map(
+      requirement => requirement.namespaceId,
+    )).toEqual([NAMESPACE, SCOPE_ORIGIN, SCOPE_FOREIGN_READ]);
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    expect(claimed.status).toBe("claimed");
+    if (claimed.status === "claimed") claimed.dispatch.candidate.onIneligible();
+  });
+
+  test("rejects initial identity and never creates a missing parked request", async () => {
+    const value = await parkedClaimFixture();
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+      .rejects.toThrow("Parked Task Runtime grant plan disagrees");
+
+    const empty = new InMemoryBackgroundAuthorizationRepository();
+    const missing = createParkedTaskRuntimeGrantClaim({
+      repository: empty,
+      recipients: value.recipients,
+      plan: () => value.plan,
+      withCurrentClaimAuthority: async () => {
+        throw new Error("missing request reached claim authority");
+      },
+      withCurrentAuthority: async () => {
+        throw new Error("missing request reached execution authority");
+      },
+    });
+    expect(await missing.prepareOrClaimExact(value.prepared.occurrence))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(await empty.get(REQUEST)).toBeNull();
+    value.recipients.close();
+  });
+});
+
+describe("exact Task Runtime recipient kernels", () => {
+  test("attaches once, retains the winner, and rejects a stale selected revision", async () => {
+    const value = await fixture();
+    const currentOccurrence = occurrence();
+    const plan = value.plan(currentOccurrence);
+    await value.repository.create(plan.initialRecord);
+    const selected = requiredTaskRuntimeRecord(
+      await value.repository.get(REQUEST),
+    );
+    const attached = await attachExactTaskRuntimeRecipient({
+      occurrence: currentOccurrence,
+      selected,
+      plan,
+      binding: value.binding,
+      authority: value.recipientAuthority(),
+      repository: value.trackedRepository,
+      recipients: value.recipients,
+      now: () => NOW,
+    });
+    expect(attached?.record.snapshot.state).toBe("awaiting_device");
+    expect(value.recipients.size).toBe(1);
+
+    const losingRecipients = new TaskRuntimeRecipientRegistry(value.crypto, {
+      now: () => NOW,
+    });
+    expect(await attachExactTaskRuntimeRecipient({
+      occurrence: currentOccurrence,
+      selected,
+      plan,
+      binding: value.binding,
+      authority: value.recipientAuthority(),
+      repository: value.trackedRepository,
+      recipients: losingRecipients,
+      now: () => NOW,
+    })).toBeNull();
+    expect(losingRecipients.size).toBe(0);
+    expect(value.recipients.size).toBe(1);
+    losingRecipients.close();
+    value.recipients.close();
+  });
+
+  test("rejects mismatched authority and a changed exact plan before attachment", async () => {
+    const value = await fixture();
+    const currentOccurrence = occurrence();
+    const plan = value.plan(currentOccurrence);
+    await value.repository.create(plan.initialRecord);
+    const selected = requiredTaskRuntimeRecord(
+      await value.repository.get(REQUEST),
+    );
+    expect(await attachExactTaskRuntimeRecipient({
+      occurrence: currentOccurrence,
+      selected,
+      plan,
+      binding: value.binding,
+      authority: {
+        ...value.recipientAuthority(),
+        policyRevision: 8,
+      },
+      repository: value.trackedRepository,
+      recipients: value.recipients,
+      now: () => NOW,
+    })).toBeNull();
+    expect(value.recipients.size).toBe(0);
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(attachExactTaskRuntimeRecipient({
+      occurrence: currentOccurrence,
+      selected,
+      plan: {
+        ...plan,
+        initialRecord: {
+          ...plan.initialRecord,
+          workIdentityHash: bytes(99),
+        },
+      },
+      binding: value.binding,
+      authority: value.recipientAuthority(),
+      repository: value.trackedRepository,
+      recipients: value.recipients,
+      now: () => NOW,
+    })).rejects.toThrow("attachment is invalid");
+    expect(value.recipients.size).toBe(0);
+    value.recipients.close();
+  });
+
+  test("destroys the new attempt when the attachment CAS throws", async () => {
+    const value = await fixture();
+    const currentOccurrence = occurrence();
+    const plan = value.plan(currentOccurrence);
+    await value.repository.create(plan.initialRecord);
+    const selected = requiredTaskRuntimeRecord(
+      await value.repository.get(REQUEST),
+    );
+    const throwingRepository = {
+      get: value.trackedRepository.get.bind(value.trackedRepository),
+      compareAndSwap: () => Promise.reject(new Error("attachment CAS failed")),
+    };
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(attachExactTaskRuntimeRecipient({
+      occurrence: currentOccurrence,
+      selected,
+      plan,
+      binding: value.binding,
+      authority: value.recipientAuthority(),
+      repository: throwingRepository,
+      recipients: value.recipients,
+      now: () => NOW,
+    })).rejects.toThrow("attachment CAS failed");
+    expect(value.recipients.size).toBe(0);
+    value.recipients.close();
+  });
+
+  test("compares immutable authority plans independently of lifecycle state", () => {
+    const initial = initialRecord();
+    expect(sameTaskRuntimeAuthorityPlan({
+      ...initial,
+      snapshot: {
+        ...initial.snapshot,
+        state: "awaiting_device",
+        requestRevision: 1,
+      },
+    } as BackgroundAuthorizationTaskRuntimeRecordV3, initial)).toBe(true);
+    expect(sameTaskRuntimeAuthorityPlan({
+      ...initial,
+      workIdentityHash: bytes(99),
+    }, initial)).toBe(false);
+  });
+
+  test("rotates an expired recipient once and does not delete custody on a CAS loser", async () => {
+    const winner = await fixture();
+    await prepareAndBind(winner);
+    const selected = requiredTaskRuntimeRecord(
+      await winner.repository.get(REQUEST),
+    );
+    winner.setClock(NOW + 60_000);
+    expect(await rotateExpiredTaskRuntimeRecipient({
+      occurrence: occurrence(),
+      selected,
+      initialRecord: winner.plan(occurrence()).initialRecord,
+      repository: winner.trackedRepository,
+      recipients: winner.recipients,
+      now: () => NOW + 60_000,
+    })).toEqual({ status: "rotated" });
+    expect(winner.recipients.size).toBe(0);
+    expect(await rotateExpiredTaskRuntimeRecipient({
+      occurrence: occurrence(),
+      selected,
+      initialRecord: winner.plan(occurrence()).initialRecord,
+      repository: winner.trackedRepository,
+      recipients: winner.recipients,
+      now: () => NOW + 60_000,
+    })).toEqual({ status: "stale" });
+    winner.recipients.close();
+
+    const loser = await fixture();
+    await prepareAndBind(loser);
+    const losingSelected = requiredTaskRuntimeRecord(
+      await loser.repository.get(REQUEST),
+    );
+    const staleRepository = {
+      get: loser.trackedRepository.get.bind(loser.trackedRepository),
+      compareAndSwap: async () => ({
+        status: "stale" as const,
+        current: losingSelected,
+      }),
+    };
+    expect(await rotateExpiredTaskRuntimeRecipient({
+      occurrence: occurrence(),
+      selected: losingSelected,
+      initialRecord: loser.plan(occurrence()).initialRecord,
+      repository: staleRepository,
+      recipients: loser.recipients,
+      now: () => NOW + 60_000,
+    })).toEqual({ status: "stale" });
+    expect(loser.recipients.size).toBe(1);
+    loser.recipients.close();
+  });
+});
+
 describe("Task Runtime grant claim", () => {
+  test("preserves the durable initial request key and isolates continuation segments", () => {
+    const identity = stableIdentity();
+    const initial = taskRuntimeStableIdempotencyKey(identity);
+    expect(initial).toBe("task-runtime-stable-v1:60000000-0000-4000-8000-000000000006:optuWJwLFjptlXGvTHSrBRnKjfqM5oYKzKpKbAIYJOQ");
+    const continuation = {
+      ...identity,
+      executionSegment: 2,
+      resumeContinuationFingerprint: Buffer.from(bytes(23)).toString("base64url"),
+    };
+    const resumed = taskRuntimeStableIdempotencyKey(continuation);
+    expect(resumed).not.toBe(initial);
+    expect(taskRuntimeStableIdempotencyKey({
+      ...continuation, executionSegment: 3,
+    })).not.toBe(resumed);
+    expect(taskRuntimeStableIdempotencyKey({
+      ...continuation,
+      resumeContinuationFingerprint: Buffer.from(bytes(24)).toString("base64url"),
+    })).not.toBe(resumed);
+  });
+
+  test("retains the routing commitment across segments without temporary grant state", () => {
+    const identity = stableIdentity();
+    const routing = { ...identity, widePrimaryWriteNamespaceId: null };
+    const expected = taskRuntimeStableRoutingDigest(routing);
+    expect(Buffer.from(expected).toString("base64url"))
+      .toBe("TO-6wYuTe_mSOzQ1XC_R3M4yYlGbkBhfQpLnCg6uhrU");
+    const continuation = {
+      ...routing,
+      executionSegment: 2,
+      resumeContinuationFingerprint: Buffer.from(bytes(23)).toString("base64url"),
+    };
+    expect(taskRuntimeStableRoutingDigest(continuation)).toEqual(expected);
+    for (const patch of [
+      { targetRoomId: "90000000-0000-4000-8000-000000000099" },
+      { targetUserIds: ["90000000-0000-4000-8000-000000000099"] },
+      { callingRoomId: null },
+      { scheduleKind: "cron" as const },
+      { memoryMode: "scope" as const, scopeId: "90000000-0000-4000-8000-000000000099" },
+      { contentRevision: identity.contentRevision + 1 },
+    ]) {
+      expect(taskRuntimeStableRoutingDigest({ ...routing, ...patch }))
+        .not.toEqual(expected);
+    }
+    expect(taskRuntimeStableRoutingDigest({
+      ...routing,
+      memoryMode: "wide",
+      widePrimaryWriteNamespaceId: identity.contentNamespaceId,
+    })).not.toEqual(taskRuntimeStableRoutingDigest({
+      ...routing,
+      memoryMode: "wide",
+      widePrimaryWriteNamespaceId:
+        "90000000-0000-4000-8000-000000000099",
+    }));
+    expected.fill(0);
+    expect(Buffer.from(taskRuntimeStableRoutingDigest(routing)).toString("base64url"))
+      .toBe("TO-6wYuTe_mSOzQ1XC_R3M4yYlGbkBhfQpLnCg6uhrU");
+  });
+
+  test("rejects incomplete and noncanonical continuation identities", () => {
+    for (const binding of [
+      { executionSegment: 0, resumeContinuationFingerprint: null },
+      { executionSegment: 1.5, resumeContinuationFingerprint: null },
+      { executionSegment: 1, resumeContinuationFingerprint: "A".repeat(43) },
+      { executionSegment: 2, resumeContinuationFingerprint: null },
+      { executionSegment: 2, resumeContinuationFingerprint: "A".repeat(42) + "B" },
+    ]) {
+      expect(() => taskRuntimeStableIdempotencyKey({ ...stableIdentity(), ...binding }))
+        .toThrow("execution segment identity is invalid");
+    }
+  });
+
+  test("keeps continuation admission out of the initial-only grant coordinator", async () => {
+    const value = await fixture();
+    value.setSubstitutePlan(plan => Object.freeze({
+      ...plan,
+      stableIdentity: Object.freeze({
+        ...plan.stableIdentity,
+        executionSegment: 2,
+        resumeContinuationFingerprint: Buffer.from(bytes(23)).toString("base64url"),
+      }),
+    }));
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+      .rejects.toThrow("disagrees with its occurrence");
+    expect(await value.repository.get(REQUEST)).toBeNull();
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("canonicalizes target ordering in the immutable plan commitment", () => {
+    const identity = stableIdentity();
+    const forward = taskRuntimeStableIdempotencyKey({
+      ...identity,
+      targetUserIds: [OWNER, REQUESTOR],
+    });
+    const reversed = taskRuntimeStableIdempotencyKey({
+      ...identity,
+      targetUserIds: [REQUESTOR, OWNER],
+    });
+    expect(reversed).toBe(forward);
+    expect(taskRuntimeStableIdempotencyKey({
+      ...identity,
+      ownerId: REQUESTOR,
+      targetUserIds: [OWNER, REQUESTOR],
+    })).not.toBe(forward);
+  });
+
   test("claims an exact read-only Memory Namespace without widening its operations", async () => {
     const value = await fixture();
     const memoryRequirement = Object.freeze({
@@ -535,6 +1542,241 @@ describe("Task Runtime grant claim", () => {
     if (claimed.status === "claimed") claimed.dispatch.candidate.onIneligible();
   });
 
+  test("atomically replaces a changed preclaim inventory and wipes the winning old recipient", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    expect(value.recipients.size).toBe(1);
+    const current = initialRecord();
+    const namespaceRequirements = Object.freeze([
+      ...current.authoritySet.namespaceRequirements,
+      Object.freeze({
+        ordinal: 1,
+        namespaceId: "z-scope-retained-namespace",
+        domainId: DOMAIN,
+        operations: Object.freeze(["decrypt"] as const),
+        expectedAccessRevision: 9,
+        expectedPolicyRevision: 7,
+      }),
+    ]);
+    value.setCurrentNamespaceRequirements(namespaceRequirements);
+    value.setSubstitutePlan((plan) => Object.freeze({
+      ...plan,
+      initialRecord: Object.freeze({
+        ...plan.initialRecord,
+        workIdentityHash: bytes(11),
+        authoritySet: Object.freeze({
+          ...plan.initialRecord.authoritySet,
+          namespaceRequirements,
+        }),
+      }),
+    }));
+
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    const replaced = await value.repository.get(REQUEST);
+    expect(replaced?.snapshot).toMatchObject({
+      state: "awaiting_recipient",
+      recipientGeneration: 1,
+      requestRevision: 3,
+      retryCount: 0,
+    });
+    expect(replaced?.descriptorBytes).toBeNull();
+    expect(replaced?.acceptedMaterial).toBeNull();
+    expect(replaced?.authoritySet?.namespaceRequirements)
+      .toEqual(namespaceRequirements);
+    expect(value.recipients.size).toBe(0);
+    expect(value.replacementCasCount()).toBe(1);
+
+    const rebound = await value.bindRecipient();
+    expect(rebound?.record.snapshot.recipientGeneration).toBe(1);
+    expect(rebound?.record.snapshot.state).toBe("awaiting_device");
+  });
+
+  test("replaces changed fixed Scope inventory and binds only its exact current copy", async () => {
+    const value = await fixture();
+    const initialBinding = scopeBinding();
+    value.setSubstitutePlan(plan => scopePlan(plan, initialBinding, 21));
+    value.setCurrentNamespaceRequirements(
+      scopePlan(value.plan(occurrence()), initialBinding, 21)
+        .initialRecord.authoritySet.namespaceRequirements,
+    );
+    await prepareAndBind(value);
+    expect(value.recipients.size).toBe(1);
+
+    const addedNamespace = "b0000000-0000-4000-8000-00000000000b";
+    const changedBinding = scopeBinding([SCOPE_ORIGIN, addedNamespace]);
+    value.setSubstitutePlan(plan => scopePlan(plan, changedBinding, 22));
+    const changedPlan = value.plan(occurrence());
+    value.setCurrentNamespaceRequirements(
+      changedPlan.initialRecord.authoritySet.namespaceRequirements,
+    );
+
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(value.recipients.size).toBe(0);
+    expect(value.replacementCasCount()).toBe(1);
+
+    expect(await value.bindRecipient(
+      value.coordinator,
+      value.binding,
+      occurrence(),
+      initialBinding,
+    )).toBeNull();
+    expect(value.recipients.size).toBe(0);
+
+    const rebound = await value.bindRecipient();
+    expect(rebound?.record.snapshot.state).toBe("awaiting_device");
+    expect(value.recipients.size).toBe(1);
+  });
+
+  test("rejects omitted or extra fixed Scope grant Namespaces", async () => {
+    for (const change of ["omitted", "extra"] as const) {
+      const value = await fixture();
+      value.setSubstitutePlan(plan => {
+        const scoped = scopePlan(plan, scopeBinding(), 23);
+        const requirements = change === "omitted"
+          ? scoped.initialRecord.authoritySet.namespaceRequirements.slice(0, 1)
+          : [
+              ...scoped.initialRecord.authoritySet.namespaceRequirements,
+              Object.freeze({
+                ordinal: 2,
+                namespaceId: "c0000000-0000-4000-8000-00000000000c",
+                domainId: DOMAIN,
+                operations: Object.freeze(["decrypt"] as const),
+                expectedAccessRevision: 8,
+                expectedPolicyRevision: 7,
+              }),
+            ];
+        return Object.freeze({
+          ...scoped,
+          initialRecord: Object.freeze({
+            ...scoped.initialRecord,
+            authoritySet: Object.freeze({
+              ...scoped.initialRecord.authoritySet,
+              namespaceRequirements: Object.freeze(requirements),
+            }),
+          }),
+        });
+      });
+
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+        .rejects.toThrow("disagrees with its occurrence");
+      expect(await value.repository.get(REQUEST)).toBeNull();
+    }
+  });
+
+  test("rejects a write upgrade for Scope seed or foreign read authority", async () => {
+    for (const upgradedNamespace of [SCOPE_SEED, SCOPE_FOREIGN_READ]) {
+      const value = await fixture();
+      const binding = scopeBinding([SCOPE_ORIGIN, upgradedNamespace]);
+      value.setSubstitutePlan(plan => {
+        const scoped = scopePlan(plan, binding, 24);
+        return Object.freeze({
+          ...scoped,
+          initialRecord: Object.freeze({
+            ...scoped.initialRecord,
+            authoritySet: Object.freeze({
+              ...scoped.initialRecord.authoritySet,
+              namespaceRequirements: Object.freeze(
+                scoped.initialRecord.authoritySet.namespaceRequirements.map(
+                  requirement => requirement.namespaceId === upgradedNamespace
+                    ? Object.freeze({
+                        ...requirement,
+                        operations: Object.freeze(
+                          ["decrypt", "encrypt"] as const,
+                        ),
+                      })
+                    : requirement,
+                ),
+              ),
+            }),
+          }),
+        });
+      });
+
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+        .rejects.toThrow("disagrees with its occurrence");
+      expect(await value.repository.get(REQUEST)).toBeNull();
+      expect(value.replacementCasCount()).toBe(0);
+    }
+  });
+
+  test("rejects an omitted distinct Scope output Namespace", async () => {
+    const value = await fixture();
+    value.setSubstitutePlan(plan => {
+      const scoped = scopePlan(plan, scopeBinding(), 25);
+      const stable = Object.freeze({
+        ...scoped.stableIdentity,
+        outputNamespaceId: OUTPUT_NAMESPACE,
+      });
+      return Object.freeze({
+        ...scoped,
+        stableIdentity: stable,
+        initialRecord: Object.freeze({
+          ...scoped.initialRecord,
+          idempotencyKey: taskRuntimeStableIdempotencyKey(stable),
+        }),
+      });
+    });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+      .rejects.toThrow("disagrees with its occurrence");
+    expect(await value.repository.get(REQUEST)).toBeNull();
+    expect(value.replacementCasCount()).toBe(0);
+  });
+
+  test("retains a same-plan legacy dark request but refuses to replace it without a stable commitment", async () => {
+    const value = await fixture();
+    await value.repository.create(Object.freeze({
+      ...initialRecord(),
+      idempotencyKey: `task-run:${RUN}`,
+    }));
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(value.replacementCasCount()).toBe(0);
+    value.setSubstitutePlan((plan) => Object.freeze({
+      ...plan,
+      initialRecord: Object.freeze({
+        ...plan.initialRecord,
+        workIdentityHash: bytes(12),
+      }),
+    }));
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+      .rejects.toThrow("changed stable identity");
+    expect((await value.repository.get(REQUEST))?.snapshot.requestRevision)
+      .toBe(0);
+  });
+
+  test("rejects coherent source identity substitution before inventory replacement", async () => {
+    const value = await fixture();
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    value.setSubstitutePlan((plan) => {
+      const stable = Object.freeze({
+        ...plan.stableIdentity,
+        sourceRoomId: PRIVATE_TASK_ROOM,
+      });
+      return Object.freeze({
+        ...plan,
+        stableIdentity: stable,
+        initialRecord: Object.freeze({
+          ...plan.initialRecord,
+          idempotencyKey: taskRuntimeStableIdempotencyKey(stable),
+          workIdentityHash: bytes(13),
+        }),
+      });
+    });
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact(occurrence()))
+      .rejects.toThrow("changed stable identity");
+    expect(value.replacementCasCount()).toBe(0);
+  });
+
   test("does not weaken the Task definition and result Namespace to read-only", async () => {
     const value = await fixture();
     const initial = initialRecord();
@@ -558,23 +1800,27 @@ describe("Task Runtime grant claim", () => {
     expect(await value.repository.get(REQUEST)).toBeNull();
   });
 
-  test("rotates an unconsumed request after its process-local recipient is lost", async () => {
+  test("does not rotate another process's live unconsumed recipient", async () => {
     const value = await fixture();
     await prepareAndBind(value);
     await acceptGrant(value);
-    const recovered = value.createCoordinator(
-      new TaskRuntimeRecipientRegistry(value.crypto, { now: () => NOW + 4 }),
+    const recoveredRecipients = new TaskRuntimeRecipientRegistry(
+      value.crypto,
+      { now: () => NOW + 4 },
     );
+    const recovered = value.createCoordinator(recoveredRecipients);
 
     expect(await recovered.prepareOrClaimExact(occurrence()))
       .toEqual({ status: "awaiting_authorization" });
     const durable = await value.repository.get(REQUEST);
-    expect(durable?.snapshot.state).toBe("awaiting_recipient");
-    expect(durable?.snapshot.recipientGeneration).toBe(1);
-    expect(durable?.snapshot.lastRetryReason).toBe("recipient_lost");
-    expect(durable?.descriptorBytes).toBeNull();
-    expect(durable?.acceptedMaterial).toBeNull();
+    expect(durable?.snapshot.state).toBe("grant_ready");
+    expect(durable?.snapshot.recipientGeneration).toBe(0);
+    expect(durable?.snapshot.lastRetryReason).toBeNull();
+    expect(durable?.descriptorBytes).not.toBeNull();
+    expect(durable?.acceptedMaterial).not.toBeNull();
     expect(value.claimCasCount()).toBe(0);
+    expect(value.recipientRotationCasCount()).toBe(0);
+    recoveredRecipients.close();
   });
 
   test("rotates an expired device request even if the old process still holds its key", async () => {
@@ -589,6 +1835,12 @@ describe("Task Runtime grant claim", () => {
     expect(durable?.snapshot.recipientGeneration).toBe(1);
     expect(durable?.snapshot.lastRetryReason).toBe("attempt_expired");
     expect(value.recipients.size).toBe(0);
+    expect(value.recipientRotationCasCount()).toBe(1);
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    expect((await value.repository.get(REQUEST))?.snapshot.recipientGeneration)
+      .toBe(1);
+    expect(value.recipientRotationCasCount()).toBe(1);
   });
 
   test("claims one accepted grant and opens transient input only inside a one-use candidate", async () => {
@@ -613,12 +1865,15 @@ describe("Task Runtime grant claim", () => {
     expect(JSON.stringify(prepared)).not.toContain(SENTINEL);
 
     await acceptGrant(value);
-    const result = await value.coordinator.prepareOrClaimExact(occurrence());
+    value.setBeforeClaimAuthorityUse(() => value.setClock(NOW + 10));
+    const admittedOccurrence = occurrence();
+    const result = await value.coordinator.prepareOrClaimExact(admittedOccurrence);
     expect(result.status).toBe("claimed");
     if (result.status !== "claimed") throw new Error("grant not claimed");
     expect(value.claimCasCount()).toBe(1);
     const durable = await value.repository.get(REQUEST);
     expect(durable?.snapshot.state).toBe("claimed");
+    expect(durable?.snapshot.updatedAt).toBe(NOW + 10);
     expect(durable?.snapshot.claimExpiresAt).toBe(NOW + 60_000);
     expect(JSON.stringify(durable)).not.toContain(SENTINEL);
 
@@ -626,8 +1881,16 @@ describe("Task Runtime grant claim", () => {
     // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
     await expect(result.dispatch.candidate.run(async () => {}))
       .rejects.toThrow("has not started");
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(result.dispatch.candidate.start("  "))
+      .rejects.toThrow("Job identity is invalid");
+    expect(value.startInputs).toEqual([]);
     expect(await result.dispatch.candidate.start("protected-job-1"))
       .toEqual({ status: "started" });
+    expect(admittedOccurrence.run).toMatchObject({
+      status: "awaiting",
+      jobId: null,
+    });
     expect(value.startInputs).toEqual([{
       taskId: TASK,
       taskRunId: RUN,
@@ -658,6 +1921,23 @@ describe("Task Runtime grant claim", () => {
     });
     expect(transient[0]).toEqual({ message: SENTINEL });
     expect(value.publishedResults).toEqual(["protected result"]);
+    for (const observed of [
+      ...value.openedOccurrences,
+      ...value.publishedOccurrences,
+      ...value.authorityOccurrences.filter(item => item.run.status === "running"),
+    ]) {
+      expect(observed.run).toMatchObject({
+        id: RUN,
+        status: "running",
+        jobId: "protected-job-1",
+      });
+    }
+    expect(value.openedOccurrences).toHaveLength(1);
+    expect(value.publishedOccurrences).toHaveLength(1);
+    expect(value.authorityOccurrences).toHaveLength(1);
+    expect(value.authorityOccurrences.some(item =>
+      item.run.status === "running"
+      && item.run.jobId === "protected-job-1")).toBe(true);
     // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
     await expect(result.dispatch.candidate.run(async () => {}))
       .rejects.toThrow("one-use");
@@ -666,8 +1946,178 @@ describe("Task Runtime grant claim", () => {
     expect(completed?.snapshot.state).toBe("completed");
     expect(completed?.snapshot.claimId).toBeNull();
     expect(completed?.snapshot.claimExpiresAt).toBeNull();
-    expect(completed?.finishedAt).toBe(NOW + 3);
+    expect(completed?.finishedAt).toBe(NOW + 10);
     expect(JSON.stringify(completed)).not.toContain(SENTINEL);
+  });
+
+  test("adopts an exact completed successor written by recovery", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-recovery-win"))
+      .toEqual({ status: "started" });
+    value.setCompletionCas(async (input, repository) => {
+      const running = requiredTaskRuntimeRecord(await repository.get(REQUEST));
+      const completedAt = running.snapshot.updatedAt + 1;
+      const recovered = {
+        ...running,
+        snapshot: completeBackgroundAuthorizationRequest(
+          running.snapshot,
+          completedAt,
+        ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+        finishedAt: completedAt,
+      };
+      expect(await repository.compareAndSwap({
+        expectedRequestRevision: running.snapshot.requestRevision,
+        next: recovered,
+      })).toMatchObject({ status: "updated" });
+      return repository.compareAndSwap(input);
+    });
+    let workCalls = 0;
+
+    expect(await claimed.dispatch.candidate.run(async (_input, _signal, publication) => {
+      workCalls += 1;
+      await publication.publish({
+        formatVersion: 1,
+        resultText: "recovery winner result",
+        lastError: null,
+      });
+      return "done";
+    })).toBe("done");
+    expect(workCalls).toBe(1);
+    expect(value.publishedResults).toEqual(["recovery winner result"]);
+    expect(value.openedOccurrences).toHaveLength(1);
+    expect(value.recipients.size).toBe(0);
+    expect((await value.repository.get(REQUEST))?.snapshot.state)
+      .toBe("completed");
+  });
+
+  test("adopts an exact completion after the CAS response is lost", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-lost-completion"))
+      .toEqual({ status: "started" });
+    value.setCompletionCas(async (input, repository) => {
+      expect(await repository.compareAndSwap(input))
+        .toMatchObject({ status: "updated" });
+      throw new Error("completion response lost");
+    });
+    let workCalls = 0;
+
+    expect(await claimed.dispatch.candidate.run(async (_input, _signal, publication) => {
+      workCalls += 1;
+      await publication.publish({
+        formatVersion: 1,
+        resultText: "lost response result",
+        lastError: null,
+      });
+      return "done";
+    })).toBe("done");
+    expect(workCalls).toBe(1);
+    expect(value.publishedResults).toEqual(["lost response result"]);
+    expect(value.openedOccurrences).toHaveLength(1);
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("rejects every noncanonical completion race after one publication", async () => {
+    const substitutions = [
+      {
+        name: "identity",
+        change: (record: BackgroundAuthorizationTaskRuntimeRecordV3) => ({
+          ...record,
+          workIdentityHash: bytes(99),
+        }),
+      },
+      {
+        name: "revision",
+        change: (record: BackgroundAuthorizationTaskRuntimeRecordV3) => ({
+          ...record,
+          snapshot: {
+            ...record.snapshot,
+            requestRevision: record.snapshot.requestRevision + 1,
+          },
+        }),
+      },
+      {
+        name: "generation",
+        change: (record: BackgroundAuthorizationTaskRuntimeRecordV3) => ({
+          ...record,
+          snapshot: {
+            ...record.snapshot,
+            recipientGeneration: record.snapshot.recipientGeneration + 1,
+          },
+        }),
+      },
+      {
+        name: "malformed",
+        change: (record: BackgroundAuthorizationTaskRuntimeRecordV3) => ({
+          ...record,
+          snapshot: {
+            ...record.snapshot,
+            credentialSubject: {
+              kind: "runtime" as const,
+              runtimeKind: "task" as const,
+              runtimeVersion: 2 as const,
+            },
+          },
+        }) as unknown as BackgroundAuthorizationTaskRuntimeRecordV3,
+      },
+      {
+        name: "failed",
+        change: (record: BackgroundAuthorizationTaskRuntimeRecordV3) => ({
+          ...record,
+          snapshot: {
+            ...record.snapshot,
+            state: "terminal_failure" as const,
+            terminalReason: "provider_outcome_unknown" as const,
+          },
+        }),
+      },
+    ] as const;
+
+    for (const substitution of substitutions) {
+      const value = await fixture();
+      await prepareAndBind(value);
+      await acceptGrant(value);
+      const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+      if (claimed.status !== "claimed") throw new Error("grant not claimed");
+      expect(await claimed.dispatch.candidate.start(
+        `protected-noncanonical-${substitution.name}`,
+      )).toEqual({ status: "started" });
+      value.setCompletionCas(async (input) => ({
+        status: "stale",
+        current: substitution.change(
+          input.next as BackgroundAuthorizationTaskRuntimeRecordV3,
+        ),
+      }));
+      let workCalls = 0;
+
+      const error = await claimed.dispatch.candidate.run(
+        async (_input, _signal, publication) => {
+          workCalls += 1;
+          await publication.publish({
+            formatVersion: 1,
+            resultText: `noncanonical ${substitution.name}`,
+            lastError: null,
+          });
+        },
+      ).catch((value: unknown) => value);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toMatchObject({
+        message: "Task Runtime execution completion could not be recorded",
+      });
+      expect(workCalls).toBe(1);
+      expect(value.publishedResults).toEqual([
+        `noncanonical ${substitution.name}`,
+      ]);
+      expect(value.openedOccurrences).toHaveLength(1);
+      expect(value.recipients.size).toBe(0);
+    }
   });
 
   test("a restarted coordinator rotates an expired claim that never began work", async () => {
@@ -694,6 +2144,112 @@ describe("Task Runtime grant claim", () => {
     expect(durable?.descriptorBytes).toBeNull();
     expect(durable?.acceptedMaterial).toBeNull();
     restartedRecipients.close();
+  });
+
+  test("parks product state before completing the grant with one timestamp", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-parked"))
+      .toEqual({ status: "started" });
+    const parkedAt = NOW + 9;
+    const ordering: string[] = [];
+    value.setClock(parkedAt);
+    value.setCompletionCas(async (input, repository) => {
+      ordering.push("grant");
+      expect(input.next.finishedAt).toBe(parkedAt);
+      return repository.compareAndSwap(input);
+    });
+
+    await claimed.dispatch.candidate.run(async (_input, _signal, settlement) => {
+      await settlement.park(async (timestamp) => {
+        ordering.push("product");
+        expect(timestamp).toBe(parkedAt);
+        expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("running");
+        return true;
+      });
+      expect(await settlement.awaitSettled()).toBe(true);
+    });
+
+    expect(ordering).toEqual(["product", "grant"]);
+    const durable = await value.repository.get(REQUEST);
+    expect(durable?.snapshot.state).toBe("completed");
+    expect(durable?.finishedAt).toBe(parkedAt);
+    expect(value.publishedResults).toEqual([]);
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("rejects a parked completion winner with a different timestamp", async () => {
+    for (const response of ["stale", "lost"] as const) {
+      const value = await fixture();
+      await prepareAndBind(value);
+      await acceptGrant(value);
+      const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+      if (claimed.status !== "claimed") throw new Error("grant not claimed");
+      expect(await claimed.dispatch.candidate.start(
+        `protected-job-park-${response}`,
+      )).toEqual({ status: "started" });
+      const parkedAt = NOW + 9;
+      value.setClock(parkedAt);
+      value.setCompletionCas(async (input, repository) => {
+        const proposed = input.next as BackgroundAuthorizationTaskRuntimeRecordV3;
+        const other = {
+          ...proposed,
+          snapshot: {
+            ...proposed.snapshot,
+            updatedAt: parkedAt + 1,
+          },
+          finishedAt: parkedAt + 1,
+        } as BackgroundAuthorizationTaskRuntimeRecordV3;
+        if (response === "stale") {
+          return { status: "stale" as const, current: other };
+        }
+        expect(await repository.compareAndSwap({
+          expectedRequestRevision: input.expectedRequestRevision,
+          next: other,
+        })).toMatchObject({ status: "updated" });
+        throw new Error("completion response lost");
+      });
+
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(claimed.dispatch.candidate.run(
+        async (_input, _signal, settlement) => {
+          await settlement.park(async timestamp => timestamp === parkedAt);
+        },
+      )).rejects.toThrow(
+        "Task Runtime execution completion could not be recorded",
+      );
+      expect(value.publishedResults).toEqual([]);
+      expect(value.recipients.size).toBe(0);
+    }
+  });
+
+  test("a rejected park leaves the running grant noncompleted", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-park-rejected"))
+      .toEqual({ status: "started" });
+    let completionCasCalls = 0;
+    value.setCompletionCas(async (input, repository) => {
+      completionCasCalls += 1;
+      return repository.compareAndSwap(input);
+    });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.run(
+      async (_input, _signal, settlement) => {
+        await settlement.park(async () => false);
+      },
+    )).rejects.toThrow("park settlement was rejected");
+    expect(completionCasCalls).toBe(0);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("running");
+    expect(value.publishedResults).toEqual([]);
+    expect(value.recipients.size).toBe(0);
   });
 
   test("a no-publication interrupt stays nonterminal and cannot redispatch", async () => {
@@ -920,11 +2476,18 @@ describe("Task Runtime grant claim", () => {
       plan: value.plan,
       now: () => NOW + 2,
       claimId: () => "stale-task-runtime-claim",
+      withCurrentClaimAuthority: async ({ now, use }) => {
+        const claimedAt = now();
+        return use({
+          foreground: {
+            ...current,
+            recipientRuntimeGeneration: current.recipientRuntimeGeneration + 1,
+          },
+          namespaceRequirements: initialRecord().authoritySet.namespaceRequirements,
+        }, value.trackedRepository, claimedAt, NOW + 60_000);
+      },
       withCurrentAuthority: async ({ use }) => use({
-        foreground: {
-          ...current,
-          recipientRuntimeGeneration: current.recipientRuntimeGeneration + 1,
-        },
+        foreground: current,
         namespaceRequirements: initialRecord().authoritySet.namespaceRequirements,
       }),
     });
@@ -1011,9 +2574,56 @@ describe("Task Runtime grant claim", () => {
     // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
     await expect(claimed.dispatch.candidate.run(async () => {
       invoked = true;
-    })).rejects.toThrow("authority is no longer current");
+    })).rejects.toThrow("Protected Task execution did not begin");
     expect(invoked).toBe(false);
     expect(value.recipients.size).toBe(0);
+  });
+
+  test("pre-execution deferral runs once after custody closes and keeps the exact Job", async () => {
+    const value = await fixture();
+    let recovered = 0;
+    value.setSubstitutePlan(plan => ({
+      ...plan,
+      openTransientInput: async () => { throw new Error("sensitive setup failure"); },
+      deferBeforeExecution: async input => {
+        expect(value.recipients.size).toBe(0);
+        expect(input.jobId).toBe("unstarted-job");
+        recovered += 1;
+        return true;
+      },
+    }));
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    const candidate = claimed.dispatch.candidate;
+    expect(await candidate.start("unstarted-job")).toEqual({ status: "started" });
+    let workCalls = 0;
+    const error = await candidate.run(async () => { workCalls += 1; })
+      .catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(ProtectedTaskExecutionDidNotBeginError);
+    expect(String(error)).not.toContain("sensitive setup failure");
+    expect(workCalls).toBe(0);
+    expect(await candidate.deferBeforeExecution?.("other-job")).toBe(false);
+    expect(await candidate.deferBeforeExecution?.("unstarted-job")).toBe(true);
+    expect(await candidate.deferBeforeExecution?.("unstarted-job")).toBe(true);
+    expect(recovered).toBe(1);
+    value.recipients.close();
+  });
+
+  test("work failures cannot masquerade as a candidate setup failure", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    await claimed.dispatch.candidate.start("started-job");
+    const failure = new Error("executor failed");
+    const error = await claimed.dispatch.candidate.run(async () => { throw failure; })
+      .catch((value: unknown) => value);
+    expect(error).toBe(failure);
+    expect(value.recipients.size).toBe(0);
+    value.recipients.close();
   });
 
   test("rejects swapped durable claim identity and authorization bytes before work", async () => {
@@ -1051,4 +2661,61 @@ describe("Task Runtime grant claim", () => {
       expect(value.recipients.size).toBe(0);
     }
   });
+  test("recipient binding uses only the repository lent by its authority owner", async () => {
+    const value = await fixture();
+    await value.coordinator.prepareOrClaimExact(occurrence());
+    let scopedReads = 0;
+    let scopedWrites = 0;
+    const result = await value.coordinator.bindAwaitingRecipientForDevice({
+      occurrence: occurrence(), binding: value.binding,
+      withCurrentAuthority: async ({ use }) => use(value.recipientAuthority(), {
+        get: async id => { scopedReads += 1; return value.repository.get(id); },
+        compareAndSwap: async () => { scopedWrites += 1; throw new Error("held CAS rejected"); },
+      }),
+    }).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect(result).toMatchObject({ message: "held CAS rejected" });
+    expect(scopedReads).toBe(1);
+    expect(scopedWrites).toBe(1);
+    expect(value.recipients.size).toBe(0);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("awaiting_recipient");
+    value.recipients.close();
+  });
+
+  test("recipient binding destroys in-memory custody when authority fails after the callback", async () => {
+    const value = await fixture();
+    await value.coordinator.prepareOrClaimExact(occurrence());
+    const result = await value.coordinator.bindAwaitingRecipientForDevice({
+      occurrence: occurrence(), binding: value.binding,
+      withCurrentAuthority: async ({ use }) => {
+        await use(value.recipientAuthority(), value.trackedRepository);
+        throw new Error("authority expired at commit");
+      },
+    }).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect(result).toMatchObject({ message: "authority expired at commit" });
+    expect(value.recipients.size).toBe(0);
+    value.recipients.close();
+  });
+
+  test("rejects expiry during the held recipient attachment CAS", async () => {
+    const value = await fixture();
+    await value.coordinator.prepareOrClaimExact(occurrence());
+    const result = await value.coordinator.bindAwaitingRecipientForDevice({
+      occurrence: occurrence(), binding: value.binding,
+      withCurrentAuthority: async ({ use }) => use(value.recipientAuthority(), {
+        get: id => value.repository.get(id),
+        compareAndSwap: async request => {
+          const result = await value.repository.compareAndSwap(request);
+          value.setClock(NOW + 60_000);
+          return result;
+        },
+      }),
+    }).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect(result instanceof Error ? result.message : null).toContain("recipient expired before commit");
+    expect(value.recipients.size).toBe(0);
+    value.recipients.close();
+  });
+
 });
