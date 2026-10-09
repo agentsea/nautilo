@@ -264,6 +264,9 @@ export type {
 } from "./object/agent-entity-crypto.ts";
 export {
   createAgentMemoryProjectionContinuationCapsule,
+  createProtectedTaskMemoryAccessContinuationCapsule,
+  type ProtectedTaskMemoryAccessContinuationCapsule,
+  type ProtectedTaskMemoryAccessContinuationIdentityV1,
   type AgentMemoryProjectionContinuationCapsule,
   type AgentMemoryProjectionContinuationIdentityV1,
 } from "./memory/projection-continuation-capsule.ts";

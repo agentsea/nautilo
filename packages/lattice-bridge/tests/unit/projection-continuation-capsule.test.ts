@@ -3,6 +3,8 @@ import { LatticeCrypto } from "@nautilo/lattice-crypto";
 
 import {
   createAgentMemoryProjectionContinuationCapsule,
+  createProtectedTaskMemoryAccessContinuationCapsule,
+  type ProtectedAgentMemoryAccessApprovalReference,
   type AgentEntityCryptoInvocation,
   type AgentEntityNamespaceAuthority,
   type AgentMemoryProjectionContinuationIdentityV1,
@@ -64,12 +66,14 @@ const taskIdentity: AgentMemoryProjectionContinuationIdentityV1 = Object.freeze(
 
 class InspectingCrypto extends LatticeCrypto {
   readonly derived: Uint8Array[] = [];
+  readonly derivationLabels: string[] = [];
 
   override deriveKey(
     inputKeyMaterial: Uint8Array,
     label: string,
     length?: number,
   ): Uint8Array {
+    this.derivationLabels.push(label);
     const result = super.deriveKey(inputKeyMaterial, label, length);
     this.derived.push(result);
     return result;
@@ -79,14 +83,28 @@ class InspectingCrypto extends LatticeCrypto {
 function entities(): Pick<
   AgentEntityCryptoInvocation,
   "signal" | "use" | "useCurrentSet"
+>;
+function entities(input: Readonly<{
+  signal?: AbortSignal;
+  authority?: AgentEntityNamespaceAuthority;
+}>): Pick<AgentEntityCryptoInvocation, "signal" | "use" | "useCurrentSet">;
+function entities(input: Readonly<{
+  signal?: AbortSignal;
+  authority?: AgentEntityNamespaceAuthority;
+}> = {}): Pick<
+  AgentEntityCryptoInvocation,
+  "signal" | "use" | "useCurrentSet"
 > {
-  const signal = new AbortController().signal;
+  const signal = input.signal ?? new AbortController().signal;
+  const selectedAuthority = input.authority ?? authority;
   return Object.freeze({
     signal,
     async use(request) {
-      if (request.entity.namespaceId !== authority.namespaceId
-        || request.entity.keyGeneration !== authority.namespaceKeyGeneration
-        || request.entity.accessRevision !== authority.namespaceAccessRevision) {
+      if (request.entity.namespaceId !== selectedAuthority.namespaceId
+        || request.entity.keyGeneration
+          !== selectedAuthority.namespaceKeyGeneration
+        || request.entity.accessRevision
+          !== selectedAuthority.namespaceAccessRevision) {
         return Object.freeze({
           status: "unavailable" as const,
           reason: "content_unavailable" as const,
@@ -96,7 +114,10 @@ function entities(): Pick<
       try {
         return Object.freeze({
           status: "executed" as const,
-          value: await request.execute({ namespaceKey: opened, authority }),
+          value: await request.execute({
+            namespaceKey: opened,
+            authority: selectedAuthority,
+          }),
         });
       } finally {
         opened.fill(0);
@@ -104,7 +125,7 @@ function entities(): Pick<
     },
     async useCurrentSet(request) {
       if (request.namespaceIds.length !== 1
-        || request.namespaceIds[0] !== authority.namespaceId) {
+        || request.namespaceIds[0] !== selectedAuthority.namespaceId) {
         return Object.freeze({
           status: "unavailable" as const,
           reason: "content_unavailable" as const,
@@ -114,7 +135,10 @@ function entities(): Pick<
       try {
         return Object.freeze({
           status: "executed" as const,
-          value: await request.execute([{ namespaceKey: opened, authority }]),
+          value: await request.execute([{
+            namespaceKey: opened,
+            authority: selectedAuthority,
+          }]),
         });
       } finally {
         opened.fill(0);
@@ -319,5 +343,175 @@ describe("Memory projection continuation capsule", () => {
       identity: { ...taskIdentity, taskRunId: "other-run" },
     });
     expect(await substituted.open({ ...reference, sealedPreparation })).toBeNull();
+  });
+});
+
+
+describe("Task Memory access continuation capsule", () => {
+  const accessReference: ProtectedAgentMemoryAccessApprovalReference = {
+    referenceVersion: 1, referenceId: "access-reference", toolCallId: "share-call",
+    requesterUserId: "user-1", agentId: "agent-1",
+    taskContinuation: {
+      kind: "protected_task_v1", requesterActorId: "actor-1", createdAt: 100,
+      sealedPreparation: "",
+    },
+  };
+  const identity = { ...taskIdentity, kind: "protected_task_access_v1" as const };
+
+  test("survives a fresh invocation while separating access and projection domains", async () => {
+    const crypto = new InspectingCrypto({ bytes: length => new Uint8Array(length).fill(0x5a) });
+    const first = createProtectedTaskMemoryAccessContinuationCapsule({
+      crypto, entities: entities(), namespaceId, identity,
+    });
+    const prepared = { memoryId: "private-memory", targetActorId: "approved-recipient" };
+    const sealedPreparation = await first.seal(accessReference, prepared);
+    expect(sealedPreparation).not.toContain("private-memory");
+    expect(crypto.derivationLabels).toEqual([
+      "nautilo/protected-task-memory-access/v1",
+    ]);
+    const retained = { ...accessReference, taskContinuation: {
+      ...accessReference.taskContinuation!, sealedPreparation,
+    } };
+    const next = createProtectedTaskMemoryAccessContinuationCapsule({
+      crypto, entities: entities(), namespaceId, identity,
+    });
+    expect(await next.open(retained)).toEqual(prepared);
+    expect(crypto.derivationLabels).toEqual([
+      "nautilo/protected-task-memory-access/v1",
+      "nautilo/protected-task-memory-access/v1",
+    ]);
+    expect(crypto.derived.every(key => key.every(byte => byte === 0))).toBeTrue();
+
+    const projection = createAgentMemoryProjectionContinuationCapsule({
+      crypto, entities: entities(), namespaceId, identity: taskIdentity,
+    });
+    expect(await projection.open({ ...reference, sealedPreparation })).toBeNull();
+    expect(await next.open({ ...retained, taskContinuation: {
+      ...retained.taskContinuation,
+      sealedPreparation: await projection.seal(reference, prepared),
+    } })).toBeNull();
+    expect(crypto.derivationLabels).toContain(
+      "nautilo/protected-task-memory-projection/v1",
+    );
+    expect(new Set(crypto.derivationLabels)).toEqual(new Set([
+      "nautilo/protected-task-memory-access/v1",
+      "nautilo/protected-task-memory-projection/v1",
+    ]));
+  });
+
+  test("rejects every substituted Namespace and Domain authority coordinate", async () => {
+    const crypto = new LatticeCrypto({
+      bytes: length => new Uint8Array(length).fill(0x5a),
+    });
+    const capsule = createProtectedTaskMemoryAccessContinuationCapsule({
+      crypto, entities: entities(), namespaceId, identity,
+    });
+    const retained = { ...accessReference, taskContinuation: {
+      ...accessReference.taskContinuation!,
+      sealedPreparation: await capsule.seal(accessReference, {
+        effectId: "authority-bound-effect",
+      }),
+    } };
+    const substitutions: readonly AgentEntityNamespaceAuthority[] = [
+      { ...authority, namespaceId: "other-namespace" },
+      { ...authority, namespaceAccessRevision:
+        authority.namespaceAccessRevision + 1 },
+      { ...authority, namespaceKeyGeneration:
+        authority.namespaceKeyGeneration + 1 },
+      { ...authority, domainId: "other-domain" },
+      { ...authority, domainKeyGeneration: authority.domainKeyGeneration + 1 },
+      { ...authority, domainAuthorizationRevision:
+        authority.domainAuthorizationRevision + 1 },
+      { ...authority, namespaceHeadDigest:
+        new Uint8Array(32).fill(0x32) },
+      { ...authority, namespaceAudienceFingerprint:
+        new Uint8Array(32).fill(0x35) },
+    ];
+    for (const substitutedAuthority of substitutions) {
+      const substituted = createProtectedTaskMemoryAccessContinuationCapsule({
+        crypto,
+        entities: entities({ authority: substitutedAuthority }),
+        namespaceId,
+        identity,
+      });
+      expect(await substituted.open(retained)).toBeNull();
+    }
+  });
+
+  test("reopens through fresh custody after the original invocation aborts", async () => {
+    const crypto = new LatticeCrypto({
+      bytes: length => new Uint8Array(length).fill(0x5a),
+    });
+    const originalController = new AbortController();
+    const original = createProtectedTaskMemoryAccessContinuationCapsule({
+      crypto,
+      entities: entities({ signal: originalController.signal }),
+      namespaceId,
+      identity,
+    });
+    const prepared = { effectId: "fresh-custody-effect" };
+    const retained = { ...accessReference, taskContinuation: {
+      ...accessReference.taskContinuation!,
+      sealedPreparation: await original.seal(accessReference, prepared),
+    } };
+    originalController.abort();
+    expect(await original.open(retained)).toBeNull();
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(original.seal(accessReference, prepared)).rejects.toThrow(
+      "Projection custody unavailable",
+    );
+
+    const fresh = createProtectedTaskMemoryAccessContinuationCapsule({
+      crypto,
+      entities: entities({ signal: new AbortController().signal }),
+      namespaceId,
+      identity,
+    });
+    expect(await fresh.open(retained)).toEqual(prepared);
+  });
+
+  test("binds exact Task, Run, checkpoint, requester and reference under fresh custody", async () => {
+    const crypto = new LatticeCrypto({ bytes: length => new Uint8Array(length).fill(0x5a) });
+    const capsule = createProtectedTaskMemoryAccessContinuationCapsule({
+      crypto, entities: entities(), namespaceId, identity,
+    });
+    const retained = { ...accessReference, taskContinuation: {
+      ...accessReference.taskContinuation!,
+      sealedPreparation: await capsule.seal(accessReference, { effectId: "exact-effect" }),
+    } };
+    for (const key of ["taskId", "taskRunId", "graphThreadId", "subjectUserId", "humanActorId", "agentId", "contentNamespaceId"] as const) {
+      const changed = createProtectedTaskMemoryAccessContinuationCapsule({
+        crypto, entities: entities(), namespaceId, identity: { ...identity, [key]: "substituted" },
+      });
+      expect(await changed.open(retained)).toBeNull();
+    }
+    for (const key of ["referenceId", "toolCallId", "requesterUserId", "agentId"] as const) {
+      expect(await capsule.open({ ...retained, [key]: "substituted" })).toBeNull();
+    }
+    expect(await capsule.open({ ...retained, taskContinuation: {
+      ...retained.taskContinuation, requesterActorId: "other-actor",
+    } })).toBeNull();
+    expect(await capsule.open({ ...retained, taskContinuation: {
+      ...retained.taskContinuation, createdAt: 101,
+    } })).toBeNull();
+    expect(await capsule.open({
+      referenceVersion: 1, referenceId: accessReference.referenceId,
+      toolCallId: accessReference.toolCallId,
+      requesterUserId: accessReference.requesterUserId, agentId: accessReference.agentId,
+    })).toBeNull();
+    expect(await capsule.open({ ...retained, taskContinuation: {
+      ...retained.taskContinuation, sealedPreparation: "malformed",
+    } })).toBeNull();
+    const controller = new AbortController();
+    controller.abort();
+    const expiredCustody = createProtectedTaskMemoryAccessContinuationCapsule({
+      crypto, entities: { ...entities(), signal: controller.signal }, namespaceId, identity,
+    });
+    expect(await expiredCustody.open(retained)).toBeNull();
+    const rejected = await expiredCustody.seal(accessReference, {}).then(
+      () => false,
+      () => true,
+    );
+    expect(rejected).toBe(true);
   });
 });

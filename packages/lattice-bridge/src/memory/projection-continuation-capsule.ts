@@ -2,6 +2,7 @@ import type { LatticeCrypto } from "@nautilo/lattice-crypto";
 
 import type {
   ProtectedAgentMemoryProjectionReference,
+  ProtectedAgentMemoryAccessApprovalReference,
 } from "./active-memory-repository.ts";
 import type {
   AgentEntityCryptoInvocation,
@@ -11,6 +12,7 @@ import type {
 const FOREGROUND_DOMAIN = "nautilo/foreground-memory-projection/v1";
 const PROTECTED_TASK_DOMAIN =
   "nautilo/protected-task-memory-projection/v1";
+const PROTECTED_TASK_ACCESS_DOMAIN = "nautilo/protected-task-memory-access/v1";
 const CAPSULE_KEY_BYTES = 32;
 
 export type AgentMemoryProjectionContinuationIdentityV1 =
@@ -39,6 +41,24 @@ export type AgentMemoryProjectionContinuationIdentityV1 =
       agentAuthorizationRevision: number;
     }>;
 
+export type ProtectedTaskMemoryAccessContinuationIdentityV1 = Readonly<
+  Omit<Extract<AgentMemoryProjectionContinuationIdentityV1,
+    { kind: "protected_task_v1" }>, "kind"> & {
+    kind: "protected_task_access_v1";
+  }
+>;
+
+type ContinuationIdentity = AgentMemoryProjectionContinuationIdentityV1
+  | ProtectedTaskMemoryAccessContinuationIdentityV1;
+type ContinuationReference = ProtectedAgentMemoryProjectionReference
+  | ProtectedAgentMemoryAccessApprovalReference;
+type ContinuationCapsule<Reference extends ContinuationReference> = Readonly<{
+  seal(reference: Reference, value: unknown): Promise<string>;
+  open(reference: Reference): Promise<unknown>;
+}>;
+export type ProtectedTaskMemoryAccessContinuationCapsule =
+  ContinuationCapsule<ProtectedAgentMemoryAccessApprovalReference>;
+
 export type AgentMemoryProjectionContinuationCapsule = Readonly<{
   seal(
     reference: ProtectedAgentMemoryProjectionReference,
@@ -53,16 +73,18 @@ type ProjectionEntityInvocation = Pick<
 >;
 
 function domainFor(
-  identity: AgentMemoryProjectionContinuationIdentityV1,
+  identity: ContinuationIdentity,
 ): string {
   return identity.kind === "foreground_v1"
     ? FOREGROUND_DOMAIN
-    : PROTECTED_TASK_DOMAIN;
+    : identity.kind === "protected_task_v1"
+      ? PROTECTED_TASK_DOMAIN
+      : PROTECTED_TASK_ACCESS_DOMAIN;
 }
 
 function snapshotIdentity(
-  identity: AgentMemoryProjectionContinuationIdentityV1,
-): AgentMemoryProjectionContinuationIdentityV1 {
+  identity: ContinuationIdentity,
+): ContinuationIdentity {
   return identity.kind === "foreground_v1"
     ? Object.freeze({
         ...identity,
@@ -80,7 +102,7 @@ function snapshotIdentity(
 }
 
 function identityAad(
-  identity: AgentMemoryProjectionContinuationIdentityV1,
+  identity: ContinuationIdentity,
 ): readonly unknown[] {
   return identity.kind === "foreground_v1"
     ? [
@@ -109,20 +131,35 @@ function identityAad(
 
 function aad(
   domain: string,
-  identity: AgentMemoryProjectionContinuationIdentityV1,
-  reference: ProtectedAgentMemoryProjectionReference,
+  identity: ContinuationIdentity,
+  reference: ContinuationReference,
   authority: AgentEntityNamespaceAuthority,
 ): Uint8Array {
+  let referenceFields: readonly unknown[];
+  if (identity.kind === "protected_task_access_v1") {
+    if (!("taskContinuation" in reference)
+      || reference.taskContinuation?.kind !== "protected_task_v1") {
+      throw new TypeError("Task Memory access custody is unavailable");
+    }
+    referenceFields = [
+      reference.referenceVersion, reference.referenceId, reference.toolCallId,
+      reference.requesterUserId, reference.taskContinuation.requesterActorId,
+      reference.agentId, reference.taskContinuation.createdAt,
+    ];
+  } else {
+    if (!("requesterActorId" in reference)) {
+      throw new TypeError("Projection custody unavailable");
+    }
+    // Preserve the existing foreground and Task projection wire/AAD order.
+    referenceFields = [
+      reference.referenceVersion, reference.referenceId, reference.toolCallId,
+      reference.requesterUserId, reference.requesterActorId, reference.agentId,
+      reference.createdAt, reference.expiresAt,
+    ];
+  }
   return new TextEncoder().encode(JSON.stringify([
     domain,
-    reference.referenceVersion,
-    reference.referenceId,
-    reference.toolCallId,
-    reference.requesterUserId,
-    reference.requesterActorId,
-    reference.agentId,
-    reference.createdAt,
-    reference.expiresAt,
+    ...referenceFields,
     ...identityAad(identity),
     authority.namespaceId,
     authority.namespaceKeyGeneration,
@@ -133,6 +170,17 @@ function aad(
     Array.from(authority.namespaceHeadDigest),
     Array.from(authority.namespaceAudienceFingerprint),
   ]));
+}
+
+function sealedPreparation(
+  identity: ContinuationIdentity,
+  reference: ContinuationReference,
+): string | undefined {
+  if (identity.kind === "protected_task_access_v1") {
+    return "taskContinuation" in reference
+      ? reference.taskContinuation?.sealedPreparation : undefined;
+  }
+  return "sealedPreparation" in reference ? reference.sealedPreparation : undefined;
 }
 
 function parseCell(value: string): Readonly<{
@@ -176,6 +224,25 @@ export function createAgentMemoryProjectionContinuationCapsule(input: Readonly<{
   namespaceId: string;
   identity: AgentMemoryProjectionContinuationIdentityV1;
 }>): AgentMemoryProjectionContinuationCapsule {
+  return createMemoryContinuationCapsule<ProtectedAgentMemoryProjectionReference>(input);
+}
+
+/** Task access custody uses a separate closed KDF/AAD domain and no approval TTL. */
+export function createProtectedTaskMemoryAccessContinuationCapsule(input: Readonly<{
+  crypto: LatticeCrypto;
+  entities: ProjectionEntityInvocation;
+  namespaceId: string;
+  identity: ProtectedTaskMemoryAccessContinuationIdentityV1;
+}>): ProtectedTaskMemoryAccessContinuationCapsule {
+  return createMemoryContinuationCapsule<ProtectedAgentMemoryAccessApprovalReference>(input);
+}
+
+function createMemoryContinuationCapsule<Reference extends ContinuationReference>(input: Readonly<{
+  crypto: LatticeCrypto;
+  entities: ProjectionEntityInvocation;
+  namespaceId: string;
+  identity: ContinuationIdentity;
+}>): ContinuationCapsule<Reference> {
   const identity = snapshotIdentity(input.identity);
   const domain = domainFor(identity);
   const active = () => {
@@ -241,8 +308,9 @@ export function createAgentMemoryProjectionContinuationCapsule(input: Readonly<{
       let ciphertext: Uint8Array | null = null;
       try {
         active();
-        if (typeof reference.sealedPreparation !== "string") return null;
-        const cell = parseCell(reference.sealedPreparation);
+        const serialized = sealedPreparation(identity, reference);
+        if (typeof serialized !== "string") return null;
+        const cell = parseCell(serialized);
         if (cell === null) return null;
         ciphertext = cell.ciphertext;
         const result = await input.entities.use({
