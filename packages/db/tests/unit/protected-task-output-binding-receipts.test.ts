@@ -24,6 +24,7 @@ import {
   protectedTaskRunOutputBindings,
   type ProtectedTaskRunOutputBinding,
 } from "../../src/schema/protected-task-run-output-bindings";
+import { rooms, type Room } from "../../src/schema/rooms";
 import {
   sessionMessageCryptoRevisions,
   type SessionMessageCryptoRevision,
@@ -34,6 +35,10 @@ import {
   type Session,
   type SessionMessage,
 } from "../../src/schema/sessions";
+import {
+  taskRunMessageAssociations,
+  type TaskRunMessageAssociation,
+} from "../../src/schema/task-run-message-associations";
 import { taskRuns, type TaskRun } from "../../src/schema/task-runs";
 import { tasks, type Task } from "../../src/schema/tasks";
 
@@ -45,6 +50,7 @@ const ids = {
   namespace: "50000000-0000-4000-8000-000000000005",
   room: "60000000-0000-4000-8000-000000000006",
   session: "70000000-0000-4000-8000-000000000007",
+  destinationOwner: "80000000-0000-4000-8000-000000000008",
 };
 const terminalAt = new Date("2026-09-29T08:00:00.000Z");
 const publishedAt = new Date("2026-09-29T08:00:01.000Z");
@@ -110,9 +116,11 @@ function harness(rows: Readonly<{
   task: Task;
   run: TaskRun;
   binding: ProtectedTaskRunOutputBinding;
+  room?: Room;
   session?: Session;
   message?: SessionMessage;
   revision?: SessionMessageCryptoRevision;
+  associations?: readonly TaskRunMessageAssociation[];
   job?: Job;
 }>) {
   let bindingRow = rows.binding;
@@ -121,10 +129,14 @@ function harness(rows: Readonly<{
     if (table === tasks) return [rows.task];
     if (table === taskRuns) return [rows.run];
     if (table === protectedTaskRunOutputBindings) return [bindingRow];
+    if (table === rooms) return rows.room ? [rows.room] : [];
     if (table === sessions) return rows.session ? [rows.session] : [];
     if (table === sessionMessages) return rows.message ? [rows.message] : [];
     if (table === sessionMessageCryptoRevisions) {
       return rows.revision ? [rows.revision] : [];
+    }
+    if (table === taskRunMessageAssociations) {
+      return [...(rows.associations ?? [])];
     }
     if (table === jobs) return rows.job ? [rows.job] : [];
     throw new Error("unexpected table");
@@ -163,6 +175,91 @@ function harness(rows: Readonly<{
       operation(tx),
   } as unknown as DirectDatabase;
   return { db, writes };
+}
+
+function messagePublicationRows(options: Readonly<{
+  representation?: "protected" | "dual";
+  publicationPolicyRevision?: number | null;
+  sessionAgentId?: string;
+  associations?: readonly TaskRunMessageAssociation[];
+  bindingOverrides?: Partial<ProtectedTaskRunOutputBinding>;
+}> = {}) {
+  const representation = options.representation ?? "protected";
+  const messageOperationId = protectedTaskRunMessageOperationId(ids.run);
+  const cryptoObjectId = "message:v2:test";
+  const message = {
+    id: 42,
+    sessionId: ids.session,
+    role: "assistant",
+    content: null,
+    toolCalls: null,
+    toolName: null,
+    cryptoObjectId,
+    editRevision: 0,
+    createdAt: publishedAt,
+  } as SessionMessage;
+  const association = {
+    taskRunId: ids.run,
+    sessionId: ids.session,
+    messageId: message.id,
+    publishedRevision: message.editRevision,
+    kind: "raw_delivery",
+    publicationKey: messageOperationId,
+    createdAt: publishedAt,
+  } as TaskRunMessageAssociation;
+  return {
+    task: task({
+      callingRoomId: ids.room,
+      resultDelivery: "raw",
+      contentRepresentation: representation,
+    }),
+    run: run({ resultRepresentation: representation }),
+    binding: binding({
+      deliveryMode: "raw",
+      destinationRoomId: ids.room,
+      destinationNamespaceId: ids.namespace,
+      messageOperationId,
+      resultAttachedAt: terminalAt,
+      ...options.bindingOverrides,
+    }),
+    room: {
+      id: ids.room,
+      ownerId: ids.destinationOwner,
+      type: "dm",
+      namespaceId: ids.namespace,
+    } as Room,
+    session: {
+      id: ids.session,
+      ownerId: ids.destinationOwner,
+      agentId: options.sessionAgentId ?? ids.agent,
+      roomId: ids.room,
+    } as Session,
+    message,
+    revision: {
+      sessionId: ids.session,
+      messageId: message.id,
+      editRevision: message.editRevision,
+      roomId: ids.room,
+      namespaceIdAtAllocation: ids.namespace,
+      cryptoObjectId,
+      appendIdempotencyKey: messageOperationId,
+      representationMode: representation === "dual"
+        ? "shadow_encryption"
+        : "full_encryption",
+      publicationPolicyRevision: options.publicationPolicyRevision === undefined
+        ? representation === "dual" ? null : 9
+        : options.publicationPolicyRevision,
+      payloadVersion: 2,
+      keyClass: "ai",
+      authorRole: "assistant",
+      completion: "complete",
+      disposition: "mapped",
+      failureCode: null,
+      cryptoCompletedAt: publishedAt,
+    } as SessionMessageCryptoRevision,
+    associations: options.associations ?? [association],
+    association,
+  };
 }
 
 describe("protected TaskRun output receipts", () => {
@@ -236,61 +333,12 @@ describe("protected TaskRun output receipts", () => {
     expect(stale.writes).toEqual([]);
   });
 
-  test("accepts only the exact mapped protected Message publication", async () => {
-    const messageOperationId = protectedTaskRunMessageOperationId(ids.run);
-    const cryptoObjectId = "message:v2:test";
-    const taskRow = task({ callingRoomId: ids.room, resultDelivery: "raw" });
-    const runRow = run();
-    const bindingRow = binding({
-      deliveryMode: "raw",
-      destinationRoomId: ids.room,
-      destinationNamespaceId: ids.namespace,
-      messageOperationId,
-      resultAttachedAt: terminalAt,
-    });
-    const session = {
-        id: ids.session,
-        ownerId: ids.owner,
-        agentId: ids.agent,
-        roomId: ids.room,
-      } as Session;
-    const message = {
-        id: 42,
-        sessionId: ids.session,
-        role: "assistant",
-        content: null,
-        toolCalls: null,
-        toolName: null,
-        cryptoObjectId,
-        editRevision: 0,
-        createdAt: publishedAt,
-      } as SessionMessage;
-    const revision = {
-        sessionId: ids.session,
-        messageId: 42,
-        editRevision: 0,
-        roomId: ids.room,
-        namespaceIdAtAllocation: ids.namespace,
-        cryptoObjectId,
-        appendIdempotencyKey: messageOperationId,
-        representationMode: "full_encryption",
-        publicationPolicyRevision: 9,
-        payloadVersion: 2,
-        keyClass: "ai",
-        authorRole: "assistant",
-        completion: "complete",
-        disposition: "mapped",
-        failureCode: null,
-        cryptoCompletedAt: publishedAt,
-      } as SessionMessageCryptoRevision;
-    const fixture = harness({
-      task: taskRow,
-      run: runRow,
-      binding: bindingRow,
-      session,
-      message,
-      revision,
-    });
+  test("accepts a peer-owned destination Message independently of the requester", async () => {
+    const rows = messagePublicationRows();
+    expect(rows.task.ownerId).toBe(rows.task.requestorId);
+    expect(rows.task.requestorId).not.toBe(rows.room.ownerId);
+    expect(rows.session.ownerId).toBe(rows.room.ownerId);
+    const fixture = harness(rows);
     expect(await recordProtectedTaskRunMessagePublished(fixture.db, {
       taskId: ids.task,
       taskRunId: ids.run,
@@ -302,25 +350,115 @@ describe("protected TaskRun output receipts", () => {
       completedAt: publishedAt,
     }]);
 
-    for (const substitutedSession of [
-      { ...session, ownerId: ids.room },
-      { ...session, agentId: ids.room },
-    ]) {
-      const substituted = harness({
-        task: taskRow,
-        run: runRow,
-        binding: bindingRow,
-        session: substitutedSession,
-        message,
-        revision,
-      });
-      expect(await recordProtectedTaskRunMessagePublished(substituted.db, {
+    const substituted = harness(messagePublicationRows({
+      sessionAgentId: ids.room,
+    }));
+    expect(await recordProtectedTaskRunMessagePublished(substituted.db, {
+      taskId: ids.task,
+      taskRunId: ids.run,
+      messageId: 42,
+    })).toEqual({ status: "rejected", reason: "conflict" });
+    expect(substituted.writes).toEqual([]);
+  });
+
+  test("binds publication policy revision to the representation mode", async () => {
+    for (const scenario of [
+      {
+        name: "Full exact revision",
+        rows: messagePublicationRows({ publicationPolicyRevision: 9 }),
+        status: "recorded",
+      },
+      {
+        name: "Full mismatched revision",
+        rows: messagePublicationRows({ publicationPolicyRevision: 10 }),
+        status: "rejected",
+      },
+      {
+        name: "Shadow null revision",
+        rows: messagePublicationRows({
+          representation: "dual",
+          publicationPolicyRevision: null,
+        }),
+        status: "recorded",
+      },
+      {
+        name: "Shadow populated revision",
+        rows: messagePublicationRows({
+          representation: "dual",
+          publicationPolicyRevision: 9,
+        }),
+        status: "rejected",
+      },
+    ] as const) {
+      const fixture = harness(scenario.rows);
+      const result = await recordProtectedTaskRunMessagePublished(fixture.db, {
         taskId: ids.task,
         taskRunId: ids.run,
         messageId: 42,
-      })).toEqual({ status: "rejected", reason: "conflict" });
-      expect(substituted.writes).toEqual([]);
+      });
+      expect(result.status, scenario.name).toBe(scenario.status);
+      expect(fixture.writes.length, scenario.name).toBe(
+        scenario.status === "recorded" ? 1 : 0,
+      );
     }
+  });
+
+  test("requires the exact raw-delivery TaskRun Message association", async () => {
+    const exact = messagePublicationRows();
+    for (const scenario of [
+      {
+        name: "missing association",
+        rows: messagePublicationRows({ associations: [] }),
+      },
+      {
+        name: "wrong association kind",
+        rows: messagePublicationRows({
+          associations: [{ ...exact.association, kind: "transcript" }],
+        }),
+      },
+      {
+        name: "wrong association publication key",
+        rows: messagePublicationRows({
+          associations: [{
+            ...exact.association,
+            publicationKey: "wrong-publication",
+          }],
+        }),
+      },
+    ]) {
+      const fixture = harness(scenario.rows);
+      expect(await recordProtectedTaskRunMessagePublished(fixture.db, {
+        taskId: ids.task,
+        taskRunId: ids.run,
+        messageId: 42,
+      }), scenario.name).toEqual({ status: "rejected", reason: "conflict" });
+      expect(fixture.writes, scenario.name).toEqual([]);
+    }
+  });
+
+  test("replays the same Message receipt and rejects a conflicting receipt", async () => {
+    const replayRows = messagePublicationRows({
+      bindingOverrides: {
+        messageId: 42,
+        messagePublishedAt: publishedAt,
+        completedAt: publishedAt,
+      },
+    });
+    const replay = harness(replayRows);
+    expect(await recordProtectedTaskRunMessagePublished(replay.db, {
+      taskId: ids.task,
+      taskRunId: ids.run,
+      messageId: 42,
+    })).toMatchObject({ status: "exact_replay" });
+    expect(replay.writes).toEqual([]);
+
+    const conflict = harness(replayRows);
+    expect(await recordProtectedTaskRunMessagePublished(conflict.db, {
+      taskId: ids.task,
+      taskRunId: ids.run,
+      messageId: 43,
+    })).toEqual({ status: "rejected", reason: "conflict" });
+    expect(conflict.writes).toEqual([]);
   });
 
   test("records only the deterministic content-free wake Job", async () => {

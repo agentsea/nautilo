@@ -21,6 +21,8 @@ import { rooms } from "../schema/rooms";
 import { sessionMessageCryptoRevisions } from
   "../schema/session-message-crypto-revisions";
 import { sessionMessages, sessions } from "../schema/sessions";
+import { taskRunMessageAssociations } from
+  "../schema/task-run-message-associations";
 import { taskRuns } from "../schema/task-runs";
 import { taskRunResultCryptoRevisions } from
   "../schema/task-run-result-crypto-revisions";
@@ -403,13 +405,42 @@ export async function recordProtectedTaskRunMessagePublished(
         eq(sessionMessageCryptoRevisions.messageId, message.id),
         eq(sessionMessageCryptoRevisions.editRevision, message.editRevision),
       )).limit(1).for("share");
+    const [association] = await tx.select().from(taskRunMessageAssociations)
+      .where(and(
+        eq(taskRunMessageAssociations.taskRunId, input.taskRunId),
+        eq(taskRunMessageAssociations.sessionId, message.sessionId),
+        eq(taskRunMessageAssociations.messageId, message.id),
+        eq(
+          taskRunMessageAssociations.publishedRevision,
+          message.editRevision,
+        ),
+        eq(taskRunMessageAssociations.kind, "raw_delivery"),
+        eq(
+          taskRunMessageAssociations.publicationKey,
+          binding.messageOperationId,
+        ),
+      )).limit(1).for("share");
+    // This immutable receipt is inserted inside the canonical Message
+    // transaction only after its producer proves that the Session belongs to
+    // the destination Room owner. Re-reading mutable Room ownership here
+    // would invert canonical publication locks and reject valid old Messages
+    // after a later Room ownership transfer.
     const expectedMode = task.contentRepresentation === "dual"
       ? "shadow_encryption"
       : "full_encryption";
+    const expectedPolicyRevision = expectedMode === "full_encryption"
+      ? binding.acceptedPolicyRevision
+      : null;
     if (
       !session
-      || session.ownerId !== task.requestorId
+      || !association
       || session.agentId !== task.agentId
+      || association.taskRunId !== input.taskRunId
+      || association.sessionId !== message.sessionId
+      || association.messageId !== message.id
+      || association.publishedRevision !== message.editRevision
+      || association.kind !== "raw_delivery"
+      || association.publicationKey !== binding.messageOperationId
       || !revision
       || message.role !== "assistant"
       || message.cryptoObjectId === null
@@ -418,7 +449,7 @@ export async function recordProtectedTaskRunMessagePublished(
       || revision.namespaceIdAtAllocation !== binding.destinationNamespaceId
       || revision.appendIdempotencyKey !== binding.messageOperationId
       || revision.representationMode !== expectedMode
-      || revision.publicationPolicyRevision !== binding.acceptedPolicyRevision
+      || revision.publicationPolicyRevision !== expectedPolicyRevision
       || revision.payloadVersion !== 2
       || revision.keyClass !== "ai"
       || revision.authorRole !== "assistant"
