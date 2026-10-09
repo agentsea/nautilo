@@ -4203,7 +4203,7 @@ export class MembershipOpError extends Error {
       | "room_owner_last_admin"
       // M258 — hidden access Rooms are immutable authority containers.
       | "access_room_immutable"
-      // D194 — visibility flip (open ↔ group only).
+      // Visibility changes apply only to ordinary conversation Rooms.
       | "invalid_kind_for_visibility",
     message?: string,
   ) {
@@ -4339,13 +4339,31 @@ export async function updateRoomMemberRole(
     );
 }
 
+export type RoomVisibilityUpdateResult = Readonly<{
+  changed: boolean;
+  kind: "private" | "group" | "open";
+  discoverable: boolean;
+  subthreadMembershipRepairs?: readonly Readonly<{
+    roomId: string;
+    event: RoomMembershipSystemEventPayload;
+  }>[];
+}>;
+
 /**
- * Update public/private kind and, when supplied, server-wide discoverability.
+ * Update public/private visibility and, for an open Room, optional directory
+ * discoverability.
+ *
+ * A Room that is already private or group keeps that non-public dispatch kind.
+ * When an open Room returns to non-public visibility, only durable personal
+ * Room provenance (`type='private'`) plus the exact owner Human + owned Genie
+ * roster restores `kind='private'`; every other open Room becomes `group`.
+ * This preserves personal-funding/content-target semantics without turning an
+ * unrelated group Room into a personal Room.
  *
  * Throws `MembershipOpError("not_found")` when the room row is missing,
  * and `MembershipOpError("invalid_kind_for_visibility")` when the current
- * kind is not `open` or `group`. Returns `true` when either stored value was
- * updated, `false` when already at the supplied target (idempotent no-op).
+ * kind is not `private`, `group`, or `open`. The result reports the stored
+ * visibility after the operation so callers can audit the actual outcome.
  *
  * Caller must validate `manage_rooms` authorization BEFORE invoking.
  */
@@ -4353,37 +4371,122 @@ export async function updateRoomVisibility(
   roomId: string,
   kind: "open" | "group",
   discoverable?: boolean,
-): Promise<boolean> {
+): Promise<RoomVisibilityUpdateResult> {
   if (!roomId) {
     throw new MembershipOpError("not_found");
   }
   const db = getSharedDirectDb();
-  const [row] = await db
-    .select({ kind: rooms.kind, discoverable: rooms.discoverable })
-    .from(rooms)
-    .where(eq(rooms.id, roomId))
-    .limit(1);
-  if (!row) {
-    throw new MembershipOpError("not_found");
-  }
-  if (row.kind !== "open" && row.kind !== "group") {
-    throw new MembershipOpError("invalid_kind_for_visibility");
-  }
-  const kindChanged = row.kind !== kind;
-  const discoverableChanged =
-    discoverable !== undefined && row.discoverable !== discoverable;
-  if (!kindChanged && !discoverableChanged) {
-    return false;
-  }
-  await db
-    .update(rooms)
-    .set({
-      ...(kindChanged ? { kind } : {}),
-      ...(discoverableChanged ? { discoverable } : {}),
-      updatedAt: new Date(),
-    })
-    .where(eq(rooms.id, roomId));
-  return true;
+  return db.transaction(async (tx) => {
+    // Share the canonical Room-first lock with join/add/remove. If a self-join
+    // wins first, its new Human is visible to the roster decision below; if
+    // this transition wins, the self-join observes a non-open Room and stops.
+    await acquireRoomWriteLock(tx, roomId);
+
+    const [row] = await tx
+      .select({
+        ownerId: rooms.ownerId,
+        type: rooms.type,
+        kind: rooms.kind,
+        discoverable: rooms.discoverable,
+      })
+      .from(rooms)
+      .where(eq(rooms.id, roomId))
+      .limit(1);
+    if (!row) {
+      throw new MembershipOpError("not_found");
+    }
+    if (row.kind !== "private" && row.kind !== "open" && row.kind !== "group") {
+      throw new MembershipOpError("invalid_kind_for_visibility");
+    }
+
+    let resultingKind: "private" | "group" | "open" = kind;
+    if (kind === "group") {
+      if (row.kind === "private" || row.kind === "group") {
+        resultingKind = row.kind;
+      } else if (row.type === "private") {
+        const roster = await tx
+          .select({
+            kind: actors.kind,
+            ownerId: actors.ownerId,
+            agentId: actors.agentId,
+          })
+          .from(roomMembers)
+          .innerJoin(actors, eq(actors.id, roomMembers.actorId))
+          .where(eq(roomMembers.roomId, roomId));
+        const ownerHumanCount = roster.filter(
+          (member) => member.kind === "user" && member.ownerId === row.ownerId,
+        ).length;
+        const ownedGenieCount = roster.filter(
+          (member) =>
+            member.kind === "agent"
+            && member.ownerId === row.ownerId
+            && member.agentId !== null,
+        ).length;
+        if (roster.length === 2 && ownerHumanCount === 1 && ownedGenieCount === 1) {
+          resultingKind = "private";
+        }
+      }
+    }
+
+    const kindChanged = row.kind !== resultingKind;
+    const discoverableChanged =
+      discoverable !== undefined && row.discoverable !== discoverable;
+    if (!kindChanged && !discoverableChanged) {
+      return {
+        changed: false,
+        kind: resultingKind,
+        discoverable: row.discoverable,
+      };
+    }
+    await tx
+      .update(rooms)
+      .set({
+        ...(kindChanged ? { kind: resultingKind } : {}),
+        ...(discoverableChanged ? { discoverable } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(rooms.id, roomId));
+
+    const subthreadMembershipRepairs: Array<{
+      roomId: string;
+      event: RoomMembershipSystemEventPayload;
+    }> = [];
+    if (row.kind !== "open" && resultingKind === "open") {
+      const parentMembers = await tx
+        .select({ actorId: roomMembers.actorId })
+        .from(roomMembers)
+        .where(eq(roomMembers.roomId, roomId))
+        .orderBy(asc(roomMembers.actorId));
+      for (const member of parentMembers) {
+        const repaired = await inheritOpenParentMemberIntoSubthreadsInTx(
+          tx,
+          roomId,
+          member.actorId,
+        );
+        if (!repaired.event) continue;
+        for (const childRoomId of repaired.roomIds) {
+          subthreadMembershipRepairs.push({
+            roomId: childRoomId,
+            event: repaired.event,
+          });
+        }
+      }
+      const repairedRoomIds = [
+        ...new Set(subthreadMembershipRepairs.map((repair) => repair.roomId)),
+      ];
+      if (repairedRoomIds.length > 0) {
+        await reconcileRoomJournalMembershipInTx(tx, repairedRoomIds);
+      }
+    }
+    return {
+      changed: true,
+      kind: resultingKind,
+      discoverable: discoverableChanged ? discoverable : row.discoverable,
+      ...(subthreadMembershipRepairs.length === 0
+        ? {}
+        : { subthreadMembershipRepairs }),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

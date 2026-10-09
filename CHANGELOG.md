@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Chat managers can change personal 1:1 chats between Private, External, and
+  Public. Returning an unchanged personal Human–Genie chat to Private restores
+  its private-chat behavior without replacing the conversation.
+
 - The sign-in screen offers Join when the server has an active selected public
   invitation and enrollment is open. Join follows the server's existing `/join`
   address; personal invitation links remain available through I have an invite.

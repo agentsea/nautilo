@@ -33,6 +33,10 @@ import {
 
 const EMPTY_LAST_SPOKE: ReadonlyMap<string, number> = new Map();
 
+function supportsVisibilityMutation(kind: RoomKind): boolean {
+  return kind === "private" || kind === "group" || kind === "open";
+}
+
 /**
  * Room membership management. Room admins can add and remove members, set
  * Human roles, and choose response modes for Agents. The panel also exposes
@@ -167,6 +171,7 @@ export function MembersPanel({
   const [roomDiscoverable, setRoomDiscoverable] = useState<boolean>(true);
   const [conductorMode, setConductorMode] = useState<RoomConductorMode>("advanced");
   const [loading, setLoading] = useState<boolean>(false);
+  const [loadedRoomId, setLoadedRoomId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<boolean>(false);
   const [archiving, setArchiving] = useState<boolean>(false);
@@ -177,6 +182,10 @@ export function MembersPanel({
   const [conductorModeBusy, setConductorModeBusy] = useState<boolean>(false);
 
   const [pickerOpen, setPickerOpen] = useState<boolean>(false);
+  const currentRoomIdRef = useRef(roomId);
+  currentRoomIdRef.current = roomId;
+  const refreshGenerationRef = useRef(0);
+  const visibilityOperationGenerationRef = useRef(0);
   // Only dismiss when a click both STARTS and ENDS on the backdrop. Without
   // this, drag-selecting text inside the panel that releases over the dim
   // backdrop fires a `click` on the overlay and nukes the panel mid-edit.
@@ -191,19 +200,31 @@ export function MembersPanel({
   const presence = useRoomPresence(roomId, viewerActorId, open);
 
   const refresh = useCallback(async () => {
+    if (currentRoomIdRef.current !== roomId) return;
+    const generation = refreshGenerationRef.current + 1;
+    refreshGenerationRef.current = generation;
+    const refreshIsCurrent = () =>
+      currentRoomIdRef.current === roomId &&
+      refreshGenerationRef.current === generation;
     setLoading(true);
+    setLoadedRoomId(null);
     setError(null);
     try {
       const detail: RoomDetailResponse = await apiClient.getRoomManageDetail(roomId);
+      if (!refreshIsCurrent()) return;
       setMembers(detail.members);
       setRoomLabel(detail.label);
       setRoomKind(detail.kind);
       setRoomDiscoverable(detail.discoverable !== false);
       setConductorMode(detail.conductorMode === "standard" ? "standard" : "advanced");
+      setLoadedRoomId(roomId);
     } catch (e) {
+      if (!refreshIsCurrent()) return;
       setError(e instanceof Error ? e.message : "Failed to load members");
     } finally {
-      setLoading(false);
+      if (refreshIsCurrent()) {
+        setLoading(false);
+      }
     }
   }, [roomId]);
 
@@ -212,6 +233,11 @@ export function MembersPanel({
       void refresh();
     }
   }, [open, refresh]);
+
+  useEffect(() => {
+    visibilityOperationGenerationRef.current += 1;
+    setVisibilityBusy(false);
+  }, [roomId]);
 
   useEffect(() => {
     if (!open) return;
@@ -253,7 +279,7 @@ export function MembersPanel({
   const canEditRoom = viewerIsAdmin || canManageRooms;
   const canEditMemberRoles = canEditRoom;
   const canFlipVisibility =
-    canManageRooms && (roomKind === "open" || roomKind === "group");
+    loadedRoomId === roomId && canManageRooms && supportsVisibilityMutation(roomKind);
   const canFlipConductorMode = canManageRooms && roomKind !== "private";
 
   const sorted = useMemo(
@@ -368,6 +394,14 @@ export function MembersPanel({
 
   const handleVisibilityFlip = useCallback(
     async (visibility: "private" | "external" | "public") => {
+      if (
+        loadedRoomId !== roomId ||
+        !canManageRooms ||
+        !supportsVisibilityMutation(roomKind) ||
+        visibilityBusy
+      ) {
+        return;
+      }
       if (visibility === "external" && !supportsRoomDiscoverability) {
         toast.show({
           variant: "error",
@@ -380,6 +414,12 @@ export function MembersPanel({
         ? "private"
         : roomDiscoverable ? "public" : "external";
       if (visibility === currentVisibility) return;
+      const operationRoomId = roomId;
+      const operationGeneration = visibilityOperationGenerationRef.current + 1;
+      visibilityOperationGenerationRef.current = operationGeneration;
+      const operationIsCurrent = () =>
+        currentRoomIdRef.current === operationRoomId &&
+        visibilityOperationGenerationRef.current === operationGeneration;
       setVisibilityBusy(true);
       try {
         const isPublic = visibility !== "private";
@@ -390,7 +430,9 @@ export function MembersPanel({
             ? visibility === "public"
             : undefined,
         );
+        if (!operationIsCurrent()) return;
         await refresh();
+        if (!operationIsCurrent()) return;
         onMembershipChanged?.();
         toast.show({
           variant: "success",
@@ -402,16 +444,30 @@ export function MembersPanel({
               : "Private",
         });
       } catch (e) {
+        if (!operationIsCurrent()) return;
         toast.show({
           variant: "error",
           title: "Could not change visibility",
           message: e instanceof Error ? e.message : "Unknown error.",
         });
       } finally {
-        setVisibilityBusy(false);
+        if (operationIsCurrent()) {
+          setVisibilityBusy(false);
+        }
       }
     },
-    [onMembershipChanged, refresh, roomDiscoverable, roomId, roomKind, supportsRoomDiscoverability, toast],
+    [
+      canManageRooms,
+      onMembershipChanged,
+      refresh,
+      loadedRoomId,
+      roomDiscoverable,
+      roomId,
+      roomKind,
+      supportsRoomDiscoverability,
+      toast,
+      visibilityBusy,
+    ],
   );
 
   const handleConductorModeFlip = useCallback(
