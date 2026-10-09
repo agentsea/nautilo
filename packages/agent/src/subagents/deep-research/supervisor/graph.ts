@@ -15,6 +15,7 @@ import { invokeWithRetry } from "../../../utils/invoke";
 import { messageContentToString } from "../shared/utils";
 import { warn } from "@nautilo/logger";
 import { ModelOutputLimitError, modelResponseReachedOutputLimit } from "../../../graph/model-output-limit";
+import { normalizeModelToolCallIdentity } from "../../../nodes/model-tool-call-identity";
 import {
   coerceString,
   getStringField,
@@ -84,7 +85,10 @@ function createSupervisorNode(cfg: Configuration) {
         timeoutMs: 60000,
         ...(config?.signal ? { signal: config.signal } : {}),
       });
-      return { supervisor_messages: [...supervisorMessages, response as BaseMessageLike] };
+      const admittedResponse = AIMessage.isInstance(response as BaseMessage)
+        ? normalizeModelToolCallIdentity(response as AIMessage)
+        : response as BaseMessageLike;
+      return { supervisor_messages: [...supervisorMessages, admittedResponse] };
     } catch (e) {
       if (config?.signal?.aborted) throw e;
       warn(`[supervisor] failed: ${getErrorMessage(e)}`);

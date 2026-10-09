@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Separate Genie tool calls keep their own arguments, results, and history even
+  when a model provider reuses call IDs. Approval resumes and repeated delivery
+  continue to use the original invocation identity.
+
 - Personal Browser Use and CloudConvert keys can fund website work and file
   conversion under the administrator's credential policy. Existing browser
   profiles and submitted conversions retain their creating account through

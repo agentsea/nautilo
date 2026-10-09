@@ -8,6 +8,9 @@ import {
   ToolMessage,
 } from "@langchain/core/messages";
 import type { ProtectedMessageDtoV2 } from "@nautilo/types";
+import { normalizeModelToolCallIdentity } from "../../../agent/src/nodes/model-tool-call-identity";
+import { transcriptMetadataForMessage } from "../../../agent/src/store/session-store";
+import { serializeTranscriptToolCalls } from "../../../agent/src/store/transcript-tool-arguments";
 
 import type {
   ActiveConversationRepository,
@@ -90,6 +93,87 @@ describe("protected conversation executor IO", () => {
         toolCallId: "call-owned",
         foregroundExecutionId: "turn-owned",
       },
+    });
+  });
+
+  test("keeps repeated provider call IDs distinct in protected and ordinary transcript payloads", () => {
+    const providerCallId = "provider-reused-call";
+    const admit = (sequence: number) => normalizeModelToolCallIdentity(new AIMessage({
+      content: [
+        { type: "text", text: "Checking." },
+        {
+          type: "tool_use",
+          id: providerCallId,
+          name: "fixture_step",
+          input: { sequence },
+        },
+      ],
+      tool_calls: [{
+        id: providerCallId,
+        name: "fixture_step",
+        args: { sequence },
+      }],
+    }));
+    const first = admit(1);
+    const second = admit(2);
+    const firstId = first.tool_calls?.[0]?.id;
+    const secondId = second.tool_calls?.[0]?.id;
+    if (!firstId || !secondId) throw new Error("expected normalized tool call IDs");
+    expect(firstId).not.toBe(secondId);
+    const firstResult = new ToolMessage({
+      content: "identical result",
+      name: "fixture_step",
+      tool_call_id: firstId,
+    });
+    const secondResult = new ToolMessage({
+      content: "identical result",
+      name: "fixture_step",
+      tool_call_id: secondId,
+    });
+
+    const protectedPayloads = [
+      protectedAgentMessagePayload(first),
+      protectedAgentMessagePayload(firstResult),
+      protectedAgentMessagePayload(second),
+      protectedAgentMessagePayload(secondResult),
+    ];
+    expect(protectedPayloads).toEqual([
+      {
+        role: "assistant",
+        content: "Checking.",
+        toolCalls: [{ id: firstId, name: "fixture_step", args: { sequence: 1 } }],
+      },
+      {
+        role: "tool",
+        content: "identical result",
+        toolName: "fixture_step",
+        sensitiveMetadata: { toolCallId: firstId },
+      },
+      {
+        role: "assistant",
+        content: "Checking.",
+        toolCalls: [{ id: secondId, name: "fixture_step", args: { sequence: 2 } }],
+      },
+      {
+        role: "tool",
+        content: "identical result",
+        toolName: "fixture_step",
+        sensitiveMetadata: { toolCallId: secondId },
+      },
+    ]);
+    expect(JSON.stringify(protectedPayloads)).not.toContain(providerCallId);
+
+    expect(JSON.parse(serializeTranscriptToolCalls(first.tool_calls!))).toEqual([
+      { id: firstId, name: "fixture_step", args: { sequence: 1 } },
+    ]);
+    expect(JSON.parse(serializeTranscriptToolCalls(second.tool_calls!))).toEqual([
+      { id: secondId, name: "fixture_step", args: { sequence: 2 } },
+    ]);
+    expect(transcriptMetadataForMessage(firstResult, {})).toEqual({
+      nautilo_tool_result: { toolCallId: firstId },
+    });
+    expect(transcriptMetadataForMessage(secondResult, {})).toEqual({
+      nautilo_tool_result: { toolCallId: secondId },
     });
   });
 
@@ -220,6 +304,81 @@ describe("protected conversation executor IO", () => {
         args: { limit: 2, query: "needle" },
       }],
     });
+  });
+
+  test("accepts normalized Gemini functionCall transport only with exact canonical parity", () => {
+    const signature = "opaque-gemini-function-signature";
+    const message = normalizeModelToolCallIdentity(new AIMessage({
+      content: [{
+        type: "functionCall",
+        functionCall: {
+          id: "provider-call",
+          name: "look_up",
+          args: { query: "needle", limit: 2 },
+        },
+      }],
+      tool_calls: [{
+        id: "provider-call",
+        name: "look_up",
+        args: { query: "needle", limit: 2 },
+      }],
+      additional_kwargs: {
+        __gemini_function_call_thought_signatures__: {
+          "provider-call": signature,
+        },
+      },
+    }));
+    const canonicalId = message.tool_calls![0]!.id!;
+    expect((message.content[0] as unknown as { functionCall: { id: string } }).functionCall.id)
+      .toBe(canonicalId);
+    expect(message.additional_kwargs["__gemini_function_call_thought_signatures__"])
+      .toEqual({ [canonicalId]: signature });
+    expect(protectedAgentMessagePayload(message)).toEqual({
+      role: "assistant",
+      content: "",
+      toolCalls: [{
+        id: canonicalId,
+        name: "look_up",
+        args: { limit: 2, query: "needle" },
+      }],
+    });
+
+    for (const content of [
+      [{
+        type: "functionCall",
+        functionCall: {
+          id: canonicalId,
+          name: "look_up",
+          args: { query: "different", limit: 2 },
+        },
+      }],
+      [{
+        type: "functionCall",
+        functionCall: {
+          id: "different-call",
+          name: "look_up",
+          args: { query: "needle", limit: 2 },
+        },
+      }],
+      [{ type: "functionCall", functionCall: null }],
+      [{
+        type: "functionCall",
+        functionCall: { name: "look_up", args: { query: "needle", limit: 2 } },
+      }],
+      [{
+        type: "functionCall",
+        functionCall: { id: canonicalId, name: "look_up", args: [] },
+      }],
+    ]) {
+      expect(() => protectedAgentMessagePayload(new AIMessage({
+        content: content as never,
+        tool_calls: message.tool_calls!,
+      }))).toThrow("lacks an exact canonical tool call");
+    }
+    expect(() => protectedAgentMessagePayload(new AIMessage({
+      content: message.content,
+      tool_calls: [],
+    }))).toThrow("lacks an exact canonical tool call");
   });
 
   test("preserves OpenAI Responses output_text blocks", () => {

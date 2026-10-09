@@ -15,6 +15,7 @@ import type {
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 
 import { SOUL_FILE_HEADER } from "../prompts/templates.ts";
+import { normalizeModelToolCallIdentity } from "../nodes/model-tool-call-identity.ts";
 import { createUniversalModel } from "../providers/universal.ts";
 import { createManageMemoryTool } from "../tools/memory/manage-memory.ts";
 import { createSearchMemoryTool } from "../tools/memory/search-memory.ts";
@@ -199,9 +200,10 @@ export async function runProtectedBackgroundMemoryReview(input: Readonly<{
     if (!AIMessage.isInstance(response)) {
       throw new TypeError("Protected background Memory model response is invalid");
     }
-    conversation = [...conversation, response];
-    if (!response.tool_calls?.length) break;
-    for (const toolCall of response.tool_calls) {
+    const admittedResponse = normalizeModelToolCallIdentity(response);
+    conversation = [...conversation, admittedResponse];
+    if (!admittedResponse.tool_calls?.length) break;
+    for (const toolCall of admittedResponse.tool_calls) {
       const tool = tools.find((candidate) => candidate.name === toolCall.name);
       if (tool === undefined) continue;
       const result = await tool.invoke(toolCall.args, {
