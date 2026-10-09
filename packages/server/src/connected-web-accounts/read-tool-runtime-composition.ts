@@ -291,7 +291,6 @@ export interface ConnectedWebOperationManagementProductionRuntimeOptions {
   readonly store: ConnectedWebAccountStore;
   readonly provider: BrowserUseCloudAdapter;
   readonly secrets: ConnectedWebOperationManagementSecrets;
-  readonly continuationModel: string;
   readonly direct?: ConnectedWebOperationDirectRuntime;
   readonly assertServerFunding?: BrowserUseServerFundingAdmission;
 }
@@ -319,10 +318,7 @@ export function createConnectedWebOperationManagementProductionRuntime(
         (provider, usageFunding) => callback(provider, usageFunding),
       );
     },
-    beginCostAttempt: beginServerProviderCostAttempt,
-    settleCostAttempt: settleServerProviderCostAttempt,
     secrets: options.secrets,
-    continuationModel: options.continuationModel,
     ...(options.direct === undefined ? {} : { direct: options.direct }),
   });
   return {

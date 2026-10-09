@@ -560,9 +560,9 @@ export interface ConnectedWebAccountStore {
     readonly leaseMs: number;
   }): Promise<readonly ConnectedWebOperation[]>;
   /**
-   * Fences an in-flight supervisor before steering or direct takeover.
-   * The lease makes a process loss recoverable: once it expires, ordinary
-   * due-work supervision may reconcile the still-due hosted operation.
+   * Fences an in-flight supervisor before direct takeover. The lease makes a
+   * process loss recoverable: once it expires, ordinary due-work supervision
+   * may reconcile the still-due hosted operation.
    */
   claimOperationForControl(input: {
     readonly operationId: string;
@@ -604,27 +604,6 @@ export interface ConnectedWebAccountStore {
   rotateOperationProviderRun(input: {
     readonly operationId: string;
     readonly workerId: string;
-    readonly now: Date;
-    readonly expectedControlEpoch: number;
-    readonly expectedRunRef: string | null;
-    readonly sealedProviderRefs: ConnectedWebOperationProviderReferences;
-    readonly safeActivity: ConnectedWebOperationSafeActivity;
-    readonly nextCheckAt: Date | null;
-    readonly cumulativeCostUsdMicros: number;
-    readonly remainingBudgetUsdMicros: number;
-  }): Promise<number | null>;
-  /**
-   * Interactive same-session continuation fence. This is intentionally not a
-   * general provider mutation API: it accepts only the already-authorized
-   * owner, exact old run reference, and current control epoch after the
-   * runtime has independently proved the old run is no longer active.
-   */
-  rotateOperationProviderRunByControl(input: {
-    readonly workerId: string;
-    readonly expectedOpaqueExecutionRef: string;
-    readonly opaqueExecutionRef: string;
-    readonly operationId: string;
-    readonly ownerUserId: string;
     readonly now: Date;
     readonly expectedControlEpoch: number;
     readonly expectedRunRef: string | null;
@@ -1744,69 +1723,6 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
         sql`${input.cumulativeCostUsdMicros}::bigint + ${input.remainingBudgetUsdMicros}::bigint <= ${connectedWebOperations.cumulativeCostUsdMicros} + ${connectedWebOperations.remainingBudgetUsdMicros}`,
       )).returning({ controlEpoch: connectedWebOperations.controlEpoch });
       return updated?.controlEpoch ?? null;
-    },
-
-    async rotateOperationProviderRunByControl(input) {
-      const refs = parseConnectedWebOperationProviderReferences(input.sealedProviderRefs);
-      const activity = parseConnectedWebOperationSafeActivity(input.safeActivity);
-      if (!refs || !activity || !input.ownerUserId || !input.workerId || !input.expectedOpaqueExecutionRef
-        || !input.opaqueExecutionRef || !Number.isSafeInteger(input.expectedControlEpoch)
-        || input.expectedControlEpoch < 1 || !nonnegativeMicros(input.cumulativeCostUsdMicros)
-        || !nonnegativeMicros(input.remainingBudgetUsdMicros)) {
-        throw new ConnectedWebAccountStoreError("conflict");
-      }
-      const rotatedAt = safeOperationDate(input.now);
-      if (!rotatedAt) throw new ConnectedWebAccountStoreError("conflict");
-      const nextEpoch = input.expectedControlEpoch + 1;
-      return db.transaction(async (tx) => {
-        const [updated] = await tx.update(connectedWebOperations).set({
-          driver: "hosted",
-          lifecycle: "running",
-          controlEpoch: nextEpoch,
-          controlLeaseToken: randomUUID(),
-          controlLeaseExpiresAt: null,
-          sealedProviderRefs: refs,
-          eventCursor: 0,
-          safeActivity: activity,
-          wakeFingerprint: null,
-          wakeClaimOwner: null,
-          wakeClaimExpiresAt: null,
-          wakeDeliveredAt: null,
-          supervisorClaimOwner: null,
-          supervisorClaimExpiresAt: null,
-          nextCheckAt: safeOperationDate(input.nextCheckAt),
-          cumulativeCostUsdMicros: input.cumulativeCostUsdMicros,
-          remainingBudgetUsdMicros: input.remainingBudgetUsdMicros,
-          updatedAt: rotatedAt,
-        }).where(and(
-          eq(connectedWebOperations.id, input.operationId),
-          eq(connectedWebOperations.ownerUserId, input.ownerUserId),
-          eq(connectedWebOperations.controlEpoch, input.expectedControlEpoch),
-          sql`${connectedWebOperations.sealedProviderRefs}->>'runRef' is not distinct from ${input.expectedRunRef}`,
-          eq(connectedWebOperations.supervisorClaimOwner, input.workerId),
-          gt(connectedWebOperations.supervisorClaimExpiresAt, rotatedAt),
-          sql`${connectedWebOperations.lifecycle} <> 'terminal'`,
-          isNull(connectedWebOperations.actionOperationId),
-          sql`${connectedWebOperations.cumulativeCostUsdMicros} <= ${input.cumulativeCostUsdMicros}`,
-          sql`${connectedWebOperations.remainingBudgetUsdMicros} >= ${input.remainingBudgetUsdMicros}`,
-          sql`${input.cumulativeCostUsdMicros}::bigint + ${input.remainingBudgetUsdMicros}::bigint <= ${connectedWebOperations.cumulativeCostUsdMicros} + ${connectedWebOperations.remainingBudgetUsdMicros}`,
-        )).returning({ controlEpoch: connectedWebOperations.controlEpoch, accountId: connectedWebOperations.accountId });
-        if (!updated) return null;
-        if (updated.accountId === null) return updated.controlEpoch;
-        const [checkpoint] = await tx.update(connectedWebAccounts).set({
-          executionCheckpoint: activeExecutionCheckpointExpression(input.opaqueExecutionRef),
-          updatedAt: rotatedAt,
-        }).where(and(
-          eq(connectedWebAccounts.id, updated.accountId),
-          eq(connectedWebAccounts.ownerUserId, input.ownerUserId),
-          eq(connectedWebAccounts.status, "busy"),
-          sql`${connectedWebAccounts.executionCheckpoint}->>'resource' = 'read'`,
-          sql`${connectedWebAccounts.executionCheckpoint}->>'phase' = 'active'`,
-          sql`${connectedWebAccounts.executionCheckpoint}->>'opaqueExecutionRef' = ${input.expectedOpaqueExecutionRef}`,
-        )).returning({ id: connectedWebAccounts.id });
-        if (!checkpoint) throw new ConnectedWebAccountStoreError("conflict");
-        return updated.controlEpoch;
-      });
     },
 
     async rotateOperationDriver(input) {

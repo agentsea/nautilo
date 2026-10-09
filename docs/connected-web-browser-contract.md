@@ -112,7 +112,7 @@ lifecycle rules.
 
 | Lane | Use | Nautilo authority | Genie contract |
 | --- | --- | --- | --- |
-| Hosted V4 Agent | Public or protected research and user-authorized website tasks | Creates, cursor-observes, steers, and cancels a run; public mode omits the profile, account mode uses the owned saved profile | `browse_web`, `read_connected_web_account` or `run_website_task`, plus `manage_connected_web_operation`; never provider coordinates |
+| Hosted V4 Agent | Public or protected research and user-authorized website tasks | Creates, cursor-observes, and cancels a run; steering stays blocked while remaining paid-run budget cannot be proven, public mode omits the profile, account mode uses the owned saved profile | `browse_web`, `read_connected_web_account` or `run_website_task`, plus `manage_connected_web_operation`; never provider coordinates |
 | Standalone V4 Browser | Human sign-in/takeover and direct Genie control | Creates, watches, and explicitly stops the browser session | No model access to CDP or live-view capabilities |
 | `agent-browser` attached to the managed browser | Deterministic Genie-selected interaction | Starts one dedicated server-side process with an ephemeral validated CDP WSS capability | Familiar semantic browser operations routed through a sealed Connected Website binding, not a raw MCP profile |
 
@@ -159,18 +159,14 @@ stop, including its billing/refund effect, in its
    events. It wakes the exact initiating Genie for meaningful progress,
    authentication/Human attention, suspected loop/no progress, requested
    check, ambiguity, or terminal state. Raw provider events remain untrusted.
-4. The Genie may inspect, continue, check later, steer, take direct control,
-   release, or stop. Session queue `interrupt` is best-effort and does not
-   accept `model` or `maxCostUsd`; until live qualification proves budget
-   inheritance, steering cancels/fences the run and explicitly creates a
-   same-session continuation with the remaining operation budget.
-   Steering holds the exclusive control claim, obtains the cancelled run's
-   final cost, and deducts that spend before granting the replacement budget.
-   Missing cost cannot become a fresh full budget. Terminal receipt and spend
-   commit together, so retrying a failed terminal write cannot charge twice.
-   The replacement's operation reference and the account's active-run
-   checkpoint also rotate in one transaction; neither can name the old run
-   while the other names its replacement.
+4. The Genie may inspect, continue, check later, request steering, take direct
+   control, release, or stop. Session queue `interrupt` is best-effort and does
+   not accept `model` or `maxCostUsd`. Browser Use reports provisional run
+   usage without a final-settlement marker, so Nautilo cannot prove how much
+   hosted-run budget remains for a paid replacement. A steering request
+   therefore returns `steer_budget_unverified`, leaves the usable run and its
+   supervision state unchanged, and sends no replacement request. Inspect,
+   Stop, and separately qualified direct takeover remain available.
 5. Nautilo obtains final output only after terminal state, validates it against
    the tool schema, and collects requested bytes through provider output APIs.
 6. **Stop** calls `POST /runs/{id}/cancel` and reports cancellation truthfully.

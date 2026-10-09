@@ -591,7 +591,7 @@ export function createConnectedWebAccountReadAdmissionRuntime(
   }
 }
 
-export function buildPublicBrowserReadTask(target: ValidatedConnectedWebTarget, request: string): string {
+function buildPublicBrowserReadTask(target: ValidatedConnectedWebTarget, request: string): string {
   return [
     "Research this public website using an isolated anonymous browser. No saved account or profile is available.",
     `Start URL: ${JSON.stringify(target.targetUrl)}`,

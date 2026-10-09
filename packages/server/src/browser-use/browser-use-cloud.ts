@@ -147,9 +147,9 @@ export interface BrowserUseHostedReadRun {
 }
 
 export interface BrowserUseHostedReadResult extends BrowserUseHostedReadRun {
-  /** Untrusted provider output; later D568 tool code must validate it. */
+  /** Untrusted provider output; later tool code must validate it. */
   readonly result: string | null;
-  /** Provider-reported actual cost, absent only when the provider omits it. */
+  /** Provisional provider-reported usage cost, absent when the provider omits it. */
   readonly totalCostUsd: string | null;
 }
 
@@ -182,38 +182,6 @@ export interface BrowserUseHostedRunEventDelta {
   readonly nextAfter: number | null;
   /** Preserved provider pagination truth; callers commit a cursor per page. */
   readonly hasMore: boolean;
-  readonly observedAt: Date;
-}
-
-export type BrowserUseSessionQueueMode = "queue" | "interrupt";
-export type BrowserUseSessionQueueStatus = "pending" | "dispatching" | "consumed" | "cancelled" | "superseded" | "failed";
-
-/** Safe queue metadata. Provider message text and attachments do not escape the adapter. */
-export interface BrowserUseHostedSessionQueueMessage {
-  /** Server-only provider queue coordinate. */
-  readonly messageId: number;
-  /** Server-only provider run coordinate, absent until the message is dispatched. */
-  readonly runId: string | null;
-  readonly mode: BrowserUseSessionQueueMode;
-  readonly status: BrowserUseSessionQueueStatus;
-  readonly createdAt: Date;
-}
-
-/**
- * Provider acceptance only: an interrupt may remain queued when Browser Use
- * cannot cancel the active run. It is never evidence that a steer took effect.
- */
-export interface BrowserUseHostedSessionSteerReceipt extends BrowserUseHostedSessionQueueMessage {
-  readonly delivery: "queued" | "interrupt_best_effort";
-}
-
-/** Safe queue inspection response for server supervision only. */
-export interface BrowserUseHostedSessionQueue {
-  /** Server-only provider session coordinate. */
-  readonly sessionId: string;
-  readonly messages: readonly BrowserUseHostedSessionQueueMessage[];
-  /** Server-only interrupted-run boundaries; no message text is retained. */
-  readonly steeringCutoffRunIds: readonly string[];
   readonly observedAt: Date;
 }
 
@@ -266,16 +234,6 @@ interface RunWireEvent {
   readonly data?: unknown;
 }
 
-interface QueueWireMessage {
-  readonly id?: unknown;
-  readonly sessionId?: unknown;
-  readonly runId?: unknown;
-  readonly mode?: unknown;
-  readonly status?: unknown;
-  readonly text?: unknown;
-  readonly createdAt?: unknown;
-}
-
 interface HostedOutputCandidate {
   readonly path: string;
   readonly url: string;
@@ -301,19 +259,6 @@ function isRunStatus(value: unknown): value is BrowserUseRunStatus {
     || value === "completed"
     || value === "failed"
     || value === "cancelled";
-}
-
-function isSessionQueueMode(value: unknown): value is BrowserUseSessionQueueMode {
-  return value === "queue" || value === "interrupt";
-}
-
-function isSessionQueueStatus(value: unknown): value is BrowserUseSessionQueueStatus {
-  return value === "pending"
-    || value === "dispatching"
-    || value === "consumed"
-    || value === "cancelled"
-    || value === "superseded"
-    || value === "failed";
 }
 
 function isSafeNonNegativeInteger(value: unknown): value is number {
@@ -477,7 +422,7 @@ function isAbortError(error: unknown): boolean {
 }
 
 /**
- * Narrow REST adapter for the D568 Phase 1 lifecycle. It intentionally owns
+ * Narrow REST adapter for the connected website lifecycle. It intentionally owns
  * no retries, queues, durable checkpoints, or UI/API projection. Values with
  * provider bearer authority remain inside the server caller and are never put
  * in exception messages or this adapter's failure type.
@@ -686,42 +631,6 @@ export class BrowserUseCloudAdapter {
     return { runId: body["id"], sessionId: body["sessionId"], workspaceId: body["workspaceId"], status: body["status"], observedAt: this.clock.now() };
   }
 
-  /**
-   * Starts a cost-authoritative continuation in the same Browser Use session.
-   * It deliberately does not use the queue endpoint: queue interrupt has no
-   * model/maxCost fields and is only best-effort.
-   */
-  async createHostedReadContinuationRun(input: {
-    readonly sessionId: string;
-    readonly workspaceId?: string;
-    readonly task: string;
-    readonly model: string;
-    readonly maxCostUsd: number;
-  }): Promise<BrowserUseResult<BrowserUseHostedReadRun>> {
-    if (!isNonEmptyString(input.sessionId) || !isNonEmptyString(input.task) || !isNonEmptyString(input.model)
-      || (input.workspaceId !== undefined && !isNonEmptyString(input.workspaceId))
-      || !Number.isFinite(input.maxCostUsd) || input.maxCostUsd <= 0) {
-      return { kind: "failure", code: "invalid_cost_policy" };
-    }
-    const response = await this.request("/runs", {
-      method: "POST",
-      body: {
-        task: input.task,
-        model: input.model,
-        sessionId: input.sessionId,
-        ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
-        maxCostUsd: input.maxCostUsd,
-      },
-    });
-    if (isFailure(response)) return response;
-    const body = await this.json(response);
-    if (!isRecord(body) || !isNonEmptyString(body["id"]) || !isRunStatus(body["status"])
-      || body["sessionId"] !== input.sessionId || !isNonEmptyString(body["workspaceId"])) {
-      return { kind: "failure", code: "malformed_response" };
-    }
-    return { runId: body["id"], sessionId: body["sessionId"], workspaceId: body["workspaceId"], status: body["status"], observedAt: this.clock.now() };
-  }
-
   async pollHostedReadRun(runId: string): Promise<BrowserUseResult<BrowserUseHostedReadRun>> {
     const response = await this.request(`/runs/${encodeURIComponent(runId)}/status`, {
       method: "GET",
@@ -920,65 +829,6 @@ export class BrowserUseCloudAdapter {
   }
 
   /**
-   * Returns queue metadata only. Browser Use's queue text and attachment IDs
-   * are deliberately discarded before the response leaves this adapter.
-   */
-  async inspectHostedSessionQueue(sessionId: string): Promise<BrowserUseResult<BrowserUseHostedSessionQueue>> {
-    if (!isNonEmptyString(sessionId)) return { kind: "failure", code: "malformed_response" };
-    const response = await this.request(`/sessions/${encodeURIComponent(sessionId)}/queue`, { method: "GET" });
-    if (isFailure(response)) return response;
-    const body = await this.json(response);
-    if (!isRecord(body) || !Array.isArray(body["queue"])
-      || (body["steeringCutoffs"] !== undefined && !Array.isArray(body["steeringCutoffs"]))) {
-      return { kind: "failure", code: "malformed_response" };
-    }
-    const messages: BrowserUseHostedSessionQueueMessage[] = [];
-    for (const rawMessage of body["queue"] as QueueWireMessage[]) {
-      const message = this.parseHostedQueueMessage(rawMessage, sessionId);
-      if (isFailure(message)) return message;
-      messages.push(message);
-    }
-    const steeringCutoffRunIds: string[] = [];
-    for (const rawCutoff of (body["steeringCutoffs"] ?? []) as unknown[]) {
-      if (!isRecord(rawCutoff) || !isNonEmptyString(rawCutoff["sourceRunId"])
-        || parseDate(rawCutoff["createdAt"]) === null) {
-        return { kind: "failure", code: "malformed_response" };
-      }
-      steeringCutoffRunIds.push(rawCutoff["sourceRunId"]);
-    }
-    return { sessionId, messages, steeringCutoffRunIds, observedAt: this.clock.now() };
-  }
-
-  /**
-   * Sends a steer as Browser Use's documented best-effort queue/interrupt
-   * operation. The result proves only that the message was accepted; callers
-   * must observe a resulting run before saying the correction took effect.
-   */
-  async queueHostedSessionSteer(input: {
-    readonly sessionId: string;
-    readonly text: string;
-    readonly interrupt: boolean;
-  }): Promise<BrowserUseResult<BrowserUseHostedSessionSteerReceipt>> {
-    if (!isNonEmptyString(input.sessionId) || !isNonEmptyString(input.text) || typeof input.interrupt !== "boolean") {
-      return { kind: "failure", code: "malformed_response" };
-    }
-    const response = await this.request(`/sessions/${encodeURIComponent(input.sessionId)}/queue`, {
-      method: "POST",
-      body: { text: input.text, interrupt: input.interrupt },
-    });
-    if (isFailure(response)) return response;
-    const message = this.parseHostedQueueMessage(await this.json(response), input.sessionId);
-    if (isFailure(message)) return message;
-    if (message.mode !== (input.interrupt ? "interrupt" : "queue")) {
-      return { kind: "failure", code: "malformed_response" };
-    }
-    return {
-      ...message,
-      delivery: input.interrupt ? "interrupt_best_effort" : "queued",
-    };
-  }
-
-  /**
    * Reads V4 status plus the bounded event page and projects only a coarse
    * Human-facing stage. Event payload text, reasoning, page contents, and
    * provider identifiers never leave this adapter.
@@ -1174,29 +1024,6 @@ export class BrowserUseCloudAdapter {
     } catch {
       return null;
     }
-  }
-
-  private parseHostedQueueMessage(
-    body: unknown,
-    expectedSessionId: string,
-  ): BrowserUseResult<BrowserUseHostedSessionQueueMessage> {
-    const message = body as QueueWireMessage | null;
-    if (!isRecord(message) || !isSafeNonNegativeInteger(message["id"])
-      || message["sessionId"] !== expectedSessionId
-      || (message["runId"] !== null && message["runId"] !== undefined && !isNonEmptyString(message["runId"]))
-      || !isSessionQueueMode(message["mode"]) || !isSessionQueueStatus(message["status"])
-      // The V4 response requires a string but does not impose a minLength.
-      // It is intentionally discarded either way.
-      || typeof message["text"] !== "string" || parseDate(message["createdAt"]) === null) {
-      return { kind: "failure", code: "malformed_response" };
-    }
-    return {
-      messageId: message["id"],
-      runId: typeof message["runId"] === "string" ? message["runId"] : null,
-      mode: message["mode"],
-      status: message["status"],
-      createdAt: parseDate(message["createdAt"])!,
-    };
   }
 
   private parseHostedBrowserSession(

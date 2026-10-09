@@ -83,40 +83,7 @@ function operationUpdateStore(capture: { condition: SQL | null }) {
   return createConnectedWebAccountStore(db);
 }
 
-describe("D568 connected website operation store boundary", () => {
-  for (const checkpointExists of [true, false]) {
-    test(`steering updates account and operation run references in one transaction (checkpoint ${checkpointExists ? "present" : "missing"})`, async () => {
-      let committed = false;
-      const writes: Array<{ values: Record<string, unknown>; condition: SQL }> = [];
-      const tx = {
-        update: () => ({ set: (values: Record<string, unknown>) => ({ where: (condition: SQL) => {
-          writes.push({ values, condition });
-          return { returning: async () => writes.length === 1
-            ? [{ controlEpoch: 9, accountId: secretContext.accountId }]
-            : checkpointExists ? [{ id: secretContext.accountId }] : [] };
-        } }) }),
-      };
-      const store = createConnectedWebAccountStore({ transaction: async (run: (connection: typeof tx) => Promise<unknown>) => {
-        const result = await run(tx);
-        committed = true;
-        return result;
-      } } as never);
-      const result = await store.rotateOperationProviderRunByControl({
-        operationId: secretContext.operationId, ownerUserId: secretContext.ownerUserId,
-        workerId: "steer", now: new Date(), expectedControlEpoch: 8,
-        expectedRunRef: sealedOldRunRef, sealedProviderRefs: { version: 1, runRef: sealedNewRunRef },
-        expectedOpaqueExecutionRef: "old-run", opaqueExecutionRef: "new-run",
-        safeActivity, nextCheckAt: new Date(), cumulativeCostUsdMicros: 50, remainingBudgetUsdMicros: 50,
-      }).catch((error: unknown) => error);
-      expect(writes).toHaveLength(2);
-      expect(rendered(writes[1]!.condition).params).toContain("old-run");
-      expect(rendered(writes[1]!.values['executionCheckpoint'] as SQL).params).toContain("new-run");
-      expect(committed).toBe(checkpointExists);
-      if (checkpointExists) expect(result).toBe(9);
-      else expect(result).toBeInstanceOf(ConnectedWebAccountStoreError);
-    });
-  }
-
+describe("connected website operation store boundary", () => {
   test("a requested Genie wake does not postpone ordinary provider observation", async () => {
     let written: Record<string, unknown> = {};
     const db = { update: () => ({ set: (value: Record<string, unknown>) => {
@@ -543,31 +510,6 @@ describe("D568 connected website operation store boundary", () => {
     expect(rotation).toBeNull();
     const rotateQuery = rendered(rotateCapture.condition!);
     expect(rotateQuery.sql).toMatch(/\$\d+::bigint \+ \$\d+::bigint <= "connected_web_operations"\."cumulative_cost_usd_micros" \+ "connected_web_operations"\."remaining_budget_usd_micros"/u);
-  });
-
-  test("fences an interactive replacement to the exact owner, old run, and epoch", async () => {
-    const capture: { condition: SQL | null } = { condition: null };
-    const rotated = await operationUpdateStore(capture).rotateOperationProviderRunByControl({
-      workerId: "steer-worker",
-      expectedOpaqueExecutionRef: "old-run-private", opaqueExecutionRef: "new-run-private",
-      operationId: secretContext.operationId,
-      ownerUserId: secretContext.ownerUserId,
-      now: new Date("2026-09-03T10:00:00.000Z"),
-      expectedControlEpoch: 7,
-      expectedRunRef: sealedOldRunRef,
-      sealedProviderRefs: { version: 1, runRef: sealedNewRunRef },
-      safeActivity,
-      nextCheckAt: new Date("2026-09-03T10:00:00.000Z"),
-      cumulativeCostUsdMicros: 20,
-      remainingBudgetUsdMicros: 80,
-    });
-    expect(rotated).toBeNull();
-    const query = rendered(capture.condition!);
-    expect(query.sql).toContain('"connected_web_operations"."id" = $1');
-    expect(query.sql).toContain('"connected_web_operations"."owner_user_id" = $2');
-    expect(query.sql).toContain('"connected_web_operations"."control_epoch" = $3');
-    expect(query.sql).toContain('"connected_web_operations"."sealed_provider_refs"->>\'runRef\' is not distinct from $4');
-    expect(query.sql).toContain('"connected_web_operations"."lifecycle" <> \'terminal\'');
   });
 
   test("records coarse direct activity only on the exact owner/direct epoch without rotating it", async () => {

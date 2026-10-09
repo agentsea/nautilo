@@ -16,7 +16,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   unresolved charges, estimated browser usage and measured conversion credits
   without invented dollar prices. Hosted connected-app actions independently
   check server-spending permission, including when the parent chat uses a
-  personal model key.
+  personal model key. Active browser status, live view and Stop recover the
+  creating account's key. Hosted steering leaves the current run unchanged
+  while provisional provider costs prevent proving a safe replacement budget.
 
 - Members can choose personal models for research and decisions independently
   of the server defaults. Personal Tavily and model keys fund supported research,

@@ -151,7 +151,7 @@ function projectManageConnectedWebOperationResult(
   input: ConnectedWebOperationToolInput,
 ): string {
   if (!result.ok) {
-    if (!(["unavailable", "not_found", "forbidden", "conflict", "invalid_result"] as const).includes(result.code)
+    if (!(["unavailable", "not_found", "forbidden", "conflict", "invalid_result", "steer_budget_unverified"] as const).includes(result.code)
       || !(["none", "human_authentication"] as const).includes(result.recovery)) {
       return JSON.stringify({ ok: false, code: "invalid_result", recovery: "none" });
     }
@@ -185,7 +185,7 @@ export async function dispatchManageConnectedWebOperation(
 export function createManageConnectedWebOperationTool(context?: ManageConnectedWebOperationToolContext) {
   return new DynamicStructuredTool({
     name: "manage_connected_web_operation",
-    description: "Inspect or manage one existing connected-website operation. Use inspect before deciding whether to continue, check later with an explicit ISO due time, steer, take control, release control, or stop. The operation id and expected control epoch come only from a prior safe operation result. This is not a browser command tool: never substitute a local browser, request a live URL, or ask for credentials. If authentication is needed, let Nautilo present the protected Human sign-in journey and wait for Done or Cancel. Server support is required; unavailable means no operation was changed.",
+    description: "Inspect or manage one existing connected-website operation. Use inspect before deciding whether to continue, check later with an explicit ISO due time, take direct control, release control, or stop. Steering is currently denied because Browser Use exposes only provisional cost: steer_budget_unverified means Nautilo kept the current run active and did not start a paid replacement. The operation id and expected control epoch come only from a prior safe operation result. This is not a browser command tool: never substitute a local browser, request a live URL, or ask for credentials. If authentication is needed, let Nautilo present the protected Human sign-in journey and wait for Done or Cancel. Server support is required; unavailable means no operation was changed.",
     schema: manageConnectedWebOperationToolSchema,
     func: async (args: ManageConnectedWebOperationToolArgs) => dispatchManageConnectedWebOperation(args, context),
   });

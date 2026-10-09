@@ -423,40 +423,6 @@ describe("BrowserUseCloudAdapter hosted V4 read runs", () => {
       .toEqual({ kind: "failure", code: "malformed_response" });
   });
 
-  test("creates an explicit same-session continuation with its own model and remaining cost", async () => {
-    const seen: Array<{ readonly url: string; readonly init: RequestInit }> = [];
-    const provider = adapter([
-      jsonResponse({
-        id: "continuation-private-id",
-        status: "queued",
-        sessionId: "session-private-id",
-        workspaceId: "workspace-private-id",
-      }),
-    ], seen);
-
-    expect(await provider.createHostedReadContinuationRun({
-      sessionId: "session-private-id",
-      workspaceId: "workspace-private-id",
-      task: "Continue the original bounded task.",
-      model: "gpt-5.6-terra",
-      maxCostUsd: 0.11,
-    })).toEqual({
-      runId: "continuation-private-id",
-      sessionId: "session-private-id",
-      workspaceId: "workspace-private-id",
-      status: "queued",
-      observedAt: FIXED_TIME,
-    });
-    expect(jsonBody(seen[0]!.init)).toEqual({
-      task: "Continue the original bounded task.",
-      model: "gpt-5.6-terra",
-      sessionId: "session-private-id",
-      workspaceId: "workspace-private-id",
-      maxCostUsd: 0.11,
-    });
-    expect(seen[0]!.url).toBe(`${BROWSER_USE_V4_BASE_URL}/runs`);
-  });
-
   test("does not erase an accepted cursor when the final drained page is empty", async () => {
     const provider = adapter([
       jsonResponse({
@@ -471,74 +437,6 @@ describe("BrowserUseCloudAdapter hosted V4 read runs", () => {
       nextAfter: 4,
       hasMore: false,
     });
-  });
-
-  test("inspects and submits queue steering without returning provider message text", async () => {
-    const seen: Array<{ readonly url: string; readonly init: RequestInit }> = [];
-    const provider = adapter([
-      jsonResponse({
-        queue: [{
-          id: 7,
-          sessionId: "session-private-id",
-          runId: RUN_ID,
-          mode: "interrupt",
-          status: "dispatching",
-          text: "private prior steer must not escape",
-          createdAt: "2026-09-01T12:00:07.000Z",
-        }, {
-          id: 9,
-          sessionId: "session-private-id",
-          runId: null,
-          mode: "queue",
-          status: "consumed",
-          text: "",
-          createdAt: "2026-09-01T12:00:09.000Z",
-        }],
-        steeringCutoffs: [{ sourceRunId: RUN_ID, createdAt: "2026-09-01T12:00:07.000Z" }],
-      }),
-      jsonResponse({
-        id: 8,
-        sessionId: "session-private-id",
-        runId: null,
-        mode: "interrupt",
-        status: "pending",
-        text: "private new steer must not escape",
-        createdAt: "2026-09-01T12:00:08.000Z",
-      }),
-    ], seen);
-
-    const inspected = await provider.inspectHostedSessionQueue("session-private-id");
-    expect(inspected).toMatchObject({
-      sessionId: "session-private-id",
-      messages: [
-        { messageId: 7, runId: RUN_ID, mode: "interrupt", status: "dispatching" },
-        { messageId: 9, runId: null, mode: "queue", status: "consumed" },
-      ],
-      steeringCutoffRunIds: [RUN_ID],
-    });
-    expect(JSON.stringify(inspected)).not.toContain("private prior steer");
-
-    const queued = await provider.queueHostedSessionSteer({
-      sessionId: "session-private-id",
-      text: "Correct the task; do not repeat an external effect.",
-      interrupt: true,
-    });
-    expect(queued).toMatchObject({
-      messageId: 8,
-      runId: null,
-      mode: "interrupt",
-      status: "pending",
-      delivery: "interrupt_best_effort",
-    });
-    expect(JSON.stringify(queued)).not.toContain("private new steer");
-    expect(jsonBody(seen[1]!.init)).toEqual({
-      text: "Correct the task; do not repeat an external effect.",
-      interrupt: true,
-    });
-    expect(seen.map((request) => request.url)).toEqual([
-      `${BROWSER_USE_V4_BASE_URL}/sessions/session-private-id/queue`,
-      `${BROWSER_USE_V4_BASE_URL}/sessions/session-private-id/queue`,
-    ]);
   });
 
   test("looks up only hosted browsers associated with the requested agent session", async () => {
@@ -584,17 +482,6 @@ describe("BrowserUseCloudAdapter hosted V4 read runs", () => {
     })]);
     expect(await mismatch.findHostedBrowsers({ agentSessionId: "agent-session-private-id" }))
       .toEqual({ kind: "failure", code: "malformed_response" });
-  });
-
-  test("maps steering queue rejection without leaking the provider body", async () => {
-    const provider = adapter([jsonResponse({ detail: "private queue capacity detail" }, 429)]);
-    const result = await provider.queueHostedSessionSteer({
-      sessionId: "session-private-id",
-      text: "Correct the current task.",
-      interrupt: true,
-    });
-    expect(result).toEqual({ kind: "failure", code: "rate_limited" });
-    expect(JSON.stringify(result)).not.toContain("private queue capacity detail");
   });
 
   test("rejects missing cost policy and malformed success bodies before returning provider state", async () => {

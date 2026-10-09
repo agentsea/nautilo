@@ -130,6 +130,7 @@ class ConnectedWebOperationProductionRuntime {
 
   constructor(options: ConnectedWebOperationProductionRuntimeOptions) {
     if (!validPolicy()) throw new Error("connected website operation runtime policy unavailable");
+    const settleCostAttempt = options.settleCostAttempt ?? settleServerProviderCostAttempt;
     this.clock = options.clock ?? SYSTEM_CLOCK;
     this.scheduler = options.scheduler ?? SYSTEM_SCHEDULER;
     this.runSupervisor = options.runSupervisor ?? this.createSupervisorRunner(options);
@@ -179,7 +180,7 @@ class ConnectedWebOperationProductionRuntime {
             findHostedBrowsers: provider.findHostedBrowsers.bind(provider),
             stopBrowser: provider.stopBrowser.bind(provider),
           },
-          ...(options.settleCostAttempt === undefined ? {} : { settleBrowserCost: (cost: { identity: string; workload: string; estimatedCostUsd: string | null; evidenceState: "estimated" | "unknown" }) => options.settleCostAttempt!({
+          settleBrowserCost: (cost: { identity: string; workload: string; estimatedCostUsd: string | null; evidenceState: "estimated" | "unknown" }) => settleCostAttempt({
             ...cost,
             actualCostUsd: null,
             ...(usageFunding === undefined ? {} : { usageFunding }),
@@ -189,7 +190,7 @@ class ConnectedWebOperationProductionRuntime {
             provider: "browser_use",
             operation: "browser_session",
             attemptOutcome: "succeeded",
-          }) }),
+          }),
         });
         const stopped = await (options.withProvider === undefined
           ? async () => {

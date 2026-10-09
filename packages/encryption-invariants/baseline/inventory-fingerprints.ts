@@ -39,13 +39,15 @@ export const MIGRATION_TREE_BASELINE = {
 // Protected execution recovery adds one typed lifecycle-only quarantine update.
 // Its exact execution-state and publication guards are covered by the shared-Agent
 // planner and conversation product-store unit suites; it never writes content.
+// Connected-web steering now fails closed when replacement-run budget cannot be
+// proven, removing its two run-rotation update callsites without adding writers.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1508,
+  "count": 1506,
   "insert": 501,
-  "update": 813,
+  "update": 811,
   "delete": 177,
   "unresolved": 17,
-  "sha256": "256213fe05ce911d0cb626ff45a6b2b1116570d3c8175bafe135abc09cbef389"
+  "sha256": "be157b6613c3ccb9a515aad4e08e2ad7713b866527f027944be8debb0e3c0d7e"
 } as const;
 
 /**

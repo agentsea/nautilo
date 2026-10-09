@@ -2968,6 +2968,7 @@ export async function createApp(options?: CreateAppOptions) {
   const connectedWebOperationOwnerController = new ConnectedWebOperationOwnerController({
     store: connectedWebAccountStore,
     provider: connectedWebAccountBrowser,
+    funding: connectedWebBrowserFunding,
     // Same listener-owned codec as admission/supervision. This remains null
     // for createApp/inject, so route registration never reads stable secrets.
     secrets: () => connectedWebOperationSecrets,
