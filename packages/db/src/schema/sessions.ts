@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   check,
+  boolean,
   customType,
   index,
   integer,
@@ -33,17 +34,14 @@ export const sessions = pgTable(
       .notNull()
       .references(() => users.id),
     personaId: text("persona_id").notNull().default("owner"),
-    // Nullable in M042A; seedDefaultAgent backfills existing rows on first boot.
+    // Nullable for legacy rows; seedDefaultAgent backfills existing rows on first boot.
     agentId: uuid("agent_id").references(() => agents.id),
-    // Nullable in M042B; seedDefaultRoom backfills existing rows on first boot.
+    // Nullable for legacy rows; seedDefaultRoom backfills existing rows on first boot.
     roomId: uuid("room_id").references(() => rooms.id),
     /**
-     * M042C: which channel opened this session ('tui' | 'electron' |
-     * future 'telegram' | 'webhook' | ...). Nullable in the M042C
-     * migration; the seed backfills existing rows to 'tui' on first
-     * post-M042C boot. preHandler uses this to pass the right channel
-     * to `resolveContext`. M041 pairing stamps the concrete channel at
-     * session creation; M042C just adds the column.
+     * Channel that opened the session ('tui', 'electron', or a future connector).
+     * Legacy rows remain nullable; seed initialization backfills 'tui'. Request
+     * context and device pairing use the concrete channel at session creation.
      */
     channel: text("channel"),
     title: text("title"),
@@ -60,9 +58,9 @@ export const sessions = pgTable(
     check("sessions_message_source_revision", sql`${table.messageSourceRevision} >= 0`),
     index("idx_sessions_thread_id").on(table.threadId),
     index("idx_sessions_owner_id").on(table.ownerId),
-    /** M219 — Room journal/recent-context readers fan in every Room session. */
+    /** Room journal/recent-context readers fan in every Room session. */
     index("idx_sessions_room_id").on(table.roomId),
-    /** M075 — at most one session row per (human owner, LangGraph thread). */
+    /** at most one session row per (human owner, LangGraph thread). */
     uniqueIndex("uq_sessions_owner_thread").on(table.ownerId, table.threadId),
   ],
 );
@@ -82,18 +80,20 @@ export const sessionMessages = pgTable(
     toolCalls: text("tool_calls"),
     /** Persisted LangChain tool name on `role = 'tool'` rows; NULL for other roles / legacy. */
     toolName: text("tool_name"),
-    /** M070 — idempotent transcript writes; NULL on legacy rows (excluded from uniqueness). */
+    /** idempotent transcript writes; NULL on legacy rows (excluded from uniqueness). */
     fingerprint: text("fingerprint"),
     /**
-     * M233 — durable server-authored identity of a Human turn. Written only
+     * durable server-authored identity of a Human turn. Written only
      * on `role = 'user'` rows from the append call's `humanTurnId`; NULL for
-     * assistant/tool/system and pre-M233 history. Unlike `fingerprint`, this
+     * assistant/tool/system and historical rows. Unlike `fingerprint`, this
      * retains the opaque turn UUID so a later Agent response can pair-validate
      * its causal Human and turn in the same Room/Subthread scope.
      */
     humanTurnId: text("human_turn_id"),
+    /** Restrictive provenance retained even after bridge metadata is removed. */
+    externalAuthorship: boolean("external_authorship").notNull().default(false),
     /**
-     * M237 — nullable shadow mapping to the one canonical encrypted revision.
+     * nullable shadow mapping to the one canonical encrypted revision.
      * The existing plaintext columns remain authoritative while activation is
      * disabled. A successful edit advances this mapping to a fresh object.
      */
@@ -107,12 +107,12 @@ export const sessionMessages = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
-    /** M230 — NULL until the first successful Human-authored text edit. */
+    /** NULL until the first successful Human-authored text edit. */
     editedAt: timestamp("edited_at", { withTimezone: true }),
-    /** M230 — optimistic-concurrency token for Human-authored text edits. */
+    /** optimistic-concurrency token for Human-authored text edits. */
     editRevision: integer("edit_revision").notNull().default(0),
     /**
-     * M084 — `main` (default) vs `subagent`. Subagent rows use a dedicated
+     * `main` (default) vs `subagent`. Subagent rows use a dedicated
      * `sessions.thread_id` but are tagged so combined views can filter.
      */
     transcriptOrigin: text("transcript_origin").notNull().default("main"),
@@ -120,9 +120,9 @@ export const sessionMessages = pgTable(
     parentThreadId: text("parent_thread_id"),
     scopeId: uuid("scope_id"),
     /**
-     * D111 / REL-RMS-RMS — denormalization: which Subthread does this
+     * Denormalization: which Subthread does this
      * message live in? NULL means top-level Room message. Set by the
-     * trust helper that inserts a Subthread reply (Phase 4 server route).
+     * trust helper that inserts a Subthread reply.
      *
      * TODO(stack-3 phase-4): wire `subthread_room_id` from the Subthread
      * reply insert path once the drawer route lands.
@@ -131,18 +131,18 @@ export const sessionMessages = pgTable(
       onDelete: "set null",
     }),
     /**
-     * D111 — denormalized reply count on root messages (only). Maintained
+     * denormalized reply count on root messages (only). Maintained
      * by the trust helper on Subthread reply insert/delete. Default 0.
      * Top-level messages without an anchored Subthread keep this at 0.
      */
     replyCount: integer("reply_count").notNull().default(0),
     /**
-     * D111 — denormalized last-reply timestamp on root messages (only).
+     * denormalized last-reply timestamp on root messages (only).
      * NULL until the first reply lands.
      */
     lastReplyAt: timestamp("last_reply_at", { withTimezone: true }),
     /**
-     * D426 — monotonic revision of this root's denormalized reply summary
+     * monotonic revision of this root's denormalized reply summary
      * (`reply_count` + `last_reply_at`). Bumped exactly once per
      * transactional recompute that actually changes the summary (a new
      * counted child reply is inserted, or a counted child reply is
@@ -154,7 +154,7 @@ export const sessionMessages = pgTable(
      */
     summaryRevision: integer("summary_revision").notNull().default(0),
     /**
-     * D124 — Per-message read state. For 1:1 Rooms, the scalar is the
+     * Per-message read state. For 1:1 Rooms, the scalar is the
      * truth. For group Rooms (3+ Humans), use session_message_recipient_state
      * junction; the scalar may be NULL or aggregated server-side.
      *
@@ -168,7 +168,7 @@ export const sessionMessages = pgTable(
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
     readAt: timestamp("read_at", { withTimezone: true }),
     /**
-     * D124 — Quote-reply linkage. Same-Room references; cross-Room
+     * Quote-reply linkage. Same-Room references; cross-Room
      * quoting is out of scope. ON DELETE SET NULL so a deleted original
      * doesn't break the reply (renders as "(deleted message)" inline).
      *
@@ -179,14 +179,14 @@ export const sessionMessages = pgTable(
       { onDelete: "set null" },
     ),
     /**
-     * M141 — used by the Task report-back ping (Phase 2) to tag/hide
-     * `originatedBy='task'` rows; nullable, no Phase-1 reader.
+     * Used by the Task report-back ping to tag and hide
+     * `originatedBy='task'` rows; nullable for ordinary messages.
      */
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
   },
   (table) => [
     index("idx_session_messages_session_id").on(table.sessionId),
-    /** M219 — cursor/range scans within the Room's member sessions. */
+    /** cursor/range scans within the Room's member sessions. */
     index("idx_session_messages_session_id_id").on(table.sessionId, table.id),
     index("idx_session_messages_session_created_id").on(table.sessionId, table.createdAt, table.id),
     index("idx_session_messages_content_search").using(
@@ -208,6 +208,7 @@ export const sessionMessages = pgTable(
       "session_messages_human_turn_id_role_check",
       sql`${table.humanTurnId} IS NULL OR ${table.role} = 'user'`,
     ),
+    check("session_messages_external_authorship_role_check", sql`NOT ${table.externalAuthorship} OR ${table.role} = 'user'`),
     index("idx_session_messages_subthread")
       .on(table.subthreadRoomId)
       .where(sql`${table.subthreadRoomId} IS NOT NULL`),

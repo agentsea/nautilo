@@ -7,6 +7,11 @@ import {
   and,
   agentPhotoSelectionRevisions,
   approvalChallenges,
+  bolterConnections,
+  bolterInboxReceipts,
+  bolterOutbox,
+  bolterRoomBindings,
+  cancelBolterExecutionsForDeletedAgentsInTransaction,
   codexThreadBindings,
   connectedWebAccounts,
   connectedWebOperations,
@@ -523,6 +528,20 @@ export async function deleteLocalUserAccount(
       throw new AccountDeletionIneligibleError({ eligible: false, code: "last_owner" });
     }
 
+    const ownedAgentRows = await tx.execute(sql`
+      SELECT agent_id
+      FROM actors
+      WHERE kind = 'agent' AND owner_id = ${targetUserId} AND agent_id IS NOT NULL
+      ORDER BY agent_id
+      FOR UPDATE
+    `) as unknown as Array<{ agent_id: string }>;
+    const agentIdList = [...new Set(ownedAgentRows.map((row) => row.agent_id))];
+    // Fence exact external work before Room/session locks, matching completion.
+    // A later eligibility failure rolls these cancellations back with deletion.
+    await cancelBolterExecutionsForDeletedAgentsInTransaction(tx, {
+      userId: targetUserId, agentIds: agentIdList,
+    });
+
     const roomRows = await tx.execute(sql`
       SELECT r.id, r.namespace_id
       FROM rooms r
@@ -579,14 +598,6 @@ export async function deleteLocalUserAccount(
       await cleanupConnectedWebAccountsBeforeAccountDeletion(connectedRows, browser);
     }
 
-    const ownedAgentRows = await tx.execute(sql`
-      SELECT agent_id
-      FROM actors
-      WHERE kind = 'agent' AND owner_id = ${targetUserId} AND agent_id IS NOT NULL
-      ORDER BY agent_id
-      FOR UPDATE
-    `) as unknown as Array<{ agent_id: string }>;
-    const agentIdList = [...new Set(ownedAgentRows.map((row) => row.agent_id))];
     const sessionRows = await tx.select({ id: sessions.id }).from(sessions)
       .where(eq(sessions.ownerId, targetUserId)).for("update");
     const sessionIdList = sessionRows.map((row) => row.id);
@@ -681,6 +692,22 @@ export async function deleteLocalUserAccount(
       await tx.update(sessions).set({ agentId: null })
         .where(inArray(sessions.agentId, agentIdList));
     }
+
+    // Another Human can sponsor a binding to one of these Genies. Remove that
+    // exact binding's metadata too, preserving their connection, Room and history.
+    const genieBindingRows = agentIdList.length === 0 ? [] : await tx
+      .select({ id: bolterRoomBindings.id }).from(bolterRoomBindings)
+      .where(inArray(bolterRoomBindings.agentId, agentIdList));
+    const genieBindingIds = genieBindingRows.map(row => row.id);
+    // Bridge receipts restrict canonical message, Job, Room and Genie deletion.
+    // Remove children first in the same transaction as their canonical parents.
+    await tx.delete(bolterOutbox).where(or(eq(bolterOutbox.userId, targetUserId),
+      genieBindingIds.length > 0 ? inArray(bolterOutbox.bindingId, genieBindingIds) : undefined));
+    await tx.delete(bolterInboxReceipts).where(or(eq(bolterInboxReceipts.userId, targetUserId),
+      genieBindingIds.length > 0 ? inArray(bolterInboxReceipts.bindingId, genieBindingIds) : undefined));
+    await tx.delete(bolterRoomBindings).where(or(eq(bolterRoomBindings.userId, targetUserId),
+      genieBindingIds.length > 0 ? inArray(bolterRoomBindings.id, genieBindingIds) : undefined));
+    await tx.delete(bolterConnections).where(eq(bolterConnections.userId, targetUserId));
 
     if (sessionIdList.length > 0) {
       await tx

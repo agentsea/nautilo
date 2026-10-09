@@ -2,6 +2,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   Job,
+  ExternalRoomExecutionBusyError,
+  type ExternalRoomClaimHooks,
   ProtectedTaskJobStartNotOwnedError,
   type JobExecutor,
 } from "./job";
@@ -15,10 +17,13 @@ import {
 } from "./lane-coalescer";
 import { coalescedToSlice } from "./fork/fork-metadata";
 import { langgraphExecutor } from "./executors/langgraph-executor";
+import { externalRoomExecutor, type ExternalRoomExecutionCandidate } from "./external-room-execution";
 import { forkLanggraphExecutor } from "./executors/fork-langgraph-executor";
 import { slowTaskExecutor } from "./executors/slow-task-executor";
 import { deepResearchExecutor } from "./executors/deep-research-executor";
 import {
+  acquireExternalRoomExecutionClaim,
+  releaseExternalRoomExecutionClaim,
   getJobById,
   persistJob,
   settleProtectedTaskJobTerminal,
@@ -35,6 +40,7 @@ import {
   type WorkAcceptanceReason,
 } from "@nautilo/db";
 import type {
+  ExternalRoomExecutionClaim,
   JobPublicationPolicy,
   PersistJobPayload,
   ProtectedTaskJobStartResult,
@@ -68,6 +74,7 @@ import {
   getAcceptedInvocationAuthorityOrigin,
   bindAcceptedInvocationAuthorityOrigin,
   isInvocationAccessAllowed,
+  getExternalRoomPolicy,
   type AcceptedInvocationAuthority,
 } from "@nautilo/trust";
 import {
@@ -88,7 +95,7 @@ import {
 } from "./tasks/protected-task-execution-candidate";
 
 /**
- * D420 — execution-local authority for work that has already crossed an
+ * execution-local authority for work that has already crossed an
  * admission boundary. Agent tools (notably deep-research) run inside
  * `Job.execute()`, so the server's background-job hook can retrieve this
  * authority without introducing an agent → runtime import cycle.
@@ -144,11 +151,11 @@ export type CreateForegroundJobResult = {
   id: string;
   virtualJobId: string;
   /**
-   * D420 — opaque authority minted after durable acceptance. Internal
+   * opaque authority minted after durable acceptance. Internal
    * continuations (Task report-back) retain it; HTTP callers never receive it.
    */
   acceptanceAuthority?: MaintenanceAcceptanceAuthority;
-  /** M254 — opaque, Human-bound invocation continuation authority. */
+  /** opaque, Human-bound invocation continuation authority. */
   invocationAcceptanceAuthority?: AcceptedInvocationAuthority;
 };
 
@@ -243,7 +250,7 @@ export function ordinaryConversationExecutionRoute(): ForegroundExecutionRoute {
   };
 }
 
-/** M298 Browser-private turns stay uncoalesced but may use a root-session fork. */
+/** Browser-private turns stay uncoalesced but may use a root-session fork. */
 export function liveShadowConversationExecutionRoute(): ForegroundExecutionRoute {
   return {
     executor: langgraphExecutor,
@@ -311,8 +318,8 @@ interface PendingTurn {
   /** Process-local only; intentionally excluded from the serialized Job input. */
   initiatingClientSurface: InitiatingClientSurfaceV1;
   /**
-   * M144 — a system-originated turn (task report-back wake). Such turns must
-   * run as strict sequential MAIN turns, never as M085 forks: forking a wake
+   * a system-originated turn (task report-back wake). Such turns must
+   * run as strict sequential MAIN turns, never as checkpoint forks: forking a wake
    * leaks its synthetic `[TASK RESULT …]` row (the fork-replay path does not
    * honor the `originatedBy:"task"` suppression) and is semantically wrong
    * (task results should arrive one-by-one, in order). When the thread is busy,
@@ -321,7 +328,7 @@ interface PendingTurn {
   system?: boolean;
 }
 
-/** M147 — why a live job was aborted. Drives the executor's silent-abort
+/** why a live job was aborted. Drives the executor's silent-abort
  * branch (a pause/stop is NOT a failure → no report-back error turn). */
 export type AbortReason = "pause" | "stop";
 export type ProtectedTaskRunQuiescenceResult =
@@ -361,7 +368,7 @@ export interface ForegroundWorkSummary {
 }
 
 /**
- * D420 (Wave 2 task 2.2.2) — payload-free executable Job work summary for
+ * payload-free executable Job work summary for
  * maintenance drain decisions. Task-backed foreground jobs are deliberately
  * excluded from `runningForegroundJobs`: the task query owns those through
  * their task-run rows, which avoids reporting the same running Task as both a
@@ -384,7 +391,7 @@ export interface ExecutableJobWorkSummary {
 }
 
 /**
- * D420 — payload-free work-acceptance ledger sinks (injectable so unit
+ * payload-free work-acceptance ledger sinks (injectable so unit
  * tests run DB-free). The production singleton wires the real
  * `@nautilo/db` sinks; tests inject no-op stubs that return
  * process-local ids so the linkage logic is exercised without a DB.
@@ -398,22 +405,22 @@ export interface WorkAcceptanceSinks {
    * dispatched`. A count LESS than the number of acceptance ids means a
    * concurrent user Stop terminalized some of them as `user_cancelled`
    * (the dispatch-vs-Stop race); the runtime compensates the never-dispatched
-   * Job instead of executing it (D420 task 2.2.3 correction, R8).
+   * Job instead of executing it.
    */
   linkAcceptancesToJob: (
     acceptanceIds: readonly string[],
     jobId: string,
   ) => Promise<number>;
   /**
-   * D420 (Wave 2 task 2.2.3) — terminalize EVERY durable `accepted` (un-
+   * terminalize EVERY durable `accepted` (un-
    * dispatched) acceptance row as `maintenance_cancelled` with a bounded
    * reason. Returns the count terminalized. Called at the drain deadline so
    * the ledger tells the truth about queued/buffered intent that never
-   * started (R8/R11). Injectable so unit tests run DB-free.
+   * started. Injectable so unit tests run DB-free.
    */
   terminalizeAllAcceptedWork: (reason: WorkAcceptanceReason) => Promise<number>;
   /**
-   * D420 (Wave 2 task 2.2.3 correction) — terminalize an EXACT, ID-scoped set
+   * terminalize an EXACT, ID-scoped set
    * of still-`accepted` acceptance rows as `user_cancelled` with a bounded
    * user-stop reason. Idempotent: rows already `dispatched` or terminal are
    * untouched. Returns the count terminalized so the runtime can detect a
@@ -451,7 +458,7 @@ const PLANNED_SHUTDOWN_CANCELLATION_REASON =
 const ACCEPTANCE_LINK_FAILURE_CANCELLATION_REASON =
   "Cancelled before dispatch because durable acceptance linkage failed";
 /**
- * D420 (Wave 2 task 2.2.3) — operator-visible reason stamped on every running
+ * operator-visible reason stamped on every running
  * Job terminalized at the `--wait-for` deadline. Mirrors the acceptance
  * ledger's `maintenanceDrain` reason text so a cancelled unit reports one
  * truthful outcome whether it had started (Job cancelled) or not (acceptance
@@ -459,7 +466,7 @@ const ACCEPTANCE_LINK_FAILURE_CANCELLATION_REASON =
  */
 const MAINTENANCE_DRAIN_CANCELLATION_REASON = "Cancelled by maintenance drain";
 /**
- * D420 (Wave 2 task 2.2.3 correction) — operator-visible reason stamped on a
+ * operator-visible reason stamped on a
  * running Job when the dispatch-vs-Stop race is lost (a concurrent user Stop
  * claimed part of the coalesced group before execution). The Job is compensated
  * (cancelled) before it executes; the user_cancelled acceptance rows carry the
@@ -469,7 +476,7 @@ const DISPATCH_VS_STOP_RACE_CANCELLATION_REASON =
   "Cancelled before dispatch because a concurrent user Stop claimed part of the coalesced group";
 
 /**
- * D420 (Wave 2 task 2.2.3) — result of terminalizing all remaining executable
+ * result of terminalizing all remaining executable
  * work at the drain deadline. Counts only (payload-free); the operator API
  * surfaces them via the aggregate maintenance status, never job/room/lane ids.
  */
@@ -523,7 +530,7 @@ function bindInvocationOrigin(humanUserId: string, input: Record<string, unknown
 export class JobManager {
   private active = new Map<string, Job>();
   /**
-   * M147 — abort-reason side-channel keyed by `jobId`, set by
+   * abort-reason side-channel keyed by `jobId`, set by
    * {@link abortJob} and read via {@link getAbortReason}. The distinction
    * pause-vs-stop lives in the `tasks`/`task_runs` status (the lifecycle fns
    * write it); at the job level every abort is the same terminal-cancel. The
@@ -534,7 +541,7 @@ export class JobManager {
   /** Route selected for each accepted virtual turn until durable Job linkage. */
   private readonly virtualToExecutionRoute = new Map<string, ForegroundExecutionRoute>();
   /**
-   * D453 — a TaskRun becomes durable before its serial foreground Job can be
+   * a TaskRun becomes durable before its serial foreground Job can be
    * dispatched. Keep its Task identity with the accepted virtual turn so a
    * Room/Thread Stop can terminalize a queued external Task through the same
    * lifecycle seam as an already-running task-backed Job. Without this map,
@@ -544,12 +551,12 @@ export class JobManager {
   private readonly virtualToTaskId = new Map<string, string>();
   /** Route of the currently buffered coalescing burst for a lane. */
   private readonly bufferedRouteByLane = new Map<string, ForegroundExecutionRoute>();
-  /** M254 — coalescing is permitted only for one canonical Human subject. */
+  /** coalescing is permitted only for one canonical Human subject. */
   private readonly bufferedInvocationSubjectByLane = new Map<string, string>();
-  /** D513 Phase 6.1 private fence for the current buffered ordinary burst. */
+  /** Private fence for the current buffered ordinary burst. */
   private readonly bufferedCoalescingBoundaryByLane = new Map<string, ForegroundCoalescingBoundary>();
   /**
-   * M136 — per-thread FIFO of coalescer-flushed turns waiting to dispatch.
+   * per-thread FIFO of coalescer-flushed turns waiting to dispatch.
    * Keyed on `graphThreadId` so turns from DIFFERENT users' coalescing lanes
    * that target the same bot serialize against each other (D-C). Drained in
    * strict arrival order by {@link drainThread}.
@@ -557,9 +564,9 @@ export class JobManager {
   private readonly pendingByThread = new Map<string, PendingTurn[]>();
   /** Threads with an active {@link drainThread} loop (re-entrancy guard). */
   private readonly drainingThreads = new Set<string>();
-  /** D349 — conversation-scoped stop/quiesce. Cleared by the next user send. */
+  /** conversation-scoped stop/quiesce. Cleared by the next user send. */
   private readonly stoppedThreads = new Set<string>();
-  /** D349 — stop intent for a room before/without a known checkpoint thread. */
+  /** stop intent for a room before/without a known checkpoint thread. */
   private readonly stoppedRooms = new Set<string>();
   private readonly laneLockRef: LaneLock;
   private readonly readRecoveryJob: typeof getJobById;
@@ -571,6 +578,7 @@ export class JobManager {
     status: JobStatus,
     fields?: { message?: string; result?: Record<string, unknown> },
     publicationPolicy?: JobPublicationPolicy,
+    executionClaim?: ExternalRoomExecutionClaim,
   ) => Promise<void>;
   private readonly startProtectedTaskJobFn: (
     jobId: string,
@@ -584,13 +592,13 @@ export class JobManager {
     publicationPolicy: JobPublicationPolicy,
   ) => Promise<ProtectedTaskJobTerminalResult>;
   /**
-   * D420 — payload-free work-acceptance ledger sinks. Defaults are
+   * payload-free work-acceptance ledger sinks. Defaults are
    * DB-free stubs so existing unit tests stay hermetic; the production
    * singleton wires the real `@nautilo/db` sinks.
    */
   private readonly acceptanceSinks: WorkAcceptanceSinks;
   /**
-   * D420 (Wave 2 task 2.2.3) — task lifecycle terminalization sink for running
+   * task lifecycle terminalization sink for running
    * task-run Jobs. `null` means no task terminalization (hermetic tests); the
    * production singleton wires a `stopTask`-backed sink.
    */
@@ -598,16 +606,16 @@ export class JobManager {
   /** Collapse duplicate active/queued/concurrent Stop observations to one Task lifecycle request. */
   private readonly taskStopRequests = new Map<string, Promise<void>>();
   /**
-   * D420 (Wave 2 task 2.2.1) — maintenance admission gate. `null` means
+   * maintenance admission gate. `null` means
    * resolve the runtime singleton at call time (permissive until `createApp`
    * wires production). An explicit gate is used to test drain behavior.
    */
   private readonly maintenanceGate: MaintenanceGate | null;
-  /** D420 — authority for accepted virtual work until it is linked to a Job. */
+  /** authority for accepted virtual work until it is linked to a Job. */
   private readonly virtualToAuthority = new Map<string, MaintenanceAcceptanceAuthority>();
-  /** D420 — authority propagated through an executing accepted Job. */
+  /** authority propagated through an executing accepted Job. */
   private readonly jobToAuthority = new Map<string, MaintenanceAcceptanceAuthority>();
-  /** M254 — Human-bound authority retained with accepted virtual work. */
+  /** Human-bound authority retained with accepted virtual work. */
   private readonly virtualToInvocationAuthority =
     new Map<string, AcceptedInvocationAuthority>();
   private readonly virtualInvocationScopes = new Map<string, InvocationWorkScope & { withdrawn: boolean }>();
@@ -615,11 +623,11 @@ export class JobManager {
   private readonly invocationTaskStop: InvocationTaskStop | undefined;
   /** Retained through failed durable cancellation; bounded by accepted work. */
   private readonly pendingInvocationJobStops = new Map<string, { job: Job; humanUserId: string; reason: string }>();
-  /** M254 — invocation authority propagated through an executing Job. */
+  /** invocation authority propagated through an executing Job. */
   private readonly jobToInvocationAuthority =
     new Map<string, AcceptedInvocationAuthority>();
   /**
-   * D420 — `virtualJobId → acceptanceId` for accepted units not yet
+   * `virtualJobId → acceptanceId` for accepted units not yet
    * dispatched. Populated only after durable acceptance insert succeeds;
    * entries are removed only after a durable link succeeds. A link failure
    * preserves the map entry and prevents the Job from executing.
@@ -636,7 +644,7 @@ export class JobManager {
     string,
     Readonly<{ threadId: string; roomId: string }>
   >();
-  /** D513 — opaque server-private candidate, installed before enqueue only. */
+  /** opaque server-private candidate, installed before enqueue only. */
   private readonly virtualToForegroundCandidate = new Map<string, ForegroundTurnCandidate>();
   /** Protected Task authority and transient-input builder; process-local only. */
   private readonly virtualToProtectedTaskExecution =
@@ -652,7 +660,12 @@ export class JobManager {
   private readonly protectedTaskExecutionSettlements =
     new Map<string, ProtectedTaskExecutionSettlement>();
 
+  private readonly externalRoomClaims: ExternalRoomClaimHooks | undefined;
+  private readonly assertResumeRoom: ((roomId: string) => Promise<void>) | undefined;
+
   constructor(opts?: {
+    externalRoomClaims?: ExternalRoomClaimHooks;
+    assertResumeRoom?: (roomId: string) => Promise<void>;
     laneLock?: LaneLock;
     /** Existing durable Job read; override only for DB-free recovery tests. */
     readRecoveryJob?: typeof getJobById;
@@ -672,6 +685,7 @@ export class JobManager {
       status: JobStatus,
       fields?: { message?: string; result?: Record<string, unknown> },
       publicationPolicy?: JobPublicationPolicy,
+      executionClaim?: ExternalRoomExecutionClaim,
     ) => Promise<void>;
     startProtectedTaskJob?: (
       jobId: string,
@@ -685,12 +699,12 @@ export class JobManager {
       publicationPolicy: JobPublicationPolicy,
     ) => Promise<ProtectedTaskJobTerminalResult>;
     /**
-     * D420 — payload-free work-acceptance ledger sinks. Defaults are
+     * payload-free work-acceptance ledger sinks. Defaults are
      * DB-free stubs; the production singleton wires the real sinks.
      */
     acceptanceSinks?: WorkAcceptanceSinks;
     /**
-     * D420 (Wave 2 task 2.2.3) — terminalize a RUNNING task-run Job through
+     * terminalize a RUNNING task-run Job through
      * the task lifecycle (`stopTask`) so the durable `task_runs`/`tasks` rows
      * are stamped `cancelled`. Plain `Job.cancel()` on a task-run Job would
      * leave the durable run `running` (the task-run executor's abort path
@@ -703,13 +717,15 @@ export class JobManager {
     checkInvocationAccess?: typeof isInvocationAccessAllowed;
     invocationTaskStop?: InvocationTaskStop;
     /**
-     * D420 (Wave 2 task 2.2.1) — maintenance admission gate. Defaults to the
+     * maintenance admission gate. Defaults to the
      * runtime singleton (permissive until `createApp` wires the production
      * gate), so hermetic unit tests stay DB-free while production gates every
      * executable start. Pass an explicit gate to test drain behavior.
      */
     maintenanceGate?: MaintenanceGate;
   }) {
+    this.externalRoomClaims = opts?.externalRoomClaims;
+    this.assertResumeRoom = opts?.assertResumeRoom;
     this.laneLockRef = opts?.laneLock ?? defaultLaneLock;
     this.readRecoveryJob = opts?.readRecoveryJob ?? getJobById;
     this.persistJobFn = opts?.persist ?? persistJob;
@@ -734,6 +750,46 @@ export class JobManager {
     );
   }
 
+  private readonly externalRoomCandidates = new Map<string, ExternalRoomExecutionCandidate>();
+  private readonly externalRoomBusyJobs = new Set<string>();
+  private readonly quiescentExternalRoomClaims = new Map<string, Job>();
+
+  /** Adopt a committed external receipt into the ordinary serialized foreground lane. */
+  async adoptExternalRoomJob(candidate: ExternalRoomExecutionCandidate, executor: JobExecutor = langgraphExecutor): Promise<void> {
+    await this.resolveGate().assertAcceptingNewWork();
+    assertAcceptedInvocationAuthoritySubject(candidate.invocationAuthority, candidate.sponsorUserId);
+    await candidate.verifyPersisted();
+    const id = candidate.jobId;
+    if (this.active.has(id) || (this.externalRoomCandidates.has(id) && !this.failedPrePersistenceScope.has(id))) return;
+    this.failedPrePersistenceScope.delete(id);
+    const reference = candidate.reference;
+    const threadId = `room:${reference.roomId}:bot:${reference.agentId}`;
+    if (this.isThreadStopped(threadId) || this.isRoomStopped(reference.roomId)) {
+      await candidate.updateStatus("cancelled");
+      return;
+    }
+    const input = {
+      ownerId: candidate.sponsorUserId, requestorId: candidate.sponsorUserId,
+      roomId: reference.roomId, agentId: reference.agentId, turnId: reference.turnId,
+      graphThreadId: threadId, message: "",
+    };
+    const laneKey = `room:${reference.roomId}`;
+    this.externalRoomCandidates.set(id, candidate);
+    this.virtualToAcceptance.set(id, reference.acceptanceId);
+    this.virtualToAuthority.set(id, createMaintenanceAcceptanceAuthority());
+    this.virtualToInvocationAuthority.set(id, candidate.invocationAuthority);
+    this.virtualInvocationScopes.set(id, { ...invocationWorkScope(input, candidate.invocationAuthority), withdrawn: false });
+    this.virtualToExecutionRoute.set(id, {
+      executor: externalRoomExecutor(candidate, executor), coalescing: "separate", contention: "serialize",
+    });
+    try {
+      this.onLaneFlush(laneKey, jobInputToCoalescedInput(input, laneKey, candidate.sponsorUserId, candidate.sponsorUserId), [id], false);
+    } catch (error) {
+      this.failedPrePersistenceScope.set(id, { threadId, roomId: reference.roomId });
+      throw error;
+    }
+  }
+
   createForegroundJob(
     ownerId: string,
     requestorId: string,
@@ -741,28 +797,28 @@ export class JobManager {
     input: Record<string, unknown>,
     executorOverride?: JobExecutor,
     /**
-     * D420 (Wave 2 task 2.2.1) — presented by continuation paths (conductor
+     * presented by continuation paths (conductor
      * wakes, task report-back) to bypass the drain gate. Omitted by NEW-work
      * ingresses so the gate can reject before acceptance/enqueue.
      */
     authority?: MaintenanceAcceptanceAuthority,
     /**
-     * D453 — optional explicit route for an accepted turn. It is last so all
+     * optional explicit route for an accepted turn. It is last so all
      * existing callers retain their positional argument contract.
      */
     executionRoute?: ForegroundExecutionRoute,
-    /** M254 — accepted parent authority for an in-process continuation. */
+    /** accepted parent authority for an in-process continuation. */
     invocationAuthority?: AcceptedInvocationAuthority,
-    /** D513 — never serialized; reserved for exact-client eligibility only. */
+    /** never serialized; reserved for exact-client eligibility only. */
     foregroundTurnCandidate?: ForegroundTurnCandidate,
     /**
-     * M282 — server-reserved idempotent live-turn identity. This is generated
+     * server-reserved idempotent live-turn identity. This is generated
      * by the trusted dispatch boundary and durably bound before runtime
      * acceptance, never accepted from a client or serialized into Job input.
      */
     preferredVirtualJobId?: string,
   ): Promise<CreateForegroundJobResult> {
-    // D420 — gate NEW executable starts BEFORE any side effect (stop-intent
+    // gate NEW executable starts BEFORE any side effect (stop-intent
     // clear, executor pin, acceptance ledger insert, coalescer enqueue). A
     // draining gate throws `MaintenanceDrainError` here; continuation paths
     // pass `authority` and pass through. The acceptance insert + coalescer
@@ -789,7 +845,7 @@ export class JobManager {
         ) {
           throw new Error(`Foreground virtual Job id is already active: ${virtualJobId}`);
         }
-        // D420 — persist the payload-free acceptance row BEFORE enqueue. A
+        // persist the payload-free acceptance row BEFORE enqueue. A
         // durable insert failure rejects this call; it must never enqueue,
         // emit `job.coalesced`, or return an accepted virtual job id.
         return this.acceptForegroundAcceptance(virtualJobId, "foreground").then(() => {
@@ -983,7 +1039,7 @@ export class JobManager {
   }
 
   /**
-   * M144 — dispatch a SYSTEM-originated foreground turn that BYPASSES the
+   * dispatch a SYSTEM-originated foreground turn that BYPASSES the
    * coalescer. Used by the task report-back finalizer (`wakeCallingRoom`): each
    * completed task's wake must land as its OWN agent reply, not merge with a
    * sibling task wake or a human's in-flight burst on the same room lane (which
@@ -1000,16 +1056,16 @@ export class JobManager {
     input: Record<string, unknown>,
     executorOverride?: JobExecutor,
     /**
-     * D420 — required to bypass an active drain. System-originated work is not
+     * required to bypass an active drain. System-originated work is not
      * inherently continuation: callers without an authority are NEW starts
      * and must be rejected while draining.
      */
     authority?: MaintenanceAcceptanceAuthority,
     executionRoute?: ForegroundExecutionRoute,
-    /** M254 — accepted parent authority for an in-process continuation. */
+    /** accepted parent authority for an in-process continuation. */
     invocationAuthority?: AcceptedInvocationAuthority,
   ): Promise<CreateForegroundJobResult> {
-    // D420 — reject genuinely new system starts before any queue mutation.
+    // reject genuinely new system starts before any queue mutation.
     // Report-back callers present their task-run authority, minted only after
     // the originating task Job was admitted.
     return this.resolveGate()
@@ -1051,7 +1107,7 @@ export class JobManager {
   }
 
   /**
-   * M136 — a coalescing lane flushed one user's merged burst. Enqueue it on
+   * a coalescing lane flushed one user's merged burst. Enqueue it on
    * the bot's checkpoint thread (the serialization axis) and kick the drain.
    * Coalescing stays per-lane (D-B); serialization is per-thread (D-C).
    */
@@ -1062,7 +1118,7 @@ export class JobManager {
     system = false,
     explicitCoalescingBoundary?: ForegroundCoalescingBoundary,
   ): void {
-    // D513 Phase 3.2 — a burst may run normally, but only a single direct
+    // A burst may run normally, but only a single direct
     // foreground source can retain eligibility. Resolve private candidates
     // before scheduling so merged sends cannot inherit the first turn id.
     if (system || virtualIds.length !== 1) this.invalidateForegroundCandidates(virtualIds);
@@ -1079,7 +1135,7 @@ export class JobManager {
       this.bufferedCoalescingBoundaryByLane.delete(laneKey);
     }
     const threadId = merged.graphThreadId;
-    // M136 §8.5 — fail-closed: a turn with no checkpoint thread must NEVER
+    // Fail-closed: a turn with no checkpoint thread must NEVER
     // run, because locking on a fallback (`laneKey`) silently re-introduces
     // the per-(user,bot) race this issue fixes. Drop + log a grep-able error.
     if (!threadId) {
@@ -1101,7 +1157,7 @@ export class JobManager {
     if (this.isThreadStopped(threadId) || this.isRoomStopped(merged.roomId)) {
       this.invalidateForegroundCandidates(virtualIds);
       this.coalescer.dropLane(laneKey);
-      // D420 (Wave 2 task 2.2.3) — preserve the virtual IDs: a Stop claimed
+      // preserve the virtual IDs: a Stop claimed
       // this flushed lane. Durably terminalize their mapped acceptances as
       // user_cancelled. Fire-and-forget with loud logging: this is a race
       // fallback (stopRoom/stopThread normally terminalize before the flush
@@ -1134,12 +1190,12 @@ export class JobManager {
   }
 
   /**
-   * M136 — drain the per-thread pending queue in strict arrival (FIFO) order.
+   * drain the per-thread pending queue in strict arrival (FIFO) order.
    * The first turn on a free, fully-reconciled thread runs as the MAIN turn
    * (holds the thread lock); every turn that finds the thread busy or with an
-   * unreconciled lower fork runs as a FORK (M085 machinery, re-keyed on the
+   * unreconciled lower fork runs as a FORK (checkpoint-fork machinery, re-keyed on the
    * thread). Sequence numbers are allocated here in queue order, so ordering
-   * holds regardless of which user triggered each turn (R1–R4).
+   * holds regardless of which user triggered each turn.
    */
   private async drainThread(threadId: string): Promise<void> {
     if (this.drainingThreads.has(threadId)) return;
@@ -1147,7 +1203,7 @@ export class JobManager {
     try {
       for (;;) {
         if (this.isThreadStopped(threadId)) {
-          // D420 (Wave 2 task 2.2.3) — preserve the queued virtual IDs: a Stop
+          // preserve the queued virtual IDs: a Stop
           // claimed this thread. Durably terminalize their mapped acceptances
           // as user_cancelled before dropping the queue (race fallback; the
           // primary awaitable path is stopThread/stopRoom).
@@ -1194,7 +1250,7 @@ export class JobManager {
           continue;
         }
 
-        // BLOCKER #1 (M085, re-keyed): even with the lock free, an earlier
+        // Checkpoint-fork ordering: even with the lock free, an earlier
         // fork may be paused (approval / prove_it) or pending splice. Running
         // a main turn on the parent checkpoint now would put a later sequence
         // ahead of an earlier unresolved one. Route as a fork instead.
@@ -1223,7 +1279,7 @@ export class JobManager {
         }
 
         if (!tryRes.acquired) {
-          // M144 — a system turn (task wake) must not fork. The busy thread
+          // a system turn (task wake) must not fork. The busy thread
           // lock is always held by a running MAIN turn, whose completion
           // re-drains this thread — so leaving the system turn at the head of
           // the FIFO lets it run as a sequential main turn next, in order, with
@@ -1256,7 +1312,7 @@ export class JobManager {
    * `tryRes` (the thread lock) for the whole turn; on EVERY terminal path it
    * releases the lock, advances fork-coordinator ordering, and re-drains the
    * thread so the next queued turn (possibly from another user's lane) runs
-   * (R5/R6). Does not await execution so the caller's drain loop can keep
+   *. Does not await execution so the caller's drain loop can keep
    * allocating sequence numbers for contending turns (they fork while busy).
    */
   private async runMainTurn(
@@ -1265,6 +1321,7 @@ export class JobManager {
     tryRes: Extract<TryAcquireResult, { acquired: true }>,
   ): Promise<void> {
     const { merged, virtualIds, route, initiatingClientSurface } = item;
+    const externalCandidate = virtualIds.length === 1 ? this.externalRoomCandidates.get(virtualIds[0]!) : undefined;
     const durableCandidate = virtualIds.length === 1
       ? this.virtualToForegroundCandidate.get(virtualIds[0]!)
       : undefined;
@@ -1321,7 +1378,7 @@ export class JobManager {
         }
       : coalescedInputToJobInput(merged);
     const executor = route.executor;
-    // M077 — `jobs.owner_id` is the authenticated human (`requestorId`) for
+    // `jobs.owner_id` is the authenticated human (`requestorId`) for
     // `GET /api/jobs/:id`; LangGraph input still carries memory-scoped
     // `ownerId` via `coalescedInputToJobInput`.
     const job = new Job({
@@ -1337,9 +1394,14 @@ export class JobManager {
         ? {}
         : { durableInputDisposition }),
       executor,
-      persist: parkedPersistence?.persistJob.bind(parkedPersistence)
-        ?? this.persistJobFn,
+      persist: externalCandidate
+        ? async () => { await externalCandidate.verifyPersisted(); return externalCandidate.jobId; }
+        : parkedPersistence?.persistJob.bind(parkedPersistence) ?? this.persistJobFn,
       updateStatus: this.updateJobStatusFn,
+      ...(this.externalRoomClaims ? { externalRoomClaims: this.externalRoomClaims } : {}),
+      ...(externalCandidate ? { transitionExternalRoomStatus: (status: JobStatus, fields?: Readonly<{ message?: string }>, claim?: ExternalRoomExecutionClaim) => externalCandidate.updateStatus(status,
+        fields?.message === MAINTENANCE_DRAIN_CANCELLATION_REASON || fields?.message === PLANNED_SHUTDOWN_CANCELLATION_REASON
+          ? "maintenance" : fields?.message === WORK_ACCEPTANCE_REASONS.accessWithdrawn ? "authority_withdrawn" : "user_stop", claim) } : {}),
       ...(protectedTaskExecution === undefined
         ? {}
         : {
@@ -1351,7 +1413,11 @@ export class JobManager {
     try {
       await job.persist();
     } catch {
-      if (parkedPersistence === null) {
+      if (externalCandidate) {
+        // Another owner may already be running this exact durable Job. A local
+        // verification failure must never publish a competing terminal event.
+        this.deferRecoveredParkedPersistence(virtualIds, threadId, merged.roomId);
+      } else if (parkedPersistence === null) {
         this.failAcceptedForegroundBeforePersistence(
           virtualIds, merged.laneKey, threadId, merged.roomId,
           "job_persistence_unavailable",
@@ -1384,7 +1450,7 @@ export class JobManager {
       ? forkCoordinator.nextSequence(threadId)
       : null;
 
-    // D420 — execution may begin only after every coalesced acceptance has
+    // execution may begin only after every coalesced acceptance has
     // been durably linked to this Job. On failure the job is explicitly
     // compensated as cancelled-before-dispatch; the acceptance rows remain
     // `accepted` for later 2.2.3 terminalization, never mislabeled as
@@ -1411,13 +1477,17 @@ export class JobManager {
           }`,
         );
       } finally {
+        if (externalCandidate) {
+          if (job.isTerminal()) this.externalRoomCandidates.delete(externalCandidate.jobId);
+          else this.failedPrePersistenceScope.set(externalCandidate.jobId, { threadId, roomId: merged.roomId });
+        }
         await tryRes.release();
         void this.drainThread(threadId);
       }
       return;
     }
 
-    // D420 (Wave 2 task 2.2.3 correction) — close the dispatch-vs-Stop race:
+    // close the dispatch-vs-Stop race:
     // if the thread/room was stopped while this Job was being persisted and
     // durably linked, a concurrent user Stop won. Compensate the never-
     // dispatched Job instead of executing it. (Linkage already verified every
@@ -1441,6 +1511,10 @@ export class JobManager {
           }`,
         );
       } finally {
+        if (externalCandidate) {
+          if (job.isTerminal()) this.externalRoomCandidates.delete(externalCandidate.jobId);
+          else this.failedPrePersistenceScope.set(externalCandidate.jobId, { threadId, roomId: merged.roomId });
+        }
         await tryRes.release();
         void this.drainThread(threadId);
       }
@@ -1530,15 +1604,15 @@ export class JobManager {
       jobId: job.id,
       laneKey: merged.laneKey,
     };
-    if (armedProtectedTaskExecution !== undefined) {
+    if (armedProtectedTaskExecution !== undefined || externalCandidate !== undefined) {
       try {
         eventBus.emit(dispatchedEvent);
       } catch {
-        // Listener diagnostics must not strand an exact TaskRun after its
-        // protected lifecycle has durably entered running.
-        log(
-          `[lane] protected Task job=${job.id} dispatch event listener failed code=PROTECTED_DISPATCH_LISTENER_RETRY`,
-        );
+        // Observer failure cannot strand durably admitted execution.
+        log(externalCandidate
+          ? "[external-room] dispatch observation failed"
+          : `[lane] protected Task job=${job.id} dispatch event listener failed code=PROTECTED_DISPATCH_LISTENER_RETRY`);
+
       }
     } else {
       eventBus.emit(dispatchedEvent);
@@ -1555,7 +1629,7 @@ export class JobManager {
       authorizationSignal?: AbortSignal,
     ) => {
       if (inputOverride !== undefined) {
-        // M296: on a successful shared-Room Shadow path, the Agent consumes the
+        // on a successful shared-Room Shadow path, the Agent consumes the
         // canonical content reconstructed from the opened protected input set.
         // The persisted ordinary sibling remains the transition fallback.
         job.input["message"] = inputOverride.message;
@@ -1625,7 +1699,20 @@ export class JobManager {
       : foregroundCandidate?.runMainTurn
       ? foregroundCandidate.runMainTurn(merged.turnId, execute)
       : execute())
+      .then(() => {
+        if (externalCandidate && this.externalRoomBusyJobs.delete(job.id)) {
+          log("[external-room] previously blocked queued work finished its local execution attempt");
+        }
+      })
       .catch(async (error: unknown) => {
+        if (externalCandidate && error instanceof ExternalRoomExecutionBusyError) {
+          // The existing durable queued reference is retried by receipt recovery.
+          if (!this.externalRoomBusyJobs.has(job.id)) {
+            this.externalRoomBusyJobs.add(job.id);
+            log("[external-room] Room execution remains owned; queued work awaits release without takeover");
+          }
+          return;
+        }
         if (
           armedProtectedTaskExecution !== undefined
           && (error instanceof ProtectedTaskJobStartNotOwnedError
@@ -1642,11 +1729,23 @@ export class JobManager {
           }
           return;
         }
-        await job.fail(error);
+        try { await job.fail(error); }
+        catch (settlementError) {
+          if (!externalCandidate) throw settlementError;
+          log("[external-room] execution ownership or settlement is unavailable; durable Job remains authoritative");
+        }
       });
     const finishMainTurnAfterRelease = (): void => {
+      if (job.hasQuiescentExternalRoomClaim()) this.quiescentExternalRoomClaims.set(job.id, job);
+      for (const id of virtualIds) {
+        if (externalCandidate && !job.isTerminal()) this.failedPrePersistenceScope.set(id, { threadId, roomId: merged.roomId });
+        else {
+          this.externalRoomCandidates.delete(id);
+          this.externalRoomBusyJobs.delete(id);
+        }
+      }
       forkCoordinator.markMainCompleted(threadId, job.id);
-      if (job.isTerminal() || protectedStartNotOwned) {
+      if (job.isTerminal() || protectedStartNotOwned || externalCandidate) {
         this.active.delete(job.id);
         this.abortReasons.delete(job.id);
         this.jobToAuthority.delete(job.id);
@@ -1672,7 +1771,7 @@ export class JobManager {
       }
       // Same-lane burst that arrived mid-turn → flush it promptly.
       this.coalescer.flushIfPending(merged.laneKey);
-      // Cross-user handoff (R5): wake whatever is queued for this thread,
+      // Cross-user handoff: wake whatever is queued for this thread,
       // regardless of which user's lane buffered it.
       void this.drainThread(threadId);
     };
@@ -1734,8 +1833,8 @@ export class JobManager {
     const preds = forkCoordinator.getTurnsBeforeSequence(threadId, sequence);
     const parentJobId = forkCoordinator.getActiveMainJobId(threadId);
 
-    // M170 — slim to identity only. Predecessor *content* now comes from the
-    // DB transcript rebuild (R1); the count drives the R2b in-flight marker.
+    // slim to identity only. Predecessor *content* now comes from the
+    // DB transcript rebuild; the count drives the in-flight marker.
     const pendingTurns = preds.map((t) => ({
       sequence: t.sequence,
       turnId: t.turnId,
@@ -1798,6 +1897,7 @@ export class JobManager {
       executor,
       persist: this.persistJobFn,
       updateStatus: this.updateJobStatusFn,
+      ...(this.externalRoomClaims ? { externalRoomClaims: this.externalRoomClaims } : {}),
     });
 
     try {
@@ -1812,7 +1912,7 @@ export class JobManager {
     }
     this.active.set(job.id, job);
 
-    // D420 — do not run a fork until its acceptance rows are durably linked.
+    // do not run a fork until its acceptance rows are durably linked.
     try {
       const linked = await this.linkAcceptancesForVirtualIds(
         virtualIds,
@@ -1838,7 +1938,7 @@ export class JobManager {
       return;
     }
 
-    // D420 (Wave 2 task 2.2.3 correction) — dispatch-vs-Stop race gate for
+    // dispatch-vs-Stop race gate for
     // forks (mirrors runMainTurn): if the thread/room was stopped while this
     // fork Job was persisted + linked, compensate it instead of executing.
     if (this.isThreadStopped(threadId) || this.isRoomStopped(merged.roomId)) {
@@ -1922,11 +2022,11 @@ export class JobManager {
           this.jobToAuthority.delete(job.id);
           this.jobToInvocationAuthority.delete(job.id);
         }
-        // M170 — a clean fork advances its own ordering from the executor
+        // a clean fork advances its own ordering from the executor
         // (after persisting its reply rows). A failed/cancelled fork wrote no
-        // reply, so advance ordering here so the lane never hangs (R4). A
+        // reply, so advance ordering here so the lane never hangs. A
         // paused fork (interrupt) is NOT terminal-failed: it stays unreconciled
-        // until the resume path advances it (R6).
+        // until the resume path advances it.
         const fr = inputRecord["forkRun"] as ForkRunMetadata | undefined;
         if (fr?.mode === "fork") {
           const st = job.status;
@@ -1937,7 +2037,7 @@ export class JobManager {
         if (this.isThreadStopped(threadId)) {
           const vids = this.coalescer.dropLaneVirtualIds(merged.laneKey);
           if (vids) {
-            // D420 (Wave 2 task 2.2.3) — fork post-completion stop: terminalize
+            // fork post-completion stop: terminalize
             // any buffered burst's queued acceptances as user_cancelled.
             void this.terminalizeUserStoppedVirtualIds(vids).catch((err) => {
               log(
@@ -1962,18 +2062,18 @@ export class JobManager {
     requestorId: string,
     input: Record<string, unknown>,
     /**
-     * D420 (Wave 2 task 2.2.1) — presented by in-turn background spawns
+     * presented by in-turn background spawns
      * (e.g. deep-research) which are continuation of an already-accepted
      * foreground turn. Omitted by the `POST /api/jobs` route so new external
      * background work is rejected during drain.
      */
     authority?: MaintenanceAcceptanceAuthority,
-    /** M254 — accepted parent authority for an in-process continuation. */
+    /** accepted parent authority for an in-process continuation. */
     invocationAuthority?: AcceptedInvocationAuthority,
     /** Trusted Room return route, accepted only for the Deep Research tool. */
     deepResearchReturnContext?: DeepResearchReturnContext | null,
   ): Promise<Job> {
-    // D420 — gate NEW background starts before the Job row is persisted. A
+    // gate NEW background starts before the Job row is persisted. A
     // draining gate throws `MaintenanceDrainError` (no `authority`); an
     // in-turn spawn passes `authority` and is admitted as continuation.
     await this.resolveGate().assertAcceptingNewWork(authority);
@@ -2020,6 +2120,7 @@ export class JobManager {
       executor: getExecutor("background", acceptedInput),
       persist: this.persistJobFn,
       updateStatus: this.updateJobStatusFn,
+      ...(this.externalRoomClaims ? { externalRoomClaims: this.externalRoomClaims } : {}),
     });
 
     await job.persist();
@@ -2084,7 +2185,10 @@ export class JobManager {
       }
       return;
     }
-    if (!job.isTerminal()) await job.execute(signal);
+    if (!job.isTerminal()) {
+      try { await job.execute(signal); }
+      finally { if (job.hasQuiescentExternalRoomClaim()) this.quiescentExternalRoomClaims.set(job.id, job); }
+    }
   }
 
   /** Every process checks its own accepted work against shared current authority.
@@ -2166,6 +2270,20 @@ export class JobManager {
     return this.active.get(id);
   }
 
+  /** Private retained tokens prove local quiescence; this never adopts a remote claim. */
+  async retryQuiescentExternalRoomClaims(): Promise<number> {
+    for (const [id, job] of this.quiescentExternalRoomClaims) {
+      if (await job.retryQuiescentExternalRoomClaimRelease()) this.quiescentExternalRoomClaims.delete(id);
+    }
+    return this.quiescentExternalRoomClaims.size;
+  }
+
+  /** Process-local work, including admission awaits and terminal executor unwind. */
+  hasLocalExternalRoomWork(jobId: string): boolean {
+    return this.active.has(jobId)
+      || (this.externalRoomCandidates.has(jobId) && !this.failedPrePersistenceScope.has(jobId));
+  }
+
   getActiveJobs(): Job[] {
     return Array.from(this.active.values()).filter((j) => j.isRunning());
   }
@@ -2177,7 +2295,7 @@ export class JobManager {
   }
 
   /**
-   * D420 — the admission gate for this manager. An explicit constructor gate
+   * the admission gate for this manager. An explicit constructor gate
    * wins (test injection); otherwise the runtime singleton is resolved at
    * call time so `createApp`'s boot wiring takes effect for the production
    * singleton without reconstructing it.
@@ -2213,7 +2331,7 @@ export class JobManager {
   }
 
   /**
-   * D420 — persist a payload-free acceptance row for `virtualJobId` before
+   * persist a payload-free acceptance row for `virtualJobId` before
    * enqueue and remember the `virtualJobId → acceptanceId` binding for
    * link-at-dispatch. Insert errors deliberately propagate: without a durable
    * acceptance row, this unit must never enter the coalescer.
@@ -2227,13 +2345,13 @@ export class JobManager {
   }
 
   /**
-   * D420 — link the coalesced group's acceptance rows to the created Job
+   * link the coalesced group's acceptance rows to the created Job
    * (`accepted → dispatched`) before it can execute. Bindings are removed
    * only after the durable write succeeds. A missing binding is also a
    * fail-closed error: running that unit would make its acceptance ledger
    * untruthful.
    *
-   * D420 (Wave 2 task 2.2.3 correction) — the durable link must verify EVERY
+   * the durable link must verify EVERY
    * expected acceptance remained eligible for linking. The sink returns the
    * count of rows that actually transitioned `accepted → dispatched`; if that
    * is less than the group size, a concurrent user Stop terminalized some of
@@ -2293,10 +2411,10 @@ export class JobManager {
     if (!invocationAuthority) {
       throw new Error("Missing accepted invocation authority for empty group");
     }
-    const linkedCount = await this.acceptanceSinks.linkAcceptancesToJob(
-      acceptanceIds,
-      jobId,
-    );
+    const external = virtualIds.length === 1 ? this.externalRoomCandidates.get(virtualIds[0]!) : undefined;
+    const linkedCount = external
+      ? (await external.linkAcceptance(), 1)
+      : await this.acceptanceSinks.linkAcceptancesToJob(acceptanceIds, jobId);
     if (invocationScopes.some(scope => scope?.withdrawn)) {
       throw new Error("Accepted invocation access withdrawn during linkage");
     }
@@ -2502,14 +2620,34 @@ export class JobManager {
   }
 
   /**
-   * D420 (Wave 2 task 2.2.3 correction) — durably terminalize the mapped
+   * durably terminalize the mapped
    * acceptances of discarded queued/buffered virtual IDs as `user_cancelled`
-   * (a D349 user Stop), then clear only the resolved in-memory mappings.
+   * (a user Stop), then clear only the resolved in-memory mappings.
    * Idempotent: virtual IDs without a mapping (already linked/dispatched or
    * already cleared) contribute no acceptance id and are skipped; the durable
    * op itself only touches still-`accepted` rows, so a double call is a no-op.
-   * Errors propagate so the Stop route can fail loudly (R8).
+   * Errors propagate so the Stop route can fail loudly.
    */
+  private async cancelExternalRoomCandidate(
+    id: string,
+    candidate: ExternalRoomExecutionCandidate,
+    reason: "user_stop" | "maintenance" | "authority_withdrawn",
+  ): Promise<void> {
+    try {
+      await candidate.updateStatus("cancelled", reason);
+      this.externalRoomCandidates.delete(id);
+      this.externalRoomBusyJobs.delete(id);
+    } catch {
+      // A different process may own the running Job. Keep its exact reference
+      // discoverable without preventing Stop from settling other queued work.
+      this.failedPrePersistenceScope.set(id, {
+        threadId: `room:${candidate.reference.roomId}:bot:${candidate.reference.agentId}`,
+        roomId: candidate.reference.roomId,
+      });
+      log("[external-room] cancellation deferred; durable execution ownership remains authoritative");
+    }
+  }
+
   private async terminalizeUserStoppedVirtualIds(
     virtualIds: readonly string[],
     reason: WorkAcceptanceReason = WORK_ACCEPTANCE_REASONS.userStop,
@@ -2521,11 +2659,17 @@ export class JobManager {
       const acceptanceId = this.virtualToAcceptance.get(virtualId);
       if (acceptanceId) acceptanceIds.push(acceptanceId);
     }
-    if (acceptanceIds.length === 0) return 0;
-    const terminalized = await this.acceptanceSinks.userCancelAcceptedWork(
+    const terminalized = acceptanceIds.length === 0 ? 0 : await this.acceptanceSinks.userCancelAcceptedWork(
       acceptanceIds,
       reason,
     );
+    for (const id of virtualIds) {
+      const candidate = this.externalRoomCandidates.get(id);
+      if (candidate) {
+        await this.cancelExternalRoomCandidate(id, candidate,
+          reason === WORK_ACCEPTANCE_REASONS.accessWithdrawn ? "authority_withdrawn" : "user_stop");
+      }
+    }
     // Clear only the resolved mappings (those that had an acceptance binding).
     for (const virtualId of virtualIds) {
       if (this.virtualToAcceptance.has(virtualId)) {
@@ -2535,13 +2679,13 @@ export class JobManager {
         this.virtualInvocationScopes.delete(virtualId);
         this.virtualToExecutionRoute.delete(virtualId);
         this.virtualToTaskId.delete(virtualId);
-        this.failedPrePersistenceScope.delete(virtualId);
+        if (!this.externalRoomCandidates.has(virtualId)) this.failedPrePersistenceScope.delete(virtualId);
       }
     }
     return terminalized;
   }
 
-  /** Drop only the non-durable M254 projection when accepted work is abandoned. */
+  /** Drop only the non-durable invocation-authority projection when accepted work is abandoned. */
   private abandonInvocationAuthorities(virtualIds: readonly string[]): void {
     for (const virtualId of virtualIds) {
       if (this.virtualInvocationScopes.get(virtualId)?.withdrawn) continue;
@@ -2585,7 +2729,7 @@ export class JobManager {
   }
 
   /**
-   * D420 — explicit compensation for a Job row written before the acceptance
+   * explicit compensation for a Job row written before the acceptance
    * link failed (or before a concurrent user Stop claimed the group). The job
    * is terminalized before it has executed or emitted `job.dispatched`; the
    * untouched acceptance mappings remain `accepted` for the later 2.2.3 owner
@@ -2642,7 +2786,7 @@ export class JobManager {
   }
 
   /**
-   * D420 (Wave 2 task 2.2.2) — maintenance executable-work view. This is
+   * maintenance executable-work view. This is
    * intentionally distinct from the legacy release-readiness summary above:
    * task jobs are counted by the durable task-run aggregate rather than here,
    * so a running Task backed by a foreground Job cannot be double-counted.
@@ -2682,7 +2826,7 @@ export class JobManager {
    * Room Stop and the maintenance-deadline drain, task-backed Jobs first route
    * through the canonical Task lifecycle so their Task/TaskRun rows cannot be
    * left `running`; a missing or failed sink falls back to direct Job cancel.
-   * D420 acceptance terminalization is deliberately NOT wired here: without
+   * Durable acceptance terminalization is deliberately NOT wired here: without
    * the maintenance ownership/gate/timeout transaction from task 2.2.3, this
    * old process-shutdown path cannot promise a truthful durable outcome for
    * every queued or buffered acceptance. Their `accepted` rows remain for
@@ -2731,13 +2875,18 @@ export class JobManager {
       }),
     );
 
+    for (const [id, candidate] of this.externalRoomCandidates) {
+      if (!this.active.has(id)) {
+        await this.cancelExternalRoomCandidate(id, candidate, "maintenance");
+      }
+    }
     return { ...summary, cancelledJobs: jobs.length };
   }
 
   /**
-   * D420 (Wave 2 task 2.2.3) — terminalize ALL remaining executable work at the
+   * terminalize ALL remaining executable work at the
    * `--wait-for` drain deadline so the upgrade transaction may proceed against a
-   * settled server (R8). This is the operator action the CLI invokes when the
+   * settled server. This is the operator action the CLI invokes when the
    * bounded drain cannot reach zero on its own.
    *
    * It terminalizes, in one pass:
@@ -2747,14 +2896,14 @@ export class JobManager {
    *    dispatch — they have no persisted Job row);
    *  - every durable `accepted` (un-dispatched) work-acceptance ledger row
    *    (terminalized `maintenance_cancelled` so the ledger never silently drops
-   *    queued/buffered intent — R11).
+   *    queued/buffered intent).
    *
    * Preserved (NOT touched here):
    *  - durable background work already `paused` or `awaiting` human reply. Those
    *    task runs are not running Jobs (their Jobs already terminated when the
    *    graph parked), so they are not in `this.active`; their durable rows keep
    *    their `paused`/`awaiting` state across the drain. No pause/resume/replay
-   *    recovery is claimed (D422 owns that).
+   *    recovery is claimed; crash recovery is a separate lifecycle.
    *
    * Running task-run Jobs are terminalized through the task lifecycle
    * ({@link taskStopSink} → `stopTask`) so the durable `task_runs`/`tasks` rows
@@ -2813,8 +2962,8 @@ export class JobManager {
     // blanket sweep so orphaned `accepted` rows from a prior restart are also
     // reconciled and the aggregate `acceptedWork` count reaches zero truthfully.
     // The sweep filters on `status='accepted'`, so `user_cancelled` rows
-    // (D349 user-Stop outcomes recorded by stopRoom/stopThread) are left
-    // untouched — a maintenance drain never relabels a user stop (R8).
+    // (user-Stop outcomes recorded by stopRoom/stopThread) are left
+    // untouched — a maintenance drain never relabels a user stop.
     const terminalizedAcceptances = await this.acceptanceSinks.terminalizeAllAcceptedWork(
       WORK_ACCEPTANCE_REASONS.maintenanceDrain,
     );
@@ -2823,8 +2972,13 @@ export class JobManager {
     // tracked virtual id was either dispatched earlier (linked) or just
     // terminalized by the sweep. Drop the bindings so a post-cancel status read
     // cannot observe stale pending state.
+    for (const [id, candidate] of this.externalRoomCandidates) {
+      await this.cancelExternalRoomCandidate(id, candidate, "maintenance");
+    }
     this.virtualToAcceptance.clear();
-    this.failedPrePersistenceScope.clear();
+    for (const id of this.failedPrePersistenceScope.keys()) {
+      if (!this.externalRoomCandidates.has(id)) this.failedPrePersistenceScope.delete(id);
+    }
     this.virtualToAuthority.clear();
     this.virtualToInvocationAuthority.clear();
     this.virtualInvocationScopes.clear();
@@ -2848,7 +3002,7 @@ export class JobManager {
   }
 
   /**
-   * D353 — ids of currently-running (non-terminal) jobs whose room matches.
+   * ids of currently-running (non-terminal) jobs whose room matches.
    * Read seam for the client's reconnect run-state reconcile: lets the
    * workbench rebuild `liveJobIdsRef`/`isRunning` from server truth after a
    * WS gap dropped a terminal `job.status`. Mirrors `stopRoom`'s room match
@@ -2943,7 +3097,7 @@ export class JobManager {
   }
 
   /**
-   * M147 (R1) — the shared, job-kind-agnostic abort seam. Looks up the live
+   * The shared, job-kind-agnostic abort seam. Looks up the live
    * `Job` in `this.active` (keyed by `jobId`); if found, aborts it via the
    * SAME `Job.cancel()` machinery `cancelJob` uses (fires the
    * `AbortController`, marks the job terminal `cancelled`, persists, emits
@@ -2951,7 +3105,7 @@ export class JobManager {
    * unknown / already-terminal id (it is no longer in `active`).
    *
    * This is the universal primitive every stop surface funnels through: a
-   * foreground main turn, an M085 fork, a task run, or a background job —
+   * foreground main turn, a checkpoint fork, a task run, or a background job —
    * all live in `this.active` by `jobId`. The optional `reason` records WHY
    * (pause vs stop) for advisory consumers (see {@link getAbortReason}); the
    * job-level effect is identical regardless of reason.
@@ -2976,8 +3130,7 @@ export class JobManager {
   }
 
   /**
-   * D349 — stop a conversation thread. D420 (Wave 2 task 2.2.3 correction)
-   * makes this async and awaitably durably terminalizes the discarded queued
+   * Stop a conversation thread and await durable terminalization of discarded queued
    * turns' and buffered lanes' mapped acceptances as `user_cancelled` BEFORE
    * returning, so the Stop route's caller never receives success before the
    * durable outcome completes. A terminalization failure propagates (fail
@@ -3042,8 +3195,8 @@ export class JobManager {
       stoppedTaskIds,
     );
 
-    // D420 (2.2.3) — durably terminalize the discarded queued + buffered
-    // acceptances as user_cancelled before returning (R8). Idempotent; clears
+    // durably terminalize the discarded queued + buffered
+    // acceptances as user_cancelled before returning. Idempotent; clears
     // only the resolved mappings.
     await this.terminalizeUserStoppedVirtualIds([
       ...queuedVirtualIds,
@@ -3061,9 +3214,8 @@ export class JobManager {
   }
 
   /**
-   * D349 — stop a room. D420 (Wave 2 task 2.2.3 correction) makes this async
-   * and awaitably durably terminalizes the room's discarded queued turns and
-   * buffered lanes as `user_cancelled` before returning (R8). Delegates the
+   * Stop a Room and await durable terminalization of its discarded queued turns and
+   * buffered lanes as `user_cancelled` before returning. Delegates the
    * per-thread queued + buffered terminalization to {@link stopThread}; the
    * room-level buffered lanes (whose thread may not yet be known) are
    * terminalized here. `dropLanesForRoom` runs first so `stopThread`'s per-
@@ -3111,19 +3263,19 @@ export class JobManager {
     // thread. A just-buffered room lane can have no pending entry yet, while
     // its TaskRun is already durable, so it needs the same lifecycle stop.
     await this.stopQueuedTaskRuns(roomLanes.virtualJobIds);
-    // D420 (2.2.3) — durably terminalize the room-level buffered lane
-    // acceptances as user_cancelled before returning (fail loudly). R8.
+    // durably terminalize the room-level buffered lane
+    // acceptances as user_cancelled before returning (fail loudly).
     await this.terminalizeUserStoppedVirtualIds(roomLanes.virtualJobIds);
     return { stoppedJobs, droppedQueuedTurns, droppedBufferedLanes };
   }
 
-  /** M147 (R3) — the recorded abort reason for a job, or `undefined`. */
+  /** The recorded abort reason for a job, or `undefined`. */
   getAbortReason(jobId: string): AbortReason | undefined {
     return this.abortReasons.get(jobId);
   }
 
   /**
-   * D353 follow-up — wrap an approval-resumed (or other resume) chain in an
+   * Wrap an approval-resumed (or other resume) chain in an
    * in-memory Job lifecycle so the workbench can clear `isRunning` when the
    * resumed stream settles and the existing Room Stop spine can abort it.
    *
@@ -3143,7 +3295,7 @@ export class JobManager {
    *   `job.dispatched` → `job.status:running` → terminal
    *   `job.status:completed|failed`
    * The synthetic `jobId` is a fresh UUID; the workbench routes the
-   * terminal event via `laneKey` (the D353 laneKey fallback in
+   * terminal event via `laneKey` (the laneKey fallback in
    * `ws-event-room.ts` covers a `jobIdToRoomId` map miss) and clears
    * `liveJobIdsRef` + `isRunning` on receipt.
    *
@@ -3178,6 +3330,7 @@ export class JobManager {
       scope.humanUserId,
     );
     invocationAuthority = bindInvocationOrigin(scope.humanUserId, { roomId: scope.roomId, ...(scope.taskRun ?? {}) }, invocationAuthority);
+    await this.assertResumeRoom?.(scope.roomId);
     await this.resolveGate().assertAcceptingNewWork(maintenanceAuthority);
     const acceptedMaintenanceAuthority =
       maintenanceAuthority ?? createMaintenanceAcceptanceAuthority();
@@ -3385,7 +3538,7 @@ function taskIdFromInput(input: Record<string, unknown>): string | null {
 }
 
 /**
- * D420 — production acceptance-ledger sinks backed by the real
+ * production acceptance-ledger sinks backed by the real
  * `@nautilo/db` store (lazy internal pool, mirrors `persistJob`). The
  * default `JobManager` constructor sinks are DB-free stubs so unit tests
  * stay hermetic; the singleton overrides them here so production
@@ -3403,7 +3556,7 @@ const productionAcceptanceSinks: WorkAcceptanceSinks = {
 };
 
 /**
- * D420 (Wave 2 task 2.2.3) — production sink that terminalizes a running
+ * production sink that terminalizes a running
  * task-run Job through the task lifecycle (`stopTask`) so the durable
  * `task_runs`/`tasks` rows are stamped `cancelled`. Uses a lazy import so the
  * core runtime module does not take a static dependency on the tasks subsystem
@@ -3424,6 +3577,13 @@ const productionTaskStopSink = async (taskId: string): Promise<void> => {
 };
 
 export const jobManager = new JobManager({
+  externalRoomClaims: {
+    acquire: (userId, jobId) => acquireExternalRoomExecutionClaim({ userId }, jobId),
+    release: (userId, claim) => releaseExternalRoomExecutionClaim({ userId }, claim),
+  },
+  assertResumeRoom: async roomId => {
+    if (await getExternalRoomPolicy(roomId)) throw new Error("External conversations do not support interrupted-turn resumes.");
+  },
   acceptanceSinks: productionAcceptanceSinks,
   taskStopSink: productionTaskStopSink,
   checkInvocationAccess: isInvocationAccessAllowed,

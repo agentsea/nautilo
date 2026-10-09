@@ -265,6 +265,32 @@ describe("invokeChatModelWithFallback (chain)", () => {
     _setFirstTokenTimeoutMsForTests(undefined);
   });
 
+  test("content-private server funding preserves failure classification without logging or caching provider text", async () => {
+    const privateFailure = Object.assign(new Error("PRIVATE_EXTERNAL_TEXT rejected by provider"), { status: 503 });
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => { throw privateFailure; } }),
+    }) as unknown as AuraModel);
+    const session: ForegroundChatFundingSession = {
+      kind: "server", contentPrivateDiagnostics: true,
+      async recheckAttempt() {},
+      async runAttempt(_modelId, callback) {
+        return callback({ usageFunding: { kind: "server", humanUserId: "sponsor", providerRoute: "anthropic" } });
+      },
+    };
+    const logs: unknown[][] = [];
+    const stderr = spyOn(console, "error").mockImplementation((...args: unknown[]) => { logs.push(args); });
+    try {
+      const failed = await invokeChatModelWithFallback(messages, tools, A, "sponsor", "agent-1", null,
+        undefined, { fundingSession: session, modelFallbackMode: "none", sameModelRetryMode: "none" }).catch(error => error as unknown);
+      expect(failed).toBe(privateFailure);
+      expect(markModelInvokeFailureMock).toHaveBeenCalledWith(A, "SERVICE_ERROR");
+      expect(JSON.stringify(logs)).toContain("SERVICE_ERROR");
+      expect(JSON.stringify(logs)).not.toContain("PRIVATE_EXTERNAL_TEXT");
+      expect(JSON.stringify(markModelInvokeFailureMock.mock.calls)).not.toContain("PRIVATE_EXTERNAL_TEXT");
+      expect(session.kind).toBe("server");
+    } finally { stderr.mockRestore(); }
+  });
+
   test("revoked server funding stops a fallback before another provider is created", async () => {
     policyState = { enabled: true, chain: [A, B] };
     createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({

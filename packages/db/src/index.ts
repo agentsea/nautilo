@@ -16,6 +16,7 @@ export * from "./queries/personal-capability-preferences";
 export * from "./queries/soul-generation-attempts";
 export * from "./queries/protected-task-output-bindings";
 export * from "./queries/video-generation-links";
+export * from "./queries/bolter-bridge";
 export {
   createDatabase,
   db,
@@ -917,6 +918,7 @@ export {
 } from "./queries/maintenance";
 export {
   insertAcceptance,
+  insertAcceptanceInTransaction,
   insertAcceptanceWith,
   insertAcceptances,
   insertAcceptancesWith,
@@ -1002,3 +1004,5 @@ export {
   type ParkedProtectedTaskPreexecutionRecoveryResult,
   type RecoverUnstartedParkedProtectedTaskClaimInput,
 } from "./queries/protected-task-parked-preexecution";
+
+export * from "./queries/external-room-execution-claims";

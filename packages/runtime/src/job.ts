@@ -1,5 +1,7 @@
 import type { ServerEvent, JobStatus } from "@nautilo/types";
 import type {
+  ExternalRoomExecutionClaim,
+  ExternalRoomExecutionClaimResult,
   JobPublicationPolicy,
   PersistJobPayload,
   ProtectedTaskJobStartResult,
@@ -101,6 +103,15 @@ export class ProtectedTaskJobStartNotOwnedError extends Error {
   }
 }
 
+export class ExternalRoomExecutionBusyError extends Error {
+  constructor() { super("This conversation is still finishing another turn. Please try again after it finishes."); }
+}
+
+export interface ExternalRoomClaimHooks {
+  acquire(userId: string, jobId: string): Promise<ExternalRoomExecutionClaimResult>;
+  release(userId: string, claim: ExternalRoomExecutionClaim): Promise<boolean>;
+}
+
 export interface JobConfig {
   ownerId: string;
   requestorId: string;
@@ -124,7 +135,11 @@ export interface JobConfig {
     status: JobStatus,
     fields?: { message?: string; result?: Record<string, unknown> },
     publicationPolicy?: JobPublicationPolicy,
+    executionClaim?: ExternalRoomExecutionClaim,
   ) => Promise<void>;
+  externalRoomClaims?: ExternalRoomClaimHooks;
+  /** Exact external receipt lifecycle; returns the durable winning state. */
+  transitionExternalRoomStatus?: (status: JobStatus, fields?: Readonly<{ message?: string }>, executionClaim?: ExternalRoomExecutionClaim) => Promise<JobStatus>;
   startProtectedTaskJob?: (
     jobId: string,
     expectedReference: ProtectedTaskJobReferenceV1,
@@ -148,6 +163,7 @@ export class Job {
   private config: JobConfig;
   /** Serializes competing local terminal observations onto one durable truth. */
   private protectedTaskTerminalSettlement: Promise<void> = Promise.resolve();
+  private externalStatusTransitions: Promise<void> = Promise.resolve();
 
   constructor(config: JobConfig) {
     this.config = config;
@@ -256,6 +272,33 @@ export class Job {
     return this.executeWithInput(input, authorizationSignal, settlementBarrier);
   }
 
+  private externalRoomClaim: ExternalRoomExecutionClaim | undefined;
+  private externalRoomClaimQuiescent = false;
+  private externalRoomClaimReleaseAttempt: Promise<boolean> | undefined;
+
+  hasQuiescentExternalRoomClaim(): boolean {
+    return this.externalRoomClaim !== undefined && this.externalRoomClaimQuiescent;
+  }
+
+  /** Retry only this process's exact token after its executor has returned. */
+  async retryQuiescentExternalRoomClaimRelease(): Promise<boolean> {
+    if (!this.externalRoomClaim) return true;
+    if (!this.externalRoomClaimQuiescent) return false;
+    if (this.externalRoomClaimReleaseAttempt) return this.externalRoomClaimReleaseAttempt;
+    const claim = this.externalRoomClaim;
+    const attempt = (async () => {
+      try {
+        const released = await this.config.externalRoomClaims!.release(this.config.ownerId, claim);
+        if (released && this.externalRoomClaim === claim) this.externalRoomClaim = undefined;
+        return released;
+      } catch { return false; }
+    })();
+    this.externalRoomClaimReleaseAttempt = attempt;
+    try { return await attempt; }
+    finally { if (this.externalRoomClaimReleaseAttempt === attempt) this.externalRoomClaimReleaseAttempt = undefined; }
+  }
+
+
   private async executeWithInput(
     executorInput: Record<string, unknown>,
     authorizationSignal?: AbortSignal,
@@ -285,6 +328,15 @@ export class Job {
     if (authorizationSignal?.aborted === true) cancelForAuthorization();
 
     try {
+      if (this.config.externalRoomClaims) {
+        let claim: ExternalRoomExecutionClaimResult;
+        try { claim = await this.config.externalRoomClaims.acquire(this.config.ownerId, this.id); }
+        catch { throw new Error("Conversation execution admission is unavailable."); }
+        if (claim.kind === "busy") throw new ExternalRoomExecutionBusyError();
+        if (claim.kind === "unavailable") throw new Error("Conversation execution authority is unavailable.");
+        if (claim.kind === "claimed") { this.externalRoomClaim = claim; this.externalRoomClaimQuiescent = false; }
+        if (this.abortController.signal.aborted || this.isTerminal()) return;
+      }
       if (this.config.durableInputReference?.kind === "protected_task_run_v1") {
         await this.startProtectedTaskJob(this.config.durableInputReference);
         if (this.abortController.signal.aborted || this.isTerminal()) {
@@ -296,6 +348,7 @@ export class Job {
         this.recordProtectedTaskJobStarted();
       } else {
         await this.setStatus("running");
+        if (this.isTerminal() || this.abortController.signal.aborted) return;
       }
 
       // Safety-net AsyncLocalStorage rebind for any job
@@ -326,6 +379,12 @@ export class Job {
         "abort",
         cancelForAuthorization,
       );
+      if (this.externalRoomClaim) {
+        this.externalRoomClaimQuiescent = true;
+        if (!await this.retryQuiescentExternalRoomClaimRelease()) {
+          log("[external-room] executor stopped but exact claim release remains unresolved");
+        }
+      }
     }
   }
 
@@ -354,7 +413,7 @@ export class Job {
 
   private recordProtectedTaskJobStarted(): void {
     this._status = "running";
-    eventBus.emit({
+    this.emitObservedEvent({
       type: "job.status",
       jobId: this.id,
       status: "running",
@@ -389,7 +448,7 @@ export class Job {
       const setContextPreparationNotice = (visible: boolean): void => {
         if (contextPreparationNoticeVisible === visible) return;
         contextPreparationNoticeVisible = visible;
-        eventBus.emit({
+        this.emitObservedEvent({
           type: "job.progress",
           kind: "foreground-context",
           jobId: id,
@@ -415,7 +474,7 @@ export class Job {
             // result publisher. Generic executor events are not a reviewed
             // content sink, so this foundation drops them fail-closed.
             if (this.config.durableInputReference?.kind !== "protected_task_run_v1") {
-              eventBus.emit(event);
+              this.emitObservedEvent(event);
             }
           }
           setContextPreparationNotice(false);
@@ -518,14 +577,16 @@ export class Job {
       // tools→pre_model seam; this is the single runtime catch site that
       // maps it.
     const noProgressOutcome = toNoProgressOutcomeFromError(err);
-    const logFailure = (): void => log(this.hasFullSinkDisposition()
+    const logFailure = (): void => log(this.hasFullSinkDisposition() || this.config.transitionExternalRoomStatus !== undefined
       ? `[nautilo/job] ${this.id} failed (code=${friendly.code} category=${friendly.category})`
       : `[nautilo/job] ${this.id} failed ` +
         `(code=${friendly.code} category=${friendly.category}` +
         `${budgetOutcome ? ` outcome=${budgetOutcome.kind} recursionLimit=${budgetOutcome.recursionLimit}` : ""}` +
         `${noProgressOutcome ? ` outcome=${noProgressOutcome.kind} ${formatNoProgressLogToken(noProgressOutcome)}` : ""}): ${friendly.detailsForLog}`);
     const fields = {
-      message: this.hasFullSinkDisposition()
+      message: this.config.transitionExternalRoomStatus !== undefined
+        ? `This external conversation could not finish its turn. Please try again. [${friendly.code}]`
+        : this.hasFullSinkDisposition()
         ? err instanceof StrictShadowEnforcementError
             && err.decision.reason === "missing_protected_sibling"
           ? `${FULL_JOB_PROTECTED_HISTORY_UNAVAILABLE_MESSAGE} [MDL007]`
@@ -548,7 +609,7 @@ export class Job {
       || this._status !== "queued") return;
     this._status = "cancelled";
     this.abortController?.abort();
-    eventBus.emit({
+    this.emitObservedEvent({
       type: "job.status", jobId: this.id, status: "cancelled",
       ...this.lifecycleIdentity(),
       ...(this.config.laneKey ? { laneKey: this.config.laneKey } : {}),
@@ -569,7 +630,7 @@ export class Job {
       : message;
     this.cancellationMessage = visibleMessage;
 
-    if (this.isProtectedTaskJob()) {
+    if (this.isProtectedTaskJob() || this.config.transitionExternalRoomStatus) {
       // Abort is intentionally synchronous. Durable settlement still decides
       // which terminal outcome this process is allowed to report.
       this.abortController?.abort();
@@ -600,7 +661,7 @@ export class Job {
       this.publicationPolicy(),
     );
     this.cancellationPersistencePending = false;
-    eventBus.emit({
+    this.emitObservedEvent({
       type: "job.status",
       jobId: this.id,
       status: "cancelled",
@@ -608,6 +669,15 @@ export class Job {
       ...this.lifecycleIdentity(),
       ...(this.config.laneKey ? { laneKey: this.config.laneKey } : {}),
     });
+  }
+
+  private emitObservedEvent(event: ServerEvent): void {
+    if (!this.config.transitionExternalRoomStatus) {
+      eventBus.emit(event);
+      return;
+    }
+    try { eventBus.emit(event); }
+    catch { log("[external-room] committed lifecycle observation failed"); }
   }
 
   private async setStatus(
@@ -624,6 +694,19 @@ export class Job {
       errorCode?: "image_assistance_failed";
     }
   ): Promise<JobStatus> {
+    if (this.config.transitionExternalRoomStatus) {
+      const transition = this.externalStatusTransitions.then(async () => {
+        if (this.isTerminal()) return this._status;
+        const actual = await this.config.transitionExternalRoomStatus!(status, fields, this.externalRoomClaim);
+        this._status = actual;
+        this.emitObservedEvent({ type: "job.status", jobId: this.id, status: actual,
+          ...(actual === status && fields?.message ? { message: fields.message } : {}),
+          ...this.lifecycleIdentity(), ...(this.config.laneKey ? { laneKey: this.config.laneKey } : {}) });
+        return actual;
+      });
+      this.externalStatusTransitions = transition.then(() => {}, () => {});
+      return transition;
+    }
     if (this.isProtectedTaskJob()) {
       if (
         status !== "completed"
@@ -653,8 +736,9 @@ export class Job {
       status,
       persistFields,
       this.publicationPolicy(),
+      status === "running" ? this.externalRoomClaim : undefined,
     );
-    eventBus.emit({
+    this.emitObservedEvent({
       type: "job.status",
       jobId: this.id,
       status,
@@ -727,7 +811,7 @@ export class Job {
 
       this._status = effective;
       const matchingFields = effective === requested ? fields : undefined;
-      eventBus.emit({
+      this.emitObservedEvent({
         type: "job.status",
         jobId: this.id,
         status: effective,

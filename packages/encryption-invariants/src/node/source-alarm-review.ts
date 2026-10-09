@@ -1,9 +1,10 @@
+import { reviewedExternalRoomSourceAlarms } from "../../baseline/reviewed-external-room-source-alarms";
 import {
   REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS,
   SUPERSEDED_TASK_FOUNDATION_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-task-foundation-source-alarms";
 import { REVIEWED_REFLECTION_REPLAY_SOURCE_ALARMS } from "../../baseline/reviewed-main-2026-09-12-reflection";
-import { REVIEWED_D581_SOURCE_ALARMS } from "../../baseline/reviewed-d581-research-continuity";
+import { REVIEWED_TASK_RESEARCH_SOURCE_ALARMS } from "../../baseline/reviewed-task-research-continuity";
 import {
   REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS,
   SUPERSEDED_MAIN_2026_09_12_SOURCE_ALARM_LOCATORS,
@@ -141,17 +142,17 @@ import { REVIEWED_M321_SOURCE_ALARMS } from
 import { isRetiredM306AuthorityLocator } from
   "../../baseline/retired-m306-authority";
 import {
-  REVIEWED_D565_RELAY_SOURCE_ALARMS,
-  SUPERSEDED_D565_RELAY_SOURCE_ALARM_LOCATORS,
-} from "../../baseline/reviewed-d565-relay-source-alarms";
+  REVIEWED_RELAY_DISPATCH_SOURCE_ALARMS,
+  SUPERSEDED_RELAY_DISPATCH_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-relay-dispatch-source-alarms";
 import {
   REVIEWED_M240_SOURCE_ALARMS,
   SUPERSEDED_M240_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-m240-source-alarms";
 import {
-  REVIEWED_D487_SOURCE_ALARMS,
-  SUPERSEDED_D487_SOURCE_ALARM_LOCATORS,
-} from "../../baseline/reviewed-d487-source-alarms";
+  REVIEWED_OWNED_PHOTO_LIBRARY_SOURCE_ALARMS,
+  SUPERSEDED_OWNED_PHOTO_LIBRARY_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-owned-photo-library-source-alarms";
 import {
   REVIEWED_MAIN_2026_09_09_DOCUMENTMEDIA_SOURCE_ALARMS,
   SUPERSEDED_MAIN_2026_09_09_DOCUMENTMEDIA_SOURCE_LOCATORS,
@@ -223,7 +224,7 @@ const PREVIOUS_SOURCE_ALARM_REVIEWS: readonly SourceAlarmReview[] = [
       !SUPERSEDED_WAVE_0_SOURCE_ALARM_LOCATORS.has(review.locator)
       && !SUPERSEDED_MAIN_2026_08_03_SOURCE_ALARM_LOCATORS.has(review.locator)
       && !SUPERSEDED_MAIN_2026_08_04_SOURCE_ALARM_LOCATORS.has(review.locator)
-      && !SUPERSEDED_D487_SOURCE_ALARM_LOCATORS.has(review.locator)
+      && !SUPERSEDED_OWNED_PHOTO_LIBRARY_SOURCE_ALARM_LOCATORS.has(review.locator)
       && !SUPERSEDED_M240_SOURCE_ALARM_LOCATORS.has(review.locator)
       && !SUPERSEDED_MAIN_2026_08_15_SOURCE_ALARM_LOCATORS.has(review.locator),
   ),
@@ -239,11 +240,11 @@ const PREVIOUS_SOURCE_ALARM_REVIEWS: readonly SourceAlarmReview[] = [
     !SUPERSEDED_MAIN_2026_08_04_SOURCE_ALARM_LOCATORS.has(review.locator)
   ),
   ...REVIEWED_MAIN_2026_08_04_SOURCE_ALARMS.filter((review) =>
-    !SUPERSEDED_D487_SOURCE_ALARM_LOCATORS.has(review.locator)
+    !SUPERSEDED_OWNED_PHOTO_LIBRARY_SOURCE_ALARM_LOCATORS.has(review.locator)
     && !SUPERSEDED_M240_SOURCE_ALARM_LOCATORS.has(review.locator)
   ),
   ...REVIEWED_M240_SOURCE_ALARMS,
-  ...REVIEWED_D487_SOURCE_ALARMS,
+  ...REVIEWED_OWNED_PHOTO_LIBRARY_SOURCE_ALARMS,
 ];
 
 const PRE_MAIN_2026_08_13_SOURCE_ALARM_REVIEWS:
@@ -324,15 +325,15 @@ const PRE_MAIN_2026_09_03_SOURCE_ALARM_REVIEWS:
   ...REVIEWED_M303_SOURCE_ALARMS,
 ];
 
-export const CURRENT_SOURCE_ALARM_REVIEWS: readonly SourceAlarmReview[] = [
+export const CURRENT_SOURCE_ALARM_REVIEWS: readonly SourceAlarmReview[] = reviewedExternalRoomSourceAlarms([
   ...PRE_MAIN_2026_09_03_SOURCE_ALARM_REVIEWS.filter((review) =>
     !SUPERSEDED_MAIN_2026_09_03_SOURCE_ALARM_LOCATORS.has(review.locator)
   ),
   ...REVIEWED_MAIN_2026_09_03_SOURCE_ALARMS,
   ...REVIEWED_MAIN_2026_09_04_SOURCE_ALARMS,
 ].filter((review) =>
-  !SUPERSEDED_D565_RELAY_SOURCE_ALARM_LOCATORS.has(review.locator)
-).concat(REVIEWED_D565_RELAY_SOURCE_ALARMS)
+  !SUPERSEDED_RELAY_DISPATCH_SOURCE_ALARM_LOCATORS.has(review.locator)
+).concat(REVIEWED_RELAY_DISPATCH_SOURCE_ALARMS)
   .filter((review) => !isRetiredM306AuthorityLocator(review.locator))
   .concat(REVIEWED_MAIN_2026_09_05_SOURCE_ALARMS)
   .filter((review) => !SUPERSEDED_LANDING_SOURCE_LOCATORS.has(review.locator))
@@ -340,7 +341,7 @@ export const CURRENT_SOURCE_ALARM_REVIEWS: readonly SourceAlarmReview[] = [
   .filter((review) => !SUPERSEDED_M318_SOURCE_ALARM_LOCATORS.has(review.locator))
   .concat(REVIEWED_M318_SOURCE_ALARMS)
   .concat(REVIEWED_M321_SOURCE_ALARMS)
-  .concat(REVIEWED_D581_SOURCE_ALARMS)
+  .concat(REVIEWED_TASK_RESEARCH_SOURCE_ALARMS)
   .filter((review) =>
     !SUPERSEDED_MAIN_2026_09_09_DOCUMENTMEDIA_SOURCE_LOCATORS.has(review.locator)
     && !SUPERSEDED_MAIN_2026_09_09_MESSAGEBACKFILL_SOURCE_LOCATORS.has(review.locator)
@@ -366,7 +367,7 @@ export const CURRENT_SOURCE_ALARM_REVIEWS: readonly SourceAlarmReview[] = [
   .filter((review) =>
     !SUPERSEDED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARM_LOCATORS.has(review.locator)
   )
-  .concat(REVIEWED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARMS);
+  .concat(REVIEWED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARMS));
 
 const LOCATOR_PATTERN =
   /^(?<path>[^#]+)#(?<kind>[a-z_]+):(?<signature>[0-9a-f]{16}):(?<occurrence>[1-9][0-9]*)$/u;

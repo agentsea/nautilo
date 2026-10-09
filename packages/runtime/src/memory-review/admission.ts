@@ -18,6 +18,7 @@ export async function memoryReviewAdmission(envelope: MemoryAccessEnvelope | nul
   threadId: string; transcriptOwnerId: string; turnId: string; input: Record<string, unknown>;
 }): Promise<{ memoryReview?: MemoryReviewAdmission }> {
   if (!envelope?.ownerId || !envelope.agentId || !envelope.roomId || !source.turnId) return {};
+  if (envelope.externalContext === true) return {};
   const ids = memoryReviewSourceIds(source.input);
   const existing = source.input["humanAlreadyPersisted"] === true;
   const memoryReview: MemoryReviewAdmission = {

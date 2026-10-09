@@ -1,3 +1,4 @@
+import { createExternalRoomExecutionService } from "./messaging/external-room-execution";
 import { resolveTaskLocalExecutionCaptureTarget } from "./local-execution-task-capture";
 import { createTaskLocalExecutionSourceAssertion } from "./local-execution-task-source";
 import { setTaskLocalExecutionSourceComposition } from "@nautilo/runtime";
@@ -2098,6 +2099,12 @@ export async function createApp(options?: CreateAppOptions) {
     resolveWorker: async () => (await reflectionRuntime()).worker,
   });
   installForegroundChatFundingPort({ openSession: openForegroundChatFundingSession, openImageAssistance });
+  const externalRoomExecution = createExternalRoomExecutionService({ jobManager });
+  app.decorate("externalRoomExecution", externalRoomExecution);
+  // Match the existing conversion worker's recovery cadence. Durable claims
+  // prevent overlapping execution across processes; this timer never takes over a claim.
+  app.addHook("onListen", () => { externalRoomExecution.start({ intervalMs: 5_000 }); return Promise.resolve(); });
+  app.addHook("onClose", () => externalRoomExecution.close());
   installTaskFundingPort(nativeTaskFundingPort);
   app.addHook("onClose", () => {
     uninstallForegroundChatFundingPort();

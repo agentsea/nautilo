@@ -1,3 +1,4 @@
+import { getExternalRoomPolicy } from "@nautilo/trust";
 import { log } from "@nautilo/logger";
 
 import {
@@ -792,10 +793,11 @@ export async function createProductionReflectionMemoryRuntime(
   });
 
   const recallRecordsPortForState: RecallRecordsPortForState = (state) => {
+    if (state.memoryAccessEnvelope?.externalContext === true) return undefined;
     if (typeof state.roomId !== "string" || state.roomId.length === 0) return undefined;
     const roomId = state.roomId;
     let resolvedPort: Promise<RecallRecordsPort | null> | undefined;
-    const resolve = () => resolvedPort ??= bindings.evidence.resolveRoom(roomId).then((room) =>
+    const resolve = () => resolvedPort ??= getExternalRoomPolicy(roomId).then((policy) => policy ? null : bindings.evidence.resolveRoom(roomId)).then((room) =>
       room === null
         ? null
         : createForegroundRecordRecallPort({
@@ -829,7 +831,7 @@ export async function createProductionReflectionMemoryRuntime(
     roomId: string,
   ): ForegroundRecordContextPort => {
     let resolvedPort: Promise<ForegroundRecordContextPort | null> | undefined;
-    const resolve = () => resolvedPort ??= bindings.evidence.resolveRoom(roomId).then((room) =>
+    const resolve = () => resolvedPort ??= getExternalRoomPolicy(roomId).then((policy) => policy ? null : bindings.evidence.resolveRoom(roomId)).then((room) =>
       room === null
         ? null
         : createForegroundRecordContextPort({

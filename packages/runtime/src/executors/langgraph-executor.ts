@@ -1,3 +1,4 @@
+import { externalRoomExecutionInput } from "./external-room-context";
 import { createForegroundContextRebuilder, ForegroundContextReceipts } from "./foreground-context-refresh";
 import { retainedImageAssistance, imageAssistanceHistory, imageAssistanceObservationMessages, attributeImageAssistance, failImageAssistance } from "./image-assistance";
 import { foregroundHumanTerminalAdmissionPort } from "../conversation/human-terminal-admission";
@@ -135,10 +136,13 @@ import type {
 import { loadForegroundAuthoredContext } from
   "./foreground-authored-context";
 import { getCurrentAcceptedInvocationAuthority } from "../job-manager";
+import { getCurrentExternalRoomExecution } from "../external-room-execution";
+import { formatExternalMessageForModel } from "../conductor/external-message-attribution";
 import { openTaskWakeFundingSessionForInvocation } from "../task-funding-port";
 import {
   assertForegroundChatFundingWorkloadSupported,
   openConnectedWebOperationWakeFundingSessionForInvocation,
+  openExternalRoomFundingSession,
   openForegroundChatFundingSessionForInvocation,
   openImageAssistanceForInvocation,
 } from "../foreground-chat-funding-port";
@@ -469,6 +473,11 @@ export async function* langgraphExecutor(
       "Protected conversation services and authorized turn scope must be supplied together",
     );
   }
+  const externalTurn = getCurrentExternalRoomExecution();
+  let externalFinalMessage: AIMessage | null = null;
+  const externalExecution = await externalRoomExecutionInput(input);
+  input = externalExecution.input;
+  const externalContext = externalExecution.externalContext;
   const ownerId = typeof input["ownerId"] === "string" ? input["ownerId"] : "";
   const transcriptOwnerId =
     typeof input["transcriptOwnerId"] === "string" && input["transcriptOwnerId"]
@@ -636,7 +645,7 @@ export async function* langgraphExecutor(
   // field is `undefined` and post-model Pass 2 behavior is unchanged.
   const foregroundActivationState = freshForegroundActivationState(input);
   const trustedExecutionEntrypoint = foregroundActivationState.trustedExecutionEntrypoint;
-  const foregroundContextRefreshEligible = foregroundContextRefreshEligibleForActivation({
+  const foregroundContextRefreshEligible = !externalContext && foregroundContextRefreshEligibleForActivation({
     roomId,
     agentId,
     trustedExecutionEntrypoint,
@@ -675,6 +684,7 @@ export async function* langgraphExecutor(
     humanTerminalAdmissionPortForState: (state) => foregroundHumanTerminalAdmissionPort(state, signal),
     ...defaultPostModelDeps,
     recallRecordsPortForState: (state) => {
+      if (externalContext) return undefined;
       const ordinary = foregroundRecordRecallPortForState(state);
       return ordinary === undefined
         ? undefined
@@ -691,10 +701,10 @@ export async function* langgraphExecutor(
   if (liveShadowRuntime !== undefined) {
     foregroundActivationState.suppressToolLifecycleEvents = true;
   }
-  const taskReportBackContinuation = parseTaskReportBackContinuation(
+  const taskReportBackContinuation = externalContext ? null : parseTaskReportBackContinuation(
     input["taskReportBackContinuation"],
   );
-  const desktopAutomationAdmission = await admitFreshComputerUseRoot({
+  const desktopAutomationAdmission = externalContext ? null : await admitFreshComputerUseRoot({
     userId: ownerId,
     actorId: memoryAccessEnvelope?.actorId ?? ownerId,
     causalHumanUserId: causalHumanUserId ?? "",
@@ -713,6 +723,7 @@ export async function* langgraphExecutor(
     agentId,
     ownerId,
     isGuest,
+    externalContext,
   }, {
     getExecutionConfigByAgentId: getAgentExecutionConfigById,
     resolveEnabledBodies,
@@ -748,6 +759,7 @@ export async function* langgraphExecutor(
   };
   const memoryBriefItems = (
     protectedTurn === undefined
+    && !externalContext
     && !isGuest
     && briefNamespaces.length > 0
   )
@@ -774,7 +786,9 @@ export async function* langgraphExecutor(
       ? configuredModel
       : getDefaultForegroundAgentModelId(),
   );
-  const fundingSession = await openTaskWakeFundingSessionForInvocation({
+  const fundingSession = externalTurn
+    ? await openExternalRoomFundingSession({ modelId: foregroundModelPlan.initialModelId, roomId, agentId })
+    : await openTaskWakeFundingSessionForInvocation({
     authority: getCurrentAcceptedInvocationAuthority(), jobInput: input, causalHumanUserId,
     modelId: foregroundModelPlan.initialModelId, roomId, agentId,
   }) ?? await openConnectedWebOperationWakeFundingSessionForInvocation({
@@ -811,6 +825,10 @@ export async function* langgraphExecutor(
   // respond to it) but SKIP the transcript persist + its message.new — avoiding
   // a duplicate human row without relying on read-time fingerprint collapse.
   const humanAlreadyPersisted = input["humanAlreadyPersisted"] === true;
+  if (externalTurn && (!externalContext || !humanAlreadyPersisted || causalHumanUserId !== null
+    || typeof input["currentMessageId"] !== "number" || !Number.isInteger(input["currentMessageId"]))) {
+    throw new Error("external_room_canonical_input_required");
+  }
   // TTS admits the initiating Human's ElevenLabs account independently of chat.
   const clientVoiceMode = input["voiceMode"] === true;
   const voiceEnabled = clientVoiceMode && Boolean(causalHumanUserId);
@@ -852,7 +870,7 @@ export async function* langgraphExecutor(
     );
   }
 
-  const resolvedInitialRecordContext = roomId && freshForegroundRecordContextEligible(input)
+  const resolvedInitialRecordContext = !externalContext && roomId && freshForegroundRecordContextEligible(input)
     ? foregroundRecordContextPortForRoom(roomId)
     : undefined;
   const initialRecordContext = resolvedInitialRecordContext === undefined
@@ -1041,7 +1059,7 @@ export async function* langgraphExecutor(
     ...attachmentTextBlocks,
   ];
   const userMessageArgs = {
-    userText: message,
+    userText: externalTurn ? formatExternalMessageForModel(externalTurn.origin, message) : message,
     attachmentTextBlocks: mergedAttachmentTextBlocks,
     multimodalImages,
     modelId,
@@ -1109,10 +1127,11 @@ export async function* langgraphExecutor(
     ...foregroundActivationState,
     taskReportBackContinuation,
     memoryAccessEnvelope,
+    externalContext,
     actorRole,
     autoApprove,
     agentId,
-    relayCapabilities: buildRuntimeCapabilityTokens(
+    relayCapabilities: externalContext ? {} : buildRuntimeCapabilityTokens(
       getRelayRegistry(),
       ownerId,
       trustedExecutionEntrypoint === "foreground.main" && desktopAutomationAdmission !== null
@@ -1159,7 +1178,7 @@ export async function* langgraphExecutor(
     // background/subagent execution sharing a checkpoint. Task report-back is
     // a fresh foreground continuation whose tools are recomputed from current
     // policy, Relay liveness, and its validated return binding.
-    toolWhitelist: undefined,
+    toolWhitelist: externalContext ? [] : undefined,
   };
 
   const tokenBatcher = new TokenBatcher({
@@ -1391,6 +1410,13 @@ export async function* langgraphExecutor(
       }
 
       if (messagesToPersist.length > 0) {
+        if (externalTurn) {
+          for (const candidate of messagesToPersist) {
+            if (AIMessage.isInstance(candidate) && !candidate.tool_calls?.length
+              && typeof candidate.content === "string" && candidate.content.trim()) externalFinalMessage = candidate;
+          }
+          continue;
+        }
         if (liveShadowRuntime !== undefined) {
           const protectedEvents = await publishLiveShadowRuntimeMessages({
             ...(foregroundContextRefreshEligible ? { foregroundExecutionId } : {}),
@@ -1458,6 +1484,19 @@ export async function* langgraphExecutor(
         Array.isArray(task["interrupts"]) && task["interrupts"].length > 0
       ) ?? false;
       if (hasAnyPendingInterrupt) memoryReviewState = "awaiting";
+      if (externalTurn) {
+        const values = postState?.values;
+        const messages = values?.["messages"] as BaseMessage[] | undefined;
+        const final = messages?.at(-1);
+        if (memoryReviewState !== "completed" || values?.["turnId"] !== externalTurn.reference.turnId
+          || values?.["agentId"] !== externalTurn.reference.agentId || !externalFinalMessage
+          || !final || !AIMessage.isInstance(final) || final.tool_calls?.length
+          || typeof final.content !== "string" || final.content !== externalFinalMessage.content) {
+          throw new Error("external_room_final_reply_unavailable");
+        }
+        signal.throwIfAborted();
+        await externalTurn.complete(final.content);
+      }
       const events = collectPendingInterruptEvents(
         postState as { tasks?: Array<Record<string, unknown>>; values?: unknown } | undefined,
         langgraphThreadId,
@@ -1468,6 +1507,7 @@ export async function* langgraphExecutor(
         yield event;
       }
     } catch (e) {
+      if (externalTurn) throw e;
       log(`[nautilo/executor] Error checking interrupt state: ${e instanceof Error ? e.message : String(e)}`);
     }
 
@@ -2048,7 +2088,8 @@ function handleTokenStream(
     }
   }
 
-  const debugStream = process.env["NAUTILO_DEBUG_FIREWORKS_STREAM"] === "1";
+  const debugStream = !getCurrentExternalRoomExecution()
+    && process.env["NAUTILO_DEBUG_FIREWORKS_STREAM"] === "1";
   if (debugStream && streamMetadataLooksFireworksOrDeepSeek(streamMetadata)) {
     debug(
       "[nautilo/executor] on_chat_model_stream chunk:",

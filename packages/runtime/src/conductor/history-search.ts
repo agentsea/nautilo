@@ -1,3 +1,4 @@
+import { externalMessageAttributionFields, formatExternalMessageForModel, formatUnverifiedExternalMessageForModel, type ExternalMessageAttribution, type ExternalMessageAttributionFields } from "@nautilo/types";
 import {
   listReactionsForMessageIds,
   normalizeRoomMessageSearchQuery,
@@ -6,6 +7,8 @@ import {
 } from "@nautilo/agent";
 import {
   actors,
+  getBolterCanonicalAttributionsWith,
+  type BolterBridgeDatabase,
   agents,
   alias,
   and,
@@ -45,7 +48,7 @@ import { normalizeSearchQuery } from "./search-query";
  * passed to the Floor Manager LLM. The Conductor maps handles → actor ids
  * itself; the LLM works in display names + `@handle` + ISO-8601 UTC only.
  */
-export interface RoomHistoryHit {
+export interface RoomHistoryHit extends ExternalMessageAttributionFields {
   messageId: number;
   ts: Date;
   /** Durable transcript role; present on production transcript reads. */
@@ -91,6 +94,8 @@ interface RawHistoryRow {
   user_name: string | null;
   user_actor_id: string | null;
   metadata?: unknown;
+  external_authorship?: boolean;
+  source_user_id?: string;
   foreground_execution_id?: string | null;
   source_order_timestamp?: string | null;
 }
@@ -117,6 +122,8 @@ function selectHistoryRows(db: Pick<DirectDatabase, "select">) {
       user_name: sql<string | null>`${userAuthor.displayName}`.as("user_name"),
       user_actor_id: sql<string | null>`${userAuthor.id}`.as("user_actor_id"),
       metadata: sessionMessages.metadata,
+      external_authorship: sessionMessages.externalAuthorship,
+      source_user_id: sessions.ownerId,
     })
     .from(sessionMessages)
     .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
@@ -280,6 +287,9 @@ export async function searchRoomHistory(
       sm.id              AS message_id,
       sm.created_at      AS ts,
       sm.role            AS role,
+      sm.metadata        AS metadata,
+      sm.external_authorship AS external_authorship,
+      s.owner_id         AS source_user_id,
       sm.content         AS content,
       ag.handle          AS agent_handle,
       aa.display_name    AS agent_display_name,
@@ -301,7 +311,7 @@ export async function searchRoomHistory(
     `,
   });
 
-  return result.ok ? mapHistoryRows(result.rows) : [];
+  return result.ok ? attributedHistoryRows(db, result.rows) : [];
 }
 
 export async function searchRoomHistoryRelaxed(
@@ -326,19 +336,42 @@ export async function searchRoomHistoryRelaxed(
   return [];
 }
 
-function mapHistoryRows(
+async function attributedHistoryRows(
+  db: RoomHistorySearchDb,
+  rows: RawHistoryRow[],
+  projection: "snippet" | "full" = "snippet",
+): Promise<RoomHistoryHit[]> {
+  const canonical = new Map<number, ExternalMessageAttribution>();
+  const owners = new Map<string, number[]>();
+  for (const row of rows) if (row.role === "user" && row.source_user_id) {
+    owners.set(row.source_user_id, [...(owners.get(row.source_user_id) ?? []), Number(row.message_id)]);
+  }
+  if (owners.size > 0) {
+    if (!("select" in db) || typeof db.select !== "function") throw new Error("Canonical external attribution requires the selected database handle");
+    for (const [userId, messageIds] of owners) {
+      const values = await getBolterCanonicalAttributionsWith(db as Pick<BolterBridgeDatabase, "select">, { userId }, messageIds);
+      for (const [id, value] of values) canonical.set(id, value);
+    }
+  }
+  return mapHistoryRows(rows, projection, canonical);
+}
+
+export function mapHistoryRows(
   rows: RawHistoryRow[],
   contentProjection: "snippet" | "full" = "snippet",
+  canonical: ReadonlyMap<number, ExternalMessageAttribution> = new Map(),
 ): RoomHistoryHit[] {
   const hits: RoomHistoryHit[] = [];
   for (const row of rows) {
+    const external = externalMessageAttributionFields(row.role, row.metadata, canonical.get(Number(row.message_id)), row.external_authorship);
+    const isExternal = Boolean(external.externalOrigin || external.externalAttributionInvalid);
     const isAgentAuthoredEvidence = row.role === "assistant" || row.role === "tool";
     const handle = isAgentAuthoredEvidence ? row.agent_handle : row.user_handle;
     const display = isAgentAuthoredEvidence ? row.agent_display_name : row.user_name;
     const actorId = isAgentAuthoredEvidence ? row.agent_actor_id : row.user_actor_id;
     // Rows whose author cannot be resolved (orphaned/legacy) are evidence
     // with no owner — skip rather than emit an ID-less hit.
-    if (!actorId || !handle) continue;
+    if (!isExternal && (!actorId || !handle)) continue;
     const metadata = row.metadata !== null
       && typeof row.metadata === "object"
       && !Array.isArray(row.metadata)
@@ -353,16 +386,21 @@ function mapHistoryRows(
       ...(row.role === "user" || row.role === "assistant" || row.role === "tool"
         ? { role: row.role }
         : {}),
-      authorDisplayName: display ?? handle,
-      handle,
-      authorActorId: actorId,
+      ...external,
+      authorDisplayName: isExternal ? "External participant" : (display ?? handle!),
+      handle: isExternal ? "external" : handle!,
+      authorActorId: isExternal ? "" : actorId!,
       ...(isAgentAuthoredEvidence
         && typeof row.author_agent_id === "string"
         && row.author_agent_id.length > 0
         ? { authorAgentId: row.author_agent_id }
         : {}),
       toolName: row.tool_name,
-      snippet: contentProjection === "full" ? row.content : snippetOf(row.content),
+      snippet: external.externalOrigin
+        ? formatExternalMessageForModel(external.externalOrigin, contentProjection === "full" ? row.content : snippetOf(row.content))
+        : external.externalAttributionInvalid
+          ? formatUnverifiedExternalMessageForModel(contentProjection === "full" ? row.content : snippetOf(row.content))
+          : contentProjection === "full" ? row.content : snippetOf(row.content),
       ...(typeof foregroundExecutionId === "string"
         && foregroundExecutionId.length > 0
         ? { foregroundExecutionId }
@@ -454,7 +492,7 @@ export async function roomMessagesSince(
       .orderBy(desc(sessionMessages.createdAt), desc(sessionMessages.id))
       .limit(limit);
   // Newest-first from SQL; reverse to oldest-first for transcript rendering.
-  const hits = mapHistoryRows(rowsFromExecute<RawHistoryRow>(raw));
+  const hits = (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(raw)));
   const oldestFirst = hits.reverse();
   return enrichWithReactions(oldestFirst, args.userId, args.agentId);
 }
@@ -498,7 +536,7 @@ export async function allRoomMessages(
       .orderBy(desc(sessionMessages.createdAt), desc(sessionMessages.id))
       .limit(CAP);
   // Newest-first from SQL; reverse to oldest-first for transcript rendering.
-  const oldestFirst = mapHistoryRows(rowsFromExecute<RawHistoryRow>(raw), "full").reverse();
+  const oldestFirst = (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(raw), "full")).reverse();
   return enrichWithReactions(oldestFirst, args.userId, args.agentId);
 }
 
@@ -664,6 +702,9 @@ export async function recentBoundedRoomMessages(
         sm.id AS message_id,
         sm.created_at AS ts,
         sm.role,
+        sm.metadata,
+        sm.external_authorship,
+        s.owner_id AS source_user_id,
         sm.tool_name,
         ${currentImageResult} AS current_image_result,
         sm.content,
@@ -755,6 +796,9 @@ export async function recentBoundedRoomMessages(
       e.message_id,
       e.ts,
       e.role,
+      e.metadata,
+      e.external_authorship,
+      e.source_user_id,
       e.tool_name,
       e.content,
       e.agent_handle,
@@ -779,7 +823,7 @@ export async function recentBoundedRoomMessages(
       AND NOT (e.role = 'user' AND e.fingerprint IS NOT NULL AND e.fingerprint_ordinal > 1)
     ORDER BY e.ts ASC, e.message_id ASC
   `);
-  const hits = mapHistoryRows(rowsFromExecute<RawHistoryRow>(raw), "full");
+  const hits = (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(raw), "full"));
   return enrichWithReactions(hits, args.userId, args.agentId);
 }
 
@@ -911,7 +955,7 @@ export async function parentMessagesUpToAnchor(
       .orderBy(desc(sessionMessages.createdAt), desc(sessionMessages.id))
       .limit(limit);
   // Newest-first from SQL; reverse to oldest-first (anchor ends the window).
-  return mapHistoryRows(rowsFromExecute<RawHistoryRow>(raw), "full").reverse();
+  return (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(raw), "full")).reverse();
 }
 
 /**
@@ -952,7 +996,7 @@ export async function subthreadContextWindow(
 
   if (total <= smallThreshold) {
     const raw = await subthreadRowsQuery(db, args.subthreadRoomId, "ASC", total);
-    return mapHistoryRows(rowsFromExecute<RawHistoryRow>(raw));
+    return (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(raw)));
   }
 
   // Long thread: first `headCount` (oldest) ++ last `tailCount` (newest).
@@ -968,9 +1012,9 @@ export async function subthreadContextWindow(
     "DESC",
     tailCount,
   );
-  const head = mapHistoryRows(rowsFromExecute<RawHistoryRow>(headRaw));
+  const head = (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(headRaw)));
   // Tail comes back newest-first; reverse to oldest-first before merging.
-  const tail = mapHistoryRows(rowsFromExecute<RawHistoryRow>(tailRaw)).reverse();
+  const tail = (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(tailRaw))).reverse();
   const seen = new Set<number>();
   const merged: RoomHistoryHit[] = [];
   for (const hit of [...head, ...tail]) {

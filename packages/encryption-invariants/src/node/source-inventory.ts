@@ -39,6 +39,19 @@ const declaration = <T extends SourceDeclaration>(value: T): T => value;
 
 export const SOURCE_DECLARATIONS: readonly SourceDeclaration[] = [
   declaration({
+    id: "source.file.desktop-bolter-inbox",
+    surface: "file",
+    locator: "apps/desktop/electron/bolter-bridge/inbox-spool.ts#BolterInboxSpool",
+    role: "store",
+    evidence: [{
+      path: "apps/desktop/electron/bolter-bridge/inbox-spool.ts",
+      symbols: ["BolterInboxSpool", "this.options.cipher.seal(plaintext)", "file.writeFile(ciphertext)", "file.sync()", "this.syncDirectory(directory)", "this.current()"],
+    }, {
+      path: "apps/desktop/electron/bolter-bridge/spool-cipher.ts",
+      symbols: ["createBolterSpoolCipher", "storage.encryptString.bind(storage)", "basic_text", "Buffer.concat([header, ciphertext])"],
+    }],
+  }),
+  declaration({
     id: "source.file.desktop-mini-app-draft-recovery",
     surface: "file",
     locator: "apps/desktop/electron/mini-app-draft-recovery.ts#MiniAppDraftRecoveryStore",

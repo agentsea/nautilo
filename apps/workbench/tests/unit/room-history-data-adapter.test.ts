@@ -51,6 +51,60 @@ function authority(keyClass: "human" | "ai", domainKeyGeneration: number) {
 }
 
 describe("Room history data adapter", () => {
+  test("Full external history carries restrictive attribution through the actual app reader handoff", async () => {
+    const coordinate = { sessionId: SESSION_ID, messageId: 27, editRevision: 0,
+      role: "user" as const, logicalMessageKey: "logical:27" };
+    const sidecar = roomHistoryShadowReadResponseV1Schema.parse({
+      responseVersion: 1, status: "ready", operationId: "history:external",
+      clientRequestKey: "history:external-page", selectedCoordinateDigestBase64url: DIGEST,
+      selectedCount: 1, selectedCoordinates: [coordinate], eligibleCount: 1,
+      authority: authority("ai", 8), signerEvidence: [], acknowledgement: { status: "already_recorded" },
+      records: [{ kind: "live_shadow", coordinate, representationMode: "protected-only",
+        selectedSource: { role: "user", logicalMessageKey: "logical:27", externalAttributionInvalid: true },
+        shadowOperationId: "external:turn", shadowTranscriptOrdinal: 1,
+        retainedGeneration: { namespaceGeneration: 5, accessRevision: 4, headDigestBase64url: DIGEST,
+          publicationDigestBase64url: DIGEST, publicationSetDigestBase64url: DIGEST, audienceFingerprintBase64url: DIGEST },
+        protectedMessage: { dtoVersion: 2, projection: { messageId: "27", logicalMessageKey: "logical:27",
+          sessionId: SESSION_ID, roomId: ROOM_ID, namespaceId: NAMESPACE_ID, role: "user",
+          createdAt: "2026-09-08T12:00:00.000Z", editRevision: 0 },
+          protectedPayload: { status: "pending", reason: "shadow_pending" } } }],
+    });
+    let reads = 0;
+    const adapter = createRoomHistoryDataAdapter({ readerDeviceId: "device:browser",
+      owner: bindEncryptionDataOperationOwner({ policy: {
+        resolve: async () => ({ policy: { mode: "encrypted_only", shadowBehavior: "strict" }, revalidationToken: 1 }),
+        revalidate: async () => undefined,
+      } }),
+      read: async (readerInput) => {
+        reads++;
+        expect(readerInput.records[0]).toMatchObject({ selectedSource: {
+          role: "user", logicalMessageKey: "logical:27", externalAttributionInvalid: true,
+        } });
+        expect(readerInput.records[0]).not.toHaveProperty("selectedSource.sourceUserId");
+        expect(readerInput.records[0]).not.toHaveProperty("selectedSource.authorAgentId");
+        expect(readerInput.records[0]).not.toHaveProperty("ordinaryPayloadBytesBase64url");
+        return { records: [{ sessionId: SESSION_ID, messageId: "27", editRevision: 0,
+          status: "verified", verification: "signed_representation_authenticated",
+          externalAttributionInvalid: true, payload: { role: "user", content: "external text" } }],
+          eligibleCount: 1, verifiedCount: 1, fallbackCounts: {} };
+      },
+    });
+    const row = { id: "27", role: "user", logicalMessageKey: "logical:27",
+      content: "", editRevision: 0, externalAttributionInvalid: true as const };
+    const result = await adapter.reconcile({ roomId: ROOM_ID, messages: [row], sidecar });
+    expect(result[0]).toMatchObject({ content: "external text", externalAttributionInvalid: true });
+    expect(result[0]).not.toHaveProperty("sourceUserId");
+    expect(result[0]).not.toHaveProperty("authorAgentId");
+    expect(result[0]).not.toHaveProperty("externalOrigin");
+    let conflict: unknown;
+    try {
+      await adapter.reconcile({ roomId: ROOM_ID,
+        messages: [{ ...row, sourceUserId: PUBLISHER_HUMAN_ID }], sidecar });
+    } catch (error) { conflict = error; }
+    expect(conflict).toBeInstanceOf(ClassifiedDataOperationError);
+    expect(reads).toBe(1);
+  });
+
   test.each(["strict", "fallback"] as const)("authenticates helper coordinates before hiding them under %s", async (shadowBehavior) => {
     const summary = { status: "completed" as const, modelId: "model-a", modelDisplayName: "Model A", attachmentIds: ["image-a"] };
     const payloads = [

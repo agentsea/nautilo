@@ -17,6 +17,7 @@ import {
   type MessageArtifactOpenRef,
   type MessageAttachmentRef,
   type ImageAssistanceSummary,
+  type ExternalMessageAttributionFields,
   type RoomHistoryTerminalExecutionSummary,
 } from "@nautilo/types";
 import {
@@ -258,7 +259,7 @@ function storedToolCallEntries(parsed: unknown): unknown[] {
     : [];
 }
 
-export interface StoredSessionMessageDto {
+export interface StoredSessionMessageDto extends ExternalMessageAttributionFields {
   id: string;
   logicalMessageKey?: string;
   role: string;
@@ -285,7 +286,7 @@ export interface StoredSessionMessageDto {
    * tool payload. Never accepted as authority from the ordinary sibling. */
   authenticatedToolCallId?: string;
   replyToMessageId?: number | null;
-  /** Persisted human author (`sessions.owner_id`) for room fan-in. */
+  /** Local Human author for Room fan-in; absent for external authorship. */
   sourceUserId?: string;
   /** Authoring agent (`sessions.agent_id`) for assistant/tool rows. */
   authorAgentId?: string;
