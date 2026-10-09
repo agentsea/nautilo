@@ -36,6 +36,11 @@ import {
 } from "../schema/task-run-result-crypto-revisions";
 import { encryptionTransitionPolicy } from "../schema/encryption-transition";
 import { actors } from "../schema/trust";
+import { users } from "../schema/users";
+import {
+  protectedTaskExecutionSegmentReceipts,
+  type ProtectedTaskExecutionSegmentReceipt,
+} from "../schema/protected-task-execution-segment-receipts";
 import {
   protectedTaskRunOutputBindings,
   type ProtectedTaskRunOutputBinding,
@@ -63,7 +68,9 @@ import { readProtectedTaskTranscriptManifestInTx } from
   "./task-run-message-associations";
 import {
   exactParkedProtectedTaskAdditionalAuthorityProof,
+  exactParkedProtectedTaskHumanProof,
   prepareParkedProtectedTaskAdditionalAuthorityStart,
+  prepareParkedProtectedTaskHumanStart,
 } from "./protected-task-parked-start-proof";
 
 type TaskStatus = NonNullable<NewTask["status"]>;
@@ -1955,7 +1962,38 @@ export async function findAwaitingTaskRunForApproval(
     )
     .orderBy(desc(taskRuns.startedAt))
     .limit(1);
-  return row ? { task: row.task, run: row.run } : undefined;
+  if (row) return { task: row.task, run: row.run };
+
+  const [protectedCron] = await db.select({
+    task: tasks,
+    run: taskRuns,
+    parkReceipt: sql<unknown>`${jobs.metadata} -> ${PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY}`,
+  }).from(tasks)
+    .innerJoin(taskRuns, eq(taskRuns.taskId, tasks.id))
+    .innerJoin(jobs, eq(jobs.id, taskRuns.jobId))
+    .where(and(
+      eq(tasks.id, taskId),
+      eq(taskRuns.graphThreadId, graphThreadId),
+      eq(tasks.scheduleKind, "cron"),
+      eq(tasks.status, "pending"),
+      inArray(tasks.contentRepresentation, ["dual", "protected"]),
+      eq(tasks.cryptoMappingState, "verified"),
+      eq(taskRuns.status, "awaiting"),
+      eq(jobs.status, "completed"),
+      excludesWriterReviewAwaitingPredicate(),
+    )).orderBy(desc(taskRuns.startedAt)).limit(1);
+  if (!protectedCron || !isRecord(protectedCron.parkReceipt)) return undefined;
+  try {
+    const interrupts = canonicalInterruptCoordinates(
+      protectedCron.parkReceipt["interrupts"] as
+        readonly ProtectedTaskRunInterruptCoordinate[],
+    );
+    return interrupts.some(interrupt => interrupt.kind === "approval")
+      ? { task: protectedCron.task, run: protectedCron.run }
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -3042,8 +3080,8 @@ export async function attachProtectedTaskRunModel(
 
 export const PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY =
   "nautilo.protectedTaskRunPark.v1";
-const PROTECTED_TASK_AWAIT_REPLY_ACCEPTANCE_METADATA_KEY =
-  "nautilo.protectedTaskAwaitReplyAcceptance.v1";
+export const PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY =
+  "nautilo.protectedTaskHumanContinuationAcceptance.v1";
 export const PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY =
   "nautilo.protectedTaskRunTerminal.v1";
 const OPAQUE_CHECKPOINT_COORDINATE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u;
@@ -3075,14 +3113,25 @@ export type ProtectedTaskAwaitReplyMessageReference = Readonly<{
   sourceUserId: string;
 }>;
 
-export type ProtectedTaskAwaitReplyAcceptance = Readonly<{
+export type ProtectedTaskHumanContinuationAcceptance = Readonly<{
   acceptanceId: string;
-  interruptId: string;
-  message: ProtectedTaskAwaitReplyMessageReference;
+  acceptedBy: Readonly<{ userId: string; humanActorId: string }>;
+  interrupt: ProtectedTaskRunInterruptCoordinate;
   acceptedAt: Date;
+  response:
+    | Readonly<{
+        kind: "approval";
+        verb: "once" | "room" | "always" | "deny";
+      }>
+    | Readonly<{ kind: "prove_it"; approved: boolean }>
+    | Readonly<{ kind: "identity" }>
+    | Readonly<{
+        kind: "await_reply";
+        message: ProtectedTaskAwaitReplyMessageReference;
+      }>;
 }>;
 
-export type AcceptProtectedTaskAwaitReplyInput = Readonly<{
+export type AcceptProtectedTaskHumanContinuationInput = Readonly<{
   taskId: string;
   taskRunId: string;
   graphThreadId: string;
@@ -3091,20 +3140,53 @@ export type AcceptProtectedTaskAwaitReplyInput = Readonly<{
   executionSegment: number;
   interrupts: readonly ProtectedTaskRunInterruptCoordinate[];
   parkedAt: Date;
+  stableRoutingDigest: Uint8Array;
   priorJobReference: ProtectedTaskDurableJobReference;
-  acceptance: ProtectedTaskAwaitReplyAcceptance;
+  acceptance: ProtectedTaskHumanContinuationAcceptance;
 }>;
 
-export type AcceptProtectedTaskAwaitReplyResult =
-  | Readonly<{ status: "accepted" | "exact_replay" }>
+export type AcceptProtectedTaskHumanContinuationResult =
+  | Readonly<{
+      status: "accepted" | "exact_replay";
+      acceptance: ProtectedTaskHumanContinuationAcceptance;
+    }>
   | Readonly<{ status: "rejected"; reason: "conflict" | "not_found" | "stale" }>;
+
+export type ResolveParkedProtectedTaskHumanContinuationAcceptanceInput =
+  Readonly<{
+    taskId: string;
+    graphThreadId: string;
+    acceptedBy: Readonly<{ userId: string; humanActorId: string }>;
+    interrupt: Readonly<{
+      kind: Exclude<ProtectedTaskRunInterruptKind, "additional_authority">;
+      id?: string;
+      requestId?: string;
+    }>;
+  }>;
+
+export type ResolveParkedProtectedTaskHumanContinuationAcceptanceResult =
+  | Readonly<{ status: "no_match" | "ambiguous" }>
+  | Readonly<{
+      status: "resolved";
+      input: Omit<AcceptProtectedTaskHumanContinuationInput, "acceptance">;
+      interrupt: ProtectedTaskRunInterruptCoordinate;
+    }>;
 
 export type ResolvePublishedProtectedTaskAwaitReplyResult =
   | Readonly<{ status: "no_match" | "ambiguous" }>
   | Readonly<{
       status: "resolved";
-      input: AcceptProtectedTaskAwaitReplyInput;
+      input: Omit<AcceptProtectedTaskHumanContinuationInput, "acceptance"> &
+        Readonly<{
+          acceptance: Omit<ProtectedTaskHumanContinuationAcceptance,
+            "acceptanceId">;
+        }>;
     }>;
+
+type ResolvedPublishedProtectedTaskAwaitReplyInput = Extract<
+  ResolvePublishedProtectedTaskAwaitReplyResult,
+  { status: "resolved" }
+>["input"];
 
 export type ParkProtectedTaskRunInput = Readonly<{
   taskId: string;
@@ -3154,6 +3236,12 @@ export type SealAndParkProtectedTaskRunInput = Readonly<{
   continuation: SealAndParkProtectedTaskRunContinuation;
 }>;
 
+export type SealAndParkProtectedTaskHumanRunInput = Readonly<{
+  park: ParkProtectedTaskRunInput;
+  segment: SegmentReceiptEvidence;
+  stableRoutingDigest: Uint8Array;
+}>;
+
 export type SealAndParkProtectedTaskRunResult =
   | Readonly<{ status: "parked" | "exact_replay" }>
   | Readonly<{
@@ -3177,6 +3265,11 @@ export type SealAndParkProtectedTaskRunResult =
       stage: "park";
       reason: Extract<ParkProtectedTaskRunResult, { status: "rejected" }>["reason"];
     }>;
+
+export type SealAndParkProtectedTaskHumanRunResult = Exclude<
+  SealAndParkProtectedTaskRunResult,
+  Readonly<{ status: "rejected"; stage: "continuation"; reason: unknown }>
+>;
 
 /** Content-free Task projection accepted by parked-authority discovery. */
 export type ParkedProtectedTaskAdditionalAuthorityTaskRow = Readonly<{
@@ -3276,7 +3369,29 @@ export type ParkedProtectedTaskAdditionalAuthority = Readonly<{
   nextExecutionSegment: number;
 }>;
 
-export type StartParkedProtectedTaskRunSegmentInput = Readonly<{
+export type ParkedProtectedTaskHumanContinuationJobRow =
+  ParkedProtectedTaskAdditionalAuthorityJobRow & Readonly<{
+    acceptanceReceipt: unknown;
+  }>;
+
+export type ParkedProtectedTaskHumanContinuationTaskRow =
+  ParkedProtectedTaskAdditionalAuthorityTaskRow & Readonly<{
+    targetRoomId: string | null;
+    targetUserIds: readonly string[];
+    localExecutionDelegation: unknown;
+  }>;
+
+export type ParkedProtectedTaskHumanContinuation = Readonly<{
+  occurrence: ParkedProtectedTaskAdditionalAuthority["occurrence"];
+  priorJob: ParkedProtectedTaskAdditionalAuthority["priorJob"];
+  segment: ProtectedTaskExecutionSegmentReceipt;
+  stableRoutingDigest: Uint8Array;
+  acceptance: ProtectedTaskHumanContinuationAcceptance;
+  authorizationRequestId: string;
+  nextExecutionSegment: number;
+}>;
+
+export type StartParkedProtectedTaskHumanRunSegmentInput = Readonly<{
   taskId: string;
   taskRunId: string;
   graphThreadId: string;
@@ -3285,24 +3400,27 @@ export type StartParkedProtectedTaskRunSegmentInput = Readonly<{
   generation: number;
   interrupts: readonly ProtectedTaskRunInterruptCoordinate[];
   parkedAt: Date;
+  stableRoutingDigest: Uint8Array;
   contentRepresentation: "dual" | "protected";
   contentNamespaceId: string;
   contentRevision: number;
   cryptoObjectId: string;
   cryptoAccessRevision: number;
   cryptoRequiredNamespaceFingerprint: Uint8Array;
+  checkpointManifest: ProtectedTaskCheckpointManifestReceipt;
   priorJobReference: ProtectedTaskDurableJobReference;
   jobReference: ProtectedTaskDurableJobReference;
-  acceptance: ProtectedTaskAwaitReplyAcceptance;
+  acceptance: ProtectedTaskHumanContinuationAcceptance;
 }>;
 
-export type StartParkedProtectedTaskRunSegmentResult =
+export type StartParkedProtectedTaskHumanRunSegmentResult =
   | Readonly<{ status: "started" | "exact_replay" }>
   | Readonly<{ status: "rejected"; reason: "conflict" | "not_found" | "stale" }>;
 
 export type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput =
   Readonly<
-    Omit<StartParkedProtectedTaskRunSegmentInput, "acceptance"> & {
+    Omit<StartParkedProtectedTaskHumanRunSegmentInput,
+      "acceptance" | "stableRoutingDigest"> & {
       checkpointManifest: ProtectedTaskCheckpointManifestReceipt;
       continuation: Readonly<{
         interruptId: string;
@@ -3317,7 +3435,7 @@ export type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput =
   >;
 
 export type StartParkedProtectedTaskRunAdditionalAuthoritySegmentResult =
-  StartParkedProtectedTaskRunSegmentResult;
+  StartParkedProtectedTaskHumanRunSegmentResult;
 
 type ProtectedTaskRunParkReceipt = Readonly<{
   version: 1;
@@ -3329,9 +3447,10 @@ type ProtectedTaskRunParkReceipt = Readonly<{
   executionSegment: number;
   interrupts: readonly ProtectedTaskRunInterruptCoordinate[];
   parkedAt: string;
+  stableRoutingDigest?: string;
 }>;
 
-type ProtectedTaskAwaitReplyAcceptanceReceipt = Readonly<{
+type ProtectedTaskHumanContinuationAcceptanceReceipt = Readonly<{
   version: 1;
   acceptanceId: string;
   taskId: string;
@@ -3341,8 +3460,9 @@ type ProtectedTaskAwaitReplyAcceptanceReceipt = Readonly<{
   generation: number;
   executionSegment: number;
   nextExecutionSegment: number;
-  interrupt: Readonly<{ id: string; kind: "await_reply" }>;
-  message: ProtectedTaskAwaitReplyMessageReference;
+  acceptedBy: Readonly<{ userId: string; humanActorId: string }>;
+  interrupt: ProtectedTaskRunInterruptCoordinate;
+  response: ProtectedTaskHumanContinuationAcceptance["response"];
   acceptedAt: string;
   consumedByJobId?: string;
 }>;
@@ -3378,36 +3498,143 @@ function exactMessageReference(
     && value["sourceUserId"] === expected.sourceUserId;
 }
 
-function assertProtectedTaskAwaitReplyAcceptance(
-  acceptance: ProtectedTaskAwaitReplyAcceptance,
+async function hasExactCurrentProtectedTaskReplyMessage(
+  tx: Pick<DirectDatabase, "select">,
+  reference: ProtectedTaskAwaitReplyMessageReference,
+): Promise<boolean> {
+  const [message] = await tx.select({
+    roomId: sessions.roomId,
+    sessionId: sessionMessages.sessionId,
+    messageId: sessionMessages.id,
+    editRevision: sessionMessages.editRevision,
+    cryptoObjectId: sessionMessages.cryptoObjectId,
+    namespaceId: rooms.namespaceId,
+    sourceUserId: sessions.ownerId,
+    role: sessionMessages.role,
+    lifecycleNamespaceId: sessionMessageCryptoRevisions.namespaceIdAtAllocation,
+    lifecycleRoomId: sessionMessageCryptoRevisions.roomId,
+    lifecycleCryptoObjectId: sessionMessageCryptoRevisions.cryptoObjectId,
+    lifecycleKeyClass: sessionMessageCryptoRevisions.keyClass,
+    lifecycleAuthorRole: sessionMessageCryptoRevisions.authorRole,
+    lifecyclePayloadVersion: sessionMessageCryptoRevisions.payloadVersion,
+    lifecycleCompletion: sessionMessageCryptoRevisions.completion,
+    lifecycleDisposition: sessionMessageCryptoRevisions.disposition,
+  }).from(sessionMessages)
+    .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
+    .innerJoin(rooms, eq(rooms.id, sessions.roomId))
+    .innerJoin(sessionMessageCryptoRevisions, and(
+      eq(sessionMessageCryptoRevisions.sessionId, sessionMessages.sessionId),
+      eq(sessionMessageCryptoRevisions.messageId, sessionMessages.id),
+      eq(
+        sessionMessageCryptoRevisions.editRevision,
+        sessionMessages.editRevision,
+      ),
+    )).where(and(
+      eq(sessionMessages.id, Number(reference.messageId)),
+      eq(sessionMessages.sessionId, reference.sessionId),
+    )).limit(1).for("share");
+  return message !== undefined
+    && message.roomId === reference.roomId
+    && message.sessionId === reference.sessionId
+    && String(message.messageId) === reference.messageId
+    && message.editRevision === reference.editRevision
+    && message.cryptoObjectId === reference.cryptoObjectId
+    && message.namespaceId === reference.namespaceId
+    && message.sourceUserId === reference.sourceUserId
+    && message.role === "user"
+    && message.lifecycleNamespaceId === reference.namespaceId
+    && message.lifecycleRoomId === reference.roomId
+    && message.lifecycleCryptoObjectId === reference.cryptoObjectId
+    && message.lifecycleKeyClass === "ai"
+    && message.lifecycleAuthorRole === "user"
+    && message.lifecyclePayloadVersion === 2
+    && message.lifecycleCompletion === "complete"
+    && message.lifecycleDisposition === "mapped";
+}
+
+function assertProtectedTaskHumanContinuationAcceptance(
+  acceptance: ProtectedTaskHumanContinuationAcceptance,
 ): void {
   if (
     !isRecord(acceptance)
     || Object.keys(acceptance).sort().join(",")
-      !== "acceptanceId,acceptedAt,interruptId,message"
-    || !isRecord(acceptance.message)
-    || Object.keys(acceptance.message).sort().join(",")
-      !== "cryptoObjectId,editRevision,messageId,namespaceId,roomId,sessionId,sourceUserId"
+      !== "acceptanceId,acceptedAt,acceptedBy,interrupt,response"
+    || !isRecord(acceptance.acceptedBy)
+    || Object.keys(acceptance.acceptedBy).sort().join(",")
+      !== "humanActorId,userId"
+    || !isRecord(acceptance.interrupt)
+    || !isRecord(acceptance.response)
   ) {
-    throw new TypeError("Protected Task await-reply acceptance is malformed");
+    throw new TypeError("Protected Task Human acceptance is malformed");
   }
-  const message = acceptance.message;
   if (
     !opaqueCheckpointCoordinate(acceptance.acceptanceId)
-    || !opaqueCheckpointCoordinate(acceptance.interruptId)
+    || !CANONICAL_UUID.test(acceptance.acceptedBy.userId)
+    || !CANONICAL_UUID.test(acceptance.acceptedBy.humanActorId)
     || !(acceptance.acceptedAt instanceof Date)
     || !Number.isFinite(acceptance.acceptedAt.getTime())
-    || !CANONICAL_UUID.test(message.roomId)
-    || !CANONICAL_UUID.test(message.sessionId)
-    || !canonicalMessageSerial(message.messageId)
-    || !Number.isSafeInteger(message.editRevision)
-    || message.editRevision < 0
-    || !opaqueCheckpointCoordinate(message.cryptoObjectId)
-    || !CANONICAL_UUID.test(message.namespaceId)
-    || !CANONICAL_UUID.test(message.sourceUserId)
   ) {
-    throw new TypeError("Protected Task await-reply acceptance is malformed");
+    throw new TypeError("Protected Task Human acceptance is malformed");
   }
+  const interrupt = canonicalInterruptCoordinates([acceptance.interrupt])[0]!;
+  if (interrupt.kind === "additional_authority"
+    || interrupt.kind !== acceptance.response.kind
+    || interrupt.kind === "approval" && interrupt.requestId === undefined
+    || interrupt.kind === "prove_it" && interrupt.requestId !== undefined
+    || interrupt.kind === "await_reply" && interrupt.requestId !== undefined) {
+    throw new TypeError("Protected Task Human acceptance is malformed");
+  }
+  const responseKeys = Object.keys(acceptance.response).sort().join(",");
+  if (acceptance.response.kind === "approval") {
+    if (responseKeys !== "kind,verb"
+      || !["once", "room", "always", "deny"].includes(
+        acceptance.response.verb,
+      )) {
+      throw new TypeError("Protected Task Human acceptance is malformed");
+    }
+  } else if (acceptance.response.kind === "prove_it") {
+    if (responseKeys !== "approved,kind"
+      || typeof acceptance.response.approved !== "boolean") {
+      throw new TypeError("Protected Task Human acceptance is malformed");
+    }
+  } else if (acceptance.response.kind === "identity") {
+    if (responseKeys !== "kind") {
+      throw new TypeError("Protected Task Human acceptance is malformed");
+    }
+  } else {
+    const message = acceptance.response.message;
+    if (responseKeys !== "kind,message"
+      || !isRecord(message)
+      || Object.keys(message).sort().join(",")
+        !== "cryptoObjectId,editRevision,messageId,namespaceId,roomId,sessionId,sourceUserId"
+      || !CANONICAL_UUID.test(message.roomId)
+      || !CANONICAL_UUID.test(message.sessionId)
+      || !canonicalMessageSerial(message.messageId)
+      || !Number.isSafeInteger(message.editRevision)
+      || message.editRevision < 0
+      || !opaqueCheckpointCoordinate(message.cryptoObjectId)
+      || !CANONICAL_UUID.test(message.namespaceId)
+      || !CANONICAL_UUID.test(message.sourceUserId)) {
+      throw new TypeError("Protected Task Human acceptance is malformed");
+    }
+  }
+}
+
+function encodeRoutingDigest(value: Uint8Array): string {
+  if (!(value instanceof Uint8Array) || value.length !== 32) {
+    throw new TypeError("Protected Task stable routing digest is malformed");
+  }
+  return Buffer.from(value).toString("base64url");
+}
+
+function decodeRoutingDigest(value: unknown): Uint8Array | null {
+  if (typeof value !== "string" || !CONTINUATION_FINGERPRINT.test(value)) {
+    return null;
+  }
+  const decoded = new Uint8Array(Buffer.from(value, "base64url"));
+  return decoded.length === 32 && encodeRoutingDigest(decoded) === value
+    ? decoded
+    : null;
 }
 
 function canonicalInterruptCoordinates(
@@ -3457,6 +3684,7 @@ function canonicalInterruptCoordinates(
 
 function parkReceipt(
   input: ParkProtectedTaskRunInput,
+  stableRoutingDigest?: Uint8Array,
 ): ProtectedTaskRunParkReceipt {
   return Object.freeze({
     version: 1,
@@ -3468,10 +3696,13 @@ function parkReceipt(
     executionSegment: input.executionSegment,
     interrupts: canonicalInterruptCoordinates(input.interrupts),
     parkedAt: input.parkedAt.toISOString(),
+    ...(stableRoutingDigest === undefined
+      ? {}
+      : { stableRoutingDigest: encodeRoutingDigest(stableRoutingDigest) }),
   });
 }
 
-function awaitReplyAcceptanceReceipt(
+function humanContinuationAcceptanceReceipt(
   input: Readonly<{
     taskId: string;
     taskRunId: string;
@@ -3481,26 +3712,44 @@ function awaitReplyAcceptanceReceipt(
     executionSegment: number;
     interrupts: readonly ProtectedTaskRunInterruptCoordinate[];
     parkedAt: Date;
-    acceptance: ProtectedTaskAwaitReplyAcceptance;
+    acceptance: ProtectedTaskHumanContinuationAcceptance;
   }>,
-): ProtectedTaskAwaitReplyAcceptanceReceipt {
-  assertProtectedTaskAwaitReplyAcceptance(input.acceptance);
+): ProtectedTaskHumanContinuationAcceptanceReceipt {
+  assertProtectedTaskHumanContinuationAcceptance(input.acceptance);
   if (
     !Number.isSafeInteger(input.executionSegment)
     || input.executionSegment < 1
     || input.executionSegment === Number.MAX_SAFE_INTEGER
     || input.acceptance.acceptedAt.getTime() < input.parkedAt.getTime()
   ) {
-    throw new TypeError("Protected Task await-reply acceptance is malformed");
+    throw new TypeError("Protected Task Human acceptance is malformed");
   }
   const selected = canonicalInterruptCoordinates(input.interrupts).filter(
-    (coordinate) => coordinate.id === input.acceptance.interruptId
-      && coordinate.kind === "await_reply"
-      && coordinate.requestId === undefined,
+    (coordinate) => coordinate.id === input.acceptance.interrupt.id
+      && coordinate.kind === input.acceptance.interrupt.kind
+      && coordinate.requestId === input.acceptance.interrupt.requestId,
   );
   if (selected.length !== 1) {
-    throw new TypeError("Protected Task await-reply acceptance is malformed");
+    throw new TypeError("Protected Task Human acceptance is malformed");
   }
+  const expectedAcceptanceId = protectedTaskHumanContinuationAcceptanceId({
+    taskId: input.taskId,
+    taskRunId: input.taskRunId,
+    priorJobId: input.priorJobId,
+    executionSegment: input.executionSegment,
+    acceptedBy: input.acceptance.acceptedBy,
+    interrupt: selected[0]!,
+    response: input.acceptance.response,
+  });
+  if (input.acceptance.acceptanceId !== expectedAcceptanceId) {
+    throw new TypeError("Protected Task Human acceptance is malformed");
+  }
+  const response = input.acceptance.response.kind === "await_reply"
+    ? Object.freeze({
+        kind: "await_reply" as const,
+        message: Object.freeze({ ...input.acceptance.response.message }),
+      })
+    : Object.freeze({ ...input.acceptance.response });
   return Object.freeze({
     version: 1,
     acceptanceId: input.acceptance.acceptanceId,
@@ -3511,11 +3760,15 @@ function awaitReplyAcceptanceReceipt(
     generation: input.generation,
     executionSegment: input.executionSegment,
     nextExecutionSegment: input.executionSegment + 1,
+    acceptedBy: Object.freeze({ ...input.acceptance.acceptedBy }),
     interrupt: Object.freeze({
-      id: input.acceptance.interruptId,
-      kind: "await_reply" as const,
+      id: selected[0]!.id,
+      kind: selected[0]!.kind,
+      ...(selected[0]!.requestId === undefined
+        ? {}
+        : { requestId: selected[0]!.requestId }),
     }),
-    message: Object.freeze({ ...input.acceptance.message }),
+    response,
     acceptedAt: input.acceptance.acceptedAt.toISOString(),
   });
 }
@@ -3541,8 +3794,10 @@ function exactParkReceipt(
   expected: ProtectedTaskRunParkReceipt,
 ): boolean {
   if (!isRecord(value)) return false;
-  return Object.keys(value).sort().join(",")
-      === "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,taskId,taskRunId,version"
+  const expectedKeys = expected.stableRoutingDigest === undefined
+    ? "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,taskId,taskRunId,version"
+    : "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,stableRoutingDigest,taskId,taskRunId,version";
+  return Object.keys(value).sort().join(",") === expectedKeys
     && value["version"] === expected.version
     && value["taskId"] === expected.taskId
     && value["taskRunId"] === expected.taskRunId
@@ -3551,19 +3806,109 @@ function exactParkReceipt(
     && value["generation"] === expected.generation
     && value["executionSegment"] === expected.executionSegment
     && exactInterruptCoordinates(value["interrupts"], expected.interrupts)
-    && value["parkedAt"] === expected.parkedAt;
+    && value["parkedAt"] === expected.parkedAt
+    && value["stableRoutingDigest"] === expected.stableRoutingDigest;
 }
 
-function exactAwaitReplyAcceptanceReceipt(
+function exactHumanContinuationResponse(
   value: unknown,
-  expected: ProtectedTaskAwaitReplyAcceptanceReceipt,
+  expected: ProtectedTaskHumanContinuationAcceptance["response"],
+): boolean {
+  if (!isRecord(value) || value["kind"] !== expected.kind) return false;
+  if (expected.kind === "approval") {
+    return Object.keys(value).sort().join(",") === "kind,verb"
+      && value["verb"] === expected.verb;
+  }
+  if (expected.kind === "prove_it") {
+    return Object.keys(value).sort().join(",") === "approved,kind"
+      && value["approved"] === expected.approved;
+  }
+  if (expected.kind === "identity") {
+    return Object.keys(value).sort().join(",") === "kind";
+  }
+  return Object.keys(value).sort().join(",") === "kind,message"
+    && exactMessageReference(value["message"], expected.message);
+}
+
+function computeProtectedTaskHumanAcceptanceId(
+  input: Readonly<{
+    taskId: string;
+    taskRunId: string;
+    priorJobId: string;
+    executionSegment: number;
+    acceptedBy: ProtectedTaskHumanContinuationAcceptance["acceptedBy"];
+    interrupt: ProtectedTaskRunInterruptCoordinate;
+    response: ProtectedTaskHumanContinuationAcceptance["response"];
+  }>,
+): string {
+  const response = input.response.kind === "await_reply"
+    ? {
+        kind: input.response.kind,
+        message: {
+          roomId: input.response.message.roomId,
+          sessionId: input.response.message.sessionId,
+          messageId: input.response.message.messageId,
+          editRevision: input.response.message.editRevision,
+          cryptoObjectId: input.response.message.cryptoObjectId,
+          namespaceId: input.response.message.namespaceId,
+          sourceUserId: input.response.message.sourceUserId,
+        },
+      }
+    : input.response.kind === "approval"
+      ? { kind: input.response.kind, verb: input.response.verb }
+      : input.response.kind === "prove_it"
+        ? { kind: input.response.kind, approved: input.response.approved }
+        : { kind: input.response.kind };
+  const digest = createHash("sha256").update(JSON.stringify({
+    taskId: input.taskId,
+    taskRunId: input.taskRunId,
+    priorJobId: input.priorJobId,
+    executionSegment: input.executionSegment,
+    acceptedBy: {
+      userId: input.acceptedBy.userId,
+      humanActorId: input.acceptedBy.humanActorId,
+    },
+    interrupt: {
+      id: input.interrupt.id,
+      kind: input.interrupt.kind,
+      requestId: input.interrupt.requestId ?? null,
+    },
+    response,
+  })).digest("base64url");
+  return `human-continuation:${digest}`;
+}
+
+export function protectedTaskHumanContinuationAcceptanceId(
+  input: Parameters<typeof computeProtectedTaskHumanAcceptanceId>[0],
+): string {
+  assertProtectedTaskHumanContinuationAcceptance({
+    acceptedBy: input.acceptedBy,
+    interrupt: input.interrupt,
+    response: input.response,
+    acceptanceId: "pending",
+    acceptedAt: new Date(0),
+  });
+  if (!CANONICAL_UUID.test(input.taskId)
+    || !CANONICAL_UUID.test(input.taskRunId)
+    || !CANONICAL_UUID.test(input.priorJobId)
+    || !Number.isSafeInteger(input.executionSegment)
+    || input.executionSegment < 1) {
+    throw new TypeError("Protected Task Human acceptance identity is malformed");
+  }
+  return computeProtectedTaskHumanAcceptanceId(input);
+}
+
+function exactHumanContinuationAcceptanceReceipt(
+  value: unknown,
+  expected: ProtectedTaskHumanContinuationAcceptanceReceipt,
   consumedByJobId?: string,
 ): boolean {
   if (!isRecord(value)) return false;
   const expectedKeys = consumedByJobId === undefined
-    ? "acceptanceId,acceptedAt,executionSegment,generation,graphThreadId,interrupt,jobId,message,nextExecutionSegment,taskId,taskRunId,version"
-    : "acceptanceId,acceptedAt,consumedByJobId,executionSegment,generation,graphThreadId,interrupt,jobId,message,nextExecutionSegment,taskId,taskRunId,version";
+    ? "acceptanceId,acceptedAt,acceptedBy,executionSegment,generation,graphThreadId,interrupt,jobId,nextExecutionSegment,response,taskId,taskRunId,version"
+    : "acceptanceId,acceptedAt,acceptedBy,consumedByJobId,executionSegment,generation,graphThreadId,interrupt,jobId,nextExecutionSegment,response,taskId,taskRunId,version";
   const interrupt = value["interrupt"];
+  const acceptedBy = value["acceptedBy"];
   return Object.keys(value).sort().join(",") === expectedKeys
     && value["version"] === expected.version
     && value["acceptanceId"] === expected.acceptanceId
@@ -3574,13 +3919,37 @@ function exactAwaitReplyAcceptanceReceipt(
     && value["generation"] === expected.generation
     && value["executionSegment"] === expected.executionSegment
     && value["nextExecutionSegment"] === expected.nextExecutionSegment
+    && isRecord(acceptedBy)
+    && Object.keys(acceptedBy).sort().join(",") === "humanActorId,userId"
+    && acceptedBy["userId"] === expected.acceptedBy.userId
+    && acceptedBy["humanActorId"] === expected.acceptedBy.humanActorId
     && isRecord(interrupt)
-    && Object.keys(interrupt).sort().join(",") === "id,kind"
+    && Object.keys(interrupt).sort().join(",")
+      === (expected.interrupt.requestId === undefined
+        ? "id,kind"
+        : "id,kind,requestId")
     && interrupt["id"] === expected.interrupt.id
-    && interrupt["kind"] === "await_reply"
-    && exactMessageReference(value["message"], expected.message)
+    && interrupt["kind"] === expected.interrupt.kind
+    && interrupt["requestId"] === expected.interrupt.requestId
+    && exactHumanContinuationResponse(value["response"], expected.response)
     && value["acceptedAt"] === expected.acceptedAt
     && value["consumedByJobId"] === consumedByJobId;
+}
+
+export function exactProtectedTaskHumanContinuationAcceptanceReceipt(
+  value: unknown,
+  input: AcceptProtectedTaskHumanContinuationInput,
+  consumedByJobId?: string,
+): boolean {
+  try {
+    return exactHumanContinuationAcceptanceReceipt(
+      value,
+      humanContinuationAcceptanceReceipt(input),
+      consumedByJobId,
+    );
+  } catch {
+    return false;
+  }
 }
 
 function pristineProtectedTaskRun(run: TaskRun): boolean {
@@ -3607,6 +3976,7 @@ type LockedProtectedTaskParkRows = Readonly<{
 
 function prepareProtectedTaskParkReceipt(
   input: ParkProtectedTaskRunInput,
+  stableRoutingDigest?: Uint8Array,
 ): ProtectedTaskRunParkReceipt {
   if (
     !input.taskId
@@ -3636,7 +4006,7 @@ function prepareProtectedTaskParkReceipt(
   ) {
     throw new TypeError("Protected Task park binding is malformed");
   }
-  return parkReceipt(input);
+  return parkReceipt(input, stableRoutingDigest);
 }
 
 async function lockProtectedTaskParkRows(
@@ -3992,6 +4362,148 @@ export async function sealAndParkProtectedTaskRun(
   }
 }
 
+/** Seal a Human-resumable native segment and park it without fabricating an
+ * additional-authority continuation receipt. The routing digest is content
+ * free and becomes immutable with the exact park receipt. */
+export async function sealAndParkProtectedTaskHumanRun(
+  db: DirectDatabase,
+  input: SealAndParkProtectedTaskHumanRunInput,
+): Promise<SealAndParkProtectedTaskHumanRunResult> {
+  const routingDigest = input.stableRoutingDigest.slice();
+  const parkReceiptValue = prepareProtectedTaskParkReceipt(
+    input.park,
+    routingDigest,
+  );
+  const park = Object.freeze({
+    ...input.park,
+    interrupts: parkReceiptValue.interrupts,
+    parkedAt: new Date(input.park.parkedAt.getTime()),
+    jobReference: Object.freeze({ ...input.park.jobReference }),
+  });
+  const segment = input.segment;
+  if (segment.route !== "native_langgraph_v1"
+    || segment.checkpoint.contract !== "encrypted_langgraph_v1"
+    || !Number.isSafeInteger(segment.checkpoint.expectedCheckpointCount)
+    || segment.checkpoint.expectedCheckpointCount < 1
+    || !parkReceiptValue.interrupts.some(interrupt =>
+      interrupt.kind !== "additional_authority"
+    )) {
+    throw new TypeError("Protected Task Human seal-and-park input is malformed");
+  }
+  const segmentSnapshot = Object.freeze({
+    route: segment.route,
+    checkpoint: Object.freeze({
+      ...segment.checkpoint,
+      checkpointOrderedDigest:
+        segment.checkpoint.checkpointOrderedDigest?.slice() ?? null,
+      blobOrderedDigest: segment.checkpoint.blobOrderedDigest?.slice() ?? null,
+      pendingWriteOrderedDigest:
+        segment.checkpoint.pendingWriteOrderedDigest?.slice() ?? null,
+    }),
+  });
+
+  try {
+    return await db.transaction(async tx => {
+      const locked = await lockProtectedTaskParkRows(tx, park);
+      if (locked.status === "rejected") {
+        return rollbackSealAndPark({
+          status: "rejected",
+          stage: "park",
+          reason: locked.reason,
+        });
+      }
+      const transcript = await readProtectedTaskTranscriptManifestInTx(tx, {
+        taskId: park.taskId,
+        taskRunId: park.taskRunId,
+        graphThreadId: park.graphThreadId,
+      });
+      const segmentResult = await sealProtectedTaskExecutionSegmentReceiptInTx(
+        tx,
+        {
+          ...segmentSnapshot,
+          taskId: park.taskId,
+          taskRunId: park.taskRunId,
+          jobId: park.jobId,
+          executionSegment: park.executionSegment,
+          transcript,
+          sealedAt: new Date(park.parkedAt.getTime()),
+        },
+      );
+      if (segmentResult.status === "rejected") {
+        return rollbackSealAndPark({
+          status: "rejected",
+          stage: "segment",
+          reason: segmentResult.reason,
+        });
+      }
+      const parkResult = await parkProtectedTaskRunWithLockedRows(
+        tx,
+        park,
+        parkReceiptValue,
+        locked,
+      );
+      if (parkResult.status === "rejected") {
+        return rollbackSealAndPark({
+          status: "rejected",
+          stage: "park",
+          reason: parkResult.reason,
+        });
+      }
+      if (parkResult.status === "exact_replay"
+        && segmentResult.status !== "exact_replay") {
+        return rollbackSealAndPark({
+          status: "rejected",
+          stage: "park",
+          reason: "conflict",
+        });
+      }
+      return Object.freeze({ status: parkResult.status });
+    });
+  } catch (error) {
+    if (error instanceof SealAndParkRollback) {
+      return error.rejection as SealAndParkProtectedTaskHumanRunResult;
+    }
+    throw error;
+  } finally {
+    routingDigest.fill(0);
+  }
+}
+
+function cloneProtectedTaskExecutionSegment(
+  segment: ProtectedTaskExecutionSegmentReceipt,
+): ProtectedTaskExecutionSegmentReceipt {
+  return Object.freeze({
+    ...segment,
+    transcriptAssociationDigest:
+      segment.transcriptAssociationDigest?.slice() ?? null,
+    checkpointDigest: segment.checkpointDigest?.slice() ?? null,
+    checkpointBlobDigest: segment.checkpointBlobDigest?.slice() ?? null,
+    pendingWriteDigest: segment.pendingWriteDigest?.slice() ?? null,
+    sealedAt: new Date(segment.sealedAt.getTime()),
+  });
+}
+
+async function readProtectedTaskExecutionSegment(
+  db: Pick<DirectDatabase, "select">,
+  input: Readonly<{
+    taskRunId: string;
+    jobId: string;
+    executionSegment: number;
+  }>,
+): Promise<ProtectedTaskExecutionSegmentReceipt | null> {
+  const rows = await db.select().from(protectedTaskExecutionSegmentReceipts)
+    .where(and(
+      eq(protectedTaskExecutionSegmentReceipts.taskRunId, input.taskRunId),
+      eq(protectedTaskExecutionSegmentReceipts.jobId, input.jobId),
+      eq(
+        protectedTaskExecutionSegmentReceipts.executionSegment,
+        input.executionSegment,
+      ),
+    )).limit(2);
+  if (rows.length !== 1) return null;
+  return cloneProtectedTaskExecutionSegment(rows[0]!);
+}
+
 function cloneProtectedTaskExecutionContinuationProof(
   proof: ProtectedTaskExecutionContinuationProof,
 ): ProtectedTaskExecutionContinuationProof {
@@ -4270,6 +4782,209 @@ export function parseParkedProtectedTaskAdditionalAuthority(input: Readonly<{
   });
 }
 
+/** Parse one accepted, content-free Human continuation occurrence. */
+export function parseParkedProtectedTaskHumanContinuation(input: Readonly<{
+  task: ParkedProtectedTaskHumanContinuationTaskRow;
+  run: ParkedProtectedTaskAdditionalAuthorityRunRow;
+  job: ParkedProtectedTaskHumanContinuationJobRow;
+  segment: ProtectedTaskExecutionSegmentReceipt | null;
+}>): ParkedProtectedTaskHumanContinuation | null {
+  const { task, run, job, segment } = input;
+  if (!CANONICAL_UUID.test(task.id)
+    || !CANONICAL_UUID.test(task.ownerId)
+    || !CANONICAL_UUID.test(task.requestorId)
+    || !CANONICAL_UUID.test(task.agentId)
+    || task.status !== (task.scheduleKind === "cron" ? "pending" : "awaiting")
+    || task.contentRepresentation !== "dual"
+      && task.contentRepresentation !== "protected"
+    || task.contentNamespaceId === null
+    || task.cryptoObjectId === null
+    || task.cryptoRequiredNamespaceFingerprint === null
+    || task.cryptoRequiredNamespaceFingerprint.length !== 32
+    || task.cryptoMappingState !== "verified"
+    || task.contentPristine !== true
+    || run.taskId !== task.id
+    || run.jobId !== job.id
+    || run.status !== "awaiting"
+    || run.pristine !== true
+    || job.ownerId !== task.requestorId
+    || job.requestorId !== task.requestorId
+    || job.laneKey !== `task:${task.id}`
+    || job.type !== "foreground"
+    || job.status !== "completed"
+    || job.startedAt === null
+    || job.completedAt === null
+    || job.pristine !== true
+    || !isRecord(job.reference)
+    || !isRecord(job.parkReceipt)
+    || !isRecord(job.acceptanceReceipt)
+    || segment === null) return null;
+  const reference = job.reference as ProtectedTaskDurableJobReference;
+  if (!exactProtectedTaskJobReference(job.reference, reference)
+    || reference.taskId !== task.id
+    || reference.taskRunId !== run.id
+    || reference.inputObjectId !== task.cryptoObjectId
+    || reference.resultObjectId !== protectedTaskRunResultObjectId(task.id, run.id)
+    || reference.executionSegment < 1
+    || reference.executionSegment === Number.MAX_SAFE_INTEGER) return null;
+  const rawPark = job.parkReceipt;
+  const parkedAtText = rawPark["parkedAt"];
+  const parkedAt = typeof parkedAtText === "string"
+    ? new Date(parkedAtText)
+    : new Date(Number.NaN);
+  const stableRoutingDigest = decodeRoutingDigest(rawPark["stableRoutingDigest"]);
+  if (!Number.isFinite(parkedAt.getTime())
+    || parkedAt.toISOString() !== parkedAtText
+    || job.completedAt.getTime() !== parkedAt.getTime()
+    || !Number.isSafeInteger(rawPark["generation"])
+    || (rawPark["generation"] as number) < 0
+    || stableRoutingDigest === null) return null;
+  let interrupts: readonly ProtectedTaskRunInterruptCoordinate[];
+  try {
+    interrupts = canonicalInterruptCoordinates(
+      rawPark["interrupts"] as readonly ProtectedTaskRunInterruptCoordinate[],
+    );
+  } catch {
+    return null;
+  }
+  const park: ProtectedTaskRunParkReceipt = Object.freeze({
+    version: 1,
+    taskId: task.id,
+    taskRunId: run.id,
+    jobId: job.id,
+    graphThreadId: run.graphThreadId,
+    generation: rawPark["generation"] as number,
+    executionSegment: reference.executionSegment,
+    interrupts,
+    parkedAt: parkedAt.toISOString(),
+    stableRoutingDigest: rawPark["stableRoutingDigest"] as string,
+  });
+  if (!exactParkReceipt(rawPark, park)
+    || segment.taskRunId !== run.id
+    || segment.jobId !== job.id
+    || segment.executionSegment !== reference.executionSegment
+    || segment.route !== "native_langgraph_v1"
+    || segment.transcriptContract !== "protected_message_associations_v1"
+    || !(segment.transcriptAssociationDigest instanceof Uint8Array)
+    || segment.transcriptAssociationDigest.length !== 32
+    || segment.checkpointContract !== "encrypted_langgraph_v1"
+    || segment.expectedCheckpointCount < 1
+    || !(segment.checkpointDigest instanceof Uint8Array)
+    || segment.checkpointDigest.length !== 32
+    || !(segment.checkpointBlobDigest instanceof Uint8Array)
+    || segment.checkpointBlobDigest.length !== 32
+    || !(segment.pendingWriteDigest instanceof Uint8Array)
+    || segment.pendingWriteDigest.length !== 32
+    || segment.sealedAt.getTime() !== parkedAt.getTime()) return null;
+  const rawAcceptance = job.acceptanceReceipt;
+  const acceptedAtText = rawAcceptance["acceptedAt"];
+  const acceptedAt = typeof acceptedAtText === "string"
+    ? new Date(acceptedAtText)
+    : new Date(Number.NaN);
+  if (!Number.isFinite(acceptedAt.getTime())
+    || acceptedAt.toISOString() !== acceptedAtText
+    || rawAcceptance["consumedByJobId"] !== undefined) return null;
+  const acceptance = Object.freeze({
+    acceptanceId: rawAcceptance["acceptanceId"],
+    acceptedBy: rawAcceptance["acceptedBy"],
+    interrupt: rawAcceptance["interrupt"],
+    response: rawAcceptance["response"],
+    acceptedAt,
+  }) as ProtectedTaskHumanContinuationAcceptance;
+  let expectedAcceptance: ProtectedTaskHumanContinuationAcceptanceReceipt;
+  try {
+    expectedAcceptance = humanContinuationAcceptanceReceipt({
+      taskId: task.id,
+      taskRunId: run.id,
+      graphThreadId: run.graphThreadId,
+      priorJobId: job.id,
+      generation: park.generation,
+      executionSegment: reference.executionSegment,
+      interrupts,
+      parkedAt,
+      acceptance,
+    });
+  } catch {
+    return null;
+  }
+  if (!exactHumanContinuationAcceptanceReceipt(
+    rawAcceptance,
+    expectedAcceptance,
+  )) return null;
+  const delegation = task.localExecutionDelegation === null
+    || task.localExecutionDelegation === undefined
+    ? null
+    : parseLocalExecutionDelegation(task.localExecutionDelegation);
+  const recipient = task.localExecutionDelegation === null
+    || task.localExecutionDelegation === undefined
+    ? task.ownerId
+    : delegation !== null
+        && delegation.humanUserId === task.requestorId
+        && delegation.agentId === task.agentId
+      ? delegation.humanUserId
+      : null;
+  const response = expectedAcceptance.response;
+  if (response.kind === "await_reply"
+    ? expectedAcceptance.acceptedBy.userId !== response.message.sourceUserId
+      || task.targetRoomId !== response.message.roomId
+      || task.requestorId !== response.message.sourceUserId
+        && !task.targetUserIds.includes(response.message.sourceUserId)
+    : recipient === null || expectedAcceptance.acceptedBy.userId !== recipient) {
+    return null;
+  }
+  return Object.freeze({
+    occurrence: Object.freeze({
+      task: Object.freeze({
+        id: task.id,
+        ownerId: task.ownerId,
+        requestorId: task.requestorId,
+        agentId: task.agentId,
+        callingRoomId: task.callingRoomId,
+        scheduleKind: task.scheduleKind,
+        status: task.status,
+        contentRepresentation: task.contentRepresentation,
+        contentNamespaceId: task.contentNamespaceId,
+        contentRevision: task.contentRevision,
+        cryptoObjectId: task.cryptoObjectId,
+        cryptoAccessRevision: task.cryptoAccessRevision,
+        cryptoRequiredNamespaceFingerprint:
+          task.cryptoRequiredNamespaceFingerprint.slice(),
+      }),
+      run: Object.freeze({
+        id: run.id,
+        taskId: run.taskId,
+        jobId: job.id,
+        graphThreadId: run.graphThreadId,
+        status: "awaiting" as const,
+        startedAt: new Date(run.startedAt.getTime()),
+      }),
+    }),
+    priorJob: Object.freeze({
+      id: job.id,
+      generation: park.generation,
+      parkedAt: new Date(parkedAt.getTime()),
+      interrupts: copyProtectedTaskInterrupts(interrupts),
+      reference: Object.freeze({ ...reference }),
+    }),
+    segment: cloneProtectedTaskExecutionSegment(segment),
+    stableRoutingDigest: stableRoutingDigest.slice(),
+    acceptance: Object.freeze({
+      acceptanceId: expectedAcceptance.acceptanceId,
+      acceptedBy: Object.freeze({ ...expectedAcceptance.acceptedBy }),
+      interrupt: Object.freeze({ ...expectedAcceptance.interrupt }),
+      response: response.kind === "await_reply"
+        ? Object.freeze({
+            kind: "await_reply" as const,
+            message: Object.freeze({ ...response.message }),
+          })
+        : Object.freeze({ ...response }),
+      acceptedAt: new Date(acceptedAt.getTime()),
+    }),
+    authorizationRequestId: expectedAcceptance.acceptanceId,
+    nextExecutionSegment: reference.executionSegment + 1,
+  });
+}
+
 /** Exact comparison for a discovered candidate re-read under lifecycle locks. */
 export function sameParkedProtectedTaskAdditionalAuthority(
   left: ParkedProtectedTaskAdditionalAuthority,
@@ -4367,6 +5082,89 @@ export function sameParkedProtectedTaskAdditionalAuthority(
     && left.nextExecutionSegment === right.nextExecutionSegment;
 }
 
+export function sameParkedProtectedTaskHumanContinuation(
+  left: ParkedProtectedTaskHumanContinuation,
+  right: ParkedProtectedTaskHumanContinuation,
+): boolean {
+  const leftTask = left.occurrence.task;
+  const rightTask = right.occurrence.task;
+  const leftRun = left.occurrence.run;
+  const rightRun = right.occurrence.run;
+  const leftJob = left.priorJob;
+  const rightJob = right.priorJob;
+  const leftSegment = left.segment;
+  const rightSegment = right.segment;
+  return leftTask.id === rightTask.id
+    && leftTask.ownerId === rightTask.ownerId
+    && leftTask.requestorId === rightTask.requestorId
+    && leftTask.agentId === rightTask.agentId
+    && leftTask.callingRoomId === rightTask.callingRoomId
+    && leftTask.scheduleKind === rightTask.scheduleKind
+    && leftTask.status === rightTask.status
+    && leftTask.contentRepresentation === rightTask.contentRepresentation
+    && leftTask.contentNamespaceId === rightTask.contentNamespaceId
+    && leftTask.contentRevision === rightTask.contentRevision
+    && leftTask.cryptoObjectId === rightTask.cryptoObjectId
+    && leftTask.cryptoAccessRevision === rightTask.cryptoAccessRevision
+    && sameBytes(
+      leftTask.cryptoRequiredNamespaceFingerprint,
+      rightTask.cryptoRequiredNamespaceFingerprint,
+    )
+    && leftRun.id === rightRun.id
+    && leftRun.taskId === rightRun.taskId
+    && leftRun.jobId === rightRun.jobId
+    && leftRun.graphThreadId === rightRun.graphThreadId
+    && leftRun.status === rightRun.status
+    && leftRun.startedAt.getTime() === rightRun.startedAt.getTime()
+    && leftJob.id === rightJob.id
+    && leftJob.generation === rightJob.generation
+    && leftJob.parkedAt.getTime() === rightJob.parkedAt.getTime()
+    && exactInterruptCoordinates(leftJob.interrupts, rightJob.interrupts)
+    && exactProtectedTaskJobReference(leftJob.reference, rightJob.reference)
+    && leftSegment.taskRunId === rightSegment.taskRunId
+    && leftSegment.executionSegment === rightSegment.executionSegment
+    && leftSegment.jobId === rightSegment.jobId
+    && leftSegment.route === rightSegment.route
+    && leftSegment.transcriptContract === rightSegment.transcriptContract
+    && leftSegment.expectedTranscriptAssociationCount
+      === rightSegment.expectedTranscriptAssociationCount
+    && sameBytes(
+      leftSegment.transcriptAssociationDigest,
+      rightSegment.transcriptAssociationDigest,
+    )
+    && leftSegment.checkpointContract === rightSegment.checkpointContract
+    && leftSegment.expectedCheckpointCount
+      === rightSegment.expectedCheckpointCount
+    && sameBytes(leftSegment.checkpointDigest, rightSegment.checkpointDigest)
+    && leftSegment.expectedCheckpointBlobCount
+      === rightSegment.expectedCheckpointBlobCount
+    && sameBytes(
+      leftSegment.checkpointBlobDigest,
+      rightSegment.checkpointBlobDigest,
+    )
+    && leftSegment.expectedPendingWriteCount
+      === rightSegment.expectedPendingWriteCount
+    && sameBytes(leftSegment.pendingWriteDigest, rightSegment.pendingWriteDigest)
+    && leftSegment.sealedAt.getTime() === rightSegment.sealedAt.getTime()
+    && sameBytes(left.stableRoutingDigest, right.stableRoutingDigest)
+    && left.acceptance.acceptanceId === right.acceptance.acceptanceId
+    && left.acceptance.acceptedBy.userId === right.acceptance.acceptedBy.userId
+    && left.acceptance.acceptedBy.humanActorId
+      === right.acceptance.acceptedBy.humanActorId
+    && exactInterruptCoordinates(
+      [left.acceptance.interrupt],
+      [right.acceptance.interrupt],
+    )
+    && exactHumanContinuationResponse(
+      left.acceptance.response,
+      right.acceptance.response,
+    )
+    && left.acceptance.acceptedAt.getTime()
+      === right.acceptance.acceptedAt.getTime()
+    && left.authorizationRequestId === right.authorizationRequestId
+    && left.nextExecutionSegment === right.nextExecutionSegment;
+}
+
 /** Validate and detach one parked authority descriptor for later locked use. */
 export function copyParkedProtectedTaskAdditionalAuthority(
   expected: ParkedProtectedTaskAdditionalAuthority,
@@ -4425,6 +5223,76 @@ export function copyParkedProtectedTaskAdditionalAuthority(
       throw error;
     }
     throw new TypeError("Parked Task authority descriptor is invalid", {
+      cause: error,
+    });
+  }
+}
+
+export function copyParkedProtectedTaskHumanContinuation(
+  expected: ParkedProtectedTaskHumanContinuation,
+): ParkedProtectedTaskHumanContinuation {
+  try {
+    assertProtectedTaskHumanContinuationAcceptance(expected.acceptance);
+    if (expected.acceptance.acceptanceId
+      !== protectedTaskHumanContinuationAcceptanceId({
+        taskId: expected.occurrence.task.id,
+        taskRunId: expected.occurrence.run.id,
+        priorJobId: expected.priorJob.id,
+        executionSegment: expected.priorJob.reference.executionSegment,
+        acceptedBy: expected.acceptance.acceptedBy,
+        interrupt: expected.acceptance.interrupt,
+        response: expected.acceptance.response,
+      })
+      || expected.authorizationRequestId !== expected.acceptance.acceptanceId
+      || expected.nextExecutionSegment
+        !== expected.priorJob.reference.executionSegment + 1
+      || expected.stableRoutingDigest.length !== 32) {
+      throw new TypeError("Parked Task Human descriptor is invalid");
+    }
+    const response = expected.acceptance.response;
+    const copy: ParkedProtectedTaskHumanContinuation = Object.freeze({
+      occurrence: Object.freeze({
+        task: Object.freeze({
+          ...expected.occurrence.task,
+          cryptoRequiredNamespaceFingerprint:
+            expected.occurrence.task.cryptoRequiredNamespaceFingerprint.slice(),
+        }),
+        run: Object.freeze({
+          ...expected.occurrence.run,
+          startedAt: new Date(expected.occurrence.run.startedAt.getTime()),
+        }),
+      }),
+      priorJob: Object.freeze({
+        ...expected.priorJob,
+        parkedAt: new Date(expected.priorJob.parkedAt.getTime()),
+        interrupts: copyProtectedTaskInterrupts(expected.priorJob.interrupts),
+        reference: Object.freeze({ ...expected.priorJob.reference }),
+      }),
+      segment: cloneProtectedTaskExecutionSegment(expected.segment),
+      stableRoutingDigest: expected.stableRoutingDigest.slice(),
+      acceptance: Object.freeze({
+        acceptanceId: expected.acceptance.acceptanceId,
+        acceptedBy: Object.freeze({ ...expected.acceptance.acceptedBy }),
+        interrupt: Object.freeze({ ...expected.acceptance.interrupt }),
+        response: response.kind === "await_reply"
+          ? Object.freeze({
+              kind: "await_reply" as const,
+              message: Object.freeze({ ...response.message }),
+            })
+          : Object.freeze({ ...response }),
+        acceptedAt: new Date(expected.acceptance.acceptedAt.getTime()),
+      }),
+      authorizationRequestId: expected.authorizationRequestId,
+      nextExecutionSegment: expected.nextExecutionSegment,
+    });
+    if (!sameParkedProtectedTaskHumanContinuation(expected, copy)) {
+      throw new TypeError("Parked Task Human descriptor is invalid");
+    }
+    return copy;
+  } catch (error) {
+    if (error instanceof TypeError
+      && error.message === "Parked Task Human descriptor is invalid") throw error;
+    throw new TypeError("Parked Task Human descriptor is invalid", {
       cause: error,
     });
   }
@@ -4494,6 +5362,19 @@ export const parkedTaskAdditionalAuthorityJobProjection = Object.freeze({
   )!.mapWith(Boolean),
 });
 
+const parkedTaskHumanContinuationTaskProjection = Object.freeze({
+  ...parkedTaskAdditionalAuthorityTaskProjection,
+  targetRoomId: tasks.targetRoomId,
+  targetUserIds: tasks.targetUserIds,
+  localExecutionDelegation: tasks.localExecutionDelegation,
+});
+
+const parkedTaskHumanContinuationJobProjection = Object.freeze({
+  ...parkedTaskAdditionalAuthorityJobProjection,
+  acceptanceReceipt:
+    sql<unknown>`${jobs.metadata} -> ${PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY}`,
+});
+
 export type LockedParkedProtectedTaskAdditionalAuthorityTaskRow =
   ParkedProtectedTaskAdditionalAuthorityTaskRow & Readonly<{
     preset: string;
@@ -4503,6 +5384,13 @@ export type LockedParkedProtectedTaskAdditionalAuthorityTaskRow =
     targetChat: string;
     targetRoomId: string | null;
     wideBringBack: boolean;
+  }>;
+
+export type LockedParkedProtectedTaskHumanContinuationTaskRow =
+  LockedParkedProtectedTaskAdditionalAuthorityTaskRow & Readonly<{
+    targetRoomId: string | null;
+    targetUserIds: readonly string[];
+    localExecutionDelegation: unknown;
   }>;
 
 const lockedParkedTaskAdditionalAuthorityTaskProjection = Object.freeze({
@@ -4516,6 +5404,13 @@ const lockedParkedTaskAdditionalAuthorityTaskProjection = Object.freeze({
   wideBringBack:
     sql<boolean>`(${tasks.metadata} -> 'bringBack') IS DISTINCT FROM 'false'::jsonb`
       .mapWith(Boolean).as("wide_bring_back"),
+});
+
+const lockedParkedTaskHumanContinuationTaskProjection = Object.freeze({
+  ...lockedParkedTaskAdditionalAuthorityTaskProjection,
+  targetRoomId: tasks.targetRoomId,
+  targetUserIds: tasks.targetUserIds,
+  localExecutionDelegation: tasks.localExecutionDelegation,
 });
 
 /**
@@ -4699,6 +5594,156 @@ export async function discoverParkedProtectedTaskAdditionalAuthority(
   });
 }
 
+async function readCurrentEnabledHumanActor(
+  db: Pick<DirectDatabase, "select">,
+  acceptedBy: ProtectedTaskHumanContinuationAcceptance["acceptedBy"],
+  lock: boolean,
+): Promise<boolean> {
+  const query = db.select({
+    humanActorId: actors.id,
+    userId: actors.ownerId,
+    kind: actors.kind,
+    disabledAt: users.disabledAt,
+  }).from(actors).innerJoin(users, eq(users.id, actors.ownerId)).where(and(
+    eq(actors.id, acceptedBy.humanActorId),
+    eq(actors.ownerId, acceptedBy.userId),
+    eq(actors.kind, "user"),
+    isNull(users.disabledAt),
+  )).limit(2);
+  const rows = lock ? await query.for("share") : await query;
+  return rows.length === 1
+    && rows[0]!.humanActorId === acceptedBy.humanActorId
+    && rows[0]!.userId === acceptedBy.userId
+    && rows[0]!.kind === "user"
+    && rows[0]!.disabledAt === null;
+}
+
+async function readAcceptedParkedProtectedTaskHumanCandidate(
+  db: Pick<DirectDatabase, "select">,
+  taskRunId: string,
+): Promise<ParkedProtectedTaskHumanContinuation | null> {
+  if (!CANONICAL_UUID.test(taskRunId)) {
+    throw new TypeError("Protected Task Human discovery identity is malformed");
+  }
+  const rows = await db.select({
+    task: parkedTaskHumanContinuationTaskProjection,
+    run: parkedTaskAdditionalAuthorityRunProjection,
+    job: parkedTaskHumanContinuationJobProjection,
+  }).from(taskRuns)
+    .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
+    .innerJoin(jobs, eq(jobs.id, taskRuns.jobId))
+    .where(and(
+      eq(taskRuns.id, taskRunId),
+      eq(taskRuns.status, "awaiting"),
+      eq(jobs.status, "completed"),
+      sql`${jobs.input} ->> 'kind' = 'protected_task_run_v1'`,
+      sql`${jobs.metadata} ? ${PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY}`,
+    )).limit(2);
+  if (rows.length !== 1) return null;
+  const row = rows[0]!;
+  if (!isRecord(row.job.reference)
+    || !Number.isSafeInteger(row.job.reference["executionSegment"])) {
+    return null;
+  }
+  const segment = await readProtectedTaskExecutionSegment(db, {
+    taskRunId: row.run.id,
+    jobId: row.job.id,
+    executionSegment: row.job.reference["executionSegment"] as number,
+  });
+  const parsed = parseParkedProtectedTaskHumanContinuation({
+    task: row.task as ParkedProtectedTaskHumanContinuationTaskRow,
+    run: row.run as ParkedProtectedTaskAdditionalAuthorityRunRow,
+    job: row.job as ParkedProtectedTaskHumanContinuationJobRow,
+    segment,
+  });
+  if (parsed === null
+    || !await readCurrentEnabledHumanActor(db, parsed.acceptance.acceptedBy, false)) {
+    return null;
+  }
+  return parsed;
+}
+
+export async function readAcceptedParkedProtectedTaskHumanContinuation(
+  db: Pick<DirectDatabase, "select">,
+  input: Readonly<{ taskRunId: string; acceptanceId: string }>,
+): Promise<ParkedProtectedTaskHumanContinuation | null> {
+  if (!opaqueCheckpointCoordinate(input.acceptanceId)) {
+    throw new TypeError("Protected Task Human discovery identity is malformed");
+  }
+  const candidate = await readAcceptedParkedProtectedTaskHumanCandidate(
+    db,
+    input.taskRunId,
+  );
+  return candidate?.acceptance.acceptanceId === input.acceptanceId
+    ? candidate
+    : null;
+}
+
+export async function discoverAcceptedParkedProtectedTaskHumanContinuation(
+  db: Pick<DirectDatabase, "select">,
+  input: Readonly<{ taskRunId: string }>,
+): Promise<ParkedProtectedTaskHumanContinuation | null> {
+  return readAcceptedParkedProtectedTaskHumanCandidate(db, input.taskRunId);
+}
+
+export async function lockParkedProtectedTaskHumanContinuation(
+  transaction: Pick<DirectDatabase, "select">,
+  supplied: ParkedProtectedTaskHumanContinuation,
+): Promise<Readonly<{
+  current: ParkedProtectedTaskHumanContinuation;
+  task: LockedParkedProtectedTaskHumanContinuationTaskRow;
+}> | null> {
+  const expected = copyParkedProtectedTaskHumanContinuation(supplied);
+  const taskRows = await transaction.select(
+    lockedParkedTaskHumanContinuationTaskProjection,
+  ).from(tasks).where(eq(tasks.id, expected.occurrence.task.id))
+    .limit(2).for("update");
+  const task = taskRows.length === 1
+    ? taskRows[0] as LockedParkedProtectedTaskHumanContinuationTaskRow
+    : undefined;
+  if (task === undefined) return null;
+  const runRows = await transaction.select(
+    parkedTaskAdditionalAuthorityRunProjection,
+  ).from(taskRuns).where(and(
+    eq(taskRuns.id, expected.occurrence.run.id),
+    eq(taskRuns.taskId, task.id),
+  )).limit(2).for("update");
+  const run = runRows.length === 1
+    ? runRows[0] as ParkedProtectedTaskAdditionalAuthorityRunRow
+    : undefined;
+  if (run === undefined || run.jobId !== expected.priorJob.id) return null;
+  const jobRows = await transaction.select(
+    parkedTaskHumanContinuationJobProjection,
+  ).from(jobs).where(and(
+    eq(jobs.id, expected.priorJob.id),
+    sql`${jobs.input} ->> 'kind' = 'protected_task_run_v1'`,
+  )).limit(2).for("update");
+  const job = jobRows.length === 1
+    ? jobRows[0] as ParkedProtectedTaskHumanContinuationJobRow
+    : undefined;
+  if (job === undefined) return null;
+  const segment = await readProtectedTaskExecutionSegment(transaction, {
+    taskRunId: run.id,
+    jobId: job.id,
+    executionSegment: expected.priorJob.reference.executionSegment,
+  });
+  const current = parseParkedProtectedTaskHumanContinuation({
+    task,
+    run,
+    job,
+    segment,
+  });
+  return current !== null
+      && sameParkedProtectedTaskHumanContinuation(expected, current)
+      && await readCurrentEnabledHumanActor(
+        transaction,
+        current.acceptance.acceptedBy,
+        true,
+      )
+    ? Object.freeze({ current, task })
+    : null;
+}
+
 type PublishedProtectedTaskReplyMessage = Readonly<{
   operationId: string;
   operationSessionId: string;
@@ -4787,11 +5832,11 @@ function publishedProtectedTaskReplyReference(
 function parkedProtectedTaskAwaitReplyInput(
   row: Readonly<{ task: Task; run: TaskRun; job: Job }>,
   publication: Readonly<{
-    operationId: string;
     acceptedAt: Date;
     message: ProtectedTaskAwaitReplyMessageReference;
+    humanActorId: string;
   }>,
-): AcceptProtectedTaskAwaitReplyInput | null {
+): ResolvedPublishedProtectedTaskAwaitReplyInput | null {
   const { task, run, job } = row;
   const metadata = isRecord(job.metadata) ? job.metadata : {};
   const rawReceipt = metadata[PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY];
@@ -4802,7 +5847,7 @@ function parkedProtectedTaskAwaitReplyInput(
     : new Date(Number.NaN);
   if (
     Object.keys(rawReceipt).sort().join(",")
-      !== "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,taskId,taskRunId,version"
+      !== "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,stableRoutingDigest,taskId,taskRunId,version"
     || rawReceipt["version"] !== 1
     || !Number.isSafeInteger(rawReceipt["generation"])
     || (rawReceipt["generation"] as number) < 0
@@ -4813,6 +5858,10 @@ function parkedProtectedTaskAwaitReplyInput(
     || parkedAt.toISOString() !== parkedAtText
     || publication.acceptedAt.getTime() < parkedAt.getTime()
   ) return null;
+  const stableRoutingDigest = decodeRoutingDigest(
+    rawReceipt["stableRoutingDigest"],
+  );
+  if (stableRoutingDigest === null) return null;
 
   let interrupts: readonly ProtectedTaskRunInterruptCoordinate[];
   try {
@@ -4838,6 +5887,7 @@ function parkedProtectedTaskAwaitReplyInput(
     executionSegment: rawReceipt["executionSegment"] as number,
     interrupts,
     parkedAt: parkedAt.toISOString(),
+    stableRoutingDigest: rawReceipt["stableRoutingDigest"] as string,
   });
   const expectedTaskStatus = task.scheduleKind === "cron" ? "pending" : "awaiting";
   if (
@@ -4878,20 +5928,215 @@ function parkedProtectedTaskAwaitReplyInput(
     executionSegment: receipt.executionSegment,
     interrupts,
     parkedAt,
+    stableRoutingDigest,
     priorJobReference: Object.freeze({ ...reference }),
     acceptance: Object.freeze({
-      acceptanceId: publication.operationId,
-      interruptId: awaitReply[0]!.id,
-      message: publication.message,
+      acceptedBy: Object.freeze({
+        userId: publication.message.sourceUserId,
+        humanActorId: publication.humanActorId,
+      }),
+      interrupt: awaitReply[0]!,
       acceptedAt: publication.acceptedAt,
+      response: Object.freeze({
+        kind: "await_reply" as const,
+        message: publication.message,
+      }),
     }),
   });
+}
+
+function parkedProtectedTaskHumanAcceptanceCoordinates(
+  row: Readonly<{ task: Task; run: TaskRun; job: Job }>,
+  selector: ResolveParkedProtectedTaskHumanContinuationAcceptanceInput[
+    "interrupt"
+  ],
+): Readonly<{
+  input: Omit<AcceptProtectedTaskHumanContinuationInput, "acceptance">;
+  interrupt: ProtectedTaskRunInterruptCoordinate;
+}> | null {
+  const { task, run, job } = row;
+  const metadata = isRecord(job.metadata) ? job.metadata : {};
+  const rawReceipt = metadata[PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY];
+  if (!isRecord(rawReceipt)) return null;
+  const parkedAtText = rawReceipt["parkedAt"];
+  const parkedAt = typeof parkedAtText === "string"
+    ? new Date(parkedAtText)
+    : new Date(Number.NaN);
+  const stableRoutingDigest = decodeRoutingDigest(
+    rawReceipt["stableRoutingDigest"],
+  );
+  if (Object.keys(rawReceipt).sort().join(",")
+      !== "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,stableRoutingDigest,taskId,taskRunId,version"
+    || rawReceipt["version"] !== 1
+    || !Number.isSafeInteger(rawReceipt["generation"])
+    || (rawReceipt["generation"] as number) < 0
+    || !Number.isSafeInteger(rawReceipt["executionSegment"])
+    || (rawReceipt["executionSegment"] as number) < 1
+    || rawReceipt["executionSegment"] === Number.MAX_SAFE_INTEGER
+    || !Number.isFinite(parkedAt.getTime())
+    || parkedAt.toISOString() !== parkedAtText
+    || stableRoutingDigest === null) return null;
+  let interrupts: readonly ProtectedTaskRunInterruptCoordinate[];
+  try {
+    interrupts = canonicalInterruptCoordinates(
+      rawReceipt["interrupts"] as readonly ProtectedTaskRunInterruptCoordinate[],
+    );
+  } catch {
+    return null;
+  }
+  const selected = interrupts.filter(interrupt =>
+    interrupt.kind === selector.kind
+      && (selector.id === undefined || interrupt.id === selector.id)
+      && (selector.requestId === undefined
+        || interrupt.requestId === selector.requestId)
+  );
+  if (selected.length !== 1 || selected[0]!.kind === "additional_authority") {
+    return null;
+  }
+  const reference = job.input as ProtectedTaskDurableJobReference;
+  const receipt: ProtectedTaskRunParkReceipt = Object.freeze({
+    version: 1,
+    taskId: task.id,
+    taskRunId: run.id,
+    jobId: job.id,
+    graphThreadId: run.graphThreadId,
+    generation: rawReceipt["generation"] as number,
+    executionSegment: rawReceipt["executionSegment"] as number,
+    interrupts,
+    parkedAt: parkedAt.toISOString(),
+    stableRoutingDigest: rawReceipt["stableRoutingDigest"] as string,
+  });
+  const expectedTaskStatus = task.scheduleKind === "cron" ? "pending" : "awaiting";
+  if (task.status !== expectedTaskStatus
+    || task.contentRepresentation !== "dual"
+      && task.contentRepresentation !== "protected"
+    || task.contentNamespaceId === null
+    || task.contentRevision < 1
+    || task.cryptoObjectId === null
+    || task.cryptoAccessRevision < 0
+    || task.cryptoRequiredNamespaceFingerprint === null
+    || task.cryptoRequiredNamespaceFingerprint.length !== 32
+    || task.cryptoMappingState !== "verified"
+    || task.lastError !== null
+    || task.contentRepresentation === "protected" && (
+      task.prompt !== "" || task.expectedOutput !== null
+    )
+    || run.status !== "awaiting"
+    || run.taskId !== task.id
+    || run.jobId !== job.id
+    || !pristineProtectedTaskRun(run)
+    || job.status !== "completed"
+    || job.completedAt?.getTime() !== parkedAt.getTime()
+    || job.ownerId !== task.requestorId
+    || job.requestorId !== task.requestorId
+    || job.laneKey !== `task:${task.id}`
+    || job.type !== "foreground"
+    || job.result !== null
+    || job.message !== null
+    || job.startedAt === null
+    || metadata[PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY] !== undefined
+    || metadata[PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY] !== undefined
+    || !exactProtectedTaskJobReference(job.input, reference)
+    || reference.taskId !== task.id
+    || reference.taskRunId !== run.id
+    || reference.executionSegment !== receipt.executionSegment
+    || !exactParkReceipt(rawReceipt, receipt)) return null;
+  return Object.freeze({
+    input: Object.freeze({
+      taskId: task.id,
+      taskRunId: run.id,
+      graphThreadId: run.graphThreadId,
+      priorJobId: job.id,
+      generation: receipt.generation,
+      executionSegment: receipt.executionSegment,
+      interrupts: copyProtectedTaskInterrupts(interrupts),
+      parkedAt: new Date(parkedAt.getTime()),
+      stableRoutingDigest: stableRoutingDigest.slice(),
+      priorJobReference: Object.freeze({ ...reference }),
+    }),
+    interrupt: Object.freeze({ ...selected[0]! }),
+  });
+}
+
+/** Resolve one exact, still-pending Human interrupt without exposing Job JSON
+ * to the HTTP route. Ambiguous coordinates fail closed. */
+export async function resolveParkedProtectedTaskHumanContinuationAcceptance(
+  db: Pick<DirectDatabase, "select">,
+  input: ResolveParkedProtectedTaskHumanContinuationAcceptanceInput,
+): Promise<ResolveParkedProtectedTaskHumanContinuationAcceptanceResult> {
+  if (!CANONICAL_UUID.test(input.taskId)
+    || !input.graphThreadId
+    || !CANONICAL_UUID.test(input.acceptedBy.userId)
+    || !CANONICAL_UUID.test(input.acceptedBy.humanActorId)
+    || !isRecord(input.interrupt)
+    || !["approval", "prove_it", "identity", "await_reply"].includes(
+      input.interrupt.kind,
+    )
+    || input.interrupt.id !== undefined
+      && !opaqueCheckpointCoordinate(input.interrupt.id)
+    || input.interrupt.requestId !== undefined
+      && !opaqueCheckpointCoordinate(input.interrupt.requestId)) {
+    return { status: "no_match" };
+  }
+  const [human] = await db.select({
+    humanActorId: actors.id,
+    userId: actors.ownerId,
+    kind: actors.kind,
+    disabledAt: users.disabledAt,
+  }).from(actors).innerJoin(users, eq(users.id, actors.ownerId)).where(and(
+    eq(actors.id, input.acceptedBy.humanActorId),
+    eq(actors.ownerId, input.acceptedBy.userId),
+    eq(actors.kind, "user"),
+    isNull(users.disabledAt),
+  )).limit(1);
+  if (!human
+    || human.humanActorId !== input.acceptedBy.humanActorId
+    || human.userId !== input.acceptedBy.userId
+    || human.kind !== "user"
+    || human.disabledAt !== null) return { status: "no_match" };
+  const rows = await db.select({ task: tasks, run: taskRuns, job: jobs })
+    .from(tasks)
+    .innerJoin(taskRuns, eq(taskRuns.taskId, tasks.id))
+    .innerJoin(jobs, eq(jobs.id, taskRuns.jobId))
+    .where(and(
+      eq(tasks.id, input.taskId),
+      eq(taskRuns.graphThreadId, input.graphThreadId),
+      eq(taskRuns.status, "awaiting"),
+      eq(jobs.status, "completed"),
+    )).limit(3);
+  let resolved: Extract<
+    ResolveParkedProtectedTaskHumanContinuationAcceptanceResult,
+    { status: "resolved" }
+  > | null = null;
+  for (const row of rows) {
+    const delegation = row.task.localExecutionDelegation === null
+      || row.task.localExecutionDelegation === undefined
+      ? null
+      : parseLocalExecutionDelegation(row.task.localExecutionDelegation);
+    const recipient = row.task.localExecutionDelegation === null
+      || row.task.localExecutionDelegation === undefined
+      ? row.task.ownerId
+      : delegation !== null
+          && delegation.humanUserId === row.task.requestorId
+          && delegation.agentId === row.task.agentId
+        ? delegation.humanUserId
+        : null;
+    if (recipient !== input.acceptedBy.userId) continue;
+    const candidate = parkedProtectedTaskHumanAcceptanceCoordinates(
+      row,
+      input.interrupt,
+    );
+    if (candidate === null) continue;
+    if (resolved !== null) return { status: "ambiguous" };
+    resolved = Object.freeze({ status: "resolved" as const, ...candidate });
+  }
+  return resolved ?? { status: "no_match" };
 }
 
 /**
  * Resolve one published AI-readable Human Message to the exact parked
  * protected Task interruption it may satisfy. This is discovery only: it
- * returns content-free coordinates for `acceptProtectedTaskAwaitReply` and
+ * returns content-free coordinates for `acceptProtectedTaskHumanContinuation` and
  * never advances the Task or opens protected bytes.
  */
 export async function resolvePublishedProtectedTaskAwaitReply(
@@ -4964,13 +6209,28 @@ export async function resolvePublishedProtectedTaskAwaitReply(
     input.messageId,
   );
   if (publication === null) return { status: "no_match" };
+  const humanRows = await db.select({
+    humanActorId: actors.id,
+    userId: actors.ownerId,
+    kind: actors.kind,
+    disabledAt: users.disabledAt,
+  }).from(actors).innerJoin(users, eq(users.id, actors.ownerId)).where(and(
+    eq(actors.ownerId, publication.message.sourceUserId),
+    eq(actors.kind, "user"),
+    isNull(users.disabledAt),
+  )).limit(2);
+  if (humanRows.length !== 1
+    || humanRows[0]!.userId !== publication.message.sourceUserId
+    || humanRows[0]!.kind !== "user"
+    || humanRows[0]!.disabledAt !== null) return { status: "no_match" };
 
   // The broad status query also finds parked Tasks with unrelated interrupts.
   // Page through it until two *validated* park receipts are found; counting
   // rows before receipt validation would reject an otherwise unique reply.
   const pageSize = 64;
   let afterRunId: string | null = null;
-  let resolved: AcceptProtectedTaskAwaitReplyInput | null = null;
+  let resolved: Extract<ResolvePublishedProtectedTaskAwaitReplyResult,
+    { status: "resolved" }>["input"] | null = null;
   while (true) {
     const candidates = await db.select({ task: tasks, run: taskRuns, job: jobs })
       .from(tasks)
@@ -4999,7 +6259,7 @@ export async function resolvePublishedProtectedTaskAwaitReply(
       .limit(pageSize);
     for (const candidate of candidates) {
       const match = parkedProtectedTaskAwaitReplyInput(candidate, {
-        operationId: input.operationId,
+        humanActorId: humanRows[0]!.humanActorId,
         ...publication,
       });
       if (match === null) continue;
@@ -5021,10 +6281,10 @@ export async function resolvePublishedProtectedTaskAwaitReply(
  * same receipt is idempotent, while a second reply for the same parked Job is
  * a conflict.
  */
-export async function acceptProtectedTaskAwaitReply(
+export async function acceptProtectedTaskHumanContinuation(
   db: DirectDatabase,
-  input: AcceptProtectedTaskAwaitReplyInput,
-): Promise<AcceptProtectedTaskAwaitReplyResult> {
+  input: AcceptProtectedTaskHumanContinuationInput,
+): Promise<AcceptProtectedTaskHumanContinuationResult> {
   const reference = input.priorJobReference;
   if (
     !input.taskId
@@ -5052,9 +6312,9 @@ export async function acceptProtectedTaskAwaitReply(
     || reference.executionSegment !== input.executionSegment
     || !exactProtectedTaskJobReference(reference, reference)
   ) {
-    throw new TypeError("Protected Task await-reply acceptance is malformed");
+    throw new TypeError("Protected Task Human acceptance is malformed");
   }
-  const receipt = awaitReplyAcceptanceReceipt(input);
+  const receipt = humanContinuationAcceptanceReceipt(input);
   const park = parkReceipt({
     taskId: input.taskId,
     taskRunId: input.taskRunId,
@@ -5065,8 +6325,10 @@ export async function acceptProtectedTaskAwaitReply(
     interrupts: input.interrupts,
     parkedAt: input.parkedAt,
     jobReference: reference,
-  });
-  const messageId = Number(receipt.message.messageId);
+  }, input.stableRoutingDigest);
+  const messageReference = receipt.response.kind === "await_reply"
+    ? receipt.response.message
+    : null;
 
   return db.transaction(async (tx) => {
     const [task] = await tx.select().from(tasks)
@@ -5086,7 +6348,25 @@ export async function acceptProtectedTaskAwaitReply(
     }
 
     const metadata = isRecord(priorJob.metadata) ? priorJob.metadata : {};
-    const existing = metadata[PROTECTED_TASK_AWAIT_REPLY_ACCEPTANCE_METADATA_KEY];
+    const existing = metadata[PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY];
+    const delegation = task.localExecutionDelegation === null
+      || task.localExecutionDelegation === undefined
+      ? null
+      : parseLocalExecutionDelegation(task.localExecutionDelegation);
+    const recipientUserId = task.localExecutionDelegation === null
+      || task.localExecutionDelegation === undefined
+      ? task.ownerId
+      : delegation !== null
+          && delegation.humanUserId === task.requestorId
+          && delegation.agentId === task.agentId
+        ? delegation.humanUserId
+        : null;
+    const exactHumanResponseBinding = messageReference === null
+      ? receipt.acceptedBy.userId === recipientUserId
+      : receipt.acceptedBy.userId === messageReference.sourceUserId
+        && task.targetRoomId === messageReference.roomId
+        && (task.requestorId === messageReference.sourceUserId
+          || task.targetUserIds.includes(messageReference.sourceUserId));
     const exactProtectedTask = (
       task.contentRepresentation === "dual"
         || task.contentRepresentation === "protected"
@@ -5099,11 +6379,8 @@ export async function acceptProtectedTaskAwaitReply(
       && task.cryptoRequiredNamespaceFingerprint.length === 32
       && task.cryptoMappingState === "verified"
       && task.lastError === null
-      && task.targetRoomId === receipt.message.roomId
-      && (
-        task.requestorId === receipt.message.sourceUserId
-        || task.targetUserIds.includes(receipt.message.sourceUserId)
-      )
+      && recipientUserId !== null
+      && exactHumanResponseBinding
       && (task.contentRepresentation !== "protected" || (
         task.prompt === ""
         && task.expectedOutput === null
@@ -5141,12 +6418,75 @@ export async function acceptProtectedTaskAwaitReply(
       return { status: "rejected", reason: "stale" } as const;
     }
     if (existing !== undefined) {
-      return exactAwaitReplyAcceptanceReceipt(existing, receipt)
-        ? { status: "exact_replay" } as const
+      const storedAcceptedAt = isRecord(existing)
+        && typeof existing["acceptedAt"] === "string"
+        ? new Date(existing["acceptedAt"])
+        : new Date(Number.NaN);
+      const durableAcceptance = Object.freeze({
+        ...input.acceptance,
+        acceptedBy: Object.freeze({ ...input.acceptance.acceptedBy }),
+        interrupt: Object.freeze({ ...input.acceptance.interrupt }),
+        response: input.acceptance.response.kind === "await_reply"
+          ? Object.freeze({
+              kind: "await_reply" as const,
+              message: Object.freeze({
+                ...input.acceptance.response.message,
+              }),
+            })
+          : Object.freeze({ ...input.acceptance.response }),
+        acceptedAt: storedAcceptedAt,
+      });
+      const durableReceipt = Number.isFinite(storedAcceptedAt.getTime())
+        ? humanContinuationAcceptanceReceipt({
+            ...input,
+            acceptance: durableAcceptance,
+          })
+        : null;
+      return durableReceipt !== null
+          && exactHumanContinuationAcceptanceReceipt(existing, durableReceipt)
+        ? { status: "exact_replay", acceptance: durableAcceptance } as const
         : { status: "rejected", reason: "conflict" } as const;
     }
 
-    const [message] = await tx.select({
+    const [human] = await tx.select({
+      humanActorId: actors.id,
+      userId: actors.ownerId,
+      kind: actors.kind,
+      disabledAt: users.disabledAt,
+    }).from(actors).innerJoin(users, eq(users.id, actors.ownerId)).where(and(
+      eq(actors.id, receipt.acceptedBy.humanActorId),
+      eq(actors.ownerId, receipt.acceptedBy.userId),
+      eq(actors.kind, "user"),
+      isNull(users.disabledAt),
+    )).limit(1).for("share");
+    if (!human
+      || human.humanActorId !== receipt.acceptedBy.humanActorId
+      || human.userId !== receipt.acceptedBy.userId
+      || human.kind !== "user"
+      || human.disabledAt !== null) {
+      return { status: "rejected", reason: "stale" } as const;
+    }
+
+    let message: {
+      roomId: string | null;
+      sessionId: string;
+      messageId: number;
+      editRevision: number;
+      cryptoObjectId: string | null;
+      namespaceId: string;
+      sourceUserId: string;
+      role: string;
+      createdAt: Date;
+      lifecycleNamespaceId: string;
+      lifecycleRoomId: string;
+      lifecycleCryptoObjectId: string;
+      lifecycleKeyClass: string;
+      lifecycleAuthorRole: string;
+      lifecyclePayloadVersion: number;
+      lifecycleCompletion: string;
+      lifecycleDisposition: string;
+    } | undefined;
+    if (messageReference !== null) [message] = await tx.select({
       roomId: sessions.roomId,
       sessionId: sessionMessages.sessionId,
       messageId: sessionMessages.id,
@@ -5176,39 +6516,39 @@ export async function acceptProtectedTaskAwaitReply(
           sessionMessages.editRevision,
         ),
       )).where(and(
-        eq(sessionMessages.id, messageId),
-        eq(sessionMessages.sessionId, receipt.message.sessionId),
+        eq(sessionMessages.id, Number(messageReference.messageId)),
+        eq(sessionMessages.sessionId, messageReference.sessionId),
       )).limit(1).for("share");
-    if (!message) {
+    if (messageReference !== null && !message) {
       return { status: "rejected", reason: "not_found" } as const;
     }
-    if (
-      message.roomId !== receipt.message.roomId
-      || message.sessionId !== receipt.message.sessionId
-      || String(message.messageId) !== receipt.message.messageId
-      || message.editRevision !== receipt.message.editRevision
-      || message.cryptoObjectId !== receipt.message.cryptoObjectId
-      || message.namespaceId !== receipt.message.namespaceId
-      || message.sourceUserId !== receipt.message.sourceUserId
+    if (messageReference !== null && message !== undefined && (
+      message.roomId !== messageReference.roomId
+      || message.sessionId !== messageReference.sessionId
+      || String(message.messageId) !== messageReference.messageId
+      || message.editRevision !== messageReference.editRevision
+      || message.cryptoObjectId !== messageReference.cryptoObjectId
+      || message.namespaceId !== messageReference.namespaceId
+      || message.sourceUserId !== messageReference.sourceUserId
       || message.role !== "user"
       || message.createdAt.getTime() < input.parkedAt.getTime()
       || input.acceptance.acceptedAt.getTime() < message.createdAt.getTime()
-      || message.lifecycleNamespaceId !== receipt.message.namespaceId
-      || message.lifecycleRoomId !== receipt.message.roomId
-      || message.lifecycleCryptoObjectId !== receipt.message.cryptoObjectId
+      || message.lifecycleNamespaceId !== messageReference.namespaceId
+      || message.lifecycleRoomId !== messageReference.roomId
+      || message.lifecycleCryptoObjectId !== messageReference.cryptoObjectId
       || message.lifecycleKeyClass !== "ai"
       || message.lifecycleAuthorRole !== "user"
       || message.lifecyclePayloadVersion !== 2
       || message.lifecycleCompletion !== "complete"
       || message.lifecycleDisposition !== "mapped"
-    ) {
+    )) {
       return { status: "rejected", reason: "stale" } as const;
     }
 
     const [updatedJob] = await tx.update(jobs).set({
       metadata: {
         ...metadata,
-        [PROTECTED_TASK_AWAIT_REPLY_ACCEPTANCE_METADATA_KEY]: receipt,
+        [PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY]: receipt,
       },
     }).where(and(
       eq(jobs.id, priorJob.id),
@@ -5217,9 +6557,25 @@ export async function acceptProtectedTaskAwaitReply(
       isNull(jobs.message),
     )).returning();
     if (!updatedJob) {
-      throw new Error("Protected Task await-reply acceptance lost its Job");
+      throw new Error("Protected Task Human acceptance lost its Job");
     }
-    return { status: "accepted" } as const;
+    return {
+      status: "accepted",
+      acceptance: Object.freeze({
+        ...input.acceptance,
+        acceptedBy: Object.freeze({ ...input.acceptance.acceptedBy }),
+        interrupt: Object.freeze({ ...input.acceptance.interrupt }),
+        response: input.acceptance.response.kind === "await_reply"
+          ? Object.freeze({
+              kind: "await_reply" as const,
+              message: Object.freeze({
+                ...input.acceptance.response.message,
+              }),
+            })
+          : Object.freeze({ ...input.acceptance.response }),
+        acceptedAt: new Date(input.acceptance.acceptedAt.getTime()),
+      }),
+    } as const;
   });
 }
 
@@ -5269,7 +6625,7 @@ async function advanceParkedProtectedTaskSegment(
     replayAuthorized: boolean;
     beforeStart?: () => Promise<void>;
   }>,
-): Promise<StartParkedProtectedTaskRunSegmentResult> {
+): Promise<StartParkedProtectedTaskHumanRunSegmentResult> {
   const { task, run, priorJob, nextJob } = rows;
   const nextJobIsPristineQueued = nextJob.status === "queued"
     && nextJob.startedAt === null;
@@ -5335,10 +6691,10 @@ async function advanceParkedProtectedTaskSegment(
  * in-memory executor. This operation does not create a grant or make an
  * awaiting run eligible on its own.
  */
-export async function startParkedProtectedTaskRunSegment(
+export async function startParkedProtectedTaskHumanRunSegment(
   db: DirectDatabase,
-  input: StartParkedProtectedTaskRunSegmentInput,
-): Promise<StartParkedProtectedTaskRunSegmentResult> {
+  input: StartParkedProtectedTaskHumanRunSegmentInput,
+): Promise<StartParkedProtectedTaskHumanRunSegmentResult> {
   const priorReference = input.priorJobReference;
   const nextReference = input.jobReference;
   if (
@@ -5409,8 +6765,8 @@ export async function startParkedProtectedTaskRunSegment(
     interrupts: input.interrupts,
     parkedAt: input.parkedAt,
     jobReference: priorReference,
-  });
-  const acceptanceReceipt = awaitReplyAcceptanceReceipt({
+  }, input.stableRoutingDigest);
+  const acceptanceReceipt = humanContinuationAcceptanceReceipt({
     taskId: input.taskId,
     taskRunId: input.taskRunId,
     graphThreadId: input.graphThreadId,
@@ -5421,6 +6777,7 @@ export async function startParkedProtectedTaskRunSegment(
     parkedAt: input.parkedAt,
     acceptance: input.acceptance,
   });
+  const prepared = prepareParkedProtectedTaskHumanStart(input);
 
   return db.transaction(async (tx) => {
     const rows = await lockParkedProtectedTaskSegmentRows(tx, input);
@@ -5431,6 +6788,59 @@ export async function startParkedProtectedTaskRunSegment(
 
     const priorMetadata = isRecord(priorJob.metadata) ? priorJob.metadata : {};
     const nextMetadata = isRecord(nextJob.metadata) ? nextJob.metadata : {};
+    const segment = await readProtectedTaskExecutionSegment(tx, {
+      taskRunId: input.taskRunId,
+      jobId: input.priorJobId,
+      executionSegment: priorReference.executionSegment,
+    });
+    const expectedParkedTaskStatus = task.scheduleKind === "cron"
+      ? "pending"
+      : "awaiting";
+    const freshLifecycleCandidate = task.status === expectedParkedTaskStatus
+      && run.status === "awaiting"
+      && run.jobId === priorJob.id
+      && nextJob.status === "queued"
+      && nextJob.startedAt === null;
+    const transcript = freshLifecycleCandidate
+      ? await readProtectedTaskTranscriptManifestInTx(tx, {
+          taskId: input.taskId,
+          taskRunId: input.taskRunId,
+          graphThreadId: input.graphThreadId,
+        })
+      : null;
+    if (!exactParkedProtectedTaskHumanProof(
+      segment,
+      priorMetadata[PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY],
+      prepared,
+      freshLifecycleCandidate,
+    ) || freshLifecycleCandidate && (
+      transcript === null
+      || segment === null
+      || !exactAdditionalAuthorityTranscriptManifest(segment, transcript)
+    )) {
+      return { status: "rejected", reason: "conflict" } as const;
+    }
+    const delegation = task.localExecutionDelegation === null
+      || task.localExecutionDelegation === undefined
+      ? null
+      : parseLocalExecutionDelegation(task.localExecutionDelegation);
+    const recipientUserId = task.localExecutionDelegation === null
+      || task.localExecutionDelegation === undefined
+      ? task.ownerId
+      : delegation !== null
+          && delegation.humanUserId === task.requestorId
+          && delegation.agentId === task.agentId
+        ? delegation.humanUserId
+        : null;
+    const messageReference = acceptanceReceipt.response.kind === "await_reply"
+      ? acceptanceReceipt.response.message
+      : null;
+    const exactHumanResponseBinding = messageReference === null
+      ? acceptanceReceipt.acceptedBy.userId === recipientUserId
+      : acceptanceReceipt.acceptedBy.userId === messageReference.sourceUserId
+        && task.targetRoomId === messageReference.roomId
+        && (task.requestorId === messageReference.sourceUserId
+          || task.targetUserIds.includes(messageReference.sourceUserId));
     const exactProtectedTask = (
       task.contentRepresentation === input.contentRepresentation
       && task.contentNamespaceId === input.contentNamespaceId
@@ -5444,11 +6854,8 @@ export async function startParkedProtectedTaskRunSegment(
       )
       && task.cryptoMappingState === "verified"
       && task.lastError === null
-      && task.targetRoomId === acceptanceReceipt.message.roomId
-      && (
-        task.requestorId === acceptanceReceipt.message.sourceUserId
-        || task.targetUserIds.includes(acceptanceReceipt.message.sourceUserId)
-      )
+      && recipientUserId !== null
+      && exactHumanResponseBinding
       && (task.contentRepresentation !== "protected" || (
         task.prompt === ""
         && task.expectedOutput === null
@@ -5472,12 +6879,12 @@ export async function startParkedProtectedTaskRunSegment(
       receipt,
     );
     const existingAcceptance =
-      priorMetadata[PROTECTED_TASK_AWAIT_REPLY_ACCEPTANCE_METADATA_KEY];
-    const exactUnconsumedAcceptance = exactAwaitReplyAcceptanceReceipt(
+      priorMetadata[PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY];
+    const exactUnconsumedAcceptance = exactHumanContinuationAcceptanceReceipt(
       existingAcceptance,
       acceptanceReceipt,
     );
-    const exactConsumedAcceptance = exactAwaitReplyAcceptanceReceipt(
+    const exactConsumedAcceptance = exactHumanContinuationAcceptanceReceipt(
       existingAcceptance,
       acceptanceReceipt,
       nextJob.id,
@@ -5491,13 +6898,35 @@ export async function startParkedProtectedTaskRunSegment(
       && nextJob.completedAt === null
       && Object.keys(nextMetadata).length === 0
       && exactProtectedTaskJobReference(nextJob.input, nextReference);
+    const [human] = await tx.select({
+      humanActorId: actors.id,
+      userId: actors.ownerId,
+      kind: actors.kind,
+      disabledAt: users.disabledAt,
+    }).from(actors).innerJoin(users, eq(users.id, actors.ownerId)).where(and(
+      eq(actors.id, acceptanceReceipt.acceptedBy.humanActorId),
+      eq(actors.ownerId, acceptanceReceipt.acceptedBy.userId),
+      eq(actors.kind, "user"),
+      isNull(users.disabledAt),
+    )).limit(1).for("share");
+    const exactCurrentMessage = messageReference === null
+      || await hasExactCurrentProtectedTaskReplyMessage(tx, messageReference);
     if (!exactPriorReceipt) {
       return { status: "rejected", reason: "conflict" } as const;
     }
     if (!exactUnconsumedAcceptance && !exactConsumedAcceptance) {
       return { status: "rejected", reason: "conflict" } as const;
     }
-    if (!exactProtectedTask || !exactRun || !exactPriorJob || !exactNextJobIdentity) {
+    if (!exactProtectedTask
+      || !exactRun
+      || !exactPriorJob
+      || !exactNextJobIdentity
+      || !human
+      || human.humanActorId !== acceptanceReceipt.acceptedBy.humanActorId
+      || human.userId !== acceptanceReceipt.acceptedBy.userId
+      || human.kind !== "user"
+      || human.disabledAt !== null
+      || !exactCurrentMessage) {
       return { status: "rejected", reason: "stale" } as const;
     }
 
@@ -5509,7 +6938,7 @@ export async function startParkedProtectedTaskRunSegment(
         const [updatedPriorJob] = await tx.update(jobs).set({
           metadata: {
             ...priorMetadata,
-            [PROTECTED_TASK_AWAIT_REPLY_ACCEPTANCE_METADATA_KEY]: {
+            [PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY]: {
               ...acceptanceReceipt,
               consumedByJobId: nextJob.id,
             },

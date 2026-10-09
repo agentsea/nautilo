@@ -10,7 +10,6 @@ import {
   sql,
   tasks,
   type PostgresJsBridgeConnection,
-  type ParkedProtectedTaskAdditionalAuthority,
 } from "@nautilo/db";
 import {
   LATTICE_LIMITS,
@@ -51,12 +50,13 @@ import {
   copyParkedTaskRuntimeAuthority,
   copyParkedTaskRuntimeExpectedNamespaceParticipants,
   currentParkedTaskRuntimeRoutingFacts,
-  lockCurrentParkedTaskAdditionalAuthority,
+  lockCurrentParkedTaskAuthority,
   parkedTaskRuntimeNamespaceParticipantsMatch,
   withParkedTaskRuntimeRestrictedAuthority,
   type ParkedTaskRuntimeCurrentRoutingFacts,
   type ParkedTaskRuntimeExpectedNamespaceParticipants,
   type ParkedTaskRuntimeLockedRoutingTask,
+  type ParkedTaskRuntimeContinuation,
 } from "./parked-task-runtime-authority.ts";
 import type { CanonicalTranscriptTx } from "@nautilo/trust";
 
@@ -608,7 +608,7 @@ export async function withTaskContentNamespaceAuthority<Value>(
  */
 export async function withParkedTaskRuntimeNamespaceAuthority<Value>(
   input: InitialTaskRuntimeNamespaceInput & Readonly<{
-    expected: ParkedProtectedTaskAdditionalAuthority;
+    expected: ParkedTaskRuntimeContinuation;
     authorizationRequestId: string;
     validateCurrentRouting(
       facts: ParkedTaskRuntimeCurrentRoutingFacts,
@@ -666,7 +666,7 @@ export async function withParkedTaskRuntimeNamespaceAuthority<Value>(
       purpose: "initial_execution" as const,
     }),
     async (_product, transaction, task) => {
-      const current = await lockCurrentParkedTaskAdditionalAuthority({
+      const current = await lockCurrentParkedTaskAuthority({
         transaction,
         expected,
       });
@@ -868,7 +868,7 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(
  */
 export async function withParkedTaskRuntimeRecipientAuthority<Value>(
   input: TaskRuntimeRecipientAuthorityInput & Readonly<{
-    expected: ParkedProtectedTaskAdditionalAuthority;
+    expected: ParkedTaskRuntimeContinuation;
     authorizationRequestId: string;
     validateCurrentRouting(
       facts: ParkedTaskRuntimeCurrentRoutingFacts,
@@ -907,7 +907,7 @@ export async function withParkedTaskRuntimeRecipientAuthority<Value>(
   return withTaskRuntimeRecipientAuthority(
     input,
     async (_product, transaction, task) => {
-      const current = await lockCurrentParkedTaskAdditionalAuthority({
+      const current = await lockCurrentParkedTaskAuthority({
         transaction,
         expected,
       });

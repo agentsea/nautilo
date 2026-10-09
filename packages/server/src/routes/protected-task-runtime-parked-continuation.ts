@@ -1,11 +1,12 @@
 import {
-  discoverParkedProtectedTaskAdditionalAuthority,
   getEncryptionTransitionPolicy,
   getProtectedTaskRunOutputBinding,
   startParkedProtectedTaskRunAdditionalAuthoritySegment,
+  startParkedProtectedTaskHumanRunSegment,
   type DirectDatabase,
   type PostgresJsBridgeConnection,
-  type ParkedProtectedTaskAdditionalAuthority,
+  type StartParkedProtectedTaskHumanRunSegmentInput,
+  type ParkedProtectedTaskHumanContinuation,
   type ProtectedTaskDurableJobReference,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
 } from "@nautilo/db";
@@ -28,17 +29,21 @@ import type { PolicyResolver } from "@nautilo/trust";
 import { createProtectedTaskRuntimeParkedMemoryPlanResolver } from "./protected-task-runtime-parked-memory-plan";
 import {
   createParkedTaskRuntimeAuthorizationPlanResolver,
+  discoverParkedProtectedTaskContinuation,
   type ParkedTaskRuntimeAuthorizationPlan,
+  type ParkedProtectedTaskContinuation,
 } from "./protected-task-runtime-parked-plan";
 import { createProtectedTaskRuntimeParkedClaimAuthority } from "./protected-task-runtime-parked-claim-authority";
-import type { ProtectedTaskRuntimeGrantPlanBuilderDependencies } from "./protected-task-runtime-grant-plan";
+import type { ProtectedTaskRuntimeGrantPlanBuilderDependencies, ProtectedTaskHumanResumePreparation } from "./protected-task-runtime-grant-plan";
 
-type StartInput = StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput;
+type StartInput = StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput
+  | StartParkedProtectedTaskHumanRunSegmentInput;
 type Dependencies = Readonly<{
   resolvePlan: ReturnType<typeof createParkedTaskRuntimeAuthorizationPlanResolver>;
   authority: ReturnType<typeof createProtectedTaskRuntimeParkedClaimAuthority>;
   readManifest: typeof readProtectedTaskCheckpointPhysicalManifest;
   start: typeof startParkedProtectedTaskRunAdditionalAuthoritySegment;
+  startHuman: typeof startParkedProtectedTaskHumanRunSegment;
 }>;
 
 function startInput(
@@ -46,8 +51,8 @@ function startInput(
   value: ParkedTaskRuntimeExecutionStartInput,
   checkpointManifest: StartInput["checkpointManifest"],
 ): StartInput {
-  const { occurrence, priorJob, proof } = resolved.expected;
-  return {
+  const { occurrence, priorJob } = resolved.expected;
+  const common = {
     taskId: occurrence.task.id, taskRunId: occurrence.run.id,
     graphThreadId: occurrence.run.graphThreadId,
     priorJobId: priorJob.id, jobId: value.jobId,
@@ -62,15 +67,42 @@ function startInput(
     priorJobReference: priorJob.reference,
     jobReference: value.reference,
     checkpointManifest,
-    continuation: {
-      interruptId: proof.continuation.interruptId!,
-      operationId: proof.continuation.operationId!,
-      requestDigest: proof.continuation.requestDigest!,
-      requiredAuthorityDigest: proof.continuation.requiredAuthorityDigest!,
-      stableRoutingDigest: proof.continuation.stableRoutingDigest,
-      semanticAuthorityRequirements: proof.continuation.semanticAuthorityRequirements,
-    },
   };
+  if ("acceptance" in resolved.expected) return {
+    ...common, acceptance: resolved.expected.acceptance,
+    stableRoutingDigest: resolved.expected.stableRoutingDigest.slice(),
+  };
+  const { proof } = resolved.expected;
+  return { ...common, continuation: {
+    interruptId: proof.continuation.interruptId!,
+    operationId: proof.continuation.operationId!,
+    requestDigest: proof.continuation.requestDigest!,
+    requiredAuthorityDigest: proof.continuation.requiredAuthorityDigest!,
+    stableRoutingDigest: proof.continuation.stableRoutingDigest,
+    semanticAuthorityRequirements: proof.continuation.semanticAuthorityRequirements,
+  } };
+
+}
+
+function humanResumePreparation(
+  expected: ParkedProtectedTaskHumanContinuation,
+): ProtectedTaskHumanResumePreparation {
+  const { interrupt, response, acceptedBy } = expected.acceptance;
+  if (response.kind !== interrupt.kind) throw new TypeError("Task Human response changed kind");
+  if (response.kind === "approval") {
+    if (interrupt.requestId === undefined) throw new TypeError("Task approval request is missing");
+    return { kind: "approval", interruptId: interrupt.id,
+      requestId: interrupt.requestId, verb: response.verb };
+  }
+  if (response.kind === "prove_it") return {
+    kind: "prove_it", interruptId: interrupt.id, approved: response.approved,
+  };
+  if (response.kind === "identity") return {
+    kind: "identity", interruptId: interrupt.id, verified: true,
+    ...(interrupt.requestId === undefined ? {} : { requestId: interrupt.requestId }),
+  };
+  return { kind: "await_reply", interruptId: interrupt.id,
+    acceptedBy: { ...acceptedBy }, message: { ...response.message } };
 }
 
 /** Accepted parked grants resume the existing graph thread through one new Job. */
@@ -88,13 +120,13 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
   createDedicatedPool: Parameters<typeof readProtectedTaskCheckpointPhysicalManifest>[0]["createDedicatedPool"];
   recoverUnstarted(start: StartInput, claimed: BackgroundAuthorizationTaskRuntimeRecordV3): Promise<boolean>;
   recoverClaim(input: Readonly<{
-    expected: ParkedProtectedTaskAdditionalAuthority;
+    expected: ParkedProtectedTaskContinuation;
     jobReference: ProtectedTaskDurableJobReference;
   }>, claimed: BackgroundAuthorizationTaskRuntimeRecordV3): Promise<boolean>;
   now(): number;
 }>, overrides: Partial<Dependencies> = {}) {
   const resolvePlan = overrides.resolvePlan ?? createParkedTaskRuntimeAuthorizationPlanResolver({
-    db: input.db, discover: discoverParkedProtectedTaskAdditionalAuthority,
+    db: input.db, discover: discoverParkedProtectedTaskContinuation,
     readPolicy: getEncryptionTransitionPolicy, readOutput: getProtectedTaskRunOutputBinding,
     resolveMemory: createProtectedTaskRuntimeParkedMemoryPlanResolver({
       db: input.db, resolver: input.resolver,
@@ -105,6 +137,7 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
   });
   const readManifest = overrides.readManifest ?? readProtectedTaskCheckpointPhysicalManifest;
   const start = overrides.start ?? startParkedProtectedTaskRunAdditionalAuthoritySegment;
+  const startHuman = overrides.startHuman ?? startParkedProtectedTaskHumanRunSegment;
   const plan = async (observed: ProtectedTaskOccurrence): Promise<ParkedTaskRuntimeGrantClaimPlan | null> => {
     const occurrence = structuredClone(observed);
     const resolved = await resolvePlan({ occurrence, taskRunId: occurrence.run.id });
@@ -124,10 +157,11 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
       if (prepared === null) return null;
       const { resolved: pinned, canonical } = prepared;
       const { expected, memory, policy } = pinned;
+      const segment = "acceptance" in expected ? expected.segment : expected.proof.segment;
       if (policy.mode === "plaintext_only"
-        || expected.proof.segment.checkpointDigest === null
-        || expected.proof.segment.checkpointBlobDigest === null
-        || expected.proof.segment.pendingWriteDigest === null) return null;
+        || segment.checkpointDigest === null
+        || segment.checkpointBlobDigest === null
+        || segment.pendingWriteDigest === null) return null;
       const reference = Object.freeze({
         kind: "protected_task_run_v1" as const,
         taskId: occurrence.task.id, taskRunId: occurrence.run.id,
@@ -136,7 +170,9 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
         authorizationRequestId: expected.authorizationRequestId,
         policyRevision: canonical.authority.policyRevision,
         executionSegment: expected.nextExecutionSegment,
-        resumeContinuationFingerprint: expected.continuationFingerprint,
+        ...("acceptance" in expected
+          ? { resumeAcceptanceId: expected.acceptance.acceptanceId }
+          : { resumeContinuationFingerprint: expected.continuationFingerprint }),
       });
       const scheduling = Object.freeze({
         ownerId: occurrence.task.ownerId, requestorId: occurrence.task.requestorId,
@@ -148,27 +184,32 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
         predispatch: { occurrence, scheduling,
           target: { roomId: memory.routing.targetRoomId, targetUserIds: memory.routing.targetUserIds },
           memory: memory.resolution },
-        stableRoutingDigest: expected.proof.continuation.stableRoutingDigest.slice(),
-        additionalAuthorityResume: {
-          interruptId: expected.proof.continuation.interruptId!,
-          authorizationRequestId: expected.authorizationRequestId,
-          effectDisposition: "not_started_v1",
-          operationId: expected.proof.continuation.operationId!,
-          requestDigest: expected.proof.continuation.requestDigest!.slice(),
-          requiredAuthorityDigest: expected.proof.continuation.requiredAuthorityDigest!.slice(),
-        },
+        ...("acceptance" in expected ? {
+          stableRoutingDigest: expected.stableRoutingDigest.slice(),
+          humanResume: humanResumePreparation(expected),
+        } : {
+          stableRoutingDigest: expected.proof.continuation.stableRoutingDigest.slice(),
+          additionalAuthorityResume: {
+            interruptId: expected.proof.continuation.interruptId!,
+            authorizationRequestId: expected.authorizationRequestId,
+            effectDisposition: "not_started_v1" as const,
+            operationId: expected.proof.continuation.operationId!,
+            requestDigest: expected.proof.continuation.requestDigest!.slice(),
+            requiredAuthorityDigest: expected.proof.continuation.requiredAuthorityDigest!.slice(),
+          },
+        }),
         ...(memory.scopeMemory === undefined ? {} : {
           scopeMemory: memory.scopeMemory, scopeWorkIdentity: canonical.scopeWorkIdentity,
         }),
       });
       const priorManifest: StartInput["checkpointManifest"] = {
         contract: "encrypted_langgraph_v1",
-        expectedCheckpointCount: expected.proof.segment.expectedCheckpointCount,
-        checkpointOrderedDigest: expected.proof.segment.checkpointDigest.slice(),
-        expectedBlobCount: expected.proof.segment.expectedCheckpointBlobCount,
-        blobOrderedDigest: expected.proof.segment.checkpointBlobDigest.slice(),
-        expectedPendingWriteCount: expected.proof.segment.expectedPendingWriteCount,
-        pendingWriteOrderedDigest: expected.proof.segment.pendingWriteDigest.slice(),
+        expectedCheckpointCount: segment.expectedCheckpointCount,
+        checkpointOrderedDigest: segment.checkpointDigest.slice(),
+        expectedBlobCount: segment.expectedCheckpointBlobCount,
+        blobOrderedDigest: segment.checkpointBlobDigest.slice(),
+        expectedPendingWriteCount: segment.expectedPendingWriteCount,
+        pendingWriteOrderedDigest: segment.pendingWriteDigest.slice(),
       };
       return {
         stableIdentity: canonical.stableIdentity, initialRecord: canonical.initialRecord,
@@ -225,7 +266,9 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
           }
           if (startValue === null) return { status: "stale" };
           // Both the held product/crypto owner and fresh physical pool are closed.
-          const result = await start(input.db, startValue);
+          const result = "acceptance" in startValue
+            ? await startHuman(input.db, startValue)
+            : await start(input.db, startValue);
           return { status: result.status === "rejected" ? "stale" : "started" };
         },
         deferBeforeExecution: value => input.recoverUnstarted(

@@ -1,9 +1,11 @@
 import {
   createProtectedTaskAdditionalAuthorityResumeMapV1,
   type RunScopeSubagentOpts,
+  type ProtectedTaskHumanResumeBindingV1,
 } from "@nautilo/agent";
 import type {
   PostgresJsBridgeConnection,
+  SealAndParkProtectedTaskHumanRunInput,
   SealAndParkProtectedTaskRunInput,
 } from "@nautilo/db";
 import {
@@ -20,6 +22,8 @@ import {
   PostgresLatticeStorage,
   verifyCryptoPostgresHandle,
   withNativeProtectedTaskDefinitionV1,
+  withNativeTaskHumanReplyV1,
+  createNativeTaskHumanReplyReadTargetV1,
   type ConversationProductCanonicalTransactionRunner,
   type ConversationProductPostgresHandle,
 } from "@nautilo/lattice-bridge/server";
@@ -73,6 +77,8 @@ import {
   withProtectedTaskResultSignerHistory,
 } from "./protected-task-result-signer-history";
 
+import { createProtectedTaskNativeReplyAuthorityResolver, createProtectedTaskHistoricalHumanReplySignerResolver } from "./protected-task-native-reply-authority";
+
 type PrepareExecution =
   ProtectedTaskRuntimeGrantPlanBuilderDependencies["prepareExecution"];
 type MemoryRepositoryInput = ProtectedTaskNativeMemoryRepositoryInput<unknown>;
@@ -108,7 +114,8 @@ export type ProtectedTaskNativeFixedMemorySegmentInput = Readonly<{
   owner: EncryptionDataOperationOwner;
   embedding: ProtectedAgentMemoryEmbeddingPort;
   createDedicatedPool: DedicatedPoolFactory;
-  parkSegment(input: SealAndParkProtectedTaskRunInput): Promise<boolean>;
+  parkSegment(input: SealAndParkProtectedTaskRunInput
+    | SealAndParkProtectedTaskHumanRunInput): Promise<boolean>;
   resolveExecutionContext(input: Readonly<{
     occurrence: ProtectedTaskRunningOccurrence;
     predispatch: ProtectedTaskPredispatchPlan;
@@ -158,6 +165,10 @@ type Dependencies = Readonly<{
   withCheckpointSaver: typeof withNativeProtectedTaskCheckpointManifest;
   createTranscriptPort: typeof createProtectedTaskTranscriptPort;
   runSegment: typeof runProtectedTaskNativeSegment;
+  openReply: typeof withNativeTaskHumanReplyV1;
+  createReplyAuthority: typeof createProtectedTaskNativeReplyAuthorityResolver;
+  replyTarget: typeof createNativeTaskHumanReplyReadTargetV1;
+  verifyReplyHandle: typeof verifyCryptoPostgresHandle;
   withCurrentMemoryAuthority: typeof withCurrentProtectedTaskMemoryAuthority;
   withSigner<Value>(input: Omit<SignerUseInput, "use"> & Readonly<{
     use(
@@ -261,6 +272,10 @@ const productionDependencies: Dependencies = Object.freeze({
   withCheckpointSaver: withNativeProtectedTaskCheckpointManifest,
   createTranscriptPort: createProtectedTaskTranscriptPort,
   runSegment: runProtectedTaskNativeSegment,
+  openReply: withNativeTaskHumanReplyV1,
+  createReplyAuthority: createProtectedTaskNativeReplyAuthorityResolver,
+  replyTarget: createNativeTaskHumanReplyReadTargetV1,
+  verifyReplyHandle: verifyCryptoPostgresHandle,
   withCurrentMemoryAuthority: withCurrentProtectedTaskMemoryAuthority,
   withSigner: withCurrentRuntimeSigner,
 });
@@ -341,6 +356,7 @@ function executablePolicyMode(
 function exactPreparation(input: Parameters<PrepareExecution>[0]): void {
   const {
     additionalAuthorityResume,
+    humanResume,
     occurrence,
     predispatch,
     policy,
@@ -373,11 +389,16 @@ function exactPreparation(input: Parameters<PrepareExecution>[0]): void {
         || "resumeContinuationFingerprint" in reference
         || "resumeAcceptanceId" in reference
         || additionalAuthorityResume !== undefined
-      : !("resumeContinuationFingerprint" in reference)
-        || "resumeAcceptanceId" in reference
-        || additionalAuthorityResume === undefined
-        || additionalAuthorityResume.authorizationRequestId
-          !== reference.authorizationRequestId)
+        || humanResume !== undefined
+      : "resumeAcceptanceId" in reference
+        ? "resumeContinuationFingerprint" in reference
+          || additionalAuthorityResume !== undefined
+          || humanResume === undefined
+        : !("resumeContinuationFingerprint" in reference)
+          || humanResume !== undefined
+          || additionalAuthorityResume === undefined
+          || additionalAuthorityResume.authorizationRequestId
+            !== reference.authorizationRequestId)
     || !(input.stableRoutingDigest instanceof Uint8Array)
     || input.stableRoutingDigest.length !== 32) {
     throw new TypeError("Protected Task fixed Memory preparation is not exact");
@@ -656,6 +677,7 @@ function exactExecutionContext(
     || !Array.isArray(value.roomRoster)
     || value.toolWhitelist?.includes("security_scan") === true
     || value.resume !== undefined
+    || value.protectedTaskHumanResume !== undefined
     || value.continueFromCheckpoint === true
     || value.awaitReply !== undefined) {
     throw new TypeError("Protected Task fixed Memory execution context is invalid");
@@ -718,6 +740,8 @@ export function createProtectedTaskNativeFixedMemorySegment(
     const policy = Object.freeze({ ...preparation.policy });
     const reference = Object.freeze({ ...preparation.reference });
     const stableRoutingDigest = preparation.stableRoutingDigest.slice();
+    const humanResume = preparation.humanResume === undefined
+      ? undefined : frozenClone(preparation.humanResume);
     const additionalAuthorityResume = preparation.additionalAuthorityResume
       === undefined
       ? undefined
@@ -993,6 +1017,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                                   ...(additionalAuthorityResume === undefined
                                     ? {}
                                     : { resume: additionalAuthorityResume }),
+
                                   ...(runningOccurrence.task.callingRoomId === null
                                     ? {}
                                     : {
@@ -1001,8 +1026,58 @@ export function createProtectedTaskNativeFixedMemorySegment(
                                       }),
                                 }),
                               };
+                              const runSegment = (binding?: ProtectedTaskHumanResumeBindingV1) =>
+                                dependencies.runSegment({ ...segment, execution: {
+                                  ...segment.execution,
+                                  ...(binding === undefined ? {} : { protectedTaskHumanResume: binding }),
+                                } });
                               const segmentOutcome = await Promise.resolve()
-                                .then(() => dependencies.runSegment(segment))
+                                .then(async () => {
+                                  if (humanResume?.kind !== "await_reply") return runSegment(humanResume);
+                                  type SegmentResult = Awaited<ReturnType<typeof runSegment>>;
+                                  const resolved = await input.owner.read<never, SegmentResult, SegmentResult>({
+                                    ordinary: () => { throw new ClassifiedDataOperationError(
+                                      "authority", "Protected Task reply requires current encrypted authority",
+                                    ); },
+                                    protected: async () => {
+                                      const resolver = dependencies.createReplyAuthority({
+                                        occurrence: runningOccurrence, evidence: grant.evidence,
+                                        acceptedBy: humanResume.acceptedBy, message: humanResume.message,
+                                        runner: input.product.canonicalRunner, restricted: input.restricted,
+                                        signal, assertCurrentTaskAuthority,
+                                      });
+                                      const authority = await resolver.readCurrent();
+                                      if (authority === null) throw new ClassifiedDataOperationError(
+                                        "authority", "Protected Task reply authority is unavailable",
+                                      );
+                                      const handle = await dependencies.verifyReplyHandle(input.restricted);
+                                      return dependencies.openReply<SegmentResult>({
+                                        restricted: input.restricted, crypto: input.crypto,
+                                        serverScope: input.serverScope, evidence: grant.evidence,
+                                        domains: grant.domains, signal,
+                                        target: dependencies.replyTarget(authority),
+                                        resolveCurrentAuthority: () => resolver.readCurrent(),
+                                        resolveHistoricalHumanSigner:
+                                          createProtectedTaskHistoricalHumanReplySignerResolver(handle),
+                                        execute: (reply, assertCurrentReply) => {
+                                          if (reply.role !== "user" || typeof reply.content !== "string"
+                                            || reply.content.trim().length === 0
+                                            || reply.toolCalls !== undefined || reply.toolName !== undefined) {
+                                            throw new TypeError("Protected Task reply payload is invalid");
+                                          }
+                                          return assertCurrentReply().then(() => runSegment({
+                                            kind: "await_reply", interruptId: humanResume.interruptId,
+                                            reply: reply.content, fromUserId: humanResume.message.sourceUserId,
+                                          }));
+                                        },
+                                      });
+                                    },
+                                    consumeOrdinary: value => value,
+                                    consumeProtected: value => value,
+                                    classifyFailure: () => "integrity",
+                                  });
+                                  return resolved.value;
+                                })
                                 .then(
                                   value => ({ status: "fulfilled", value } as const),
                                   (error: unknown) =>
@@ -1042,10 +1117,17 @@ export function createProtectedTaskNativeFixedMemorySegment(
               if (terminalPayload.status === "aborted") {
                 signal.throwIfAborted();
               }
-              if (terminalPayload.status === "interrupted"
-                && terminalPayload.additionalAuthority !== undefined) {
+              if (terminalPayload.status === "interrupted") {
                 signal.throwIfAborted();
                 const additionalAuthority = terminalPayload.additionalAuthority;
+                if (terminalPayload.threadId !== runningOccurrence.run.graphThreadId
+                  || terminalPayload.interruptCoordinates.length === 0
+                  || (additionalAuthority === undefined
+                    && terminalPayload.interruptCoordinates.some(
+                      coordinate => coordinate.kind === "additional_authority",
+                    ))) {
+                  throw new TypeError("Protected Task interruption is not exact");
+                }
                 await publication.park(parkedAt => {
                   if (!Number.isSafeInteger(parkedAt) || parkedAt < 0) {
                     throw new TypeError(
@@ -1068,10 +1150,12 @@ export function createProtectedTaskNativeFixedMemorySegment(
                       route: "native_langgraph_v1" as const,
                       checkpoint: outcome.value.manifest,
                     }),
-                    continuation: Object.freeze({
-                      ...additionalAuthority,
-                      stableRoutingDigest: stableRoutingDigest.slice(),
-                    }),
+                    ...(additionalAuthority === undefined
+                      ? { stableRoutingDigest: stableRoutingDigest.slice() }
+                      : { continuation: Object.freeze({
+                          ...additionalAuthority,
+                          stableRoutingDigest: stableRoutingDigest.slice(),
+                        }) }),
                   }));
                 });
                 return;

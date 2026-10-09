@@ -1,3 +1,4 @@
+import { createProtectedTaskHumanResponse } from "./routes/protected-task-human-response";
 import { resolveTaskLocalExecutionCaptureTarget } from "./local-execution-task-capture";
 import { createTaskLocalExecutionSourceAssertion } from "./local-execution-task-source";
 import { setTaskLocalExecutionSourceComposition } from "@nautilo/runtime";
@@ -145,6 +146,12 @@ import { invokeDirectRoutes } from "./routes/invoke-direct";
 import { jobRoutes } from "./routes/jobs";
 import { operatorMaintenanceRoutes, withMaintenanceStatusPublishing } from "./routes/operator-release";
 import { tasksRoutes } from "./routes/tasks";
+import {
+  createProtectedTaskTranscriptReadService,
+} from "./routes/protected-task-transcript-read";
+import {
+  createProductionRoomHistoryShadowReadComposition,
+} from "./routes/room-history-shadow-read-composition";
 import { profileRoutes } from "./routes/profile";
 import { profileAvatarRoutes } from "./routes/profile-avatar";
 import { agentPhotoLibraryRoutes } from "./routes/agent-photo-library";
@@ -2247,6 +2254,10 @@ export async function createApp(options?: CreateAppOptions) {
     };
 
     authRoutes(app, {
+      acceptProtectedTaskResponse: createProtectedTaskHumanResponse({
+        db: getServerDirectDb(), owner: dormantTaskContentOwner,
+        wake: () => taskObserver.kick(), now: () => new Date(),
+      }),
       pinProvider,
       ownerActorId,
       ownerId,
@@ -4443,6 +4454,10 @@ export async function createApp(options?: CreateAppOptions) {
     observer: taskObserver,
     prepareStopTask: prepareHarnessStop,
     contentOwner: dormantTaskContentOwner,
+    protectedTranscriptRead: createProtectedTaskTranscriptReadService({
+      db: getServerDirectDb(),
+      history: createProductionRoomHistoryShadowReadComposition(),
+    }),
   });
   await taskObserver.start();
   codexRequestsRoutes(app, {

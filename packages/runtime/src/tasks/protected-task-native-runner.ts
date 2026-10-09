@@ -1,6 +1,7 @@
 import {
   runScopeSubagentUntilPause,
   type ProtectedTaskAdditionalAuthorityResumeBindingV1,
+  type ProtectedTaskHumanResumeBindingV1,
   type RunScopeSubagentOpts,
   type RunScopeSubagentResult,
 } from "@nautilo/agent";
@@ -54,6 +55,7 @@ export type ProtectedTaskNativeExecution = Readonly<{
   focusedResources?: RunScopeSubagentOpts["focusedResources"];
   relayCapabilities?: RunScopeSubagentOpts["relayCapabilities"];
   resume?: unknown;
+  protectedTaskHumanResume?: ProtectedTaskHumanResumeBindingV1;
   continueFromCheckpoint?: boolean;
   awaitReply?: Readonly<{
     roomId: string;
@@ -151,6 +153,13 @@ function exactIdentity(input: RunProtectedTaskNativeSegmentInput): void {
     || (
       input.execution.continueFromCheckpoint === true
       && input.execution.resume !== undefined
+    )
+    || (
+      input.execution.protectedTaskHumanResume !== undefined
+      && (
+        input.execution.continueFromCheckpoint === true
+        || input.execution.resume !== undefined
+      )
     )
   ) {
     throw new TypeError(
@@ -341,6 +350,9 @@ function runnerOptions(
       ? {}
       : { relayCapabilities: execution.relayCapabilities }),
     ...(execution.resume === undefined ? {} : { resume: execution.resume }),
+    ...(execution.protectedTaskHumanResume === undefined
+      ? {}
+      : { protectedTaskHumanResume: execution.protectedTaskHumanResume }),
     ...(execution.continueFromCheckpoint === true
       ? { continueFromCheckpoint: true }
       : {}),

@@ -1,18 +1,19 @@
 import {
-  acceptProtectedTaskAwaitReply,
+  acceptProtectedTaskHumanContinuation,
   resolvePublishedProtectedTaskAwaitReply,
+  protectedTaskHumanContinuationAcceptanceId,
   type DirectDatabase,
 } from "@nautilo/db";
 
 type MessageCoordinate = Readonly<{ operationId: string; messageId: number }>;
 type AcceptancePorts = Readonly<{
   resolve: typeof resolvePublishedProtectedTaskAwaitReply;
-  accept: typeof acceptProtectedTaskAwaitReply;
+  accept: typeof acceptProtectedTaskHumanContinuation;
 }>;
 
 const productionPorts: AcceptancePorts = {
   resolve: resolvePublishedProtectedTaskAwaitReply,
-  accept: acceptProtectedTaskAwaitReply,
+  accept: acceptProtectedTaskHumanContinuation,
 };
 
 /** Dark composition leg: record one content-free reply acceptance, then wait
@@ -27,6 +28,13 @@ export async function acceptPublishedProtectedTaskReply(
 > {
   const resolved = await ports.resolve(db, message);
   if (resolved.status !== "resolved") return resolved.status;
-  const accepted = await ports.accept(db, resolved.input);
+  const input = resolved.input;
+  const accepted = await ports.accept(db, { ...input, acceptance: {
+    ...input.acceptance,
+    acceptanceId: protectedTaskHumanContinuationAcceptanceId({
+      taskId: input.taskId, taskRunId: input.taskRunId, priorJobId: input.priorJobId,
+      executionSegment: input.executionSegment, ...input.acceptance,
+    }),
+  } });
   return accepted.status === "rejected" ? accepted.reason : accepted.status;
 }

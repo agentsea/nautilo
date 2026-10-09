@@ -469,6 +469,32 @@ test("offline approval preserves the exact pending interrupt and requires a fres
 });
 
 
+test("legacy approval authorization rejects protected representations before authority effects", async () => {
+  const { authorizeTaskApprovalResume } = await import("./resume-task-approval");
+  const assertInvocation = mock(async () => {});
+  const assertServerFunding = mock(async () => {});
+  const resolveLocalExecution = mock(async (): Promise<DelegatedLocalExecutionPort | undefined> => undefined);
+  const args = { taskId: task.id, threadId: run.graphThreadId,
+    sessionUserId: task.requestorId };
+  for (const contentRepresentation of ["dual", "protected"] as const) {
+    findAwaitingTaskRunForApproval.mockImplementationOnce(async () => ({
+      task: { ...task, contentRepresentation }, run,
+    }));
+    expect(await authorizeTaskApprovalResume(args, {
+      assertInvocation, assertServerFunding, resolveLocalExecution,
+    })).toEqual({ ok: false, status: 404, error: "task_approval_not_found" });
+  }
+  expect(assertInvocation).not.toHaveBeenCalled();
+  expect(assertServerFunding).not.toHaveBeenCalled();
+  expect(resolveLocalExecution).not.toHaveBeenCalled();
+
+  findAwaitingTaskRunForApproval.mockImplementationOnce(async () => ({ task, run }));
+  expect(await authorizeTaskApprovalResume({ ...args, sessionUserId: task.ownerId }, {
+    assertInvocation, assertServerFunding, resolveLocalExecution,
+  })).toMatchObject({ ok: true, task: { id: task.id }, run: { id: run.id } });
+});
+
+
 test("delegated approval authorizes only its exact requesting Human, preserving ordinary owner replies", async () => {
   const { authorizeTaskApprovalResume } = await import("./resume-task-approval");
   const delegation = { version: 1 as const, humanUserId: task.requestorId, agentId: task.agentId,

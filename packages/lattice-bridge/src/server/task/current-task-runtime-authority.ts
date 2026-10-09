@@ -3,7 +3,6 @@ import {
   acquireEncryptionPublicationFence,
   exactParkedProtectedTaskJobReference,
   persistJobInTransaction,
-  type ParkedProtectedTaskAdditionalAuthority,
   type PersistJobPayload,
   type PostgresJsBridgeConnection,
   type ProtectedTaskDurableJobReference,
@@ -53,13 +52,14 @@ import {
   copyParkedTaskRuntimeExpectedNamespaceParticipants,
   currentParkedTaskRuntimeRoutingFacts,
   exactCurrentParkedTaskScopeMemory,
-  lockCurrentParkedTaskAdditionalAuthorityWithRouting,
+  lockCurrentParkedTaskAuthorityWithRouting,
   parkedTaskRuntimeNamespaceParticipantsMatch,
   parkedTaskRuntimeScopeBindingMatches,
   withParkedTaskRuntimeRestrictedAuthority,
   type ParkedTaskRuntimeCurrentRoutingFacts,
   type ParkedTaskRuntimeExpectedNamespaceParticipants,
   type ParkedTaskRuntimeLockedRoutingTask,
+  type ParkedTaskRuntimeContinuation,
 } from "./parked-task-runtime-authority.ts";
 import {
   copyTaskScopeMemoryBinding,
@@ -487,7 +487,7 @@ type CurrentAcceptedTaskRuntimeAuthorityInput = Readonly<{
 }>;
 
 function parkedContinuationJobReference(input: Readonly<{
-  expected: ParkedProtectedTaskAdditionalAuthority;
+  expected: ParkedTaskRuntimeContinuation;
   policyRevision: number;
 }>): ProtectedTaskDurableJobReference {
   return Object.freeze({
@@ -499,13 +499,15 @@ function parkedContinuationJobReference(input: Readonly<{
     authorizationRequestId: input.expected.authorizationRequestId,
     policyRevision: input.policyRevision,
     executionSegment: input.expected.nextExecutionSegment,
-    resumeContinuationFingerprint: input.expected.continuationFingerprint,
+    ...("acceptance" in input.expected
+      ? { resumeAcceptanceId: input.expected.acceptance.acceptanceId }
+      : { resumeContinuationFingerprint: input.expected.continuationFingerprint }),
   });
 }
 
 function exactParkedContinuationJobPayload(input: Readonly<{
   payload: PersistJobPayload;
-  expected: ParkedProtectedTaskAdditionalAuthority;
+  expected: ParkedTaskRuntimeContinuation;
   expectedReference: ProtectedTaskDurableJobReference;
   targetRoomId: string;
   policyRevision: number;
@@ -530,7 +532,7 @@ function exactParkedContinuationJobPayload(input: Readonly<{
 
 async function withParkedTaskRuntimeJobPersistence<Value>(input: Readonly<{
   transaction: CanonicalTranscriptTx;
-  expected: ParkedProtectedTaskAdditionalAuthority;
+  expected: ParkedTaskRuntimeContinuation;
   targetRoomId: string;
   policyRevision: number;
   use(persistence: ParkedTaskRuntimeJobPersistence): Promise<Value>;
@@ -640,7 +642,7 @@ type CurrentAcceptedTaskRuntimeAuthorityUse<Value> =
   }>
   | Readonly<{
     kind: "parked";
-    expected: ParkedProtectedTaskAdditionalAuthority;
+    expected: ParkedTaskRuntimeContinuation;
     targetRoomId: string;
     scopeMemory?: TaskScopeMemoryBinding;
     expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants;
@@ -738,7 +740,7 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
           requirement.expectedPolicyRevision !== policy.revision)) return null;
       let parkedTask: ParkedTaskRuntimeLockedRoutingTask | undefined;
       if (authorityUse.kind === "parked") {
-        const locked = await lockCurrentParkedTaskAdditionalAuthorityWithRouting({
+        const locked = await lockCurrentParkedTaskAuthorityWithRouting({
           transaction: tx,
           expected: authorityUse.expected,
         });
@@ -1015,7 +1017,7 @@ export async function withCurrentAcceptedTaskRuntimeClaimAuthority<Value>(
  */
 export async function withCurrentAcceptedParkedTaskRuntimeAuthority<Value>(
   input: CurrentAcceptedTaskRuntimeAuthorityInput & Readonly<{
-    expected: ParkedProtectedTaskAdditionalAuthority;
+    expected: ParkedTaskRuntimeContinuation;
     targetRoomId: string;
     scopeMemory?: TaskScopeMemoryBinding;
     expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants;
@@ -1049,13 +1051,17 @@ export async function withCurrentAcceptedParkedTaskRuntimeAuthority<Value>(
   const namespaceIds = input.accepted.namespaceRequirements.map(
     requirement => requirement.namespaceId,
   );
+  const workKind = "acceptance" in expected
+    ? expected.acceptance.response.kind === "await_reply"
+      ? "task.await_reply_resume" : "task.approval_resume"
+    : "task.execute";
   if (typeof use !== "function" || typeof validateCurrentRouting !== "function"
     || expectedNamespaceParticipants?.some(value =>
       !namespaceIds.includes(value.namespaceId)) === true
     || input.accepted.requestId !== expected.authorizationRequestId
     || input.accepted.workId !== expected.occurrence.run.id
-    || input.accepted.workKind !== "task.execute"
-    || input.accepted.workPurpose !== "task.execute"
+    || input.accepted.workKind !== workKind
+    || input.accepted.workPurpose !== workKind
     || subject.userId !== expected.occurrence.task.requestorId
     || !input.accepted.namespaceRequirements.some(requirement =>
       requirement.namespaceId

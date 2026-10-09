@@ -459,6 +459,12 @@ import {
   type DualTaskPreparedUpdateRequestV1,
 } from "./schemas/protected-task";
 import {
+  protectedTaskTranscriptReadRequestV1Schema,
+  protectedTaskTranscriptReadResponseV1Schema,
+  type ProtectedTaskTranscriptReadRequestV1,
+  type ProtectedTaskTranscriptReadResponseV1,
+} from "./schemas/protected-task-transcript-read";
+import {
   protectedAdditionalDeviceAcknowledgementRequestV1Schema,
   protectedAdditionalDeviceActivationRequestV1Schema,
   protectedAdditionalDeviceActivationV1Schema,
@@ -7984,6 +7990,33 @@ export class NautiloApiClient {
       schema: protectedTaskRunResultReadEnvelopeV1Schema,
       defaultErrorPrefix:
         `GET /api/protected/tasks/${id}/runs/${runId}/result`,
+    });
+  }
+
+  /** Exact, bounded protected Message history for one TaskRun transcript. */
+  async readProtectedTaskRunTranscriptV1(input: Readonly<{
+    taskId: string;
+    taskRunId: string;
+  }> & ProtectedTaskTranscriptReadRequestV1): Promise<
+    ProtectedTaskTranscriptReadResponseV1
+  > {
+    const taskId = z.string().uuid().parse(input.taskId);
+    const taskRunId = z.string().uuid().parse(input.taskRunId);
+    const body = protectedTaskTranscriptReadRequestV1Schema.parse({
+      readVersion: input.readVersion,
+      agentId: input.agentId,
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      ...(input.limit === undefined ? {} : { limit: input.limit }),
+      historyRead: input.historyRead,
+    });
+    return this.request<ProtectedTaskTranscriptReadResponseV1>({
+      method: "POST",
+      path: `/api/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(taskRunId)}/transcript-v1`,
+      auth: "session-fresh",
+      body,
+      schema: protectedTaskTranscriptReadResponseV1Schema,
+      defaultErrorPrefix:
+        `POST /api/tasks/${taskId}/runs/${taskRunId}/transcript-v1`,
     });
   }
 

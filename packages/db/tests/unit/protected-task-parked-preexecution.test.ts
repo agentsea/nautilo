@@ -19,10 +19,16 @@ import {
 } from "../../src/queries/protected-task-execution-receipts";
 import type {
   ParkedProtectedTaskAdditionalAuthority,
+  ParkedProtectedTaskHumanContinuation,
   ProtectedTaskDurableJobReference,
+  StartParkedProtectedTaskHumanRunSegmentInput,
   StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
 } from "../../src/queries/tasks";
-import { parseParkedProtectedTaskAdditionalAuthority } from
+import {
+  parseParkedProtectedTaskAdditionalAuthority,
+  parseParkedProtectedTaskHumanContinuation,
+  protectedTaskHumanContinuationAcceptanceId,
+} from
   "../../src/queries/tasks";
 import { jobs } from "../../src/schema/jobs";
 import { protectedTaskContinuationReceipts } from
@@ -31,6 +37,7 @@ import { protectedTaskExecutionSegmentReceipts } from
   "../../src/schema/protected-task-execution-segment-receipts";
 import { taskRuns } from "../../src/schema/task-runs";
 import { tasks } from "../../src/schema/tasks";
+import { actors } from "../../src/schema/trust";
 
 const ids = {
   task: "10000000-0000-4000-8000-000000000001",
@@ -38,9 +45,13 @@ const ids = {
   priorJob: "30000000-0000-4000-8000-000000000003",
   nextJob: "30000000-0000-4000-8000-000000000004",
   owner: "40000000-0000-4000-8000-000000000005",
+  humanActor: "40000000-0000-4000-8000-000000000015",
   namespace: "60000000-0000-4000-8000-000000000006",
 };
 const graphThreadId = `subagent:${ids.task}:${ids.run}`;
+const parkReceiptKey = "nautilo.protectedTaskRunPark.v1";
+const humanAcceptanceReceiptKey =
+  "nautilo.protectedTaskHumanContinuationAcceptance.v1";
 const definitionObjectId = `task-definition:v1:${"a".repeat(64)}`;
 const resultObjectId =
   "task-run-result:v1:c3d2c1c68222360a4404fe37119db6e3e7fcf973c1f1ccf2c4a894683c83705e";
@@ -71,6 +82,36 @@ const continuation = Object.freeze({
   stableRoutingDigest: digest(6),
   semanticAuthorityRequirements,
 });
+const humanStableRoutingDigest = digest(20);
+const humanInterrupt = Object.freeze({
+  id: "interrupt:identity:1",
+  kind: "identity" as const,
+});
+
+function humanAcceptanceId(): string {
+  return protectedTaskHumanContinuationAcceptanceId({
+    taskId: ids.task,
+    taskRunId: ids.run,
+    priorJobId: ids.priorJob,
+    executionSegment: 1,
+    acceptedBy: { userId: ids.owner, humanActorId: ids.humanActor },
+    interrupt: humanInterrupt,
+    response: { kind: "identity" },
+  });
+}
+
+function humanAcceptance() {
+  return Object.freeze({
+    acceptanceId: humanAcceptanceId(),
+    acceptedBy: Object.freeze({
+      userId: ids.owner,
+      humanActorId: ids.humanActor,
+    }),
+    interrupt: humanInterrupt,
+    response: Object.freeze({ kind: "identity" as const }),
+    acceptedAt: new Date("2026-10-08T10:00:30.000Z"),
+  });
+}
 
 function priorReference(
   segment = 1,
@@ -107,6 +148,15 @@ function nextReference(segment = 1): ProtectedTaskDurableJobReference {
         effectDisposition: "not_started_v1",
         ...continuation,
       }),
+  };
+}
+
+function humanNextReference(): ProtectedTaskDurableJobReference {
+  return {
+    ...priorReference(),
+    authorizationRequestId: humanAcceptanceId(),
+    executionSegment: 2,
+    resumeAcceptanceId: humanAcceptanceId(),
   };
 }
 
@@ -159,6 +209,40 @@ function input(
   };
 }
 
+function humanInput(
+  overrides: Partial<StartParkedProtectedTaskHumanRunSegmentInput> = {},
+): StartParkedProtectedTaskHumanRunSegmentInput {
+  return {
+    taskId: ids.task,
+    taskRunId: ids.run,
+    graphThreadId,
+    priorJobId: ids.priorJob,
+    jobId: ids.nextJob,
+    generation: 3,
+    interrupts: [humanInterrupt],
+    parkedAt,
+    stableRoutingDigest: humanStableRoutingDigest.slice(),
+    contentRepresentation: "protected",
+    contentNamespaceId: ids.namespace,
+    contentRevision: 4,
+    cryptoObjectId: definitionObjectId,
+    cryptoAccessRevision: 6,
+    cryptoRequiredNamespaceFingerprint: digest(1),
+    priorJobReference: priorReference(),
+    jobReference: humanNextReference(),
+    checkpointManifest: {
+      ...checkpointManifest,
+      checkpointOrderedDigest:
+        checkpointManifest.checkpointOrderedDigest.slice(),
+      blobOrderedDigest: checkpointManifest.blobOrderedDigest.slice(),
+      pendingWriteOrderedDigest:
+        checkpointManifest.pendingWriteOrderedDigest.slice(),
+    },
+    acceptance: humanAcceptance(),
+    ...overrides,
+  };
+}
+
 function parkReceipt(segment = 1, overrides: Record<string, unknown> = {}) {
   return {
     version: 1,
@@ -174,6 +258,35 @@ function parkReceipt(segment = 1, overrides: Record<string, unknown> = {}) {
   };
 }
 
+function humanParkReceipt(overrides: Record<string, unknown> = {}) {
+  return parkReceipt(1, {
+    interrupts: [humanInterrupt],
+    stableRoutingDigest:
+      Buffer.from(humanStableRoutingDigest).toString("base64url"),
+    ...overrides,
+  });
+}
+
+function humanAcceptanceReceipt(overrides: Record<string, unknown> = {}) {
+  const acceptance = humanAcceptance();
+  return {
+    version: 1,
+    acceptanceId: acceptance.acceptanceId,
+    taskId: ids.task,
+    taskRunId: ids.run,
+    jobId: ids.priorJob,
+    graphThreadId,
+    generation: 3,
+    executionSegment: 1,
+    nextExecutionSegment: 2,
+    acceptedBy: acceptance.acceptedBy,
+    interrupt: acceptance.interrupt,
+    response: acceptance.response,
+    acceptedAt: acceptance.acceptedAt.toISOString(),
+    ...overrides,
+  };
+}
+
 function taskRow(overrides: Record<string, unknown> = {}) {
   return {
     id: ids.task,
@@ -181,6 +294,9 @@ function taskRow(overrides: Record<string, unknown> = {}) {
     requestorId: ids.owner,
     agentId: "50000000-0000-4000-8000-000000000005",
     callingRoomId: null,
+    targetRoomId: null,
+    targetUserIds: [],
+    localExecutionDelegation: null,
     scheduleKind: "one_shot",
     status: "awaiting",
     contentRepresentation: "protected",
@@ -247,6 +363,28 @@ function nextJobRow(
   };
 }
 
+function humanPriorJobRow(overrides: Record<string, unknown> = {}) {
+  const acceptance = humanAcceptanceReceipt();
+  return priorJobRow(1, {
+    reference: priorReference(),
+    parkReceipt: humanParkReceipt(),
+    humanAcceptanceReceipt: acceptance,
+    acceptanceReceipt: acceptance,
+    metadata: {
+      [parkReceiptKey]: humanParkReceipt(),
+      [humanAcceptanceReceiptKey]: acceptance,
+    },
+    ...overrides,
+  });
+}
+
+function humanNextJobRow(overrides: Record<string, unknown> = {}) {
+  return nextJobRow(1, {
+    reference: humanNextReference(),
+    ...overrides,
+  });
+}
+
 function segmentReceipt(
   segment = 1,
   overrides: Record<string, unknown> = {},
@@ -305,6 +443,17 @@ function expectedAuthority(
   return expected;
 }
 
+function expectedHuman(): ParkedProtectedTaskHumanContinuation {
+  const expected = parseParkedProtectedTaskHumanContinuation({
+    task: taskRow() as never,
+    run: runRow() as never,
+    job: humanPriorJobRow() as never,
+    segment: segmentReceipt() as never,
+  });
+  if (expected === null) throw new Error("invalid parked Human fixture");
+  return expected;
+}
+
 function discoveryRow(
   segment = 1,
   overrides: Partial<ParkedProtectedTaskRecoveryCandidateRow> = {},
@@ -326,12 +475,47 @@ function discoveryRow(
   };
 }
 
+function humanDiscoveryRow(
+  overrides: Partial<ParkedProtectedTaskRecoveryCandidateRow> = {},
+): ParkedProtectedTaskRecoveryCandidateRow {
+  return {
+    task: taskRow(),
+    run: {
+      ...runRow(),
+      modelId: "openai:gpt-6-sol",
+      fundingPristine: true,
+    },
+    priorJob: humanPriorJobRow(),
+    nextJob: humanNextJobRow(),
+    segment: segmentReceipt() as
+      ParkedProtectedTaskRecoveryCandidateRow["segment"],
+    continuation: null,
+    ...overrides,
+  };
+}
+
 describe("parked protected Task pre-execution recovery discovery", () => {
   test("reconstructs a model-bound segment 3 continuation from immutable proof", () => {
     const projected = projectParkedProtectedTaskRecoveryCandidate(
       discoveryRow(3),
     );
     expect(projected).toEqual({ lifecycle: "parked", input: input(3) });
+  });
+
+  test("reconstructs an accepted Human continuation from immutable proof", () => {
+    expect(projectParkedProtectedTaskRecoveryCandidate(
+      humanDiscoveryRow(),
+    )).toEqual({ lifecycle: "parked", input: humanInput() });
+    expect(projectParkedProtectedTaskRecoveryCandidate(humanDiscoveryRow({
+      priorJob: humanPriorJobRow({
+        humanAcceptanceReceipt: humanAcceptanceReceipt({
+          acceptedBy: {
+            userId: ids.owner,
+            humanActorId: ids.namespace,
+          },
+        }),
+      }),
+    }))).toBeNull();
   });
 
   test("reconstructs a linked cancelled continuation", () => {
@@ -450,24 +634,31 @@ describe("parked protected Task pre-execution recovery discovery", () => {
 });
 
 type HarnessOptions = Readonly<{
+  human?: boolean;
   segment?: number;
   task?: ReturnType<typeof taskRow>;
   run?: ReturnType<typeof runRow>;
   priorJob?: ReturnType<typeof priorJobRow>;
   nextJob?: ReturnType<typeof nextJobRow>;
   segmentReceipt?: ReturnType<typeof segmentReceipt>;
-  continuationReceipt?: ReturnType<typeof continuationReceipt>;
+  continuationReceipt?: ReturnType<typeof continuationReceipt> | null;
 }>;
 
 function harness(options: HarnessOptions = {}) {
   const segment = options.segment ?? 1;
   let currentTask = options.task ?? taskRow();
   let currentRun = options.run ?? runRow();
-  const currentPriorJob = options.priorJob ?? priorJobRow(segment);
-  let currentNextJob = options.nextJob ?? nextJobRow(segment);
+  let currentPriorJob: Record<string, unknown> = options.priorJob
+    ?? (options.human ? humanPriorJobRow() : priorJobRow(segment));
+  let currentNextJob = options.nextJob
+    ?? (options.human ? humanNextJobRow() : nextJobRow(segment));
   const currentSegment = options.segmentReceipt ?? segmentReceipt(segment);
-  const currentContinuation = options.continuationReceipt
-    ?? continuationReceipt(segment);
+  const currentContinuation = Object.prototype.hasOwnProperty.call(
+    options,
+    "continuationReceipt",
+  )
+    ? options.continuationReceipt
+    : options.human ? null : continuationReceipt(segment);
   const locks: string[] = [];
   const writes: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
   let transactionCount = 0;
@@ -489,7 +680,7 @@ function harness(options: HarnessOptions = {}) {
           return [currentSegment];
         }
         if (table === protectedTaskContinuationReceipts) {
-          return [currentContinuation];
+          return currentContinuation === null ? [] : [currentContinuation];
         }
         throw new Error("unexpected table");
       };
@@ -516,6 +707,17 @@ function harness(options: HarnessOptions = {}) {
               returning: async () => {
                 writes.push({ table, patch });
                 if (table === jobs) {
+                  if (Object.hasOwn(patch, "metadata")) {
+                    const metadata = patch["metadata"] as Record<string, unknown>;
+                    const acceptance = metadata[humanAcceptanceReceiptKey];
+                    currentPriorJob = {
+                      ...currentPriorJob,
+                      ...patch,
+                      humanAcceptanceReceipt: acceptance,
+                      acceptanceReceipt: acceptance,
+                    };
+                    return [{ id: ids.priorJob }];
+                  }
                   currentNextJob = { ...currentNextJob, ...patch };
                   return [{ id: ids.nextJob }];
                 }
@@ -570,6 +772,131 @@ describe("parked protected Task pre-execution recovery", () => {
       "jobs:update",
       "jobs:update",
     ]);
+  });
+
+  test("recovers an accepted Human continuation only from its exact proof", async () => {
+    const fixture = harness({ human: true });
+    let deferredAfterCancellation = false;
+    expect(await recoverUnstartedParkedProtectedTaskRun(
+      fixture.db,
+      humanInput(),
+      recoveredAt,
+      async () => {
+        deferredAfterCancellation = fixture.writes.some(write =>
+          write.table === jobs && write.patch["status"] === "cancelled"
+        );
+        return true;
+      },
+    )).toEqual({ status: "recovered" });
+    expect(deferredAfterCancellation).toBe(true);
+
+    const stale = harness({
+      human: true,
+      priorJob: humanPriorJobRow({
+        humanAcceptanceReceipt: humanAcceptanceReceipt({
+          acceptedBy: {
+            userId: ids.owner,
+            humanActorId: ids.namespace,
+          },
+        }),
+      }),
+    });
+    expect(await recoverUnstartedParkedProtectedTaskRun(
+      stale.db,
+      humanInput(),
+      recoveredAt,
+      async () => true,
+    )).toEqual({ status: "stale" });
+    expect(stale.writes).toEqual([]);
+  });
+
+  test("restores a consumed Human acceptance after cancelling a linked unstarted Job", async () => {
+    const consumed = humanAcceptanceReceipt({ consumedByJobId: ids.nextJob });
+    const fixture = harness({
+      human: true,
+      task: taskRow({ status: "running" }),
+      run: runRow({ status: "running", jobId: ids.nextJob }),
+      priorJob: humanPriorJobRow({
+        humanAcceptanceReceipt: consumed,
+        acceptanceReceipt: consumed,
+        metadata: {
+          [parkReceiptKey]: humanParkReceipt(),
+          [humanAcceptanceReceiptKey]: consumed,
+        },
+      }),
+    });
+    expect(await recoverUnstartedParkedProtectedTaskRun(
+      fixture.db,
+      humanInput(),
+      recoveredAt,
+      async () => true,
+    )).toEqual({ status: "recovered" });
+    expect(fixture.writes.map(write => ({
+      table: write.table,
+      status: write.patch["status"],
+      jobId: write.patch["jobId"],
+      metadata: write.patch["metadata"],
+    }))).toEqual([
+      { table: jobs, status: "cancelled", jobId: undefined, metadata: undefined },
+      {
+        table: jobs,
+        status: undefined,
+        jobId: undefined,
+        metadata: {
+          [parkReceiptKey]: humanParkReceipt(),
+          [humanAcceptanceReceiptKey]: humanAcceptanceReceipt(),
+        },
+      },
+      {
+        table: taskRuns,
+        status: "awaiting",
+        jobId: ids.priorJob,
+        metadata: undefined,
+      },
+      {
+        table: tasks,
+        status: "awaiting",
+        jobId: undefined,
+        metadata: undefined,
+      },
+    ]);
+
+    const writes = fixture.writes.length;
+    expect(await recoverUnstartedParkedProtectedTaskRun(
+      fixture.db,
+      humanInput(),
+      new Date("2026-10-08T10:02:00.000Z"),
+      async () => true,
+    )).toEqual({ status: "exact_replay" });
+    expect(fixture.writes).toHaveLength(writes);
+  });
+
+  test("never restores a Human continuation after its Job began execution", async () => {
+    const consumed = humanAcceptanceReceipt({ consumedByJobId: ids.nextJob });
+    const fixture = harness({
+      human: true,
+      task: taskRow({ status: "running" }),
+      run: runRow({ status: "running", jobId: ids.nextJob }),
+      priorJob: humanPriorJobRow({
+        humanAcceptanceReceipt: consumed,
+        acceptanceReceipt: consumed,
+        metadata: {
+          [parkReceiptKey]: humanParkReceipt(),
+          [humanAcceptanceReceiptKey]: consumed,
+        },
+      }),
+      nextJob: humanNextJobRow({
+        status: "running",
+        startedAt: new Date("2026-10-08T10:00:45.000Z"),
+      }),
+    });
+    expect(await recoverUnstartedParkedProtectedTaskRun(
+      fixture.db,
+      humanInput(),
+      recoveredAt,
+      async () => true,
+    )).toEqual({ status: "stale" });
+    expect(fixture.writes).toEqual([]);
   });
 
   test("restores a linked Run only after durable cancellation and deferral", async () => {
@@ -728,7 +1055,10 @@ function claimJobRow(
   };
 }
 
-function claimHarness(initialJobs: ReturnType<typeof claimJobRow>[]) {
+function claimHarness(
+  initialJobs: ReturnType<typeof claimJobRow>[],
+  options: Readonly<{ human?: boolean; actorEnabled?: boolean }> = {},
+) {
   let currentJobs = initialJobs.map(row => ({ ...row }));
   const locks: string[] = [];
   const writes: string[][] = [];
@@ -747,14 +1077,22 @@ function claimHarness(initialJobs: ReturnType<typeof claimJobRow>[]) {
         if (table === taskRuns) return [runRow()];
         if (table === jobs) {
           return Object.hasOwn(projection, "parkReceipt")
-            ? [priorJobRow()]
+            ? [options.human ? humanPriorJobRow() : priorJobRow()]
             : currentJobs;
         }
         if (table === protectedTaskExecutionSegmentReceipts) {
           return [segmentReceipt()];
         }
         if (table === protectedTaskContinuationReceipts) {
-          return [continuationReceipt()];
+          return options.human ? [] : [continuationReceipt()];
+        }
+        if (table === actors) {
+          return [{
+            humanActorId: ids.humanActor,
+            userId: ids.owner,
+            kind: "user",
+            disabledAt: options.actorEnabled === false ? recoveredAt : null,
+          }];
         }
         throw new Error("unexpected table");
       };
@@ -762,6 +1100,7 @@ function claimHarness(initialJobs: ReturnType<typeof claimJobRow>[]) {
         select: (projection: Record<string, unknown> = {}) => ({
           from: (table: unknown) => {
             const query = {
+              innerJoin: (_joined: unknown, _condition: unknown) => query,
               where: (_condition: unknown) => query,
               orderBy: (_order: unknown) => query,
               limit: (_limit: number) => query,
@@ -821,6 +1160,37 @@ describe("parked protected Task claimed-before-Job recovery", () => {
       "jobs:update",
       "jobs:update",
     ]);
+  });
+
+  test("defers an accepted Human continuation with no persisted Job", async () => {
+    const fixture = claimHarness([], { human: true });
+    let deferred = 0;
+    expect(await recoverUnstartedParkedProtectedTaskClaim(
+      fixture.db,
+      { expected: expectedHuman(), jobReference: humanNextReference() },
+      recoveredAt,
+      async () => { deferred += 1; return true; },
+    )).toEqual({ status: "recovered" });
+    expect(deferred).toBe(1);
+    expect(fixture.writes).toEqual([]);
+    expect(fixture.locks.slice(0, 5)).toEqual([
+      "tasks:update",
+      "task_runs:update",
+      "jobs:update",
+      "actors:share",
+      "jobs:update",
+    ]);
+
+    const revoked = claimHarness([], {
+      human: true,
+      actorEnabled: false,
+    });
+    expect(await recoverUnstartedParkedProtectedTaskClaim(
+      revoked.db,
+      { expected: expectedHuman(), jobReference: humanNextReference() },
+      recoveredAt,
+      async () => true,
+    )).toEqual({ status: "stale" });
   });
 
   test("cancels every exact queued duplicate and accepts a cancelled replay", async () => {

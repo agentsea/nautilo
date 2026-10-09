@@ -1,12 +1,12 @@
 import { z } from "zod";
 import { protectedMessageDtoV2Schema } from "@nautilo/types";
+import {
+  HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_MAX_RESULTS_V1,
+} from "@nautilo/lattice-crypto/wire";
 
 import {
   protectedObjectAccessSignerEvidenceSetV1Schema,
 } from "./protected-object-access";
-
-// Mirrors the signed Human history acknowledgement wire's exact result bound.
-const HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_MAX_RESULTS_V1 = 50;
 
 const portableId = z.string().min(1).max(128)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u);
@@ -231,7 +231,7 @@ export const roomHistoryShadowRecordV1Schema = z.union([
   }).strict(),
 ]);
 
-const ready = z.object({
+export const roomHistoryShadowReadReadyResponseV1Schema = z.object({
   responseVersion: z.literal(1),
   status: z.literal("ready"),
   operationId: portableId,
@@ -329,7 +329,7 @@ export const roomHistoryShadowReadResponseV1Schema = z.discriminatedUnion(
       eligibleCount: z.literal(0),
     }).strict(),
     unavailable,
-    ready,
+    roomHistoryShadowReadReadyResponseV1Schema,
   ],
 );
 
@@ -425,6 +425,9 @@ export type RoomHistoryShadowRecordV1 = z.infer<
 >;
 export type RoomHistoryShadowReadResponseV1 = z.infer<
   typeof roomHistoryShadowReadResponseV1Schema
+>;
+export type RoomHistoryShadowReadReadyResponseV1 = z.infer<
+  typeof roomHistoryShadowReadReadyResponseV1Schema
 >;
 export type RoomHistoryShadowReadAcknowledgementRequestV1 = z.infer<
   typeof roomHistoryShadowReadAcknowledgementRequestV1Schema

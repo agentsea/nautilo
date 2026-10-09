@@ -1,3 +1,4 @@
+import type { ProtectedTaskHumanResponseInput, ProtectedTaskHumanResponseResult } from "./protected-task-human-response";
 import { readForegroundFundingForThread, runWithForegroundFundingSession } from "@nautilo/agent";
 import { openForegroundChatFundingSession } from "../lib/foreground-chat-funding";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -177,6 +178,7 @@ declare module "fastify" {
 }
 
 export interface AuthRouteDeps {
+  acceptProtectedTaskResponse?: (input: ProtectedTaskHumanResponseInput) => Promise<ProtectedTaskHumanResponseResult>;
   pinProvider: PinChallengeProvider;
   ownerActorId: string;
   ownerId: string;
@@ -359,6 +361,17 @@ function requestUserAgent(request: FastifyRequest): string | undefined {
 }
 
 export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
+  const acceptProtectedTaskResponse = async (
+    input: ProtectedTaskHumanResponseInput, reply: FastifyReply,
+  ): Promise<boolean> => {
+    const result = await deps.acceptProtectedTaskResponse?.(input);
+    if (result === undefined || result.status === "not_applicable") return false;
+    if (result.status === "accepted") reply.send({ ok: true });
+    else reply.status(result.code === "task_approval_not_found" ? 404 : 409)
+      .send({ error: result.code, code: result.code });
+    return true;
+  };
+
   const { pinProvider, unlockVaultWithPin } = deps;
   const approvalResolutions = createApprovalResolutionCoordinator((event) =>
     eventBus.emit(event),
@@ -1121,6 +1134,23 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
           const taskEnrollLaneKey = laneKey ?? threadId;
           if (taskEnrollLaneKey.startsWith("task:")) {
             const taskId = taskEnrollLaneKey.slice("task:".length);
+            const protectedResponse = await deps.acceptProtectedTaskResponse?.({
+              taskId, graphThreadId: threadId, userId,
+              humanActorId: request.sessionActorId, response: { kind: "identity" },
+            });
+            if (protectedResponse !== undefined && protectedResponse.status !== "not_applicable") {
+              // Enrollment already succeeded; preserve recovery-code delivery even
+              // when this exact Task no longer has an identity interrupt to resume.
+              void auditPinEnrolled(deps.auditEvent, {
+                ts: now().toISOString(), actorId: request.sessionActorId ?? null,
+                userId, route: "POST /api/auth/pin", ip: request.ip,
+                userAgent: typeof request.headers["user-agent"] === "string"
+                  ? request.headers["user-agent"] : undefined,
+              });
+              return { ok: true, enrolled: true, recoveryCodes,
+                ...(protectedResponse.status === "rejected"
+                  ? { resumeError: protectedResponse.code } : {}) };
+            }
             const auth = await authorizeTaskApprovalResume({
               taskId,
               threadId,
@@ -1694,6 +1724,12 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
       // parked Task run and resume + finalize through the Task path.
       if (effectiveLaneKey.startsWith("task:")) {
         const taskId = effectiveLaneKey.slice("task:".length);
+        if (await acceptProtectedTaskResponse({
+          taskId, graphThreadId: threadId, userId,
+          humanActorId: request.sessionActorId,
+          ...(challengeId === undefined ? {} : { requestId: challengeId }),
+          response: { kind: "prove_it", approved },
+        }, reply)) return;
         const auth = await authorizeTaskApprovalResume({
           taskId,
           threadId,
@@ -2110,8 +2146,23 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
       // resume + finalize through the Task path.
       const taskApprovalLaneKey = laneKey ?? "";
       if (taskApprovalLaneKey.startsWith("task:")) {
-        if (githubEcho) return reply.status(409).send({ error: "approval_stale", code: "approval_stale" });
         const taskId = taskApprovalLaneKey.slice("task:".length);
+        if (await acceptProtectedTaskResponse({
+          taskId, graphThreadId: threadId, userId: sessionUserId,
+          humanActorId: request.sessionActorId,
+          ...(approvalId === undefined ? {} : { requestId: approvalId }),
+          response: { kind: "approval", verb },
+        }, reply)) {
+          if (reply.statusCode === 200) void auditApprovalReply(deps.auditEvent, {
+            kind: verb === "deny" ? "approval_denied" : "approval_granted",
+            ts: now().toISOString(), actorId: request.sessionActorId ?? sessionUserId,
+            ip: request.ip, userAgent: request.headers["user-agent"],
+            route: "POST /api/auth/approval-reply", threadId,
+            laneKey: taskApprovalLaneKey, verb,
+          });
+          return;
+        }
+        if (githubEcho) return reply.status(409).send({ error: "approval_stale", code: "approval_stale" });
         const auth = await authorizeTaskApprovalResume({
           taskId,
           threadId,
@@ -2690,6 +2741,10 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
       const effectiveLaneKey = laneKey ?? threadId;
       if (effectiveLaneKey.startsWith("task:")) {
         const taskId = effectiveLaneKey.slice("task:".length);
+        if (await acceptProtectedTaskResponse({
+          taskId, graphThreadId: threadId, userId,
+          humanActorId: request.sessionActorId, response: { kind: "identity" },
+        }, reply)) return;
         const auth = await authorizeTaskApprovalResume({
           taskId,
           threadId,

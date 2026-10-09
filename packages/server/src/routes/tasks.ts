@@ -85,6 +85,10 @@ import {
 } from "@nautilo/trust";
 import { SHELL_AVATAR_REF } from "@nautilo/types";
 import { sendAvatar, setMediaCacheHeaders } from "./_helpers/avatar";
+import {
+  protectedTaskTranscriptReadRoutes,
+  type ProtectedTaskTranscriptReadService,
+} from "./protected-task-transcript-read";
 
 interface TasksRoutesDeps {
   /** The live TaskObserver — kicked for `now` tasks (mirrors app.ts wiring). */
@@ -92,6 +96,8 @@ interface TasksRoutesDeps {
   /** Exact native custody hook; resolves only after a locally owned Stop is contained. */
   prepareStopTask?: (taskId: string) => Promise<boolean>;
   contentOwner: EncryptionDataOperationOwner;
+  /** Exact protected Message projection; omitted by isolated Plain fixtures. */
+  protectedTranscriptRead?: ProtectedTaskTranscriptReadService;
 }
 
 function listTaskOptions(query: ListTasksQuery): Parameters<typeof listTasksForOwner>[2] {
@@ -531,6 +537,9 @@ function taskHarnessId(metadata: unknown): string | null {
 }
 
 export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
+  if (deps.protectedTranscriptRead !== undefined) {
+    protectedTaskTranscriptReadRoutes(app, deps.protectedTranscriptRead);
+  }
   app.post<{ Body: TaskCreatePayload }>("/api/tasks", async (request, reply) => {
     const ownerId =
       request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";

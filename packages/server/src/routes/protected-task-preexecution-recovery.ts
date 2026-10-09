@@ -7,6 +7,7 @@ import {
   type ProtectedTaskPreexecutionRecoveryCursor,
   type StartProtectedTaskRunInput,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+  type StartParkedProtectedTaskHumanRunSegmentInput,
 } from "@nautilo/db";
 import {
   isTaskRuntimeStableIdempotencyKey,
@@ -15,6 +16,10 @@ import {
   type BackgroundAuthorizationTaskRuntimeRecordV3,
 } from "@nautilo/runtime";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+
+type RecoveryStart = StartProtectedTaskRunInput
+  | StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput
+  | StartParkedProtectedTaskHumanRunSegmentInput;
 
 type AuthorizationRepository = Pick<BackgroundAuthorizationTaskRuntimeDeferralRepository,
   "get" | "deferUnstartedTaskRuntimeRequest">;
@@ -94,9 +99,19 @@ function exactInput(input: StartProtectedTaskRunInput): boolean {
 }
 
 function exactTaskRuntimeRecord(
-  input: StartProtectedTaskRunInput,
+  input: RecoveryStart,
   record: BackgroundAuthorizationRecord,
 ): record is BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const human = "acceptance" in input;
+  const workKind = human
+    ? input.acceptance.response.kind === "await_reply" ? "task.await_reply_resume" : "task.approval_resume"
+    : "task.execute";
+  if (human
+    ? input.jobReference.resumeAcceptanceId !== input.acceptance.acceptanceId
+      || input.jobReference.authorizationRequestId !== input.acceptance.acceptanceId
+      || input.jobReference.resumeContinuationFingerprint !== undefined
+      || input.jobReference.executionSegment < 2
+    : input.jobReference.resumeAcceptanceId !== undefined) return false;
   if (record.snapshot.formatVersion !== 3
     || record.snapshot.credentialSubject.kind !== "runtime"
     || record.snapshot.credentialSubject.runtimeKind !== "task"
@@ -119,8 +134,8 @@ function exactTaskRuntimeRecord(
       record.idempotencyKey,
       input.taskRunId,
     )
-    && record.workKind === "task.execute"
-    && record.purpose === "task.execute"
+    && record.workKind === workKind
+    && record.purpose === workKind
     && record.processorAuthorizationRevision === null
     && record.expectedPolicyRevision === input.jobReference.policyRevision
     && record.expectedDomainEpoch !== null
@@ -190,7 +205,7 @@ function activeGrantExpired(
 
 /** Shared metadata-only classification for initial and continuation recovery. */
 export function classifyProtectedTaskPreexecutionAuthorization(
-  start: StartProtectedTaskRunInput,
+  start: RecoveryStart,
   record: BackgroundAuthorizationRecord,
   now: number,
 ): "active" | "expired" | "deferred" | null {
@@ -205,7 +220,8 @@ export function createProtectedTaskPreexecutionRecovery(input: Readonly<{
   repository: AuthorizationRepository;
   now?: () => number;
   dependencies?: Partial<Dependencies>;
-  recoverParked?(start: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+  recoverParked?(start: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput
+    | StartParkedProtectedTaskHumanRunSegmentInput,
     options: Readonly<{ immediate: boolean }>): Promise<Readonly<{
       cancelled: boolean; reset: boolean; failed: boolean;
     }>>;
@@ -348,7 +364,7 @@ export function createProtectedTaskPreexecutionRecovery(input: Readonly<{
       for (const candidate of page.candidates) {
         try {
           const recoveryOptions = { immediate: candidate.jobStatus === "cancelled" };
-          const result = candidate.route === "parked_additional_authority"
+          const result = (candidate.route === "parked_additional_authority" || candidate.route === "parked_human")
             ? await input.recoverParked?.(candidate.input, recoveryOptions)
             : await recoverDetailed(candidate.input, recoveryOptions);
           if (result === undefined) continue;

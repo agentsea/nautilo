@@ -973,6 +973,7 @@ export function parseBackgroundAuthorizationRecord(
         value.workKind !== "task.dispatch"
         && value.workKind !== "task.execute"
         && value.workKind !== "task.await_reply_resume"
+        && value.workKind !== "task.approval_resume"
       )
       || value.purpose !== value.workKind
     )
@@ -2224,6 +2225,11 @@ function validateTaskRuntimeCancellationPageInput(input: Readonly<{
   return limit;
 }
 
+function isTaskExecutionWorkKind(value: BackgroundAuthorizationRecord["workKind"]): boolean {
+  return value === "task.execute" || value === "task.approval_resume"
+    || value === "task.await_reply_resume";
+}
+
 function isTaskRuntimeCancellationCandidate(
   record: BackgroundAuthorizationRecord,
 ): record is BackgroundAuthorizationTaskRuntimeRecordV3 {
@@ -2232,8 +2238,8 @@ function isTaskRuntimeCancellationCandidate(
     && snapshot.credentialSubject.kind === "runtime"
     && snapshot.credentialSubject.runtimeKind === "task"
     && snapshot.credentialSubject.runtimeVersion === 1
-    && record.workKind === "task.execute"
-    && record.purpose === "task.execute"
+    && isTaskExecutionWorkKind(record.workKind)
+    && record.purpose === record.workKind
     && record.processorAuthorizationRevision === null
     && (
       [
@@ -2403,9 +2409,9 @@ export function buildUnclaimedTaskRuntimeAuthorityReplacement(input: Readonly<{
       current.idempotencyKey,
       current.snapshot.workId,
     )
-    || current.workKind !== "task.execute"
+    || !isTaskExecutionWorkKind(current.workKind)
     || nextPlan.workKind !== current.workKind
-    || current.purpose !== "task.execute"
+    || current.purpose !== current.workKind
     || nextPlan.purpose !== current.purpose
     || current.processorAuthorizationRevision !== null
     || nextPlan.processorAuthorizationRevision !== null
@@ -2449,8 +2455,8 @@ export function buildDeferredUnstartedTaskRuntimeRequest(input: Readonly<{
   }
   const expected = parsed as BackgroundAuthorizationTaskRuntimeRecordV3;
   if (
-    expected.workKind !== "task.execute"
-    || expected.purpose !== "task.execute"
+    !isTaskExecutionWorkKind(expected.workKind)
+    || expected.purpose !== expected.workKind
     || expected.processorAuthorizationRevision !== null
     || expected.finishedAt !== null
     || !isTaskRuntimeStableIdempotencyKey(

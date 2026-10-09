@@ -547,13 +547,14 @@ describe("background authorization repository contract", () => {
       workKind: "task.await_reply_resume",
       purpose: "task.await_reply_resume",
     });
-    expect(() => parseBackgroundAuthorizationRecord({
+    expect(parseBackgroundAuthorizationRecord({
       ...record,
       workKind: "task.approval_resume",
       purpose: "task.approval_resume",
-    })).toThrow(
-      "Task Runtime authorization requires an exact Task work purpose",
-    );
+    })).toMatchObject({
+      workKind: "task.approval_resume",
+      purpose: "task.approval_resume",
+    });
     const repository = new InMemoryBackgroundAuthorizationRepository();
     expect((await repository.create(record)).status).toBe("created");
 
@@ -607,8 +608,9 @@ describe("background authorization repository contract", () => {
     )).toThrow("does not match current durable authorization");
   });
 
-  test("gives exactly one winner to Task inventory replacement versus claim", async () => {
-    const waiting = taskRuntimeRecordV3();
+  test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)(
+    "gives exactly one winner to Task inventory replacement versus claim (%s)", async workKind => {
+    const waiting = { ...taskRuntimeRecordV3(), workKind, purpose: workKind };
     const response = verifiedTaskRuntimeResponseV3(waiting);
     const replacement: BackgroundAuthorizationTaskRuntimeRecordV3 = {
       ...waiting,
@@ -708,8 +710,9 @@ describe("background authorization repository contract", () => {
     })).status).toBe("stale");
   });
 
-  test("defers an exact unstarted Task request once without spending its retry budget", async () => {
-    const waiting = taskRuntimeRecordV3();
+  test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)(
+    "defers an exact unstarted Task request once without spending its retry budget (%s)", async workKind => {
+    const waiting = { ...taskRuntimeRecordV3(), workKind, purpose: workKind };
     const accepted = buildAcceptedBackgroundAuthorizationResponse(
       waiting,
       verifiedTaskRuntimeResponseV3(waiting),
@@ -1591,9 +1594,10 @@ describe("background authorization repository contract", () => {
     })).rejects.toThrow("cursor exceeds watermark");
   });
 
-  test("Task Runtime cancellation discovery includes active and explicitly cancelled records only", async () => {
-    const awaitingRecipient = taskRuntimeAwaitingRecipientV3();
-    const awaitingDevice = taskRuntimeRecordV3();
+  test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)(
+    "Task Runtime cancellation discovery includes active and explicitly cancelled records only (%s)", async workKind => {
+    const awaitingRecipient = { ...taskRuntimeAwaitingRecipientV3(), workKind, purpose: workKind };
+    const awaitingDevice = { ...taskRuntimeRecordV3(), workKind, purpose: workKind };
     const grantReady = buildAcceptedBackgroundAuthorizationResponse(
       awaitingDevice,
       verifiedTaskRuntimeResponseV3(awaitingDevice),

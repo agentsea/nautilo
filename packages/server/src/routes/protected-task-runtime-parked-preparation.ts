@@ -1,10 +1,10 @@
 import {
   actors, and, asc, createPostgresJsBridgeConnection,
-  discoverParkedProtectedTaskAdditionalAuthority, eq,
+  eq,
   getEncryptionTransitionPolicy, getProtectedTaskRunOutputBinding,
   getSharedDirectCryptoDb, inArray, isNull, roomMembers, rooms,
-  sameParkedProtectedTaskAdditionalAuthority,
-  type DirectDatabase, type ParkedProtectedTaskAdditionalAuthority,
+  sameParkedProtectedTaskAdditionalAuthority, sameParkedProtectedTaskHumanContinuation,
+  type DirectDatabase,
 } from "@nautilo/db";
 import { LatticeCrypto, type TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
 import {
@@ -25,8 +25,10 @@ import { createHumanProductTransactionContext } from "./human-message-product-st
 import { createProtectedTaskRuntimeParkedMemoryPlanResolver } from "./protected-task-runtime-parked-memory-plan";
 import {
   createParkedTaskRuntimeAuthorizationPlanResolver,
+  discoverParkedProtectedTaskContinuation,
   createParkedTaskRuntimeAuthorizationRecord,
   type ParkedTaskRuntimePlanDependencies,
+  type ParkedProtectedTaskContinuation,
 } from "./protected-task-runtime-parked-plan";
 
 type PrepareResult = Awaited<ReturnType<typeof prepareUnclaimedParkedTaskRuntimeAuthority>>
@@ -45,7 +47,7 @@ type Dependencies = ParkedTaskRuntimePlanDependencies & Readonly<{
   prepare: typeof prepareUnclaimedParkedTaskRuntimeAuthority;
   rotate: typeof rotateExpiredTaskRuntimeRecipient;
   wake: (input: Readonly<{
-    expected: ParkedProtectedTaskAdditionalAuthority;
+    expected: ParkedProtectedTaskContinuation;
     namespaceIds: readonly string[];
   }>) => Promise<void>;
   now: () => number;
@@ -54,10 +56,14 @@ type Dependencies = ParkedTaskRuntimePlanDependencies & Readonly<{
 /** Existing key catch-up transport only; the observer's durable park supplies retries. */
 function createReadinessWake(db: DirectDatabase): Dependencies["wake"] {
   return async ({ expected, namespaceIds }) => {
-    const current = await discoverParkedProtectedTaskAdditionalAuthority(db, {
+    const current = await discoverParkedProtectedTaskContinuation(db, {
       taskRunId: expected.occurrence.run.id,
     });
-    if (current === null || !sameParkedProtectedTaskAdditionalAuthority(current, expected)) return;
+    if (current === null || ("acceptance" in expected
+      ? !("acceptance" in current)
+        || !sameParkedProtectedTaskHumanContinuation(current, expected)
+      : "acceptance" in current
+        || !sameParkedProtectedTaskAdditionalAuthority(current, expected))) return;
     const participants = await db.select({
       roomId: rooms.id, namespaceId: rooms.namespaceId, userId: actors.ownerId,
     }).from(rooms).innerJoin(roomMembers, eq(roomMembers.roomId, rooms.id))
@@ -92,7 +98,7 @@ export function createProtectedTaskRuntimeParkedPreparation(
     recipients: input.recipients,
     resolveMemory: overrides.resolveMemory
       ?? createProtectedTaskRuntimeParkedMemoryPlanResolver({ db, resolver: input.resolver }),
-    discover: overrides.discover ?? discoverParkedProtectedTaskAdditionalAuthority,
+    discover: overrides.discover ?? discoverParkedProtectedTaskContinuation,
     readOutput: overrides.readOutput ?? getProtectedTaskRunOutputBinding,
     readPolicy: overrides.readPolicy ?? getEncryptionTransitionPolicy,
     productContext: overrides.productContext ?? createHumanProductTransactionContext,

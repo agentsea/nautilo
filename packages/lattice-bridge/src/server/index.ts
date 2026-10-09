@@ -1056,10 +1056,15 @@ export {
   type NativeTaskMessageCryptoCompletionPort,
 } from "./task/postgres-native-task-message-completion.ts";
 export {
+  createNativeTaskHumanReplyReadTargetV1,
   createNativeTaskMessageReadTargetV1,
+  withNativeTaskHumanReplyV1,
   withNativeTaskMessageV1,
+  type NativeTaskHumanReplyReadAuthorityV1,
+  type NativeTaskHumanReplyReadTargetV1,
   type NativeTaskMessageReadAuthorityV1,
   type NativeTaskMessageReadTargetV1,
+  type ResolveNativeTaskHumanReplyHistoricalSigner,
 } from "./task/native-task-message-opener.ts";
 
 export {

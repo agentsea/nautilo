@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { expect, test } from "bun:test";
 import type {
   StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+  StartParkedProtectedTaskHumanRunSegmentInput,
 } from "@nautilo/db";
 import {
   InMemoryBackgroundAuthorizationRepository,
@@ -338,3 +339,30 @@ test("observer recovers an expired no-Job claim without device or content author
   expect(await recovery.recoverExpiredClaim(proof.expected.occurrence)).toBe(false);
   expect(proofs).toBe(1);
 });
+
+
+test.each(["approval", "await_reply"] as const)(
+  "observer defers an expired %s continuation only for its exact acceptance", async kind => {
+    const workKind = kind === "approval" ? "task.approval_resume" : "task.await_reply_resume";
+    const claimed = { ...claimedRecord(), workKind, purpose: workKind } as BackgroundAuthorizationTaskRuntimeRecordV3;
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    await repository.create(claimed);
+    let cancellations = 0;
+    const recovery = createProtectedTaskParkedPreexecutionRecovery({
+      db: {} as never, repository, now: () => NOW + 60_001,
+    }, async (_db, _start, _time, defer) => {
+      cancellations++;
+      return await defer() ? { status: "recovered" as const } : { status: "cancelled" as const };
+    });
+    const start = { ...startInput(), acceptance: { acceptanceId: REQUEST, response: { kind } },
+      jobReference: { ...startInput().jobReference, executionSegment: 2, resumeAcceptanceId: REQUEST },
+    } as unknown as StartParkedProtectedTaskHumanRunSegmentInput;
+    const stale = { ...start, jobReference: { ...start.jobReference, resumeAcceptanceId: "other" } };
+    expect(await recovery.recoverDiscovered(stale, { immediate: false }))
+      .toEqual({ cancelled: false, reset: false, failed: false });
+    expect(cancellations).toBe(0);
+    expect(await recovery.recoverDiscovered(start, { immediate: false }))
+      .toEqual({ cancelled: true, reset: true, failed: false });
+    expect(cancellations).toBe(1);
+    expect((await repository.get(REQUEST))?.snapshot.state).toBe("awaiting_recipient");
+  });

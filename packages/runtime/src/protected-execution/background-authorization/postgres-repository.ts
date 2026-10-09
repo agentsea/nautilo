@@ -1623,8 +1623,8 @@ export class PostgresBackgroundAuthorizationRepository
         eq(table.credentialSubjectKind, "runtime"),
         eq(table.runtimeKind, "task"),
         eq(table.runtimeVersion, 1),
-        eq(table.workKind, "task.execute"),
-        eq(table.purpose, "task.execute"),
+        inArray(table.workKind, ["task.execute", "task.approval_resume", "task.await_reply_resume"]),
+        eq(table.purpose, table.workKind),
         isNull(table.processorAuthorizationRevision),
         or(
           inArray(table.state, [

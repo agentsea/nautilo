@@ -130,6 +130,11 @@ export {
   type ProtectedTaskAdditionalAuthorityResumeAcknowledgementV1,
   type ProtectedTaskAdditionalAuthorityResumeBindingV1,
 } from "./graph/protected-task-additional-authority-resume";
+export {
+  createProtectedTaskHumanResumeCommandV1,
+  type ProtectedTaskHumanResumeBindingV1,
+  type ProtectedTaskHumanResumeContextV1,
+} from "./graph/protected-task-human-resume";
 export { readPendingInterruptEventsForThread } from "./graph/pending-interrupts";
 export { resumeGraphWithConnectedWebAction } from "./graph/resume-connected-web-action";
 export {

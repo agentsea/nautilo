@@ -41,9 +41,11 @@ import {
   "./protected-task-output-binding-identities";
 import {
   PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY,
+  PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY,
   PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY,
   type ProtectedTaskDurableJobReference,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+  type StartParkedProtectedTaskHumanRunSegmentInput,
   type StartProtectedTaskRunInput,
 } from "./tasks";
 
@@ -67,6 +69,13 @@ export type ProtectedTaskPreexecutionRecoveryCandidate =
   | Readonly<{
       route: "parked_additional_authority";
       input: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput;
+      jobStatus: "queued" | "cancelled";
+      lifecycle: "linked" | "parked";
+      cursor: ProtectedTaskPreexecutionRecoveryCursor;
+    }>
+  | Readonly<{
+      route: "parked_human";
+      input: StartParkedProtectedTaskHumanRunSegmentInput;
       jobStatus: "queued" | "cancelled";
       lifecycle: "linked" | "parked";
       cursor: ProtectedTaskPreexecutionRecoveryCursor;
@@ -158,6 +167,8 @@ const priorJobProjection = Object.freeze({
   completedAt: priorJobs.completedAt,
   parkReceipt:
     sql<unknown>`${priorJobs.metadata} -> ${PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY}`,
+  humanAcceptanceReceipt:
+    sql<unknown>`${priorJobs.metadata} -> ${PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY}`,
   pristine: and(
     isNull(priorJobs.result),
     isNull(priorJobs.message),
@@ -578,13 +589,22 @@ export async function listUnstartedProtectedTaskRunRecoveryCandidates(
         segment: row.segment,
         continuation: row.continuation,
       } as ParkedProtectedTaskRecoveryCandidateRow);
-      if (parked !== null) candidates.push({
-        route: "parked_additional_authority",
-        input: parked.input,
-        jobStatus: row.job.status,
-        lifecycle: parked.lifecycle,
-        cursor,
-      });
+      if (parked !== null) {
+        if ("acceptance" in parked.input) candidates.push({
+          route: "parked_human",
+          input: parked.input,
+          jobStatus: row.job.status,
+          lifecycle: parked.lifecycle,
+          cursor,
+        });
+        else candidates.push({
+          route: "parked_additional_authority",
+          input: parked.input,
+          jobStatus: row.job.status,
+          lifecycle: parked.lifecycle,
+          cursor,
+        });
+      }
       continue;
     }
     if (row.run.status !== "running" || row.run.jobId !== row.job.id

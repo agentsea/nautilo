@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import type { ProtectedTaskHumanResumeBindingV1 } from "@nautilo/agent";
 
 import {
   type LatticeCrypto,
@@ -17,7 +18,9 @@ import type {
   AcceptProtectedTaskRunOutputBindingResult,
   ProtectedTaskRunOutputDestination,
   ParkedProtectedTaskAdditionalAuthority,
+  ParkedProtectedTaskHumanContinuation,
   ProtectedTaskRunOutputBinding,
+  ProtectedTaskHumanContinuationAcceptance,
 } from "@nautilo/db";
 import {
   createBackgroundAuthorizationTaskRuntimeRequestV3,
@@ -41,7 +44,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 /** Compare locked routing with durable park evidence, independently of old grants. */
 export function createParkedTaskRuntimeRoutingValidator(input: Readonly<{
-  expected: ParkedProtectedTaskAdditionalAuthority;
+  expected: ParkedProtectedTaskAdditionalAuthority | ParkedProtectedTaskHumanContinuation;
   output: ProtectedTaskRunOutputBinding;
   /** Current canonical Wide envelope's private write target, not content custody. */
   widePrivateNamespaceId: string | null;
@@ -49,7 +52,8 @@ export function createParkedTaskRuntimeRoutingValidator(input: Readonly<{
   const { expected, output } = input;
   const widePrivateNamespaceId = input.widePrivateNamespaceId;
   const taskRunId = expected.occurrence.run.id;
-  const storedDigest = expected.proof.continuation.stableRoutingDigest;
+  const storedDigest = "acceptance" in expected ? expected.stableRoutingDigest
+    : expected.proof.continuation.stableRoutingDigest;
   if (!(storedDigest instanceof Uint8Array) || storedDigest.length !== 32
     || (widePrivateNamespaceId !== null && !UUID.test(widePrivateNamespaceId))
     || output.taskRunId !== taskRunId
@@ -92,6 +96,17 @@ export function createParkedTaskRuntimeRoutingValidator(input: Readonly<{
     }
   };
 }
+
+/** Reply text is opened only inside the fresh segment grant, never preparation. */
+export type ProtectedTaskHumanResumePreparation =
+  | Exclude<ProtectedTaskHumanResumeBindingV1, { kind: "await_reply" }>
+  | Readonly<{
+      kind: "await_reply";
+      interruptId: string;
+      acceptedBy: ProtectedTaskHumanContinuationAcceptance["acceptedBy"];
+      message: Extract<ProtectedTaskHumanContinuationAcceptance["response"],
+        { kind: "await_reply" }>["message"];
+    }>;
 
 export type ProtectedTaskRuntimeNamespaceAuthorityFact = Readonly<{
   namespaceId: string;
@@ -143,6 +158,7 @@ export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
     stableRoutingDigest: Uint8Array;
     /** Exact pending interrupt and immutable pre-effect proof for a parked run. */
     additionalAuthorityResume?: ProtectedTaskNativeAdditionalAuthorityResume;
+    humanResume?: ProtectedTaskHumanResumePreparation;
     scopeMemory?: TaskScopeMemoryBinding;
     /** Exact committed preimage; retained only for fixed Scope execution admission. */
     scopeWorkIdentity?: string;

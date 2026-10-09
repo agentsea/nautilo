@@ -5,6 +5,7 @@ import {
   countDistinct,
   sql,
   eq,
+  gt,
   inArray,
   isNotNull,
   isNull,
@@ -435,7 +436,19 @@ export type ProtectedTaskRunTranscriptIndexRow = Readonly<{
 }>;
 
 export type ProtectedTaskRunTranscriptIndexRead =
-  | Readonly<{ status: "ready"; rows: readonly ProtectedTaskRunTranscriptIndexRow[] }>
+  | Readonly<{
+      status: "ready";
+      source:
+        | Readonly<{ kind: "task_target"; roomId: string }>
+        | Readonly<{
+            kind: "requester_private";
+            requesterUserId: string;
+            roomId: string;
+            namespaceId: string;
+          }>;
+      rows: readonly ProtectedTaskRunTranscriptIndexRow[];
+      nextAfterMessageId: number | null;
+    }>
   | Readonly<{ status: "waiting"; reason: "transcript_not_mapped" }>
   | Readonly<{
       status: "unavailable";
@@ -450,30 +463,45 @@ export type ProtectedTaskRunTranscriptIndexRead =
 /**
  * Resolve only the Message coordinates owned by one exact protected TaskRun.
  * Task ownership and Message audience remain separate: Room transcripts are
- * returned only for a current Room member, while a roomless private Session is
- * recognized but reported unavailable until it has an exact protected-history
- * reader. No Message content or protected payload leaves this query.
+ * returned only for a current Room member. A target-roomless Task remains
+ * readable through its canonical requester+Agent private Room; a historical
+ * Session with no Room is reported unavailable because the history projector
+ * has no exact Room authority. No Message content or protected payload leaves
+ * this query.
  */
 export async function readProtectedTaskRunTranscriptIndex(
   db: Pick<DirectDatabase, "select">,
   input: Readonly<{
     taskId: string;
     taskRunId: string;
+    agentId: string;
     viewerUserId: string;
     viewerActorId: string;
+    afterMessageId?: number;
+    limit: number;
   }>,
 ): Promise<ProtectedTaskRunTranscriptIndexRead> {
   if (
     !CANONICAL_UUID.test(input.taskId)
     || !CANONICAL_UUID.test(input.taskRunId)
+    || !CANONICAL_UUID.test(input.agentId)
     || !CANONICAL_UUID.test(input.viewerUserId)
     || !CANONICAL_UUID.test(input.viewerActorId)
+    || (input.afterMessageId !== undefined
+      && (!Number.isSafeInteger(input.afterMessageId)
+        || input.afterMessageId < 1))
+    || !Number.isSafeInteger(input.limit)
+    || input.limit < 1
+    || input.limit === Number.MAX_SAFE_INTEGER
   ) throw new TypeError("Protected Task transcript identity is malformed");
 
   const lifecycleRows = await db.select({
     ownerId: tasks.ownerId,
+    requestorId: tasks.requestorId,
+    agentId: tasks.agentId,
     contentRepresentation: tasks.contentRepresentation,
     cryptoMappingState: tasks.cryptoMappingState,
+    contentNamespaceId: tasks.contentNamespaceId,
     targetRoomId: tasks.targetRoomId,
     runTaskId: taskRuns.taskId,
     graphThreadId: taskRuns.graphThreadId,
@@ -485,6 +513,7 @@ export async function readProtectedTaskRunTranscriptIndex(
   const lifecycle = lifecycleRows[0];
   if (lifecycleRows.length !== 1 || lifecycle === undefined
     || lifecycle.ownerId !== input.viewerUserId
+    || lifecycle.agentId !== input.agentId
     || lifecycle.runTaskId !== input.taskId) {
     return Object.freeze({ status: "not_found" as const });
   }
@@ -504,6 +533,7 @@ export async function readProtectedTaskRunTranscriptIndex(
     sessionId: sessions.id,
     roomId: sessions.roomId,
     sessionOwnerId: sessions.ownerId,
+    sessionAgentId: sessions.agentId,
     threadId: sessions.threadId,
     messageId: sessionMessages.id,
     messageSessionId: sessionMessages.sessionId,
@@ -525,10 +555,20 @@ export async function readProtectedTaskRunTranscriptIndex(
     .where(and(
       eq(taskRunMessageAssociations.taskRunId, input.taskRunId),
       eq(taskRunMessageAssociations.kind, "transcript"),
+      ...(input.afterMessageId === undefined
+        ? []
+        : [gt(taskRunMessageAssociations.messageId, input.afterMessageId)]),
     ))
-    .orderBy(asc(taskRunMessageAssociations.messageId));
+    .orderBy(asc(taskRunMessageAssociations.messageId))
+    .limit(input.limit + 1);
 
   if (rows.length === 0) {
+    if (input.afterMessageId !== undefined) {
+      return Object.freeze({
+        status: "unavailable" as const,
+        reason: "integrity_failure" as const,
+      });
+    }
     return lifecycle.runStatus === "running"
         || lifecycle.runStatus === "awaiting"
         || lifecycle.runStatus === "paused"
@@ -544,7 +584,8 @@ export async function readProtectedTaskRunTranscriptIndex(
 
   const roomIds = new Set<string>();
   const projected: ProtectedTaskRunTranscriptIndexRow[] = [];
-  for (const row of rows) {
+  const pageRows = rows.slice(0, input.limit);
+  for (const row of pageRows) {
     if (row.sessionId === null
       || row.messageId === null
       || row.editRevision === null
@@ -556,7 +597,13 @@ export async function readProtectedTaskRunTranscriptIndex(
       || row.associatedRevision !== row.editRevision
       || row.messageSessionId !== row.sessionId
       || row.threadId !== lifecycle.graphThreadId
-      || row.roomId !== lifecycle.targetRoomId
+      || row.sessionAgentId !== lifecycle.agentId
+      || (lifecycle.targetRoomId !== null
+        && row.roomId !== lifecycle.targetRoomId)
+      || (lifecycle.targetRoomId === null
+        && row.roomId !== null
+        && (row.sessionOwnerId !== lifecycle.requestorId
+          || lifecycle.contentNamespaceId === null))
       || !["assistant", "tool", "system"].includes(row.role)) {
       return Object.freeze({
         status: "unavailable" as const,
@@ -594,9 +641,33 @@ export async function readProtectedTaskRunTranscriptIndex(
       reason: "not_in_message_audience" as const,
     });
   }
+  const sourceRoomId = projected[0]?.roomId;
+  if (sourceRoomId === undefined
+    || [...roomIds].length !== 1
+    || !roomIds.has(sourceRoomId)) {
+    return Object.freeze({
+      status: "unavailable" as const,
+      reason: "integrity_failure" as const,
+    });
+  }
+  const nextAfterMessageId = rows.length > input.limit
+    ? projected.at(-1)?.messageId ?? null
+    : null;
   return Object.freeze({
     status: "ready" as const,
+    source: lifecycle.targetRoomId === null
+      ? Object.freeze({
+          kind: "requester_private" as const,
+          requesterUserId: lifecycle.requestorId,
+          roomId: sourceRoomId,
+          namespaceId: lifecycle.contentNamespaceId!,
+        })
+      : Object.freeze({
+          kind: "task_target" as const,
+          roomId: sourceRoomId,
+        }),
     rows: Object.freeze(projected),
+    nextAfterMessageId,
   });
 }
 

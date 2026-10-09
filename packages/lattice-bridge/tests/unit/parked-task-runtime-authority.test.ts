@@ -21,7 +21,7 @@ import {
 } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
 import {
   copyParkedTaskRuntimeAuthority,
-  lockCurrentParkedTaskAdditionalAuthority,
+  lockCurrentParkedTaskAuthority,
   withParkedTaskRuntimeRestrictedAuthority,
 } from "../../src/server/task/parked-task-runtime-authority.ts";
 
@@ -257,7 +257,7 @@ describe("parked Task Runtime authority", () => {
   test("locks Task, Run and prior Job before re-reading immutable proof", async () => {
     const value = rows();
     const events: string[] = [];
-    const current = await lockCurrentParkedTaskAdditionalAuthority({
+    const current = await lockCurrentParkedTaskAuthority({
       transaction: transactionRows(value, events) as never,
       expected: descriptor(),
     });
@@ -274,7 +274,7 @@ describe("parked Task Runtime authority", () => {
 
   test("pins caller-owned bytes before the first lock await", async () => {
     const expected = descriptor();
-    const operation = lockCurrentParkedTaskAdditionalAuthority({
+    const operation = lockCurrentParkedTaskAuthority({
       transaction: transactionRows(rows(), []) as never,
       expected,
     });
@@ -301,7 +301,7 @@ describe("parked Task Runtime authority", () => {
         },
       },
     };
-    expect(await lockCurrentParkedTaskAdditionalAuthority({
+    expect(await lockCurrentParkedTaskAuthority({
       transaction: transactionRows(value, []) as never,
       expected: descriptor(),
     })).toBeNull();
@@ -319,7 +319,7 @@ describe("parked Task Runtime authority", () => {
         },
       },
     };
-    expect(await lockCurrentParkedTaskAdditionalAuthority({
+    expect(await lockCurrentParkedTaskAuthority({
       transaction: transactionRows(value, []) as never,
       expected: descriptor(),
     })).toBeNull();
@@ -336,7 +336,7 @@ describe("parked Task Runtime authority", () => {
     ];
     for (const currentCase of cases) {
       const events: string[] = [];
-      expect(await lockCurrentParkedTaskAdditionalAuthority({
+      expect(await lockCurrentParkedTaskAuthority({
         transaction: transactionRows(currentCase.value, events) as never,
         expected: descriptor(),
       }), currentCase.stage).toBeNull();

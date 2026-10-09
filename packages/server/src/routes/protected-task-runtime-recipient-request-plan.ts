@@ -90,6 +90,7 @@ export function createProtectedTaskRuntimeRecipientRequestPlan(
   const { occurrence, initialRecord } = input;
   const crypto = input.crypto;
   const requestId = initialRecord.snapshot.requestId;
+  const workKind = initialRecord.workKind;
   const workId = occurrence.run.id;
   const requesterUserId = occurrence.task.requestorId;
   const sourceRoomId = input.sourceRoomId;
@@ -108,6 +109,9 @@ export function createProtectedTaskRuntimeRecipientRequestPlan(
     || !Number.isSafeInteger(createdAt) || createdAt < 0
     || !Number.isSafeInteger(recipientTtlMs) || recipientTtlMs < 1
     || recipientTtlMs > DOMAIN_FOREGROUND_AUTHORIZATION_MAX_TTL_MS_V2
+    || (workKind !== "task.execute" && workKind !== "task.approval_resume"
+      && workKind !== "task.await_reply_resume")
+    || initialRecord.purpose !== workKind
     || initialRecord.snapshot.workId !== workId
     || occurrence.run.taskId !== occurrence.task.id
     || initialRecord.expectedPolicyRevision !== policyRevision
@@ -127,6 +131,7 @@ export function createProtectedTaskRuntimeRecipientRequestPlan(
     recipientAttempt: ({ record, now: attemptAt }) => {
       if (record.snapshot.requestId !== requestId
         || record.snapshot.workId !== workId
+        || record.workKind !== workKind || record.purpose !== workKind
         || record.expectedPolicyRevision !== policyRevision
         || record.idempotencyKey !== idempotencyKey
         || !sameBytes(record.workIdentityHash, workIdentityHash)) {
@@ -149,6 +154,7 @@ export function createProtectedTaskRuntimeRecipientRequestPlan(
         .sort((left, right) => left.domainId.localeCompare(right.domainId));
       if (record.snapshot.requestId !== requestId
         || record.snapshot.workId !== workId
+        || record.workKind !== workKind || record.purpose !== workKind
         || record.idempotencyKey !== idempotencyKey
         || !sameBytes(record.workIdentityHash, workIdentityHash)
         || attempt.requestId !== requestId
@@ -202,8 +208,8 @@ export function createProtectedTaskRuntimeRecipientRequestPlan(
         return createTaskRuntimeBackgroundAuthorizationRequestV1({
           requestId,
           workId,
-          workKind: "task.execute",
-          workPurpose: "task.execute",
+          workKind,
+          workPurpose: workKind,
           recipientGeneration: attempt.recipientGeneration,
           episodeId: grant.sessionId,
           sourceRoomId: current.sourceRoomId,

@@ -288,6 +288,10 @@ export type TaskRuntimeGrantStableIdentity = Readonly<{
   taskRunId: string;
   executionSegment: number;
   resumeContinuationFingerprint: string | null;
+  /** Exact accepted Human response that authorizes this later segment. */
+  resumeAcceptanceId?: string;
+  /** Closed Runtime descriptor purpose for that Human response. */
+  resumeWorkKind?: "task.approval_resume" | "task.await_reply_resume";
   ownerId: string;
   requestorId: string;
   agentId: string;
@@ -363,19 +367,39 @@ export function taskRuntimeStableIdempotencyKey(
   identity: TaskRuntimeGrantStableIdentity,
 ): string {
   const fingerprint = identity.resumeContinuationFingerprint;
+  const acceptanceId = identity.resumeAcceptanceId;
+  const resumeWorkKind = identity.resumeWorkKind;
+  const initial = identity.executionSegment === 1
+    && fingerprint === null
+    && acceptanceId === undefined
+    && resumeWorkKind === undefined;
+  const additionalAuthority = identity.executionSegment > 1
+    && typeof fingerprint === "string"
+    && /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u.test(fingerprint)
+    && acceptanceId === undefined
+    && resumeWorkKind === undefined;
+  const human = identity.executionSegment > 1
+    && fingerprint === null
+    && typeof acceptanceId === "string"
+    && acceptanceId.trim().length > 0
+    && (resumeWorkKind === "task.approval_resume"
+      || resumeWorkKind === "task.await_reply_resume");
   if (!Number.isSafeInteger(identity.executionSegment)
     || identity.executionSegment < 1
-    || (identity.executionSegment === 1
-      ? fingerprint !== null
-      : typeof fingerprint !== "string"
-        || !/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u.test(fingerprint))) {
+    || (!initial && !additionalAuthority && !human)) {
     throw new TypeError("Task Runtime execution segment identity is invalid");
   }
-  const initial = taskRuntimeStableRoutingTuple(identity);
+  const routing = taskRuntimeStableRoutingTuple(identity);
   const digest = createHash("sha256")
-    .update(JSON.stringify(identity.executionSegment === 1 ? initial : [
+    .update(JSON.stringify(initial ? routing : human ? [
+      "task-runtime-human-resume:v1",
+      routing,
+      identity.executionSegment,
+      acceptanceId,
+      resumeWorkKind,
+    ] : [
       "task-runtime-continuation:v1",
-      initial,
+      routing,
       identity.executionSegment,
       fingerprint,
     ]))
@@ -530,6 +554,8 @@ function sameTaskScopeMemoryBinding(
 function exactOccurrenceRecord(
   occurrence: ProtectedTaskAuthorityOccurrence,
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
+  expectedWorkKind?: "task.execute" | "task.approval_resume"
+    | "task.await_reply_resume",
 ): boolean {
   const contentRequirements = record.authoritySet.namespaceRequirements.filter(
     (requirement) =>
@@ -544,8 +570,11 @@ function exactOccurrenceRecord(
     })
     && record.snapshot.workId === occurrence.run.id
     && record.snapshot.namespaceId === occurrence.task.contentNamespaceId
-    && record.workKind === "task.execute"
-    && record.purpose === "task.execute"
+    && (record.workKind === "task.execute"
+      || record.workKind === "task.approval_resume"
+      || record.workKind === "task.await_reply_resume")
+    && record.purpose === record.workKind
+    && (expectedWorkKind === undefined || record.workKind === expectedWorkKind)
     && record.processorAuthorizationRevision === null
     && record.expectedDomainEpoch !== null
     && contentRequirements.length === 1
@@ -564,9 +593,18 @@ function parkedStableIdentityMatchesOccurrence(
   identity: TaskRuntimeGrantStableIdentity,
 ): boolean {
   const canonicalTargetUserIds = [...identity.targetUserIds].sort();
+  const additionalAuthority = typeof identity.resumeContinuationFingerprint
+      === "string"
+    && identity.resumeAcceptanceId === undefined
+    && identity.resumeWorkKind === undefined;
+  const human = identity.resumeContinuationFingerprint === null
+    && typeof identity.resumeAcceptanceId === "string"
+    && identity.resumeAcceptanceId.trim().length > 0
+    && (identity.resumeWorkKind === "task.approval_resume"
+      || identity.resumeWorkKind === "task.await_reply_resume");
   return occurrence.run.jobId !== null
     && identity.executionSegment > 1
-    && identity.resumeContinuationFingerprint !== null
+    && (additionalAuthority || human)
     && identity.taskId === occurrence.task.id
     && identity.taskRunId === occurrence.run.id
     && identity.ownerId === occurrence.task.ownerId
@@ -604,7 +642,8 @@ function exactUnclaimedParkedInitialRecord(
   stableIdentity: TaskRuntimeGrantStableIdentity,
   initial: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): boolean {
-  return exactOccurrenceRecord(occurrence, initial)
+  const workKind = stableIdentity.resumeWorkKind ?? "task.execute";
+  return exactOccurrenceRecord(occurrence, initial, workKind)
     && parkedStableIdentityMatchesOccurrence(occurrence, stableIdentity)
     && initial.idempotencyKey === taskRuntimeStableIdempotencyKey(stableIdentity)
     && initial.snapshot.state === "awaiting_recipient"
@@ -656,6 +695,8 @@ function stableIdentityMatchesOccurrence(
   // dedicated proof-consuming start plan before it can attach a recipient.
   return identity.executionSegment === 1
     && identity.resumeContinuationFingerprint === null
+    && identity.resumeAcceptanceId === undefined
+    && identity.resumeWorkKind === undefined
     && plan.reference.executionSegment === 1
     && !Object.hasOwn(plan.reference, "resumeAcceptanceId")
     && !Object.hasOwn(plan.reference, "resumeContinuationFingerprint")
@@ -786,7 +827,7 @@ function assertPlan(
   const outputDomain = outputDomains[0];
   if (
     !isTaskRuntimeRecord(initial)
-    || !exactOccurrenceRecord(occurrence, initial)
+    || !exactOccurrenceRecord(occurrence, initial, "task.execute")
     || !stableIdentityMatchesOccurrence(occurrence, plan)
     || (plan.stableIdentity.memoryMode === "scope"
       ? scopeMemory === undefined
@@ -870,6 +911,8 @@ function assertParkedPlan(
       requirement.domainId === outputNamespace.domainId
     ) ?? [];
   const outputDomain = outputDomains[0];
+  const humanResume = identity.resumeContinuationFingerprint === null;
+  const expectedWorkKind = identity.resumeWorkKind ?? "task.execute";
   if (
     !isTaskRuntimeRecord(initial)
     || !exactUnclaimedParkedInitialRecord(occurrence, identity, initial)
@@ -886,10 +929,16 @@ function assertParkedPlan(
     || plan.reference.authorizationRequestId !== initial.snapshot.requestId
     || plan.reference.policyRevision !== initial.expectedPolicyRevision
     || plan.reference.executionSegment !== identity.executionSegment
-    || !Object.hasOwn(plan.reference, "resumeContinuationFingerprint")
-    || Object.hasOwn(plan.reference, "resumeAcceptanceId")
-    || plan.reference.resumeContinuationFingerprint
-      !== identity.resumeContinuationFingerprint
+    || (humanResume
+      ? !Object.hasOwn(plan.reference, "resumeAcceptanceId")
+        || Object.hasOwn(plan.reference, "resumeContinuationFingerprint")
+        || plan.reference.resumeAcceptanceId !== identity.resumeAcceptanceId
+      : !Object.hasOwn(plan.reference, "resumeContinuationFingerprint")
+        || Object.hasOwn(plan.reference, "resumeAcceptanceId")
+        || plan.reference.resumeContinuationFingerprint
+          !== identity.resumeContinuationFingerprint)
+    || initial.workKind !== expectedWorkKind
+    || initial.purpose !== expectedWorkKind
     || plan.scheduling.ownerId !== occurrence.task.ownerId
     || plan.scheduling.requestorId !== occurrence.task.requestorId
     || plan.scheduling.agentId !== occurrence.task.agentId

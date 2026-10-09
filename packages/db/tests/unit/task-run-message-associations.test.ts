@@ -31,6 +31,7 @@ const ids = {
   namespace: "40000000-0000-4000-8000-000000000003",
   owner: "50000000-0000-4000-8000-000000000001",
   roomOwner: "50000000-0000-4000-8000-000000000002",
+  requester: "50000000-0000-4000-8000-000000000003",
   agent: "60000000-0000-4000-8000-000000000001",
   actor: "70000000-0000-4000-8000-000000000001",
 };
@@ -371,37 +372,56 @@ describe("TaskRun Message association receipts", () => {
 function transcriptReadHarness(input: Readonly<{
   member?: boolean;
   roomId?: string | null;
+  targetRoomId?: string | null;
   sessionOwnerId?: string;
+  taskRequestorId?: string;
+  taskAgentId?: string;
+  sessionAgentId?: string | null;
   messagePresent?: boolean;
+  messageIds?: readonly number[];
+  observations?: { where: SQL[]; limits: number[] };
 }> = {}) {
   const roomId = input.roomId === undefined ? ids.room : input.roomId;
+  const targetRoomId = input.targetRoomId === undefined
+    ? ids.room
+    : input.targetRoomId;
   const data = (table: unknown) => {
     if (table === tasks) return [{
       ownerId: ids.owner,
+      requestorId: input.taskRequestorId ?? ids.owner,
+      agentId: input.taskAgentId ?? ids.agent,
       contentRepresentation: "protected",
       cryptoMappingState: "verified",
-      targetRoomId: roomId,
+      contentNamespaceId: ids.namespace,
+      targetRoomId,
       runTaskId: ids.task,
       graphThreadId,
       runStatus: "running",
     }];
-    if (table === taskRunMessageAssociations) return [{
+    if (table === taskRunMessageAssociations) return (
+      input.messageIds ?? [41]
+    ).map((messageId) => ({
       associatedSessionId: ids.session,
-      associatedMessageId: 41,
+      associatedMessageId: messageId,
       associatedRevision: 0,
       sessionId: ids.session,
       roomId,
       sessionOwnerId: input.sessionOwnerId ?? ids.roomOwner,
+      sessionAgentId: input.sessionAgentId === undefined
+        ? ids.agent
+        : input.sessionAgentId,
       threadId: graphThreadId,
-      messageId: input.messagePresent === false ? null : 41,
+      messageId: input.messagePresent === false ? null : messageId,
       messageSessionId: input.messagePresent === false ? null : ids.session,
       editRevision: input.messagePresent === false ? null : 0,
       role: input.messagePresent === false ? null : "assistant",
-      cryptoObjectId: input.messagePresent === false ? null : "message:v2:41",
+      cryptoObjectId: input.messagePresent === false
+        ? null
+        : `message:v2:${messageId}`,
       createdAt: input.messagePresent === false ? null : createdAt,
-    }];
+    }));
     if (table === roomMembers) {
-      return input.member === false ? [] : [{ roomId: ids.room }];
+      return input.member === false || roomId === null ? [] : [{ roomId }];
     }
     return [];
   };
@@ -411,9 +431,15 @@ function transcriptReadHarness(input: Readonly<{
         const query = {
           innerJoin: (_joined: unknown, _condition: unknown) => query,
           leftJoin: (_joined: unknown, _condition: unknown) => query,
-          where: (_condition: unknown) => query,
-          limit: async (_limit: number) => data(table),
-          orderBy: async (_order: unknown) => data(table),
+          where: (condition: SQL) => {
+            input.observations?.where.push(condition);
+            return query;
+          },
+          limit: async (limit: number) => {
+            input.observations?.limits.push(limit);
+            return data(table).slice(0, limit);
+          },
+          orderBy: (_order: unknown) => query,
           then: <Value>(
             resolve: (value: unknown[]) => Value | PromiseLike<Value>,
             reject?: (reason: unknown) => unknown,
@@ -429,8 +455,10 @@ describe("protected TaskRun transcript index", () => {
   const request = {
     taskId: ids.task,
     taskRunId: ids.run,
+    agentId: ids.agent,
     viewerUserId: ids.owner,
     viewerActorId: ids.actor,
+    limit: 50,
   };
 
   test("returns only content-free coordinates for a current Room member", async () => {
@@ -439,6 +467,7 @@ describe("protected TaskRun transcript index", () => {
       request,
     )).toEqual({
       status: "ready",
+      source: { kind: "task_target", roomId: ids.room },
       rows: [{
         sessionId: ids.session,
         roomId: ids.room,
@@ -447,7 +476,59 @@ describe("protected TaskRun transcript index", () => {
         role: "assistant",
         createdAt,
       }],
+      nextAfterMessageId: null,
     });
+  });
+
+  test("bounds the canonical query and emits a stable exclusive continuation", async () => {
+    const observations = { where: [] as SQL[], limits: [] as number[] };
+    expect(await readProtectedTaskRunTranscriptIndex(
+      transcriptReadHarness({ messageIds: [41, 42, 43], observations }),
+      { ...request, limit: 2 },
+    )).toMatchObject({
+      status: "ready",
+      rows: [{ messageId: 41 }, { messageId: 42 }],
+      nextAfterMessageId: 42,
+    });
+    expect(observations.limits).toEqual([2, 3]);
+
+    const dialect = new PgDialect();
+    const after = { ...request, afterMessageId: 42, limit: 2 };
+    await readProtectedTaskRunTranscriptIndex(
+      transcriptReadHarness({ observations }),
+      after,
+    );
+    const transcriptWhere = dialect.sqlToQuery(observations.where.at(-2)!);
+    expect(transcriptWhere.sql).toContain('"task_run_message_associations"."message_id" >');
+    expect(transcriptWhere.params).toContain(42);
+  });
+
+  test("binds the exact Task Agent and canonical requester private Room source", async () => {
+    expect(await readProtectedTaskRunTranscriptIndex(
+      transcriptReadHarness({
+        targetRoomId: null,
+        roomId: ids.room,
+        taskRequestorId: ids.requester,
+        sessionOwnerId: ids.requester,
+      }),
+      request,
+    )).toMatchObject({
+      status: "ready",
+      source: {
+        kind: "requester_private",
+        requesterUserId: ids.requester,
+        roomId: ids.room,
+        namespaceId: ids.namespace,
+      },
+    });
+    expect(await readProtectedTaskRunTranscriptIndex(
+      transcriptReadHarness({ taskAgentId: ids.otherTask }),
+      request,
+    )).toEqual({ status: "not_found" });
+    expect(await readProtectedTaskRunTranscriptIndex(
+      transcriptReadHarness({ sessionAgentId: ids.otherTask }),
+      request,
+    )).toEqual({ status: "unavailable", reason: "integrity_failure" });
   });
 
   test("Task ownership does not grant a peer-private Room transcript", async () => {
@@ -462,7 +543,11 @@ describe("protected TaskRun transcript index", () => {
 
   test("recognizes owner-private Sessions without inventing a history reader", async () => {
     expect(await readProtectedTaskRunTranscriptIndex(
-      transcriptReadHarness({ roomId: null, sessionOwnerId: ids.owner }),
+      transcriptReadHarness({
+        targetRoomId: null,
+        roomId: null,
+        sessionOwnerId: ids.owner,
+      }),
       request,
     )).toEqual({
       status: "unavailable",

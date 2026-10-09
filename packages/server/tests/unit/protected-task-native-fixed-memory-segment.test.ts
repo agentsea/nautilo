@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { AIMessage } from "@langchain/core/messages";
 
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
-import type { TaskPayloadV1 } from "@nautilo/lattice-bridge";
+import { bindEncryptionDataOperationOwner, type TaskPayloadV1 } from "@nautilo/lattice-bridge";
 import {
   LatticeCrypto,
   authorizationRevision,
@@ -411,7 +411,7 @@ async function consume(
 
 function overrides(
   calls: string[],
-  outcome: "complete" | "throw" | "interrupt" | "additional-authority" = "complete",
+  outcome: "complete" | "throw" | "interrupt" | "prove_it" | "identity" | "await_reply" | "additional-authority" = "complete",
   protectedMetadata: TaskPayloadV1["protectedMetadata"] = {},
   onDefinitionClose?: () => void,
 ) {
@@ -534,12 +534,14 @@ function overrides(
         "search",
       ]);
       if (outcome === "throw") throw new Error("runner failed");
-      if (outcome === "interrupt") {
+      if (outcome === "interrupt" || outcome === "prove_it"
+        || outcome === "identity" || outcome === "await_reply") {
         return {
           status: "interrupted" as const,
           threadId: `subagent:task:${TASK}:${RUN}`,
           interrupt: {},
-          interruptCoordinates: [{ id: "approval-1", kind: "approval" as const,
+          interruptCoordinates: [{ id: "approval-1", kind: outcome === "interrupt"
+            ? "approval" as const : outcome,
             requestId: "request-1" }],
         };
       }
@@ -582,7 +584,7 @@ function overrides(
 
 async function executeScenario(
   mode: "namespace" | "scope" = "namespace",
-  outcome: "complete" | "throw" | "interrupt" = "complete",
+  outcome: "complete" | "throw" | "interrupt" | "prove_it" | "identity" | "await_reply" = "complete",
 ) {
   const value = await fixture(mode);
   const calls: string[] = [];
@@ -624,7 +626,7 @@ async function executeScenario(
 
 async function withScenario<Value>(
   mode: "namespace" | "scope",
-  outcome: "complete" | "throw" | "interrupt",
+  outcome: "complete" | "throw" | "interrupt" | "prove_it" | "identity" | "await_reply",
   use: (scenario: Awaited<ReturnType<typeof executeScenario>>) => Promise<Value>,
   onDefinitionClose?: () => void,
   grantSignal: AbortSignal = new AbortController().signal,
@@ -1151,39 +1153,40 @@ describe("protected Task native fixed Memory segment", () => {
     );
   });
 
-  test("settles runner failure after closing owners and rejects unsupported continuation", async () => {
-    for (const outcome of ["throw", "interrupt"] as const) {
+  test("settles runner failure after closing plaintext owners", async () => {
+    await withScenario("namespace", "throw", async scenario => {
+      await consume(scenario.prepared.executor(
+        scenario.input, JOB, `task:${TASK}`, new AbortController().signal,
+      ));
+      expect(scenario.published).toEqual([{
+        formatVersion: 1, resultText: null,
+        lastError: "Protected Task execution failed",
+      }]);
+      expect(JSON.stringify(scenario.published)).not.toContain("runner failed");
+      expect(scenario.calls.indexOf("definition-close"))
+        .toBeLessThan(scenario.calls.indexOf("result-publish"));
+      expect(scenario.calls.at(-1)).toBe("request-destroy");
+    });
+  });
+
+  test.each(["interrupt", "prove_it", "identity", "await_reply"] as const)(
+    "parks Human %s only after checkpoint and plaintext owners close", async outcome => {
       await withScenario("namespace", outcome, async scenario => {
-        const execution = consume(scenario.prepared.executor(
-          scenario.input,
-          JOB,
-          `task:${TASK}`,
-          new AbortController().signal,
+        await consume(scenario.prepared.executor(
+          scenario.input, JOB, `task:${TASK}`, new AbortController().signal,
         ));
-        if (outcome === "interrupt") {
-          const failure = await execution.then(
-            () => null,
-            (error: unknown) => error,
-          );
-          expect(failure).toBeInstanceOf(Error);
-          if (!(failure instanceof Error)) throw failure;
-          expect(failure.message).toContain("continuation is unavailable");
-          expect(scenario.published).toEqual([]);
-        } else {
-          await execution;
-          expect(scenario.published).toEqual([{
-            formatVersion: 1,
-            resultText: null,
-            lastError: "Protected Task execution failed",
-          }]);
-          expect(JSON.stringify(scenario.published)).not.toContain("runner failed");
-          expect(scenario.calls.indexOf("definition-close"))
-            .toBeLessThan(scenario.calls.indexOf("result-publish"));
+        expect(scenario.published).toEqual([]);
+        expect(scenario.calls).not.toContain("result-publish");
+        for (const close of ["transcript-quiesce", "checkpoint-close", "repository-close",
+          "signer-close", "definition-close"]) {
+          expect(scenario.calls.indexOf(close)).toBeGreaterThanOrEqual(0);
+          expect(scenario.calls.indexOf(close))
+            .toBeLessThan(scenario.calls.indexOf("result-park"));
         }
         expect(scenario.calls.at(-1)).toBe("request-destroy");
       });
-    }
-  });
+    },
+  );
 
   test("continues from the immutable checkpoint and parks only after every plaintext owner closes", async () => {
     const value = await fixture("namespace");
@@ -1464,7 +1467,7 @@ describe("protected Task native fixed Memory segment", () => {
     })).toThrow("preparation is not exact");
   });
 
-  test("requires a typed resume only for an additional-authority continuation", async () => {
+  test("requires a typed resume matching its exact continuation reference", async () => {
     const value = await fixture();
     const prepare = createProtectedTaskNativeFixedMemorySegment(
       compositionInput(value.crypto, runner()),
@@ -1510,6 +1513,24 @@ describe("protected Task native fixed Memory segment", () => {
         authorizationRequestId: "foreign-request",
       },
     })).toThrow("preparation is not exact");
+    const humanResume = {
+      kind: "approval" as const, interruptId: "approval-exact",
+      requestId: "approval-request", verb: "once" as const,
+    };
+    const base = {
+      occurrence: value.occurrence, predispatch: value.predispatch,
+      policy: value.policy, stableRoutingDigest: value.stableRoutingDigest,
+    };
+    expect(() => prepare({ ...base, reference: value.reference, humanResume }))
+      .toThrow("preparation is not exact");
+    expect(() => prepare({ ...base, reference: continuationReference, humanResume,
+      additionalAuthorityResume })).toThrow("preparation is not exact");
+    const humanReference = { ...value.reference, executionSegment: 2,
+      resumeAcceptanceId: "accepted-human-response" };
+    expect(() => prepare({ ...base, reference: humanReference }))
+      .toThrow("preparation is not exact");
+    expect(() => prepare({ ...base, reference: humanReference, humanResume,
+      additionalAuthorityResume })).toThrow("preparation is not exact");
   });
 
   test("rejects specialized protected metadata before context resolution", async () => {
@@ -1561,4 +1582,64 @@ describe("protected Task native fixed Memory segment", () => {
     });
     expect(contextResolutions).toBe(0);
   });
+});
+
+
+test.each([false, true])("opens an accepted reply only inside fresh grant custody (stale=%s)", async stale => {
+  const value = await fixture();
+  const calls: string[] = [];
+  const published: unknown[] = [];
+  let replyHeld = false;
+  let graphRuns = 0;
+  const reference = { ...value.reference, executionSegment: 2, resumeAcceptanceId: REQUEST };
+  const humanResume = { kind: "await_reply" as const, interruptId: "reply-interrupt",
+    acceptedBy: { userId: USER, humanActorId: HUMAN },
+    message: { roomId: ROOM, sessionId: ROOM, messageId: "12", editRevision: 0,
+      cryptoObjectId: "reply-object", namespaceId: NAMESPACE, sourceUserId: USER } };
+  const prepare = createProtectedTaskNativeFixedMemorySegment({
+    ...compositionInput(value.crypto, runner()),
+    owner: bindEncryptionDataOperationOwner({ policy: {
+      resolve: async () => ({ policy: value.policy, revalidationToken: 17 }),
+      revalidate: async () => {},
+    } }),
+  }, {
+    ...overrides(calls, "complete"),
+    createReplyAuthority: seed => {
+      expect(seed.message).toEqual(humanResume.message);
+      return { readCurrent: async () => stale ? null : {} as never };
+    },
+    replyTarget: () => ({} as never),
+    verifyReplyHandle: async () => ({} as never),
+    openReply: async input => {
+      replyHeld = true;
+      try { return await input.execute({ role: "user", content: "Accepted private answer" }, async () => {}); }
+      finally { replyHeld = false; calls.push("reply-close"); }
+    },
+    runSegment: async segment => {
+      expect(replyHeld).toBe(true);
+      graphRuns++;
+      expect(segment.execution.protectedTaskHumanResume).toEqual({ kind: "await_reply",
+        interruptId: "reply-interrupt", reply: "Accepted private answer", fromUserId: USER });
+      return { formatVersion: 1, resultText: "done", lastError: null };
+    },
+  });
+  const prepared = await prepare({ occurrence: value.occurrence,
+    predispatch: value.predispatch, policy: value.policy, reference,
+    stableRoutingDigest: value.stableRoutingDigest, humanResume });
+  expect(replyHeld).toBe(false);
+  await withTaskRuntimeExecutionEvidenceV1({ evidence: value.evidenceInput,
+    signal: new AbortController().signal, now: () => NOW,
+    execute: async evidence => {
+      const transient = await prepared.openTransientInput({ occurrence: value.runningOccurrence,
+        reference, record: value.record, domains: value.domains, evidence,
+        signal: new AbortController().signal });
+      expect(JSON.stringify(transient)).not.toContain("Accepted private answer");
+      expect(replyHeld).toBe(false);
+      await consume(prepared.executor(executorInput(value.occurrence, transient, published, calls),
+        JOB, `task:${TASK}`, new AbortController().signal));
+    } });
+  expect(graphRuns).toBe(stale ? 0 : 1);
+  expect(replyHeld).toBe(false);
+  expect(published).toHaveLength(1);
+  if (!stale) expect(calls.indexOf("reply-close")).toBeLessThan(calls.indexOf("result-publish"));
 });

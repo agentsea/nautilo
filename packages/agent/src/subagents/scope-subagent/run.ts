@@ -65,6 +65,10 @@ import {
   protectedTaskInterruptCoordinates,
   type ProtectedTaskInterruptCoordinate,
 } from "../../graph/interrupt-mapping";
+import {
+  createProtectedTaskHumanResumeCommandV1,
+  type ProtectedTaskHumanResumeBindingV1,
+} from "../../graph/protected-task-human-resume";
 
 function extractPersistedMessagesFromChainEnd(ev: unknown): BaseMessage[] {
   if (!ev || typeof ev !== "object") return [];
@@ -666,6 +670,8 @@ export type RunScopeSubagentOpts = {
   protectedTaskMemoryHandoff?: ProtectedTaskMemoryGraphHandoff;
   /** Resume payload after a bridged interrupt (same shape as HTTP resume) */
   resume?: unknown;
+  /** Exact Human continuation for one protected Task checkpoint interrupt. */
+  protectedTaskHumanResume?: ProtectedTaskHumanResumeBindingV1;
   /** When resuming, reuse the same subagent thread */
   subagentThreadId?: string;
   /**
@@ -800,6 +806,18 @@ async function runScopeSubagentUntilPauseInternal(
   ) {
     throw new TypeError(
       "Subagent cannot receive both invocation and Task-run checkpoint savers",
+    );
+  }
+  if (
+    opts.protectedTaskHumanResume !== undefined
+    && (
+      opts.taskRunCheckpointSaver === undefined
+      || opts.resume !== undefined
+      || opts.continueFromCheckpoint === true
+    )
+  ) {
+    throw new TypeError(
+      "Protected Task Human resume requires one exact Task-run continuation mode",
     );
   }
   if (
@@ -1025,27 +1043,54 @@ async function runScopeSubagentUntilPauseInternal(
     callbacks: [],
   };
 
-  // Three stream-entry modes:
+  // Four stream-entry modes:
   // • continueFromCheckpoint → `null` input resumes the parked checkpoint on
   // the reused thread (an unpause after a pause abort; no interrupt reply,
   // no fresh brief). A revalidated security Task uses a continuation-only
   // Command below to refresh its socket binding without replacing history.
-  // • resume defined → an interrupt reply `Command` (approval / await).
+  // • protectedTaskHumanResume → an exact interrupt-keyed protected reply plus
+  //   replacement authority state reconstructed from the fresh segment grant.
+  // • resume defined → an existing bridged interrupt reply `Command`.
   // • else → a cold start with the freshly-built brief `graphInput`.
   //
   // INVARIANT (the related invariants): this is the ONLY place `graphInput.messages` is
   // constructed, and the cold-start branch builds it from exactly the brief —
-  // NEVER from checkpoint/transcript history. The two resume branches stream a
-  // `null` / `Command` and re-inject no messages. `classifyTurnKind` maps both
-  // resume branches to `"resume"`; the subagent path keeps the parked
+  // NEVER from checkpoint/transcript history. Continuation branches stream a
+  // `null` / `Command` and re-inject no messages. `classifyTurnKind` maps them
+  // to `"resume"`; the subagent path keeps the parked
   // checkpoint (spec decision 10.2.3) and has no foreground-style "read history
   // + concat" seam to rebuild. Do not turn any branch into a rebuilt
   // `messages` array — that would be a behavior change ( §7).
-  let streamInput = opts.continueFromCheckpoint
-    ? null
-    : opts.resume !== undefined
-      ? new Command({ resume: opts.resume })
-      : graphInput;
+  let streamInput: unknown;
+  if (opts.continueFromCheckpoint) {
+    streamInput = null;
+  } else if (opts.protectedTaskHumanResume !== undefined) {
+    const saved = await graph.getState({
+      configurable: { thread_id: subThreadId },
+    });
+    streamInput = createProtectedTaskHumanResumeCommandV1(
+      saved,
+      opts.protectedTaskHumanResume,
+      {
+        taskId: opts.currentTaskId ?? "",
+        taskRunId: opts.currentTaskRunId ?? "",
+        graphThreadId: subThreadId,
+        ownerId: opts.parentOwnerId,
+        causalHumanUserId: opts.causalHumanUserId ?? "",
+        agentId: opts.subEnvelope.agentId,
+        roomId: opts.roomId,
+        callingRoomId: opts.callingRoomId ?? "",
+        actorRole: opts.actorRole,
+        approvalLaneKey: opts.approvalLaneKey ?? subThreadId,
+        memoryAccessEnvelope: opts.subEnvelope,
+        relayCapabilities: opts.relayCapabilities,
+      },
+    );
+  } else if (opts.resume !== undefined) {
+    streamInput = new Command({ resume: opts.resume });
+  } else {
+    streamInput = graphInput;
+  }
   // A resumed security Task keeps the same Run and canonical graph. Runtime
   // revalidates its original Desktop grant before dispatch; refresh only the
   // transport binding so a same-Desktop server reconnect can continue work.

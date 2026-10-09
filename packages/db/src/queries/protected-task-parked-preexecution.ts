@@ -4,22 +4,33 @@ import type { DirectDatabase } from "../config/direct-database";
 import { jobs } from "../schema/jobs";
 import { taskRuns } from "../schema/task-runs";
 import { tasks } from "../schema/tasks";
+import { protectedTaskExecutionSegmentReceipts } from
+  "../schema/protected-task-execution-segment-receipts";
 import { readProtectedTaskExecutionContinuationProof } from
   "./protected-task-execution-receipts";
 import {
   exactParkedProtectedTaskAdditionalAuthorityProof,
+  exactParkedProtectedTaskHumanProof,
   exactParkedProtectedTaskJobReference,
   prepareParkedProtectedTaskAdditionalAuthorityStart,
+  prepareParkedProtectedTaskHumanStart,
   type PreparedParkedProtectedTaskAdditionalAuthorityStart,
+  type PreparedParkedProtectedTaskHumanStart,
 } from "./protected-task-parked-start-proof";
 import {
   copyParkedProtectedTaskAdditionalAuthority,
+  copyParkedProtectedTaskHumanContinuation,
+  exactProtectedTaskHumanContinuationAcceptanceReceipt,
   lockParkedProtectedTaskAdditionalAuthority,
+  lockParkedProtectedTaskHumanContinuation,
+  PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY,
   PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY,
   PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY,
   type ParkedProtectedTaskAdditionalAuthority,
+  type ParkedProtectedTaskHumanContinuation,
   type ProtectedTaskDurableJobReference,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+  type StartParkedProtectedTaskHumanRunSegmentInput,
 } from "./tasks";
 
 export type ParkedProtectedTaskPreexecutionRecoveryResult = Readonly<{
@@ -29,7 +40,9 @@ export type ParkedProtectedTaskPreexecutionRecoveryResult = Readonly<{
 type RecoveryTransaction = Pick<DirectDatabase, "select" | "update">;
 
 export type RecoverUnstartedParkedProtectedTaskClaimInput = Readonly<{
-  expected: ParkedProtectedTaskAdditionalAuthority;
+  expected:
+    | ParkedProtectedTaskAdditionalAuthority
+    | ParkedProtectedTaskHumanContinuation;
   jobReference: ProtectedTaskDurableJobReference;
 }>;
 
@@ -85,8 +98,11 @@ const priorJobProjection = Object.freeze({
   reference: jobs.input,
   startedAt: jobs.startedAt,
   completedAt: jobs.completedAt,
+  metadata: jobs.metadata,
   parkReceipt:
     sql<unknown>`${jobs.metadata} -> ${PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY}`,
+  humanAcceptanceReceipt:
+    sql<unknown>`${jobs.metadata} -> ${PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY}`,
   pristine: and(
     isNull(jobs.result),
     isNull(jobs.message),
@@ -125,7 +141,8 @@ type ParkedClaimJob = Readonly<{
 }>;
 
 function exactParkedClaimReference(
-  expected: ParkedProtectedTaskAdditionalAuthority,
+  expected: ParkedProtectedTaskAdditionalAuthority
+    | ParkedProtectedTaskHumanContinuation,
   reference: ProtectedTaskDurableJobReference,
 ): boolean {
   const prior = expected.priorJob.reference;
@@ -138,13 +155,17 @@ function exactParkedClaimReference(
     && Number.isSafeInteger(reference.policyRevision)
     && reference.policyRevision >= 1
     && reference.executionSegment === expected.nextExecutionSegment
-    && reference.resumeAcceptanceId === undefined
-    && reference.resumeContinuationFingerprint
-      === expected.continuationFingerprint;
+    && ("continuationFingerprint" in expected
+      ? reference.resumeAcceptanceId === undefined
+        && reference.resumeContinuationFingerprint
+          === expected.continuationFingerprint
+      : reference.resumeContinuationFingerprint === undefined
+        && reference.resumeAcceptanceId === expected.acceptance.acceptanceId);
 }
 
 function exactParkedClaimJob(
-  expected: ParkedProtectedTaskAdditionalAuthority,
+  expected: ParkedProtectedTaskAdditionalAuthority
+    | ParkedProtectedTaskHumanContinuation,
   reference: ProtectedTaskDurableJobReference,
   job: ParkedClaimJob,
 ): "queued" | "cancelled" | null {
@@ -166,13 +187,16 @@ function exactParkedClaimJob(
 
 async function lockParkedClaimJobs(
   tx: RecoveryTransaction,
-  expected: ParkedProtectedTaskAdditionalAuthority,
+  expected: ParkedProtectedTaskAdditionalAuthority
+    | ParkedProtectedTaskHumanContinuation,
   reference: ProtectedTaskDurableJobReference,
 ): Promise<Readonly<{
   jobs: readonly ParkedClaimJob[];
   queuedIds: readonly string[];
 }> | null> {
-  const locked = await lockParkedProtectedTaskAdditionalAuthority(tx, expected);
+  const locked = "continuationFingerprint" in expected
+    ? await lockParkedProtectedTaskAdditionalAuthority(tx, expected)
+    : await lockParkedProtectedTaskHumanContinuation(tx, expected);
   if (locked === null) return null;
   const rows = await (
     tx.select(nextJobProjection).from(jobs)
@@ -199,9 +223,17 @@ type LockedRecovery = Readonly<{
   nextJobState: "queued" | "cancelled";
 }>;
 
+type PreparedParkedProtectedTaskRecovery =
+  | PreparedParkedProtectedTaskAdditionalAuthorityStart
+  | PreparedParkedProtectedTaskHumanStart;
+
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 async function selectTask(
   tx: RecoveryTransaction,
-  input: PreparedParkedProtectedTaskAdditionalAuthorityStart,
+  input: PreparedParkedProtectedTaskRecovery,
 ) {
   const [row] = await tx.select(taskProjection).from(tasks)
     .where(eq(tasks.id, input.taskId)).limit(1).for("update");
@@ -210,7 +242,7 @@ async function selectTask(
 
 async function selectRun(
   tx: RecoveryTransaction,
-  input: PreparedParkedProtectedTaskAdditionalAuthorityStart,
+  input: PreparedParkedProtectedTaskRecovery,
 ) {
   const [row] = await tx.select(runProjection).from(taskRuns).where(and(
     eq(taskRuns.id, input.taskRunId),
@@ -221,7 +253,7 @@ async function selectRun(
 
 async function selectPriorJob(
   tx: RecoveryTransaction,
-  input: PreparedParkedProtectedTaskAdditionalAuthorityStart,
+  input: PreparedParkedProtectedTaskRecovery,
 ) {
   const [row] = await tx.select(priorJobProjection).from(jobs)
     .where(eq(jobs.id, input.priorJobId)).limit(1).for("update");
@@ -230,7 +262,7 @@ async function selectPriorJob(
 
 async function selectNextJob(
   tx: RecoveryTransaction,
-  input: PreparedParkedProtectedTaskAdditionalAuthorityStart,
+  input: PreparedParkedProtectedTaskRecovery,
 ) {
   const [row] = await tx.select(nextJobProjection).from(jobs)
     .where(eq(jobs.id, input.jobId)).limit(1).for("update");
@@ -247,7 +279,7 @@ function sameBytes(left: Uint8Array | null, right: Uint8Array): boolean {
 
 async function lockExactRecovery(
   tx: RecoveryTransaction,
-  input: PreparedParkedProtectedTaskAdditionalAuthorityStart,
+  input: PreparedParkedProtectedTaskRecovery,
 ): Promise<LockedRecovery | null> {
   const task = await selectTask(tx, input);
   if (!task) return null;
@@ -258,12 +290,55 @@ async function lockExactRecovery(
   const nextJob = await selectNextJob(tx, input);
   if (!nextJob) return null;
 
-  const proof = await readProtectedTaskExecutionContinuationProof(tx, {
-    taskId: input.taskId,
-    taskRunId: input.taskRunId,
-    jobId: input.priorJobId,
-    executionSegment: input.priorJobReference.executionSegment,
-  });
+  const proof = "continuation" in input
+    ? await readProtectedTaskExecutionContinuationProof(tx, {
+        taskId: input.taskId,
+        taskRunId: input.taskRunId,
+        jobId: input.priorJobId,
+        executionSegment: input.priorJobReference.executionSegment,
+      })
+    : null;
+  const humanSegments = "acceptance" in input
+    ? await tx.select().from(protectedTaskExecutionSegmentReceipts).where(and(
+        eq(protectedTaskExecutionSegmentReceipts.taskRunId, input.taskRunId),
+        eq(protectedTaskExecutionSegmentReceipts.jobId, input.priorJobId),
+        eq(
+          protectedTaskExecutionSegmentReceipts.executionSegment,
+          input.priorJobReference.executionSegment,
+        ),
+      )).limit(2)
+    : [];
+  const exactProof = "continuation" in input
+    ? exactParkedProtectedTaskAdditionalAuthorityProof(
+        proof,
+        priorJob.parkReceipt,
+        input,
+        true,
+      )
+    : humanSegments.length === 1
+      && exactParkedProtectedTaskHumanProof(
+        humanSegments[0]!,
+        priorJob.parkReceipt,
+        input,
+        true,
+      )
+      && exactProtectedTaskHumanContinuationAcceptanceReceipt(
+        priorJob.humanAcceptanceReceipt,
+        {
+          taskId: input.taskId,
+          taskRunId: input.taskRunId,
+          graphThreadId: input.graphThreadId,
+          priorJobId: input.priorJobId,
+          generation: input.generation,
+          executionSegment: input.priorJobReference.executionSegment,
+          interrupts: input.receipt.interrupts,
+          parkedAt: input.parkedAt,
+          stableRoutingDigest: input.stableRoutingDigest,
+          priorJobReference: input.priorJobReference,
+          acceptance: input.acceptance,
+        },
+        run.jobId === nextJob.id ? nextJob.id : undefined,
+      );
   const expectedParkedTaskStatus = task.scheduleKind === "cron"
     ? "pending"
     : "awaiting";
@@ -320,12 +395,7 @@ async function lockExactRecovery(
       nextJob.reference,
       input.jobReference,
     )
-    || !exactParkedProtectedTaskAdditionalAuthorityProof(
-      proof,
-      priorJob.parkReceipt,
-      input,
-      true,
-    )) return null;
+    || !exactProof) return null;
   return Object.freeze({
     task,
     run,
@@ -342,11 +412,14 @@ async function lockExactRecovery(
  */
 export async function recoverUnstartedParkedProtectedTaskRun(
   db: DirectDatabase,
-  startInput: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+  startInput: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput
+    | StartParkedProtectedTaskHumanRunSegmentInput,
   recoveredAt: Date,
   deferAuthorization: () => Promise<boolean>,
 ): Promise<ParkedProtectedTaskPreexecutionRecoveryResult> {
-  const input = prepareParkedProtectedTaskAdditionalAuthorityStart(startInput);
+  const input = "continuation" in startInput
+    ? prepareParkedProtectedTaskAdditionalAuthorityStart(startInput)
+    : prepareParkedProtectedTaskHumanStart(startInput);
   if (!(recoveredAt instanceof Date)
     || !Number.isFinite(recoveredAt.getTime())
     || recoveredAt.getTime() < input.parkedAt.getTime()) {
@@ -398,6 +471,36 @@ export async function recoverUnstartedParkedProtectedTaskRun(
         } as const;
       }
 
+      if ("acceptance" in input) {
+        const metadata = locked.priorJob.metadata;
+        const consumed = record(metadata)
+          ? metadata[PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY]
+          : undefined;
+        if (!record(consumed)
+          || consumed["consumedByJobId"] !== locked.nextJob.id) {
+          return { status: "cancelled" } as const;
+        }
+        const restoredAcceptance = { ...consumed };
+        delete restoredAcceptance["consumedByJobId"];
+        const [restoredReceipt] = await tx.update(jobs).set({
+          metadata: {
+            ...metadata,
+            [PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY]: restoredAcceptance,
+          },
+        }).where(and(
+          eq(jobs.id, locked.priorJob.id),
+          eq(jobs.status, "completed"),
+          isNull(jobs.result),
+          isNull(jobs.message),
+          eq(jobs.metadata, metadata),
+        )).returning({ id: jobs.id });
+        if (!restoredReceipt) {
+          throw new Error(
+            "Protected Task parked recovery lost its Human acceptance",
+          );
+        }
+      }
+
       const [restoredRun] = await tx.update(taskRuns).set({
         status: "awaiting",
         jobId: locked.priorJob.id,
@@ -443,7 +546,9 @@ export async function recoverUnstartedParkedProtectedTaskClaim(
   recoveredAt: Date,
   deferAuthorization: () => Promise<boolean>,
 ): Promise<ParkedProtectedTaskPreexecutionRecoveryResult> {
-  const expected = copyParkedProtectedTaskAdditionalAuthority(supplied.expected);
+  const expected = "continuationFingerprint" in supplied.expected
+    ? copyParkedProtectedTaskAdditionalAuthority(supplied.expected)
+    : copyParkedProtectedTaskHumanContinuation(supplied.expected);
   const reference = Object.freeze({ ...supplied.jobReference });
   if (!exactParkedClaimReference(expected, reference)
     || !(recoveredAt instanceof Date)

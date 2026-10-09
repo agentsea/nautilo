@@ -263,6 +263,31 @@ function parkedPreparation() {
   return { occurrence: parkedOccurrence, stableIdentity: stable, initialRecord: initial };
 }
 
+function humanParkedPreparation(
+  resumeWorkKind: "task.approval_resume" | "task.await_reply_resume",
+  resumeAcceptanceId = "human-acceptance-exact",
+  executionSegment = 2,
+) {
+  const parked = parkedPreparation();
+  const stableIdentity = Object.freeze({
+    ...parked.stableIdentity,
+    executionSegment,
+    resumeContinuationFingerprint: null,
+    resumeAcceptanceId,
+    resumeWorkKind,
+  });
+  return Object.freeze({
+    occurrence: parked.occurrence,
+    stableIdentity,
+    initialRecord: Object.freeze({
+      ...parked.initialRecord,
+      idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity),
+      workKind: resumeWorkKind,
+      purpose: resumeWorkKind,
+    }),
+  });
+}
+
 function parkedPersistPayload(
   reference: ParkedTaskRuntimeGrantClaimPlan["reference"],
 ): PersistJobPayload {
@@ -719,8 +744,8 @@ async function acceptGrant(value: Fixture): Promise<void> {
       recipientKeyId: request.recipientKeyId,
       recipientPublicKey: request.recipientPublicKey,
       workId: RUN,
-      workKind: "task.execute",
-      purpose: "task.execute",
+      workKind: record.workKind,
+      purpose: record.purpose,
       authoritySet: record.authoritySet as BackgroundAuthorizationTaskRuntimeRecordV3["authoritySet"],
       responseBytes,
       responseHash,
@@ -746,10 +771,15 @@ async function prepareAndBind(value: Fixture): Promise<void> {
 }
 
 async function parkedClaimFixture(
-  options: Readonly<{ scopeWithSemanticExtra?: boolean }> = {},
+  options: Readonly<{
+    scopeWithSemanticExtra?: boolean;
+    humanResumeWorkKind?: "task.approval_resume" | "task.await_reply_resume";
+  }> = {},
 ) {
   const value = await fixture();
-  const discovered = parkedPreparation();
+  const discovered = options.humanResumeWorkKind === undefined
+    ? parkedPreparation()
+    : humanParkedPreparation(options.humanResumeWorkKind);
   const base = value.plan(discovered.occurrence);
   const parkedScope = options.scopeWithSemanticExtra
     ? scopeBinding([SCOPE_ORIGIN])
@@ -837,7 +867,10 @@ async function parkedClaimFixture(
   let deferrals = 0;
   let clock = NOW + 3;
   const fingerprint = prepared.stableIdentity.resumeContinuationFingerprint;
-  if (fingerprint === null) throw new Error("parked fingerprint missing");
+  const acceptanceId = prepared.stableIdentity.resumeAcceptanceId;
+  if (fingerprint === null && acceptanceId === undefined) {
+    throw new Error("parked continuation identity missing");
+  }
   const plan: ParkedTaskRuntimeGrantClaimPlan = Object.freeze({
     stableIdentity: prepared.stableIdentity,
     initialRecord: prepared.initialRecord,
@@ -850,7 +883,9 @@ async function parkedClaimFixture(
       authorizationRequestId: REQUEST,
       policyRevision: 7,
       executionSegment: 2,
-      resumeContinuationFingerprint: fingerprint,
+      ...(fingerprint === null
+        ? { resumeAcceptanceId: acceptanceId! }
+        : { resumeContinuationFingerprint: fingerprint }),
     }),
     scheduling: base.scheduling,
     executor: base.executor,
@@ -941,6 +976,46 @@ describe("parked Task Runtime authority preparation", () => {
     expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
       ...input, repository, recipients, now: () => NOW,
     })).toEqual({ status: "exact_replay" });
+  });
+
+  test.each([
+    "task.approval_resume",
+    "task.await_reply_resume",
+  ] as const)("creates and exactly replays a Human %s request", async resumeWorkKind => {
+    const input = humanParkedPreparation(resumeWorkKind);
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const recipients = new TaskRuntimeRecipientRegistry(new LatticeCrypto());
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "created" });
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "exact_replay" });
+  });
+
+  test("rejects changed Human acceptance or segment for an existing request", async () => {
+    const exact = humanParkedPreparation("task.approval_resume");
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const recipients = new TaskRuntimeRecipientRegistry(new LatticeCrypto());
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...exact, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "created" });
+    for (const changed of [
+      humanParkedPreparation(
+        "task.approval_resume",
+        "human-acceptance-changed",
+      ),
+      humanParkedPreparation(
+        "task.approval_resume",
+        "human-acceptance-exact",
+        3,
+      ),
+    ]) {
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(prepareUnclaimedParkedTaskRuntimeAuthority({
+        ...changed, repository, recipients, now: () => NOW,
+      })).rejects.toThrow("durable record was substituted");
+    }
   });
 
   test("replaces changed preclaim authority and clears only the winning recipient generation", async () => {
@@ -1119,6 +1194,28 @@ describe("parked Task Runtime grant claim", () => {
     expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("completed");
     expect(value.openedOccurrences[0]?.run.jobId).toBe(newJobId);
     expect(value.recipients.size).toBe(0);
+  });
+
+  test.each([
+    "task.approval_resume",
+    "task.await_reply_resume",
+  ] as const)("claims an exact Human %s segment and preserves its acceptance identity", async resumeWorkKind => {
+    const value = await parkedClaimFixture({ humanResumeWorkKind: resumeWorkKind });
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("Human grant not claimed");
+    expect(claimed.dispatch.reference).toMatchObject({
+      executionSegment: 2,
+      resumeAcceptanceId: "human-acceptance-exact",
+    });
+    expect("resumeContinuationFingerprint" in claimed.dispatch.reference)
+      .toBe(false);
+    expect(value.plan.initialRecord).toMatchObject({
+      workKind: resumeWorkKind,
+      purpose: resumeWorkKind,
+    });
+    claimed.dispatch.candidate.onIneligible();
   });
 
   test("lets only one parked claimant win the held grant CAS", async () => {
@@ -1419,6 +1516,26 @@ describe("Task Runtime grant claim", () => {
       ...continuation,
       resumeContinuationFingerprint: Buffer.from(bytes(24)).toString("base64url"),
     })).not.toBe(resumed);
+    const approvalResume = taskRuntimeStableIdempotencyKey({
+      ...identity,
+      executionSegment: 2,
+      resumeAcceptanceId: "human-acceptance-exact",
+      resumeWorkKind: "task.approval_resume",
+    });
+    expect(approvalResume).not.toBe(initial);
+    expect(approvalResume).not.toBe(resumed);
+    expect(taskRuntimeStableIdempotencyKey({
+      ...identity,
+      executionSegment: 2,
+      resumeAcceptanceId: "human-acceptance-changed",
+      resumeWorkKind: "task.approval_resume",
+    })).not.toBe(approvalResume);
+    expect(taskRuntimeStableIdempotencyKey({
+      ...identity,
+      executionSegment: 2,
+      resumeAcceptanceId: "human-acceptance-exact",
+      resumeWorkKind: "task.await_reply_resume",
+    })).not.toBe(approvalResume);
   });
 
   test("retains the routing commitment across segments without temporary grant state", () => {
@@ -1466,6 +1583,24 @@ describe("Task Runtime grant claim", () => {
       { executionSegment: 1, resumeContinuationFingerprint: "A".repeat(43) },
       { executionSegment: 2, resumeContinuationFingerprint: null },
       { executionSegment: 2, resumeContinuationFingerprint: "A".repeat(42) + "B" },
+      {
+        executionSegment: 2,
+        resumeContinuationFingerprint: Buffer.from(bytes(23)).toString("base64url"),
+        resumeAcceptanceId: "mixed",
+        resumeWorkKind: "task.approval_resume" as const,
+      },
+      { executionSegment: 2, resumeContinuationFingerprint: null, resumeAcceptanceId: "missing-kind" },
+      {
+        executionSegment: 2,
+        resumeContinuationFingerprint: null,
+        resumeWorkKind: "task.approval_resume" as const,
+      },
+      {
+        executionSegment: 1,
+        resumeContinuationFingerprint: null,
+        resumeAcceptanceId: "initial-cannot-resume",
+        resumeWorkKind: "task.approval_resume" as const,
+      },
     ]) {
       expect(() => taskRuntimeStableIdempotencyKey({ ...stableIdentity(), ...binding }))
         .toThrow("execution segment identity is invalid");

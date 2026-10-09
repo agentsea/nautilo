@@ -245,6 +245,38 @@ describe("protected Task native runner", () => {
     expect(captured?.continueFromCheckpoint).toBeUndefined();
   });
 
+  test("passes one typed protected Human resume to the graph runner", async () => {
+    const protectedTaskHumanResume = Object.freeze({
+      kind: "approval" as const,
+      interruptId: "interrupt-exact",
+      requestId: "approval-exact",
+      verb: "once" as const,
+    });
+    const scenario = fixture({
+      execution: {
+        ...fixture().input.execution,
+        protectedTaskHumanResume,
+      },
+    });
+    let captured: RunScopeSubagentOpts | undefined;
+    await runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async options => {
+        captured = options;
+        return {
+          status: "completed",
+          threadId: GRAPH_THREAD_ID,
+          finalText: "internal transcript",
+          finalResponseText: "Protected result",
+        };
+      },
+    });
+
+    expect(captured?.protectedTaskHumanResume).toBe(protectedTaskHumanResume);
+    expect(captured?.resume).toBeUndefined();
+    expect(captured?.continueFromCheckpoint).toBeUndefined();
+    expect(captured?.subEnvelope).toBe(scenario.input.execution.subEnvelope);
+  });
+
   test("returns a protected error payload without ordinary report-back", async () => {
     const scenario = fixture();
     const result = await runProtectedTaskNativeSegment(scenario.input, {
@@ -465,6 +497,40 @@ describe("protected Task native runner", () => {
     }), "exact supported segment");
     expect(graphStarted).toBe(false);
     expect(conflicting.published).toEqual([]);
+
+    for (const conflictingContinuation of [
+      {
+        protectedTaskHumanResume: {
+          kind: "prove_it" as const,
+          interruptId: "interrupt-exact",
+          approved: true,
+        },
+        resume: { approved: true },
+      },
+      {
+        protectedTaskHumanResume: {
+          kind: "identity" as const,
+          interruptId: "interrupt-exact",
+          verified: true as const,
+        },
+        continueFromCheckpoint: true,
+      },
+    ]) {
+      const humanConflict = fixture({
+        execution: {
+          ...fixture().input.execution,
+          ...conflictingContinuation,
+        },
+      });
+      graphStarted = false;
+      await expectRejected(runProtectedTaskNativeSegment(humanConflict.input, {
+        runScopeSubagent: async () => {
+          graphStarted = true;
+          throw new Error("must not run");
+        },
+      }), "exact supported segment");
+      expect(graphStarted).toBe(false);
+    }
 
     const missingMemory = fixture({ memoryHandoff: undefined as never });
     await expectRejected(runProtectedTaskNativeSegment(missingMemory.input, {

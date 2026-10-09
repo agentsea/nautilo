@@ -6,6 +6,7 @@ import {
 import { MEMORY_EMBEDDING_DIMENSIONS } from "@nautilo/lattice-bridge";
 import {
   sealAndParkProtectedTaskRun,
+  sealAndParkProtectedTaskHumanRun,
   type DirectDatabase,
   type PostgresJsBridgeConnection,
 } from "@nautilo/db";
@@ -34,6 +35,7 @@ type Dependencies = Readonly<{
   segment: typeof createProtectedTaskNativeFixedMemorySegment;
   result: typeof createProtectedTaskNativeResultPublication;
   sealAndPark: typeof sealAndParkProtectedTaskRun;
+  sealAndParkHuman: typeof sealAndParkProtectedTaskHumanRun;
 }>;
 
 export type ProductionProtectedTaskNativeExecutionInput = Readonly<{
@@ -65,6 +67,7 @@ export function createProductionProtectedTaskNativeExecution(
     segment: createProtectedTaskNativeFixedMemorySegment,
     result: createProtectedTaskNativeResultPublication,
     sealAndPark: sealAndParkProtectedTaskRun,
+    sealAndParkHuman: sealAndParkProtectedTaskHumanRun,
     ...overrides,
   };
   const resolveExecutionContext = dependencies.executionContext({ db: input.db });
@@ -106,7 +109,9 @@ export function createProductionProtectedTaskNativeExecution(
         embedding,
         createDedicatedPool,
         parkSegment: async park => {
-          const result = await dependencies.sealAndPark(input.db, park);
+          const result = "continuation" in park
+            ? await dependencies.sealAndPark(input.db, park)
+            : await dependencies.sealAndParkHuman(input.db, park);
           return result.status === "parked" || result.status === "exact_replay";
         },
         resolveExecutionContext,

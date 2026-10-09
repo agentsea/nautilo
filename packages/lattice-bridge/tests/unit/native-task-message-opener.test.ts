@@ -24,7 +24,18 @@ import {
   deriveMessageCryptoObjectIdV2,
 } from "../../src/message/conversation-repository.ts";
 import {
-  createNativeTaskMessageReadTargetV1, withNativeTaskMessageV1,
+  prepareHumanExistingMessageRepresentationCryptoRevision,
+} from "../../src/message/human-existing-message-representation-crypto.ts";
+import {
+  readPreparedConversationCryptoRevisionSnapshot,
+} from "../../src/message/conversation-prepared-revision.ts";
+import {
+  createNativeTaskHumanReplyReadTargetV1,
+  createNativeTaskMessageReadTargetV1,
+  withNativeTaskHumanReplyV1,
+  withNativeTaskMessageV1,
+  type NativeTaskHumanReplyReadAuthorityV1,
+  type NativeTaskHumanReplyReadTargetV1,
   type NativeTaskMessageReadAuthorityV1,
   type NativeTaskMessageReadTargetV1,
 } from "../../src/server/task/native-task-message-opener.ts";
@@ -37,6 +48,7 @@ const NOW = 1_920_000_000_000;
 const TASK = "10000000-0000-4000-8000-000000000731";
 const RUN = "20000000-0000-4000-8000-000000000731";
 const HUMAN = "30000000-0000-4000-8000-000000000731";
+const USER = "31000000-0000-4000-8000-000000000731";
 const NAMESPACE = "40000000-0000-4000-8000-000000000731";
 const DOMAIN = "50000000-0000-4000-8000-000000000731";
 const AGENT = "60000000-0000-4000-8000-000000000731";
@@ -389,7 +401,169 @@ async function fixture(
   });
   return {
     crypto, authority, target, domain, evidenceInput, controller, stages,
-    snapshot, open, get authorityReads() { return authorityReads; },
+    snapshot, open, restricted, generationKey,
+    get authorityReads() { return authorityReads; },
+  };
+}
+
+async function humanReplyFixture() {
+  const base = await fixture();
+  const device = base.crypto.generateSigningKeyPair();
+  const objectId = "native-task-human-reply-object";
+  const prepared = prepareHumanExistingMessageRepresentationCryptoRevision({
+    crypto: base.crypto,
+    objectId,
+    payload: {
+      role: "user",
+      content: "Exact encrypted Human reply",
+    },
+    createdAt: NOW,
+    namespace: {
+      namespaceId: NAMESPACE,
+      accessRevision: 0,
+      keyGeneration: 0,
+      aiKey: base.generationKey,
+    },
+    device: {
+      deviceId: "native-task-human-reply-device",
+      hostAuthorizationRevision: 4,
+      signingPrivateKey: device.privateKey,
+    },
+    resolveCurrentAuthorization: () => null,
+  });
+  const snapshot = readPreparedConversationCryptoRevisionSnapshot(prepared);
+  if (snapshot.kind !== "human-v2") {
+    throw new Error("Expected Human-v2 reply fixture");
+  }
+  const value = snapshot.value;
+  const envelope = value.access.envelopeBytes[0];
+  if (envelope === undefined) throw new Error("Human reply envelope missing");
+  const payloadBytes = value.object.payloadBytes.ciphertext;
+  const payloadHash = base.crypto.hash(payloadBytes);
+  const envelopeHash = base.crypto.hash(envelope);
+  const manifestHash = base.crypto.hash(value.access.manifestBytes);
+  const authority: NativeTaskHumanReplyReadAuthorityV1 = Object.freeze({
+    mode: "encrypted_only",
+    taskId: TASK,
+    taskRunId: RUN,
+    sourceRoomId: SOURCE_ROOM,
+    roomId: TRANSCRIPT_ROOM,
+    sessionId: SESSION,
+    messageId: 41,
+    revision: 0,
+    sourceUserId: USER,
+    sourceHumanActorId: HUMAN,
+    agentId: AGENT,
+    createdAt: NOW,
+    objectId,
+    cryptoAccessRevision: 0,
+    namespaceId: NAMESPACE,
+    domainId: DOMAIN,
+    expectedAccessRevision: 0,
+    expectedPolicyRevision: 3,
+  });
+  const target = createNativeTaskHumanReplyReadTargetV1(authority);
+  const stages: string[] = [];
+  const restricted: PostgresJsBridgeConnection = {
+    query: async <Row extends PostgresJsBridgeRow>(
+      statement: string,
+      parameters?: readonly PostgresJsBridgeScalar[],
+    ) => {
+      let rows: readonly PostgresJsBridgeRow[] | undefined;
+      if (statement.includes('from "crypto_objects"')) {
+        stages.push("human-object");
+        rows = [{
+          object_id: objectId,
+          payload_hash: payloadHash,
+          payload_bytes: payloadBytes,
+        }];
+      } else if (statement.includes('from "object_crypto_access_heads"')) {
+        stages.push("human-access-head");
+        rows = [{
+          object_id: objectId,
+          access_revision: 0,
+          manifest_hash: manifestHash,
+          previous_manifest_hash: null,
+          payload_hash: payloadHash,
+          manifest_bytes: value.access.manifestBytes,
+        }];
+      } else if (statement.includes('from "object_crypto_namespace_envelopes"')) {
+        stages.push("human-envelope");
+        rows = [{
+          object_id: objectId,
+          access_revision: 0,
+          namespace_id: NAMESPACE,
+          ordinal: 0,
+          envelope_hash: envelopeHash,
+          envelope_bytes: envelope,
+        }];
+      } else if (statement.includes('from "object_crypto_access_manifests"')) {
+        stages.push("human-manifest");
+        rows = [{
+          object_id: objectId,
+          access_revision: 0,
+          previous_manifest_hash: null,
+          payload_hash: payloadHash,
+          manifest_hash: manifestHash,
+          manifest_bytes: value.access.manifestBytes,
+        }];
+      }
+      return (rows ?? await base.restricted.query(statement, parameters)) as readonly Row[];
+    },
+    transaction: async (use, options) => base.restricted.transaction(
+      async () => use(restricted),
+      options,
+    ),
+    transactionOnce: async (use, options) => base.restricted.transactionOnce(
+      async () => use(restricted),
+      options,
+    ),
+  };
+  let authorityReads = 0;
+  const signerActors: string[] = [];
+  const open = <Value>(
+    execute: Parameters<typeof withNativeTaskHumanReplyV1<Value>>[0]["execute"],
+    options: Readonly<{
+      target?: NativeTaskHumanReplyReadTargetV1;
+      resolveCurrentAuthority?: (
+        expected: NativeTaskHumanReplyReadAuthorityV1,
+        read: number,
+      ) => Promise<NativeTaskHumanReplyReadAuthorityV1 | null>;
+      signerActor?: string;
+    }> = {},
+  ) => withTaskRuntimeExecutionEvidenceV1({
+    evidence: base.evidenceInput,
+    signal: base.controller.signal,
+    now: () => NOW,
+    execute: evidence => withNativeTaskHumanReplyV1({
+      restricted,
+      crypto: base.crypto,
+      serverScope: SERVER,
+      evidence,
+      domains: [base.domain],
+      signal: base.controller.signal,
+      target: options.target ?? target,
+      resolveCurrentAuthority: expected => {
+        authorityReads += 1;
+        return options.resolveCurrentAuthority?.(expected, authorityReads)
+          ?? Promise.resolve({ ...expected });
+      },
+      resolveHistoricalHumanSigner: ({ sourceHumanActorId, context }) => {
+        signerActors.push(sourceHumanActorId);
+        return sourceHumanActorId === (options.signerActor ?? HUMAN)
+          ? { ...context, committerSigningPublicKey: device.publicKey.slice() }
+          : null;
+      },
+      execute,
+    }),
+  });
+  return {
+    authority,
+    target,
+    open,
+    stages,
+    signerActors,
+    get authorityReads() { return authorityReads; },
   };
 }
 
@@ -411,6 +585,44 @@ async function fails(operation: Promise<unknown>): Promise<void> {
 }
 
 describe("native Task Message opener", () => {
+  test("opens an accepted Human-v2 reply with exact actor-bound signer history", async () => {
+    const value = await humanReplyFixture();
+    expect(await value.open(async (payload, assertCurrent) => {
+      await assertCurrent();
+      return payload.content;
+    })).toBe("Exact encrypted Human reply");
+    expect(value.signerActors).toEqual([HUMAN]);
+    expect(value.stages).toContain("human-access-head");
+    expect(value.authorityReads).toBeGreaterThanOrEqual(4);
+  });
+
+  test("rejects Human reply actor substitution and forged targets", async () => {
+    const value = await humanReplyFixture();
+    await fails(value.open(() => "must not open", {
+      signerActor: USER,
+    }));
+    const forged = await humanReplyFixture();
+    await fails(forged.open(() => "must not open", {
+      target: { ...forged.target },
+    }));
+    expect(forged.stages).toEqual([]);
+  });
+
+  test("rejects Human reply authority loss before plaintext and after callback", async () => {
+    for (const staleAt of [1, 4]) {
+      const value = await humanReplyFixture();
+      let called = false;
+      await fails(value.open(() => {
+        called = true;
+        return "done";
+      }, {
+        resolveCurrentAuthority: async (expected, read) =>
+          read >= staleAt ? null : expected,
+      }));
+      expect(called).toBe(staleAt === 4);
+    }
+  });
+
   test("opens a historically signed V5 Message under its exact Task audience", async () => {
     const value = await fixture();
     expect(await value.open(async (payload, assertCurrent) => {

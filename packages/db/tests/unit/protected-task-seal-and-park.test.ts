@@ -5,10 +5,12 @@ import { protectedTaskSemanticAuthorityRequirementsDigest } from
   "../../src/queries/protected-task-execution-receipts";
 import {
   parkProtectedTaskRun,
+  sealAndParkProtectedTaskHumanRun,
   sealAndParkProtectedTaskRun,
   type ParkProtectedTaskRunInput,
   type ProtectedTaskDurableJobReference,
   type SealAndParkProtectedTaskRunInput,
+  type SealAndParkProtectedTaskHumanRunInput,
 } from "../../src/queries/tasks";
 import { jobs, type Job } from "../../src/schema/jobs";
 import {
@@ -114,6 +116,22 @@ function input(
       semanticAuthorityRequirements,
     },
     ...overrides,
+  };
+}
+
+function humanInput(): SealAndParkProtectedTaskHumanRunInput {
+  const additional = input();
+  return {
+    park: {
+      ...additional.park,
+      interrupts: [{
+        id: "interrupt:approval:1",
+        kind: "approval",
+        requestId: "approval:1",
+      }],
+    },
+    segment: additional.segment,
+    stableRoutingDigest: digest(9),
   };
 }
 
@@ -317,6 +335,37 @@ function harness(options: HarnessOptions = {}) {
 }
 
 describe("protected Task execution seal-and-park owner", () => {
+  test("seals a Human segment and park without an authority receipt", async () => {
+    const fixture = harness();
+    expect(await sealAndParkProtectedTaskHumanRun(
+      fixture.db,
+      humanInput(),
+    )).toEqual({ status: "parked" });
+    expect(fixture.state().segments).toHaveLength(1);
+    expect(fixture.state().continuations).toEqual([]);
+    expect(fixture.state().jobRow.metadata).toEqual({
+      "nautilo.protectedTaskRunPark.v1": {
+        version: 1,
+        taskId: ids.task,
+        taskRunId: ids.run,
+        jobId: ids.job,
+        graphThreadId,
+        generation: 3,
+        executionSegment: 1,
+        interrupts: [{
+          id: "interrupt:approval:1",
+          kind: "approval",
+          requestId: "approval:1",
+        }],
+        parkedAt: parkedAt.toISOString(),
+        stableRoutingDigest: Buffer.from(digest(9)).toString("base64url"),
+      },
+    });
+    expect(await sealAndParkProtectedTaskHumanRun(
+      fixture.db,
+      humanInput(),
+    )).toEqual({ status: "exact_replay" });
+  });
   test("locks the exact lifecycle chain before sealing and parks atomically", async () => {
     const fixture = harness();
 

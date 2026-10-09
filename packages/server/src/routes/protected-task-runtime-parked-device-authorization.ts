@@ -1,5 +1,5 @@
 import {
-  discoverParkedProtectedTaskAdditionalAuthority, getEncryptionTransitionPolicy,
+  getEncryptionTransitionPolicy,
   getProtectedTaskRunOutputBinding,
   type DirectDatabase, type PostgresJsBridgeConnection,
 } from "@nautilo/db";
@@ -28,7 +28,8 @@ import { createHumanProductTransactionContext } from "./human-message-product-st
 import type { createProductionBackgroundAuthorizationComposition } from "./background-authorization-composition";
 import { createProtectedTaskRuntimeParkedMemoryPlanResolver } from "./protected-task-runtime-parked-memory-plan";
 import {
-  createParkedTaskRuntimeAuthorizationPlanResolver, createParkedTaskRuntimeAuthorizationRecord,
+  createParkedTaskRuntimeAuthorizationPlanResolver,
+  discoverParkedProtectedTaskContinuation, createParkedTaskRuntimeAuthorizationRecord,
   type ParkedTaskRuntimeAuthorizationPlan,
 } from "./protected-task-runtime-parked-plan";
 import { createProtectedTaskRuntimeRecipientRequestPlan } from "./protected-task-runtime-recipient-request-plan";
@@ -72,7 +73,7 @@ export function createProtectedTaskRuntimeParkedDeviceAuthorization(
       ?? (process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001"),
     now: overrides.now ?? Date.now,
     resolvePlan: overrides.resolvePlan ?? createParkedTaskRuntimeAuthorizationPlanResolver({
-      db, discover: discoverParkedProtectedTaskAdditionalAuthority,
+      db, discover: discoverParkedProtectedTaskContinuation,
       readOutput: getProtectedTaskRunOutputBinding, readPolicy: getEncryptionTransitionPolicy,
       resolveMemory: createProtectedTaskRuntimeParkedMemoryPlanResolver({ db, resolver: input.resolver }),
     }),

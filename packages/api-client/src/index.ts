@@ -415,6 +415,15 @@ export {
   taskOperationalCreateV1Schema,
   taskOperationalUpdateV1Schema,
 } from "./schemas/protected-task";
+export {
+  protectedTaskTranscriptReadRequestV1Schema,
+  protectedTaskTranscriptReadResponseV1Schema,
+} from "./schemas/protected-task-transcript-read";
+export type {
+  ProtectedTaskTranscriptReadRequestV1,
+  ProtectedTaskTranscriptReadResponseV1,
+  ProtectedTaskTranscriptReadReadyResponseV1,
+} from "./schemas/protected-task-transcript-read";
 export type {
   ProtectedTaskPreparedCreateRequestV1,
   ProtectedTaskPreparedPublicationRequestV1,
@@ -761,6 +770,7 @@ export {
   roomHistoryShadowSelectedCoordinateV1Schema,
   roomHistoryShadowAuthorityV1Schema,
   roomHistoryShadowRecordV1Schema,
+  roomHistoryShadowReadReadyResponseV1Schema,
   roomHistoryShadowReadResponseV1Schema,
   roomHistoryShadowReadAcknowledgementRequestV1Schema,
   roomHistoryShadowReadAcknowledgementResponseV1Schema,
@@ -769,6 +779,7 @@ export {
   type RoomHistoryShadowSelectedCoordinateV1,
   type RoomHistoryShadowAuthorityV1,
   type RoomHistoryShadowRecordV1,
+  type RoomHistoryShadowReadReadyResponseV1,
   type RoomHistoryShadowReadResponseV1,
   type RoomHistoryShadowReadAcknowledgementRequestV1,
   type RoomHistoryShadowReadAcknowledgementResponseV1,
