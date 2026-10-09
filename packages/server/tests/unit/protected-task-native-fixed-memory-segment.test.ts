@@ -669,7 +669,7 @@ async function withScenario<Value>(
 }
 
 describe("protected Task native fixed Memory segment", () => {
-  test("canonicalizes multi-Namespace Memory authority before opening the repository", async () => {
+  test.each([{ writableNamespaces: [NAMESPACE] }, { writableNamespaces: [OTHER_NAMESPACE, NAMESPACE] }])("keeps the primary writable Namespace in multi-Namespace Memory authority: %j", async ({ writableNamespaces }) => {
     const value = await fixture();
     const calls: string[] = [];
     const published: unknown[] = [];
@@ -688,6 +688,7 @@ describe("protected Task native fixed Memory segment", () => {
           ...envelope,
           readableNamespaces: [OTHER_NAMESPACE, NAMESPACE],
           mutableNamespaces: [OTHER_NAMESPACE, NAMESPACE],
+          writableNamespaces,
         }),
       }),
     });
@@ -702,7 +703,7 @@ describe("protected Task native fixed Memory segment", () => {
             agentId: AGENT,
             readableNamespaceIds: [NAMESPACE, OTHER_NAMESPACE],
             mutableNamespaceIds: [NAMESPACE, OTHER_NAMESPACE],
-            writableNamespaceId: NAMESPACE,
+            writableNamespaceId: writableNamespaces[0],
           });
           return baseWithMemoryRepository(input);
         },

@@ -551,7 +551,7 @@ function memoryAuthority(input: Readonly<{
   }
   if (isNamespaceMemoryEnvelope(envelope)) {
     if (input.scopeMemory !== undefined
-      || envelope.writableNamespaces.length !== 1) {
+      || envelope.writableNamespaces.length === 0) {
       throw new TypeError("Protected Task fixed Namespace Memory is unavailable");
     }
     return Object.freeze({
