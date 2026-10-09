@@ -1262,6 +1262,7 @@ export function canRelayExecuteBrowserResearchConsentRecovery(
 
 /** Complete contained execution readiness, owned by one Desktop generation. */
 export interface RelayLocalExecutionCapability {
+  readonly localNetworkPolicy?: true;
   readonly version: 1;
   readonly generation: string;
   readonly pipe: true;
@@ -1272,11 +1273,13 @@ export interface RelayLocalExecutionCapability {
 export function parseRelayLocalExecutionCapability(value: unknown): RelayLocalExecutionCapability | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
-  if (Object.keys(v).length !== 5 || Object.keys(v).some(k => !["version", "generation", "pipe", "pty", "capacity"].includes(k))
+  if (Object.keys(v).length !== 5 + ("localNetworkPolicy" in v ? 1 : 0) || Object.keys(v).some(k => !["version", "generation", "pipe", "pty", "capacity", "localNetworkPolicy"].includes(k))
+    || ("localNetworkPolicy" in v && v["localNetworkPolicy"] !== true)
     || v["version"] !== 1 || typeof v["generation"] !== "string" || v["generation"].length === 0
     || v["pipe"] !== true || typeof v["pty"] !== "boolean"
     || !Number.isSafeInteger(v["capacity"]) || (v["capacity"] as number) <= 0) return null;
-  return { version: 1, generation: v["generation"], pipe: true, pty: v["pty"], capacity: v["capacity"] as number };
+  return { version: 1, generation: v["generation"], pipe: true, pty: v["pty"], capacity: v["capacity"] as number,
+    ...(v["localNetworkPolicy"] === true ? { localNetworkPolicy: true as const } : {}) };
 }
 
 /** Advisory Basic selection. Electron revalidates the selected root locally. */

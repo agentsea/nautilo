@@ -15,7 +15,7 @@ import {
   type ProfileCapabilityBackend,
   type ProfileNetworkMode,
 } from "@nautilo/workstation-profiles";
-import { isCanonicalNautiloInstanceId } from "@nautilo/config";
+import { isCanonicalNautiloInstanceId, NetworkPolicySchema } from "@nautilo/config";
 import {
   parseComputerUseHostContract,
   type ComputerUseHostContract,
@@ -168,13 +168,40 @@ import type {
  * from shadowing a built-in dispatch lane.
  */
 // v20 adds owner-private Claude permission detail; never sent to older peers.
-export const RELAY_PROTOCOL_VERSION = 28;
-export const RELAY_GITHUB_PROTOCOL_VERSION = 27;
+export const RELAY_PROTOCOL_VERSION = 29;
+export const RELAY_GITHUB_PROTOCOL_VERSION = 29;
+/** Minimum admission contract after retiring legacy Agent shell execution. */
+export const RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION = 29;
+export type RelayGitHubInvocationBinding = GitHubInvocationBinding & {
+  readonly localNetworkPolicy: RelayNetworkPolicy;
+};
+export function parseRelayGitHubInvocationBinding(value: unknown, args?: unknown): RelayGitHubInvocationBinding | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const { localNetworkPolicy, ...base } = value as Record<string, unknown>;
+  const binding = parseGitHubInvocationBinding(base, args);
+  const policy = NetworkPolicySchema.safeParse(localNetworkPolicy);
+  return binding && policy.success ? { ...binding, localNetworkPolicy: policy.data } as RelayGitHubInvocationBinding : null;
+}
 export function isRelayGitHubDispatch(toolName: string, args: unknown, bindingValue: unknown, capabilities: RelayCapabilities, protocol: number): boolean {
-  const binding = parseGitHubInvocationBinding(bindingValue, args), capability = parseGitHubCapability(capabilities.github);
-  return toolName === "local_github" && binding !== null && capability !== null && capabilities.profile === "desktop-agent"
+  const binding = parseRelayGitHubInvocationBinding(bindingValue, args), capability = parseGitHubCapability(capabilities.github);
+  const authenticatedGit = toolName === "local_git";
+  return (toolName === "local_github" || authenticatedGit) && binding !== null && capability !== null && capabilities.profile === "desktop-agent"
     && capabilities.canUseGitHub === true && protocol >= RELAY_GITHUB_PROTOCOL_VERSION && binding.generation === capability.generation
+    && (!authenticatedGit || capability.authenticatedGit?.version === 1)
     && sameGitHubDesktopIdentity(binding.owner, capability.identity);
+}
+/** Shared account/project facts must describe one reviewed operation. Pairing
+ * has two representations: the server checks the shell's raw token generation,
+ * while account topology carries the opaque authenticated generation reference. */
+export function matchesGitHubWorkstationBinding(account: RelayGitHubInvocationBinding, value: unknown): boolean {
+  const parsed = parseRelayWorkstationShellBinding(value);
+  if (!parsed.ok) return false;
+  const shell = parsed.binding, owner = account.owner;
+  return shell.toolCallId === account.toolCallId && shell.subject.userId === owner.humanUserId
+    && shell.subject.instanceId === owner.instanceId && shell.subject.relayId === owner.relayId
+    && shell.relayId === owner.relayId && shell.desktopSessionId === owner.desktopSessionId
+    && shell.profileId === owner.profileId && shell.profileRevision === owner.profileRevision
+    && shell.grantRevision === owner.grantRevision && shell.protectedPolicyVersion === owner.protectedPolicyVersion;
 }
 /** Typed Git and retained shell output are independent replacement surfaces. */
 export const RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION = 22;
@@ -243,7 +270,12 @@ export function projectRelayCapabilitiesForProtocol(
   protocolVersion: number,
 ): RelayCapabilities {
   const compatible = { ...capabilities };
-  if (protocolVersion < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION) delete compatible.canDelegateLocalExecution;
+  if (protocolVersion < RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION) {
+    delete compatible.canExecuteLocal;
+    delete compatible.localExecution;
+    delete compatible.canDelegateLocalExecution;
+    delete compatible.canExecuteFullMacOneShot;
+  }
   if (protocolVersion < RELAY_GITHUB_PROTOCOL_VERSION) { delete compatible.canUseGitHub; delete compatible.github; }
   if (protocolVersion < RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION) delete compatible.canSearchLocalExecutionOutput;
   if (protocolVersion < RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION) delete compatible.canExecuteFullMacOneShot;
@@ -937,7 +969,7 @@ export type RelayDispatchMessage = {
   localExecutionDelegationCapture?: RelayLocalExecutionDelegationCapture | undefined;
   localExecutionBinding?: RelayLocalExecutionBinding | undefined;
   localExecutionHistoryBinding?: RelayLocalExecutionHistoryBindingV1 | undefined;
-  githubBinding?: GitHubInvocationBinding | undefined;
+  githubBinding?: RelayGitHubInvocationBinding | undefined;
   humanTerminalBinding?: RelayHumanTerminalBinding | undefined;
   /** server-owned marker: this real-workstation dispatch was admitted by the live uncontained session resolver. */
   uncontainedHostCommandsSession?: true | undefined;
@@ -1197,7 +1229,7 @@ export type RelayDispatchRequest = {
   localExecutionDelegationCapture?: RelayLocalExecutionDelegationCapture | undefined;
   localExecutionBinding?: RelayLocalExecutionBinding | undefined;
   localExecutionHistoryBinding?: RelayLocalExecutionHistoryBindingV1 | undefined;
-  githubBinding?: GitHubInvocationBinding | undefined;
+  githubBinding?: RelayGitHubInvocationBinding | undefined;
   humanTerminalBinding?: RelayHumanTerminalBinding | undefined;
   /** See `RelayDispatchMessage.uncontainedHostCommandsSession`. */
   uncontainedHostCommandsSession?: true | undefined;
@@ -3832,6 +3864,8 @@ export interface RelayLocalExecutionOwnerV1 {
   readonly protectedPolicyVersion: number | null;
 }
 export interface RelayLocalExecutionBindingV1 {
+  /** Server-owned restriction, checked independently of the local profile. */
+  readonly localNetworkPolicy?: RelayNetworkPolicy;
   readonly version: 1;
   readonly generation: string;
   readonly invocationId: string;
@@ -3929,11 +3963,12 @@ export function isRelayLocalExecutionHistoryRead(toolName: string, args: Readonl
 /** Retained identities, including completed receipts, per Desktop generation. */
 export const LOCAL_EXECUTION_MAX_IDENTITIES = 1024;
 export function parseRelayLocalExecutionBinding(value: unknown): RelayLocalExecutionBinding | null {
-  if (!isRecord(value) || Object.keys(value).length !== (value["version"] !== 1 ? 7 : 6)
-    || Object.keys(value).some(k => !["version", "generation", "invocationId", "executionId", "operation", "owner", ...(value["version"] !== 1 ? ["authority"] : [])].includes(k))
+  if (!isRecord(value) || Object.keys(value).length !== (value["version"] !== 1 ? 7 : 6) + ("localNetworkPolicy" in value ? 1 : 0)
+    || Object.keys(value).some(k => !["version", "generation", "invocationId", "executionId", "operation", "owner", "localNetworkPolicy", ...(value["version"] !== 1 ? ["authority"] : [])].includes(k))
     || (value["version"] !== 1 && value["version"] !== 2 && value["version"] !== 3 && value["version"] !== 4) || typeof value["operation"] !== "string" || !["start", "read", "input", "cancel"].includes(value["operation"])
     || !["generation", "invocationId", "executionId"].every(k => typeof value[k] === "string" && value[k].length > 0)
     || !isRecord(value["owner"])) return null;
+  if ("localNetworkPolicy" in value && !NetworkPolicySchema.safeParse(value["localNetworkPolicy"]).success) return null;
   const o = value["owner"];
   const strings = ["humanUserId", "agentId", "runId", "conversationId", "relayId", "desktopSessionId", "pairingGeneration", "serverBindingId"];
   const revisions = ["profileRevision", "grantRevision", "protectedPolicyVersion"];

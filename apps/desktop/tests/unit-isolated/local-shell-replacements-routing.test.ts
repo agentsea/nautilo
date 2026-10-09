@@ -30,9 +30,15 @@ test("composed typed Git dispatch revalidates execute authority and preserves br
   const outcome = { operation: "status" as const, ok: true, reason: "ok" as const, sideEffectStarted: false, retrySafe: true, message: "clean" };
   const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: "/tmp" }), {
     relayId: owner.relayId, isProduction: false,
+    workstationProfileStateProvider: {
+      getProfileSnapshot: async () => ({ profileId: "profile-fixture", profileRevision: 1,
+        grantIds: ["grant-fixture"], protectedPolicyVersion: 1, networkMode: "isolated", capabilities: [] }),
+      getExecutionEnvironment: () => ({ profileId: "profile-fixture", profileRevision: 1,
+        protectedPolicyVersion: 1, home: "/tmp", environmentValues: {}, executables: [] }),
+    },
     workstationShellBindingAuthority: async input => { checkedOperation = input.concreteOperation; return { ok: true, roots: ["/tmp"], readOnlyRoots: [], writableRoots: ["/tmp"], grantIds: ["grant-fixture"], networkPolicy: { mode: "isolated", allow: [] } }; },
     getLocalWorkspacePath: () => "/tmp", localShellWorkspaceAuthority: async () => ({ ok: true, workspace: "/tmp" }),
-    createGuardedShellScratch: () => "/tmp/synthetic-shell-scratch",
+    createGuardedShellScratch: () => ({ workspace: "/tmp", protectedFileMaskPath: "/tmp/protected-mask" }),
     createSandbox: async () => ({ containmentActive: () => true, protectedFileMaskSupported: () => true, close: async () => { closed++; } }) as unknown as Sandbox,
     createGitBroker: options => { expect(options.gitExecutable).toBe("/usr/bin/git"); expect(options.authority.repository).toBe("/tmp");
       const run = async () => { calls++; return outcome; }; return { status: run, diff: run, add: run, commit: run, worktreeAdd: run, worktreeRemove: run }; },

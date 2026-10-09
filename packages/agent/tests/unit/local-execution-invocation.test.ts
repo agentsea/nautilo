@@ -22,8 +22,8 @@ function fixture() {
   setRelayRegistry({
     findByCapabilityForUser: (_capability: string, userId: string) => userId === "human-fixture" ? ["relay-fixture"] : [],
     getCapabilities: () => ({ profile: "desktop-agent", canExecuteLocal: true,
-      localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, capacity: 1 } }),
-    getUserId: () => "human-fixture", getDesktopSessionId: () => "desktop-fixture", getProtocolVersion: () => 20,
+      localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, localNetworkPolicy: true, capacity: 1 } }),
+    getUserId: () => "human-fixture", getDesktopSessionId: () => "desktop-fixture", getProtocolVersion: () => 29,
     getPairingGeneration: () => "pairing-fixture",
     getLocalExecutionPairingGeneration: () => "pairing-fixture",
     getLocalExecutionWorkstationBinding: () => sent[0]?.workstationShellBinding ?? null,

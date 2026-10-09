@@ -21,7 +21,7 @@ const toolsNode = createToolsNode({ humanTerminalAdmissionPortForState: () => ({
 } }) });
 function fixture() {
   sourceAllowed = true; postSourceAllowed = true;
-  let protocol = 25; let admitted = false; let activationId = "activation"; const activation = new AbortController();
+  let protocol = 29; let admitted = false; let activationId = "activation"; const activation = new AbortController();
   const catalog = new ToolCatalog();
   for (const factory of [createExecCommandTool, createWriteStdinTool]) {
     catalog.register({ name: factory().name, factory, exposure: "core", category: "development", trustTier: "admin",
@@ -35,7 +35,7 @@ function fixture() {
     findByCapabilityForUser: (_capability: string, userId: string) => userId === "human-fixture" ? ["relay-fixture"] : [],
     getCapabilities: () => ({ profile: "desktop-agent", canExecuteLocal: true, canExecuteFullMacOneShot: true,
       basicExecution: { version: 1, currentFolder: "/tmp/fixture", serverBindingId: "server-fixture", protectedPolicyVersion: 1 },
-      localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, capacity: 1 } }),
+      localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, localNetworkPolicy: true, capacity: 1 } }),
     getUserId: () => "human-fixture", getDesktopSessionId: () => "desktop-fixture", getProtocolVersion: () => protocol,
     getPairingGeneration: () => "pairing-fixture",
     getLocalExecutionPairingGeneration: () => "pairing-fixture",

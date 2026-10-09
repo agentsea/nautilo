@@ -7,8 +7,9 @@
  * behavior change — ISSUE-M169 §7) fails here:
  *   - R3 cold start → the freshly-built `graphInput` with `messages.length === 1`
  *     (the brief only); never a transcript/checkpoint history concat.
- *   - R4 `continueFromCheckpoint` → a literal `null` input (resume the parked
- *     checkpoint), NOT a rebuilt array.
+ *   - R4 `continueFromCheckpoint` → a literal `null` input, or a state-only
+ *     `Command` for a narrowly authorized legacy lifecycle repair; never a
+ *     rebuilt array.
  *   - R4 `resume` → a `Command` (interrupt reply), NOT a rebuilt array.
  *
  * Lives in unit-isolated because it mocks `createNautiloGraph` process-globally
@@ -32,6 +33,7 @@ let capturedStreamInput: unknown;
 let capturedCheckpointSaver: unknown;
 let capturedInitiatingSurface: string;
 let ordinaryAppendCalls: number;
+let checkpointValues: Record<string, unknown>;
 
 const protectedTaskTranscriptPort = {
   publishBatch: async () => {},
@@ -80,7 +82,7 @@ beforeAll(async () => {
         yield { event: "noop" };
       },
       getState: async () => ({
-        values: { messages: [new AIMessage("done")] },
+        values: { messages: [new AIMessage("done")], ...checkpointValues },
         tasks: [],
       }),
       };
@@ -99,6 +101,7 @@ beforeEach(() => {
   capturedCheckpointSaver = undefined;
   capturedInitiatingSurface = "unknown";
   ordinaryAppendCalls = 0;
+  checkpointValues = {};
 });
 
 const baseOpts = {
@@ -185,6 +188,41 @@ describe("runScopeSubagentUntilPause stream-entry invariants (M169 R3/R4)", () =
     expect(capturedStreamInput).toBeNull();
   });
 
+  test("R4 — legacy exec-only checkpoint gains only its currently authorized lifecycle companion", async () => {
+    checkpointValues = {
+      toolWhitelist: ["read_artifact_events", "exec_command"],
+      activatedToolNames: ["read_artifact_events", "exec_command"],
+    };
+    await runScopeSubagentUntilPause({
+      ...baseOpts,
+      toolWhitelist: ["exec_command", "write_stdin"],
+      continueFromCheckpoint: true,
+      subagentThreadId: "subagent:parent-thread:reuse-legacy-exec",
+    });
+
+    expect(capturedStreamInput instanceof Command).toBe(true);
+    expect((capturedStreamInput as Command).resume).toBeUndefined();
+    expect((capturedStreamInput as Command).update).toEqual({
+      toolWhitelist: ["read_artifact_events", "exec_command", "write_stdin"],
+      activatedToolNames: ["read_artifact_events", "exec_command", "write_stdin"],
+    });
+  });
+
+  test("R4 — current denial does not widen a legacy exec-only checkpoint", async () => {
+    checkpointValues = {
+      toolWhitelist: ["exec_command"],
+      activatedToolNames: ["exec_command"],
+    };
+    await runScopeSubagentUntilPause({
+      ...baseOpts,
+      toolWhitelist: ["exec_command"],
+      continueFromCheckpoint: true,
+      subagentThreadId: "subagent:parent-thread:reuse-denied-write",
+    });
+
+    expect(capturedStreamInput).toBeNull();
+  });
+
   test("R4 — resume streams a Command (not a rebuilt array)", async () => {
     await runScopeSubagentUntilPause({
       ...baseOpts,
@@ -197,6 +235,27 @@ describe("runScopeSubagentUntilPause stream-entry invariants (M169 R3/R4)", () =
     // A Command is NOT a `{ messages: [...] }` rebuilt-history input.
     expect((capturedStreamInput as { messages?: unknown }).messages).toBeUndefined();
     expect((capturedStreamInput as Command).update).toBeUndefined();
+  });
+
+  test("R4 — interrupt reply preserves its resume payload while repairing a legacy lifecycle pair", async () => {
+    checkpointValues = {
+      toolWhitelist: ["exec_command"],
+      activatedToolNames: ["exec_command"],
+    };
+    const resume = { approved: true };
+    await runScopeSubagentUntilPause({
+      ...baseOpts,
+      toolWhitelist: ["exec_command", "write_stdin"],
+      resume,
+      subagentThreadId: "subagent:parent-thread:reuse-approved-exec",
+    });
+
+    expect(capturedStreamInput instanceof Command).toBe(true);
+    expect((capturedStreamInput as Command).resume).toEqual(resume);
+    expect((capturedStreamInput as Command).update).toEqual({
+      toolWhitelist: ["exec_command", "write_stdin"],
+      activatedToolNames: ["exec_command", "write_stdin"],
+    });
   });
 
   test("a subagent resets a known parent initiating surface to unknown", async () => {

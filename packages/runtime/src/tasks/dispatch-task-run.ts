@@ -177,6 +177,9 @@ export type DispatchTaskRunResult =
  * - `none` uses an empty whitelist, binding no tools.
  * - `whitelist` is an explicit hard ceiling; the graph still intersects it
  *   with its core/activated progressive selection and normal eligibility.
+ *   `exec_command` carries only its required `write_stdin` lifecycle companion
+ *   so a yielded owned execution remains observable and stoppable. The
+ *   companion is validated normally and does not add unrelated tool authority.
  *
  * The `whitelist` case is validated at dispatch time against the run's
  * effective parent catalog (the single source of truth for every surface; the

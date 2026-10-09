@@ -384,7 +384,7 @@ function ExecCommandExpanded({ toolName, args, event, resultText, resultTruncate
     try {
       await api.openPreview({ generation: active.generation, executionId: active.executionId, url });
     } catch {
-      setMessage("The preview could not be opened.");
+      setMessage("The preview listener could not be verified. Check that this command is still running and listening on the expected port; an existing or detached service cannot be opened as its preview.");
     } finally {
       if (activeKeyRef.current === activeKey) setBusy(null);
     }

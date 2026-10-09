@@ -7,6 +7,27 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Creating a background Task no longer invalidates unrelated foreground command
+  grants. Tasks that can start managed commands also retain their output and
+  cancellation tool, including existing command-only task whitelists.
+- GitHub account status can be checked through the admitted account tool.
+  Connections and Genie guidance now describe the supported GitHub operations
+  and the limits of credentialed shell commands consistently.
+
+- Development commands use the same controlled real-HOME environment in foreground
+  and delegated pipes or contained terminals. The revised profile narrows shared
+  toolchain writes and requires consent for its new revision.
+- Compatible Desktop and server versions support typed authenticated GitHub reads,
+  clone/fetch/fast-forward pull, and separately reviewed push, comment and pull
+  request creation. Credentials stay inside the account broker. Uncertain publishing
+  outcomes never authorize an automatic retry.
+- Security managers can set a separate local-computer network ceiling. It combines
+  with each computer's execution profile; unsupported executors and authenticated
+  account operations are unavailable under a restricted ceiling.
+- Local preview opens only after verifying a live listener owned by the selected
+  execution. Legacy Agent shell and terminal execution is retired; new commands
+  require the current Desktop/server contract. Saved results remain readable, and
+  Human Terminal and structured SSH retain their separate interfaces.
 - Chat managers can change personal 1:1 chats between Private, External, and
   Public. Returning an unchanged personal Human–Genie chat to Private restores
   its private-chat behavior without replacing the conversation.
@@ -70,7 +91,7 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Commands keep running after yielding, retain output and actual exit status,
   and provide explicit Stop and local preview actions. Compatible Desktops hide
   the legacy Genie command tools once the replacement capabilities are available;
-  older clients retain their existing tools. Human Terminal remains available.
+  older clients must upgrade for new commands. Human Terminal remains available.
   Command cards update automatically as processes produce output or finish,
   including while collapsed, and preview links work in colored tool output.
   Stopping npm-launched commands confirms process-group cleanup on macOS

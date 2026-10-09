@@ -2,10 +2,7 @@ import { describe, test, expect, beforeAll } from "bun:test";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { ToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import { setConfigOverrides } from "@nautilo/config";
-import {
-  preModelNode,
-  reconcileLiveTerminalHandoffCapabilities,
-} from "../../src/nodes/pre-model";
+import { preModelNode } from "../../src/nodes/pre-model";
 import { ROOM_PARTICIPANTS_HEADER } from "../../src/prompts/templates";
 import { registerAllTools } from "../../src/tools/register-all";
 import type { NautiloState } from "../../src/agent/state";
@@ -291,7 +288,7 @@ describe("preModelNode — roster injection", () => {
     expect(prompt).not.toContain("**file**:");
   });
 
-  test("Let Genie drive auto-binds terminal and injects authoritative handoff guidance", async () => {
+  test("a legacy pending terminal hint cannot auto-bind the retired terminal tool", async () => {
     const state = makeState({
       messages: [new HumanMessage("Continue the repository inspection.")],
       relayCapabilities: {
@@ -312,29 +309,9 @@ describe("preModelNode — roster injection", () => {
     const patch = await preModelNode(state);
     const prompt = await systemPromptOf(state);
 
-    expect(patch.activatedToolNames).toContain("terminal");
-    expect(patch.toolNames).toContain("terminal");
-    expect(prompt).toContain("## Human terminal handoff");
-    expect(prompt).toContain("`terminal` tool is already callable");
-    expect(prompt).toContain("may be omitted while Genie retains control");
-    expect(prompt).toContain("terminal discovery, activation, listing, and spawning are unnecessary");
-  });
-
-  test("an in-flight turn gains and later drops the live terminal handoff token", () => {
-    const gained = reconcileLiveTerminalHandoffCapabilities(
-      { canRunShell: true },
-      { canUseTerminal: true, hasPendingTerminalHandoff: true },
-    );
-    expect(gained).toEqual({
-      canRunShell: true,
-      canUseTerminal: true,
-      hasPendingTerminalHandoff: true,
-    });
-
-    const cleared = reconcileLiveTerminalHandoffCapabilities(gained, {
-      canUseTerminal: true,
-    });
-    expect(cleared).toEqual({ canRunShell: true, canUseTerminal: true });
+    expect(patch.activatedToolNames).not.toContain("terminal");
+    expect(patch.toolNames).not.toContain("terminal");
+    expect(prompt).not.toContain("## Human terminal handoff");
   });
 
   test("explicit file editing pre-activates filesystem with prompt/schema parity", async () => {

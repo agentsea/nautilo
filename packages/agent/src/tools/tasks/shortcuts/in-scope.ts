@@ -13,6 +13,7 @@ import {
   type ShortcutContext,
 } from "./shortcut-context";
 import { validateTaskModelSelectionForCreate } from "../selection-validation";
+import { normalizeTaskToolWhitelist } from "../../subagents/validate-subagent-whitelist";
 
 /**
  * `in_scope` intent shortcut for asynchronous scoped work.
@@ -26,7 +27,7 @@ const inScopeSchema = z.object({
   brief: z.string().min(1).describe("What the scoped helper should do."),
   tools: z
     .array(z.string())
-    .describe("Tool names the helper may use (empty list = no tools / reasoning-only)."),
+    .describe("Tool names the helper may use (empty list = no tools / reasoning-only). exec_command includes write_stdin for the same owned execution lifecycle."),
   expected_output: z
     .string()
     .optional()
@@ -62,7 +63,7 @@ export function createInScopeTool(context?: unknown) {
         profile: args.model_selection,
         // in_scope is always tool-using with a (possibly empty) whitelist.
         toolsMode: "whitelist",
-        toolsWhitelist: args.tools,
+        toolsWhitelist: normalizeTaskToolWhitelist(args.tools),
       });
       if (selectionError) return selectionError;
       const rt = getTaskToolRuntime();
@@ -85,7 +86,7 @@ export function createInScopeTool(context?: unknown) {
         useScope: true,
         scopeId: args.scope_id ?? null,
         toolsMode: "whitelist",
-        toolsWhitelist: args.tools,
+        toolsWhitelist: normalizeTaskToolWhitelist(args.tools),
         targetChat: "orphan",
         awaitResponse: false,
         callingRoomId: ctx.roomId || null,

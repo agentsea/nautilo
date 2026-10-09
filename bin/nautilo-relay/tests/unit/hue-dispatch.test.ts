@@ -25,17 +25,11 @@ function hueRequest(): RelayDispatchRequest {
 describe("headless relay Hue dispatch", () => {
   test("routes hue_lights through the typed handler before sandbox resolution", async () => {
     const guard = createWorkspaceGuard({ workspaceRoot: process.cwd() });
-    let sandboxCalls = 0;
     const expected: RelayDispatchResult = {
       status: "ok",
       result: [{ id: "kitchen" }],
     };
     const handler = makeDispatchHandler(guard, {
-      isProduction: true,
-      createSandbox: async () => {
-        sandboxCalls += 1;
-        throw new Error("Hue dispatch must not construct a sandbox");
-      },
       hueHandler: async (args) => {
         expect(args).toEqual({ action: "list_lights" });
         return expected;
@@ -44,7 +38,6 @@ describe("headless relay Hue dispatch", () => {
 
     const result = await Promise.resolve(handler(hueRequest()));
     expect(result).toEqual(expected);
-    expect(sandboxCalls).toBe(0);
   });
 
   test("resolves OpenHue override, tools bin, then PATH in order", () => {

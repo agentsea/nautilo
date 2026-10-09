@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import {
-  createAdmittedGitHubCliConnection as createGitHubCliConnection,
+  createAdmittedGitHubCliConnection,
   GITHUB_DEVICE_URL,
   type GitHubCliInvocation,
 } from "../../electron/github-cli-connection";
@@ -16,7 +16,7 @@ const getInstallation = async () => ({
 describe("GitHub CLI connection", () => {
   test("reports only redacted installation and authentication state", async () => {
     const commands: GitHubCliInvocation[] = [];
-    const connection = createGitHubCliConnection({
+    const connection = createAdmittedGitHubCliConnection({
       subscribeAuthorityChanges: () => () => {},
       getInstallation,
       openExternal: async () => undefined,
@@ -59,7 +59,7 @@ describe("GitHub CLI connection", () => {
     child.stderr = new PassThrough();
     child.stdin = new PassThrough();
     child.kill = () => true;
-    const connection = createGitHubCliConnection({
+    const connection = createAdmittedGitHubCliConnection({
       subscribeAuthorityChanges: () => () => {},
       getInstallation,
       openExternal: async (url) => {
@@ -82,7 +82,7 @@ describe("GitHub CLI connection", () => {
 
   test("reports gh as unavailable without attempting auth status", async () => {
     let calls = 0;
-    const connection = createGitHubCliConnection({
+    const connection = createAdmittedGitHubCliConnection({
       subscribeAuthorityChanges: () => () => {},
       getInstallation,
       openExternal: async () => undefined,
@@ -106,7 +106,7 @@ test("cancel during installation admission prevents spawn and concurrent login",
   let release!: () => void;
   const barrier = new Promise<void>(resolve => { release = resolve; });
   let spawns = 0;
-  const connection = createGitHubCliConnection({ subscribeAuthorityChanges: () => () => {}, openExternal: async () => undefined,
+  const connection = createAdmittedGitHubCliConnection({ subscribeAuthorityChanges: () => () => {}, openExternal: async () => undefined,
     getInstallation: async () => { await barrier; return await getInstallation(); },
     spawnProcess: (() => { spawns += 1; throw new Error("must not spawn"); }) as never });
   const pending = connection.connect().then(() => "success", error => (error as Error).message);
@@ -119,7 +119,7 @@ test("cancel during installation admission prevents spawn and concurrent login",
 test("status suppresses a stale account after authority changes during a command", async () => {
   let current = true;
   const base = await getInstallation();
-  const connection = createGitHubCliConnection({ subscribeAuthorityChanges: () => () => {}, openExternal: async () => undefined,
+  const connection = createAdmittedGitHubCliConnection({ subscribeAuthorityChanges: () => () => {}, openExternal: async () => undefined,
     getInstallation: async () => ({ ...base, verify: async () => ({ ...await base.verify(), isCurrent: () => current }) }),
     runCommand: async input => {
       if (input.argv[0] === "--version") return { code: 0, stdout: "gh version 2.102.0", stderr: "" };
@@ -135,7 +135,7 @@ test("authority reduction after device-code delivery kills only that login and r
   let subscriptions = 0;
   const children: (EventEmitter & { stdout: PassThrough; stderr: PassThrough; stdin: PassThrough; kills: number; kill: () => boolean })[] = [];
   const base = await getInstallation();
-  const connection = createGitHubCliConnection({ openExternal: async () => undefined,
+  const connection = createAdmittedGitHubCliConnection({ openExternal: async () => undefined,
     getInstallation: async () => ({ ...base, verify: async () => ({ ...await base.verify(), isCurrent: () => current }) }),
     subscribeAuthorityChanges: callback => { listener = callback; subscriptions++; return () => { if (listener === callback) listener = undefined; subscriptions--; }; },
     spawnProcess: (() => {

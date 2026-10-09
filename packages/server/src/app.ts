@@ -2289,7 +2289,10 @@ export async function createApp(options?: CreateAppOptions) {
     securityRoutes(app, {
       pinProvider,
       auditLogPath: securityAuditLogPath,
-      mutatePosture: createPostureMutator({ auditLogPath: securityAuditLogPath, sidecarPath }),
+      mutatePosture: async meta => {
+        await createPostureMutator({ auditLogPath: securityAuditLogPath, sidecarPath })(meta);
+        relayRegistry.revokeLocalExecutionsForNetworkPolicy();
+      },
       auditEvent,
       //  real Capability-store lookup. The
       // owner-actor heuristic is gone; household/teammate/guest
