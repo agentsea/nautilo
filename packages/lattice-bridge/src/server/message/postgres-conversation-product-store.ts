@@ -253,6 +253,13 @@ export interface ConversationProductPublicationGuard {
     transaction: CanonicalTranscriptTx,
     input: ConversationProductPublicationGuardInput,
   ): Promise<void>;
+  /** Record product provenance atomically with the verified Message mapping. */
+  recordMappedPublication?(
+    transaction: CanonicalTranscriptTx,
+    input: ConversationRevisionCoordinates & Readonly<{
+      idempotencyKey: string | null;
+    }>,
+  ): Promise<void>;
 }
 
 const verifiedProductHandles = new WeakSet<object>();
@@ -4051,6 +4058,12 @@ export class PostgresConversationProductStore
       if (
         oneOrNone(mappedLifecycle, "Conversation mapped lifecycle") === null
       ) throw new Error("Mapping CAS lost its lifecycle");
+      await this.publicationGuard?.recordMappedPublication?.(transaction, {
+        sessionId: input.sessionId,
+        messageId: input.messageId,
+        revision: input.revision,
+        idempotencyKey: lifecycle.appendIdempotencyKey,
+      });
       return duplicate ? "duplicate" : "applied";
     }, "serializable");
   }

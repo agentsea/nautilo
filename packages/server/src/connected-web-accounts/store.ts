@@ -711,6 +711,8 @@ export interface ConnectedWebAccountStore {
     readonly opaqueExecutionRef: string;
     readonly now: Date;
     readonly receipt: ConnectedWebOperationSafeReceipt;
+    /** True only for a validated completed private text-read intent. */
+    readonly retainBrowserForWarmReuse: boolean;
     /** Null for failed/cancelled terminal truth and never provider raw text. */
     readonly terminalReadResult?: ConnectedWebTerminalReadResult | null;
     /** A validated provider auth outcome transfers exact account control to Human attention. */
@@ -1967,7 +1969,7 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
       return rows.length === 1;
     },
 
-    async terminalizeReadOperationAndCompleteExecution({ operationId, ownerUserId, accountId, expectedControlEpoch, expectedRunRef, opaqueExecutionRef, now, receipt, terminalReadResult = null, authenticationRequired, cumulativeCostUsdMicros, remainingBudgetUsdMicros, safeActivity, wakeFingerprint }) {
+    async terminalizeReadOperationAndCompleteExecution({ operationId, ownerUserId, accountId, expectedControlEpoch, expectedRunRef, opaqueExecutionRef, now, receipt, retainBrowserForWarmReuse, terminalReadResult = null, authenticationRequired, cumulativeCostUsdMicros, remainingBudgetUsdMicros, safeActivity, wakeFingerprint }) {
       const parsedReceipt = parseConnectedWebOperationSafeReceipt(receipt);
       const parsedTerminalReadResult = terminalReadResult === null ? null : parseConnectedWebTerminalReadResult(terminalReadResult);
       const terminalAt = safeOperationDate(now);
@@ -1980,6 +1982,7 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
           ? parsedTerminalReadResult.account !== null || parsedTerminalReadResult.page.ref !== operationId
           : parsedTerminalReadResult.account?.id !== accountId))
         || (authenticationRequired !== undefined && terminalReadResult !== null)
+        || typeof retainBrowserForWarmReuse !== "boolean"
         || !Number.isSafeInteger(expectedControlEpoch) || expectedControlEpoch < 1) {
         throw new ConnectedWebAccountStoreError("conflict");
       }
@@ -1999,7 +2002,8 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
           terminalReadResult: accountAuthentication === undefined ? parsedTerminalReadResult : null,
           terminalAt: accountAuthentication === undefined ? terminalAt : null,
           browserIdleUntil: accountAuthentication === undefined
-            ? connectedWebBrowserIdleUntil(terminalAt, accountId !== null && parsedReceipt.outcome === "completed") : null,
+            ? connectedWebBrowserIdleUntil(terminalAt, retainBrowserForWarmReuse
+              && accountId !== null && parsedReceipt.outcome === "completed") : null,
           nextCheckAt: null,
           supervisorClaimOwner: null,
           supervisorClaimExpiresAt: null,

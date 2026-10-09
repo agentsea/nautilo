@@ -37,6 +37,12 @@ function assertDigest(value: string, label: string): void {
   if (!/^[0-9a-f]{64}$/.test(value)) throw new TypeError(`Invalid ${label}`);
 }
 
+function assertBoundedFormat(value: string, label: string): void {
+  if (value.length === 0 || value.length > 32) {
+    throw new TypeError(`Invalid ${label}`);
+  }
+}
+
 function assertCreateInput(input: CreateConversionOperationInput): void {
   for (const [value, label] of [
     [input.operationKey, "conversion operation key"],
@@ -49,6 +55,8 @@ function assertCreateInput(input: CreateConversionOperationInput): void {
   if (!/^ntlo_cv_[0-9a-f]{32}$/.test(input.providerTag)) {
     throw new TypeError("Invalid CloudConvert recovery tag");
   }
+  assertBoundedFormat(input.inputFormat, "conversion input format");
+  assertBoundedFormat(input.outputFormat, "conversion output format");
 }
 
 export async function createConversionOperationWith(

@@ -12,6 +12,7 @@ import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import {
   getCloudConvertConfig,
+  isCloudConvertFormatToken,
   isCloudConvertConfigured,
   convert as cloudConvert,
 } from "@nautilo/cloudconvert";
@@ -649,13 +650,34 @@ function publicationAuthority(
   };
 }
 
-async function publishCloudConversion(input: {
+async function confirmCloudPublication(
+  runtime: ConversionRuntime,
+  confirmation: Parameters<ConversionRuntime["confirmPublication"]>[0],
+  recoveryHandle: string,
+): Promise<string | null> {
+  try {
+    await runtime.confirmPublication(confirmation);
+    return null;
+  } catch {
+    return JSON.stringify({
+      error: "conversion_publication_confirmation_uncertain",
+      message: "The Artifact was committed, but its durable conversion receipt could not be confirmed. Resume with the recovery handle; the provider job will not be submitted again.",
+      retryable: true,
+      uncertainEffect: true,
+      recoveryHandle,
+    });
+  }
+}
+
+type PublishCloudConversionInput = Readonly<{
   runtime: ConversionRuntime;
   result: Extract<CloudConversionExecutionResult, { status: "ready_to_publish" | "recover_publication" | "published" }>;
   recovery: CloudConversionRecoveryRequest;
   dest: Extract<Awaited<ReturnType<typeof prepareDestination>>, { ok: true }>;
   destinationPath: string;
-}): Promise<string> {
+}>;
+
+async function publishCloudConversionAttempt(input: PublishCloudConversionInput): Promise<string> {
   let result = input.result;
   if (result.status === "published") {
     return JSON.stringify({
@@ -687,11 +709,12 @@ async function publishCloudConversion(input: {
       if (recovered.ok) {
         const artifactId = recovered.artifactId ?? input.dest.ctx.workspaceArtifactMeta?.artifactId;
         if (!artifactId) return `Error: Conversion publication recovered without an Artifact identity. Resume ${result.recoveryHandle}.`;
-        await input.runtime.confirmPublication({
+        const confirmationError = await confirmCloudPublication(input.runtime, {
           operationKey: result.operationKey,
           artifactId,
           revisionId: recovered.revisionId,
-        });
+        }, result.recoveryHandle);
+        if (confirmationError) return confirmationError;
         return JSON.stringify({
           applied: true,
           recovered: true,
@@ -769,11 +792,12 @@ async function publishCloudConversion(input: {
     return `Error: ${committed.message} The provider conversion was not repeated.`;
   }
   const artifactId = committed.artifactId ?? meta.artifactId;
-  await input.runtime.confirmPublication({
+  const confirmationError = await confirmCloudPublication(input.runtime, {
     operationKey: result.operationKey,
     artifactId,
     revisionId: committed.revisionId,
-  });
+  }, result.recoveryHandle);
+  if (confirmationError) return confirmationError;
   return JSON.stringify({
     applied: true,
     path: input.destinationPath,
@@ -787,6 +811,20 @@ async function publishCloudConversion(input: {
     summary: `Published CloudConvert ${result.outputFormat.toUpperCase()} output (${result.bytes.byteLength} bytes).`,
     warnings: ["Bytes were sent to CloudConvert."],
   });
+}
+
+async function publishCloudConversion(input: PublishCloudConversionInput): Promise<string> {
+  try {
+    return await publishCloudConversionAttempt(input);
+  } catch {
+    return JSON.stringify({
+      error: "conversion_publication_recovery_uncertain",
+      message: "The conversion publication receipt could not be updated safely. Resume with the recovery handle; the provider job will not be submitted again.",
+      retryable: true,
+      uncertainEffect: true,
+      recoveryHandle: input.result.recoveryHandle,
+    });
+  }
 }
 
 function buildCommandArgs(input: ConvertInput, source: ResolvedSource, backend: ConvertBackend): Record<string, unknown> {
@@ -849,6 +887,9 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
         return JSON.stringify(cancelled);
       }
       const outputFormat = normalizeFormat(input.format!);
+      if (!isCloudConvertFormatToken(outputFormat)) {
+        return "Error: format must normalize to 1-32 lowercase letters, digits, dots, underscores, plus signs, or hyphens.";
+      }
       const destinationZone = input.destinationZone ?? "workspace";
       const expectedExt = expectedExtensionForFormat(outputFormat);
       if (!pathMatchesOutputFormat(input.destinationPath!, outputFormat)) {
@@ -1004,6 +1045,10 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
       }
 
       if (backend === "cloud" && conversionRuntime) {
+        const inputFormat = normalizeFormat(source.inputFormat);
+        if (!isCloudConvertFormatToken(inputFormat)) {
+          return "Error: The source format must normalize to 1-32 lowercase letters, digits, dots, underscores, plus signs, or hyphens.";
+        }
         if (!toolCtx.causalHumanUserId || !toolCtx.stableToolCallId || !currentTurnId
           || !toolCtx.agentId || !toolCtx.roomId) {
           return "Error: Durable cloud conversion requires trusted Human, Room, turn, and tool-call identity.";
@@ -1033,7 +1078,7 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
           },
           source: sourceBinding(source, dispatchCtx),
           destination,
-          inputFormat: source.inputFormat,
+          inputFormat,
           outputFormat,
           bytes: source.bytes,
           maxOutputBytes: DELIVERED_FORMAT_LIMITS.generatedBytes,

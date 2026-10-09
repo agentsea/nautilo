@@ -444,6 +444,9 @@ export const DATA_TABLES = [
   // Preserve paid conversion recovery only after all Task/Job/Room parents.
   "public.conversion_operations",
   "public.protected_task_run_output_bindings",
+  "public.task_run_message_associations",
+  "public.protected_task_execution_segment_receipts",
+  "public.protected_task_continuation_receipts",
   // Pending/recoverable Plan input references the Task, run, Job,
   // Room, and Codex binding, so every parent must be restored first.
   "public.codex_user_input_requests",

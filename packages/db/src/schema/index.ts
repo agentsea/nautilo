@@ -92,3 +92,6 @@ export * from "./video-generation-links";
 export * from "./event-feed";
 
 export * from "./conversion-operations";
+export * from "./task-run-message-associations";
+export * from "./protected-task-execution-segment-receipts";
+export * from "./protected-task-continuation-receipts";

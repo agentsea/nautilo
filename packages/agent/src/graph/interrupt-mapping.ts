@@ -10,6 +10,11 @@ import {
   RELAY_SSH_TIMEOUT_REASON_MAX_BYTES,
   RELAY_SSH_TIMEOUT_REASON_MIN_BYTES,
 } from "@nautilo/relay";
+import {
+  canonicalProtectedTaskSemanticAuthorityRequirements,
+  protectedTaskSemanticAuthorityRequirementsDigest,
+  type ProtectedTaskSemanticAuthorityRequirements,
+} from "@nautilo/db";
 
 /**
  * Translate a LangGraph interrupt payload (from `graph.getState()` →
@@ -445,13 +450,86 @@ export type ProtectedTaskInterruptKind =
   | "approval"
   | "prove_it"
   | "identity"
-  | "await_reply";
+  | "await_reply"
+  | "additional_authority";
+
+export type ProtectedTaskAdditionalAuthorityInterruptCoordinate = Readonly<{
+  id: string;
+  kind: "additional_authority";
+  requestId: string;
+  effectDisposition: "not_started_v1";
+  operationId: string;
+  requestDigest: Uint8Array;
+  requiredAuthorityDigest: Uint8Array;
+  semanticAuthorityRequirements: ProtectedTaskSemanticAuthorityRequirements;
+}>;
 
 export type ProtectedTaskInterruptCoordinate = Readonly<{
   id: string;
-  kind: ProtectedTaskInterruptKind;
+  kind: Exclude<ProtectedTaskInterruptKind, "additional_authority">;
   requestId?: string;
-}>;
+}> | ProtectedTaskAdditionalAuthorityInterruptCoordinate;
+
+function protectedAdditionalAuthorityCoordinate(
+  id: string,
+  value: Record<string, unknown>,
+): ProtectedTaskAdditionalAuthorityInterruptCoordinate {
+  if (Object.keys(value).sort().join(",") !== [
+    "authorizationRequestId",
+    "effectDisposition",
+    "operationId",
+    "requestDigest",
+    "requiredAuthorityDigest",
+    "semanticAuthorityRequirements",
+    "type",
+  ].sort().join(",")) {
+    throw new TypeError(
+      "Protected Task additional authority interrupt is malformed",
+    );
+  }
+  const requestId = value["authorizationRequestId"];
+  const effectDisposition = value["effectDisposition"];
+  const operationId = value["operationId"];
+  const requestDigest = value["requestDigest"];
+  const requiredAuthorityDigest = value["requiredAuthorityDigest"];
+  const requirements = value["semanticAuthorityRequirements"];
+  if (typeof requestId !== "string" || requestId.trim().length === 0
+    || effectDisposition !== "not_started_v1"
+    || typeof operationId !== "string" || operationId.trim().length === 0
+    || !(requestDigest instanceof Uint8Array) || requestDigest.length !== 32
+    || !(requiredAuthorityDigest instanceof Uint8Array)
+    || requiredAuthorityDigest.length !== 32) {
+    throw new TypeError(
+      "Protected Task additional authority interrupt is malformed",
+    );
+  }
+  let semanticAuthorityRequirements: ProtectedTaskSemanticAuthorityRequirements;
+  try {
+    semanticAuthorityRequirements =
+      canonicalProtectedTaskSemanticAuthorityRequirements(requirements);
+    const digest = protectedTaskSemanticAuthorityRequirementsDigest(
+      semanticAuthorityRequirements,
+    );
+    const matches = digest.length === requiredAuthorityDigest.length
+      && digest.every((byte, index) => byte === requiredAuthorityDigest[index]);
+    digest.fill(0);
+    if (!matches) throw new TypeError("authority digest mismatch");
+  } catch {
+    throw new TypeError(
+      "Protected Task additional authority interrupt is malformed",
+    );
+  }
+  return Object.freeze({
+    id,
+    kind: "additional_authority" as const,
+    requestId,
+    effectDisposition,
+    operationId,
+    requestDigest: requestDigest.slice(),
+    requiredAuthorityDigest: requiredAuthorityDigest.slice(),
+    semanticAuthorityRequirements,
+  });
+}
 
 function protectedInterruptRequestId(
   value: Record<string, unknown>,
@@ -515,6 +593,8 @@ export function protectedTaskInterruptCoordinates(
         });
       } else if (type === "await_human_reply") {
         coordinate = Object.freeze({ id, kind: "await_reply" });
+      } else if (type === "protected_task_additional_authority") {
+        coordinate = protectedAdditionalAuthorityCoordinate(id, record);
       } else {
         throw new TypeError("Protected Task interrupt type is unsupported");
       }

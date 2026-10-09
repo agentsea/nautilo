@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 import {
   actors,
@@ -22,6 +22,8 @@ import {
   cryptoTypedDb,
   executeTypedCryptoQuery,
   withCurrentAcceptedTaskRuntimeAuthority,
+  withCurrentAcceptedTaskRuntimeClaimAuthority,
+  verifyCryptoPostgresHandle,
   type AcceptedTaskRuntimeAuthorizationV3,
   type ConversationProductCanonicalTransactionRunner,
   type CurrentTaskRuntimeAuthority,
@@ -29,7 +31,11 @@ import {
 } from "@nautilo/lattice-bridge/server";
 import {
   isCurrentProtectedTaskRunForGrant,
+  BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
+  PostgresBackgroundAuthorizationRepository,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
+  type BackgroundAuthorizationTaskRuntimeReplacementRepository,
+  type ProtectedTaskAuthorityOccurrence,
   type ProtectedTaskOccurrence,
 } from "@nautilo/runtime";
 
@@ -47,23 +53,48 @@ type CurrentRun = Pick<TaskRun,
   | "resultCryptoRequiredNamespaceFingerprint" | "resultCryptoMappingState"
 >;
 
-export type CurrentProtectedTaskRuntimeFacts = Readonly<{
+export type CurrentProtectedTaskRuntimeLifecycleFacts = Readonly<{
   task: CurrentTask;
   run: CurrentRun;
+  /** Content-free result of inspecting the locked Task's execution route. */
+  nativeExecutionSupported: boolean;
+}>;
+
+type CurrentRequesterPrivateRoomFacts = Readonly<{
   requesterPrivateRoom: Readonly<{roomId: string; namespaceId: string}> | null;
 }>;
 
-type LoadCurrentFacts = (input: Readonly<{
+export type CurrentProtectedTaskRuntimeFacts =
+  CurrentProtectedTaskRuntimeLifecycleFacts & CurrentRequesterPrivateRoomFacts;
+
+type LoadCurrentLifecycleFacts = (input: Readonly<{
   product: PostgresJsBridgeConnection;
-  occurrence: ProtectedTaskOccurrence;
-}>) => Promise<CurrentProtectedTaskRuntimeFacts | null>;
+  occurrence: ProtectedTaskAuthorityOccurrence;
+}>) => Promise<CurrentProtectedTaskRuntimeLifecycleFacts | null>;
+
+type LoadCurrentRequesterPrivateRoomFacts = (input: Readonly<{
+  product: PostgresJsBridgeConnection;
+  task: CurrentTask;
+}>) => Promise<CurrentRequesterPrivateRoomFacts | null>;
 
 type WithAcceptedAuthority = typeof withCurrentAcceptedTaskRuntimeAuthority;
+type WithAcceptedClaimAuthority =
+  typeof withCurrentAcceptedTaskRuntimeClaimAuthority;
 
 export type HeldProtectedTaskRuntimeAuthority = Readonly<{
   foreground: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
   namespaceRequirements: CurrentTaskRuntimeAuthority["namespaceRequirements"];
+  /** Absent on legacy/test adapters; native execution must treat absence as false. */
+  nativeExecutionSupported?: boolean;
 }>;
+
+const NATIVE_TASK_PRESETS: readonly Task["preset"][] = [
+  "task",
+  "in_scope",
+  "in_private_namespace",
+  "in_background",
+  "schedule",
+];
 
 export type CurrentProtectedTaskRuntimeAuthorityPort = <Value>(input: Readonly<{
   runner: ConversationProductCanonicalTransactionRunner;
@@ -71,7 +102,7 @@ export type CurrentProtectedTaskRuntimeAuthorityPort = <Value>(input: Readonly<{
   crypto: LatticeCrypto;
   serverScope: string;
   subject: TaskRuntimeAuthoritySubject;
-  occurrence: ProtectedTaskOccurrence;
+  occurrence: ProtectedTaskAuthorityOccurrence;
   record: BackgroundAuthorizationTaskRuntimeRecordV3;
   request: TaskRuntimeBackgroundAuthorizationRequestV1;
   now(): number;
@@ -79,12 +110,36 @@ export type CurrentProtectedTaskRuntimeAuthorityPort = <Value>(input: Readonly<{
   use(current: HeldProtectedTaskRuntimeAuthority): Value | Promise<Value>;
 }>) => Promise<Value | null>;
 
+export type CurrentProtectedTaskRuntimeClaimAuthorityPort = <Value>(
+  input: Readonly<{
+    runner: ConversationProductCanonicalTransactionRunner;
+    restricted: PostgresJsBridgeConnection;
+    crypto: LatticeCrypto;
+    serverScope: string;
+    subject: TaskRuntimeAuthoritySubject;
+    occurrence: ProtectedTaskOccurrence;
+    record: BackgroundAuthorizationTaskRuntimeRecordV3;
+    request: TaskRuntimeBackgroundAuthorizationRequestV1;
+    now(): number;
+    signal?: AbortSignal;
+    use(
+      current: HeldProtectedTaskRuntimeAuthority,
+      repository: Pick<
+        BackgroundAuthorizationTaskRuntimeReplacementRepository,
+        "compareAndSwap"
+      >,
+      claimedAt: number,
+      claimExpiresAt: number,
+    ): Value | Promise<Value>;
+  }>,
+) => Promise<Value | null>;
+
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length
     && left.every((value, index) => value === right[index]);
 }
 
-function acceptedRecord(
+export function acceptedTaskRuntimeRecord(
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): AcceptedTaskRuntimeAuthorizationV3 | null {
   const snapshot = record.snapshot;
@@ -123,7 +178,7 @@ function acceptedRecord(
   });
 }
 
-function destroyAcceptedRecord(
+export function destroyAcceptedTaskRuntimeRecord(
   accepted: AcceptedTaskRuntimeAuthorizationV3,
 ): void {
   accepted.descriptorBytes.fill(0);
@@ -131,8 +186,9 @@ function destroyAcceptedRecord(
   accepted.issuerSigningPublicKeyHash.fill(0);
 }
 
-function copyHeldAuthority(
+export function copyProtectedTaskRuntimeAuthority(
   authority: CurrentTaskRuntimeAuthority,
+  nativeExecutionSupported: boolean,
 ): HeldProtectedTaskRuntimeAuthority {
   const plan = authority.plan;
   return Object.freeze({
@@ -169,10 +225,11 @@ function copyHeldAuthority(
         operations: Object.freeze([...requirement.operations]),
       })),
     ),
+    nativeExecutionSupported,
   });
 }
 
-function destroyHeldAuthority(authority: HeldProtectedTaskRuntimeAuthority): void {
+export function destroyProtectedTaskRuntimeAuthority(authority: HeldProtectedTaskRuntimeAuthority): void {
   authority.foreground.committerDeviceSigningPublicKey.fill(0);
   for (const domain of authority.foreground.domains) {
     domain.participantDigest.fill(0);
@@ -181,10 +238,10 @@ function destroyHeldAuthority(authority: HeldProtectedTaskRuntimeAuthority): voi
   }
 }
 
-async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
+export async function loadCurrentProtectedTaskRuntimeLifecycleFacts(input: Readonly<{
   product: PostgresJsBridgeConnection;
-  occurrence: ProtectedTaskOccurrence;
-}>): Promise<CurrentProtectedTaskRuntimeFacts | null> {
+  occurrence: ProtectedTaskAuthorityOccurrence;
+}>): Promise<CurrentProtectedTaskRuntimeLifecycleFacts | null> {
   const taskRows = await executeTypedCryptoQuery(input.product, cryptoTypedDb.select({
     id: tasks.id,
     owner_id: tasks.ownerId,
@@ -201,6 +258,14 @@ async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
     crypto_required_namespace_fingerprint:
       tasks.cryptoRequiredNamespaceFingerprint,
     crypto_mapping_state: tasks.cryptoMappingState,
+    native_execution_supported: sql<boolean>`case
+      when jsonb_typeof(${tasks.metadata}) = 'object' then coalesce(
+        ${inArray(tasks.preset, NATIVE_TASK_PRESETS)}
+        and (${tasks.metadata} - 'preparation' - 'lastInterruption') = '{}'::jsonb,
+        false
+      )
+      else false
+    end`.as("native_execution_supported"),
   }).from(tasks).where(eq(tasks.id, input.occurrence.task.id))
     .limit(2).for("update"));
   if (taskRows.length !== 1) return null;
@@ -261,7 +326,21 @@ async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
         : Uint8Array.from(runRow.result_crypto_required_namespace_fingerprint),
     resultCryptoMappingState: runRow.result_crypto_mapping_state,
   };
-  let requesterPrivateRoom: CurrentProtectedTaskRuntimeFacts["requesterPrivateRoom"] = null;
+  return Object.freeze({
+    task: Object.freeze(task),
+    run: Object.freeze(run),
+    nativeExecutionSupported: taskRow.native_execution_supported === true,
+  });
+}
+
+export async function loadCurrentProtectedTaskRuntimeRequesterRoomFacts(
+  input: Readonly<{
+    product: PostgresJsBridgeConnection;
+    task: CurrentTask;
+  }>,
+): Promise<CurrentRequesterPrivateRoomFacts | null> {
+  const { task } = input;
+  let requesterPrivateRoom: CurrentRequesterPrivateRoomFacts["requesterPrivateRoom"] = null;
   if (task.contentNamespaceId !== null) {
     const humanRows = await executeTypedCryptoQuery(input.product,
       cryptoTypedDb.select({actor_id: actors.id}).from(actors).where(and(
@@ -297,25 +376,121 @@ async function loadCurrentProtectedTaskRuntimeFacts(input: Readonly<{
       namespaceId: room.namespace_id,
     });
   }
-  return Object.freeze({task: Object.freeze(task), run: Object.freeze(run), requesterPrivateRoom});
+  return Object.freeze({ requesterPrivateRoom });
+}
+
+type CurrentAuthorityInput = Omit<Parameters<
+  CurrentProtectedTaskRuntimeAuthorityPort
+>[0], "use">;
+
+type CurrentAuthorityDependencies = Readonly<{
+  loadCurrentLifecycleFacts?: LoadCurrentLifecycleFacts;
+  loadCurrentRequesterPrivateRoomFacts?: LoadCurrentRequesterPrivateRoomFacts;
+  withAcceptedAuthority?: WithAcceptedAuthority;
+  withAcceptedClaimAuthority?: WithAcceptedClaimAuthority;
+}>;
+
+async function withLockedCurrentProtectedTaskRuntimeAuthority<Value>(
+  input: CurrentAuthorityInput,
+  phase: "awaiting" | "running",
+  dependencies: CurrentAuthorityDependencies,
+  use: (
+    authority: CurrentTaskRuntimeAuthority,
+    facts: CurrentProtectedTaskRuntimeLifecycleFacts,
+    restricted: PostgresJsBridgeConnection,
+  ) => Value | Promise<Value>,
+  validateBeforeCommit?: () => void | Promise<void>,
+): Promise<Value | null> {
+  const accepted = acceptedTaskRuntimeRecord(input.record);
+  if (accepted === null || input.record.descriptorBytes === null) return null;
+  let requestBytes: Uint8Array;
+  try {
+    requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
+      input.request,
+    );
+  } catch {
+    destroyAcceptedTaskRuntimeRecord(accepted);
+    return null;
+  }
+  const exactRequest = sameBytes(requestBytes, input.record.descriptorBytes);
+  requestBytes.fill(0);
+  if (!exactRequest) {
+    destroyAcceptedTaskRuntimeRecord(accepted);
+    return null;
+  }
+  const loadLifecycle = dependencies.loadCurrentLifecycleFacts
+    ?? loadCurrentProtectedTaskRuntimeLifecycleFacts;
+  const loadRequesterRoom = dependencies.loadCurrentRequesterPrivateRoomFacts
+    ?? loadCurrentProtectedTaskRuntimeRequesterRoomFacts;
+  let lifecycle: CurrentProtectedTaskRuntimeLifecycleFacts | null = null;
+  const validateCurrentProduct = async (
+    product: PostgresJsBridgeConnection,
+  ): Promise<boolean> => {
+    lifecycle = await loadLifecycle({
+      product,
+      occurrence: input.occurrence,
+    });
+    return lifecycle !== null;
+  };
+  const useCurrent = async (
+    authority: CurrentTaskRuntimeAuthority,
+    product: PostgresJsBridgeConnection,
+    restricted: PostgresJsBridgeConnection,
+  ): Promise<Value | null> => {
+    if (lifecycle === null) return null;
+    const room = await loadRequesterRoom({
+      product,
+      task: lifecycle.task,
+    });
+    if (room === null || !isCurrentProtectedTaskRunForGrant({
+      occurrence: input.occurrence,
+      task: lifecycle.task,
+      run: lifecycle.run,
+      requestorUserId: input.subject.userId,
+      requestWorkId: input.request.workId,
+      sourceRoomId: input.request.sourceRoomId,
+      requesterPrivateRoom: room.requesterPrivateRoom,
+      phase,
+    })) return null;
+    return use(authority, lifecycle, restricted);
+  };
+  try {
+    const ownerInput = {
+      runner: input.runner,
+      restricted: input.restricted,
+      crypto: input.crypto,
+      serverScope: input.serverScope,
+      subject: input.subject,
+      accepted,
+      now: input.now,
+      ...(input.signal === undefined ? {} : {signal: input.signal}),
+      validateCurrentProduct,
+      use: useCurrent,
+    };
+    if (validateBeforeCommit !== undefined) {
+      const withAcceptedClaimAuthority =
+        dependencies.withAcceptedClaimAuthority
+        ?? withCurrentAcceptedTaskRuntimeClaimAuthority;
+      return await withAcceptedClaimAuthority({
+        ...ownerInput,
+        validateBeforeCommit,
+      });
+    }
+    const withAcceptedAuthority = dependencies.withAcceptedAuthority
+      ?? withCurrentAcceptedTaskRuntimeAuthority;
+    return await withAcceptedAuthority(ownerInput);
+  } finally {
+    destroyAcceptedTaskRuntimeRecord(accepted);
+  }
 }
 
 /**
- * Revalidates an accepted Task grant before claim or while running, then
- * releases every database lock before exposing the public authority snapshot.
- * Recipient binding is a separate awaiting-phase owner and cannot use this
- * accepted-execution boundary before a signed response exists.
+ * Revalidates an accepted Task grant, copies its public authority, and releases
+ * every database lock before the execution callback begins.
  */
 export function createCurrentProtectedTaskRuntimeAuthorityPort(
-  dependencies: Readonly<{
-    loadCurrentFacts?: LoadCurrentFacts;
-    withAcceptedAuthority?: WithAcceptedAuthority;
-  }> = {},
+  dependencies: CurrentAuthorityDependencies = {},
 ): CurrentProtectedTaskRuntimeAuthorityPort {
-  const loadCurrentFacts = dependencies.loadCurrentFacts
-    ?? loadCurrentProtectedTaskRuntimeFacts;
-  const withAcceptedAuthority = dependencies.withAcceptedAuthority
-    ?? withCurrentAcceptedTaskRuntimeAuthority;
   return async input => {
     const phase = input.record.snapshot.state === "grant_ready"
       ? "awaiting" as const
@@ -323,61 +498,89 @@ export function createCurrentProtectedTaskRuntimeAuthorityPort(
         || input.record.snapshot.state === "running"
         ? "running" as const : null;
     if (phase === null) return null;
-    const accepted = acceptedRecord(input.record);
-    if (accepted === null || input.record.descriptorBytes === null) return null;
-    let requestBytes: Uint8Array;
-    try {
-      requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
-        input.request,
-      );
-    } catch {
-      destroyAcceptedRecord(accepted);
-      return null;
-    }
-    const exactRequest = sameBytes(requestBytes, input.record.descriptorBytes);
-    requestBytes.fill(0);
-    if (!exactRequest) {
-      destroyAcceptedRecord(accepted);
-      return null;
-    }
-    let held: HeldProtectedTaskRuntimeAuthority | null;
-    try {
-      held = await withAcceptedAuthority({
-        runner: input.runner,
-        restricted: input.restricted,
-        crypto: input.crypto,
-        serverScope: input.serverScope,
-        subject: input.subject,
-        accepted,
-        now: input.now,
-        ...(input.signal === undefined ? {} : {signal: input.signal}),
-        use: async (authority, product) => {
-          const facts = await loadCurrentFacts({
-            product,
-            occurrence: input.occurrence,
-          });
-          if (facts === null || !isCurrentProtectedTaskRunForGrant({
-            occurrence: input.occurrence,
-            task: facts.task,
-            run: facts.run,
-            requestorUserId: input.subject.userId,
-            requestWorkId: input.request.workId,
-            sourceRoomId: input.request.sourceRoomId,
-            requesterPrivateRoom: facts.requesterPrivateRoom,
-            phase,
-          })) return null;
-          return copyHeldAuthority(authority);
-        },
-      });
-    } finally {
-      destroyAcceptedRecord(accepted);
-    }
+    const held = await withLockedCurrentProtectedTaskRuntimeAuthority(
+      input,
+      phase,
+      dependencies,
+      (authority, facts) =>
+        copyProtectedTaskRuntimeAuthority(authority, facts.nativeExecutionSupported),
+    );
     if (held === null) return null;
     try {
       input.signal?.throwIfAborted();
       return await input.use(held);
     } finally {
-      destroyHeldAuthority(held);
+      destroyProtectedTaskRuntimeAuthority(held);
     }
+  };
+}
+
+/** Claim-only owner. The CAS repository and authority expire with its callback. */
+export function createCurrentProtectedTaskRuntimeClaimAuthorityPort(
+  dependencies: CurrentAuthorityDependencies & Readonly<{
+    repository?(restricted: PostgresJsBridgeConnection): Promise<Pick<
+      BackgroundAuthorizationTaskRuntimeReplacementRepository,
+      "compareAndSwap"
+    >>;
+  }> = {},
+): CurrentProtectedTaskRuntimeClaimAuthorityPort {
+  const repository = dependencies.repository ?? (async restricted =>
+    new PostgresBackgroundAuthorizationRepository(
+      await verifyCryptoPostgresHandle(restricted),
+    ));
+  return async input => {
+    if (input.record.snapshot.state !== "grant_ready"
+      || input.occurrence.run.status !== "awaiting"
+      || input.occurrence.run.jobId !== null) return null;
+    let claimExpiresAt: number | null = null;
+    return withLockedCurrentProtectedTaskRuntimeAuthority(
+      input,
+      "awaiting",
+      dependencies,
+      async (authority, facts, restricted) => {
+        const scopedRepository = await repository(restricted);
+        const claimedAt = input.now();
+        const recipient = input.record.snapshot.recipient;
+        const material = input.record.acceptedMaterial;
+        if (!Number.isSafeInteger(claimedAt)
+          || claimedAt < input.request.issuedAt
+          || recipient === null
+          || material === null
+          || claimedAt >= input.request.deadlineAt
+          || claimedAt >= recipient.expiresAt
+          || claimedAt >= material.authorizationExpiresAt) return null;
+        claimExpiresAt = Math.min(
+          input.request.deadlineAt,
+          recipient.expiresAt,
+          material.authorizationExpiresAt,
+          claimedAt + BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
+        );
+        const held = copyProtectedTaskRuntimeAuthority(
+          authority,
+          facts.nativeExecutionSupported,
+        );
+        try {
+          const value = await input.use(
+            held,
+            scopedRepository,
+            claimedAt,
+            claimExpiresAt,
+          );
+          return value;
+        } finally {
+          destroyProtectedTaskRuntimeAuthority(held);
+        }
+      },
+      () => {
+        if (claimExpiresAt === null) return;
+        const finishedAt = input.now();
+        if (!Number.isSafeInteger(finishedAt)
+          || finishedAt >= claimExpiresAt) {
+          throw new Error(
+            "Task Runtime claim authority expired before commit",
+          );
+        }
+      },
+    );
   };
 }

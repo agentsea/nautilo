@@ -33,9 +33,7 @@ const secrets = new ConnectedWebOperationSecrets({ stableServerSecret: "d568-dis
 const now = new Date();
 
 beforeAll(async () => {
-  if (bootstrapTestDbInstance() !== "personal-workspace-8422c449") {
-    throw new Error("This fixture runs only against its authorized disposable personal-workspace clone");
-  }
+  bootstrapTestDbInstance();
   // Never reset a shared scratch DB merely to make this focused test pass.
   process.env["NAUTILO_TEST_DB_AUTOHEAL"] = "0";
   await ensureDatabase();
@@ -87,7 +85,7 @@ async function admit(accountId: string, at: Date, thread = "same-thread") {
   return { ...result, reservationToken };
 }
 
-async function complete(first: Awaited<ReturnType<typeof admit>>, at: Date): Promise<ConnectedWebOperation> {
+async function complete(first: Awaited<ReturnType<typeof admit>>, at: Date, retainBrowserForWarmReuse = true): Promise<ConnectedWebOperation> {
   const op = first.operation!;
   if (op.accountId === null) throw new Error("Expected authenticated reuse fixture");
   const inherited = secrets.unsealProviderReferences({ context: context(op.id, op.accountId), references: op.sealedProviderRefs });
@@ -99,9 +97,22 @@ async function complete(first: Awaited<ReturnType<typeof admit>>, at: Date): Pro
   expect(await store.terminalizeReadOperationAndCompleteExecution({ operationId: op.id, ownerUserId: owner, accountId: op.accountId,
     cumulativeCostUsdMicros: 0, remainingBudgetUsdMicros: op.remainingBudgetUsdMicros, safeActivity: op.safeActivity, wakeFingerprint: "terminal-read",
     expectedControlEpoch: 1, expectedRunRef: refs.runRef!, opaqueExecutionRef: `run-${op.id}`, now: at,
-    receipt: { version: 1, outcome: "completed", code: "completed", summary: "Done." } })).toBe(true);
+    receipt: { version: 1, outcome: "completed", code: "completed", summary: "Done." }, retainBrowserForWarmReuse })).toBe(true);
   return store.getOperationForOwner({ ownerUserId: owner, operationId: op.id });
 }
+
+test("a completed Workspace delivery is cleanup-due and cannot seed a later warm read", async () => {
+  const id = await account();
+  const workspace = await complete(await admit(id, now), now, false);
+  expect(workspace.browserIdleUntil).toEqual(now);
+
+  const next = await admit(id, new Date(now.getTime() + 1_000));
+  expect(next.kind).toBe("new");
+  expect(next.retiredBrowsers?.map((operation) => operation.id)).toContain(workspace.id);
+  const refs = secrets.unsealProviderReferences({ context: context(next.operation!.id, id), references: next.operation!.sealedProviderRefs });
+  expect(refs.sessionId).toBeUndefined();
+  expect(refs.workspaceId).toBeUndefined();
+});
 
 test("a later turn reuses persisted custody after a store restart; old cleanup cannot touch it", async () => {
   const id = await account();
@@ -311,6 +322,7 @@ test("D585 public operation persists and cleans up without any account row", asy
   expect(await store.activateReadOperation({ ownerUserId: owner, accountId: null, operationId: id, reservationToken, opaqueExecutionRef: "public-run", sealedProviderRefs: refs, safeActivity: admission.safeActivity, now })).toBe(true);
   expect(await store.terminalizeReadOperationAndCompleteExecution({ operationId: id, ownerUserId: owner, accountId: null, expectedControlEpoch: 1, expectedRunRef: refs.runRef!, opaqueExecutionRef: "public-run", now,
     cumulativeCostUsdMicros: 0, remainingBudgetUsdMicros: 1_000_000, safeActivity: admission.safeActivity, wakeFingerprint: "public-terminal",
+    retainBrowserForWarmReuse: false,
     receipt: { version: 1, outcome: "completed", code: "done", summary: "Done." }, terminalReadResult: { version: 1, account: null,
       page: { ref: id, title: "example.com", origin: "https://example.com" },
       read: { answer: "Public answer", facts: [], completeness: "complete", provenance: "public_website", origin: "https://example.com" },

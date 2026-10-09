@@ -190,3 +190,11 @@ test("known-zero cancellation requires a pre-dispatch phase and exact live lease
     operationKey: row.operationKey, providerJobId: "late-job", submissionLeaseId: leaseId,
   })).toBeNull();
 });
+
+test("rejects format values outside the persisted 32-character bound before insert", async () => {
+  const invalid = input();
+  await Promise.resolve(expect(createConversionOperationWith(db, {
+    ...invalid,
+    outputFormat: "x".repeat(33),
+  })).rejects.toThrow("Invalid conversion output format"));
+});

@@ -14,6 +14,7 @@ import {
   findConversionsByTag,
   getCloudConvertConfig,
   getConversionWithClient,
+  isCloudConvertFormatToken,
   submitConversionWithClient,
   waitForConversionWithClient,
   type CloudConvertClient,
@@ -418,7 +419,8 @@ function executionRequestMatches(row: ConversionOperation, request: CloudConvers
     && row.destinationPathDigest === request.destination.pathDigest
     && row.destinationAuthorityDigest === request.destination.authorityDigest
     && row.inputFormat === request.inputFormat
-    && row.outputFormat === request.outputFormat;
+    && row.outputFormat === request.outputFormat
+    && row.maxOutputBytes === request.maxOutputBytes;
 }
 
 function executionConflict(row: ConversionOperation): CloudConversionExecutionResult {
@@ -480,6 +482,30 @@ export function createCloudConversionRuntime(
     measuredUnits: 0,
     unitType: "cloudconvert_credit",
   });
+
+  const settleCancelledBeforeDispatchIfPresent = async (
+    row: ConversionOperation,
+  ): Promise<CloudConversionExecutionResult | null> => {
+    try {
+      // Settlement updates a pre-dispatch attempt in place and fails when no
+      // such attempt exists. A prepared receipt may have crashed on either side
+      // of cost admission, so cancellation must remain successful in both cases.
+      await settleCancelledBeforeDispatch(row);
+      return null;
+    } catch (error) {
+      if (error instanceof Error
+        && error.message === "Provider cost attempt settlement conflicts with durable state") {
+        // No matching pre-dispatch attempt exists; settlement never inserts one.
+        return null;
+      }
+      return publicError(
+        "conversion_cancel_cost_settlement_pending",
+        `The conversion was cancelled before CloudConvert dispatch, but its cost receipt could not be settled yet. Cancel ${row.recoveryHandle} again to retry; no provider job was created.`,
+        row,
+        { retryable: true, uncertainEffect: true },
+      );
+    }
+  };
 
   const cancelledBeforeDispatchResult = (row?: ConversionOperation): CloudConversionExecutionResult => publicError(
     "conversion_cancelled",
@@ -569,7 +595,6 @@ export function createCloudConversionRuntime(
 
   const downloadAndClaim = async (
     row: ConversionOperation,
-    maxOutputBytes: number,
     signal?: AbortSignal,
   ): Promise<CloudConversionExecutionResult> => {
     const publicationAlreadyClaimed = row.status === "publication_committing";
@@ -614,7 +639,7 @@ export function createCloudConversionRuntime(
     let result;
     try {
       result = await withProvider(row, "recover", (client) =>
-        downloadConversionWithClient(client, providerJob, row.providerTag, maxOutputBytes, signal));
+        downloadConversionWithClient(client, providerJob, row.providerTag, row.maxOutputBytes, signal));
     } catch (error) {
       const expired = error instanceof Error && error.message === "No export URLs returned from conversion";
       if (expired) {
@@ -748,7 +773,7 @@ export function createCloudConversionRuntime(
     if (row.status === "publication_committing" && !afterPublicationRecovery) {
       return rowResult(row)!;
     }
-    return downloadAndClaim(row, request.maxOutputBytes, request.signal);
+    return downloadAndClaim(row, request.signal);
   };
 
   const execute = async (request: CloudConversionExecutionRequest): Promise<CloudConversionExecutionResult> => {
@@ -760,6 +785,8 @@ export function createCloudConversionRuntime(
       !validateDigest(request.source.authorityDigest) ||
       !validateDigest(request.destination.pathDigest) ||
       !validateDigest(request.destination.authorityDigest) ||
+      !isCloudConvertFormatToken(request.inputFormat) ||
+      !isCloudConvertFormatToken(request.outputFormat) ||
       !Number.isSafeInteger(request.maxOutputBytes) || request.maxOutputBytes <= 0 ||
       createHash("sha256").update(request.bytes).digest("hex") !== request.source.sha256
     ) {
@@ -1003,7 +1030,7 @@ export function createCloudConversionRuntime(
             const current = await store.getByKey(submittingRow.operationKey) ?? outcome.row;
             return cancellationPendingResult(current);
           }
-          const result = await downloadAndClaim(outcome.row, request.maxOutputBytes, request.signal);
+          const result = await downloadAndClaim(outcome.row, request.signal);
           if (request.signal?.aborted) {
             await persistAbort();
             const current = await store.getByKey(submittingRow.operationKey) ?? outcome.row;
@@ -1160,7 +1187,50 @@ export function createCloudConversionRuntime(
         );
       }
       const terminal = rowResult(row);
+      if (row.status === "cancelled" && row.failureCode === "cancelled_before_provider_dispatch") {
+        const settlementPending = await settleCancelledBeforeDispatchIfPresent(row);
+        return settlementPending ?? cancelledBeforeDispatchResult(row);
+      }
       if (terminal) return terminal;
+      if (row.status === "prepared") {
+        const cancelled = await store.cancelBeforeDispatch({
+          operationKey: row.operationKey,
+          phase: "prepared",
+        });
+        if (cancelled) {
+          const settlementPending = await settleCancelledBeforeDispatchIfPresent(cancelled);
+          return settlementPending ?? cancelledBeforeDispatchResult(cancelled);
+        }
+        const current = await store.getByKey(row.operationKey);
+        if (!current) {
+          return publicError(
+            "conversion_cancel_unknown",
+            `Cancellation could not resolve the durable state for ${row.recoveryHandle}. No new provider request was sent.`,
+            row,
+            { retryable: true, uncertainEffect: true },
+          );
+        }
+        row = current;
+        if ([
+          "provider_finished",
+          "ready_to_publish",
+          "publication_committing",
+          "published",
+          "publication_failed",
+        ].includes(row.status)) {
+          return publicError(
+            "conversion_already_completed",
+            `The provider conversion has already completed and cannot be cancelled. Resume ${row.recoveryHandle} from the original Room to recover its publication.`,
+            row,
+          );
+        }
+        if (row.status === "cancelled" && row.failureCode === "cancelled_before_provider_dispatch") {
+          const settlementPending = await settleCancelledBeforeDispatchIfPresent(row);
+          return settlementPending ?? cancelledBeforeDispatchResult(row);
+        }
+        const racedTerminal = rowResult(row);
+        if (racedTerminal) return racedTerminal;
+      }
       row = await store.requestCancel(row.operationKey) ?? row;
       if (row.status === "submitting") {
         const expired = await store.expireSubmissionLease({ operationKey: row.operationKey, now: new Date() });

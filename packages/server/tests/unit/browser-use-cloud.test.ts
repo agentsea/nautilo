@@ -565,6 +565,23 @@ describe("BrowserUseCloudAdapter hosted V4 read runs", () => {
     expect(JSON.stringify(collected)).not.toContain("workspace-private-id");
   });
 
+  test("falls back to a bounded safe MIME when the provider media type exceeds the terminal contract", async () => {
+    const provider = adapter([
+      jsonResponse({ files: [{ path: "report.bin", size: 1, url: "https://storage.example/workspace?sig=private" }], hasMore: false }),
+      jsonResponse({ files: [], hasMore: false }),
+      new Response(new Uint8Array([1]), { headers: { "content-type": `application/${"x".repeat(128)}` } }),
+    ]);
+
+    expect(await provider.collectHostedReadOutputs({
+      workspaceId: "workspace-private-id",
+      sessionId: "session-private-id",
+      maxOutputs: 1,
+    })).toMatchObject({
+      truncated: false,
+      outputs: [{ mimeType: "application/octet-stream", bytes: new Uint8Array([1]) }],
+    });
+  });
+
   test("fails closed on malformed output lists before fetching a provider URL", async () => {
     const seen: Array<{ readonly url: string; readonly init: RequestInit }> = [];
     const provider = adapter([

@@ -5,10 +5,12 @@ export { encodeMemoryListCursor, decodeMemoryListCursor } from "@nautilo/types";
 import * as dbModule from "@nautilo/db";
 import {
   agentDb as db,
+  agentScopes,
   memories,
   memoryCryptoOperations,
   memoryCryptoRevisions,
   memoryNamespaces,
+  memoryScopes,
   memoryEmbeddingValues,
   memoryEmbeddingCompatibilityCondition,
   eq,
@@ -770,12 +772,19 @@ export async function saveMemoryWithDb(
     embedding: EmbeddingWithProvenanceV1;
     id?: string;
     expectedDedupId?: string | null;
+    expectedNamespaceIds?: readonly string[];
   },
 ): Promise<{ id: string; action: "created" | "updated"; similarity?: number }> {
   const { type, content, namespaceId } = opts;
   const importance = opts.importance ?? DEFAULT_IMPORTANCE[type] ?? 0.6;
   const embedding = prepared?.embedding ?? (await embedTextWithProvenance(content));
-  const top = await findMemorySaveTargetWithDb(handle, opts, embedding);
+  const top = await findMemorySaveTargetWithDb(
+    handle,
+    opts,
+    embedding,
+    [],
+    prepared?.expectedNamespaceIds,
+  );
   if (top) {
     if (
       prepared &&
@@ -825,6 +834,12 @@ export type ForegroundMemoryOrdinaryFallbackInput = Readonly<{
   content: string;
   importance: number;
   namespaceId?: string;
+  expectedNamespaceIds?: readonly string[];
+  scope?: Readonly<{
+    subjectUserId: string;
+    scopeId: string;
+    originWritableNamespaceId: string;
+  }>;
   expectedDedupId?: string | null;
   embedding: readonly number[];
   embeddingProvider: "openai" | "openrouter" | "venice";
@@ -863,6 +878,57 @@ export async function commitForegroundMemoryOrdinaryFallback(
     contractVersion: input.embeddingContractVersion,
   };
   const finalEmbeddingValues = memoryEmbeddingValues(preparedEmbedding, input.resultContentRevision);
+  if (input.scope !== undefined
+    && (input.namespaceId !== undefined
+      || input.expectedNamespaceIds !== undefined)) {
+    throw new TypeError("Memory fallback target is ambiguous");
+  }
+  if (input.expectedNamespaceIds !== undefined) {
+    if (input.expectedNamespaceIds.length === 0
+      || input.expectedNamespaceIds.some((id, index, ids) =>
+        index > 0 && ids[index - 1]! >= id)) {
+      throw new TypeError("Memory fallback Namespace audience is invalid");
+    }
+    const createsNamespaceMemory = input.action === "save"
+      && (input.expectedDedupId ?? null) === null;
+    if (createsNamespaceMemory) {
+      if (input.expectedContentRevision !== 0
+        || input.namespaceId === undefined
+        || input.expectedNamespaceIds.length !== 1
+        || input.expectedNamespaceIds[0] !== input.namespaceId) {
+        throw new TypeError("Memory fallback creation audience is invalid");
+      }
+    } else {
+      const audience = await handle
+        .select({ namespaceId: memoryNamespaces.namespaceId })
+        .from(memories)
+        .innerJoin(memoryNamespaces, eq(memoryNamespaces.memoryId, memories.id))
+        .where(eq(memories.id, input.memoryId))
+        .orderBy(memoryNamespaces.namespaceId)
+        .for("update", { of: [memories, memoryNamespaces] });
+      if (audience.length !== input.expectedNamespaceIds.length
+        || audience.some((row, index) =>
+          row.namespaceId !== input.expectedNamespaceIds![index])) {
+        throw new MemoryMutationAuthorityError("source_changed");
+      }
+    }
+  }
+  if (input.scope !== undefined) {
+    const scopeRows = await handle
+      .select({ lifecycleState: agentScopes.lifecycleState })
+      .from(agentScopes)
+      .where(and(
+        eq(agentScopes.id, input.scope.scopeId),
+        eq(agentScopes.parentAgentId, input.agentId),
+        eq(agentScopes.speakerUserId, input.scope.subjectUserId),
+      ))
+      .limit(2)
+      .for("update");
+    if (scopeRows.length !== 1
+      || scopeRows[0]?.lifecycleState !== "open") {
+      throw new MemoryMutationAuthorityError("memory_unavailable");
+    }
+  }
   let result: Readonly<{
     id: string;
     action: "created" | "updated";
@@ -871,31 +937,140 @@ export async function commitForegroundMemoryOrdinaryFallback(
   if (input.action === "save") {
     if (input.type === undefined)
       throw new TypeError("Memory fallback save type is missing");
-    result = await saveMemoryWithDb(
-      handle,
-      {
-        agentId: input.agentId,
-        type: input.type,
-        content: input.content,
-        importance: input.importance,
-        ...(input.namespaceId === undefined
-          ? {}
-          : { namespaceId: input.namespaceId }),
-      },
-      {
-        embedding: preparedEmbedding,
-        id: input.memoryId,
-        expectedDedupId: input.expectedDedupId ?? null,
-      },
-    );
+    if (input.scope === undefined) {
+      try {
+        result = await saveMemoryWithDb(
+          handle,
+          {
+            agentId: input.agentId,
+            type: input.type,
+            content: input.content,
+            importance: input.importance,
+            ...(input.namespaceId === undefined
+              ? {}
+              : { namespaceId: input.namespaceId }),
+          },
+          {
+            embedding: preparedEmbedding,
+            id: input.memoryId,
+            expectedDedupId: input.expectedDedupId ?? null,
+            ...(input.expectedNamespaceIds === undefined
+              ? {}
+              : { expectedNamespaceIds: input.expectedNamespaceIds }),
+          },
+        );
+      } catch (error) {
+        if (error instanceof Error && error.message === "memory_dedup_changed") {
+          throw new MemoryMutationAuthorityError("source_changed");
+        }
+        throw error;
+      }
+    } else {
+      const distance = sql<number>`${memories.embedding} <=> ${vectorLiteral(
+        preparedEmbedding.vector,
+      )}::vector`;
+      const candidates = await handle
+        .select({
+          id: memories.id,
+          similarity: sql<number>`1 - (${distance})`,
+        })
+        .from(memories)
+        .innerJoin(memoryScopes, eq(memoryScopes.memoryId, memories.id))
+        .where(and(
+          eq(memoryScopes.scopeId, input.scope.scopeId),
+          eq(memoryScopes.origin, "scope"),
+          eq(
+            memories.scopeOriginNamespaceId,
+            input.scope.originWritableNamespaceId,
+          ),
+          memoryEmbeddingCompatibilityCondition(preparedEmbedding),
+          lt(memories.tier, 3),
+        ))
+        .orderBy(distance, memories.id)
+        .limit(1)
+        .for("update", { of: [memories, memoryScopes] });
+      const candidate = candidates[0];
+      const selected = candidate !== undefined
+        && candidate.similarity
+          >= fromRuntimeConfig().nautilo_memory_dedup_similarity_threshold
+        ? candidate : null;
+      if ((input.expectedDedupId ?? null) !== (selected?.id ?? null)) {
+        throw new MemoryMutationAuthorityError("source_changed");
+      }
+      if (selected === null) {
+        await handle.insert(memories).values({
+          id: input.memoryId,
+          tier: 1,
+          type: input.type,
+          content: input.content,
+          importance: input.importance,
+          scopeOriginNamespaceId: input.scope.originWritableNamespaceId,
+          ...memoryEmbeddingValues(preparedEmbedding, 0),
+        });
+        await handle.insert(memoryScopes).values({
+          memoryId: input.memoryId,
+          scopeId: input.scope.scopeId,
+          origin: "scope",
+        });
+        result = Object.freeze({
+          id: input.memoryId,
+          action: "created" as const,
+        });
+      } else {
+        await handle.update(memories).set({
+          content: input.content,
+          type: input.type,
+          importance: input.importance,
+          ...memoryEmbeddingValues(
+            preparedEmbedding,
+            sql`${memories.contentRevision}`,
+          ),
+          updatedAt: new Date(),
+        }).where(eq(memories.id, selected.id));
+        result = Object.freeze({
+          id: selected.id,
+          action: "updated" as const,
+          similarity: selected.similarity,
+        });
+      }
+    }
   } else {
-    await replaceMemoryWithDb(
-      handle,
-      input.memoryId,
-      input.content,
-      undefined,
-      preparedEmbedding,
-    );
+    if (input.scope === undefined) {
+      await replaceMemoryWithDb(
+        handle,
+        input.memoryId,
+        input.content,
+        undefined,
+        preparedEmbedding,
+      );
+    } else {
+      const scopeOrigins = await handle
+        .select({ origin: memoryScopes.origin })
+        .from(memoryScopes)
+        .innerJoin(memories, eq(memories.id, memoryScopes.memoryId))
+        .where(and(
+          eq(memoryScopes.memoryId, input.memoryId),
+          eq(memoryScopes.scopeId, input.scope.scopeId),
+          eq(memoryScopes.origin, "scope"),
+          eq(
+            memories.scopeOriginNamespaceId,
+            input.scope.originWritableNamespaceId,
+          ),
+        ))
+        .limit(2)
+        .for("update", { of: [memories, memoryScopes] });
+      if (scopeOrigins.length !== 1) {
+        throw new MemoryMutationAuthorityError("memory_unavailable");
+      }
+      await handle.update(memories).set({
+        content: input.content,
+        ...memoryEmbeddingValues(
+          preparedEmbedding,
+          sql`${memories.contentRevision}`,
+        ),
+        updatedAt: new Date(),
+      }).where(eq(memories.id, input.memoryId));
+    }
     result = Object.freeze({ id: input.memoryId, action: "updated" as const });
   }
   if (result.id !== input.memoryId)
@@ -924,6 +1099,12 @@ export async function commitForegroundMemoryOrdinaryFallback(
           : eq(
               memories.cryptoRequiredNamespaceFingerprint,
               input.expectedRequiredNamespaceFingerprint,
+            ),
+        input.scope === undefined
+          ? undefined
+          : eq(
+              memories.scopeOriginNamespaceId,
+              input.scope.originWritableNamespaceId,
             ),
       ),
     )
@@ -2110,13 +2291,17 @@ async function findMemorySaveTargetWithDb(
   opts: SaveMemoryOptions,
   embedding: EmbeddingWithProvenanceV1,
   excludeMemoryIds: string[] = [],
+  expectedNamespaceIds?: readonly string[],
 ): Promise<MemoryResult | null> {
+  const searchNamespaceIds = expectedNamespaceIds === undefined
+    ? opts.namespaceId ? [opts.namespaceId] : []
+    : [...expectedNamespaceIds];
   const rows = await searchByVector(
     handle,
     embedding,
     1,
     false,
-    opts.namespaceId ? [opts.namespaceId] : [],
+    searchNamespaceIds,
     opts.agentId,
     excludeMemoryIds,
   );
@@ -2126,7 +2311,14 @@ async function findMemorySaveTargetWithDb(
     top.score < fromRuntimeConfig().nautilo_memory_dedup_similarity_threshold
   )
     return null;
-  if (opts.namespaceId) {
+  if (expectedNamespaceIds !== undefined) {
+    const namespaces = (await getMemoryNamespacesWithDb(handle, top.id))
+      .sort((left, right) => left.localeCompare(right));
+    if (namespaces.length !== expectedNamespaceIds.length
+      || namespaces.some((id, index) => id !== expectedNamespaceIds[index])) {
+      return null;
+    }
+  } else if (opts.namespaceId) {
     const namespaces = await getMemoryNamespacesWithDb(handle, top.id);
     try {
       assertNamespaceWriteAccess(namespaces, [opts.namespaceId], top.id);

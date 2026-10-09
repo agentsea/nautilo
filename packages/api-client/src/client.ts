@@ -2022,6 +2022,10 @@ export interface PublicJoinSelection {
   joinUrl: string;
 }
 
+export interface PublicJoinAvailability {
+  available: boolean;
+}
+
 export interface InvitePage {
   returned: number;
   complete: boolean;
@@ -2091,6 +2095,10 @@ const publicJoinSelectionSchema = z.object({
   inviteId: z.string().nullable(),
   revision: z.number().int().nonnegative(),
   joinUrl: z.string().url(),
+}).strict();
+
+const publicJoinAvailabilitySchema = z.object({
+  available: z.boolean(),
 }).strict();
 
 const invitePageSchema = z.object({
@@ -11524,6 +11532,15 @@ export class NautiloApiClient {
       path: "/api/admin/public-join",
       schema: publicJoinSelectionSchema,
       defaultErrorPrefix: "GET /api/admin/public-join",
+    });
+  }
+
+  async getPublicJoinAvailability(): Promise<PublicJoinAvailability> {
+    return this.request<PublicJoinAvailability>({
+      path: "/api/public-join",
+      auth: "none",
+      schema: publicJoinAvailabilitySchema,
+      defaultErrorPrefix: "GET /api/public-join",
     });
   }
 

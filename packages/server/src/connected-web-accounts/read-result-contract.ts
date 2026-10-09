@@ -1,4 +1,7 @@
-import { connectedWebOperationTerminalReadResultSchema } from "@nautilo/types";
+import {
+  CONNECTED_WEB_OUTPUT_MIME_MAX_CHARS,
+  connectedWebOperationTerminalReadResultSchema,
+} from "@nautilo/types";
 
 /**
  * Server-only projection contract for Browser Use read summaries.  This is
@@ -122,7 +125,7 @@ export function parseConnectedWebTerminalReadResult(value: unknown): ConnectedWe
     if (!isPlainObject(raw) || !exactKeys(raw, ["artifactId", "bytes", "mime", "path"])) return null;
     const artifactId = boundedText(raw["artifactId"], 256);
     const path = boundedText(raw["path"], 512);
-    const mime = boundedText(raw["mime"], 128);
+    const mime = boundedText(raw["mime"], CONNECTED_WEB_OUTPUT_MIME_MAX_CHARS);
     if (!artifactId || !path || path.includes("://") || !mime || typeof raw["bytes"] !== "number" || !Number.isSafeInteger(raw["bytes"]) || raw["bytes"] < 0) return null;
     outputs.push({ artifactId, path, mime, bytes: raw["bytes"] });
   }

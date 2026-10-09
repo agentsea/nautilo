@@ -293,6 +293,27 @@ describe("createConvertTool", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  test("rejects an invalid normalized output format before durable dispatch", async () => {
+    const execute = mock(async (_input: Parameters<ConversionRuntime["execute"]>[0]) => ({
+      status: "error" as const,
+      code: "must_not_execute",
+      message: "must not execute",
+      retryable: false,
+      uncertainEffect: false,
+    }));
+    const tool = createConvertTool(durableToolContext(), {
+      conversionRuntime: conversionRuntime({ execute }),
+    });
+    const result = await runWithTurn("turn-invalid-format", () => tool.invoke({
+      html: "<p>Hi</p>",
+      format: ".",
+      destinationPath: "report.",
+      backend: "cloud",
+    }));
+    expect(String(result)).toContain("format must normalize to 1-32");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   test("exposes durable cancellation by opaque recovery handle", async () => {
     const cancel = mock(async (_input: Parameters<ConversionRuntime["cancel"]>[0]) => ({
       status: "error" as const,
@@ -363,6 +384,84 @@ describe("createConvertTool", () => {
     expect(String(result)).toContain(`cvr_${"2".repeat(32)}`);
   });
 
+  test("returns the recovery handle when durable confirmation fails after Artifact commit", async () => {
+    const output = Buffer.from("%PDF-durable");
+    const handle = `cvr_${"2".repeat(32)}`;
+    const execute = mock(async () => ({
+      status: "ready_to_publish" as const,
+      operationKey: "1".repeat(64),
+      recoveryHandle: handle,
+      outputFormat: "pdf",
+      bytes: output,
+      outputSha256: sha(output),
+    }));
+    const confirmPublication = mock(async () => { throw new Error("database unavailable"); });
+    const commit = mock(async () => ({
+      ok: true as const,
+      revisionId: "10000000-0000-4000-8000-000000000030",
+      artifactId: "artifact-1",
+    }));
+    setWorkspaceFileContentCommitExecution(commit);
+    const tool = createConvertTool(durableToolContext(), {
+      conversionRuntime: conversionRuntime({ execute, confirmPublication }),
+      prepareWorkspaceDestination: destinationPreparer(),
+    });
+
+    const result = await runWithTurn("turn-confirm-failure", () => tool.invoke({
+      html: "<p>Hi</p>",
+      format: "pdf",
+      destinationPath: "report.pdf",
+      backend: "cloud",
+    }));
+    const parsed = JSON.parse(String(result)) as Record<string, unknown>;
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(confirmPublication).toHaveBeenCalledTimes(1);
+    expect(parsed).toMatchObject({
+      error: "conversion_publication_confirmation_uncertain",
+      retryable: true,
+      uncertainEffect: true,
+      recoveryHandle: handle,
+    });
+  });
+
+  test("preserves the recovery handle when a failed Artifact commit cannot be recorded", async () => {
+    const output = Buffer.from("%PDF-durable");
+    const handle = `cvr_${"3".repeat(32)}`;
+    const execute = mock(async () => ({
+      status: "ready_to_publish" as const,
+      operationKey: "1".repeat(64),
+      recoveryHandle: handle,
+      outputFormat: "pdf",
+      bytes: output,
+      outputSha256: sha(output),
+    }));
+    const failPublication = mock(async () => { throw new Error("database unavailable"); });
+    setWorkspaceFileContentCommitExecution(mock(async () => ({
+      ok: false as const,
+      code: "human_edit_conflict" as const,
+      message: "The destination changed.",
+    })));
+    const tool = createConvertTool(durableToolContext(), {
+      conversionRuntime: conversionRuntime({ execute, failPublication }),
+      prepareWorkspaceDestination: destinationPreparer(),
+    });
+
+    const result = await runWithTurn("turn-fail-publication-receipt", () => tool.invoke({
+      html: "<p>Hi</p>",
+      format: "pdf",
+      destinationPath: "report.pdf",
+      backend: "cloud",
+    }));
+    const parsed = JSON.parse(String(result)) as Record<string, unknown>;
+    expect(failPublication).toHaveBeenCalledTimes(1);
+    expect(parsed).toMatchObject({
+      error: "conversion_publication_recovery_uncertain",
+      retryable: true,
+      uncertainEffect: true,
+      recoveryHandle: handle,
+    });
+  });
+
   test("recovers a committed Artifact receipt after the destination revision changed", async () => {
     const resume = mock(async () => ({
       status: "recover_publication" as const,
@@ -393,6 +492,77 @@ describe("createConvertTool", () => {
     expect(resumePublication).not.toHaveBeenCalled();
     expect(confirmPublication).toHaveBeenCalledTimes(1);
     expect(String(result)).toContain("Recovered the committed");
+  });
+
+  test("returns the existing recovery handle when recovered Artifact confirmation fails", async () => {
+    const handle = `cvr_${"5".repeat(32)}`;
+    const resume = mock(async () => ({
+      status: "recover_publication" as const,
+      operationKey: "4".repeat(64),
+      recoveryHandle: handle,
+      outputFormat: "pdf",
+    }));
+    const resumePublication = mock(async () => { throw new Error("must not redownload"); });
+    const confirmPublication = mock(async () => { throw new Error("database unavailable"); });
+    const recover = mock(async () => ({
+      ok: true as const,
+      revisionId: "10000000-0000-4000-8000-000000000031",
+      artifactId: "artifact-1",
+    }));
+    setWorkspaceFileContentRecoveryExecution(recover);
+    const tool = createConvertTool(durableToolContext(), {
+      conversionRuntime: conversionRuntime({ resume, resumePublication, confirmPublication }),
+      prepareWorkspaceDestination: destinationPreparer("update", 2),
+    });
+
+    const result = await runWithTurn("turn-recovered-confirm-failure", () => tool.invoke({
+      action: "resume",
+      recoveryHandle: handle,
+      format: "pdf",
+      destinationPath: "report.pdf",
+    }));
+    const parsed = JSON.parse(String(result)) as Record<string, unknown>;
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(resumePublication).not.toHaveBeenCalled();
+    expect(parsed).toMatchObject({
+      error: "conversion_publication_confirmation_uncertain",
+      retryable: true,
+      uncertainEffect: true,
+      recoveryHandle: handle,
+    });
+  });
+
+  test("preserves the existing handle when Artifact receipt recovery throws", async () => {
+    const handle = `cvr_${"6".repeat(32)}`;
+    const resume = mock(async () => ({
+      status: "recover_publication" as const,
+      operationKey: "4".repeat(64),
+      recoveryHandle: handle,
+      outputFormat: "pdf",
+    }));
+    const resumePublication = mock(async () => { throw new Error("must not redownload"); });
+    setWorkspaceFileContentRecoveryExecution(mock(async () => {
+      throw new Error("recovery store unavailable");
+    }));
+    const tool = createConvertTool(durableToolContext(), {
+      conversionRuntime: conversionRuntime({ resume, resumePublication }),
+      prepareWorkspaceDestination: destinationPreparer("update", 2),
+    });
+
+    const result = await runWithTurn("turn-recovery-read-failure", () => tool.invoke({
+      action: "resume",
+      recoveryHandle: handle,
+      format: "pdf",
+      destinationPath: "report.pdf",
+    }));
+    const parsed = JSON.parse(String(result)) as Record<string, unknown>;
+    expect(resumePublication).not.toHaveBeenCalled();
+    expect(parsed).toMatchObject({
+      error: "conversion_publication_recovery_uncertain",
+      retryable: true,
+      uncertainEffect: true,
+      recoveryHandle: handle,
+    });
   });
 
   test("does not project a published receipt onto the caller's supplied path", async () => {

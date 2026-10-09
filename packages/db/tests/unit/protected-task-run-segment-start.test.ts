@@ -538,6 +538,13 @@ describe("protected TaskRun parked-segment start CAS", () => {
       cryptoRequiredNamespaceFingerprint: fingerprint,
       jobReference: nextReference(),
     }), "binding is malformed");
+    await expectRejected(startProtectedTaskRun(db, {
+      ...input(),
+      jobId: ids.job,
+      jobReference: priorReference({
+        resumeContinuationFingerprint: "A".repeat(43),
+      }),
+    }), "binding is malformed");
     expect(transactions).toBe(0);
   });
 
@@ -569,6 +576,12 @@ describe("protected TaskRun parked-segment start CAS", () => {
     })), "binding is malformed");
     await expectRejected(startParkedProtectedTaskRunSegment(db, input({
       jobReference: nextReference({ resumeAcceptanceId: "other-acceptance" }),
+    })), "binding is malformed");
+    await expectRejected(startParkedProtectedTaskRunSegment(db, input({
+      jobReference: {
+        ...nextReference(),
+        resumeContinuationFingerprint: "A".repeat(43),
+      },
     })), "binding is malformed");
     await expectRejected(startParkedProtectedTaskRunSegment(db, input({
       priorJobReference: priorReference({ executionSegment: 0 }),

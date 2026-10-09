@@ -29,6 +29,7 @@ import type {
 import type { UsageFundingProvenance } from "@nautilo/agent";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 import type { ServerProviderCostReceipt } from "../costs/provider-cost-recorder";
+import type { ConnectedWebAccountPrivateOutputPublication } from "./private-output-import";
 
 export interface ConnectedWebOperationSupervisorClock {
   now(): Date;
@@ -83,7 +84,7 @@ export interface ConnectedWebOperationSupervisorOptions {
     readonly actor: { readonly userId: string; readonly agentId: string; readonly roomId: string; readonly callingRoomId: null; readonly memoryAccessEnvelope: MemoryAccessEnvelope };
     readonly output: { readonly logicalPath: string; readonly mimeType: string; readonly bytes: Uint8Array };
     readonly publicationId: string;
-  }) => Promise<{ readonly artifactId: string; readonly path: string; readonly mime: string } | null>;
+  }) => Promise<ConnectedWebAccountPrivateOutputPublication>;
   readonly providerReferences: ConnectedWebOperationProviderReferenceCodec;
   readonly clock: ConnectedWebOperationSupervisorClock;
   /** V4 cursor page size, supplied by boot policy rather than hidden in the worker. */
@@ -474,6 +475,7 @@ export class ConnectedWebOperationSupervisor {
     }
     let terminalRead: ReturnType<typeof terminalReadSnapshot> = { auth: false, result: null };
     let invalidReadAuthority = false;
+    let retainBrowserForWarmReuse = false;
     if (status.status === "completed" && current.actionOperationId === null) {
       let intent: SealedReadIntent | null = null;
       let account: ConnectedWebAccount | null = null;
@@ -489,6 +491,7 @@ export class ConnectedWebOperationSupervisor {
       if (intent === null || (current.accountId !== null && (account === null || account.id !== current.accountId || account.origin !== intent.origin))) {
         invalidReadAuthority = true;
       } else {
+        retainBrowserForWarmReuse = intent.delivery === "text";
         terminalRead = terminalReadSnapshot({ account, intent, summary, operationId: current.id });
         if (intent.delivery === "workspace" && terminalRead.result !== null) {
           if (account === null || intent.memoryAccessEnvelope === null || !unsealed.sessionId || !unsealed.workspaceId
@@ -504,6 +507,7 @@ export class ConnectedWebOperationSupervisor {
               activity("checking", "output_download_pending", "Waiting to retrieve the requested website output."));
           }
           const outputs: Array<{ artifactId: string; path: string; mime: string; bytes: number }> = [];
+          let outputsTruncated = collected.truncated || collected.outputs.length === 0;
           for (let index = 0; index < collected.outputs.length; index += 1) {
             const output = collected.outputs[index]!;
             const published = await this.importOutput({
@@ -516,17 +520,24 @@ export class ConnectedWebOperationSupervisor {
               },
               output: { logicalPath: output.path, mimeType: output.mimeType, bytes: output.bytes },
               publicationId: `connected-web:${current.id}:${index}`,
-            }).catch(() => null);
-            if (published === null) {
+            }).catch(() => ({ kind: "unsafe_failure" } as const));
+            if (published.kind === "retryable_failure") {
               return this.reschedule({ operation: current, workerId }, "provider_unavailable",
                 activity("checking", "output_publication_pending", "Waiting to publish the requested website output."));
             }
-            outputs.push({ ...published, bytes: output.bytes.byteLength });
+            if (published.kind !== "published") {
+              outputsTruncated = true;
+              // A permanent failure or unknown partial write ends this
+              // publication attempt. Continuing could encounter a transient
+              // failure and reschedule, replaying the unsafe output.
+              break;
+            }
+            outputs.push({ ...published.receipt, bytes: output.bytes.byteLength });
           }
           terminalRead = { auth: false, result: {
             ...terminalRead.result,
             outputs,
-            outputsTruncated: collected.truncated || outputs.length === 0,
+            outputsTruncated,
           } };
         }
       }
@@ -578,6 +589,7 @@ export class ConnectedWebOperationSupervisor {
         now: this.clock.now(),
         receipt,
         ...finalCheckpoint,
+        retainBrowserForWarmReuse,
         terminalReadResult: status.status === "completed" && receipt.outcome === "completed" && !cost.exceeded ? terminalRead.result : null,
         ...(terminalRead.auth ? { authenticationRequired: terminalRead.reason } : {}),
       }).catch(() => false)

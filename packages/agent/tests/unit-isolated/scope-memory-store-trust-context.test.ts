@@ -33,6 +33,7 @@ beforeAll(() => {
 
   mock.module("@nautilo/db", () => ({
     agentDb: {},
+    agentScopes: {},
     and: (...args: unknown[]) => args,
     desc: (col: unknown) => col,
     eq: (a: unknown, b: unknown) => [a, b],

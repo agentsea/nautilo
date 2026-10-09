@@ -454,6 +454,14 @@ describe("CloudConvert durable conversion runtime", () => {
     expect(changedTarget.status).toBe("error");
     if (changedTarget.status !== "error") throw new Error("expected target conflict");
     expect(changedTarget.code).toBe("conversion_operation_conflict");
+
+    const changedOutputBound = await runtime.execute({
+      ...request(),
+      maxOutputBytes: 2048,
+    });
+    expect(changedOutputBound.status).toBe("error");
+    if (changedOutputBound.status !== "error") throw new Error("expected output-bound conflict");
+    expect(changedOutputBound.code).toBe("conversion_operation_conflict");
     expect(create).toHaveBeenCalledTimes(1);
   });
 
@@ -497,6 +505,92 @@ describe("CloudConvert durable conversion runtime", () => {
     expect(beginCost).not.toHaveBeenCalled();
   });
 
+  test("terminalizes explicit prepared cancellation without creating a missing cost attempt", async () => {
+    const store = new MemoryConversionStore();
+    const row = store.seed({ status: "prepared", providerJobId: null, submittedAt: null });
+    let costRowCreated = false;
+    const beginCost = mock(async () => { costRowCreated = true; });
+    const settleCost = mock(async () => {
+      if (!costRowCreated) {
+        throw new Error("Provider cost attempt settlement conflicts with durable state");
+      }
+    });
+    const runtime = createCloudConversionRuntime({
+      store,
+      ...fundingDependencies(),
+      beginCost,
+      settleCost,
+    });
+
+    const result = await runtime.cancel({
+      operationKey: row.recoveryHandle,
+      causalHumanUserId: HUMAN_ID,
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") throw new Error("expected prepared cancellation");
+    expect(result.code).toBe("conversion_cancelled");
+    expect(store.row?.status).toBe("cancelled");
+    expect(store.row?.providerCredits).toBe("0");
+    expect(beginCost).not.toHaveBeenCalled();
+    expect(settleCost).toHaveBeenCalledTimes(1);
+    expect(costRowCreated).toBe(false);
+  });
+
+  test("retries prepared-cancellation cost settlement without reopening provider dispatch", async () => {
+    const store = new MemoryConversionStore();
+    const row = store.seed({ status: "prepared", providerJobId: null, submittedAt: null });
+    let settlementAttempts = 0;
+    const settleCost = mock(async () => {
+      settlementAttempts += 1;
+      if (settlementAttempts === 1) throw new Error("database temporarily unavailable");
+    });
+    const createClient = mock(() => { throw new Error("must not create a provider client"); });
+    const runtime = createCloudConversionRuntime({
+      store,
+      ...fundingDependencies(),
+      createClient,
+      settleCost,
+    });
+
+    const first = await runtime.cancel({ operationKey: row.recoveryHandle, causalHumanUserId: HUMAN_ID });
+    expect(first.status).toBe("error");
+    if (first.status !== "error") throw new Error("expected pending settlement");
+    expect(first.code).toBe("conversion_cancel_cost_settlement_pending");
+    expect(first.recoveryHandle).toBe(row.recoveryHandle);
+    expect(store.row?.status).toBe("cancelled");
+
+    const retried = await runtime.cancel({ operationKey: row.recoveryHandle, causalHumanUserId: HUMAN_ID });
+    expect(retried.status).toBe("error");
+    if (retried.status !== "error") throw new Error("expected cancelled result");
+    expect(retried.code).toBe("conversion_cancelled");
+    expect(settleCost).toHaveBeenCalledTimes(2);
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
+  test("preserves a concurrent submission claim when prepared cancellation loses its race", async () => {
+    const store = new MemoryConversionStore();
+    const row = store.seed({ status: "prepared", providerJobId: null, submittedAt: null });
+    store.cancelBeforeDispatch = async () => {
+      store.row = {
+        ...store.row!,
+        status: "submitting",
+        submissionLeaseId: "7".repeat(64),
+        submissionLeaseExpiresAt: new Date(Date.now() + 60_000),
+        version: store.row!.version + 1,
+      };
+      return null;
+    };
+    const runtime = createCloudConversionRuntime({ store, ...fundingDependencies() });
+
+    const result = await runtime.cancel({ operationKey: row.recoveryHandle, causalHumanUserId: HUMAN_ID });
+    expect(result.status).toBe("error");
+    if (result.status !== "error") throw new Error("expected pending submission cancellation");
+    expect(result.code).toBe("conversion_cancel_waiting_for_submission");
+    expect(store.row?.status).toBe("submitting");
+    expect(store.row?.cancellationRequestedAt).toBeInstanceOf(Date);
+  });
+
   test("does not admit funding or dispatch when the request is already aborted", async () => {
     const store = new MemoryConversionStore();
     const controller = new AbortController();
@@ -518,6 +612,24 @@ describe("CloudConvert durable conversion runtime", () => {
     expect(admitFunding).not.toHaveBeenCalled();
     expect(createClient).not.toHaveBeenCalled();
     expect(store.row).toBeNull();
+  });
+
+  test("rejects non-normalized and oversized format tokens before durable creation", async () => {
+    for (const input of [
+      { ...request(), outputFormat: "." },
+      { ...request(), inputFormat: "x".repeat(33) },
+      { ...request(), outputFormat: "PDF" },
+    ]) {
+      const store = new MemoryConversionStore();
+      const admitFunding = mock(async () => FUNDING);
+      const runtime = createCloudConversionRuntime({ store, ...fundingDependencies(), admitFunding });
+      const result = await runtime.execute(input);
+      expect(result.status).toBe("error");
+      if (result.status !== "error") throw new Error("expected invalid format rejection");
+      expect(result.code).toBe("conversion_invalid_request");
+      expect(store.row).toBeNull();
+      expect(admitFunding).not.toHaveBeenCalled();
+    }
   });
 
   test("cancels durably without dispatch when stopped while request-local funding waits", async () => {
@@ -807,6 +919,50 @@ describe("CloudConvert durable conversion runtime", () => {
     if (result.status !== "error") throw new Error("expected expired export");
     expect(result.code).toBe("conversion_result_expired");
     expect(store.row!.status).toBe("expired");
+  });
+
+  test("enforces the persisted output bound when a resume caller supplies a larger value", async () => {
+    const store = new MemoryConversionStore();
+    const row = store.seed({
+      status: "provider_finished",
+      providerCredits: "2.00000000",
+      maxOutputBytes: 8,
+    });
+    const client: CloudConvertClient = {
+      jobs: {
+        create: mock(async () => providerJob()),
+        all: mock(async () => []),
+        get: mock(async () => providerJob({ tag: row.providerTag })),
+        wait: mock(async () => providerJob({ tag: row.providerTag })),
+        getExportUrls: mock(() => [{ url: "https://storage.cloudconvert.com/result.pdf" }]),
+      },
+      tasks: {
+        upload: mock(async () => undefined),
+        cancel: mock(async () => providerJob().tasks[0]!),
+      },
+    };
+    globalThis.fetch = mock(async () => new Response("too large", {
+      status: 200,
+      headers: { "content-length": "9" },
+    })) as unknown as typeof fetch;
+    const runtime = createCloudConversionRuntime({
+      store,
+      ...fundingDependencies(),
+      createClient: () => client,
+      settleCost: mock(async () => undefined),
+    });
+
+    const result = await runtime.resume({
+      recoveryHandle: row.recoveryHandle,
+      causalHumanUserId: HUMAN_ID,
+      destination: request().destination,
+      maxOutputBytes: 1024,
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") throw new Error("expected bounded download failure");
+    expect(result.code).toBe("conversion_download_failed");
+    expect(store.row?.status).toBe("provider_finished");
   });
 
   test("stop aborts a hung provider recovery read", async () => {

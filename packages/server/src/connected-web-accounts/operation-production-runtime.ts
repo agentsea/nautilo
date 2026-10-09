@@ -20,7 +20,7 @@ import type {
 import { connectedWebBrowserFunding, withFundedBrowserUse, type ConnectedWebBrowserFunding } from "./browser-use-funding";
 import { settleServerProviderCostAttempt } from "../costs/provider-cost-recorder";
 import type { ServerProviderCostReceipt } from "../costs/provider-cost-recorder";
-import { importConnectedWebPrivateOutput } from "./private-output-import";
+import { publishConnectedWebPrivateOutput } from "./private-output-import";
 
 /**
  * Operational scheduling policy for the durable supervisor, named here for
@@ -256,7 +256,7 @@ class ConnectedWebOperationProductionRuntime {
           );
         },
         settleCostAttempt: options.settleCostAttempt ?? settleServerProviderCostAttempt,
-        importOutput: importConnectedWebPrivateOutput,
+        importOutput: publishConnectedWebPrivateOutput,
         providerReferences: {
           unseal: ({ operationId, references }) => {
             const operation = claimedContexts.get(operationId);

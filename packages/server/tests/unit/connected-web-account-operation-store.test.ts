@@ -321,6 +321,7 @@ describe("connected website operation store boundary", () => {
       opaqueExecutionRef: "run-private",
       now: new Date("2026-09-03T10:00:00.000Z"),
       receipt: { version: 1, outcome: "completed", code: "provider_completed", summary: "Connected website work completed." },
+      retainBrowserForWarmReuse: true,
       terminalReadResult: {
         version: 1,
         account: { id: secretContext.accountId, label: "Example", service: "example", origin: "https://example.com" },
@@ -408,6 +409,7 @@ describe("connected website operation store boundary", () => {
       opaqueExecutionRef: "run-private",
       now: new Date("2026-09-03T10:00:00.000Z"),
       receipt: { version: 1, outcome: "attention_required", code: "authentication_required", summary: "Connected website sign-in needs Human attention." },
+      retainBrowserForWarmReuse: false,
       terminalReadResult: null,
       authenticationRequired: "mfa",
     })).toBe(true);

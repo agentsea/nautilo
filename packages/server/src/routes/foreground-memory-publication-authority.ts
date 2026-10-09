@@ -5,7 +5,7 @@ import {
 } from "@nautilo/agent";
 import { acquireEncryptionPublicationFence } from "@nautilo/db";
 import { selectLiveEncryptionRepresentationPolicy } from "@nautilo/lattice-bridge";
-import type { AgentMemoryPublicationBoundary } from "@nautilo/lattice-bridge/server";
+import type { AgentMemoryBeforeLocks } from "@nautilo/lattice-bridge/server";
 import { isScopeMemoryEnvelope, type MemoryAccessEnvelope } from "@nautilo/trust";
 
 /** Selected foreground policy + trust envelope, rechecked in the product tx. */
@@ -19,7 +19,7 @@ export function createForegroundMemoryPublicationAuthority(input: Readonly<{
 }>): Readonly<{
   representation: "ordinary_and_protected" | "protected_only";
   allowOrdinaryFallback: boolean;
-  beforeLocks: AgentMemoryPublicationBoundary["beforeLocks"];
+  beforeLocks: AgentMemoryBeforeLocks;
 }> {
   if (isScopeMemoryEnvelope(input.envelope)) {
     throw new MemoryMutationAuthorityError("memory_unavailable");

@@ -18,6 +18,11 @@ export {
   resolveConvertConfig,
 } from "./config.ts";
 
+export {
+  CLOUDCONVERT_FORMAT_TOKEN_MAX_LENGTH,
+  isCloudConvertFormatToken,
+} from "./format-token.ts";
+
 export type { ConvertOptions, ConversionResult, ConversionSubmission } from "./service.ts";
 export {
   assertJobSucceeded,

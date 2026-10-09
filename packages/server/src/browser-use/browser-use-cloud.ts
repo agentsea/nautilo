@@ -6,6 +6,7 @@ import { RELAY_MEDIA_MAX_BYTES } from "@nautilo/relay";
 import { createHash } from "node:crypto";
 import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 import type { UsageFundingProvenance } from "@nautilo/agent";
+import { CONNECTED_WEB_OUTPUT_MIME_MAX_CHARS } from "@nautilo/types";
 
 export const BROWSER_USE_V4_BASE_URL = "https://api.browser-use.com/api/v4";
 export const BROWSER_USE_DEFAULT_MODEL = "gpt-5.6-luna";
@@ -315,7 +316,8 @@ function readHostedOutputCandidates(body: unknown, field: "files", outputScope: 
 
 function normalizeHostedOutputMimeType(value: string | null): string {
   const mimeType = value?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-  return /^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+$/u.test(mimeType)
+  return mimeType.length <= CONNECTED_WEB_OUTPUT_MIME_MAX_CHARS
+    && /^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+$/u.test(mimeType)
     ? mimeType
     : "application/octet-stream";
 }

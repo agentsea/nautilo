@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+/** Safe terminal projection bound shared with provider-output normalization. */
+export const CONNECTED_WEB_OUTPUT_MIME_MAX_CHARS = 128;
+
 /** Browser-safe lifecycle states. Provider coordinates never belong in this contract. */
 export const connectedWebAccountStatusSchema = z.enum([
   "connecting",
@@ -198,7 +201,7 @@ export const connectedWebOperationTerminalReadResultSchema = z.object({
   outputs: z.array(z.object({
     artifactId: z.string().trim().min(1).max(256),
     path: z.string().trim().min(1).max(512).refine((value) => !value.includes("://")),
-    mime: z.string().trim().min(1).max(128),
+    mime: z.string().trim().min(1).max(CONNECTED_WEB_OUTPUT_MIME_MAX_CHARS),
     bytes: z.number().int().nonnegative().safe(),
   }).strict()).max(4),
   outputsTruncated: z.boolean(),

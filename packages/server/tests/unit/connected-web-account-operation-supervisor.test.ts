@@ -139,6 +139,7 @@ function supervisor(input: {
     readonly runCost?: { readonly identity: string; readonly workload: string };
   } | null>;
   readonly settleCostAttempt?: ConstructorParameters<typeof ConnectedWebOperationSupervisor>[0]["settleCostAttempt"];
+  readonly importOutput?: ConstructorParameters<typeof ConnectedWebOperationSupervisor>[0]["importOutput"];
 }) {
   return new ConnectedWebOperationSupervisor({
     store: input.store,
@@ -156,6 +157,7 @@ function supervisor(input: {
     eventPageLimit: 2,
     nextCheckAt: ({ now }) => new Date(now.getTime() + 1_000),
     ...(input.settleCostAttempt === undefined ? {} : { settleCostAttempt: input.settleCostAttempt }),
+    ...(input.importOutput === undefined ? {} : { importOutput: input.importOutput }),
   });
 }
 
@@ -434,6 +436,88 @@ describe("ConnectedWebOperationSupervisor", () => {
     expect(result.terminalized).toBe(1);
     expect(gets).toBe(1);
     expect(terminalizations).toMatchObject([{ receipt: { outcome: "completed" }, terminalReadResult: { read: null, outputs: [], outputsTruncated: false } }]);
+  });
+
+  test("terminalizes an unsafe Workspace publication as truncated without retrying it or retaining the browser", async () => {
+    const records: unknown[] = [];
+    const releases: unknown[] = [];
+    const terminalizations: unknown[] = [];
+    let publications = 0;
+    const fundingHumanUserId = "77777777-7777-4777-8777-777777777777";
+    const intent = JSON.stringify({
+      version: 2,
+      kind: "read_connected_web_account",
+      fundingHumanUserId,
+      origin: "https://example.com",
+      request: "export the report",
+      delivery: "workspace",
+      deliveryId: "delivery-id",
+      threadId: "thread-id",
+      lane: "foreground",
+      turnId: "turn-id",
+      memoryAccessEnvelope: {
+        ownerId: fundingHumanUserId,
+        agentId: "agent-id",
+        roomId: "room-id",
+        actorId: "actor-id",
+        toolPolicy: {},
+      },
+    });
+    const result = await supervisor({
+      store: storeFor({ operations: [operation()], records, releases, terminalizations }),
+      intent,
+      provider: provider({
+        pollHostedReadRun: async () => terminal("completed"),
+        getHostedReadResult: async () => ({ runId: RUN_ID, status: "completed", result: null, totalCostUsd: "0", observedAt: NOW }),
+        collectHostedReadOutputs: async () => ({
+          outputs: [
+            { path: "connected-web/scope/report.csv", mimeType: "text/csv", bytes: new Uint8Array([1, 2, 3]) },
+            { path: "connected-web/scope/second.csv", mimeType: "text/csv", bytes: new Uint8Array([4, 5, 6]) },
+          ],
+          truncated: false,
+        }),
+      }),
+      importOutput: async () => {
+        publications += 1;
+        return publications === 1 ? { kind: "unsafe_failure" } : { kind: "retryable_failure" };
+      },
+    }).runOnce({ workerId: "worker-a", leaseMs: 1_000 });
+
+    expect(result).toEqual({ claimed: 1, reconciled: 0, rescheduled: 0, terminalized: 1, stale: 0 });
+    expect(publications).toBe(1);
+    expect(releases).toEqual([]);
+    expect(terminalizations).toMatchObject([{
+      retainBrowserForWarmReuse: false,
+      terminalReadResult: { outputs: [], outputsTruncated: true },
+    }]);
+    expect(records.filter((record) => (record as { safeActivity?: { code?: string } }).safeActivity?.code === "output_publication_pending")).toEqual([]);
+  });
+
+  test("reschedules only an explicitly retryable Workspace publication failure", async () => {
+    const records: unknown[] = [];
+    const releases: unknown[] = [];
+    const terminalizations: unknown[] = [];
+    const fundingHumanUserId = "77777777-7777-4777-8777-777777777777";
+    const result = await supervisor({
+      store: storeFor({ operations: [operation()], records, releases, terminalizations }),
+      intent: JSON.stringify({
+        version: 2, kind: "read_connected_web_account", fundingHumanUserId,
+        origin: "https://example.com", request: "export", delivery: "workspace",
+        deliveryId: "delivery-id", threadId: "thread-id", lane: "foreground", turnId: "turn-id",
+        memoryAccessEnvelope: { ownerId: fundingHumanUserId, agentId: "agent-id", roomId: "room-id", actorId: "actor-id", toolPolicy: {} },
+      }),
+      provider: provider({
+        pollHostedReadRun: async () => terminal("completed"),
+        getHostedReadResult: async () => ({ runId: RUN_ID, status: "completed", result: null, totalCostUsd: "0", observedAt: NOW }),
+        collectHostedReadOutputs: async () => ({ outputs: [{ path: "connected-web/scope/report.csv", mimeType: "text/csv", bytes: new Uint8Array([1]) }], truncated: false }),
+      }),
+      importOutput: async () => ({ kind: "retryable_failure" }),
+    }).runOnce({ workerId: "worker-a", leaseMs: 1_000 });
+
+    expect(result).toEqual({ claimed: 1, reconciled: 0, rescheduled: 1, terminalized: 0, stale: 0 });
+    expect(records.at(-1)).toMatchObject({ safeActivity: { code: "output_publication_pending" } });
+    expect(releases).toHaveLength(1);
+    expect(terminalizations).toEqual([]);
   });
 
   test("converts a validated terminal authentication outcome into exact account attention", async () => {

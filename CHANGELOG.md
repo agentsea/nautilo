@@ -19,6 +19,18 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   personal model key. Active browser status, live view and Stop recover the
   creating account's key. Hosted steering leaves the current run unchanged
   while provisional provider costs prevent proving a safe replacement budget.
+- Chat managers can change personal 1:1 chats between Private, External, and
+  Public. Returning an unchanged personal Human–Genie chat to Private restores
+  its private-chat behavior without replacing the conversation.
+
+- The sign-in screen offers Join when the server has an active selected public
+  invitation and enrollment is open. Join follows the server's existing `/join`
+  address; personal invitation links remain available through I have an invite.
+
+- Desktop relays recover when the server expires their heartbeat registration
+  while the connection remains open. A later heartbeat triggers authenticated
+  reconnection so local tools can become available again; interrupted commands
+  are not automatically replayed.
 
 - Members can choose personal models for research and decisions independently
   of the server defaults. Personal Tavily and model keys fund supported research,

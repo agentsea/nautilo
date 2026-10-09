@@ -27,17 +27,21 @@ import {
   sql,
 } from "@nautilo/db";
 import {
+  BACKGROUND_AUTHORIZATION_MAX_GENERATION,
   BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES,
   BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT,
   BACKGROUND_AUTHORIZATION_MAX_TIMESTAMP_MS,
   parseBackgroundAuthorizationRequestSnapshot,
   cancelBackgroundAuthorizationRequest,
+  markBackgroundAuthorizationRunning,
 } from "./lifecycle";
 import {
   BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH,
   BACKGROUND_AUTHORIZATION_TERMINAL_RETENTION_MS,
   BackgroundAuthorizationRepositoryConflictError,
   assertBackgroundAuthorizationCasSuccessor,
+  buildDeferredUnstartedTaskRuntimeRequest,
+  buildUnclaimedTaskRuntimeAuthorityReplacement,
   assertUnstartedProcessorSupersession,
   isExactProcessorSupersessionCancellation,
   sameProcessorSupersessionPlan,
@@ -56,18 +60,42 @@ import {
   type BackgroundAuthorizationCasResult,
   type BackgroundAuthorizationCreateResult,
   type BackgroundAuthorizationRecord,
-  type BackgroundAuthorizationRepository,
   type BackgroundAuthorizationAwaitingDeviceCursor,
   type BackgroundAuthorizationAwaitingDevicePage,
   type BackgroundAuthorizationAwaitingTaskRuntimeRecipientCursor,
   type BackgroundAuthorizationAwaitingTaskRuntimeRecipientPage,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
+  type BackgroundAuthorizationTaskRuntimeDeferralRepository,
+  type BackgroundAuthorizationTaskRuntimeDeferralResult,
+  type BackgroundAuthorizationTaskRuntimeCancellationCandidate,
+  type BackgroundAuthorizationTaskRuntimeCancellationCursor,
+  type BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository,
+  type BackgroundAuthorizationTaskRuntimeCancellationPage,
+  type BackgroundAuthorizationTaskRuntimeReplacementRepository,
+  type BackgroundAuthorizationTaskRuntimeReplacementResult,
   type BackgroundAuthorizationVerifiedDeviceResponse,
   type ProcessorSignerAuthorizationEvidence,
   type ProcessorSignerEvidenceAppendResult,
 } from "./repository";
 
 type Row = Readonly<Record<string, unknown>>;
+
+function taskRuntimeExecutionClaimIsActive(
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+  now: number,
+): boolean {
+  if (
+    !Number.isSafeInteger(now)
+    || now < 0
+    || now > BACKGROUND_AUTHORIZATION_MAX_TIMESTAMP_MS
+  ) throw new TypeError("Task Runtime execution claim clock is invalid");
+  return record.snapshot.claimExpiresAt !== null
+    && record.snapshot.recipient !== null
+    && record.acceptedMaterial !== null
+    && now < record.snapshot.claimExpiresAt
+    && now < record.snapshot.recipient.expiresAt
+    && now < record.acceptedMaterial.authorizationExpiresAt;
+}
 
 function requiredString(row: Row, field: string): string {
   const value = row[field];
@@ -120,6 +148,53 @@ function requiredTimestamp(row: Row, field: string): number {
   const value = nullableTimestamp(row, field);
   if (value === null) throw new TypeError(`${field} must be a timestamp`);
   return value;
+}
+
+function taskRuntimeCancellationIdentifier(row: Row, field: string): string {
+  const value = requiredString(row, field);
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u.test(value)
+    || new TextEncoder().encode(value).length
+      > BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES
+  ) {
+    throw new TypeError(
+      `Background authorization column ${field} must be a portable identifier`,
+    );
+  }
+  return value;
+}
+
+function taskRuntimeCancellationCursorFromRow(
+  row: Row,
+): BackgroundAuthorizationTaskRuntimeCancellationCursor {
+  return Object.freeze({
+    updatedAt: requiredTimestamp(row, "updated_at"),
+    requestId: taskRuntimeCancellationIdentifier(row, "request_id"),
+  });
+}
+
+function taskRuntimeCancellationCandidateFromRow(
+  row: Row,
+): BackgroundAuthorizationTaskRuntimeCancellationCandidate | null {
+  try {
+    const recipientGeneration = requiredCounter(row, "recipient_generation");
+    const requestRevision = requiredCounter(row, "request_revision");
+    if (
+      recipientGeneration > BACKGROUND_AUTHORIZATION_MAX_GENERATION
+      || requestRevision > BACKGROUND_AUTHORIZATION_MAX_GENERATION
+    ) throw new TypeError("Task Runtime cancellation counter is invalid");
+    return Object.freeze({
+      requestId: taskRuntimeCancellationIdentifier(row, "request_id"),
+      workId: taskRuntimeCancellationIdentifier(row, "work_id"),
+      namespaceId: taskRuntimeCancellationIdentifier(row, "namespace_id"),
+      recipientGeneration,
+      requestRevision,
+      updatedAt: requiredTimestamp(row, "updated_at"),
+    });
+  } catch (error) {
+    if (error instanceof TypeError) return null;
+    throw error;
+  }
 }
 
 function requiredBytes(row: Row, field: string): Uint8Array {
@@ -507,7 +582,9 @@ function rowToEvidence(row: Row): ProcessorSignerAuthorizationEvidence {
 }
 
 export class PostgresBackgroundAuthorizationRepository
-  implements BackgroundAuthorizationRepository {
+  implements BackgroundAuthorizationTaskRuntimeReplacementRepository,
+    BackgroundAuthorizationTaskRuntimeDeferralRepository,
+    BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository {
   constructor(private readonly handle: CryptoPostgresHandle) {
     assertVerifiedCryptoPostgresHandle(handle);
   }
@@ -752,6 +829,285 @@ export class PostgresBackgroundAuthorizationRepository
       .where(eq(backgroundCryptoAuthorizationRequests.idempotencyKey, idempotencyKey)).limit(2));
     if (rows.length > 1) throw new BackgroundAuthorizationRepositoryConflictError("create_conflict");
     return rows[0] === undefined ? null : this.#recordFromRow(rows[0] as Row);
+  }
+
+  replaceUnclaimedTaskRuntimeAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    const expected = parseBackgroundAuthorizationRecord(input.expected);
+    const replacement = parseBackgroundAuthorizationRecord(input.replacement);
+    return withVerifiedCryptoPostgresTransaction<
+      BackgroundAuthorizationTaskRuntimeReplacementResult
+    >(this.handle, async handle => {
+      const table = backgroundCryptoAuthorizationRequests;
+      const rows = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.select().from(table)
+          .where(eq(table.requestId, expected.snapshot.requestId))
+          .limit(2).for("update"),
+      );
+      const row = rows[0];
+      const repository = new PostgresBackgroundAuthorizationRepository(handle);
+      const current = row === undefined
+        ? null
+        : await repository.#recordFromRow(row as Row);
+      if (
+        rows.length !== 1
+        || row === undefined
+        || current === null
+        || !sameBackgroundAuthorizationRecord(current, expected)
+        || row.transform_commit_claim_id !== null
+        || row.transform_commit_descriptor_hash !== null
+        || row.transform_commit_recipient_generation !== null
+        || row.transform_commit_output_count !== null
+        || row.transform_committed_at !== null
+      ) return { status: "stale", current };
+      const next = buildUnclaimedTaskRuntimeAuthorityReplacement({
+        expected: expected as BackgroundAuthorizationTaskRuntimeRecordV3,
+        replacement: replacement as BackgroundAuthorizationTaskRuntimeRecordV3,
+        now: input.now,
+      });
+      const values = requestValues(next);
+      const updated = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.update(table).set({
+          workIdentityHash: values.workIdentityHash,
+          domainId: values.domainId,
+          expectedDomainEpoch: values.expectedDomainEpoch,
+          expectedNamespaceAccessRevision:
+            values.expectedNamespaceAccessRevision,
+          expectedPolicyRevision: values.expectedPolicyRevision,
+          recipientGeneration: values.recipientGeneration,
+          descriptorHash: values.descriptorHash,
+          descriptorBytes: values.descriptorBytes,
+          recipientKeyId: values.recipientKeyId,
+          recipientPublicKey: values.recipientPublicKey,
+          recipientExpiresAt: values.recipientExpiresAt,
+          acceptedResponseKind: values.acceptedResponseKind,
+          acceptedResponseHash: values.acceptedResponseHash,
+          acceptedResponseBytes: values.acceptedResponseBytes,
+          credentialId: values.credentialId,
+          credentialHash: values.credentialHash,
+          issuingHumanId: values.issuingHumanId,
+          issuingDeviceId: values.issuingDeviceId,
+          issuingDeviceAuthorizationRevision:
+            values.issuingDeviceAuthorizationRevision,
+          issuerSigningPublicKeyHash: values.issuerSigningPublicKeyHash,
+          acceptedAt: values.acceptedAt,
+          authorizationExpiresAt: values.authorizationExpiresAt,
+          requestRevision: values.requestRevision,
+          state: values.state,
+          claimId: values.claimId,
+          claimExpiresAt: values.claimExpiresAt,
+          nextAttemptAt: values.nextAttemptAt,
+          updatedAt: values.updatedAt,
+        }).where(and(
+          eq(table.requestId, expected.snapshot.requestId),
+          eq(table.requestRevision, expected.snapshot.requestRevision),
+        )).returning(),
+      );
+      if (updated.length !== 1) {
+        return { status: "stale", current: await repository.get(
+          expected.snapshot.requestId,
+        ) };
+      }
+      await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.delete(backgroundCryptoAuthorizationNamespaceRequirements)
+          .where(eq(
+            backgroundCryptoAuthorizationNamespaceRequirements.requestId,
+            expected.snapshot.requestId,
+          )),
+      );
+      await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.delete(backgroundCryptoAuthorizationDomainRequirements)
+          .where(eq(
+            backgroundCryptoAuthorizationDomainRequirements.requestId,
+            expected.snapshot.requestId,
+          )),
+      );
+      await repository.#insertAuthoritySet(next);
+      const stored = await repository.#recordFromRow(updated[0] as Row);
+      return {
+        status: "replaced" as const,
+        record: stored as BackgroundAuthorizationTaskRuntimeRecordV3,
+      };
+    });
+  }
+
+  deferUnstartedTaskRuntimeRequest(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeDeferralResult> {
+    const parsed = parseBackgroundAuthorizationRecord(input.expected);
+    const next = buildDeferredUnstartedTaskRuntimeRequest({
+      expected: parsed as BackgroundAuthorizationTaskRuntimeRecordV3,
+      now: input.now,
+    });
+    return withVerifiedCryptoPostgresTransaction<
+      BackgroundAuthorizationTaskRuntimeDeferralResult
+    >(this.handle, async handle => {
+      const table = backgroundCryptoAuthorizationRequests;
+      const rows = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.select().from(table)
+          .where(eq(table.requestId, parsed.snapshot.requestId))
+          .limit(2).for("update"),
+      );
+      const row = rows[0] as Row | undefined;
+      const repository = new PostgresBackgroundAuthorizationRepository(handle);
+      const current = row === undefined
+        ? null
+        : await repository.#recordFromRow(row);
+      if (
+        rows.length !== 1
+        || row === undefined
+        || current === null
+        || row["transform_commit_claim_id"] !== null
+        || row["transform_commit_descriptor_hash"] !== null
+        || row["transform_commit_recipient_generation"] !== null
+        || row["transform_commit_output_count"] !== null
+        || row["transform_committed_at"] !== null
+      ) return { status: "stale", current };
+      if (sameBackgroundAuthorizationRecord(current, next)) {
+        return {
+          status: "exact_replay",
+          record: current as BackgroundAuthorizationTaskRuntimeRecordV3,
+        };
+      }
+      if (!sameBackgroundAuthorizationRecord(current, parsed)) {
+        return { status: "stale", current };
+      }
+      const values = requestValues(next);
+      const updated = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.update(table).set({
+          recipientGeneration: values.recipientGeneration,
+          descriptorHash: values.descriptorHash,
+          descriptorBytes: values.descriptorBytes,
+          recipientKeyId: values.recipientKeyId,
+          recipientPublicKey: values.recipientPublicKey,
+          recipientExpiresAt: values.recipientExpiresAt,
+          acceptedResponseKind: values.acceptedResponseKind,
+          acceptedResponseHash: values.acceptedResponseHash,
+          acceptedResponseBytes: values.acceptedResponseBytes,
+          credentialId: values.credentialId,
+          credentialHash: values.credentialHash,
+          issuingHumanId: values.issuingHumanId,
+          issuingDeviceId: values.issuingDeviceId,
+          issuingDeviceAuthorizationRevision:
+            values.issuingDeviceAuthorizationRevision,
+          issuerSigningPublicKeyHash: values.issuerSigningPublicKeyHash,
+          acceptedAt: values.acceptedAt,
+          authorizationExpiresAt: values.authorizationExpiresAt,
+          requestRevision: values.requestRevision,
+          state: values.state,
+          claimId: values.claimId,
+          claimExpiresAt: values.claimExpiresAt,
+          retryCount: values.retryCount,
+          lastRetryReason: values.lastRetryReason,
+          nextAttemptAt: values.nextAttemptAt,
+          updatedAt: values.updatedAt,
+        }).where(and(
+          eq(table.requestId, parsed.snapshot.requestId),
+          eq(table.requestRevision, parsed.snapshot.requestRevision),
+        )).returning(),
+      );
+      if (updated.length !== 1) {
+        return {
+          status: "stale",
+          current: await repository.get(parsed.snapshot.requestId),
+        };
+      }
+      const stored = await repository.#recordFromRow(updated[0] as Row);
+      return {
+        status: "deferred",
+        record: stored as BackgroundAuthorizationTaskRuntimeRecordV3,
+      };
+    });
+  }
+
+  /**
+   * Hold one exact live Task execution claim for a restricted transaction.
+   * The scoped handle is revoked when `use` returns and cannot serve as a
+   * durable claim proof after the request lock is released.
+   */
+  withCurrentTaskRuntimeExecutionClaim<Value>(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now(): number;
+    use(
+      current: BackgroundAuthorizationTaskRuntimeRecordV3,
+      transactionHandle: CryptoPostgresHandle,
+    ): Promise<Value>;
+  }>): Promise<Value | null> {
+    const parsed = parseBackgroundAuthorizationRecord(input.expected);
+    const snapshot = parsed.snapshot;
+    if (
+      snapshot.formatVersion !== 3
+      || snapshot.credentialSubject.kind !== "runtime"
+      || snapshot.credentialSubject.runtimeKind !== "task"
+      || snapshot.credentialSubject.runtimeVersion !== 1
+      || parsed.authoritySet === undefined
+    ) throw new TypeError("Task Runtime execution claim expected record is invalid");
+    const expected = parsed as BackgroundAuthorizationTaskRuntimeRecordV3;
+    return withVerifiedCryptoPostgresTransaction(this.handle, async handle => {
+      const table = backgroundCryptoAuthorizationRequests;
+      const rows = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.select().from(table)
+          .where(eq(table.requestId, expected.snapshot.requestId))
+          .limit(2).for("update"),
+      );
+      const row = rows[0] as Row | undefined;
+      if (
+        rows.length !== 1
+        || row === undefined
+        || row["transform_commit_claim_id"] !== null
+        || row["transform_commit_descriptor_hash"] !== null
+        || row["transform_commit_recipient_generation"] !== null
+        || row["transform_commit_output_count"] !== null
+        || row["transform_committed_at"] !== null
+      ) return null;
+      const repository = new PostgresBackgroundAuthorizationRepository(handle);
+      const hydrated = await repository.#recordFromRow(row);
+      const currentSnapshot = hydrated.snapshot;
+      if (
+        currentSnapshot.formatVersion !== 3
+        || currentSnapshot.credentialSubject.kind !== "runtime"
+        || currentSnapshot.credentialSubject.runtimeKind !== "task"
+        || currentSnapshot.credentialSubject.runtimeVersion !== 1
+        || hydrated.authoritySet === undefined
+        || currentSnapshot.state !== "running"
+      ) return null;
+      const current = hydrated as BackgroundAuthorizationTaskRuntimeRecordV3;
+      let matches = expected.snapshot.state === "running"
+        && sameBackgroundAuthorizationRecord(current, expected);
+      if (!matches && expected.snapshot.state === "claimed") {
+        try {
+          const successor = {
+            ...expected,
+            snapshot: markBackgroundAuthorizationRunning(
+              expected.snapshot,
+              current.snapshot.updatedAt,
+            ),
+          } as BackgroundAuthorizationTaskRuntimeRecordV3;
+          matches = sameBackgroundAuthorizationRecord(current, successor);
+        } catch {
+          return null;
+        }
+      }
+      if (!matches || !taskRuntimeExecutionClaimIsActive(current, input.now())) {
+        return null;
+      }
+      const value = await input.use(current, handle);
+      if (!taskRuntimeExecutionClaimIsActive(current, input.now())) {
+        throw new Error("Task Runtime execution claim expired during transaction");
+      }
+      return value;
+    });
   }
 
   /** Called only while the exact product claim and fallback policy are locked.
@@ -1226,6 +1582,88 @@ export class PostgresBackgroundAuthorizationRepository
           updatedAt: last.snapshot.updatedAt,
           requestId: last.snapshot.requestId,
         })
+        : null,
+    });
+  }
+
+  async listTaskRuntimeCancellationPage(input: Readonly<{
+    readonly throughUpdatedAt: number;
+    readonly after?: BackgroundAuthorizationTaskRuntimeCancellationCursor;
+    readonly limit: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeCancellationPage> {
+    if (
+      !Number.isSafeInteger(input.throughUpdatedAt)
+      || input.throughUpdatedAt < 0
+      || input.throughUpdatedAt > BACKGROUND_AUTHORIZATION_MAX_TIMESTAMP_MS
+      || !Number.isSafeInteger(input.limit)
+      || input.limit < 1
+      || input.limit > BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH
+      || (input.after !== undefined && (
+        !Number.isSafeInteger(input.after.updatedAt)
+        || input.after.updatedAt < 0
+        || input.after.updatedAt > input.throughUpdatedAt
+        || !/^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u.test(input.after.requestId)
+        || new TextEncoder().encode(input.after.requestId).length
+          > BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES
+      ))
+    ) throw new TypeError("Task Runtime cancellation page input must be bounded");
+    const table = backgroundCryptoAuthorizationRequests;
+    const after = input.after;
+    const rows = await executeTypedCryptoQuery(
+      this.handle,
+      cryptoTypedDb.select({
+        request_id: table.requestId,
+        work_id: table.workId,
+        namespace_id: table.namespaceId,
+        recipient_generation: table.recipientGeneration,
+        request_revision: table.requestRevision,
+        updated_at: table.updatedAt,
+      }).from(table).where(and(
+        eq(table.formatVersion, 3),
+        eq(table.credentialSubjectKind, "runtime"),
+        eq(table.runtimeKind, "task"),
+        eq(table.runtimeVersion, 1),
+        eq(table.workKind, "task.execute"),
+        eq(table.purpose, "task.execute"),
+        isNull(table.processorAuthorizationRevision),
+        or(
+          inArray(table.state, [
+            "awaiting_recipient",
+            "awaiting_device",
+            "grant_ready",
+            "claimed",
+            "running",
+            "publication_reconciliation",
+          ]),
+          and(
+            eq(table.state, "cancelled"),
+            eq(table.terminalReason, "cancelled"),
+          ),
+        ),
+        lte(table.updatedAt, new Date(input.throughUpdatedAt)),
+        ...(after === undefined ? [] : [or(
+          gt(table.updatedAt, new Date(after.updatedAt)),
+          and(
+            eq(table.updatedAt, new Date(after.updatedAt)),
+            gt(table.requestId, after.requestId),
+          ),
+        )]),
+      )).orderBy(
+        asc(table.updatedAt),
+        asc(table.requestId),
+      ).limit(input.limit),
+    );
+    const rawRows = rows as readonly Row[];
+    const candidates = rawRows
+      .map(taskRuntimeCancellationCandidateFromRow)
+      .filter((candidate): candidate is
+        BackgroundAuthorizationTaskRuntimeCancellationCandidate =>
+        candidate !== null);
+    const lastRow = rawRows.at(-1);
+    return Object.freeze({
+      candidates: Object.freeze(candidates),
+      continuation: rawRows.length === input.limit && lastRow !== undefined
+        ? taskRuntimeCancellationCursorFromRow(lastRow)
         : null,
     });
   }

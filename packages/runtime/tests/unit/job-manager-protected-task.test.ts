@@ -1,9 +1,13 @@
+import { ProtectedTaskExecutionDidNotBeginError } from "../../src/tasks/protected-task-execution-candidate";
 import { describe, expect, test } from "bun:test";
 import type { PersistJobPayload } from "@nautilo/db";
 import type { JobStatus, ServerEvent } from "@nautilo/types";
 
 import { eventBus } from "../../src/event-bus";
-import type { JobExecutor } from "../../src/job";
+import {
+  ProtectedTaskJobStartNotOwnedError,
+  type JobExecutor,
+} from "../../src/job";
 import { JobManager, type WorkAcceptanceSinks } from "../../src/job-manager";
 import { InMemoryLaneLock } from "../../src/lane-lock";
 import type { ProtectedTaskExecutionCandidate } from
@@ -20,8 +24,15 @@ const RUN_ID = "60000000-0000-4000-8000-000000000006";
 const THREAD_ID = `subagent:${TASK_ID}:${RUN_ID}`;
 const publication = Object.freeze({
   publish: async () => {},
-  awaitPublished: async () => true,
+  park: async () => {},
+  awaitSettled: async () => true,
 });
+const startProtectedTaskJob = async () => "started" as const;
+const settleProtectedTaskJobTerminal = async (
+  _jobId: string,
+  _reference: unknown,
+  requested: "completed" | "failed" | "cancelled",
+) => ({ kind: "transitioned", status: requested } as const);
 
 function reference(
   taskId = TASK_ID,
@@ -37,6 +48,22 @@ function reference(
     authorizationRequestId: `task-run-authorization:${taskRunId}`,
     policyRevision: 7,
     executionSegment: 1,
+  };
+}
+
+function continuationReference(fill = 1): ProtectedTaskJobReferenceV1 {
+  const initial = reference();
+  return {
+    kind: initial.kind,
+    taskId: initial.taskId,
+    taskRunId: initial.taskRunId,
+    inputObjectId: initial.inputObjectId,
+    resultObjectId: initial.resultObjectId,
+    authorizationRequestId: initial.authorizationRequestId,
+    policyRevision: initial.policyRevision,
+    executionSegment: 2,
+    resumeContinuationFingerprint:
+      Buffer.from(new Uint8Array(32).fill(fill)).toString("base64url"),
   };
 }
 
@@ -78,6 +105,189 @@ function acceptanceSinks(
 }
 
 describe("JobManager protected Task execution", () => {
+  test("uses the paired parked persistence capability before the existing start", async () => {
+    const order: string[] = [];
+    const persisted: PersistJobPayload[] = [];
+    let globalPersists = 0;
+    const jm = new JobManager({
+      laneLock: new InMemoryLaneLock(),
+      acceptanceSinks: acceptanceSinks(order),
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
+      persist: async () => {
+        globalPersists += 1;
+        throw new Error("generic persistence must not run");
+      },
+      updateStatus: async () => {},
+    });
+    await jm.createProtectedTaskJob({
+      scheduling: scheduling("subagent:parked-persistence"),
+      reference: continuationReference(),
+      executor: async function* () {
+        order.push("executor");
+        yield* [];
+      },
+      candidate: {
+        async persistJob(payload) {
+          order.push("parked-persist");
+          persisted.push(payload);
+          return "parked-persisted-job";
+        },
+        async recoverBeforeExecution() {
+          throw new Error("unexpected persistence recovery");
+        },
+        async start(jobId) {
+          order.push(`start:${jobId}`);
+          return { status: "started" };
+        },
+        run: work => work(
+          { message: "parked" },
+          new AbortController().signal,
+          publication,
+        ),
+        onIneligible() {},
+      },
+    });
+    await waitFor(() => order.includes("executor"));
+
+    expect(globalPersists).toBe(0);
+    expect(order.slice(0, 5)).toEqual([
+      "accept",
+      "parked-persist",
+      "link",
+      "start:parked-persisted-job",
+      "executor",
+    ]);
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]?.input).toMatchObject({ executionSegment: 2 });
+  });
+
+  test("recovers an uncertain parked persistence without a Job id or virtual failure", async () => {
+    const order: string[] = [];
+    const serverEvents: ServerEvent[] = [];
+    const listener = (event: ServerEvent) => serverEvents.push(event);
+    eventBus.on(listener);
+    let globalPersists = 0;
+    let starts = 0;
+    let executions = 0;
+    const terminalizedAcceptances: string[] = [];
+    const sinks = acceptanceSinks(order);
+    sinks.userCancelAcceptedWork = async ids => {
+      terminalizedAcceptances.push(...ids);
+      return ids.length;
+    };
+    const jm = new JobManager({
+      laneLock: new InMemoryLaneLock(),
+      acceptanceSinks: sinks,
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
+      persist: async () => {
+        globalPersists += 1;
+        return "wrong-generic-job";
+      },
+      updateStatus: async () => {},
+    });
+    try {
+      const admitted = await jm.createProtectedTaskJob({
+        scheduling: scheduling("subagent:parked-persistence-uncertain"),
+        reference: continuationReference(),
+        executor: async function* () { executions += 1; yield* []; },
+        candidate: {
+          async persistJob() {
+            order.push("parked-persist");
+            throw new Error("persistence response unknown");
+          },
+          async recoverBeforeExecution() {
+            order.push("recover-without-id");
+            return false;
+          },
+          async start() {
+            starts += 1;
+            return { status: "started" };
+          },
+          run: work => work(
+            { message: "must-not-open" },
+            new AbortController().signal,
+            publication,
+          ),
+          onIneligible() {
+            order.push("ineligible");
+          },
+        },
+      });
+      await waitFor(() => order.includes("ineligible"));
+
+      expect(globalPersists).toBe(0);
+      expect(starts).toBe(0);
+      expect(executions).toBe(0);
+      expect(order).toEqual([
+        "accept",
+        "parked-persist",
+        "recover-without-id",
+        "ineligible",
+      ]);
+      expect(serverEvents.some(event => event.type === "job.status"
+        && event.jobId === admitted.id && event.status === "failed")).toBe(false);
+
+      let retried = 0;
+      await jm.createProtectedTaskJob({
+        scheduling: scheduling("subagent:parked-persistence-uncertain"),
+        reference: continuationReference(2),
+        executor: async function* () { retried += 1; yield* []; },
+        candidate: {
+          persistJob: async () => "parked-retry-job",
+          recoverBeforeExecution: async () => true,
+          start: async () => ({ status: "started" }),
+          run: work => work(
+            { message: "retry" },
+            new AbortController().signal,
+            publication,
+          ),
+          onIneligible() {},
+        },
+      });
+      await waitFor(() => retried === 1);
+      await waitFor(() => jm.getJob("parked-retry-job") === undefined);
+      expect(terminalizedAcceptances).toEqual([]);
+      await jm.stopThread("subagent:parked-persistence-uncertain");
+      expect(terminalizedAcceptances).toEqual(["acceptance-1"]);
+    } finally {
+      eventBus.off(listener);
+    }
+  });
+
+  test("keeps initial protected persistence failure on the generic failure path", async () => {
+    const serverEvents: ServerEvent[] = [];
+    const listener = (event: ServerEvent) => serverEvents.push(event);
+    eventBus.on(listener);
+    let ineligible = 0;
+    const jm = new JobManager({
+      laneLock: new InMemoryLaneLock(),
+      acceptanceSinks: acceptanceSinks([]),
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
+      persist: async () => { throw new Error("generic persistence failed"); },
+      updateStatus: async () => {},
+    });
+    try {
+      const admitted = await jm.createProtectedTaskJob({
+        scheduling: scheduling("subagent:initial-persistence-failure"),
+        reference: reference(),
+        executor: async function* () { yield* []; },
+        candidate: {
+          start: async () => ({ status: "started" }),
+          run: work => work({}, new AbortController().signal, publication),
+          onIneligible() { ineligible += 1; },
+        },
+      });
+      await waitFor(() => ineligible === 1);
+      expect(serverEvents.some(event => event.type === "job.status"
+        && event.jobId === admitted.id && event.status === "failed")).toBe(true);
+    } finally {
+      eventBus.off(listener);
+    }
+  });
+
   test("persists and links content-free state before opening transient input", async () => {
     const longThreadId = `subagent:${"a".repeat(300)}`;
     const order: string[] = [];
@@ -119,6 +329,8 @@ describe("JobManager protected Task execution", () => {
     const jm = manager = new JobManager({
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks(order),
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async (payload) => {
         order.push("persist");
         persisted.push(payload);
@@ -181,6 +393,8 @@ describe("JobManager protected Task execution", () => {
     const jm = new JobManager({
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks([]),
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async (payload) => {
         persisted.push(payload);
         return `protected-job-${persisted.length}`;
@@ -225,6 +439,8 @@ describe("JobManager protected Task execution", () => {
     const jm = new JobManager({
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks([], () => 0),
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => "protected-job-link-race",
       updateStatus: async () => {},
     });
@@ -252,7 +468,7 @@ describe("JobManager protected Task execution", () => {
     expect(opened).toBe(0);
   });
 
-  test("a stale protected lifecycle start cancels the Job without opening content", async () => {
+  test("a stale protected lifecycle start uses exact recovery without a generic write", async () => {
     const order: string[] = [];
     const updates: Array<{ status: JobStatus; fields: unknown }> = [];
     let opened = 0;
@@ -260,6 +476,8 @@ describe("JobManager protected Task execution", () => {
     const jm = new JobManager({
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks(order),
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => {
         order.push("persist");
         return "protected-job-stale";
@@ -282,28 +500,89 @@ describe("JobManager protected Task execution", () => {
           opened += 1;
           return work({ message: "must-not-open" }, new AbortController().signal, publication);
         },
+        async deferBeforeExecution(jobId) {
+          expect(jobId).toBe("protected-job-stale");
+          order.push("recover");
+          return true;
+        },
         onIneligible() {
           ineligible += 1;
         },
       },
     });
-    await waitFor(() => updates.some((update) => update.status === "cancelled"));
+    await waitFor(() => ineligible === 1);
+    expect(order).toContain("recover");
+    expect(updates).toEqual([]);
 
     expect(order.slice(0, 4)).toEqual(["accept", "persist", "link", "start"]);
     expect(opened).toBe(0);
     expect(ineligible).toBe(1);
   });
 
+  test("a Stop racing lifecycle start releases the candidate before recovery", async () => {
+    const order: string[] = [];
+    let finished = false;
+    let opened = 0;
+    let manager: JobManager;
+    const jm = manager = new JobManager({
+      laneLock: new InMemoryLaneLock(),
+      acceptanceSinks: acceptanceSinks([]),
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
+      persist: async () => "protected-job-start-stop-race",
+      updateStatus: async () => {},
+    });
+
+    await jm.createProtectedTaskJob({
+      scheduling: scheduling("subagent:protected-start-stop-race"),
+      reference: reference(),
+      executor: async function* () { yield* []; },
+      candidate: {
+        async start(jobId) {
+          order.push("start");
+          expect(await manager.cancelJob(jobId)).toBe(true);
+          return { status: "started" };
+        },
+        async run(work) {
+          opened += 1;
+          return work(
+            { message: "must-not-open" },
+            new AbortController().signal,
+            publication,
+          );
+        },
+        async deferBeforeExecution(jobId) {
+          expect(jobId).toBe("protected-job-start-stop-race");
+          expect(finished).toBe(true);
+          order.push("recover");
+          return true;
+        },
+        onIneligible() {
+          if (finished) return;
+          finished = true;
+          order.push("ineligible");
+          throw new Error("candidate cleanup diagnostic");
+        },
+      },
+    });
+    await waitFor(() => order.includes("recover"));
+    await waitFor(() => jm.getJob("protected-job-start-stop-race") === undefined);
+
+    expect(order).toEqual(["start", "ineligible", "recover"]);
+    expect(opened).toBe(0);
+  });
+
   test("a protected lifecycle start failure cannot open content", async () => {
     let opened = 0;
-    let cancelled = 0;
+    let recoveryAttempts = 0;
+    let writes = 0;
     const jm = new JobManager({
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks([]),
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => "protected-job-start-failure",
-      updateStatus: async (_jobId, status) => {
-        if (status === "cancelled") cancelled += 1;
-      },
+      updateStatus: async () => { writes += 1; },
     });
 
     await jm.createProtectedTaskJob({
@@ -318,10 +597,16 @@ describe("JobManager protected Task execution", () => {
           opened += 1;
           return work({ message: "must-not-open" }, new AbortController().signal, publication);
         },
+        async deferBeforeExecution() {
+          recoveryAttempts += 1;
+          throw new Error("recovery response unknown");
+        },
         onIneligible() {},
       },
     });
-    await waitFor(() => cancelled === 1);
+    await waitFor(() => recoveryAttempts === 1);
+    await waitFor(() => jm.getJob("protected-job-start-failure") === undefined);
+    expect(writes).toBe(0);
     expect(opened).toBe(0);
   });
 
@@ -344,6 +629,8 @@ describe("JobManager protected Task execution", () => {
     const jm = new JobManager({
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks([]),
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => "protected-job-event",
       updateStatus: async () => {},
     });
@@ -389,6 +676,8 @@ describe("JobManager protected Task execution", () => {
     const jm = new JobManager({
       laneLock,
       acceptanceSinks: sinks,
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       taskStopSink: async (taskId) => {
         stoppedTasks.push(taskId);
       },
@@ -434,6 +723,8 @@ describe("JobManager protected Task execution", () => {
     const jm = new JobManager({
       laneLock,
       acceptanceSinks: acceptanceSinks([]),
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
       persist: async () => "must-not-persist",
       updateStatus: async () => {},
     });
@@ -463,9 +754,129 @@ describe("JobManager protected Task execution", () => {
     }
   });
 
+  test("a protected Job start loss releases local tracking without terminal writes", async () => {
+    for (const disposition of ["rejected", "unknown"] as const) {
+      const jobId = `protected-job-start-${disposition}`;
+      const updates: JobStatus[] = [];
+      let executed = 0;
+      let startInput: readonly unknown[] | undefined;
+      const jm = new JobManager({
+        laneLock: new InMemoryLaneLock(),
+        acceptanceSinks: acceptanceSinks([]),
+        persist: async () => jobId,
+        updateStatus: async (_jobId, status) => { updates.push(status); },
+        startProtectedTaskJob: async (...input) => {
+          startInput = input;
+          if (disposition === "unknown") throw new Error("response lost");
+          return "rejected";
+        },
+      });
+
+      await jm.createProtectedTaskJob({
+        scheduling: scheduling(`subagent:protected-job-start-${disposition}`),
+        reference: reference(),
+        executor: async function* () { executed += 1; yield* []; },
+        candidate: {
+          start: async () => ({ status: "started" }),
+          run: (work) => work(
+            { message: "must-not-open" },
+            new AbortController().signal,
+            publication,
+          ),
+          onIneligible() {},
+        },
+      });
+      await waitFor(() => startInput !== undefined);
+      await waitFor(() => jm.getJob(jobId) === undefined);
+
+      expect(executed).toBe(0);
+      expect(updates).toEqual([]);
+      expect(startInput).toEqual([
+        jobId,
+        reference(),
+        { expectedRevision: 7, representation: "protected_only" },
+      ]);
+    }
+  });
+
+  test("a typed pre-executor failure settles through guarded recovery, never generic fail", async () => {
+    let writes = 0;
+    let recovered = 0;
+    let executed = 0;
+    const jm = new JobManager({
+      laneLock: new InMemoryLaneLock(), acceptanceSinks: acceptanceSinks([]),
+      persist: async () => "protected-before-work",
+      updateStatus: async () => { writes += 1; },
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
+    });
+    await jm.createProtectedTaskJob({
+      scheduling: scheduling("subagent:protected-before-work"), reference: reference(),
+      executor: async function* () { executed += 1; yield* []; },
+      candidate: {
+        start: async () => ({ status: "started" }),
+        run: async () => { throw new ProtectedTaskExecutionDidNotBeginError(); },
+        deferBeforeExecution: async jobId => {
+          expect(jobId).toBe("protected-before-work"); recovered += 1; return true;
+        },
+        onIneligible() {},
+      },
+    });
+    await waitFor(() => recovered === 1);
+    await waitFor(() => jm.getJob("protected-before-work") === undefined);
+    expect(writes).toBe(0);
+    expect(executed).toBe(0);
+  });
+
+  test("a start-shaped candidate close failure after confirmed running is terminalized normally", async () => {
+    const updates: JobStatus[] = [];
+    let executed = 0;
+    const jm = new JobManager({
+      laneLock: new InMemoryLaneLock(),
+      acceptanceSinks: acceptanceSinks([]),
+      persist: async () => "protected-job-post-start-failure",
+      updateStatus: async () => {},
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal: async (
+        _jobId, _reference, requested,
+      ) => {
+        updates.push(requested);
+        return { kind: "transitioned", status: requested };
+      },
+    });
+
+    await jm.createProtectedTaskJob({
+      scheduling: scheduling("subagent:protected-job-post-start-failure"),
+      reference: reference(),
+      executor: async function* () { executed += 1; yield* []; },
+      candidate: {
+        start: async () => ({ status: "started" }),
+        async run(work) {
+          await work(
+            { message: "opened" },
+            new AbortController().signal,
+            Object.freeze({
+              publish: async () => {},
+              park: async () => {},
+              awaitSettled: async () => false,
+            }),
+          );
+          throw new ProtectedTaskJobStartNotOwnedError("rejected");
+        },
+        onIneligible() {},
+      },
+    });
+    await waitFor(() => updates.includes("failed"));
+    await waitFor(() => jm.getJob("protected-job-post-start-failure") === undefined);
+
+    expect(executed).toBe(1);
+    expect(updates).toEqual(["failed"]);
+  });
+
   test("ordinary foreground dispatch retains its existing execution path", async () => {
     const persisted: PersistJobPayload[] = [];
     const executed: string[] = [];
+    let protectedStarts = 0;
     const executor: JobExecutor = async function* (input) {
       executed.push(String(input["message"]));
       yield* [];
@@ -473,6 +884,10 @@ describe("JobManager protected Task execution", () => {
     const jm = new JobManager({
       laneLock: new InMemoryLaneLock(),
       acceptanceSinks: acceptanceSinks([]),
+      startProtectedTaskJob: async () => {
+        protectedStarts += 1;
+        return "started";
+      },
       persist: async (payload) => {
         persisted.push(payload);
         return "ordinary-job";
@@ -504,6 +919,7 @@ describe("JobManager protected Task execution", () => {
     await waitFor(() => executed.length === 1);
 
     expect(executed).toEqual(["ordinary-message"]);
+    expect(protectedStarts).toBe(0);
     expect(persisted[0]?.input).toMatchObject({ message: "ordinary-message" });
     expect(persisted[0]?.publicationPolicy).toBeUndefined();
   });
