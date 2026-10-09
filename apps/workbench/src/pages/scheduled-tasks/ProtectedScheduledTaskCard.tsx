@@ -1,5 +1,15 @@
 import { useState, type ReactElement } from "react";
-import type { ProtectedScheduledTaskRow } from "./use-scheduled-tasks";
+import type { TaskRunSummaryV1 } from "@nautilo/types";
+import type { ConversationEncryptionPolicyMode } from
+  "../../adapters/runtime-contexts";
+import type { WorkbenchProtectedHumanTaskController } from
+  "../../lib/protected-human-task-controller";
+import { ProtectedTaskRunResult } from
+  "../../modes/rooms/subagents/ProtectedTaskRunResult";
+import type {
+  ProtectedScheduledTaskHistory,
+  ProtectedScheduledTaskRow,
+} from "./use-scheduled-tasks";
 import {
   formatNextFire,
   isScheduleEnabled,
@@ -12,19 +22,44 @@ export function ProtectedScheduledTaskCard({
   onEnable,
   onDisable,
   onRemove,
+  controller,
+  mode,
+  scopeKey,
+  history,
+  onOpenHistory,
+  onCloseHistory,
 }: Readonly<{
   row: ProtectedScheduledTaskRow;
   busy?: boolean;
   onEnable(taskId: string): void;
   onDisable(taskId: string): void;
   onRemove(taskId: string): void;
+  controller: WorkbenchProtectedHumanTaskController | undefined;
+  mode: ConversationEncryptionPolicyMode;
+  scopeKey: string;
+  history: ProtectedScheduledTaskHistory | null;
+  onOpenHistory(taskId: string): void;
+  onCloseHistory(taskId: string): void;
 }>): ReactElement {
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [selectedRun, setSelectedRun] = useState<Readonly<{
+    scopeKey: string;
+    taskId: string;
+    taskRunId: string;
+  }> | null>(null);
   const { task } = row;
   const enabled = isScheduleEnabled(task.status);
   const cadence = task.scheduleKind === "cron" ? task.cron || "recurring" : "once";
   const unavailableLabel = row.availability === "unavailable"
     ? protectedTaskUnavailableLabel(row.reason)
+    : null;
+  const currentHistory = history?.taskId === task.id ? history : null;
+  const selectedRunId = selectedRun !== null
+    && selectedRun.scopeKey === scopeKey
+    && selectedRun.taskId === task.id
+    && currentHistory?.state === "ready"
+    && currentHistory.runs.some((run) => run.id === selectedRun.taskRunId)
+    ? selectedRun.taskRunId
     : null;
 
   return (
@@ -77,9 +112,90 @@ export function ProtectedScheduledTaskCard({
       <div className="flex items-center gap-3 text-[11px] text-foreground-muted">
         <span className="font-mono">{cadence}</span>
         <span>{enabled ? `next ${formatNextFire(task.nextFireAt)}` : "paused"}</span>
+        {row.availability === "opened" ? (
+          <button type="button" className="font-medium text-primary"
+            aria-expanded={currentHistory !== null}
+            onClick={() => {
+              setSelectedRun(null);
+              if (currentHistory === null) onOpenHistory(task.id);
+              else onCloseHistory(task.id);
+            }}>
+            {currentHistory === null ? "Run history" : "Hide runs"}
+          </button>
+        ) : null}
       </div>
+      {currentHistory !== null ? (
+        <div className="mt-2 space-y-2 border-t border-border pt-2"
+          data-testid="protected-scheduled-task-history">
+          {currentHistory.state === "loading" ? (
+            <p className="text-xs text-foreground-muted" role="status">
+              Loading run history…
+            </p>
+          ) : currentHistory.state === "error" ? (
+            <div className="flex items-center gap-2 text-xs text-red-500" role="alert">
+              <span>{currentHistory.message}</span>
+              <button type="button" className="font-medium underline"
+                onClick={() => onOpenHistory(task.id)}>Try again</button>
+            </div>
+          ) : currentHistory.runs.length === 0 ? (
+            <p className="text-xs text-foreground-muted" role="status">
+              No runs yet.
+            </p>
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-1.5" aria-label="Protected task runs">
+                {currentHistory.runs.map((run, index) => {
+                  const label = protectedRunLabel(run, index);
+                  return (
+                    <button key={run.id} type="button"
+                      aria-pressed={selectedRunId === run.id}
+                      className={`rounded border px-2 py-1 text-[11px] ${
+                        selectedRunId === run.id
+                          ? "border-primary bg-primary/10 text-foreground"
+                          : "border-border text-foreground-muted"
+                      }`}
+                      onClick={() => setSelectedRun({
+                        scopeKey,
+                        taskId: task.id,
+                        taskRunId: run.id,
+                      })}>
+                      <span>{label}</span>
+                      <span className="ml-1 uppercase">{run.status}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {selectedRunId === null ? (
+                <p className="text-xs text-foreground-muted" role="status">
+                  Choose a run to open its protected result.
+                </p>
+              ) : (
+                <ProtectedTaskRunResult
+                  agentId={task.agentId}
+                  controller={controller}
+                  mode={mode}
+                  scopeKey={scopeKey}
+                  taskId={task.id}
+                  taskRunId={selectedRunId}
+                />
+              )}
+            </>
+          )}
+        </div>
+      ) : null}
     </li>
   );
+}
+
+function protectedRunLabel(run: TaskRunSummaryV1, index: number): string {
+  const timestamp = run.completedAt ?? run.startedAt;
+  if (timestamp === null) return `Run ${index + 1}`;
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return `Run ${index + 1}`;
+  return date.toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
 
 function protectedTaskUnavailableLabel(

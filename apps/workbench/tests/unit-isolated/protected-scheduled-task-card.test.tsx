@@ -1,0 +1,163 @@
+import "../bun-dom-preload";
+import { cleanup, fireEvent, render } from "@testing-library/react";
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import type { TaskRunSummaryV1 } from "@nautilo/types";
+
+import type {
+  ProtectedScheduledTaskHistory,
+  ProtectedScheduledTaskRow,
+} from "../../src/pages/scheduled-tasks/use-scheduled-tasks";
+
+const renderProtectedResult = mock((props: Readonly<{ taskRunId: string }>) => (
+  <div data-testid="selected-protected-result">
+    {props.taskRunId === "failed-run" ? "Run failed before producing a result." : "Opened result"}
+  </div>
+));
+
+mock.module("../../src/modes/rooms/subagents/ProtectedTaskRunResult", () => ({
+  ProtectedTaskRunResult: renderProtectedResult,
+}));
+
+const { ProtectedScheduledTaskCard } = await import("../../src/pages/scheduled-tasks/ProtectedScheduledTaskCard");
+
+function openedRow(): ProtectedScheduledTaskRow {
+  return {
+    availability: "opened",
+    task: {
+      id: "protected-schedule",
+      agentId: "agent-one",
+      agentName: "Genie",
+      scheduleKind: "cron",
+      cron: "0 9 * * 1",
+      nextFireAt: "2026-10-12T09:00:00.000Z",
+      status: "pending",
+    } as ProtectedScheduledTaskRow["task"],
+    prompt: "Prepare a private weekly digest",
+    expectedOutput: null,
+  };
+}
+
+function run(id: string, status: string, startedAt: string | null): TaskRunSummaryV1 {
+  return {
+    id,
+    status,
+    modelId: null,
+    startedAt,
+    completedAt: null,
+    content: {
+      dtoVersion: 1,
+      status: "unavailable",
+      reason: "waiting_for_authorization",
+    },
+  };
+}
+
+const actions = {
+  onEnable: mock(() => {}),
+  onDisable: mock(() => {}),
+  onRemove: mock(() => {}),
+  onOpenHistory: mock(() => {}),
+  onCloseHistory: mock(() => {}),
+};
+
+function readyHistory(): ProtectedScheduledTaskHistory {
+  return {
+    taskId: "protected-schedule",
+    state: "ready",
+    runs: [
+      run("pending-run", "pending", null),
+      run("failed-run", "errored", "2026-10-08T10:00:00.000Z"),
+      run("completed-run", "completed", "2026-10-09T10:00:00.000Z"),
+    ],
+  };
+}
+
+describe("ProtectedScheduledTaskCard run history", () => {
+  afterEach(() => {
+    cleanup();
+    renderProtectedResult.mockClear();
+    Object.values(actions).forEach((action) => action.mockClear());
+  });
+
+  test("opens history on demand and reports loading and failures truthfully", () => {
+    const view = render(
+      <ProtectedScheduledTaskCard row={openedRow()} {...actions}
+        controller={undefined} mode="encrypted_only" scopeKey="scope-a"
+        history={null} />,
+    );
+
+    fireEvent.click(view.getByRole("button", { name: "Run history" }));
+    expect(actions.onOpenHistory).toHaveBeenCalledWith("protected-schedule");
+
+    view.rerender(
+      <ProtectedScheduledTaskCard row={openedRow()} {...actions}
+        controller={undefined} mode="encrypted_only" scopeKey="scope-a"
+        history={{ taskId: "protected-schedule", state: "loading" }} />,
+    );
+    expect(view.getByRole("status").textContent).toBe("Loading run history…");
+
+    view.rerender(
+      <ProtectedScheduledTaskCard row={openedRow()} {...actions}
+        controller={undefined} mode="encrypted_only" scopeKey="scope-a"
+        history={{
+          taskId: "protected-schedule",
+          state: "error",
+          message: "Device access is unavailable",
+        }} />,
+    );
+    expect(view.getByRole("alert").textContent).toContain("Device access is unavailable");
+    fireEvent.click(view.getByRole("button", { name: "Try again" }));
+    expect(actions.onOpenHistory).toHaveBeenCalledTimes(2);
+  });
+
+  test("requires an exact stored run selection and never displays run ids", () => {
+    const history = readyHistory();
+    const view = render(
+      <ProtectedScheduledTaskCard row={openedRow()} {...actions}
+        controller={undefined} mode="encrypted_only" scopeKey="scope-a"
+        history={history} />,
+    );
+
+    expect(view.getByText("Choose a run to open its protected result.")).toBeTruthy();
+    expect(view.getByText("pending")).toBeTruthy();
+    expect(view.getByText("errored")).toBeTruthy();
+    expect(view.getByText("completed")).toBeTruthy();
+    expect(renderProtectedResult).not.toHaveBeenCalled();
+    expect(view.container.textContent).not.toContain("pending-run");
+    expect(view.container.textContent).not.toContain("failed-run");
+    expect(view.container.textContent).not.toContain("completed-run");
+
+    fireEvent.click(view.getByRole("button", { name: /errored/i }));
+    expect(renderProtectedResult).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        agentId: "agent-one",
+        mode: "encrypted_only",
+        scopeKey: "scope-a",
+        taskId: "protected-schedule",
+        taskRunId: "failed-run",
+      }),
+      undefined,
+    );
+    expect(view.getByText("Run failed before producing a result.")).toBeTruthy();
+    expect(view.container.textContent).not.toContain("failed-run");
+  });
+
+  test("clears the selected result immediately when viewer scope changes", () => {
+    const history = readyHistory();
+    const view = render(
+      <ProtectedScheduledTaskCard row={openedRow()} {...actions}
+        controller={undefined} mode="encrypted_only" scopeKey="scope-a"
+        history={history} />,
+    );
+    fireEvent.click(view.getByRole("button", { name: /completed/i }));
+    expect(view.getByTestId("selected-protected-result")).toBeTruthy();
+
+    view.rerender(
+      <ProtectedScheduledTaskCard row={openedRow()} {...actions}
+        controller={undefined} mode="encrypted_only" scopeKey="scope-b"
+        history={history} />,
+    );
+    expect(view.queryByTestId("selected-protected-result")).toBeNull();
+    expect(view.getByText("Choose a run to open its protected result.")).toBeTruthy();
+  });
+});

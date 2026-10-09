@@ -15,7 +15,9 @@ import { useScheduledTasks } from "./use-scheduled-tasks";
  */
 export function ScheduledTasksSurface(): ReactElement {
   const { tasks, protectedTasks, protectedLoading, protectedError, loading, error,
-    busyIds, refresh, disable, enable, remove } = useScheduledTasks();
+    protectedController, protectedMode, protectedScopeKey, protectedHistory,
+    busyIds, refresh, openProtectedHistory, closeProtectedHistory,
+    disable, enable, remove } = useScheduledTasks();
   const [query, setQuery] = useState("");
 
   const visible = useMemo(() => filterBySearch(tasks, query), [tasks, query]);
@@ -139,6 +141,12 @@ export function ScheduledTasksSurface(): ReactElement {
                     onEnable={enable}
                     onDisable={disable}
                     onRemove={remove}
+                    controller={protectedController}
+                    mode={protectedMode}
+                    scopeKey={protectedScopeKey}
+                    history={protectedHistory}
+                    onOpenHistory={openProtectedHistory}
+                    onCloseHistory={closeProtectedHistory}
                   />
                 ))}
               </ul>
