@@ -63,6 +63,7 @@ function factories(
     send: async () => ({ messageId: 1 }),
     recoverPending: async () => 0,
     recoverRoomPendingAttention: async () => ({ status: "ready", events: [] }),
+    recoverTaskPendingAttention: async () => ({ status: "ready", events: [] }),
     completePending: async () => true,
     synchronizeHumanPeerRecipients: async () => true,
     serviceDomainKeyBacklog: async () => true,
@@ -1021,6 +1022,26 @@ describe("ElectronForegroundShadowController", () => {
     });
     expect(typeof call.isCurrent).toBe("function");
     expect(call.isCurrent()).toBeTrue();
+
+    const taskCalls: unknown[] = [];
+    const taskController = createElectronForegroundShadowController(controllerInput({
+      factories: factories({ sender: {
+        recoverTaskPendingAttention: async (input: unknown) => {
+          taskCalls.push(input);
+          return { status: "ready", events: [] };
+        },
+      } }),
+    }));
+    expect(await taskController.recoverTaskPendingAttention({
+      clientActionSessionId: "session-2",
+    })).toEqual({ status: "ready", events: [] });
+    expect(taskCalls).toHaveLength(1);
+    const taskCall = taskCalls[0] as Readonly<{
+      clientActionSessionId: string;
+      isCurrent: () => boolean;
+    }>;
+    expect(taskCall.clientActionSessionId).toBe("session-2");
+    expect(taskCall.isCurrent()).toBeTrue();
   });
 
   test("routes receive, recipient, and history operations as public DTOs", async () => {

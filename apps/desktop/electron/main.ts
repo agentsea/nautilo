@@ -273,6 +273,7 @@ import {
   foregroundShadowString,
   parseForegroundShadowEdit,
   parseForegroundShadowPendingAttention,
+  parseForegroundShadowTaskPendingAttention,
 } from "./foreground-shadow-ipc-validation.ts";
 import {
   parseTaskOperationRequestV1,
@@ -8694,6 +8695,12 @@ ipcMain.handle("foregroundShadow:recoverRoomPendingAttention", async (e, raw: un
   const input = parseForegroundShadowPendingAttention(raw);
   const { controller } = await foregroundShadowControllerForSender(e);
   return controller.recoverRoomPendingAttention(input);
+});
+
+ipcMain.handle("foregroundShadow:recoverTaskPendingAttention", async (e, raw: unknown) => {
+  const input = parseForegroundShadowTaskPendingAttention(raw);
+  const { controller } = await foregroundShadowControllerForSender(e);
+  return controller.recoverTaskPendingAttention(input);
 });
 
 ipcMain.handle("foregroundShadow:edit", async (e, raw: unknown) => {

@@ -1,5 +1,8 @@
 import { prepareVaultHumanMessageEdit } from "./vault-human-message-edit.ts";
-import { isRoomPendingAttentionEventForViewer } from "@nautilo/api-client/browser";
+import {
+  isRoomPendingAttentionEventForViewer,
+  isTaskPendingAttentionEventForViewer,
+} from "@nautilo/api-client/browser";
 import type {
   LiveShadowMessagePreparedRequestV1,
   FullEncryptionMessagePreparedRequestV2,
@@ -7,6 +10,9 @@ import type {
   NautiloApiClient,
   RoomPendingAttentionChallenge,
   RoomPendingAttentionPageResponse,
+  TaskPendingAttentionChallenge,
+  TaskPendingAttentionEvent,
+  TaskPendingAttentionPageResponse,
 } from "@nautilo/api-client/browser";
 import type { LatticeCrypto } from "@nautilo/lattice-crypto";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -96,11 +102,18 @@ export interface HumanLiveShadowMessageApiPort {
   authorizeRuntimeInvocation?: NautiloApiClient["authorizeRuntimeInvocation"];
   getRoomPendingAttention?: NautiloApiClient["getRoomPendingAttention"];
   readRoomPendingAttention?: NautiloApiClient["readRoomPendingAttention"];
+  getTaskPendingAttention?: NautiloApiClient["getTaskPendingAttention"];
+  readTaskPendingAttention?: NautiloApiClient["readTaskPendingAttention"];
 }
 
 export type RecoveredRoomPendingAttention = Readonly<{
   status: "ready" | "unavailable";
   events: readonly ServerEvent[];
+}>;
+
+export type RecoveredTaskPendingAttention = Readonly<{
+  status: "ready" | "unavailable";
+  events: readonly TaskPendingAttentionEvent[];
 }>;
 
 export interface AuthorizedHumanLiveShadowMessageClient {
@@ -149,6 +162,11 @@ export interface AuthorizedHumanLiveShadowMessageClient {
     signal?: AbortSignal;
     isCurrent?: () => boolean;
   }>): Promise<RecoveredRoomPendingAttention>;
+  recoverTaskPendingAttention(input: Readonly<{
+    clientActionSessionId: string;
+    signal?: AbortSignal;
+    isCurrent?: () => boolean;
+  }>): Promise<RecoveredTaskPendingAttention>;
 }
 
 export interface CreateAuthorizedHumanLiveShadowMessageClientInput {
@@ -317,6 +335,18 @@ function areExactPendingAttentionEvents(
   });
 }
 
+function areExactTaskPendingAttentionEvents(
+  events: readonly ServerEvent[],
+  challenge: TaskPendingAttentionChallenge,
+  userId: string,
+): events is readonly TaskPendingAttentionEvent[] {
+  return events.every((event) => isTaskPendingAttentionEventForViewer(event, {
+    taskId: challenge.taskId,
+    taskRunId: challenge.taskRunId,
+    userId,
+  }));
+}
+
 function isExactPendingAttentionPlan(input: Readonly<{
   challenge: RoomPendingAttentionChallenge;
   planBytes: Uint8Array;
@@ -351,6 +381,10 @@ function isExactPendingAttentionPlan(input: Readonly<{
 const unavailablePendingAttention = Object.freeze({
   status: "unavailable" as const,
   events: Object.freeze([]) as readonly ServerEvent[],
+});
+const unavailableTaskPendingAttention = Object.freeze({
+  status: "unavailable" as const,
+  events: Object.freeze([]) as readonly TaskPendingAttentionEvent[],
 });
 
 export function createAuthorizedHumanLiveShadowMessageClient(
@@ -601,6 +635,121 @@ export function createAuthorizedHumanLiveShadowMessageClient(
         }
       } catch {
         return unavailablePendingAttention;
+      }
+    },
+    async recoverTaskPendingAttention(request) {
+      const page = input.api.getTaskPendingAttention;
+      const read = input.api.readTaskPendingAttention;
+      if (page === undefined || read === undefined
+        || input.domainForegroundAuthority === undefined
+        || !isCurrentPendingAttentionRecovery(request)) {
+        return unavailableTaskPendingAttention;
+      }
+      const events: TaskPendingAttentionEvent[] = [];
+      const seenCursors = new Set<string>();
+      let cursor: string | undefined;
+      try {
+        for (;;) {
+          if (!isCurrentPendingAttentionRecovery(request)) {
+            return unavailableTaskPendingAttention;
+          }
+          const response: TaskPendingAttentionPageResponse = await page.call(
+            input.api,
+            {
+              clientActionSessionId: request.clientActionSessionId,
+              authorizationDeviceId: input.coordinates.deviceId,
+              ...(cursor === undefined ? {} : { cursor }),
+            },
+            request.signal === undefined ? undefined : { signal: request.signal },
+          );
+          if (response.status !== "ready"
+            || !isCurrentPendingAttentionRecovery(request)) {
+            return unavailableTaskPendingAttention;
+          }
+          const challenge = response.challenge;
+          if (challenge !== undefined) {
+            let authorizationPlanBytes: Uint8Array | undefined;
+            let recipientPublicKey: Uint8Array | undefined;
+            try {
+              authorizationPlanBytes = fromBase64url(
+                challenge.authorizationPlanBytesBase64url,
+              );
+              recipientPublicKey = fromBase64url(
+                challenge.recipientPublicKeyBase64url,
+              );
+              const now = input.now();
+              if (!isExactPendingAttentionPlan({
+                challenge,
+                planBytes: authorizationPlanBytes,
+                roomId: challenge.roomId,
+                clientActionSessionId: request.clientActionSessionId,
+                coordinates: input.coordinates,
+                now,
+              }) || !isCurrentPendingAttentionRecovery(request)) {
+                return unavailableTaskPendingAttention;
+              }
+              const prepared = await prepareVaultRuntimeForegroundAuthorization({
+                crypto: input.crypto,
+                vault: input.vault,
+                coordinates: input.coordinates,
+                domainForegroundAuthority: input.domainForegroundAuthority,
+                authorizationPlanBytes,
+                recipientPublicKey,
+                browserSessionId: request.clientActionSessionId,
+                now,
+              });
+              if (prepared.status !== "prepared") {
+                return unavailableTaskPendingAttention;
+              }
+              try {
+                if (!isCurrentPendingAttentionRecovery(request)) {
+                  return unavailableTaskPendingAttention;
+                }
+                const opened = await read.call(input.api, {
+                  clientActionSessionId: request.clientActionSessionId,
+                  authorizationDeviceId: input.coordinates.deviceId,
+                  taskId: challenge.taskId,
+                  taskRunId: challenge.taskRunId,
+                  challengeId: challenge.challengeId,
+                  authorizationBytesBase64url:
+                    toBase64url(prepared.authorizationBytes),
+                }, request.signal === undefined
+                  ? undefined
+                  : { signal: request.signal });
+                if (opened.status !== "read"
+                  || !isCurrentPendingAttentionRecovery(request)
+                  || !areExactTaskPendingAttentionEvents(
+                    opened.events,
+                    challenge,
+                    input.coordinates.userId,
+                  )) {
+                  return unavailableTaskPendingAttention;
+                }
+                events.push(...opened.events);
+              } finally {
+                prepared.authorizationBytes.fill(0);
+                prepared.authorizationDigest.fill(0);
+              }
+            } finally {
+              authorizationPlanBytes?.fill(0);
+              recipientPublicKey?.fill(0);
+            }
+          }
+          const nextCursor = response.nextCursor;
+          if (nextCursor === null) {
+            return Object.freeze({
+              status: "ready" as const,
+              events: Object.freeze(events.slice()),
+            });
+          }
+          if (seenCursors.has(nextCursor)) {
+            return unavailableTaskPendingAttention;
+          }
+          seenCursors.add(nextCursor);
+          cursor = nextCursor;
+        }
+      } catch {
+        return unavailableTaskPendingAttention;
       }
     },
     async authorizeSharedAgentExecution(candidate) {

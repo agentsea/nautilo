@@ -30,6 +30,7 @@ export {
   modelControlSelectionSchema,
   modelControlSelectionResponseSchema,
   isRoomPendingAttentionEventForViewer,
+  isTaskPendingAttentionEventForViewer,
 } from "./client";
 export type {
   ServerProviderPolicy,
@@ -90,6 +91,13 @@ export type {
   RoomPendingAttentionReadResponse,
   RoomPendingAttentionRecoveryResponse,
   RoomPendingAttentionEvent,
+  TaskPendingAttentionPageRequest,
+  TaskPendingAttentionChallenge,
+  TaskPendingAttentionPageResponse,
+  TaskPendingAttentionReadRequest,
+  TaskPendingAttentionReadResponse,
+  TaskPendingAttentionRecoveryResponse,
+  TaskPendingAttentionEvent,
   UnauthorizedResponse,
   UnauthorizedResponseHandler,
   DeviceAdmissionRequiredHandler,

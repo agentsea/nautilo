@@ -83,6 +83,8 @@ import type { PreparedMutationJournalVaultPort } from
 
 const NOW = 1_800_000_000_000;
 const ROOM = "40000000-0000-4000-8000-000000000282";
+const TASK = "50000000-0000-4000-8000-000000000282";
+const TASK_RUN = "60000000-0000-4000-8000-000000000282";
 const COORDINATES: ClientProfileCoordinates = Object.freeze({
   serverScope: "https://m282.test",
   userId: "10000000-0000-4000-8000-000000000282",
@@ -541,6 +543,86 @@ function fixture(
 }
 
 describe("authorized Human live Shadow Message client", () => {
+  test("exhausts opaque Task checkpoint pages without opening custody when empty", async () => {
+    const cursors: Array<string | undefined> = [];
+    let reads = 0;
+    let domainOpens = 0;
+    const client = pendingAttentionClient(pendingAttentionApi({
+      getTaskPendingAttention: (request) => {
+        cursors.push(request.cursor);
+        return Promise.resolve({
+          status: "ready" as const,
+          nextCursor: request.cursor === undefined ? "opaque-task-page-2" : null,
+        });
+      },
+      readTaskPendingAttention: () => {
+        reads += 1;
+        return Promise.reject(new Error("must not read"));
+      },
+    }), {
+      domainForegroundAuthority: {
+        withOpenedAuthorizationDomains: () => {
+          domainOpens += 1;
+          return Promise.reject(new Error("must not open domains"));
+        },
+        withOpenedTurnAuthority: () => Promise.reject(new Error("unused")),
+        withOpenedReusableTurnRoomKey: () => Promise.reject(new Error("unused")),
+      },
+    });
+
+    expect(await client.recoverTaskPendingAttention({
+      clientActionSessionId: "pending-session-1",
+    })).toEqual({ status: "ready", events: [] });
+    expect(cursors).toEqual([undefined, "opaque-task-page-2"]);
+    expect(reads).toBe(0);
+    expect(domainOpens).toBe(0);
+  });
+
+  test("rejects a Task pending read plan that grants encryption", async () => {
+    const crypto = new LatticeCrypto(seededRng(322_003));
+    const recipient = await crypto.generateEncryptionKeyPair();
+    const planBytes = pendingAttentionPlanBytes(crypto, ["decrypt", "encrypt"]);
+    let reads = 0;
+    let domainOpens = 0;
+    const client = pendingAttentionClient(pendingAttentionApi({
+      getTaskPendingAttention: () => Promise.resolve({
+        status: "ready" as const,
+        challenge: {
+          challengeId: "pending-challenge-1",
+          authorizationPlanBytesBase64url: base64url(planBytes),
+          recipientPublicKeyBase64url: base64url(recipient.publicKey),
+          deadlineAt: NOW + 30_000,
+          roomId: ROOM,
+          taskId: TASK,
+          taskRunId: TASK_RUN,
+        },
+        nextCursor: null,
+      }),
+      readTaskPendingAttention: () => {
+        reads += 1;
+        return Promise.reject(new Error("must not read"));
+      },
+    }), {
+      crypto,
+      domainForegroundAuthority: {
+        withOpenedAuthorizationDomains: () => {
+          domainOpens += 1;
+          return Promise.reject(new Error("must not open domains"));
+        },
+        withOpenedTurnAuthority: () => Promise.reject(new Error("unused")),
+        withOpenedReusableTurnRoomKey: () => Promise.reject(new Error("unused")),
+      },
+    });
+
+    expect(await client.recoverTaskPendingAttention({
+      clientActionSessionId: "pending-session-1",
+    })).toEqual({ status: "unavailable", events: [] });
+    expect(reads).toBe(0);
+    expect(domainOpens).toBe(0);
+    planBytes.fill(0);
+    recipient.privateKey.fill(0);
+  });
+
   test("recovers every ordinary pending page without an execution request", async () => {
     const cursors: Array<string | undefined> = [];
     let executionRequests = 0;

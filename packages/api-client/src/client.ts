@@ -903,6 +903,57 @@ export type RoomPendingAttentionEvent = Extract<ServerEvent, {
   type: "approval.ask" | "prove_it.challenge" | "identity.challenge";
 }>;
 
+export type TaskPendingAttentionEvent = Readonly<
+  RoomPendingAttentionEvent & {
+    origin: "task";
+    taskId: string;
+    taskRunId: string;
+    userId: string;
+  }
+>;
+
+/** Socket- and device-bound request for one protected Task checkpoint page. */
+export type TaskPendingAttentionPageRequest = Omit<
+  RoomPendingAttentionPageRequest,
+  "cursor"
+> & Readonly<{ cursor?: string }>;
+
+export interface TaskPendingAttentionChallenge
+  extends RoomPendingAttentionChallenge {
+  taskId: string;
+  taskRunId: string;
+}
+
+export type TaskPendingAttentionPageResponse =
+  | Readonly<{
+      status: "ready";
+      nextCursor: string | null;
+      challenge?: TaskPendingAttentionChallenge | undefined;
+    }>
+  | Readonly<{
+      status: "unavailable";
+      nextCursor: string | null;
+      challenge?: never;
+    }>;
+
+export interface TaskPendingAttentionReadRequest {
+  clientActionSessionId: string;
+  authorizationDeviceId: string;
+  taskId: string;
+  taskRunId: string;
+  challengeId: string;
+  authorizationBytesBase64url: string;
+}
+
+export type TaskPendingAttentionReadResponse =
+  | Readonly<{ status: "read"; events: TaskPendingAttentionEvent[] }>
+  | Readonly<{ status: "unavailable"; events: [] }>;
+
+export interface TaskPendingAttentionRecoveryResponse {
+  status: "ready" | "unavailable";
+  events: readonly TaskPendingAttentionEvent[];
+}
+
 const UUID_LANE_COMPONENT_PATTERN =
   "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const UUID_LANE_COMPONENT = new RegExp(`^${UUID_LANE_COMPONENT_PATTERN}$`, "i");
@@ -935,6 +986,26 @@ export function isRoomPendingAttentionEventForViewer(
   return groupLane !== null
     && groupLane[1] === expected.roomId
     && groupLane[2]?.toLowerCase() === expected.humanActorId.toLowerCase();
+}
+
+/** Exact owner-private Task prompt returned from one authenticated checkpoint. */
+export function isTaskPendingAttentionEventForViewer(
+  event: ServerEvent,
+  expected: Readonly<{
+    taskId: string;
+    taskRunId: string;
+    userId: string;
+  }>,
+): event is TaskPendingAttentionEvent {
+  return (event.type === "approval.ask"
+      || event.type === "prove_it.challenge"
+      || event.type === "identity.challenge")
+    && event.origin === "task"
+    && event.taskId === expected.taskId
+    && event.taskRunId === expected.taskRunId
+    && event.userId === expected.userId
+    && event.threadId.length > 0
+    && event.laneKey === `task:${expected.taskId}`;
 }
 
 function isPendingAttentionTool(value: unknown): boolean {
@@ -1009,6 +1080,49 @@ const roomPendingAttentionReadResponseSchema: z.ZodType<RoomPendingAttentionRead
     status: z.enum(["read", "unavailable"]),
     events: z.array(pendingAttentionEventSchema),
   }).strict();
+const taskPendingAttentionChallengeSchema: z.ZodType<TaskPendingAttentionChallenge> =
+  z.object({
+    challengeId: z.string().min(1),
+    authorizationPlanBytesBase64url: z.string().min(1),
+    recipientPublicKeyBase64url: z.string().min(1),
+    deadlineAt: z.number().int().nonnegative(),
+    roomId: z.string().min(1),
+    taskId: z.string().uuid(),
+    taskRunId: z.string().uuid(),
+  }).strict();
+const taskPendingAttentionEventSchema = z.custom<TaskPendingAttentionEvent>(
+  (value) => isPendingAttentionEvent(value)
+    && value.origin === "task"
+    && typeof value.taskId === "string"
+    && value.taskId.length > 0
+    && typeof value.taskRunId === "string"
+    && value.taskRunId.length > 0
+    && typeof value.userId === "string"
+    && value.userId.length > 0,
+);
+const taskPendingAttentionPageResponseSchema: z.ZodType<TaskPendingAttentionPageResponse> =
+  z.discriminatedUnion("status", [
+    z.object({
+      status: z.literal("ready"),
+      nextCursor: z.string().min(1).nullable(),
+      challenge: taskPendingAttentionChallengeSchema.optional(),
+    }).strict(),
+    z.object({
+      status: z.literal("unavailable"),
+      nextCursor: z.string().min(1).nullable(),
+    }).strict(),
+  ]);
+const taskPendingAttentionReadResponseSchema: z.ZodType<TaskPendingAttentionReadResponse> =
+  z.discriminatedUnion("status", [
+    z.object({
+      status: z.literal("read"),
+      events: z.array(taskPendingAttentionEventSchema),
+    }).strict(),
+    z.object({
+      status: z.literal("unavailable"),
+      events: z.tuple([]),
+    }).strict(),
+  ]);
 
 /** First-time PIN enrollment returns recovery codes exactly once. */
 export interface PinEnrollmentResponse {
@@ -6203,6 +6317,36 @@ export class NautiloApiClient {
       ...(options?.signal === undefined ? {} : { signal: options.signal }),
       defaultErrorPrefix:
         `POST /api/rooms/${roomId}/pending-attention/read`,
+    });
+  }
+
+  /** Read one canonical protected Task checkpoint page without resuming it. */
+  async getTaskPendingAttention(
+    input: TaskPendingAttentionPageRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskPendingAttentionPageResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/pending-attention",
+      body: input,
+      schema: taskPendingAttentionPageResponseSchema,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      defaultErrorPrefix: "POST /api/tasks/pending-attention",
+    });
+  }
+
+  /** Open one exact protected Task checkpoint with fresh decrypt-only custody. */
+  async readTaskPendingAttention(
+    input: TaskPendingAttentionReadRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskPendingAttentionReadResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/pending-attention/read",
+      body: input,
+      schema: taskPendingAttentionReadResponseSchema,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      defaultErrorPrefix: "POST /api/tasks/pending-attention/read",
     });
   }
 

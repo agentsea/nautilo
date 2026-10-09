@@ -2037,6 +2037,12 @@ const foregroundShadowAPI = {
     "foregroundShadow:recoverRoomPendingAttention",
     input,
   ) as Promise<RoomPendingAttentionRecoveryResponse>,
+  recoverTaskPendingAttention: (input: Readonly<{
+    clientActionSessionId: string;
+  }>) => ipcRenderer.invoke(
+    "foregroundShadow:recoverTaskPendingAttention",
+    input,
+  ) as Promise<import("@nautilo/api-client").TaskPendingAttentionRecoveryResponse>,
   memory: {
     list: (options?: Readonly<{
       cursor?: string; limit?: number; includeArchive?: boolean;

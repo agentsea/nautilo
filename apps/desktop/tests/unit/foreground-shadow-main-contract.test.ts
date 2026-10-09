@@ -36,6 +36,12 @@ describe("foreground Shadow main-process contract", () => {
     );
     expect(pendingAttention.indexOf("parseForegroundShadowPendingAttention(raw)"))
       .toBeLessThan(pendingAttention.indexOf("foregroundShadowControllerForSender(e)"));
+    const taskPendingAttention = handler(
+      "foregroundShadow:recoverTaskPendingAttention",
+      "foregroundShadow:edit",
+    );
+    expect(taskPendingAttention.indexOf("parseForegroundShadowTaskPendingAttention(raw)"))
+      .toBeLessThan(taskPendingAttention.indexOf("foregroundShadowControllerForSender(e)"));
     const receive = handler("foregroundShadow:receive", "foregroundShadow:synchronizeRecipients");
     expect(receive.indexOf("parseLiveShadowMessageRealtimeEventV1(")).toBeLessThan(
       receive.indexOf("foregroundShadowControllerForSender(e)"),

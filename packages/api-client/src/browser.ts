@@ -36,6 +36,7 @@ export {
   saveArtifactToDisk,
   pickHighestRoleSlug,
   isRoomPendingAttentionEventForViewer,
+  isTaskPendingAttentionEventForViewer,
 } from "./client";
 
 export type {
@@ -148,6 +149,13 @@ export type {
   RoomPendingAttentionReadResponse,
   RoomPendingAttentionRecoveryResponse,
   RoomPendingAttentionEvent,
+  TaskPendingAttentionPageRequest,
+  TaskPendingAttentionChallenge,
+  TaskPendingAttentionPageResponse,
+  TaskPendingAttentionReadRequest,
+  TaskPendingAttentionReadResponse,
+  TaskPendingAttentionRecoveryResponse,
+  TaskPendingAttentionEvent,
   UnauthorizedResponse,
   UnauthorizedResponseHandler,
   ListArtifactsResponse,

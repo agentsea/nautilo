@@ -414,6 +414,15 @@ export class ElectronForegroundShadowController {
     }));
   }
 
+  recoverTaskPendingAttention(input: Readonly<{
+    clientActionSessionId: string;
+  }>): ReturnType<LiveShadowSender["recoverTaskPendingAttention"]> {
+    return this.#run(() => this.#sender.recoverTaskPendingAttention({
+      ...input,
+      isCurrent: () => !this.#disposed,
+    }));
+  }
+
   edit(
     roomId: string,
     messageId: string,

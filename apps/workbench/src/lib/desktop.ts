@@ -341,6 +341,9 @@ export interface DesktopForegroundShadowAPI {
     roomId: string;
     clientActionSessionId: string;
   }>): Promise<import("@nautilo/api-client/browser").RoomPendingAttentionRecoveryResponse>;
+  recoverTaskPendingAttention?(input: Readonly<{
+    clientActionSessionId: string;
+  }>): Promise<import("@nautilo/api-client/browser").TaskPendingAttentionRecoveryResponse>;
   memory: {
     list(options?: Readonly<{
       cursor?: string; limit?: number; includeArchive?: boolean;

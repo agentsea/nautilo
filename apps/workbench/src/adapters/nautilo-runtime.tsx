@@ -39,6 +39,7 @@ import {
 import type {
   MessageBackfillUrgentSelection,
   RoomPendingAttentionRecoveryResponse,
+  TaskPendingAttentionRecoveryResponse,
 } from "@nautilo/api-client/browser";
 import { resumeRealtimeAfterAdmission } from "./admission-realtime-resume";
 import { PinDialog } from "../components/pin-dialog";
@@ -303,7 +304,7 @@ import {
   initialApprovalLifecycleState,
   initialPendingApprovalPreviewQueue,
   reduceApprovalLifecycle,
-  reconcilePendingApprovalPreviewSnapshot,
+  reconcilePendingApprovalPreviewSubset,
   resolutionFromVerb,
   settlePendingApprovalPreview,
   shouldQueueApprovalAsk,
@@ -334,6 +335,16 @@ type QueuedPendingAttentionPreview = Readonly<{
   recovered: boolean;
 }>;
 
+function isQueuedTaskPendingAttention(item: QueuedPendingAttentionPreview): boolean {
+  return isTaskPendingAttentionPreviewEvent(item.event);
+}
+
+function isRecoveredQueuedTaskPendingAttention(
+  item: QueuedPendingAttentionPreview,
+): boolean {
+  return item.recovered && isQueuedTaskPendingAttention(item);
+}
+
 function pendingAttentionPreviewKey(event: PendingAttentionPreviewEvent): string {
   if (event.type === "approval.ask") return `approval:${event.approvalId}`;
   if (event.type === "identity.challenge") return `identity:${event.challengeId}`;
@@ -358,13 +369,61 @@ export function isTaskPendingAttentionPreviewEvent(
     && (event.origin === "task" || event.laneKey.startsWith("task:"));
 }
 
+function isTaskAttentionLifecycleEvent(event: ServerEvent): boolean {
+  if (isTaskPendingAttentionPreviewEvent(event)) return true;
+  if (event.type !== "approval.resolved") return false;
+  return ("origin" in event && event.origin === "task")
+    || ("laneKey" in event && typeof event.laneKey === "string"
+      && event.laneKey.startsWith("task:"));
+}
+
+export function taskPendingAttentionRecoveryTrigger(event: ServerEvent): boolean {
+  if (event.type === "task.status" || event.type === "task.completed"
+    || event.type === "task.errored") return true;
+  return event.type === "job.status"
+    && (event.status === "completed" || event.status === "failed"
+      || event.status === "cancelled" || event.status === "timed_out")
+    && event.laneKey?.startsWith("task:") === true;
+}
+
+export function roomHydrationShouldClearPendingAttentionUi(
+  active: ServerEvent | null,
+): boolean {
+  return active === null || !isTaskPendingAttentionPreviewEvent(active);
+}
+
 export function pendingAttentionPreviewIngress(
   event: ServerEvent,
   changesActiveRoomPendingAttention: boolean,
 ): "not-preview" | "direct" | "enqueue" | "drop" {
   if (!isPendingAttentionPreviewEvent(event)) return "not-preview";
-  if (isTaskPendingAttentionPreviewEvent(event)) return "direct";
+  if (isTaskPendingAttentionPreviewEvent(event)) return "enqueue";
   return changesActiveRoomPendingAttention ? "enqueue" : "drop";
+}
+
+export function recoverDesktopTaskPendingAttention(
+  desktopForegroundShadow: Pick<DesktopForegroundShadowAPI, "recoverTaskPendingAttention">,
+  input: Readonly<{
+    clientActionSessionId: string;
+    signal?: AbortSignal;
+    isCurrent?: () => boolean;
+  }>,
+  runWithAdmission: <T>(operation: () => Promise<T>) => Promise<T> = runWithCryptoAdmission,
+): Promise<TaskPendingAttentionRecoveryResponse> {
+  if (input.signal?.aborted || input.isCurrent?.() === false) {
+    return Promise.resolve({ status: "unavailable", events: [] });
+  }
+  if (desktopForegroundShadow.recoverTaskPendingAttention === undefined) {
+    return Promise.resolve({ status: "unavailable", events: [] });
+  }
+  return runWithAdmission(async () => {
+    const result = await desktopForegroundShadow.recoverTaskPendingAttention!({
+      clientActionSessionId: input.clientActionSessionId,
+    });
+    return input.signal?.aborted || input.isCurrent?.() === false
+      ? { status: "unavailable" as const, events: [] }
+      : result;
+  });
 }
 
 export function recoverDesktopRoomPendingAttention(
@@ -1836,6 +1895,11 @@ export function NautiloRuntimeProvider({
           signal?: AbortSignal;
           isCurrent?: () => boolean;
         }>) => recoverDesktopRoomPendingAttention(desktopForegroundShadow, input),
+        recoverTaskPendingAttention: (input: Readonly<{
+          clientActionSessionId: string;
+          signal?: AbortSignal;
+          isCurrent?: () => boolean;
+        }>) => recoverDesktopTaskPendingAttention(desktopForegroundShadow, input),
         completePending: () => Promise.resolve(true),
         synchronizeHumanPeerRecipients: (roomId: string, namespaceId: string) =>
           runWithCryptoAdmission(() => desktopForegroundShadow.synchronizeRecipients(roomId, namespaceId)),
@@ -2516,8 +2580,12 @@ export function NautiloRuntimeProvider({
     setOrdinaryContentAccessRecoveryGeneration] = useState(0);
   const [clientActionSessionGeneration, setClientActionSessionGeneration] =
     useState(0);
+  const [taskPendingAttentionRecoveryTriggerGeneration,
+    setTaskPendingAttentionRecoveryTriggerGeneration] = useState(0);
   const pendingAttentionLiveSequenceRef = useRef(0);
   const pendingAttentionRecoveryGenerationRef = useRef(0);
+  const taskPendingAttentionLiveSequenceRef = useRef(0);
+  const taskPendingAttentionRecoveryGenerationRef = useRef(0);
   const pendingAttentionReplayRef = useRef(false);
   const pendingAttentionUiScopeGenerationRef = useRef(0);
   const pendingAttentionPreviewQueueRef = useRef<PendingApprovalPreviewQueue<QueuedPendingAttentionPreview>>(
@@ -5229,7 +5297,9 @@ export function NautiloRuntimeProvider({
             event.localMcpInstall !== undefined || event.structuredSsh !== undefined ||
             mediaGeneration !== null || github !== null);
           const askPayload: ApprovalAskPayload & Pick<ApprovalAskState, "github"> = {
-            ...(activeRoomIdRef.current ? { roomId: activeRoomIdRef.current } : {}),
+            ...(!isTaskPendingAttentionPreviewEvent(event) && activeRoomIdRef.current
+              ? { roomId: activeRoomIdRef.current }
+              : {}),
             approvalId: event.approvalId,
             threadId: event.threadId,
             laneKey: event.laneKey,
@@ -5275,10 +5345,14 @@ export function NautiloRuntimeProvider({
               structuredSshHostTrust: event.structuredSsh?.hostTrust,
             })
           ) {
-            pendingAttentionLiveSequenceRef.current += 1;
+            if (isTaskPendingAttentionPreviewEvent(event)) {
+              taskPendingAttentionLiveSequenceRef.current += 1;
+            } else {
+              pendingAttentionLiveSequenceRef.current += 1;
+            }
             dispatchCurrentApprovalLifecycle({ kind: "ask", payload: askPayload, silent: true });
             const previewKey = pendingAttentionPreviewKey(event);
-            const roomId = activeRoomIdRef.current;
+            const roomId = askPayload.roomId ?? null;
             const viewerGeneration = viewerGenerationRef.current;
             const scopeGeneration = pendingAttentionUiScopeGenerationRef.current;
             const isCurrentSubmission = () => isPendingAttentionSubmissionCurrent({
@@ -5289,7 +5363,7 @@ export function NautiloRuntimeProvider({
               currentKey: approvalLifecycleRef.current.pending === null
                 ? null
                 : `approval:${approvalLifecycleRef.current.pending.approvalId}`,
-              currentRoomId: activeRoomIdRef.current,
+              currentRoomId: approvalLifecycleRef.current.pending?.roomId ?? null,
               currentViewerGeneration: viewerGenerationRef.current,
               currentScopeGeneration: pendingAttentionUiScopeGenerationRef.current,
             });
@@ -5584,16 +5658,20 @@ export function NautiloRuntimeProvider({
     [showRecoveredPendingAttentionPreview],
   );
   enqueuePendingAttentionPreviewRef.current = enqueueRecoveredPendingAttentionPreviews;
-  const reconcileCanonicalPendingAttentionPreviews = useCallback(
-    (events: readonly PendingAttentionPreviewEvent[]): void => {
+  const reconcilePendingAttentionPreviewSource = useCallback(
+    (
+      events: readonly PendingAttentionPreviewEvent[],
+      belongsToSource: (item: QueuedPendingAttentionPreview) => boolean,
+    ): void => {
       const canonical = events
         .filter((event) => event.type !== "approval.ask"
           || shouldQueueApprovalAsk(approvalLifecycleRef.current, event.approvalId))
         .map((event) => ({ key: pendingAttentionPreviewKey(event), event, recovered: true }));
-      const reconciled = reconcilePendingApprovalPreviewSnapshot(
+      const reconciled = reconcilePendingApprovalPreviewSubset(
         pendingAttentionPreviewQueueRef.current,
         canonical,
         (item) => item.key,
+        belongsToSource,
       );
       pendingAttentionPreviewQueueRef.current = reconciled.queue;
       if (reconciled.retainedActive) return;
@@ -5630,9 +5708,21 @@ export function NautiloRuntimeProvider({
     }
   };
   useEffect(() => {
-    pendingAttentionUiScopeGenerationRef.current += 1;
-    pendingAttentionPreviewQueueRef.current = initialPendingApprovalPreviewQueue();
-  }, [activeRoomId, auth.viewerGeneration, viewerKey]);
+    reconcilePendingAttentionPreviewSource(
+      [],
+      (item) => !isTaskPendingAttentionPreviewEvent(item.event),
+    );
+  }, [activeRoomId, reconcilePendingAttentionPreviewSource]);
+  useEffect(() => {
+    reconcilePendingAttentionPreviewSource([], () => true);
+  }, [
+    auth.viewerGeneration,
+    clientActionSessionGeneration,
+    reconcilePendingAttentionPreviewSource,
+    serverOrigin,
+    shadowPolicyMode,
+    viewerKey,
+  ]);
 
   // socket-local automatic actions are consumed before the
   // normal ServerEvent router. Their action IDs live only for this mounted
@@ -5793,6 +5883,9 @@ export function NautiloRuntimeProvider({
         voicePlayerRef.current?.handleStreamEvent(event);
       },
       onEvent: (event) => {
+        if (taskPendingAttentionRecoveryTrigger(event)) {
+          setTaskPendingAttentionRecoveryTriggerGeneration((generation) => generation + 1);
+        }
         const changesActivePendingAttention = changesPendingAttention(event, {
           roomId: activeRoomIdRef.current,
           userId: viewerKeyRef.current,
@@ -5802,17 +5895,13 @@ export function NautiloRuntimeProvider({
         if (changesActivePendingAttention) {
           pendingAttentionLiveSequenceRef.current += 1;
         }
+        if (isTaskAttentionLifecycleEvent(event)) {
+          taskPendingAttentionLiveSequenceRef.current += 1;
+        }
         const previewIngress = pendingAttentionPreviewIngress(
           event,
           changesActivePendingAttention,
         );
-        if (previewIngress === "direct") {
-          // Preserve 's owner-scoped Task/subagent attention path. These
-          // prompts have task lanes rather than Room lanes and are intentionally
-          // excluded from the Room-bound durable checkpoint queue below.
-          handleWsEventRef.current(event as PendingAttentionPreviewEvent);
-          return;
-        }
         if (previewIngress === "enqueue") {
           enqueuePendingAttentionPreviewRef.current(
             [event as PendingAttentionPreviewEvent],
@@ -5976,11 +6065,15 @@ export function NautiloRuntimeProvider({
       clearAgentStreamingVisibleOutput();
       lastStreamLaneKeyRef.current = null;
       setIsRunning(hasLiveJobForActiveRoom());
-      setShowPinDialog(false);
-      setShowApprovalDialog(false);
-      dispatchCurrentApprovalLifecycle({ kind: "hide" });
-      approvalAskThreadIdRef.current = null;
-      approvalAskLaneKeyRef.current = null;
+      if (roomHydrationShouldClearPendingAttentionUi(
+        pendingAttentionPreviewQueueRef.current.active?.event ?? null,
+      )) {
+        setShowPinDialog(false);
+        setShowApprovalDialog(false);
+        dispatchCurrentApprovalLifecycle({ kind: "hide" });
+        approvalAskThreadIdRef.current = null;
+        approvalAskLaneKeyRef.current = null;
+      }
     }
 
     const cached = backgroundRefresh
@@ -6314,8 +6407,9 @@ export function NautiloRuntimeProvider({
         // Keep existing previews; an unavailable read is not an empty set.
         return;
       }
-      reconcileCanonicalPendingAttentionPreviews(
+      reconcilePendingAttentionPreviewSource(
         result.events.filter(isPendingAttentionPreviewEvent),
+        (item) => !isTaskPendingAttentionPreviewEvent(item.event),
       );
     })().catch(() => {
       // Preserve existing previews on a failed background read. The next
@@ -6335,11 +6429,101 @@ export function NautiloRuntimeProvider({
     authState,
     clientActionSessionGeneration,
     desktopForegroundShadow,
-    reconcileCanonicalPendingAttentionPreviews,
+    reconcilePendingAttentionPreviewSource,
     liveShadowMessageClient,
     pendingAttentionAuthorizationDeviceId,
     roomInitialHydrationState,
     serverOrigin,
+    viewerKey,
+    wsState,
+  ]);
+
+  // Task attention is owner-scoped and independent of the active Room. The
+  // same foreground custody opens each exact durable TaskRun checkpoint; live
+  // events fence the snapshot so recovery cannot overwrite a newer prompt.
+  useEffect(() => {
+    const clientActionSessionId = currentClientActionSessionIdForResume();
+    if (authState !== "signed-in" || !auth.viewer.isVerified
+      || !viewerKey || !auth.viewer.sessionActorId
+      || wsState !== "open" || !clientActionSessionId
+      || !isCryptoAdmissionAllowed()) return;
+    const protectedMode = shadowPolicyMode === "shadow_encryption"
+      || shadowPolicyMode === "encrypted_only";
+    if (protectedMode && (liveShadowMessageClient === undefined
+      || pendingAttentionAuthorizationDeviceId === null)) return;
+
+    const controller = new AbortController();
+    const recoveryGeneration = ++taskPendingAttentionRecoveryGenerationRef.current;
+    const liveSequenceAtStart = taskPendingAttentionLiveSequenceRef.current;
+    const admissionGeneration = getCryptoAdmissionSnapshot().generation;
+    const viewerGeneration = auth.viewerGeneration;
+    const humanActorId = auth.viewer.sessionActorId;
+    const origin = serverOrigin;
+    const policyMode = shadowPolicyMode;
+    const scopeIsCurrent = (): boolean => !controller.signal.aborted
+      && taskPendingAttentionRecoveryGenerationRef.current === recoveryGeneration
+      && isCryptoAdmissionGenerationCurrent(admissionGeneration)
+      && viewerKeyRef.current === viewerKey
+      && viewerGenerationRef.current === viewerGeneration
+      && humanActorIdRef.current === humanActorId
+      && serverOriginRef.current === origin
+      && shadowPolicyModeRef.current === policyMode
+      && wsStateRef.current === "open"
+      && currentClientActionSessionIdForResume() === clientActionSessionId;
+    const isCurrent = (): boolean => scopeIsCurrent()
+      && taskPendingAttentionLiveSequenceRef.current === liveSequenceAtStart;
+    const clearRecoveredTaskPreviews = (): void => {
+      if (!isCurrent()) return;
+      reconcilePendingAttentionPreviewSource(
+        [],
+        isRecoveredQueuedTaskPendingAttention,
+      );
+    };
+
+    void (async () => {
+      const result = protectedMode
+        ? await liveShadowMessageClient!.recoverTaskPendingAttention({
+            clientActionSessionId,
+            signal: controller.signal,
+            isCurrent,
+          })
+        : {
+            status: "ready" as const,
+            events: (await apiClient.listPendingTaskAttention()).filter(
+              (event): event is PendingAttentionPreviewEvent =>
+                isTaskPendingAttentionPreviewEvent(event)
+                && event.userId === viewerKey,
+            ),
+          };
+      if (!isCurrent()) return;
+      if (result.status !== "ready") {
+        clearRecoveredTaskPreviews();
+        return;
+      }
+      reconcilePendingAttentionPreviewSource(
+        result.events.filter(isPendingAttentionPreviewEvent),
+        isQueuedTaskPendingAttention,
+      );
+    })().catch(clearRecoveredTaskPreviews);
+
+    return () => {
+      controller.abort();
+      if (taskPendingAttentionRecoveryGenerationRef.current === recoveryGeneration) {
+        taskPendingAttentionRecoveryGenerationRef.current += 1;
+      }
+    };
+  }, [
+    auth.viewer.isVerified,
+    auth.viewer.sessionActorId,
+    auth.viewerGeneration,
+    authState,
+    clientActionSessionGeneration,
+    liveShadowMessageClient,
+    pendingAttentionAuthorizationDeviceId,
+    reconcilePendingAttentionPreviewSource,
+    serverOrigin,
+    shadowPolicyMode,
+    taskPendingAttentionRecoveryTriggerGeneration,
     viewerKey,
     wsState,
   ]);
@@ -7542,7 +7726,8 @@ export function NautiloRuntimeProvider({
   const submitPin = useCallback(async (pin: string) => {
     const threadId = challengeThreadIdRef.current;
     const previewKey = challengePreviewKeyRef.current;
-    const roomId = activeRoomIdRef.current;
+    const taskScoped = challengeLaneKeyRef.current?.startsWith("task:") === true;
+    const roomId = taskScoped ? null : activeRoomIdRef.current;
     const viewerGeneration = viewerGenerationRef.current;
     const scopeGeneration = pendingAttentionUiScopeGenerationRef.current;
     const isCurrentSubmission = () => isPendingAttentionSubmissionCurrent({
@@ -7551,11 +7736,15 @@ export function NautiloRuntimeProvider({
       capturedViewerGeneration: viewerGeneration,
       capturedScopeGeneration: scopeGeneration,
       currentKey: challengePreviewKeyRef.current,
-      currentRoomId: activeRoomIdRef.current,
+      currentRoomId: challengeLaneKeyRef.current?.startsWith("task:") === true
+        ? null
+        : activeRoomIdRef.current,
       currentViewerGeneration: viewerGenerationRef.current,
       currentScopeGeneration: pendingAttentionUiScopeGenerationRef.current,
     });
     if (!threadId) return;
+    if (taskScoped) taskPendingAttentionLiveSequenceRef.current += 1;
+    else pendingAttentionLiveSequenceRef.current += 1;
     setPinError(undefined);
 
     if (challengeModeRef.current === "enrollPin") {
@@ -7802,7 +7991,8 @@ export function NautiloRuntimeProvider({
   const submitProveIt = useCallback(async (pin: string) => {
     const threadId = approvalThreadIdRef.current;
     const previewKey = approvalPreviewKeyRef.current;
-    const roomId = activeRoomIdRef.current;
+    const taskScoped = approvalLaneKeyRef.current?.startsWith("task:") === true;
+    const roomId = taskScoped ? null : activeRoomIdRef.current;
     const viewerGeneration = viewerGenerationRef.current;
     const scopeGeneration = pendingAttentionUiScopeGenerationRef.current;
     const isCurrentSubmission = () => isPendingAttentionSubmissionCurrent({
@@ -7811,12 +8001,15 @@ export function NautiloRuntimeProvider({
       capturedViewerGeneration: viewerGeneration,
       capturedScopeGeneration: scopeGeneration,
       currentKey: approvalPreviewKeyRef.current,
-      currentRoomId: activeRoomIdRef.current,
+      currentRoomId: approvalLaneKeyRef.current?.startsWith("task:") === true
+        ? null
+        : activeRoomIdRef.current,
       currentViewerGeneration: viewerGenerationRef.current,
       currentScopeGeneration: pendingAttentionUiScopeGenerationRef.current,
     });
     if (!threadId) return;
-    pendingAttentionLiveSequenceRef.current += 1;
+    if (taskScoped) taskPendingAttentionLiveSequenceRef.current += 1;
+    else pendingAttentionLiveSequenceRef.current += 1;
     setApprovalError(undefined);
     try {
       await apiClient.proveItAndResume(
@@ -7861,7 +8054,8 @@ export function NautiloRuntimeProvider({
   const denyProveIt = useCallback(async () => {
     const threadId = approvalThreadIdRef.current;
     const previewKey = approvalPreviewKeyRef.current;
-    const roomId = activeRoomIdRef.current;
+    const taskScoped = approvalLaneKeyRef.current?.startsWith("task:") === true;
+    const roomId = taskScoped ? null : activeRoomIdRef.current;
     const viewerGeneration = viewerGenerationRef.current;
     const scopeGeneration = pendingAttentionUiScopeGenerationRef.current;
     const isCurrentSubmission = () => isPendingAttentionSubmissionCurrent({
@@ -7870,7 +8064,9 @@ export function NautiloRuntimeProvider({
       capturedViewerGeneration: viewerGeneration,
       capturedScopeGeneration: scopeGeneration,
       currentKey: approvalPreviewKeyRef.current,
-      currentRoomId: activeRoomIdRef.current,
+      currentRoomId: approvalLaneKeyRef.current?.startsWith("task:") === true
+        ? null
+        : activeRoomIdRef.current,
       currentViewerGeneration: viewerGenerationRef.current,
       currentScopeGeneration: pendingAttentionUiScopeGenerationRef.current,
     });
@@ -7878,7 +8074,8 @@ export function NautiloRuntimeProvider({
       setShowApprovalDialog(false);
       return;
     }
-    pendingAttentionLiveSequenceRef.current += 1;
+    if (taskScoped) taskPendingAttentionLiveSequenceRef.current += 1;
+    else pendingAttentionLiveSequenceRef.current += 1;
     setApprovalError(undefined);
     try {
       await apiClient.denyProveIt(
@@ -7933,7 +8130,8 @@ export function NautiloRuntimeProvider({
       const threadId = approvalAskThreadIdRef.current;
       const approvalId = approvalAskState.approvalId;
       const previewKey = approvalId === null ? null : `approval:${approvalId}`;
-      const roomId = activeRoomIdRef.current;
+      const taskScoped = approvalAskLaneKeyRef.current?.startsWith("task:") === true;
+      const roomId = approvalAskState.roomId ?? null;
       const viewerGeneration = viewerGenerationRef.current;
       const scopeGeneration = pendingAttentionUiScopeGenerationRef.current;
       const isCurrentSubmission = () => isPendingAttentionSubmissionCurrent({
@@ -7944,7 +8142,7 @@ export function NautiloRuntimeProvider({
         currentKey: approvalLifecycleRef.current.pending === null
           ? null
           : `approval:${approvalLifecycleRef.current.pending.approvalId}`,
-        currentRoomId: activeRoomIdRef.current,
+        currentRoomId: approvalLifecycleRef.current.pending?.roomId ?? null,
         currentViewerGeneration: viewerGenerationRef.current,
         currentScopeGeneration: pendingAttentionUiScopeGenerationRef.current,
       });
@@ -7963,7 +8161,8 @@ export function NautiloRuntimeProvider({
         });
         return;
       }
-      pendingAttentionLiveSequenceRef.current += 1;
+      if (taskScoped) taskPendingAttentionLiveSequenceRef.current += 1;
+      else pendingAttentionLiveSequenceRef.current += 1;
       dispatchCurrentApprovalLifecycle({ kind: "submitStart" });
       try {
         await apiClient.approvalReply(
@@ -8012,6 +8211,7 @@ export function NautiloRuntimeProvider({
     },
     [
       approvalAskState.approvalId,
+      approvalAskState.roomId,
       approvalAskState.localMcpInstall,
       approvalAskState.mediaGeneration,
       approvalAskState.requiresExplicitReview,

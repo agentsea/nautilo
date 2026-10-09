@@ -26,6 +26,7 @@ describe("M300 foreground Shadow preload contract", () => {
       "foregroundShadow:edit",
       "foregroundShadow:recoverPending",
       "foregroundShadow:recoverRoomPendingAttention",
+      "foregroundShadow:recoverTaskPendingAttention",
       "foregroundShadow:authorize",
       "foregroundShadow:receive",
       "foregroundShadow:synchronizeRecipients",
