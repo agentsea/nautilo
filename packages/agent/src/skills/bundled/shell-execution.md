@@ -74,14 +74,15 @@ is actually offered; it is not the continuation path for an `exec_command`
 ## Related tools when available
 
 - Use `local_git` for its narrow typed Git operations when the active
-  Development profile and broker support the requested operation. It is not a
-  general shell and has no network Git authority.
+  Development profile and broker support the requested operation. Exact
+  GitHub clone, fetch, fast-forward-only pull, and separately reviewed push
+  also require the authenticated GitHub capability. It is not a general shell
+  or an arbitrary credential/remotes surface.
 - Use `human_terminal` only after the Human explicitly hands over their exact
   existing terminal. It sends input to that terminal and has its own receipts;
   it is not a way to acquire or replace managed local execution.
-- The legacy `terminal` tool may still be offered by an older Desktop. Follow
-  the terminal-sessions skill for that existing capability, but do not require
-  it and do not treat it as evidence that managed execution is admitted.
+- Use the terminal-sessions skill for managed PTY continuation and explicit
+  Human terminal handoff discipline.
 
 ## Workflow
 

@@ -32,6 +32,7 @@ const SERVER_POSTURE = {
   deploymentMode: "server",
   securityLevel: "paranoid",
   networkPolicy: { mode: "isolated" },
+  localNetworkPolicy: { mode: "host" },
   allowUncontainedHostCommands: false,
 } as const;
 
@@ -39,6 +40,7 @@ const DESKTOP_POSTURE = {
   deploymentMode: "desktop-permissive",
   securityLevel: "cautious",
   networkPolicy: { mode: "host" },
+  localNetworkPolicy: { mode: "host" },
   allowUncontainedHostCommands: false,
 } as const;
 
@@ -46,6 +48,7 @@ const LOCKED_POSTURE = {
   deploymentMode: "desktop-locked",
   securityLevel: "paranoid",
   networkPolicy: { mode: "isolated" },
+  localNetworkPolicy: { mode: "host" },
   allowUncontainedHostCommands: false,
 } as const;
 
@@ -206,14 +209,14 @@ describe("ensurePostureSidecar (G4 first-boot provisioner)", () => {
     expect(readPostureSidecar(sidecarPath)).toEqual(DESKTOP_POSTURE);
   });
 
-  test("malformed file → returns defaults but does NOT overwrite (operator triage)", () => {
+  test("malformed file → isolates local networking without overwriting evidence", () => {
     // Operator hand-edited the sidecar and broke it. We must NOT
     // overwrite — that masks the misconfiguration. Use defaults
     // for the current process; preserve the file for triage.
     writeFileSync(sidecarPath, "{ this is not valid json", "utf-8");
     const defaults = SERVER_POSTURE;
     const got = ensurePostureSidecar(sidecarPath, defaults);
-    expect(got).toEqual(defaults);
+    expect(got).toEqual({ ...defaults, localNetworkPolicy: { mode: "isolated" } });
     // File on disk is STILL the malformed content — readPostureSidecar
     // returns null for it (operator-visible warn line surfaces the issue).
     expect(readPostureSidecar(sidecarPath)).toBeNull();
@@ -229,4 +232,11 @@ describe("ensurePostureSidecar (G4 first-boot provisioner)", () => {
     expect(desktop).toEqual(DESKTOP_POSTURE);
     expect(server).toEqual(DESKTOP_POSTURE);
   });
+});
+
+ test("local restriction survives round-trip independently of server networking", () => {
+  const restricted = { ...DESKTOP_POSTURE, localNetworkPolicy: { mode: "proxy-allowlist" as const,
+    allow: [{ type: "domain" as const, host: "api.example.com", ports: [443] }] } };
+  writePostureSidecar(sidecarPath, restricted);
+  expect(readPostureSidecar(sidecarPath)).toEqual(restricted);
 });

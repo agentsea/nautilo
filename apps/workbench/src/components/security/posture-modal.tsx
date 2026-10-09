@@ -179,6 +179,25 @@ export function PostureModal({
           ) : null}
 
           <NetworkPolicySummary posture={posture} />
+          <section className="mt-5">
+            <h3 className="text-sm font-semibold">Local-computer network ceiling</h3>
+            <p className="mt-1 text-sm text-foreground-muted">
+              {posture.localNetworkPolicy === undefined
+                ? "This server does not report a local-computer network ceiling. Upgrade the server to manage it."
+                : posture.localNetworkPolicy.mode === "host"
+                  ? "No additional server restriction. Each computer's execution profile still applies."
+                  : posture.localNetworkPolicy.mode === "isolated"
+                    ? "The server requires local Agent commands to run without network access."
+                    : "The server allowlist and the computer's execution profile must both permit each connection."}
+              {posture.localNetworkPolicy !== undefined && posture.localNetworkPolicy.mode !== "host"
+                ? " Local preview listeners and executors that cannot enforce this restriction are unavailable." : ""}
+            </p>
+            {posture.localNetworkPolicy?.mode === "proxy-allowlist" && posture.localNetworkPolicy.allow.length > 0 ? (
+              <ul className="mt-2 grid gap-1">
+                {posture.localNetworkPolicy.allow.map((rule, index) => <li key={index} className="rounded bg-background-element px-2 py-1 font-mono text-xs">{networkRuleLabel(rule)}</li>)}
+              </ul>
+            ) : null}
+          </section>
           <PathList title="Writable paths" paths={posture.writablePaths} />
           <PathList title="Read-only paths" paths={posture.readOnlyPaths} />
 

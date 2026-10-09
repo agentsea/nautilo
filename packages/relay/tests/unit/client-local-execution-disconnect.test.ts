@@ -26,7 +26,7 @@ mock.module("ws", () => ({ default: class extends FakeSocket {
 } }));
 const { createRelayClient } = await import("../../src/client");
 const binding: RelayLocalExecutionBindingV1 = { version: 1, generation: "generation-fixture", executionId: "execution-fixture",
-  invocationId: "call-fixture", operation: "start", owner: { instanceId: "instance-fixture", humanUserId: "human-fixture",
+  invocationId: "call-fixture", operation: "start", localNetworkPolicy: { mode: "host" }, owner: { instanceId: "instance-fixture", humanUserId: "human-fixture",
     agentId: "agent-fixture", runId: "run-fixture", conversationId: "conversation-fixture", relayId: "relay-fixture",
     desktopSessionId: "desktop-fixture", pairingGeneration: "pairing-fixture", serverBindingId: "server-fixture",
     profileId: "profile-fixture", profileRevision: 1, grantIds: [], grantRevision: 1, protectedPolicyVersion: 1 } };
@@ -35,15 +35,15 @@ async function fixture() {
   const client = createRelayClient({ serverUrl: "http://127.0.0.1:9", userId: binding.owner.humanUserId,
     relayId: binding.owner.relayId, desktopSessionId: binding.owner.desktopSessionId, runShellOwnerInstanceId: binding.owner.instanceId,
     capabilities: { profile: "desktop-agent", canExecuteLocal: true, canRunShell: true,
-      localExecution: { version: 1, generation: binding.generation, pipe: true, pty: true, capacity: 8 } },
+      localExecution: { version: 1, generation: binding.generation, pipe: true, pty: true, capacity: 8, localNetworkPolicy: true } },
     initialCapabilityRevision: 1, reconnectDelayMs: 30000,
     onDispatch: (request, signal) => new Promise(resolve => { dispatched.push({ request, signal,
       finish: () => resolve({ status: "ok", result: { state: "running", resources: "owned" } }) }); }),
   });
   const connect = async () => {
     const connecting = client.connect(); const socket = sockets.at(-1)!; socket.open();
-    socket.message({ type: "relay:registered", relayId: binding.owner.relayId, protocolVersion: 20,
-      selectedProtocolVersion: 20, relaySessionId: "relay-session-fixture", pairingGenerationRef: binding.owner.pairingGeneration });
+    socket.message({ type: "relay:registered", relayId: binding.owner.relayId, protocolVersion: 29,
+      selectedProtocolVersion: 29, relaySessionId: "relay-session-fixture", pairingGenerationRef: binding.owner.pairingGeneration });
     await connecting; return socket;
   };
   const socket = await connect();

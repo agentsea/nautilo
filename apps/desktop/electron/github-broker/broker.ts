@@ -1,6 +1,7 @@
 import { digestGitHubPreparation, githubFailure, parseGitHubInvocationOwner, parseGitHubOperation, parseGitHubPreparedOperation,
   type GitHubAccount, type GitHubBrokerResult, type GitHubFailureCode, type GitHubInvocationOwner,
   type GitHubOperation, type GitHubPullRequestPreparation, type GitHubPreparedOperation, type GitHubRepository, type GitHubResource } from "../../../../packages/types/src/github-broker";
+import type { GitHubPreparedPublication } from "../../../../packages/types/src/github-invocation";
 import type { GitHubApiClient, GitHubCredentialProvider } from "./credentials";
 import { GitHubPreparations, type GitHubPreparationResult } from "./preparations";
 
@@ -22,6 +23,8 @@ function failureCode(error: unknown): GitHubFailureCode {
 interface Resolved { account: GitHubAccount; repository: GitHubRepository; resource: GitHubResource }
 interface ResolvedPullRequest { account: GitHubAccount; repository: GitHubRepository; resource: null; pullRequest: GitHubPullRequestPreparation }
 type CreateRequest = Extract<GitHubOperation, { operation: "pr_create" }>;
+type AccountStatusRequest = Extract<GitHubOperation, { operation: "account_status" }>;
+type ResourceRequest = Exclude<GitHubOperation, CreateRequest | AccountStatusRequest>;
 
 export interface GitHubPublishingApproval {
   readonly verb: "once";
@@ -37,7 +40,7 @@ export interface GitHubBrokerPorts {
   readonly isCurrentNow: (owner: GitHubInvocationOwner) => boolean;
   /** Trusted admission owner verifies the durable exact Human reply. Never a
    * model flag, standing shell approval or an Auto-Approve bypass. */
-  readonly isPublishingApproved: (owner: GitHubInvocationOwner, prepared: GitHubPreparedOperation, approval: GitHubPublishingApproval) => Promise<boolean>;
+  readonly isPublishingApproved: (owner: GitHubInvocationOwner, prepared: GitHubPreparedPublication, approval: GitHubPublishingApproval) => Promise<boolean>;
 }
 
 export class GitHubBroker {
@@ -48,7 +51,7 @@ export class GitHubBroker {
       throw new GitHubResolutionFailure("authority_changed");
     }
   }
-  async #resolve(client: GitHubApiClient, owner: GitHubInvocationOwner, request: Exclude<GitHubOperation, CreateRequest>, signal?: AbortSignal): Promise<Resolved> {
+  async #resolveAccount(client: GitHubApiClient, owner: GitHubInvocationOwner, signal?: AbortSignal): Promise<GitHubAccount> {
     await this.#current(owner, signal);
     const user = await client.request("GET", "/user");
     if (user.status !== 200) throw new GitHubResolutionFailure(httpFailure(user.status));
@@ -57,6 +60,10 @@ export class GitHubBroker {
       || !/^[A-Za-z0-9-]+$/.test(accountValue["login"])) throw new GitHubResolutionFailure("account_unavailable");
     const account: GitHubAccount = { id: accountValue["id"], login: accountValue["login"] };
     await this.#current(owner, signal);
+    return account;
+  }
+  async #resolve(client: GitHubApiClient, owner: GitHubInvocationOwner, request: ResourceRequest, signal?: AbortSignal): Promise<Resolved> {
+    const account = await this.#resolveAccount(client, owner, signal);
     const repo = await client.request("GET", `/repos/${request.repository}`);
     if (repo.status !== 200) throw new GitHubResolutionFailure(httpFailure(repo.status));
     const repositoryValue = object(repo.data);
@@ -77,12 +84,7 @@ export class GitHubBroker {
     return { account, repository, resource };
   }
   async #resolvePullRequest(client: GitHubApiClient, owner: GitHubInvocationOwner, request: CreateRequest, signal?: AbortSignal): Promise<ResolvedPullRequest> {
-    await this.#current(owner, signal);
-    const response = await client.request("GET", "/user");
-    if (response.status !== 200) throw new GitHubResolutionFailure(httpFailure(response.status));
-    const user = object(response.data);
-    if (!user || !id(user["id"]) || typeof user["login"] !== "string" || !/^[A-Za-z0-9-]+$/.test(user["login"])) throw new GitHubResolutionFailure("account_unavailable");
-    const account = { id: user["id"], login: user["login"] };
+    const account = await this.#resolveAccount(client, owner, signal);
     const resolveRepository = async (name: string) => {
       await this.#current(owner, signal);
       const response = await client.request("GET", `/repos/${name}`);
@@ -122,6 +124,12 @@ export class GitHubBroker {
     try {
       await this.#current(owner, signal);
       return await this.ports.credentials.withClient(signal, async client => {
+        if (request.operation === "account_status") {
+          const account = await this.#resolveAccount(client, owner, signal);
+          if (signal?.aborted || !this.ports.isCurrentNow(owner)) throw new GitHubResolutionFailure("authority_changed");
+          return { ok: true, operation: "account_status", account, authenticated: true, operationReady: true,
+            sideEffectStarted: false, retrySafe: true };
+        }
         const resolved = await this.#resolve(client, owner, request, signal);
         if (signal?.aborted || !this.ports.isCurrentNow(owner)) throw new GitHubResolutionFailure("authority_changed");
         return { ok: true, operation: request.operation, ...resolved, sideEffectStarted: false, retrySafe: true };

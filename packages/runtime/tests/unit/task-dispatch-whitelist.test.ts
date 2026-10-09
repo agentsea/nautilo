@@ -65,6 +65,22 @@ describe("M144 dispatch — resolveToolWhitelist (R3 single source of truth)", (
     expect(out).toEqual(["search_memory"]);
   });
 
+  test("legacy exec-only rows gain the managed execution continuation companion", () => {
+    const out = resolveToolWhitelist(
+      makeTask({ toolsMode: "whitelist", toolsWhitelist: ["exec_command"] }),
+      baseEnvelope,
+    );
+    expect(out).toEqual(["exec_command", "write_stdin"]);
+  });
+
+  test("managed execution closure does not promote unrelated tools", () => {
+    const out = resolveToolWhitelist(
+      makeTask({ toolsMode: "whitelist", toolsWhitelist: ["search_memory", "exec_command"] }),
+      baseEnvelope,
+    );
+    expect(out).toEqual(["search_memory", "exec_command", "write_stdin"]);
+  });
+
   test("whitelist with an unknown tool → throws (rejected at dispatch)", () => {
     expect(() =>
       resolveToolWhitelist(

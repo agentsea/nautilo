@@ -37,4 +37,17 @@ describe("caller-funded Task durable tool intent", () => {
     })).toBe(false);
     expect(callerTaskToolIntentMatches(canonical, {})).toBe(false);
   });
+
+  test("legacy exec-only intent accepts only its canonical lifecycle companion", () => {
+    const legacy = task("whitelist", ["exec_command"]);
+    expect(callerTaskToolIntentMatches(legacy, {
+      toolWhitelist: ["exec_command", "write_stdin"],
+    })).toBe(true);
+    expect(callerTaskToolIntentMatches(legacy, {
+      toolWhitelist: ["exec_command", "write_stdin", "file"],
+    })).toBe(false);
+    expect(callerTaskToolIntentMatches(legacy, {
+      toolWhitelist: ["write_stdin", "exec_command"],
+    })).toBe(false);
+  });
 });

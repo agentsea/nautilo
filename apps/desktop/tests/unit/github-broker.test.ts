@@ -12,13 +12,14 @@ const request = { operation: "comment_create" as const, repository: "fixture-org
 function barrier<T>() { let resolve!: (value: T) => void; return { promise: new Promise<T>(done => { resolve = done; }), resolve }; }
 function fixture() {
   const calls: { method: string; path: string; body: unknown }[] = [];
-  const state = { current: true, approval: true, accountId: 10, repoId: 20, resourceId: 30, credentials: 0,
+  const state = { current: true, approval: true, accountId: 10, accountStatus: 200, repoId: 20, resourceId: 30, credentials: 0,
     post: null as ((body: GitHubApiBody | undefined) => Promise<GitHubApiResponse>) | null,
     afterApproval: null as (() => void) | null,
     afterRead: null as (() => void) | null };
   const client: GitHubApiClient = { async request(method, path, body) {
     calls.push({ method, path, body });
     if (method === "POST") return state.post ? state.post(body) : { status: 201, data: { id: 40, body: body!.body, token: "ignored-provider-field" } };
+    if (path === "/user" && state.accountStatus !== 200) return { status: state.accountStatus, data: { token: "ignored-provider-field" } };
     let data: unknown = path === "/user" ? { id: state.accountId, login: "fixture-user", credentials: "ignored-provider-field" }
       : path.endsWith("/project") ? { id: state.repoId, full_name: "fixture-org/project", clone_url: "ignored-provider-field" }
       : { id: state.resourceId, number: 12, title: "Fixture", body: "Details", state: "open", private: "ignored-provider-field" };
@@ -46,6 +47,24 @@ test("issue/PR reads follow exact fixed resource paths and return a closed secre
     expect(f.calls.at(-1)!.path).toBe(`/repos/fixture-org/project/${operation === "issue_read" ? "issues" : "pulls"}/12`);
   }
   expect(f.calls.every(call => call.method === "GET")).toBe(true);
+});
+test("account status revalidates the admitted account and returns only readiness and identity", async () => {
+  const f = fixture();
+  const result = await f.broker.read(owner, { operation: "account_status" });
+  expect(result).toEqual({ ok: true, operation: "account_status", account: { id: 10, login: "fixture-user" },
+    authenticated: true, operationReady: true, sideEffectStarted: false, retrySafe: true });
+  expect(f.calls).toEqual([{ method: "GET", path: "/user", body: undefined }]);
+  expect(JSON.stringify(result)).not.toContain("ignored-provider-field");
+
+  const unavailable = fixture(); unavailable.state.accountStatus = 401;
+  expect(await unavailable.broker.read(owner, { operation: "account_status" })).toEqual({ ok: false, operation: "account_status",
+    code: "account_unavailable", sideEffectStarted: false, retrySafe: true });
+});
+test("account status withholds identity when authority changes during revalidation", async () => {
+  const f = fixture(); f.state.afterRead = () => { f.state.current = false; };
+  expect(await f.broker.read(owner, { operation: "account_status" })).toEqual({ ok: false, operation: "account_status",
+    code: "authority_changed", sideEffectStarted: false, retrySafe: true });
+  expect(f.calls).toHaveLength(1);
 });
 test("no current authority or malformed model intent accesses account custody", async () => {
   const f = fixture(); f.state.current = false;

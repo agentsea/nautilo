@@ -26,7 +26,6 @@ import {
   MEMORY_BRIEF_HEADER,
   MEMORY_DELTA_HEADER,
   ROOM_PARTICIPANTS_HEADER,
-  buildPendingTerminalHandoffBlock,
   buildTwoPathBlock,
   buildActiveMiniAppBlock,
   buildLiveMiniAppSessionBlock,
@@ -120,28 +119,6 @@ import { listConnectedWebAccountCapabilities } from "../tools/connected-web-acco
 import { connectedAppEligibleProviderIdsForContext } from "../tools/connected-apps/runtime";
 
 export type AssignedVoicesPortForState = typeof getVoices;
-
-export function reconcileLiveTerminalHandoffCapabilities(
-  checkpointCapabilities: Readonly<Record<string, boolean>> | undefined,
-  liveCapabilities: Readonly<Record<string, boolean>> | undefined,
-): Readonly<Record<string, boolean>> | undefined {
-  if (
-    liveCapabilities?.["canUseTerminal"] === true &&
-    liveCapabilities["hasPendingTerminalHandoff"] === true
-  ) {
-    return {
-      ...checkpointCapabilities,
-      canUseTerminal: true,
-      hasPendingTerminalHandoff: true,
-    };
-  }
-  if (checkpointCapabilities?.["hasPendingTerminalHandoff"] !== true) {
-    return checkpointCapabilities;
-  }
-  const reconciled = { ...checkpointCapabilities };
-  delete reconciled["hasPendingTerminalHandoff"];
-  return Object.keys(reconciled).length > 0 ? reconciled : undefined;
-}
 
 /**
  * Selects schemas only after the catalog has applied its shared eligibility
@@ -606,18 +583,11 @@ export async function preModelNode(
 
   const isGuest = state.actorRole === "guest";
   const initiatingClientSurface = getCurrentInitiatingClientSurface();
-  // Relay capability snapshots enter with the Human message, but Let Genie
-  // drive can happen while that turn is already running. Re-read only this
-  // transient presence signal at every model step so the continuation after
-  // a fenced run_shell receives terminal immediately. Execution authority and
-  // the exact PTY remain Electron-local.
+  // Relay capability snapshots enter with the Human message. Exact local
+  // execution and Human-terminal capabilities are refreshed below against the
+  // selected relay and its current local receipt.
   const relayRegistry = getRelayRegistry();
-  const capabilitiesAtModelStep = relayRegistry === null
-    ? state.relayCapabilities
-    : reconcileLiveTerminalHandoffCapabilities(
-        state.relayCapabilities,
-        buildRuntimeCapabilityTokens(relayRegistry, state.userId, state.agentId),
-      );
+  const capabilitiesAtModelStep = state.relayCapabilities;
   const executionHuman = causalHumanForExecution(state.causalHumanUserId) || state.verifiedOrdinaryOrigin?.userId || "";
   const delegatedPort = getCurrentLocalExecutionDelegation();
   let delegatedRelayId: string | undefined;
@@ -782,20 +752,13 @@ export async function preModelNode(
         eligibleToolNameSet,
       )
     : retainedActivatedToolNames;
-  // Let Genie drive is an explicit local authority event, not model intent.
-  // Whenever its presence-only relay token is live, bind `terminal` on this
-  // very model step even if the progressive intent pack was already applied.
-  // Normal catalog eligibility still enforces actor policy + live PTY relay.
+  // A Human terminal handoff binds only the dedicated human_terminal tool.
+  // The retired six-action terminal tombstone must never be autoactivated by
+  // an old presence hint retained in a checkpoint or relay capability set.
   const activatedToolNames = personalFunding && !getCapabilityFundingSession()
     ? personalTaskControls ? [...PERSONAL_TASK_CONTROL_TOOL_NAMES] : []
     : !isGuest && relayCapabilities?.["canUseHumanTerminal"] === true
       ? mergeEligibleActivatedToolNames(ordinaryActivatedToolNames, ["human_terminal"], eligibleToolNameSet)
-    : !isGuest && relayCapabilities?.["hasPendingTerminalHandoff"] === true
-      ? mergeEligibleActivatedToolNames(
-          ordinaryActivatedToolNames,
-          ["terminal"],
-          eligibleToolNameSet,
-        )
       : ordinaryActivatedToolNames;
   const applyPatchContext = buildApplyPatchToolContext({
     ownerId: state.userId,
@@ -911,8 +874,9 @@ export async function preModelNode(
       + (relayCapabilities["canUseLocalGit"] === true ? "Use local_git for supported typed local Git. " : "")
       + (relayCapabilities["canReadShellOutput"] === true ? "Use read_shell_output for earlier retained shell output. " : "")
       + (relayCapabilities["canUseHumanTerminal"] === true ? "Use human_terminal for the exact Human terminal handoff. " : "")
-      + (tools.some(tool => tool.name === "terminal") ? "Use terminal for an existing terminal handoff only when offered. " : "")
-      + (relayCapabilities["canUseGitHub"] === true ? "" : "Authenticated GitHub operations remain unavailable until their admitted account capability is enabled; do not bypass this with shell credentials. ")
+      + (relayCapabilities["canUseGitHub"] === true
+        ? "Use local_github account_status to check the admitted GitHub account, then use its supported typed operations. A successful status confirms the account broker path; exact repository access is checked per operation. Do not test GitHub authentication with gh through exec_command; contained commands cannot read the protected account configuration. "
+        : "Authenticated GitHub operations remain unavailable until their admitted account capability is enabled; do not bypass this with shell credentials. ")
       + "Unavailable tools have no shell fallback."
     : "";
   const stableSystemPrefix = buildSystemPrompt({
@@ -944,14 +908,6 @@ export async function preModelNode(
   // Exact client surface is process-local and varies per accepted turn, so it
   // must stay outside the cached stable prefix.
   systemPrompt += buildInitiatingClientSurfaceGuidance(initiatingClientSurface);
-
-  if (
-    !isGuest &&
-    relayCapabilities?.["hasPendingTerminalHandoff"] === true &&
-    tools.some((tool) => tool.name === "terminal")
-  ) {
-    systemPrompt += buildPendingTerminalHandoffBlock();
-  }
 
   // owner-only `## Current time` block: local time + day + IANA tz +
   // UTC offset, the UTC ISO timestamp, and the bucketed "last user message in

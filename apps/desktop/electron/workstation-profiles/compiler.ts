@@ -70,6 +70,8 @@ export interface CompiledProfileSessionResult {
   profileRevision: number;
   grantIds: string[];
   compiledAt: string;
+  environmentValues: Readonly<Record<string, string>>;
+  capabilities: CompiledWorkstationProfile["capabilities"];
 }
 
 export type WorkstationProfileCompilerErrorCode =
@@ -154,8 +156,21 @@ export async function compileWorkstationProfileSession(
 
   // Mint ids and build grants for every compiled root before touching the
   // authority, so a malformed grant never causes a partial overlay mutation.
+  const compiledRoots = new Map<string, CompiledWorkstationProfile["roots"][number]>();
+  for (const root of [
+    ...compiled.compiled.roots,
+    ...compiled.compiled.capabilities
+      .filter((capability) => capability.backend === "sandboxed")
+      .flatMap((capability) => capability.roots),
+  ]) {
+    const existing = compiledRoots.get(root.path);
+    compiledRoots.set(root.path, existing === undefined ? root : {
+      ...root,
+      access: [...new Set([...existing.access, ...root.access])],
+    });
+  }
   const grants: DesktopFilesystemGrant[] = [];
-  for (const root of compiled.compiled.roots) {
+  for (const root of compiledRoots.values()) {
     const grant = buildPolicyPackGrant(root, input.subject, mintGrantId(), compiledAt);
     const parsed = parseDesktopFilesystemGrant(grant, { now });
     if (!parsed.ok) {
@@ -199,6 +214,13 @@ export async function compileWorkstationProfileSession(
       profileRevision: compiled.compiled.profileRevision,
       grantIds: addedIds,
       compiledAt,
+      environmentValues: { ...compiled.compiled.environmentValues },
+      capabilities: compiled.compiled.capabilities.map((capability) => ({
+        ...capability,
+        roots: capability.roots.map((root) => ({ ...root, access: [...root.access] })),
+        environmentKeys: [...capability.environmentKeys],
+        operations: [...capability.operations],
+      })),
     },
   };
 }

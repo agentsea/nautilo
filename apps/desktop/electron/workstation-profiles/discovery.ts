@@ -48,6 +48,10 @@ import {
   isPathWithinDesktopFilesystemGrantRoot,
 } from "@nautilo/desktop-filesystem-grants";
 import {
+  LINUX_READ_ONLY_SYSTEM_PATHS,
+  MACOS_READ_ONLY_SYSTEM_PATHS,
+} from "@nautilo/sandbox";
+import {
   type DiscoveredProfileCapability,
   type DiscoveredProfileRoot,
   type DiscoveredWorkstationFacts,
@@ -62,11 +66,14 @@ import {
   CAP_ANDROID_SDK,
   CAP_BUN,
   CAP_EXPO_METRO,
+  CAP_GIT,
   CAP_GRADLE,
   CAP_HOMEBREW,
   CAP_JDK,
   CAP_MASTRO,
+  CAP_NODE,
   CAP_NPM,
+  CAP_PYTHON,
   CAP_XCODE,
 } from "./developer-workstation-seed.ts";
 
@@ -81,6 +88,7 @@ const EXEC_PROBE_MAX_BUFFER = 1024 * 1024;
  */
 export interface WorkstationDiscoveryFileSystem {
   access(path: string): Promise<void>;
+  realpath?(path: string): Promise<string>;
 }
 
 /**
@@ -176,6 +184,9 @@ const defaultFs: WorkstationDiscoveryFileSystem = {
   access(path) {
     return nodeFs.access(path, nodeFs.constants.R_OK);
   },
+  realpath(path) {
+    return nodeFs.realpath(path);
+  },
 };
 
 interface ResolvedDependencies {
@@ -207,7 +218,7 @@ async function readablePath(
   const canonical = nodePath.resolve(candidate);
   try {
     await fs.access(canonical);
-    return canonical;
+    return fs.realpath === undefined ? canonical : nodePath.resolve(await fs.realpath(canonical));
   } catch {
     return null;
   }
@@ -336,6 +347,45 @@ function presentEnvKeys(
   return present;
 }
 
+async function approvedEnvironmentValues(
+  ctx: AdapterContext,
+  allowed: readonly string[],
+): Promise<Record<string, string>> {
+  const values: Record<string, string> = {};
+  for (const key of allowed) {
+    const raw = ctx.getEnv(key);
+    if (typeof raw !== "string" || !nodePath.isAbsolute(raw)) continue;
+    const canonical = await readablePath(ctx.fs, raw);
+    if (canonical !== null) values[key] = canonical;
+  }
+  return values;
+}
+
+async function probeInstalledExecutable(
+  ctx: AdapterContext,
+  name: string,
+  versionArgs: readonly string[],
+): Promise<{ executable: string; version: string | null } | null> {
+  const candidates = [
+    nodePath.join("/opt/homebrew/bin", name),
+    nodePath.join("/usr/local/bin", name),
+    nodePath.join("/usr/bin", name),
+    nodePath.join("/bin", name),
+  ];
+  const sandboxSystemRoots = ctx.platform === "darwin"
+    ? MACOS_READ_ONLY_SYSTEM_PATHS
+    : LINUX_READ_ONLY_SYSTEM_PATHS;
+  for (const candidate of candidates) {
+    const executable = await readablePath(ctx.fs, candidate);
+    if (executable === null) continue;
+    if (!sandboxSystemRoots.some((root) =>
+      isPathWithinDesktopFilesystemGrantRoot(root, executable))) continue;
+    const probed = await probeExecutable(ctx.exec, executable, versionArgs);
+    if (probed.ok) return { executable, version: probed.version };
+  }
+  return null;
+}
+
 // ── Adapters ─────────────────────────────────────────────────────────────────
 
 async function adaptBun(spec: ProfileToolchainCapability, ctx: AdapterContext): Promise<AdapterOutcome> {
@@ -395,8 +445,8 @@ async function adaptBun(spec: ProfileToolchainCapability, ctx: AdapterContext): 
 }
 
 async function adaptNpm(spec: ProfileToolchainCapability, ctx: AdapterContext): Promise<AdapterOutcome> {
-  const probed = await probeExecutable(ctx.exec, "npm", ["--version"]);
-  const executable = probed.ok ? "npm" : null;
+  const installed = await probeInstalledExecutable(ctx, "npm", ["--version"]);
+  const executable = installed?.executable ?? null;
   const { roots, dropped } = await collectCapabilityRoots(ctx, spec, [nodePath.join(ctx.home, ".npm")], "npm");
   const envKeys = presentEnvKeys(ctx.getEnv, spec.environmentKeys);
   if (executable === null) {
@@ -426,8 +476,27 @@ async function adaptNpm(spec: ProfileToolchainCapability, ctx: AdapterContext): 
       operations: [...spec.operations],
     },
     rows: [
-      rowFound(CAP_NPM, "npm", "npm", "fixed_argv", executable, probed.version, roots, envKeys, spec.backend, dropped),
+      rowFound(CAP_NPM, "npm", "npm", "fixed_argv", executable, installed?.version ?? null, roots, envKeys, spec.backend, dropped),
     ],
+  };
+}
+
+async function adaptCoreTool(
+  spec: ProfileToolchainCapability,
+  ctx: AdapterContext,
+  input: { id: string; name: string; executable: string; versionArgs: readonly string[] },
+): Promise<AdapterOutcome> {
+  const installed = await probeInstalledExecutable(ctx, input.executable, input.versionArgs);
+  if (installed === null) {
+    return { rows: [{ tool: input.name, capabilityId: input.id, status: "missing",
+      origin: "fixed_argv", environmentKeys: [], backend: spec.backend,
+      note: `${input.name} is not installed in a supported executable location.` }] };
+  }
+  return {
+    capability: { id: input.id, executable: installed.executable, roots: [], environmentKeys: [],
+      backend: spec.backend, operations: [...spec.operations] },
+    rows: [rowFound(input.id, input.name, undefined, "fixed_argv", installed.executable,
+      installed.version, [], [], spec.backend, [])],
   };
 }
 
@@ -949,7 +1018,10 @@ async function adaptAdminDeclared(spec: ProfileToolchainCapability, ctx: Adapter
 
 const ADAPTERS: Record<string, (spec: ProfileToolchainCapability, ctx: AdapterContext) => Promise<AdapterOutcome>> = {
   [CAP_BUN]: adaptBun,
+  [CAP_NODE]: (spec, ctx) => adaptCoreTool(spec, ctx, { id: CAP_NODE, name: "Node.js", executable: "node", versionArgs: ["--version"] }),
   [CAP_NPM]: adaptNpm,
+  [CAP_PYTHON]: (spec, ctx) => adaptCoreTool(spec, ctx, { id: CAP_PYTHON, name: "Python", executable: "python3", versionArgs: ["--version"] }),
+  [CAP_GIT]: (spec, ctx) => adaptCoreTool(spec, ctx, { id: CAP_GIT, name: "Git", executable: "git", versionArgs: ["--version"] }),
   [CAP_HOMEBREW]: adaptHomebrew,
   [CAP_JDK]: adaptJdk,
   [CAP_GRADLE]: adaptGradle,
@@ -1041,11 +1113,13 @@ export async function discoverWorkstationFacts(
     rows.push(...outcome.rows);
   }
 
-  const environmentKeys = presentEnvKeys(ctx.getEnv, options.profile.environmentKeys);
+  const environmentValues = await approvedEnvironmentValues(ctx, options.profile.environmentKeys);
+  const environmentKeys = Object.keys(environmentValues);
 
   const facts: DiscoveredWorkstationFacts = {
     roots: topRoots,
     environmentKeys,
+    environmentValues,
     capabilities,
   };
 

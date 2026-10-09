@@ -1,16 +1,17 @@
+import { resolveServerPosture, setConfigOverrides } from "@nautilo/config";
 import { describe, expect, test } from "bun:test";
 import type { RelayLocalExecutionBindingV1, RelayServerMessage } from "@nautilo/relay";
 import { InMemoryRelayRegistry } from "../../src/relay-registry";
-const binding: RelayLocalExecutionBindingV1 = { version: 1, generation: "generation-fixture", invocationId: "call-fixture",
+const binding: RelayLocalExecutionBindingV1 = { version: 1, localNetworkPolicy: { mode: "host" }, generation: "generation-fixture", invocationId: "call-fixture",
   executionId: "execution-fixture", operation: "start", owner: { instanceId: "instance-fixture", humanUserId: "human-fixture",
     agentId: "agent-fixture", runId: "run-fixture", conversationId: "conversation-fixture", relayId: "relay-fixture", desktopSessionId: "desktop-fixture",
     pairingGeneration: "pairing-fixture", serverBindingId: "server-fixture", profileId: null, profileRevision: null,
     grantIds: [], grantRevision: null, protectedPolicyVersion: null } };
-async function fixture(capacity = 1, protocol = 20, receipt = { state: "running", resources: "owned" }) {
+async function fixture(capacity = 1, protocol = 29, receipt = { state: "running", resources: "owned" }) {
   const registry = new InMemoryRelayRegistry();
   const sent: RelayServerMessage[] = [];
   await registry.register("relay-fixture", "human-fixture", { profile: "desktop-agent", canExecuteLocal: true,
-    localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, capacity } }, message => {
+    localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, localNetworkPolicy: true, capacity } }, message => {
       sent.push(message);
       if (message.type === "relay:dispatch") registry.resolveDispatch(message.correlationId,
         { status: "ok", result: { session_id: message.localExecutionBinding?.executionId, ...receipt } });
@@ -20,7 +21,7 @@ async function fixture(capacity = 1, protocol = 20, receipt = { state: "running"
 }
 describe("managed execution Relay ownership", () => {
   test("releases the owning-run listener only on confirmed terminal resource release while retaining replay identity", async () => {
-    const { registry, sent, admittedBinding } = await fixture(1, 20, { state: "completed", resources: "released" });
+    const { registry, sent, admittedBinding } = await fixture(1, 29, { state: "completed", resources: "released" });
     const controller = new AbortController();
     const request = { toolName: "exec_command", args: { cmd: "echo fixture" }, impact: "destructive" as const,
       approvalObtained: true, localExecutionBinding: admittedBinding, signal: controller.signal };
@@ -33,7 +34,7 @@ describe("managed execution Relay ownership", () => {
   test("capability refresh preserves the exact managed contract and rejects a peer-raised identity ceiling", async () => {
     const { registry } = await fixture();
     const capabilities = { profile: "desktop-agent" as const, canExecuteLocal: true,
-      localExecution: { version: 1 as const, generation: "generation-fixture", pipe: true as const, pty: true, capacity: 1 } };
+      localExecution: { version: 1 as const, generation: "generation-fixture", pipe: true as const, pty: true, localNetworkPolicy: true as const, capacity: 1 } };
     expect(registry.updateCapabilities({ relayId: "relay-fixture", userId: "human-fixture", desktopSessionId: "desktop-fixture",
       capabilityRevision: 2, capabilities })).toEqual({ ok: true });
     expect(registry.getCapabilities("relay-fixture")?.localExecution).toEqual(capabilities.localExecution);
@@ -77,17 +78,47 @@ describe("managed execution Relay ownership", () => {
     controller.abort();
     const reconnected: RelayServerMessage[] = [];
     const capabilities = { profile: "desktop-agent" as const, canExecuteLocal: true,
-      localExecution: { version: 1 as const, generation: "generation-fixture", pipe: true as const, pty: true, capacity: 1 } };
+      localExecution: { version: 1 as const, generation: "generation-fixture", pipe: true as const, pty: true, localNetworkPolicy: true as const, capacity: 1 } };
     await registry.register("relay-fixture", "human-fixture", capabilities, (message: RelayServerMessage) => reconnected.push(message),
-      20, "desktop-fixture", 2, "pairing-fixture");
+      29, "desktop-fixture", 2, "pairing-fixture");
     await new Promise<void>(resolve => setTimeout(resolve, 0));
     const stop = reconnected.find(message => message.type === "relay:dispatch" && message.toolName === "write_stdin");
     expect(stop?.type === "relay:dispatch" ? stop.localExecutionBinding?.operation : null).toBe("cancel");
     expect(stop?.type === "relay:dispatch" ? stop.localExecutionBinding?.executionId : null).toBe("execution-fixture");
     await registry.register("relay-fixture", "human-fixture", { ...capabilities,
       localExecution: { ...capabilities.localExecution, generation: "replacement-generation" } }, () => {},
-      20, "replacement-desktop", 3, "pairing-fixture");
+      29, "replacement-desktop", 3, "pairing-fixture");
     expect(registry.getLocalExecutionBinding("relay-fixture", "execution-fixture")).toBeNull();
   });
 
+});
+
+describe("local network restriction admission and revocation", () => {
+  test("an older Desktop refuses a restricted command before sending frames", async () => {
+    const previous = resolveServerPosture().localNetworkPolicy;
+    const { registry, sent, admittedBinding } = await fixture(1, 28);
+    try {
+      setConfigOverrides({ nautilo_local_network_policy: { mode: "isolated" } });
+      expect(registry.dispatch("relay-fixture", { toolName: "exec_command", args: { cmd: "echo fixture" },
+        impact: "high", approvalObtained: true, localExecutionBinding: admittedBinding })).rejects.toThrow("LOCAL_EXECUTION_UPGRADE_REQUIRED");
+      expect(sent).toHaveLength(0);
+    } finally { setConfigOverrides({ nautilo_local_network_policy: previous ?? { mode: "host" } }); }
+  });
+  test("tightening fences retained work and sends cancellation under original ownership", async () => {
+    const previous = resolveServerPosture().localNetworkPolicy;
+    try {
+      setConfigOverrides({ nautilo_local_network_policy: { mode: "host" } });
+      const { registry, sent, admittedBinding } = await fixture();
+      await registry.dispatch("relay-fixture", { toolName: "exec_command", args: { cmd: "echo fixture" },
+        impact: "high", approvalObtained: true, localExecutionBinding: admittedBinding });
+      setConfigOverrides({ nautilo_local_network_policy: { mode: "isolated" } });
+      registry.revokeLocalExecutionsForNetworkPolicy();
+      expect(sent.at(-1)).toMatchObject({ type: "relay:dispatch", toolName: "write_stdin",
+        args: { session_id: admittedBinding.executionId, cancel: true },
+        localExecutionBinding: { owner: admittedBinding.owner, operation: "cancel" } });
+      expect(registry.dispatch("relay-fixture", { toolName: "write_stdin",
+        args: { session_id: admittedBinding.executionId, chars: "again" }, impact: "high", approvalObtained: true,
+        localExecutionBinding: { ...admittedBinding, operation: "input" } })).rejects.toThrow("LOCAL_NETWORK_POLICY");
+    } finally { setConfigOverrides({ nautilo_local_network_policy: previous ?? { mode: "host" } }); }
+  });
 });

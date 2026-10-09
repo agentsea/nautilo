@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { digestGitHubPreparation, type GitHubInvocationOwner, type GitHubPreparedOperation } from "@nautilo/types";
+import { digestGitHubPreparation, type GitHubInvocationOwner, type GitHubPreparedGitPush, type GitHubPreparedOperation } from "@nautilo/types";
 const owner: GitHubInvocationOwner = { instanceId: "", humanUserId: "human", agentId: "agent", roomId: "room", conversationId: "thread", runId: "turn", relayId: "relay", desktopSessionId: "desktop", pairingGeneration: "opaque-pair", serverOrigin: "https://server.example", serverFingerprint: "fingerprint", profileId: "profile", profileRevision: 1, grantRevision: 1, protectedPolicyVersion: 1 };
 const { agentId: _agent, roomId: _room, conversationId: _thread, runId: _run, ...identity } = owner;
 void _agent; void _room; void _thread; void _run;
@@ -29,6 +29,22 @@ test("pull request review includes both repository IDs, branches, OIDs, title an
   const prepared = { ...original, request, resource: null, pullRequest: { headRepository: { id: 4, fullName: "fixture/fork", htmlUrl: "https://github.com/fixture/fork" }, forkNetworkId: 2, maintainerCanModify: false as const, base: { ref: "main", sha: "a".repeat(40) }, head: { ref: "feature", sha: "b".repeat(40) } } };
   const html = renderToStaticMarkup(<GitHubPublishApprovalDetail approval={{ version: 1, approvalId: githubApprovalId(prepared), digest: prepared.digest, prepared }} />);
   for (const text of ["fixture/project:main", "fixture/fork:feature", "a".repeat(40), "b".repeat(40), "ID 4", "Exact title", "(empty body)", "Draft", "maintainer edits disabled"]) expect(html).toContain(text);
+});
+
+test("push review includes the exact public destination and OIDs without local paths", () => {
+  const digest = "a".repeat(64);
+  const prepared: GitHubPreparedGitPush = {
+    version: 1, preparationId: "push-preparation", generation: "generation", toolCallId: "call", digest,
+    request: { operation: "push", repository: "fixture/project", sourceBranch: "topic", destinationBranch: "topic" },
+    remote: { repository: "fixture/project", repositoryId: 2, accountId: 1, accountLogin: "fixture", branch: "topic", oid: "1".repeat(40) },
+    local: { identity: { workTree: "/private/project", gitDir: "/private/project/.git", commonDir: "/private/project/.git", isLinkedWorktree: false },
+      sourceBranch: "topic", sourceOid: "2".repeat(40), objectFormat: "sha1", indexHash: "3".repeat(64), repositoryStamp: "4".repeat(64) },
+  };
+  const html = renderToStaticMarkup(<GitHubPublishApprovalDetail approval={{ version: 1, approvalId: githubApprovalId(prepared), digest, prepared }} />);
+  for (const text of ["fixture (ID 1)", "fixture/project (ID 2)", `topic at ${"1".repeat(40)}`, `topic at ${"2".repeat(40)}`]) {
+    expect(html).toContain(text);
+  }
+  expect(html).not.toContain("/private/project");
 });
 
 import { initialApprovalLifecycleState, reduceApprovalLifecycle, deriveApprovalAskView, type ApprovalAskPayload } from "../../src/approval/approval-lifecycle";

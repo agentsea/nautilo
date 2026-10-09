@@ -1844,6 +1844,7 @@ export interface GetEligibleModelsQuery {
 }
 
 export interface SecurityPostureResponse {
+  localNetworkPolicy?: SecurityPostureResponse["networkPolicy"];
   deploymentMode: "server" | "desktop-permissive" | "desktop-locked";
   securityLevel: "yolo" | "permissive" | "standard" | "cautious" | "paranoid";
   allowUncontainedHostCommands: boolean;
@@ -7262,6 +7263,8 @@ export class NautiloApiClient {
   }
 
   async updateSecurityPosture(request: {
+    networkPolicy?: SecurityPostureResponse["networkPolicy"];
+    localNetworkPolicy?: SecurityPostureResponse["networkPolicy"];
     deploymentMode?: SecurityPostureResponse["deploymentMode"];
     securityLevel?: SecurityPostureResponse["securityLevel"];
     allowUncontainedHostCommands?: boolean;

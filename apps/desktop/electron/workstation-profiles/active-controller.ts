@@ -47,6 +47,7 @@ import {
 } from "@nautilo/workstation-profiles";
 import type { RelayWorkstationProfileSnapshot } from "@nautilo/relay";
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 
 import type { DesktopFilesystemGrantAuthority } from "../desktop-filesystem-grants/authority.ts";
 import {
@@ -81,6 +82,21 @@ export interface ActiveWorkstationProfileSession {
    */
   readonly network: ProfileNetworkPolicy;
   readonly capabilities: readonly ActiveWorkstationProfileCapabilityEntry[];
+  /** Local-only immutable inputs for contained Development process startup. */
+  readonly executionEnvironment: ActiveWorkstationExecutionEnvironment;
+}
+
+export interface ActiveWorkstationExecutionEnvironment {
+  readonly profileId: string;
+  readonly profileRevision: number;
+  readonly protectedPolicyVersion: number;
+  readonly home: string;
+  readonly environmentValues: Readonly<Record<string, string>>;
+  readonly executables: readonly {
+    readonly capabilityId: string;
+    readonly executable: string;
+    readonly backend: ProfileCapabilityBackend;
+  }[];
 }
 
 export interface ActiveWorkstationProfileControllerOptions {
@@ -104,6 +120,8 @@ export interface ActiveWorkstationProfileControllerOptions {
   readonly clock?: () => Date;
   /** Mints fresh grant ids per compiled root. Defaults to crypto.randomUUID. */
   readonly mintGrantId?: () => string;
+  /** Captured into each activated Development environment. */
+  readonly homeDirectory?: string;
   /**
    * Fired after a successful activate / deactivate so the relay can
    * re-advertise its capabilities atomically via
@@ -153,6 +171,7 @@ export class ActiveWorkstationProfileController {
   private readonly clock: () => Date;
   private readonly mintGrantId: () => string;
   private readonly onActiveProfileChanged: ((reason: string) => void) | undefined;
+  private readonly homeDirectory: string;
   private activeSession: ActiveWorkstationProfileSession | null = null;
   private authorityHidden = false;
   private pendingDeactivations = 0;
@@ -170,6 +189,7 @@ export class ActiveWorkstationProfileController {
       });
     this.clock = options.clock ?? (() => new Date());
     this.mintGrantId = options.mintGrantId ?? (() => randomUUID());
+    this.homeDirectory = options.homeDirectory ?? homedir();
     this.onActiveProfileChanged = options.onActiveProfileChanged;
   }
 
@@ -281,6 +301,18 @@ export class ActiveWorkstationProfileController {
           id: capability.id,
           backend: capability.backend,
         })),
+        executionEnvironment: Object.freeze({
+          profileId: compiled.data.profileId,
+          profileRevision: compiled.data.profileRevision,
+          protectedPolicyVersion: profile.protectedPolicyVersion,
+          home: this.homeDirectory,
+          environmentValues: Object.freeze({ ...compiled.data.environmentValues }),
+          executables: Object.freeze(compiled.data.capabilities.map((capability) => Object.freeze({
+            capabilityId: capability.id,
+            executable: capability.executable,
+            backend: capability.backend,
+          }))),
+        }),
       };
       this.activeSession = nextSession;
       // An already-requested Off wins over an older queued activation. Only
@@ -341,6 +373,10 @@ export class ActiveWorkstationProfileController {
    */
   getActiveNetworkPolicy(): ProfileNetworkPolicy | null {
     return this.getActiveSession()?.network ?? null;
+  }
+
+  getExecutionEnvironment(): ActiveWorkstationExecutionEnvironment | null {
+    return this.getActiveSession()?.executionEnvironment ?? null;
   }
 
   /**

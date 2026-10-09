@@ -341,6 +341,7 @@ const runtimeSecuritySchema = {
   // server-owned network egress policy. No env fallback; this is
   // mutated through the PIN/capability-gated posture API + sidecar.
   nautilo_network_policy: NetworkPolicySchema.optional(),
+  nautilo_local_network_policy: NetworkPolicySchema.optional(),
 } satisfies z.ZodRawShape;
 
 const runtimeBackupSchema = {
@@ -571,6 +572,7 @@ const UserSecuritySchema = z.object({
   level: SecurityLevelSchema.default("standard"),
   deploymentMode: DeploymentModeSchema.default("desktop-permissive"),
   networkPolicy: NetworkPolicySchema.optional(),
+  localNetworkPolicy: NetworkPolicySchema.optional(),
 });
 
 /** optional local/LAN network overrides (maps to `nautilo_instance_*` runtime fields). */
@@ -772,6 +774,7 @@ function normalizeSecurity(user: NautiloUserConfig): Record<string, unknown> {
     nautilo_security_level: user.security.level,
     nautilo_deployment_mode: user.security.deploymentMode,
     nautilo_network_policy: user.security.networkPolicy,
+    nautilo_local_network_policy: user.security.localNetworkPolicy,
   };
 }
 
@@ -962,6 +965,7 @@ function readSecurityFromEnv(source: RuntimeSource, _env: Env): Record<string, u
     nautilo_security_level: source?.nautilo_security_level,
     nautilo_deployment_mode: source?.nautilo_deployment_mode,
     nautilo_network_policy: source?.nautilo_network_policy,
+    nautilo_local_network_policy: source?.nautilo_local_network_policy,
   };
 }
 
@@ -1113,6 +1117,8 @@ export interface ServerPosture {
   readonly deploymentMode: DeploymentMode;
   readonly securityLevel: SecurityLevel;
   readonly networkPolicy?: NetworkPolicy;
+  /** Separate ceiling for Agent operations on paired local computers. */
+  readonly localNetworkPolicy?: NetworkPolicy;
 }
 
 export function defaultNetworkPolicyForDeploymentMode(
@@ -1132,6 +1138,7 @@ export function defaultNetworkPolicyForDeploymentMode(
 export function resolveServerPosture(): ServerPosture {
   const config = fromRuntimeConfig();
   return {
+    localNetworkPolicy: config.nautilo_local_network_policy ?? { mode: "host" },
     deploymentMode: config.nautilo_deployment_mode,
     securityLevel: config.nautilo_security_level,
     networkPolicy:

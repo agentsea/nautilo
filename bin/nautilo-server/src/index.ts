@@ -140,6 +140,7 @@ setConfigOverrides({
   nautilo_deployment_mode: _sidecarPosture.deploymentMode,
   nautilo_security_level: _sidecarPosture.securityLevel,
   nautilo_network_policy: _sidecarPosture.networkPolicy,
+  nautilo_local_network_policy: _sidecarPosture.localNetworkPolicy,
 });
 
 import {

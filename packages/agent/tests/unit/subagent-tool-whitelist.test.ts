@@ -4,6 +4,7 @@ import { z } from "zod";
 import { ToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import { registerAllTools } from "../../src/tools/register-all";
 import {
+  normalizeTaskToolWhitelist,
   validateSubagentToolWhitelist,
   clampSubagentBranchMax,
 } from "../../src/tools/subagents/validate-subagent-whitelist";
@@ -106,6 +107,24 @@ describe("M084 — subagent tool whitelist validation", () => {
       subagentMaxDepth: 3,
     });
     expect(r).toEqual({ ok: true, whitelist: [] });
+  });
+
+  test("managed command grants only its required continuation companion", () => {
+    expect(normalizeTaskToolWhitelist(["exec_command"])).toEqual([
+      "exec_command",
+      "write_stdin",
+    ]);
+    expect(normalizeTaskToolWhitelist(["search_memory", "exec_command"])).toEqual([
+      "search_memory",
+      "exec_command",
+      "write_stdin",
+    ]);
+    expect(normalizeTaskToolWhitelist(["exec_command", "write_stdin"])).toEqual([
+      "exec_command",
+      "write_stdin",
+    ]);
+    expect(normalizeTaskToolWhitelist(["write_stdin"])).toEqual(["write_stdin"]);
+    expect(normalizeTaskToolWhitelist([])).toEqual([]);
   });
 
   test("preserves an explicit whitelist without promoting other authorized tools", () => {

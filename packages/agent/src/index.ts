@@ -238,6 +238,7 @@ export {
 // exposed so the runtime task-dispatch seam validates a task's
 // tool whitelist at dispatch time (single source of truth for every surface).
 export {
+  normalizeTaskToolWhitelist,
   validateSubagentToolWhitelist,
   type ValidateSubagentToolsResult,
 } from "./tools/subagents/validate-subagent-whitelist";

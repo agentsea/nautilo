@@ -15,6 +15,7 @@ export interface RelayDispatchSandboxLocalAuthority {
   /** Runtime-only; never accepted from the serialized Relay envelope. */
   readonly allowWorkspaceGovernanceWrites?: boolean;
   readonly managedHome?: string;
+  readonly preparedEnvironment?: Readonly<Record<string, string>>;
 }
 
 export type RelayDispatchSandboxFactory = (

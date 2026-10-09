@@ -16,6 +16,7 @@ import {
 } from "./shortcut-context";
 import { validateTaskModelSelectionForCreate } from "../selection-validation";
 import { grantArtifactExactUserAccess } from "../../file/share-artifact";
+import { normalizeTaskToolWhitelist } from "../../subagents/validate-subagent-whitelist";
 
 /**
  * `ask_peer` intent shortcut. Sends the agent to DM another
@@ -45,7 +46,7 @@ const askPeerSchema = z.object({
   tools: z
     .array(z.string())
     .optional()
-    .describe("Optional tool whitelist for the DM subagent (default: no tools)."),
+    .describe("Optional tool whitelist for the DM subagent (default: no tools). exec_command includes write_stdin for the same owned execution lifecycle."),
   include_focused_artifacts: z
     .boolean()
     .optional()
@@ -134,7 +135,7 @@ export function createAskPeerTool(context?: unknown) {
         profile: args.model_selection,
         // ask_peer defaults to tool-free (none); a non-empty tools list → whitelist.
         toolsMode: hasTools ? "whitelist" : "none",
-        toolsWhitelist: args.tools ?? [],
+        toolsWhitelist: normalizeTaskToolWhitelist(args.tools ?? []),
       });
       if (selectionError) return selectionError;
       const rt = getTaskToolRuntime();
@@ -248,7 +249,7 @@ export function createAskPeerTool(context?: unknown) {
         scheduleKind: "now",
         useScope: false,
         toolsMode: hasTools ? "whitelist" : "none",
-        toolsWhitelist: args.tools ?? [],
+        toolsWhitelist: normalizeTaskToolWhitelist(args.tools ?? []),
         targetChat: "last_dm",
         targetChatHandle: `@${handle}`,
         awaitResponse: true,

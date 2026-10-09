@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeAll, expect, mock, spyOn, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildProtectedPathPolicy } from "@nautilo/security";
@@ -22,9 +22,10 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(tty = false, authorityExpiresAt?: number) {
+function fixture(tty = false, authorityExpiresAt?: number, ceiling: "basic" | "development" = "basic") {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "local-execution-integration-")));
   const policyHome = realpathSync(mkdtempSync(join(tmpdir(), "local-execution-home-")));
+  const tools = join(root, "tools"); mkdirSync(tools);
   roots.push(root, policyHome);
   let selected = ""; let allowed = true;
   let preparedHome: string | undefined;
@@ -54,12 +55,15 @@ function fixture(tty = false, authorityExpiresAt?: number) {
   selected = root;
   const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: root }), {
     relayId: "relay-a", isProduction: true, localExecution,
+    trustedToolsBin: tools,
     protectedPathPolicy: buildProtectedPathPolicy({ homeDir: policyHome, platform: process.platform }),
     getLocalWorkspacePath: () => selected,
     resolveLocalExecutionDelegation: async binding => {
       if (!allowed || binding.authority.delegation.projectGrantId !== "task-grant") throw new Error("GRANT_REVOKED");
       return { root, grantIds: ["task-grant", "profile-tools-grant"], access: ["read", "create_modify", "delete", "execute"], dataDir: join(root, "private"),
         readOnlyRoots: [], writableRoots: [], networkPolicy: { mode: "isolated" },
+        ...(ceiling === "development" ? { developmentEnvironment: { profileId: "profile", profileRevision: 2,
+          protectedPolicyVersion: 1, home: policyHome, environmentValues: {}, executables: [] } } : {}),
         ...(authorityExpiresAt === undefined ? {} : { authorityExpiresAt }), isCurrent: () => allowed };
     },
     createSandbox: async (envelope, authority) => {
@@ -67,7 +71,7 @@ function fixture(tty = false, authorityExpiresAt?: number) {
       expect(envelope.config.networkPolicy).toEqual({ mode: "isolated" });
       expect(envelope.config.passthroughEnv).toEqual([]); expect(envelope.config.writablePaths).toEqual([]);
       expect(envelope.workspace).toBe(root); expect(envelope.config.readOnlyPaths).toBeUndefined();
-      expect(envelope.failIfNoBackend).toBe(true); preparedHome = authority?.managedHome;
+      expect(envelope.failIfNoBackend).toBe(true); preparedHome = authority?.managedHome ?? authority?.preparedEnvironment?.["HOME"];
       expect(preparedHome).toBeDefined(); expect(preparedHome).not.toBe(root);
       return {
         containmentActive: () => true, protectedFileMaskSupported: () => true,
@@ -83,17 +87,19 @@ function fixture(tty = false, authorityExpiresAt?: number) {
     localExecutionBinding: { version: 4, authority: { kind: "delegated", roomId: "room-fixture", taskId: "task", taskRunId: "run-a",
       delegation: { version: 1, humanUserId: "human-a", agentId: "agent-a", sourceRoomId: "room-fixture", sourceConversationId: "source-thread", rootTaskId: "task",
         target: { instanceId: "instance-a", relayId: "relay-a", pairingGeneration: "raw-pair", serverOrigin: "https://server.invalid", serverFingerprint: "fingerprint" },
-        projectGrantId: "task-grant", ceiling: "basic", profile: null } }, generation: host.hostGeneration, invocationId: "call-a", executionId: "execution-a", operation: "start",
+        projectGrantId: "task-grant", ceiling, profile: ceiling === "development" ? { id: "profile", revision: 2 } : null } }, generation: host.hostGeneration, invocationId: "call-a", executionId: "execution-a", operation: "start",
+      localNetworkPolicy: { mode: "host" },
       owner: { instanceId: "instance-a", humanUserId: "human-a", agentId: "agent-a", runId: "run-a", conversationId: "conversation-a",
         relayId: "relay-a", desktopSessionId: "desktop-a", pairingGeneration: "pair-a", serverBindingId: "server-a",
-        profileId: null, profileRevision: null, grantIds: ["task-grant"], grantRevision: null, protectedPolicyVersion: 1 } },
+        profileId: ceiling === "development" ? "profile" : null, profileRevision: ceiling === "development" ? 2 : null,
+        grantIds: ["task-grant"], grantRevision: null, protectedPolicyVersion: 1 } },
     sandboxProfile: {
       workspace: root, dataDir: join(root, "data"), toolsBin: join(root, "tools"), mode: "desktop-permissive",
       securityLevel: "standard", failIfNoBackend: true,
       config: { mode: "disabled", writablePaths: ["/"], projectPaths: ["/"], readOnlyPaths: ["/"], passthroughEnv: ["GH_TOKEN"], networkPolicy: { mode: "host" } },
     },
   };
-  return { root, host, localExecution, handler, request, spawned, settled,
+  return { root, developmentHome: policyHome, host, localExecution, handler, request, spawned, settled,
     select: (value: string) => { selected = value; }, revoke: () => { allowed = false; },
     home: () => preparedHome,
     finish: () => finish({ exitCode: 7, signal: null }),
@@ -109,6 +115,12 @@ test("delegated preparation uses original durable root after Current Folder chan
   expect(f.command()?.cwd).toBe(f.root);
   expect(f.localExecution.retainedContainedRoots()).toContain(f.root);
   expect(f.home()).not.toBe(f.root); f.finish();
+});
+for (const tty of [false, true]) test(`delegated Development ${tty ? "PTY" : "pipe"} uses the activated real HOME projection`, async () => {
+  const f = fixture(tty, undefined, "development");
+  expect((await f.handler(f.request)).status).toBe("ok"); await f.spawned;
+  expect(f.home()).toBe(f.developmentHome);
+  f.finish();
 });
 test("revoked delegated source refuses preparation without a spawn", async () => {
   const f = fixture(); f.revoke(); await f.handler(f.request);

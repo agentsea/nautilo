@@ -77,8 +77,8 @@ const origin = {
 } as const;
 
 function relayFixture() {
-  const live = { connected: true, owner: origin.userId as string, protocol: 20, managed: true, history: false, search: false,
-    localGit: false, shellOutput: false, delegation: false };
+  const live = { connected: true, owner: origin.userId as string, protocol: 29, managed: true, history: false, search: false,
+    localGit: false, shellOutput: false, delegation: false, github: false };
   setRelayRegistry({
     findByCapabilityForUser: (_capability: string, userId: string) => live.connected && userId === live.owner ? [origin.relayId] : [],
     getUserId: (id: string) => live.connected && id === origin.relayId ? live.owner : undefined,
@@ -86,11 +86,18 @@ function relayFixture() {
       profile: "desktop-agent", canRunShell: true, canExecuteLocal: live.managed, canReadLocalExecutionHistory: live.history, canSearchLocalExecutionOutput: live.search,
       canUseLocalGit: live.localGit, ...(live.localGit ? { localGit: { version: 1 } } : {}),
       canReadShellOutput: live.shellOutput, canDelegateLocalExecution: live.delegation,
-      ...(live.managed ? { localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, capacity: 1 } } : {}),
+      canUseGitHub: live.github,
+      ...(live.github ? { github: { version: 1 as const, generation: "github-generation-fixture", identity: {
+        instanceId: "", humanUserId: origin.userId, relayId: origin.relayId, desktopSessionId: origin.desktopSessionId,
+        pairingGeneration: origin.pairingGeneration, serverOrigin: "https://server.example", serverFingerprint: "fingerprint-fixture",
+        profileId: "profile-fixture", profileRevision: 1, grantRevision: 1, protectedPolicyVersion: 1,
+      } } } : {}),
+      ...(live.managed ? { localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, localNetworkPolicy: true, capacity: 1 } } : {}),
     } : undefined,
     getProtocolVersion: () => live.protocol,
     getDesktopSessionId: () => origin.desktopSessionId,
     getPairingGeneration: () => origin.pairingGeneration,
+    getLocalExecutionPairingGeneration: () => origin.pairingGeneration,
     dispatch: () => { throw new Error("Discovery and activation must not dispatch execution"); },
   } as ToolRelayRegistry);
   return live;
@@ -133,20 +140,24 @@ async function activate(state: NautiloState): Promise<string[]> {
 
 describe("managed execution capability projection through graph state", () => {
   test("auxiliary guidance follows the fresh exact Desktop capabilities", async () => {
-    const live = relayFixture(); live.protocol = 28; live.localGit = true; live.shellOutput = true;
+    const live = relayFixture(); live.protocol = 29; live.localGit = true; live.shellOutput = true; live.github = true;
     let state = await project(executionState());
     expect(projectedPrompt(state)).toContain("Use local_git for supported typed local Git.");
     expect(projectedPrompt(state)).toContain("Use read_shell_output for earlier retained shell output.");
     expect(projectedPrompt(state)).not.toContain("Use human_terminal for the exact Human terminal handoff.");
-    live.localGit = false; live.shellOutput = false;
+    expect(projectedPrompt(state)).toContain("Use local_github account_status to check the admitted GitHub account");
+    expect(projectedPrompt(state)).toContain("exact repository access is checked per operation");
+    expect(projectedPrompt(state)).toContain("Do not test GitHub authentication with gh through exec_command");
+    live.localGit = false; live.shellOutput = false; live.github = false;
     state = await project(state);
     expect(projectedPrompt(state)).not.toContain("Use local_git for supported typed local Git.");
     expect(projectedPrompt(state)).not.toContain("Use read_shell_output for earlier retained shell output.");
+    expect(projectedPrompt(state)).toContain("Authenticated GitHub operations remain unavailable");
     expect(projectedPrompt(state)).toContain("Unavailable tools have no shell fallback.");
   });
 
   test("delegated worker guidance names only its admitted managed tools and preserves the original Mac", async () => {
-    const live = relayFixture(); live.protocol = 28; live.localGit = true; live.shellOutput = true; live.delegation = true;
+    const live = relayFixture(); live.protocol = 29; live.localGit = true; live.shellOutput = true; live.delegation = true;
     const signal = new AbortController().signal;
     const port: DelegatedLocalExecutionPort = { taskId: "task-fixture", taskRunId: "run-fixture", signal,
       withAdmission: async (_operation, work) => work({ taskId: "task-fixture", taskRunId: "run-fixture", signal,
@@ -233,7 +244,7 @@ test("history discovery remains available with Workstation off on a compatible e
 });
 
 test("search readiness is exact-peer versioned and stale true is cleared by pre-model projection", async () => {
-  const live = relayFixture(); live.search = true; live.protocol = 26;
+  const live = relayFixture(); live.search = true; live.history = true; live.protocol = 26;
   let state = await project(executionState());
   expect(state.relayCapabilities?.["canSearchLocalExecutionOutput"]).toBeTrue();
   const schemaFor = (projected: NautiloState) => {
