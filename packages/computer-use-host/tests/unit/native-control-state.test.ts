@@ -156,7 +156,7 @@ test("publishes exact slider state only on the unique selected element through a
   })]);
 
   const observed = await observedWindow(host, "slider-state");
-  expect(COMPUTER_USE_NATIVE_CONTRACTS.observe.contractVersion).toBe(12);
+  expect(COMPUTER_USE_NATIVE_CONTRACTS.observe.contractVersion).toBe(13);
   expect(observed).toMatchObject({ settlement: "completed", result: {
     operation: "window_state",
     element: { disposition: "unique", state: {

@@ -2333,6 +2333,9 @@ const computerObserveFailureResultSchema = z
     version: z.literal(1),
     operation: z.enum(["desktop_state", "window_state", "application_windows", "window_region"]),
     outcome: computerOperationOutcomeSchema,
+    // Host-authored diagnostics only; never raw provider output or effect authority.
+    failureCode: z.string().regex(/\S/u, "failure code cannot be blank").optional(),
+    failureDetail: z.string().regex(/\S/u, "failure detail cannot be blank").optional(),
   })
   .strict();
 
@@ -2393,7 +2396,7 @@ export const COMPUTER_USE_NATIVE_CONTRACTS = {
   observe: {
     contractNamespace: "nautilo.computer_use",
     contractId: "native.observe",
-    contractVersion: 12,
+    contractVersion: 13,
     schemaDigest: schemaDigest(NATIVE_CONTRACT_SCHEMAS.observe),
     effectClass: "read",
     replayClass: "safe",

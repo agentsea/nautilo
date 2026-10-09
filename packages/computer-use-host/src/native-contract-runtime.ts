@@ -127,10 +127,14 @@ function failed(
   operation: "desktop_state" | "window_state" | "application_windows" | "window_region" | "verify",
   outcome: object,
   signal: AbortSignal,
+  failure?: Readonly<{ code?: string; error: string }>,
 ): ComputerUseContractHandlerResult {
   return {
     settlement: signal.aborted ? "cancelled" : "not_completed",
-    result: jsonRecord({ version: 1, operation, outcome }),
+    result: jsonRecord({ version: 1, operation, outcome,
+      ...(failure?.code ? { failureCode: failure.code } : {}),
+      ...(failure?.error ? { failureDetail: failure.error } : {}),
+    }),
   };
 }
 
@@ -163,7 +167,7 @@ export class CuaNativeContractRuntime {
               : input.operation === "application_windows"
                 ? await options.adapter.observeApplicationWindows({ ...input, scope, signal: context.signal } as CuaApplicationWindowsObserveRequest)
                 : await options.adapter.observeWindowRegion({ ...input, scope, signal: context.signal } as CuaWindowRegionObserveRequest);
-          if (!observed.ok) return failed(input.operation, observed.outcome, context.signal);
+          if (!observed.ok) return failed(input.operation, observed.outcome, context.signal, observed);
           const observation = computerObservationResultSchema.parse(observed.observation);
           const visionImage = "visionImage" in observed ? observed.visionImage : undefined;
           if (visionImage === undefined) {

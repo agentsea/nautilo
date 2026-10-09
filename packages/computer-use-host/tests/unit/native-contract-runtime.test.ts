@@ -208,7 +208,12 @@ test("a new Host serves the previous native contracts without changing their sch
     expect(validateNativeCompatibility(result?.result, schema.result)).toBe(true);
     expect(result?.contract).toEqual(contract);
     if (observe) {
-      if (contract.contractVersion === 11) {
+      if (contract.contractVersion === 12) {
+        expect(result?.result).toHaveProperty("element.state.value", "current");
+        expect(result?.result).toHaveProperty("controlCollection.controls.0.actions", ["AXPress"]);
+        expect(result?.result).toHaveProperty("controlCollection.controls.0.depth", 1);
+        expect(result?.result).toHaveProperty("controlCollection.controls.0.frame.coordinateSpace", "provider_layout");
+      } else if (contract.contractVersion === 11) {
         expect(result?.result).toHaveProperty("element.state.value", "current");
         expect(result?.result).toHaveProperty("controlCollection.controls", [
           { id: "c0", role: "button", label: "Continue", state: { completeness: "partial" } },
@@ -220,7 +225,7 @@ test("a new Host serves the previous native contracts without changing their sch
       expect(host.takeAttachment(requestId)).not.toBeNull();
     }
   }
-  expect(enhanced.observeWindowState).toHaveBeenCalledTimes(2);
+  expect(enhanced.observeWindowState).toHaveBeenCalledTimes(3);
   expect(adapter.launchApp).toHaveBeenCalledTimes(2);
 });
 
@@ -406,6 +411,43 @@ test("native Host admits explicit editing and scrolling on general observed role
   }
 });
 
+test("native observations retain diagnostics without changing recovery or older contracts", async () => {
+  for (const [code, detail, interference] of [
+    ["human_input_unavailable", "Desktop human-input state could not be read.", false],
+    ["provider_error", "Cua could not return a desktop application observation.", false],
+    ["external_interference", "Local input interrupted the desktop observation.", true],
+  ] as const) {
+    const failureOutcome = { ...outcome, retrySafety: "observe_before_retry" as const,
+      providerCondition: "unknown" as const, targetCondition: "unknown" as const,
+      recovery: ["observe_again" as const], ...(interference ? { externalInterference: "user_input" as const } : {}) };
+    const failedRead = mock(async () => ({ ok: false as const, code, error: detail, outcome: failureOutcome,
+      providerDebug: { secret: "must-not-leave-the-adapter" } }));
+    const adapter = { ...fakeAdapter(), observe: failedRead, observeWindowState: failedRead,
+      observeApplicationWindows: failedRead, observeWindowRegion: failedRead };
+    const native = new CuaNativeContractRuntime({ adapter: adapter as never, scopeForAuthority: nativeScope });
+    const host = new ComputerUseHost({ hostGeneration: "host-1", driverGeneration: "driver-1", handlers: native.handlers });
+    for (const input of [
+      { operation: "desktop_state" },
+      { operation: "window_state", target: windowTarget },
+      { operation: "application_windows", target: appTarget },
+      { operation: "window_region", target: snapshotTarget, coordinateSpace: "window_snapshot_pixels", region: { x: 0, y: 0, width: 1, height: 1 } },
+    ]) {
+      const current = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.observe, `current-${input.operation}`, input));
+      expect(current).toMatchObject({ settlement: "not_completed", result: {
+        version: 1, operation: input.operation, outcome: failureOutcome, failureCode: code, failureDetail: detail,
+      } });
+      expect(current.result).not.toHaveProperty("providerDebug");
+      expect(NATIVE_CONTRACT_SCHEMAS.observe.result.safeParse(current.result).success).toBe(true);
+      for (const schema of NATIVE_COMPATIBILITY_SCHEMAS.filter(s => s.descriptor.contractId === "native.observe")) {
+        const prior = await host.dispatch(request(parseComputerUseHostContract(schema.descriptor), `prior-${schema.descriptor.contractVersion}-${input.operation}`, input));
+        expect(prior.settlement).toBe("not_completed");
+        expect(prior.result).toEqual({ version: 1, operation: input.operation, outcome: failureOutcome });
+        expect(validateNativeCompatibility(prior.result, schema.result)).toBe(true);
+      }
+    }
+  }
+});
+
 test("native Host failure results remain valid signed catalogue results", async () => {
   const staleOutcome = {
     ...outcome,
@@ -415,7 +457,7 @@ test("native Host failure results remain valid signed catalogue results", async 
   };
   const adapter = {
     ...fakeAdapter(),
-    observeApplicationWindows: mock(async () => ({ ok: false as const, outcome: staleOutcome })),
+    observeApplicationWindows: mock(async () => ({ ok: false as const, error: "The application target is stale.", outcome: staleOutcome })),
     verify: mock(async () => ({ ok: false as const, outcome: staleOutcome })),
   };
   const native = new CuaNativeContractRuntime({ adapter: adapter as never, scopeForAuthority: () => nativeScope() });
@@ -428,8 +470,9 @@ test("native Host failure results remain valid signed catalogue results", async 
   }));
   expect(observed).toMatchObject({
     settlement: "not_completed",
-    result: { version: 1, operation: "application_windows", outcome: { targetCondition: "stale" } },
+    result: { version: 1, operation: "application_windows", failureDetail: "The application target is stale.", outcome: { targetCondition: "stale" } },
   });
+  expect(observed.result).not.toHaveProperty("failureCode");
   expect(NATIVE_CONTRACT_SCHEMAS.observe.result.safeParse(observed.result).success).toBe(true);
 
   const verified = await host.dispatch(request(COMPUTER_USE_NATIVE_CONTRACTS.verify, "verify-stale", {
@@ -441,6 +484,20 @@ test("native Host failure results remain valid signed catalogue results", async 
     result: { version: 1, operation: "verify", outcome: { targetCondition: "stale" } },
   });
   expect(NATIVE_CONTRACT_SCHEMAS.verify.result.safeParse(verified.result).success).toBe(true);
+});
+
+test("cancelled observation retains its diagnostics without changing cancellation settlement", async () => {
+  const controller = new AbortController();
+  const failedOutcome = { ...outcome, providerCondition: "cancelled" as const };
+  const native = new CuaNativeContractRuntime({ adapter: { ...fakeAdapter(), observe: mock(async () => {
+    controller.abort();
+    return { ok: false as const, code: "cancelled", error: "Desktop observation was cancelled.", outcome: failedOutcome };
+  }) } as never, scopeForAuthority: nativeScope });
+  const handler = native.handlers.find(h => h.contract === COMPUTER_USE_NATIVE_CONTRACTS.observe)!;
+  const result = await handler.execute({ operation: "desktop_state" }, { authority, contract: handler.contract, signal: controller.signal });
+  expect(result).toEqual({ settlement: "cancelled", result: { version: 1, operation: "desktop_state",
+    outcome: failedOutcome, failureCode: "cancelled", failureDetail: "Desktop observation was cancelled." } });
+  expect(NATIVE_CONTRACT_SCHEMAS.observe.result.safeParse(result.result).success).toBe(true);
 });
 
 test("native Host preserves exact off-Space focus recovery through final result validation", async () => {

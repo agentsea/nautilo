@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Computer Use observation failures retain their Host-owned diagnostic code and
+  explanation, with exact prior contracts retained for older clients. Recovery
+  and effect certainty are unchanged.
+
 - Computer Use re-reads imprecise local-input clock samples instead of treating
   subprocess delays as Human activity, and retains its input fence across small
   timing changes. Unavailable samples still block actions without blaming input.
