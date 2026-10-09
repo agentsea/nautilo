@@ -1786,8 +1786,8 @@ describe("Postgres background authorization repository", () => {
     expect(statement).toContain("CREDENTIAL_SUBJECT_KIND =");
     expect(statement).toContain("RUNTIME_KIND =");
     expect(statement).toContain("RUNTIME_VERSION =");
-    expect(statement).toContain("WORK_KIND =");
-    expect(statement).toContain("PURPOSE =");
+    expect(statement).toContain("WORK_KIND IN");
+    expect(statement).toContain("PURPOSE = BACKGROUND_CRYPTO_AUTHORIZATION_REQUESTS.WORK_KIND");
     expect(statement).toContain("PROCESSOR_AUTHORIZATION_REVISION IS NULL");
     expect(statement).toContain("TERMINAL_REASON =");
     expect(statement).toContain("UPDATED_AT <=");
@@ -1809,6 +1809,8 @@ describe("Postgres background authorization repository", () => {
     expect(parameters).toContain("runtime");
     expect(parameters).toContain("task");
     expect(parameters).toContain("task.execute");
+    expect(parameters).toContain("task.approval_resume");
+    expect(parameters).toContain("task.await_reply_resume");
 
     const invalidCursor = postgres.repository
       .listTaskRuntimeCancellationPage({
