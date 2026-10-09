@@ -1,80 +1,32 @@
 ---
 name: terminal-sessions
-description: Operate the legacy persistent terminal relay tool when it is offered — shared PTY spawn/run/write/read/list/kill, capability gating, cursor discipline, and its separation from managed local execution and explicit Human terminal handoff.
-requiresTools: [terminal]
+description: Operate managed local terminal sessions through exec_command and write_stdin, including contained PTYs, cursor-based output, input uncertainty, cancellation, and explicit Human terminal handoff.
+requiresTools: [exec_command, write_stdin]
 source: official
-version: 3
+version: 4
 ---
 # Terminal Sessions — Skill
 
-Use `terminal` only when it is present and the task benefits from its legacy
-persistent, shared PTY: a long-running dev server, watcher, REPL, TUI, or a
-workflow that must return to the same shell across calls. Newer Desktop
-contexts may instead offer managed `exec_command` and `write_stdin`; do not
-require the legacy tool when it is absent.
+Use `exec_command` for a command that needs a managed local process. Request
+`tty: true` only for a contained Basic or Development command that genuinely
+needs a PTY, such as a REPL, watcher, interactive prompt, or terminal UI. A
+temporary Full Mac command accepts a one-shot pipe only.
 
-`terminal` is a relay tool offered only by a PTY-capable Desktop relay. It is
-capability-gated by the Human's `use_workstation` authority and the relay's
-`canUseTerminal` capability. It has no per-command approval dock. The session
-is visible to and shared with the Human, who may type into it too.
+`exec_command` may finish in the first response or yield a live `session_id`.
+Keep that identifier and continue the same process with `write_stdin`:
 
-## Choose the correct terminal surface
+- omit `chars` to poll repeatable output and process state;
+- pass `chars` only when the managed PTY is waiting for input;
+- pass `cursor` to resume from an exact output position;
+- pass `cancel: true` to request termination and inspect the cleanup result.
 
-| Need | Surface |
-| --- | --- |
-| Complete local command, actual exit status, retained output, or a fresh contained managed PTY | `exec_command`, then `write_stdin` if it yields |
-| Existing legacy shared PTY with spawn/list/kill lifecycle | `terminal`, when offered |
-| The Human's exact existing terminal after an explicit handoff | `human_terminal`, when offered |
+Do not relaunch a quiet or yielded process. Output reads do not consume output,
+and a pause does not mean the process stopped. If an input response has an
+unknown delivery outcome, do not send it again automatically. If cancellation
+is uncertain, report that uncertainty instead of claiming cleanup succeeded.
 
-These are independent capabilities. A working legacy session does not prove
-that managed Basic or Development execution is admitted. Do not use it to
-work around an access denial, changed Current Folder, protected path, or Full
-Mac restriction.
-
-## Actions
-
-| Action | Purpose |
-| --- | --- |
-| `spawn` | Create a session rooted at the selected Current Folder. |
-| `run` | Submit one command plus Enter to a live session and observe initial output. |
-| `write` | Send raw input or control characters without adding Enter. |
-| `read` | Read output from a cursor without sending input. |
-| `list` | Inspect live sessions; use sparingly when the Human refers ambiguously to one. |
-| `kill` | Stop a session and release its process. |
-
-Typical lifecycle:
-
-```text
-terminal({ action: "spawn", cwd: "/selected/project" })
-terminal({ action: "run", session_id, data: "bun run dev" })
-terminal({ action: "read", session_id, cursor })
-terminal({ action: "write", session_id, data: "\u0003" })
-terminal({ action: "kill", session_id })
-```
-
-Remember the returned `session_id` and latest cursor. Read incrementally; do
-not repeatedly request the full transcript. A `run` body can execute a compound
-script, but shell-local `cd` or `export` inside that body does not necessarily
-persist afterward. Send a standalone command or raw keystrokes when later
-calls need the changed shell state.
-
-## Human handoff and lifecycle discipline
-
-If the Human selected **Let Genie drive**, use the exact handed-over terminal
-according to the tool result. When `terminal` is offered for that handoff,
-start directly with `run`, `read`, or `write`; `session_id`
-may remain omitted while Genie controls that PTY. No discovery, listing, or
-new session is needed for the exact handed-over terminal.
-If the separate `human_terminal` tool is offered,
-prefer its explicit read/run/write contract for that handoff. Never guess a
-session or send uncertain input twice.
-
-Spawn against the selected Current Folder, not a remembered path. A PTY can
-exit immediately because of a bad directory, missing binary, or login-shell
-failure; confirm it remains live before sending more input. After a dead
-session, fix the cause and respawn at most once rather than looping.
-
-State intent before destructive commands even though the tool is
-capability-gated. Never capture credentials or type a Human password. Send
-Ctrl-C before killing a process when graceful shutdown matters, then `kill`
-when finished so watchers, REPLs, and servers are not left behind.
+Use `human_terminal` only after the Human explicitly hands over their exact
+existing terminal. That surface has its own read, run, and write receipts and
+does not create managed local execution authority. Never discover or guess a
+terminal identifier, capture credentials, type a Human password, or use one
+terminal surface to bypass an access denial on another.

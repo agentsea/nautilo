@@ -10,9 +10,7 @@ import {
 import {
   createAcceptedInvocationAuthority,
   assertCanInvokeAgent,
-  assertCanUseServerProviderCredentials,
   AgentInvocationDeniedError,
-  ServerProviderCredentialsDeniedError,
   isUuidString,
   type AgentInvocationAdmissionInput,
   getPolicyResolver,
@@ -84,6 +82,7 @@ export function createConnectedWebOperationWakeExecutor(options: {
   readonly load: ConnectedWebAccountStore["getOperationForOwner"];
   readonly resolveEnvelope: (operation: ConnectedWebOperation) => Promise<unknown>;
   readonly secrets?: Pick<ConnectedWebOperationSecrets, "unsealIntent">;
+  readonly assertInvocation?: (input: AgentInvocationAdmissionInput) => Promise<void>;
   readonly execute?: JobExecutor;
 }): JobExecutor {
   return async function* (input, jobId, laneKey, signal) {
@@ -108,10 +107,23 @@ export function createConnectedWebOperationWakeExecutor(options: {
       } catch { /* Older or unreadable response preferences do not enable speech. */ }
     }
     if (signal.aborted) return;
+    try {
+      await (options.assertInvocation ?? assertCanInvokeAgent)({
+        humanUserId: fundingHumanUserId,
+        origin: "foreground_resume",
+        roomId: current.initiatingRoomId,
+        agentId: current.initiatingAgentId,
+      });
+    } catch (error) {
+      if (error instanceof AgentInvocationDeniedError) return;
+      throw error;
+    }
+    if (signal.aborted) return;
     yield* (options.execute ?? langgraphExecutor)({
       ...input, message: connectedWebOperationWakeMessage(current), voiceMode, memoryAccessEnvelope: envelope,
       metadata: {
         originatedBy: "connected_web_operation", operationId: current.id, controlEpoch: current.controlEpoch,
+        wakeFingerprint: current.wakeFingerprint,
         activity: current.safeActivity, receipt: current.terminalReceipt,
       },
     }, jobId, laneKey, signal);
@@ -137,7 +149,6 @@ export async function deliverConnectedWebOperationWakes(input: {
   readonly resolveEnvelope?: (operation: ConnectedWebOperation) => Promise<unknown>;
   readonly operations?: ConnectedWebOperationWakeOperations;
   readonly assertInvocation?: (input: AgentInvocationAdmissionInput) => Promise<void>;
-  readonly assertServerFunding?: (humanUserId: string, origin?: string) => Promise<void>;
 }): Promise<{ readonly claimed: number; readonly accepted: number; readonly delivered: number }> {
   const now = input.now ?? (() => new Date());
   const store = input.operations === undefined ? createConnectedWebAccountStore(input.db) : null;
@@ -165,7 +176,13 @@ export async function deliverConnectedWebOperationWakes(input: {
     try {
       const fundingHumanUserId = sealedFundingHuman(operation, input.secrets);
       if (!fundingHumanUserId) {
-        throw new ServerProviderCredentialsDeniedError("", "connected_web_operation_wake");
+        await operations.complete({
+          operationId: operation.id,
+          workerId: input.workerId,
+          expectedWakeFingerprint: fingerprint,
+          now: now(),
+        });
+        continue;
       }
       await (input.assertInvocation ?? assertCanInvokeAgent)({
         humanUserId: fundingHumanUserId,
@@ -173,10 +190,6 @@ export async function deliverConnectedWebOperationWakes(input: {
         roomId: operation.initiatingRoomId,
         agentId: operation.initiatingAgentId,
       });
-      await (input.assertServerFunding ?? assertCanUseServerProviderCredentials)(
-        fundingHumanUserId,
-        "connected_web_operation_wake",
-      );
       const resolveEnvelope = input.resolveEnvelope ?? (async (operation: ConnectedWebOperation) => {
         const resolver = getPolicyResolver();
         if (!resolver) throw new Error("policy resolver unavailable");
@@ -223,6 +236,7 @@ export async function deliverConnectedWebOperationWakes(input: {
             originatedBy: "connected_web_operation",
             operationId: operation.id,
             controlEpoch: operation.controlEpoch,
+            wakeFingerprint: fingerprint,
             activity: operation.safeActivity,
             receipt: operation.terminalReceipt,
           },
@@ -230,6 +244,7 @@ export async function deliverConnectedWebOperationWakes(input: {
         createConnectedWebOperationWakeExecutor({
           expected: operation, load: operations.load, resolveEnvelope,
           ...(input.secrets === undefined ? {} : { secrets: input.secrets }),
+          assertInvocation: input.assertInvocation ?? assertCanInvokeAgent,
         }),
         createMaintenanceAcceptanceAuthority(),
         undefined,
@@ -243,8 +258,7 @@ export async function deliverConnectedWebOperationWakes(input: {
         now: now(),
       })) delivered += 1;
     } catch (error) {
-      if (error instanceof AgentInvocationDeniedError
-        || error instanceof ServerProviderCredentialsDeniedError) {
+      if (error instanceof AgentInvocationDeniedError) {
         await operations.complete({
           operationId: operation.id,
           workerId: input.workerId,

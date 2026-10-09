@@ -4,6 +4,7 @@ import { parseGitHubOperation } from "../../../../types/src/github-broker";
 
 const resource = { repository: z.string(), number: z.number().int().positive().safe() };
 export const githubSchema = z.discriminatedUnion("operation", [
+  z.object({ operation: z.literal("account_status") }).strict(),
   z.object({ operation: z.literal("issue_read"), ...resource }).strict(),
   z.object({ operation: z.literal("pr_read"), ...resource }).strict(),
   z.object({ operation: z.literal("comment_create"), ...resource, body: z.string().min(1) }).strict(),
@@ -16,7 +17,7 @@ export function createGitHubTool() {
   return new DynamicStructuredTool({
     name: "local_github",
     schema: githubSchema,
-    description: "Read an issue or pull request, or propose a conversation comment or pull request, in an exact owner/repository on GitHub.com using the admitted Desktop account broker. Publishing always needs a separate one-time Human review showing the actual account, repository, target and full payload, including observed branches for a pull request. PR creation disables maintainer branch edits and returns observed branch movement, without guaranteeing an approved commit because GitHub has no commit compare-and-swap for creation. This is not arbitrary gh, review submission, merge, or authenticated Git. A publishing outcome_unknown must never be retried automatically.",
+    description: "Report readiness and identity for the admitted Desktop GitHub account, read an issue or pull request, or propose a conversation comment or pull request in an exact owner/repository on GitHub.com. Use account_status instead of gh auth status; operationReady means only that the admitted account broker and identity check succeeded. Repository-specific access is checked separately for each exact operation. The result never includes credentials. Publishing always needs a separate one-time Human review showing the actual account, repository, target and full payload, including observed branches for a pull request. PR creation disables maintainer branch edits and returns observed branch movement, without guaranteeing an approved commit because GitHub has no commit compare-and-swap for creation. This is not arbitrary gh, review submission, merge, or authenticated Git. A publishing outcome_unknown must never be retried automatically.",
     func: () => Promise.reject(new Error("local_github requires the admitted Desktop account broker")),
   });
 }

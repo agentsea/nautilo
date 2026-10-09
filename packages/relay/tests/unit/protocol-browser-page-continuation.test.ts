@@ -31,7 +31,7 @@ const CAPABILITIES: RelayCapabilities = {
 
 describe("Browser-page continuation and snapshot-reference protocols", () => {
   test("keeps v12 continuation while projecting v13 inspection away", () => {
-    expect(RELAY_PROTOCOL_VERSION).toBe(28);
+    expect(RELAY_PROTOCOL_VERSION).toBe(29);
     expect(RELAY_BROWSER_PAGE_CONTINUATION_PROTOCOL_VERSION).toBe(12);
     expect(RELAY_BROWSER_PAGE_SNAPSHOT_REFERENCE_PROTOCOL_VERSION).toBe(13);
     expect(BROWSER_RESEARCH_READ_PROTOCOL_VERSION).toBe(12);

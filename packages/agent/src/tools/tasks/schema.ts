@@ -91,7 +91,7 @@ export function createTaskToolSchema(
   tools: z
     .array(z.string())
     .optional()
-    .describe("Tool whitelist: omit for all tools, [] for none, or a list of tool names."),
+    .describe("Tool whitelist: omit for all tools, [] for none, or a list of tool names. exec_command includes write_stdin for the same owned execution lifecycle; each operation keeps its own authorization."),
   result_delivery: z
     .enum(["wake", "raw", "raw_and_wake"])
     .optional()

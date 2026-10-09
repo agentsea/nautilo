@@ -993,6 +993,17 @@ describe("checkToolAccess with envelope", () => {
     expect(result.type).toBe("read_only");
   });
 
+  test("GitHub account status is read-only while publishing retains its approval gate", async () => {
+    const resolver = makeResolver();
+    const envelope = await resolver.buildEnvelope(OWNER_ACTOR_ID, "tui:default", TEST_AGENT_ID);
+    expect(envelope.toolPolicy["local_github"]).toBe("require_prove_it");
+    expect(await resolver.checkToolAccess(OWNER_ACTOR_ID, makeTool("local_github", { operation: "account_status" }), envelope))
+      .toMatchObject({ type: "read_only" });
+    expect(await resolver.checkToolAccess(OWNER_ACTOR_ID, makeTool("local_github", {
+      operation: "comment_create", repository: "fixture-org/project", number: 12, body: "Reviewed body",
+    }), envelope)).toMatchObject({ type: "require_approval" });
+  });
+
   test("transcribe_audio requires approval when actor lacks use_transcription (envelope-less path)", async () => {
     // M128 — transcribe_audio now requires use_transcription; override caps to empty so actor has none
     mockGetCapabilities.mockReturnValueOnce(Promise.resolve([]));

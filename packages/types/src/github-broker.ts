@@ -1,10 +1,13 @@
 /** Closed typed account operations. No URL, credential, executable or header
  * can be supplied by the model. Publishing approval is a separate binding. */
 export type GitHubOperation =
+  | { readonly operation: "account_status" }
   | { readonly operation: "issue_read"; readonly repository: string; readonly number: number }
   | { readonly operation: "pr_read"; readonly repository: string; readonly number: number }
   | { readonly operation: "comment_create"; readonly repository: string; readonly number: number; readonly body: string }
   | { readonly operation: "pr_create"; readonly repository: string; readonly headRepository: string; readonly baseBranch: string; readonly headBranch: string; readonly title: string; readonly body: string; readonly draft: boolean };
+
+export type GitHubPublishingOperation = Extract<GitHubOperation, { readonly operation: "comment_create" | "pr_create" }>;
 
 export interface GitHubInvocationOwner {
   readonly instanceId: string;
@@ -50,7 +53,7 @@ export interface GitHubPreparedOperation {
   readonly generation: string;
   readonly toolCallId: string;
   readonly digest: string;
-  readonly request: GitHubOperation;
+  readonly request: GitHubPublishingOperation;
   readonly account: GitHubAccount;
   readonly repository: GitHubRepository;
   readonly resource: GitHubResource | null;
@@ -61,6 +64,10 @@ export type GitHubFailureCode = "invalid_request" | "account_unavailable" | "aut
   | "resource_changed" | "approval_stale" | "capacity_exhausted" | "not_found"
   | "permission_denied" | "rate_limited" | "request_failed" | "outcome_unknown";
 export type GitHubBrokerResult =
+  | { readonly ok: true; readonly operation: "account_status"; readonly account: GitHubAccount;
+      /** The current admitted account broker and identity check succeeded.
+       * Repository-specific access is evaluated only for an exact operation. */
+      readonly authenticated: true; readonly operationReady: true; readonly sideEffectStarted: false; readonly retrySafe: true }
   | { readonly ok: true; readonly operation: "issue_read" | "pr_read"; readonly account: GitHubAccount;
       readonly repository: GitHubRepository; readonly resource: GitHubResource; readonly sideEffectStarted: false; readonly retrySafe: true }
   | { readonly ok: true; readonly operation: "comment_create"; readonly account: GitHubAccount;
@@ -90,6 +97,9 @@ export function isGitHubBranchName(value: unknown): value is string {
     && !value.endsWith(".") && value.split("/").every(part => part.length > 0 && !part.startsWith(".") && !part.endsWith(".lock"));
 }
 export function parseGitHubOperation(value: unknown): GitHubOperation | null {
+  if (object(value) && value["operation"] === "account_status") {
+    return exact(value, ["operation"]) ? { operation: "account_status" } : null;
+  }
   if (object(value) && value["operation"] === "pr_create") {
     return exact(value, ["operation", "repository", "headRepository", "baseBranch", "headBranch", "title", "body", "draft"])
       && isGitHubRepositoryName(value["repository"]) && isGitHubRepositoryName(value["headRepository"])
@@ -153,7 +163,8 @@ export function parseGitHubPreparedOperation(value: unknown): GitHubPreparedOper
   const request = parseGitHubOperation(value["request"]);
   const account = value["account"], repository = value["repository"], resource = value["resource"];
   const id = (entry: unknown) => typeof entry === "number" && Number.isSafeInteger(entry) && entry > 0;
-  if (!request || !object(account) || !exact(account, ["id", "login"]) || !id(account["id"])
+  if (!request || (request.operation !== "comment_create" && request.operation !== "pr_create")
+    || !object(account) || !exact(account, ["id", "login"]) || !id(account["id"])
     || typeof account["login"] !== "string" || !/^[A-Za-z0-9-]+$/.test(account["login"])
     || !object(repository) || !exact(repository, ["id", "fullName", "htmlUrl"]) || !id(repository["id"])
     || repository["fullName"] !== request.repository || repository["htmlUrl"] !== `https://github.com/${request.repository}`

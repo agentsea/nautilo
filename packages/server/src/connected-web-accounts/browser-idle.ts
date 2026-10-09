@@ -11,9 +11,26 @@ export const CONNECTED_WEB_BROWSER_CLEANUP_RETRY_MS = 60_000;
 
 import type { ConnectedWebOperation, ConnectedWebOperationAdmission } from "./store";
 
+function sameFundingBinding(
+  source: ConnectedWebOperation["fundingBinding"],
+  target: ConnectedWebOperationAdmission["fundingBinding"],
+): boolean {
+  if (source === null
+    || source.humanUserId !== target.humanUserId
+    || source.provider !== target.provider
+    || source.credentialFingerprint !== target.credentialFingerprint
+    || source.binding.kind !== target.binding.kind
+    || source.binding.providerRoute !== target.binding.providerRoute) return false;
+  return source.binding.kind === "server"
+    || (target.binding.kind === "personal"
+      && source.binding.credentialId === target.binding.credentialId
+      && source.binding.credentialRevision === target.binding.credentialRevision);
+}
+
 export function canReuseConnectedWebBrowser(source: ConnectedWebOperation, target: ConnectedWebOperationAdmission, now: Date): boolean {
   return source.accountId !== null && target.accountId !== null && source.browserCleanupStartedAt == null && source.browserIdleUntil != null && source.browserIdleUntil > now
     && source.lifecycle === "terminal" && source.driver === "hosted" && source.terminalReceipt?.outcome === "completed"
+    && sameFundingBinding(source.fundingBinding, target.fundingBinding)
     && source.ownerUserId === target.ownerUserId && source.accountId === target.accountId
     && source.initiatingAgentId === target.initiatingAgentId && source.initiatingRoomId === target.initiatingRoomId
     && source.initiatingThreadId === target.initiatingThreadId && source.initiatingLane === target.initiatingLane;

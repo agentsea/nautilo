@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { NautiloApiClient } from "../../src/client";
+import { ApiError, NautiloApiClient } from "../../src/client";
 
 describe("NautiloApiClient", () => {
   const client = new NautiloApiClient("http://127.0.0.1:3001");
@@ -27,6 +27,36 @@ describe("NautiloApiClient", () => {
     expect(typeof client.changePin).toBe("function");
     expect(typeof client.getSecurityPosture).toBe("function");
     expect(typeof client.updateSecurityPosture).toBe("function");
+  });
+
+  test("maps active conversion account deletion conflicts truthfully", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => Response.json(
+      { eligible: false, code: "active_conversion_operation" },
+      { status: 409 },
+    )) as unknown as typeof fetch;
+    try {
+      const error = await client.deleteAccount().catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as Error).message).toContain("active or uncertain file conversions");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("maps active conversion administrator deletion conflicts truthfully", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => Response.json(
+      { eligible: false, code: "active_conversion_operation" },
+      { status: 409 },
+    )) as unknown as typeof fetch;
+    try {
+      const error = await client.admin.users.delete("00000000-0000-4000-8000-000000000001").catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as Error).message).toContain("active or uncertain file conversion");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test("sends the uncontained-host-commands policy through the existing posture API", async () => {

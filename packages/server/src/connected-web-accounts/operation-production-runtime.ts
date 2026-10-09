@@ -12,11 +12,15 @@ import {
 import { ConnectedWebOperationSecrets } from "./operation-secrets";
 import { deliverConnectedWebOperationWakes } from "./operation-wake";
 import { stopIdleConnectedWebBrowser } from "./browser-idle-cleanup";
-import { reconcileHostedExecutionCleanup } from "./hosted-execution-cleanup";
+import { completeHostedExecution } from "./hosted-execution-cleanup";
 import type {
   ConnectedWebAccountStore,
   ConnectedWebOperation,
 } from "./store";
+import { connectedWebBrowserFunding, withFundedBrowserUse, type ConnectedWebBrowserFunding } from "./browser-use-funding";
+import { settleServerProviderCostAttempt } from "../costs/provider-cost-recorder";
+import type { ServerProviderCostReceipt } from "../costs/provider-cost-recorder";
+import { publishConnectedWebPrivateOutput } from "./private-output-import";
 
 /**
  * Operational scheduling policy for the durable supervisor, named here for
@@ -67,8 +71,12 @@ export interface ConnectedWebOperationProductionRuntimeOptions {
   readonly provider: Pick<
     BrowserUseCloudAdapter,
     "pollHostedReadRun" | "readHostedRunEventDelta" | "getHostedReadResult"
-  > & Partial<Pick<BrowserUseCloudAdapter, "findHostedBrowsers" | "stopBrowser" | "stopHostedReadBrowser">>;
+  > & Partial<Pick<BrowserUseCloudAdapter, "collectHostedReadOutputs" | "findHostedBrowsers" | "stopBrowser" | "stopHostedReadBrowser">>;
   readonly secrets: ConnectedWebOperationSecrets;
+  readonly funding?: ConnectedWebBrowserFunding;
+  /** Narrow lifecycle test seam; production uses the persisted funding binding. */
+  readonly withProvider?: <T>(resource: Pick<ConnectedWebOperation, "ownerUserId">, intent: "recover", provider: BrowserUseCloudAdapter, callback: (provider: BrowserUseCloudAdapter) => Promise<T>) => Promise<T>;
+  readonly settleCostAttempt?: (receipt: ServerProviderCostReceipt) => Promise<void>;
   readonly clock?: ConnectedWebOperationProductionRuntimeClock;
   readonly scheduler?: ConnectedWebOperationProductionRuntimeScheduler;
   /** Narrow test seam; production composes the landed supervisor below. */
@@ -122,29 +130,74 @@ class ConnectedWebOperationProductionRuntime {
 
   constructor(options: ConnectedWebOperationProductionRuntimeOptions) {
     if (!validPolicy()) throw new Error("connected website operation runtime policy unavailable");
+    const settleCostAttempt = options.settleCostAttempt ?? settleServerProviderCostAttempt;
     this.clock = options.clock ?? SYSTEM_CLOCK;
     this.scheduler = options.scheduler ?? SYSTEM_SCHEDULER;
     this.runSupervisor = options.runSupervisor ?? this.createSupervisorRunner(options);
     this.cleanExecutions = async () => {
+      const funding = options.funding ?? connectedWebBrowserFunding;
       if (!options.store.requestExecutionCleanup || !options.store.completeExecution
         || !options.store.listPendingExecutionCleanup || !options.provider.stopHostedReadBrowser) return;
-      await reconcileHostedExecutionCleanup({
+      const cleanupStore = {
         requestExecutionCleanup: options.store.requestExecutionCleanup.bind(options.store),
         completeExecution: options.store.completeExecution.bind(options.store),
         listPendingExecutionCleanup: options.store.listPendingExecutionCleanup.bind(options.store),
-      }, { stopHostedReadBrowser: options.provider.stopHostedReadBrowser.bind(options.provider) });
+      };
+      for (const execution of await options.store.listPendingExecutionCleanup()) {
+        const checkpoint = execution.checkpoint;
+        if (!checkpoint.cleanupStatus || !checkpoint.opaqueExecutionRef) continue;
+        const cleanupStatus = checkpoint.cleanupStatus;
+        const opaqueExecutionRef = checkpoint.opaqueExecutionRef;
+        try {
+          const run = options.withProvider === undefined
+            ? async <T>(callback: (provider: BrowserUseCloudAdapter) => Promise<T>) => {
+              const binding = execution.profileFundingBinding ?? await funding.admitLegacyServer(execution.ownerUserId);
+              return withFundedBrowserUse(funding, options.provider as BrowserUseCloudAdapter, binding, "recover", callback);
+            }
+            : <T>(callback: (provider: BrowserUseCloudAdapter) => Promise<T>) => options.withProvider!(execution, "recover", options.provider as BrowserUseCloudAdapter, callback);
+          await run((provider) => completeHostedExecution(cleanupStore, provider, {
+              ownerUserId: execution.ownerUserId,
+              accountId: execution.accountId,
+              reservationToken: checkpoint.reservationToken,
+              expectedOpaqueExecutionRef: opaqueExecutionRef,
+              status: cleanupStatus,
+            }));
+        } catch { /* Durable custody remains for the next independent cleanup tick. */ }
+      }
     };
     this.cleanIdleBrowsers = async () => {
+      const funding = options.funding ?? connectedWebBrowserFunding;
       if (!options.store.claimIdleBrowserOperations || !options.store.completeIdleBrowserCleanup
         || !options.provider.findHostedBrowsers || !options.provider.stopBrowser) return;
       const due = await options.store.claimIdleBrowserOperations({
         now: this.clock.now(), batch: CONNECTED_WEB_OPERATION_RUNTIME_POLICY.claimBatch,
       });
       for (const operation of due) {
-        const stopped = await stopIdleConnectedWebBrowser({ operation, secrets: options.secrets, provider: {
-          findHostedBrowsers: options.provider.findHostedBrowsers.bind(options.provider),
-          stopBrowser: options.provider.stopBrowser.bind(options.provider),
-        } });
+        const cleanup = (provider: BrowserUseCloudAdapter, usageFunding?: Parameters<NonNullable<ConnectedWebOperationProductionRuntimeOptions["settleCostAttempt"]>>[0]["usageFunding"]) => stopIdleConnectedWebBrowser({
+          operation,
+          secrets: options.secrets,
+          provider: {
+            findHostedBrowsers: provider.findHostedBrowsers.bind(provider),
+            stopBrowser: provider.stopBrowser.bind(provider),
+          },
+          settleBrowserCost: (cost: { identity: string; workload: string; estimatedCostUsd: string | null; evidenceState: "estimated" | "unknown" }) => settleCostAttempt({
+            ...cost,
+            actualCostUsd: null,
+            ...(usageFunding === undefined ? {} : { usageFunding }),
+            userId: operation.fundingBinding?.humanUserId ?? operation.ownerUserId,
+            roomId: operation.initiatingRoomId,
+            agentId: operation.initiatingAgentId,
+            provider: "browser_use",
+            operation: "browser_session",
+            attemptOutcome: "succeeded",
+          }),
+        });
+        const stopped = await (options.withProvider === undefined
+          ? async () => {
+            const binding = operation.fundingBinding ?? await funding.admitLegacyServer(operation.ownerUserId);
+            return withFundedBrowserUse(funding, options.provider as BrowserUseCloudAdapter, binding, "recover", cleanup);
+          }
+          : () => options.withProvider!(operation, "recover", options.provider as BrowserUseCloudAdapter, (provider) => cleanup(provider, { kind: "service", providerRoute: "browser-use" })))();
         await options.store.completeIdleBrowserCleanup({ operationId: operation.id, now: this.clock.now(), stopped });
       }
     };
@@ -168,6 +221,7 @@ class ConnectedWebOperationProductionRuntime {
   }
 
   private createSupervisorRunner(options: ConnectedWebOperationProductionRuntimeOptions): NonNullable<ConnectedWebOperationProductionRuntimeOptions["runSupervisor"]> {
+    const funding = options.funding ?? connectedWebBrowserFunding;
     return async ({ workerId, signal }) => {
       if (signal.aborted) return { claimed: 0, reconciled: 0, rescheduled: 0, terminalized: 0, stale: 0 };
       // The supervisor's legacy narrow codec receives only operationId and
@@ -189,6 +243,20 @@ class ConnectedWebOperationProductionRuntime {
       const supervisor = new ConnectedWebOperationSupervisor({
         store,
         provider: options.provider,
+        withProvider: async (operation, intent, callback) => {
+          if (options.withProvider !== undefined) return options.withProvider(operation, intent, options.provider as BrowserUseCloudAdapter, (provider) => callback(provider, { kind: "service", providerRoute: "browser-use" }));
+          const binding = operation.fundingBinding
+            ?? await funding.admitLegacyServer(operation.ownerUserId);
+          return withFundedBrowserUse(
+            funding,
+            options.provider as BrowserUseCloudAdapter,
+            binding,
+            intent,
+            (provider, usageFunding) => callback(provider, usageFunding),
+          );
+        },
+        settleCostAttempt: options.settleCostAttempt ?? settleServerProviderCostAttempt,
+        importOutput: publishConnectedWebPrivateOutput,
         providerReferences: {
           unseal: ({ operationId, references }) => {
             const operation = claimedContexts.get(operationId);
@@ -208,6 +276,8 @@ class ConnectedWebOperationProductionRuntime {
               sessionId: coordinates.sessionId ?? null,
               workspaceId: coordinates.workspaceId ?? null,
               browserId: coordinates.browserId ?? null,
+              runCost: coordinates.runCost ?? null,
+              browserCost: coordinates.browserCost ?? null,
             });
           },
           unsealIntent: ({ operation }) => {

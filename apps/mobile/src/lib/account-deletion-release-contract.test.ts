@@ -58,4 +58,10 @@ describe("public account deletion release contract", () => {
     expect(mobileScreen).toContain("active media work with a provider");
     expect(mobileScreen).toContain("cleanup to complete");
   });
+
+  test("explains that active or uncertain conversions must become terminal", () => {
+    expect(mobileScreen).toContain('case "active_conversion_operation"');
+    expect(mobileScreen).toContain("active or uncertain file conversion");
+    expect(mobileScreen).toContain("terminal recovery state");
+  });
 });

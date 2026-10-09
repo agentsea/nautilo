@@ -1,10 +1,9 @@
 /**
- * Relay dispatch sandbox wiring, progress, and filesystem-grant regressions.
- * These tests use real local subprocesses with a passthrough sandbox where
- * requested. They prove dispatch contracts, not OS containment.
+ * Relay dispatch retirement, sandbox-lifecycle, and filesystem-grant
+ * regressions. These tests prove dispatch contracts, not OS containment.
  */
 
-import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeAll, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import * as fsp from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -20,8 +19,6 @@ import { buildProtectedPathPolicy } from "@nautilo/security";
 import type { DesktopFilesystemGrant } from "@nautilo/desktop-filesystem-grants";
 import type { DesktopFilesystemGrantAuthorityStore } from "../../electron/relay";
 import { createCurrentFolderAdoptionAuthority } from "../../electron/current-folder-adoption";
-import { RunShellOutputArtifactStore } from "../../electron/run-shell-output-continuity";
-import { createRunShellProgressReporter } from "../../electron/relay-dispatch/run-shell-output";
 import {
   deriveDesktopFilesystemAccessOperation,
   deriveDesktopFilesystemAccessOperations,
@@ -54,13 +51,6 @@ beforeAll(async () => {
 
 function mkTmp(prefix: string): string {
   return canonicalize(mkdtempSync(join(tmpdir(), prefix)));
-}
-
-function passthroughSandbox(
-  workspace: string,
-  networkDeniedDestinations?: Array<{ host: string; port: number; reason: string }>,
-): Sandbox {
-  return makeTestSandbox(workspace, undefined, networkDeniedDestinations);
 }
 
 function makeTestSandbox(
@@ -126,23 +116,7 @@ function mkRequest(overrides: Partial<RelayDispatchRequest> = {}): RelayDispatch
   } as RelayDispatchRequest;
 }
 
-// Factory closure for tests: returns a `createSandbox`-compatible
-// function that resolves to a pre-built Sandbox. Used with the
-// `options.createSandbox` test hook so we skip real backend detection.
-function mockCreateSandbox(sandbox: Sandbox) {
-  return (): Promise<Sandbox> => Promise.resolve(sandbox);
-}
-
-describe("makeDispatchHandler — run_shell sandbox wiring", () => {
-  // Preserve + restore env across tests that mutate it.
-  const savedLdPreload = process.env["LD_PRELOAD"];
-  beforeEach(() => {
-    delete process.env["LD_PRELOAD"];
-  });
-  afterEach(() => {
-    if (savedLdPreload === undefined) delete process.env["LD_PRELOAD"];
-    else process.env["LD_PRELOAD"] = savedLdPreload;
-  });
+describe("makeDispatchHandler — desktop dispatch and retired shell boundaries", () => {
 
   test("explicit Current Folder selection delegates once to Electron authority before sandboxing", async () => {
     const ws = mkTmp("relay-current-folder-select-");
@@ -402,385 +376,45 @@ describe("makeDispatchHandler — run_shell sandbox wiring", () => {
     }
   });
 
-  test("envelope + passthrough sandbox runs command + returns stdout", async () => {
-    const ws = mkTmp("relay-sb-envelope-");
-    const guard = createWorkspaceGuard({ workspaceRoot: ws });
-    const handler = makeDispatchHandler(guard, {
-      createSandbox: mockCreateSandbox(passthroughSandbox(ws)),
+  test("retired run_shell requests refuse before sandbox construction or host effects", async () => {
+    const workspace = mkTmp("relay-retired-shell-");
+    const effectPath = join(workspace, "must-not-exist");
+    let sandboxCreations = 0;
+    const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: workspace }), {
+      createSandbox: () => {
+        sandboxCreations += 1;
+        throw new Error("retired execution reached sandbox construction");
+      },
     });
-    const r = await handler(mkRequest({ args: { command: "/bin/echo sandboxed" } }));
-    expect(r.status).toBe("ok");
-    if (r.status === "ok") {
-      const result = r.result as { stdout: string; stderr: string };
-      expect(result.stdout.trim()).toBe("sandboxed");
-    }
-  });
 
-  test("real workstation execution uses the visible Workspace when no Current Folder is selected", async () => {
-    const workspace = mkTmp("relay-workstation-baseline-");
-    const calls: Array<{ cwd: string; workspacePath?: string; isCurrentWorkspace?: () => boolean }> = [];
     try {
-      const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: workspace }), {
-        relayId: "relay-workstation",
-        getLocalWorkspacePath: () => undefined,
-        workstationWorkspacePath: workspace,
-        verifyUncontainedHostCommands: async () => true,
-        runWorkstationShell: async (request) => {
-          calls.push(request);
-          return {
-            status: "ok",
-            result: {
-              version: 1,
-              execution: "workstation",
-              exitCode: 0,
-              signal: null,
-              timedOut: false,
-              cancelled: false,
-              durationMs: 1,
-              stdout: "connected",
-              stderr: "",
-              stdoutTruncated: false,
-              stderrTruncated: false,
-              sideEffectsMayHaveStarted: true,
-              profileRevision: null,
-            },
-          };
-        },
-      });
-
-      const result = await handler(mkRequest({
-        executionClass: "real_workstation",
-        uncontainedHostCommandsSession: true,
-        approvalObtained: true,
-        args: { command: "ssh example.test", execution: "workstation" },
-        runShellOwnerBinding: {
-          instanceId: "instance-workstation",
-          userId: "user-workstation",
-          relayId: "relay-workstation",
-          desktopSessionId: "desktop-workstation",
-        },
-      }));
-
-      expect(result.status).toBe("ok");
-      expect(calls).toHaveLength(1);
-      expect(calls[0]).toMatchObject({
-        cwd: workspace,
-        workspacePath: workspace,
-        consentMode: "verified_uncontained_session",
-      });
-      expect(calls[0]?.isCurrentWorkspace?.()).toBe(true);
+      for (const request of [
+        mkRequest({ args: { command: `/usr/bin/touch ${effectPath}` } }),
+        mkRequest({
+          executionClass: "real_workstation",
+          uncontainedHostCommandsSession: true,
+          approvalObtained: true,
+          args: { command: `/usr/bin/touch ${effectPath}`, execution: "workstation" },
+        }),
+        mkRequest({
+          impact: "destructive",
+          approvalObtained: true,
+          args: { command: `/usr/bin/touch ${effectPath}` },
+        }),
+      ]) {
+        const result = await handler(request);
+        expect(result).toMatchObject({
+          status: "error",
+          errorCode: "LOCAL_EXECUTION_UPGRADE_REQUIRED",
+        });
+        expect(result.status === "error" && result.error).toContain("exec_command and write_stdin");
+        expect(result.status === "error" && result.error).toContain("Saved output remains readable");
+      }
+      expect(sandboxCreations).toBe(0);
+      expect(await fsp.stat(effectPath).then(() => true, () => false)).toBeFalse();
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
-  });
-
-  test("real workstation baseline remains subject to protected-path policy", async () => {
-    const workspace = mkTmp("relay-workstation-protected-");
-    let calls = 0;
-    try {
-      const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: workspace }), {
-        relayId: "relay-workstation",
-        getLocalWorkspacePath: () => undefined,
-        workstationWorkspacePath: workspace,
-        verifyUncontainedHostCommands: async () => true,
-        protectedPathPolicy: { check: () => ({ allowed: false }) } as never,
-        runWorkstationShell: async () => {
-          calls += 1;
-          return { status: "ok" };
-        },
-      });
-
-      const result = await handler(mkRequest({
-        executionClass: "real_workstation",
-        uncontainedHostCommandsSession: true,
-        approvalObtained: true,
-        args: { command: "echo should-not-run", execution: "workstation" },
-        runShellOwnerBinding: {
-          instanceId: "instance-workstation",
-          userId: "user-workstation",
-          relayId: "relay-workstation",
-          desktopSessionId: "desktop-workstation",
-        },
-      }));
-
-      expect(result).toMatchObject({
-        status: "error",
-        errorCode: "WORKSTATION_CURRENT_FOLDER_PROTECTED",
-      });
-      expect(calls).toBe(0);
-    } finally {
-      rmSync(workspace, { recursive: true, force: true });
-    }
-  });
-
-  test("Real workstation rejects requests without the local binding", async () => {
-    const workspace = mkTmp("relay-workstation-binding-");
-    let calls = 0;
-    try {
-      const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: workspace }), {
-        relayId: "relay-workstation",
-        workstationWorkspacePath: workspace,
-        verifyUncontainedHostCommands: async () => true,
-        runWorkstationShell: async () => {
-          calls += 1;
-          return { status: "ok" };
-        },
-      });
-
-      const result = await handler(mkRequest({
-        executionClass: "real_workstation",
-        uncontainedHostCommandsSession: true,
-        approvalObtained: true,
-        args: { command: "echo should-not-run", execution: "workstation" },
-      }));
-
-      expect(result).toMatchObject({
-        status: "error",
-        errorCode: "UNCONTAINED_HOST_COMMANDS_LOCAL_BINDING_REQUIRED",
-      });
-      expect(calls).toBe(0);
-    } finally {
-      rmSync(workspace, { recursive: true, force: true });
-    }
-  });
-
-  test("run_shell cwd follows sandboxProfile.workspace over registered guard root", async () => {
-    const registeredRoot = mkTmp("relay-sb-registered-");
-    const currentFolder = mkTmp("relay-sb-current-");
-    const guard = createWorkspaceGuard({ workspaceRoot: registeredRoot });
-    const handler = makeDispatchHandler(guard, {
-      createSandbox: mockCreateSandbox(passthroughSandbox(currentFolder)),
-    });
-
-    const r = await handler(
-      mkRequest({
-        allowedRoots: [currentFolder],
-        sandboxProfile: {
-          workspace: currentFolder,
-          dataDir: `${currentFolder}/data`,
-          toolsBin: `${currentFolder}/tools`,
-          mode: "desktop-permissive",
-          securityLevel: "standard",
-          failIfNoBackend: false,
-          config: {
-            mode: "disabled",
-            writablePaths: [],
-            projectPaths: [],
-            passthroughEnv: [],
-          },
-        },
-        args: { command: "/bin/pwd" },
-      }),
-    );
-
-    expect(r.status).toBe("ok");
-    if (r.status === "ok") {
-      const result = r.result as { stdout: string; stderr: string };
-      expect(result.stdout.trim()).toBe(currentFolder);
-    }
-  });
-
-  test("run_shell explains when the Current Folder is no longer usable", async () => {
-    const registeredRoot = mkTmp("relay-sb-registered-");
-    const deletedCurrentFolder = mkTmp("relay-sb-deleted-current-");
-    const guard = createWorkspaceGuard({ workspaceRoot: registeredRoot });
-    const handler = makeDispatchHandler(guard, {
-      createSandbox: mockCreateSandbox(passthroughSandbox(deletedCurrentFolder)),
-    });
-    rmSync(deletedCurrentFolder, { recursive: true, force: true });
-
-    const r = await handler(
-      mkRequest({
-        sandboxProfile: {
-          workspace: deletedCurrentFolder,
-          dataDir: `${deletedCurrentFolder}/data`,
-          toolsBin: `${deletedCurrentFolder}/tools`,
-          mode: "desktop-permissive",
-          securityLevel: "standard",
-          failIfNoBackend: false,
-          config: {
-            mode: "disabled",
-            writablePaths: [],
-            projectPaths: [],
-            passthroughEnv: [],
-          },
-        },
-      }),
-    );
-
-    expect(r.status).toBe("error");
-    if (r.status === "error") {
-      expect(r.error).toContain("Current Folder is unusable");
-      expect(r.error).toContain("normal user directory");
-    }
-  });
-
-  test("run_shell preserves the sandbox Current Folder retry error", async () => {
-    const currentFolder = mkTmp("relay-sb-sandbox-cwd-");
-    const guard = createWorkspaceGuard({ workspaceRoot: currentFolder });
-    const handler = makeDispatchHandler(guard, {
-      createSandbox: mockCreateSandbox(passthroughSandbox(currentFolder)),
-    });
-
-    const r = await handler(
-      mkRequest({
-        args: {
-          command:
-            "printf 'shell-init: error retrieving current directory: getcwd: Operation not permitted\\n' >&2; exit 1",
-        },
-      }),
-    );
-
-    expect(r.status).toBe("error");
-    if (r.status === "error") {
-      expect(r.error).toContain("Current Folder is unusable");
-    }
-  });
-
-  test("run_shell preserves denied-network retry metadata", async () => {
-    const currentFolder = mkTmp("relay-sb-network-denied-");
-    const destination = { host: "api.example.test", port: 443, reason: "no allow rule matched" };
-    const guard = createWorkspaceGuard({ workspaceRoot: currentFolder });
-    const handler = makeDispatchHandler(guard, {
-      createSandbox: mockCreateSandbox(passthroughSandbox(currentFolder, [destination])),
-    });
-
-    const r = await handler(
-      mkRequest({ args: { command: "printf blocked >&2; exit 1" } }),
-    );
-
-    expect(r.status).toBe("error");
-    if (r.status === "error") {
-      expect(r.error).toContain("run_shell exit 1");
-      expect(r.networkDeniedDestination).toEqual(destination);
-    }
-  });
-
-  test("envelope + passthrough sandbox drops DANGEROUS env vars (LD_PRELOAD)", async () => {
-    const ws = mkTmp("relay-sb-danger-");
-    const guard = createWorkspaceGuard({ workspaceRoot: ws });
-    const handler = makeDispatchHandler(guard, {
-      createSandbox: mockCreateSandbox(passthroughSandbox(ws)),
-    });
-
-    // The relay doesn't expose per-request env directly — the env
-    // we inspect here is what the parent process exports. Set it,
-    // run a shell that echoes $LD_PRELOAD, assert it's empty inside
-    // the child (sandbox stripped it via clean-env + taxonomy).
-    process.env["LD_PRELOAD"] = "/tmp/evil.so";
-
-    const r = await handler(
-      mkRequest({
-        args: { command: '/bin/sh -c "echo PRELOAD=$LD_PRELOAD"' },
-      }),
-    );
-    expect(r.status).toBe("ok");
-    if (r.status === "ok") {
-      const result = r.result as { stdout: string; stderr: string };
-      // Sandbox clear-env + re-inject skipped LD_PRELOAD — child sees empty.
-      expect(result.stdout.trim()).toBe("PRELOAD=");
-    }
-  });
-
-  test("envelope + passthrough sandbox injects hardened env defaults (CI=true)", async () => {
-    const ws = mkTmp("relay-sb-hardened-");
-    const guard = createWorkspaceGuard({ workspaceRoot: ws });
-    const handler = makeDispatchHandler(guard, {
-      createSandbox: mockCreateSandbox(passthroughSandbox(ws)),
-    });
-    const r = await handler(
-      mkRequest({ args: { command: '/bin/sh -c "echo CI=$CI"' } }),
-    );
-    expect(r.status).toBe("ok");
-    if (r.status === "ok") {
-      const result = r.result as { stdout: string; stderr: string };
-      expect(result.stdout.trim()).toBe("CI=true");
-    }
-  });
-
-  test("destructive + !approvalObtained rejected regardless of sandbox", async () => {
-    const ws = mkTmp("relay-sb-destructive-");
-    const guard = createWorkspaceGuard({ workspaceRoot: ws });
-    const handler = makeDispatchHandler(guard, {
-      createSandbox: mockCreateSandbox(passthroughSandbox(ws)),
-    });
-    const r = await handler(
-      mkRequest({
-        args: { command: "/bin/echo would-run" },
-        impact: "destructive",
-        approvalObtained: false,
-      }),
-    );
-    expect(r.status).toBe("error");
-    if (r.status === "error") {
-      expect(r.error).toMatch(/approval/i);
-    }
-  });
-
-  test("non-zero exit is a canonical structured process result (sandbox path)", async () => {
-    const ws = mkTmp("relay-sb-exit-");
-    const guard = createWorkspaceGuard({ workspaceRoot: ws });
-    const handler = makeDispatchHandler(guard, {
-      createSandbox: mockCreateSandbox(passthroughSandbox(ws)),
-    });
-    const r = await handler(
-      mkRequest({ args: { command: "/bin/sh -c 'printf stdout; printf stderr >&2; exit 42'" } }),
-    );
-    expect(r.status).toBe("ok");
-    if (r.status === "ok") {
-      const result = r.result as { exitCode: number; stdout: string; stderr: string; sideEffectsMayHaveStarted: boolean };
-      expect(result.exitCode).toBe(42);
-      expect(result.stdout).toBe("stdout");
-      expect(result.stderr).toBe("stderr");
-      expect(result.sideEffectsMayHaveStarted).toBe(true);
-    }
-  });
-
-  test("timeout is a canonical structured process result (sandbox path)", async () => {
-    const ws = mkTmp("relay-sb-timeout-");
-    const guard = createWorkspaceGuard({ workspaceRoot: ws });
-    const handler = makeDispatchHandler(guard, {
-      createSandbox: mockCreateSandbox(passthroughSandbox(ws)),
-    });
-    const r = await handler(
-      mkRequest({
-        args: { command: "/bin/sleep 5" },
-        timeout: 150,
-      }),
-    );
-    expect(r.status).toBe("ok");
-    if (r.status === "ok") {
-      expect((r.result as { timedOut: boolean }).timedOut).toBe(true);
-    }
-    // Note on wall-clock: we intentionally do NOT assert elapsed <
-    // <short-threshold> here. `/bin/sh -c "/bin/sleep 5"` runs the sleep
-    // as a shell child. When SIGKILL hits the SHELL, the sleep becomes
-    // an orphan that still holds the stdout/stderr pipes, and node's
-    // child.on("close") doesn't fire until those pipes close — on Linux
-    // that's when the orphaned sleep finishes naturally (~5s elapsed).
-    // macOS kills the whole process group implicitly so elapsed is
-    // ~200ms locally. The assertion "elapsed < 2000ms" was a
-    // platform-dependent smoke check that blew on CI's Linux runner
-    // without flagging any real bug — the timeout contract IS verified
-    // by the status/error checks above.
-    //
-    // This checks the timeout receipt only. Descendant process cleanup needs
-    // separate cross-platform coverage of the spawn owner.
-  });
-
-  test("empty command rejected with 'No command provided'", async () => {
-    const ws = mkTmp("relay-sb-empty-");
-    const guard = createWorkspaceGuard({ workspaceRoot: ws });
-    let closeCalls = 0;
-    const handler = makeDispatchHandler(guard, {
-      createSandbox: mockCreateSandbox(makeTestSandbox(ws, () => closeCalls += 1)),
-    });
-    const r = await handler(mkRequest({ args: { command: "" } }));
-    expect(r.status).toBe("error");
-    if (r.status === "error") {
-      expect(r.error).toMatch(/no command/i);
-    }
-    expect(closeCalls).toBe(1);
   });
 
   test("closes the prepared sandbox when a local-search runtime probe rejects", async () => {
@@ -814,64 +448,6 @@ describe("makeDispatchHandler — run_shell sandbox wiring", () => {
     expect(closeCalls).toBe(1);
   });
 
-  test("closes per-request sandbox after run_shell dispatch", async () => {
-    const ws = mkTmp("relay-sb-close-shell-");
-    const guard = createWorkspaceGuard({ workspaceRoot: ws });
-    let createCalls = 0;
-    let closeCalls = 0;
-    const handler = makeDispatchHandler(guard, {
-      createSandbox: async () => {
-        createCalls += 1;
-        return makeTestSandbox(ws, () => closeCalls += 1);
-      },
-    });
-
-    const r = await handler(mkRequest({ args: { command: "/bin/echo closed" } }));
-
-    expect(r.status).toBe("ok");
-    expect(createCalls).toBe(1);
-    expect(closeCalls).toBe(1);
-  });
-
-  test("preserves sandbox close rejection over a handled run_shell result", async () => {
-    const ws = mkTmp("relay-sb-close-reject-");
-    const guard = createWorkspaceGuard({ workspaceRoot: ws });
-    const failure = new Error("injected sandbox close failure");
-    let closeCalls = 0;
-    const sandbox = new Sandbox({
-      config: {
-        mode: "disabled",
-        writablePaths: [],
-        projectPaths: [],
-        passthroughEnv: [],
-      },
-      workspace: ws,
-      dataDir: `${ws}/data`,
-      toolsBin: `${ws}/tools`,
-      backend: { kind: "none" },
-      networkProxy: {
-        url: "http://127.0.0.1:49152",
-        port: 49152,
-        close: () => {
-          closeCalls += 1;
-          return Promise.reject(failure);
-        },
-      },
-    });
-    const handler = makeDispatchHandler(guard, {
-      createSandbox: mockCreateSandbox(sandbox),
-    });
-    let caught: unknown;
-    try {
-      await handler(mkRequest({ args: { command: "" } }));
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBe(failure);
-    expect(closeCalls).toBe(2);
-  });
-
   test("closes per-request sandbox even when toolName is unknown (removed tools still close the sandbox)", async () => {
     const ws = mkTmp("relay-sb-close-unknown-");
     const guard = createWorkspaceGuard({ workspaceRoot: ws });
@@ -899,246 +475,6 @@ describe("makeDispatchHandler — run_shell sandbox wiring", () => {
     expect(r.status === "error" && r.error).toContain("Unknown tool");
     expect(createCalls).toBe(1);
     expect(closeCalls).toBe(1);
-  });
-});
-
-describe("run_shell progress reporter", () => {
-  test("does not split a UTF-8 code point across observations and stops after finish", () => {
-    const observed: Array<{ text: string; offsetBytes: number; endOffsetBytes: number }> = [];
-    const reporter = createRunShellProgressReporter((progress) => {
-      observed.push(progress);
-    });
-    // The euro sign arrives split across child pipe chunks. It is retained
-    // until complete, then emitted as one valid UTF-8 observation.
-    reporter.stdout(Buffer.from([0xe2, 0x82]));
-    reporter.stdout(Buffer.from([0xac, 0x0a]));
-    reporter.finish();
-    reporter.stdout(Buffer.from("late"));
-    expect(observed).toHaveLength(1);
-    expect(observed[0]).toMatchObject({ text: "€\n", offsetBytes: 0, endOffsetBytes: 4 });
-  });
-
-  test("one sanitized stream feeds progress, final output, and paged owner-bound continuation", async () => {
-    const ws = mkTmp("relay-execution-continuity-");
-    const secretName = "NAUTILO_EXECUTION_TEST_SECRET_TOKEN";
-    const prior = process.env[secretName];
-    const secret = `synthetic-${crypto.randomUUID()}`;
-    process.env[secretName] = secret;
-    try {
-      const artifacts = new RunShellOutputArtifactStore();
-      const progress: string[] = [];
-      const owner = {
-        instanceId: "instance-a",
-        userId: "user-a",
-        relayId: "relay-a",
-        desktopSessionId: "desktop-a",
-      } as const;
-      const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: ws }), {
-        createSandbox: mockCreateSandbox(passthroughSandbox(ws)),
-        runShellOutputArtifactStore: artifacts,
-      });
-      const executed = await handler(mkRequest({
-        correlationId: "correlation-a",
-        runShellOwnerBinding: owner,
-        args: {
-          command: `/usr/bin/yes x | /usr/bin/head -c 20000; /usr/bin/printf '${secret}'`,
-        },
-        reportRunShellProgress: (event) => progress.push(event.text),
-      }));
-      expect(executed.status).toBe("ok");
-      const result = executed.result as { stdout: string; outputArtifact?: { reference: string } };
-      expect(progress.join("")).not.toContain(secret);
-      expect(result.stdout).not.toContain(secret);
-      expect(result.outputArtifact).toBeDefined();
-
-      const page = await handler(mkRequest({
-        correlationId: "correlation-b",
-        runShellOwnerBinding: owner,
-        args: {
-          output_artifact: {
-            reference: result.outputArtifact!.reference,
-            max_bytes: 16 * 1024,
-          },
-        },
-      }));
-      expect(page.status).toBe("ok");
-      const pageResult = page.result as { stdout: string; stderr: string };
-      expect(Buffer.byteLength(`${pageResult.stdout}${pageResult.stderr}`)).toBeLessThanOrEqual(16 * 1024);
-      expect(`${pageResult.stdout}${pageResult.stderr}`).not.toContain(secret);
-
-      const search = await handler(mkRequest({
-        correlationId: "correlation-search",
-        runShellOwnerBinding: owner,
-        args: {
-          output_artifact: {
-            reference: result.outputArtifact!.reference,
-            operation: "search",
-            query: "x",
-            max_matches: 2,
-            context_bytes: 0,
-          },
-        },
-      }));
-      expect(search.status).toBe("ok");
-      expect(search.result).toMatchObject({
-        operation: "search",
-        totalMatches: 10_000,
-        matchesTruncated: true,
-        matches: [
-          { stream: "stdout", matchOffsetBytes: 0, artifactOffsetBytes: 0, matchBytes: 1 },
-          { stream: "stdout", matchOffsetBytes: 2, artifactOffsetBytes: 2, matchBytes: 1 },
-        ],
-      });
-      expect(Buffer.byteLength(JSON.stringify(search.result), "utf8")).toBeLessThanOrEqual(16 * 1024);
-
-      const wrongOwner = await handler(mkRequest({
-        correlationId: "correlation-c",
-        runShellOwnerBinding: { ...owner, desktopSessionId: "desktop-b" },
-        args: { output_artifact: { reference: result.outputArtifact!.reference } },
-      }));
-      expect(wrongOwner).toMatchObject({
-        status: "error",
-        errorCode: "RUN_SHELL_OUTPUT_ARTIFACT_NOT_FOUND",
-      });
-
-      for (const args of [
-        { output_artifact: { reference: "not-a-valid-reference" } },
-        {
-          output_artifact: { reference: result.outputArtifact!.reference },
-          cwd: ws,
-        },
-        {
-          output_artifact: { reference: result.outputArtifact!.reference },
-          timeout_seconds: 30,
-        },
-        {
-          output_artifact: {
-            reference: result.outputArtifact!.reference,
-            operation: "search",
-            query: "x",
-            delete_after_read: true,
-          },
-        },
-        {
-          output_artifact: {
-            reference: result.outputArtifact!.reference,
-            operation: "search",
-            query: "x".repeat(1_025),
-          },
-        },
-      ]) {
-        const invalid = await handler(mkRequest({
-          correlationId: "correlation-invalid",
-          runShellOwnerBinding: owner,
-          args,
-        }));
-        expect(invalid).toMatchObject({
-          status: "error",
-          errorCode: "RUN_SHELL_OUTPUT_ARTIFACT_REQUEST_INVALID",
-        });
-      }
-    } finally {
-      if (prior === undefined) delete process.env[secretName];
-      else process.env[secretName] = prior;
-    }
-  });
-
-  test("search finds an omitted-middle marker from one shell invocation without rerunning it", async () => {
-    const ws = mkTmp("relay-output-omitted-middle-");
-    const owner = {
-      instanceId: "instance-a",
-      userId: "user-a",
-      relayId: "relay-a",
-      desktopSessionId: "desktop-a",
-    } as const;
-    const artifacts = new RunShellOutputArtifactStore();
-    const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: ws }), {
-      createSandbox: mockCreateSandbox(passthroughSandbox(ws)),
-      runShellOutputArtifactStore: artifacts,
-    });
-    const marker = "OMITTED-MIDDLE-MARKER";
-    const invocationFile = join(ws, "run-count");
-    const executed = await handler(mkRequest({
-      correlationId: "output-omitted-middle-execute",
-      runShellOwnerBinding: owner,
-      args: {
-        command:
-          `/usr/bin/printf run >> ${invocationFile}; ` +
-          "/usr/bin/yes a | /usr/bin/head -c 10000; " +
-          `/usr/bin/printf '${marker}'; ` +
-          "/usr/bin/yes b | /usr/bin/head -c 10000",
-      },
-    }));
-    expect(executed.status).toBe("ok");
-    const result = executed.result as {
-      stdout: string;
-      outputArtifact?: { reference: string; capturedBytes: number; totalBytes: number; truncated: boolean };
-    };
-    expect(result.stdout).not.toContain(marker);
-    expect(result.outputArtifact).toMatchObject({
-      capturedBytes: 20_000 + Buffer.byteLength(marker),
-      totalBytes: 20_000 + Buffer.byteLength(marker),
-      truncated: false,
-    });
-    const search = await handler(mkRequest({
-      correlationId: "output-omitted-middle-search",
-      runShellOwnerBinding: owner,
-      args: { output_artifact: { reference: result.outputArtifact!.reference, operation: "search", query: marker } },
-    }));
-    expect(search).toMatchObject({
-      status: "ok",
-      result: { totalMatches: 1, matches: [{ stream: "stdout", matchOffsetBytes: 10_000 }] },
-    });
-    expect(await fsp.readFile(invocationFile, "utf8")).toBe("run");
-  });
-
-  test("does not commit continuation artifacts for post-process cwd or network errors", async () => {
-    const ws = mkTmp("relay-execution-no-error-artifact-");
-    const owner = {
-      instanceId: "instance-a",
-      userId: "user-a",
-      relayId: "relay-a",
-      desktopSessionId: "desktop-a",
-    } as const;
-    const artifacts = new RunShellOutputArtifactStore();
-    const originalCreateDraft = artifacts.createDraft.bind(artifacts);
-    let commits = 0;
-    artifacts.createDraft = ((draftOwner) => {
-      const draft = originalCreateDraft(draftOwner);
-      return {
-        ...draft,
-        commit: () => {
-          commits += 1;
-          return draft.commit();
-        },
-      };
-    }) as typeof artifacts.createDraft;
-
-    const cases = [
-      {
-        sandbox: passthroughSandbox(ws),
-        command:
-          "/usr/bin/yes x | /usr/bin/head -c 20000; " +
-          "printf 'shell-init: error retrieving current directory: getcwd: Operation not permitted\\n' >&2; exit 1",
-      },
-      {
-        sandbox: passthroughSandbox(ws, [{ host: "blocked.test", port: 443, reason: "denied" }]),
-        command: "/usr/bin/yes x | /usr/bin/head -c 20000; printf blocked >&2; exit 1",
-      },
-    ];
-    for (const [index, fixture] of cases.entries()) {
-      const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: ws }), {
-        createSandbox: mockCreateSandbox(fixture.sandbox),
-        runShellOutputArtifactStore: artifacts,
-      });
-      const result = await handler(mkRequest({
-        correlationId: `correlation-error-${index}`,
-        runShellOwnerBinding: owner,
-        args: { command: fixture.command },
-      }));
-      expect(result.status).toBe("error");
-    }
-    expect(commits).toBe(0);
   });
 });
 
@@ -1504,7 +840,7 @@ describe("Desktop-filesystem-grant authority resolver", () => {
 });
 
 describe("Grant operation derivation", () => {
-  test("maps fs, local-file, and shell operations; rejects the undeterminable", () => {
+  test("maps fs and local-file operations; rejects the undeterminable", () => {
     expect(
       deriveDesktopFilesystemAccessOperation({
         correlationId: "x",
@@ -1545,15 +881,6 @@ describe("Grant operation derivation", () => {
         args: { operation: { kind: "file", command: "delete", zone: "current", args: {} } },
       }),
     ).toBe("delete");
-    expect(
-      deriveDesktopFilesystemAccessOperation({
-        correlationId: "x",
-        toolName: "run_shell",
-        impact: "low",
-        approvalObtained: true,
-        args: { command: "ls" },
-      }),
-    ).toBe("execute");
     expect(
       deriveDesktopFilesystemAccessOperation({
         correlationId: "x",
@@ -1669,75 +996,6 @@ describe("makeDispatchHandler — filesystem dispatch enforcement", () => {
       expect(res.errorCode).toBe("DESKTOP_FILESYSTEM_GRANT_REQUEST_INVALID");
     } finally {
       rmSync(baseRoot, { recursive: true, force: true });
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Release-build envelope enforcement
-// ---------------------------------------------------------------------------
-
-describe("makeDispatchHandler — envelope enforcement", () => {
-  test("release build REFUSES dispatch without sandboxProfile", async () => {
-    const ws = mkTmp("relay-sb-enforce-");
-    const guard = createWorkspaceGuard({ workspaceRoot: ws });
-    const handler = makeDispatchHandler(guard, { isProduction: true });
-
-    const { sandboxProfile, ...noEnvelope } = mkRequest({
-      args: { command: "/bin/echo would-run" },
-    });
-    void sandboxProfile;
-    const r = await handler(noEnvelope as RelayDispatchRequest);
-    expect(r.status).toBe("error");
-    if (r.status === "error") {
-      expect(r.error).toContain("server did not supply its security configuration");
-      expect(r.error).toContain("No operation was started");
-      expect(r.error).not.toMatch(/\b[A-Z]\d{3}\b|G\d\.\d|ship plan|sandboxProfile/);
-    }
-  });
-
-  test("dev build allows dispatch without sandboxProfile (legacy path, WARN logged)", async () => {
-    const ws = mkTmp("relay-sb-dev-");
-    const guard = createWorkspaceGuard({ workspaceRoot: ws });
-    const handler = makeDispatchHandler(guard, { isProduction: false });
-    const originalWarn = console.warn;
-    const warnings: string[] = [];
-    console.warn = (message: unknown) => warnings.push(String(message));
-    try {
-      const { sandboxProfile, ...noEnvelope } = mkRequest({
-        args: { command: "/bin/echo dev-fallback" },
-      });
-      void sandboxProfile;
-      const r = await handler(noEnvelope as RelayDispatchRequest);
-      expect(r.status).toBe("ok");
-      if (r.status === "ok") {
-        const result = r.result as { stdout: string; stderr: string };
-        expect(result.stdout.trim()).toBe("dev-fallback");
-      }
-      expect(warnings).toEqual([
-        "[relay] Dispatch received without sandboxProfile (run_shell). " +
-          "Development-build dev loop — release builds will refuse this path.",
-      ]);
-    } finally {
-      console.warn = originalWarn;
-    }
-  });
-
-  test("envelope with malformed sandboxProfile surfaces a clean error", async () => {
-    const ws = mkTmp("relay-sb-bad-envelope-");
-    const guard = createWorkspaceGuard({ workspaceRoot: ws });
-    // createSandbox override that throws — simulates e.g. Sandbox.create
-    // rejecting a config that fails backend detection with failIfNoBackend.
-    const handler = makeDispatchHandler(guard, {
-      isProduction: false,
-      createSandbox: () =>
-        Promise.reject(new Error("backend detection failed")),
-    });
-    const r = await handler(mkRequest({ args: { command: "/bin/echo hi" } }));
-    expect(r.status).toBe("error");
-    if (r.status === "error") {
-      expect(r.error).toMatch(/Failed to construct sandbox/);
-      expect(r.error).toMatch(/backend detection failed/);
     }
   });
 });

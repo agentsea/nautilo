@@ -39,6 +39,7 @@ import type { SandboxConfig, SpawnArgs } from "./types";
 export interface PassthroughBuildOptions {
   readonly workspace: string;
   readonly toolsBin: string;
+  readonly preparedEnvironment?: Readonly<Record<string, string>>;
   readonly config: SandboxConfig;
   readonly cwd: string;
   readonly commandEnv: Readonly<Record<string, string>>;
@@ -57,30 +58,31 @@ export interface PassthroughBuildOptions {
  * workspace path.
  */
 export function buildPassthrough(opts: PassthroughBuildOptions): SpawnArgs {
-  const env: Record<string, string> = {};
+  const env: Record<string, string> = opts.preparedEnvironment === undefined
+    ? {}
+    : { ...opts.preparedEnvironment };
 
   // PATH: tools-bin prepended ahead of parent PATH (same as bwrap
   // builder so the sandbox vs. passthrough paths are environment-
   // indistinguishable to the child).
-  const parentPath = process.env["PATH"] ?? "";
-  env["PATH"] =
-    parentPath.length > 0
+  if (opts.preparedEnvironment === undefined) {
+    const parentPath = process.env["PATH"] ?? "";
+    env["PATH"] = parentPath.length > 0
       ? `${opts.toolsBin}${pathDelimiter}${parentPath}`
       : opts.toolsBin;
 
   // HOME: prefer parent's when set + non-empty, fall back to the
   // workspace path. Spacebot's `wrap_passthrough` lines 727-729 use
   // the same pattern.
-  const parentHome = process.env["HOME"];
-  env["HOME"] =
-    parentHome !== undefined && parentHome.length > 0 ? parentHome : opts.workspace;
-
-  env["TMPDIR"] = process.env["TMPDIR"] ?? "/tmp";
-  env["CI"] = "true";
-  env["DEBIAN_FRONTEND"] = "noninteractive";
+    const parentHome = process.env["HOME"];
+    env["HOME"] = parentHome !== undefined && parentHome.length > 0 ? parentHome : opts.workspace;
+    env["TMPDIR"] = process.env["TMPDIR"] ?? "/tmp";
+    env["CI"] = "true";
+    env["DEBIAN_FRONTEND"] = "noninteractive";
+  }
 
   // SAFE forwards
-  for (const name of SAFE_ENV_VARS) {
+  for (const name of opts.preparedEnvironment === undefined ? SAFE_ENV_VARS : []) {
     const val = process.env[name];
     if (val !== undefined) {
       env[name] = val;
@@ -88,7 +90,7 @@ export function buildPassthrough(opts: PassthroughBuildOptions): SpawnArgs {
   }
 
   // passthroughEnv (skip reserved)
-  for (const name of opts.config.passthroughEnv) {
+  for (const name of opts.preparedEnvironment === undefined ? opts.config.passthroughEnv : []) {
     if (isReservedEnvVar(name)) continue;
     const val = process.env[name];
     if (val !== undefined) {
@@ -97,7 +99,7 @@ export function buildPassthrough(opts: PassthroughBuildOptions): SpawnArgs {
   }
 
   // commandEnv (skip reserved, DROP dangerous w/ WARN)
-  for (const [name, value] of Object.entries(opts.commandEnv)) {
+  for (const [name, value] of Object.entries(opts.preparedEnvironment === undefined ? opts.commandEnv : {})) {
     if (isReservedEnvVar(name)) continue;
     if (isDangerousEnvVar(name)) {
       warn(`[sandbox/passthrough] dropping dangerous per-command env var: ${name}`);

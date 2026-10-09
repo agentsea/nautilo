@@ -4,7 +4,8 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 
 const realUseAuth = await import("../../hooks/use-auth");
 const realDesktop = await import("../../lib/desktop");
-const status = mock(async () => ({ installed: true, authenticated: false, login: null, version: "2.0" }));
+let currentStatus = { installed: true, authenticated: false, login: null as string | null, version: "2.0" as string | null };
+const status = mock(async () => currentStatus);
 const connect = mock(async () => ({ url: "https://github.com/login/device", code: "ABCD-EFGH" }));
 
 mock.module("../../hooks/use-auth", () => ({
@@ -23,6 +24,7 @@ beforeEach(() => {
   localStorage.clear();
   status.mockClear();
   connect.mockClear();
+  currentStatus = { installed: true, authenticated: false, login: null, version: "2.0" };
 });
 
 afterAll(() => {
@@ -32,6 +34,25 @@ afterAll(() => {
 });
 
 describe("GitHub CLI connection", () => {
+  test("describes the protected typed account broker without promising ambient gh access", async () => {
+    const view = render(<GitHubCliConnectionSection />);
+    await view.findByRole("heading", { name: "GitHub account" });
+    expect(view.getByText(/Let Genie check your account/)).toBeTruthy();
+    expect(view.getByText(/Pushes, comments and new pull requests require review/)).toBeTruthy();
+    expect(view.getByText(/cannot read GitHub CLI credentials/)).toBeTruthy();
+    expect(view.container.textContent).not.toContain("Full host");
+    expect(view.container.textContent).not.toContain("normal host configuration");
+  });
+
+  test("reports an unavailable managed runtime without telling the Human to install host gh", async () => {
+    currentStatus = { installed: false, authenticated: false, login: null, version: null };
+    const view = render(<GitHubCliConnectionSection />);
+    await view.findByText("Unavailable");
+    expect(view.getByText(/built-in GitHub support is unavailable/)).toBeTruthy();
+    expect(view.container.textContent).not.toContain("Install the official GitHub CLI");
+    expect(view.container.textContent).not.toContain("~/.config/gh");
+  });
+
   test("keeps device login mounted but reveals it while the active flow is running", async () => {
     const view = render(<GitHubCliConnectionSection />);
     await waitFor(() => expect(view.getByRole("button", { name: "Collapse" })).toBeTruthy());

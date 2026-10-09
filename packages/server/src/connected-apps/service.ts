@@ -18,7 +18,9 @@ import type {
 } from "@nautilo/types";
 import {
   compileConnectedAppOperationAdmissions,
+  getUsageContext,
   type ConnectedAppOperationAdmission,
+  type ConnectedAppExecutionIdentity,
 } from "@nautilo/agent";
 import {
   hostedDriverBinding,
@@ -44,7 +46,7 @@ import {
 import {
   type ConnectedAppProviderDefinition,
 } from "./providers";
-import { safelyRecordProviderCost } from "../costs/provider-cost-recorder";
+import { claimServerProviderCostAttempt, settleServerProviderCostAttempt, type ServerProviderCostReceipt } from "../costs/provider-cost-recorder";
 import { warn } from "@nautilo/logger";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 import { assertConnectedAppExecutionFunding } from "./funding-admission";
@@ -174,7 +176,46 @@ type Inspection = HostedOauthInspection | LocalOauthInspection;
 
 export interface ConnectedAppServiceDependencies {
   readonly assertExecutionFunding?: typeof assertConnectedAppExecutionFunding;
-  readonly recordProviderCost?: typeof safelyRecordProviderCost;
+  readonly claimProviderCost?: typeof claimServerProviderCostAttempt;
+  readonly settleProviderCost?: typeof settleServerProviderCostAttempt;
+}
+
+function exactExecutionIdentity(
+  value: ConnectedAppExecutionIdentity | null | undefined,
+): ConnectedAppExecutionIdentity | null {
+  if (!value) return null;
+  const toolCallId = value.toolCallId.trim();
+  const turnId = value.turnId?.trim() || null;
+  const taskRunId = value.taskRunId?.trim() || null;
+  return toolCallId && (turnId || taskRunId)
+    ? { toolCallId, turnId, taskRunId }
+    : null;
+}
+
+function hostedAttemptIdentity(input: {
+  readonly executionIdentity: ConnectedAppExecutionIdentity;
+  readonly causalHumanUserId: string;
+  readonly scope: ConnectedAppScope;
+  readonly profileId: string;
+  readonly providerId: string;
+  readonly operationId: string;
+  readonly phase: "primary" | "reconciliation";
+}): string {
+  // This transient coordinate is hashed by the cost recorder. Provider input
+  // and content never enter the durable replay key or ledger.
+  return JSON.stringify([
+    "oomol-connected-app-attempt-v1",
+    input.executionIdentity.toolCallId,
+    input.executionIdentity.turnId,
+    input.executionIdentity.taskRunId,
+    input.causalHumanUserId,
+    input.scope.userId,
+    input.scope.namespaceId,
+    input.profileId,
+    input.providerId,
+    input.operationId,
+    input.phase,
+  ]);
 }
 
 export class ConnectedAppService {
@@ -567,6 +608,7 @@ export class ConnectedAppService {
   async execute(input: {
     readonly scope: ConnectedAppScope;
     readonly causalHumanUserId?: string | undefined;
+    readonly executionIdentity?: ConnectedAppExecutionIdentity | null | undefined;
     readonly operationId: string;
     readonly effect: "read" | "write";
     readonly args: Record<string, unknown>;
@@ -624,8 +666,10 @@ export class ConnectedAppService {
       const result = await this.executeDriver(
         input.scope,
         input.causalHumanUserId ?? "",
+        input.executionIdentity,
         profile,
         input.operationId,
+        "primary",
         driverArgs,
         input.signal,
       );
@@ -663,8 +707,10 @@ export class ConnectedAppService {
             const reconciled = await this.executeDriver(
               input.scope,
               input.causalHumanUserId ?? "",
+              input.executionIdentity,
               profile,
               admission.reconciliationOperationId,
+              "reconciliation",
               reconciliationInput,
               input.signal,
             );
@@ -742,8 +788,10 @@ export class ConnectedAppService {
   private async executeDriver(
     scope: ConnectedAppScope,
     causalHumanUserId: string,
+    executionIdentity: ConnectedAppExecutionIdentity | null | undefined,
     profile: ConnectedAppProfileRow,
     operationId: string,
+    phase: "primary" | "reconciliation",
     args: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<{ data: unknown; executionId: string }> {
@@ -762,27 +810,76 @@ export class ConnectedAppService {
       });
     }
     if (!this.hostedDriver) throw new ConnectedAppServiceError("hosted_driver_not_configured", 503);
+    const exactIdentity = exactExecutionIdentity(executionIdentity);
+    if (!exactIdentity) {
+      throw new ConnectedAppServiceError("connected_app_execution_identity_required", 409);
+    }
     await (this.dependencies.assertExecutionFunding
       ?? assertConnectedAppExecutionFunding)({
         hosted: true,
         causalHumanUserId,
       });
-    const result = await this.hostedDriver.execute({
-      binding: hostedDriverBinding(this.provider.id, scope.userId, scope.namespaceId),
-      connectedAccountId: profile.connectedAccountId,
-      providerConfigId: profile.providerConfigId,
-      workspaceIdentity: profile.providerWorkspaceIdentity,
-      operationId,
-      args,
-      signal,
-    });
-    await (this.dependencies.recordProviderCost ?? safelyRecordProviderCost)({
-      identity: `oomol:connected-app:${result.executionId}`,
+    const usage = getUsageContext();
+    const metadataString = (name: string): string | null => {
+      const value = usage?.metadata?.[name];
+      return typeof value === "string" && value.trim() ? value : null;
+    };
+    const attempt = {
+      identity: hostedAttemptIdentity({
+        executionIdentity: exactIdentity,
+        causalHumanUserId,
+        scope,
+        profileId: profile.id,
+        providerId: this.provider.id,
+        operationId,
+        phase,
+      }),
+      usageFunding: { kind: "server" as const, humanUserId: causalHumanUserId, providerRoute: "oomol" },
       userId: causalHumanUserId,
+      roomId: usage?.roomId || null,
+      agentId: metadataString("agentId"),
+      taskId: metadataString("taskId"),
+      runId: metadataString("taskRunId"),
+      jobId: metadataString("jobId"),
+      workload: usage?.callType ?? null,
       provider: "oomol",
       operation: "connected_app_execute",
-      evidenceState: "unknown",
-    });
-    return result;
+    };
+    const claim = await (this.dependencies.claimProviderCost
+      ?? claimServerProviderCostAttempt)(attempt);
+    if (claim === "existing") {
+      throw new ConnectedAppServiceError("connected_app_previous_attempt_exists_do_not_retry", 409);
+    }
+    const settle = async (outcome: Pick<ServerProviderCostReceipt, "attemptOutcome" | "failureCode" | "receiptId">) => {
+      try {
+        await (this.dependencies.settleProviderCost ?? settleServerProviderCostAttempt)({
+          ...attempt, ...outcome, evidenceState: "unknown",
+        });
+      } catch {
+        // The pre-dispatch unknown row survives. Do not replay an action or
+        // discard its usable result because accounting settlement is delayed.
+        warn("[connected-apps] hosted cost settlement unavailable");
+      }
+    };
+    try {
+      const result = await this.hostedDriver.execute({
+        binding: hostedDriverBinding(this.provider.id, scope.userId, scope.namespaceId),
+        connectedAccountId: profile.connectedAccountId,
+        providerConfigId: profile.providerConfigId,
+        workspaceIdentity: profile.providerWorkspaceIdentity,
+        operationId,
+        args,
+        signal,
+      });
+      await settle({ attemptOutcome: "succeeded", receiptId: result.executionId });
+      return result;
+    } catch (error) {
+      const knownFailure = error instanceof HostedConnectedAppDriverError && !error.outcomeUnknown;
+      await settle({
+        attemptOutcome: knownFailure ? "failed" : "unknown",
+        failureCode: knownFailure ? "provider_execution_failed" : "provider_execution_uncertain",
+      });
+      throw error;
+    }
   }
 }

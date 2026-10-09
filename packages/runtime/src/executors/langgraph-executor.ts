@@ -138,6 +138,7 @@ import { getCurrentAcceptedInvocationAuthority } from "../job-manager";
 import { openTaskWakeFundingSessionForInvocation } from "../task-funding-port";
 import {
   assertForegroundChatFundingWorkloadSupported,
+  openConnectedWebOperationWakeFundingSessionForInvocation,
   openForegroundChatFundingSessionForInvocation,
   openImageAssistanceForInvocation,
 } from "../foreground-chat-funding-port";
@@ -774,6 +775,9 @@ export async function* langgraphExecutor(
       : getDefaultForegroundAgentModelId(),
   );
   const fundingSession = await openTaskWakeFundingSessionForInvocation({
+    authority: getCurrentAcceptedInvocationAuthority(), jobInput: input, causalHumanUserId,
+    modelId: foregroundModelPlan.initialModelId, roomId, agentId,
+  }) ?? await openConnectedWebOperationWakeFundingSessionForInvocation({
     authority: getCurrentAcceptedInvocationAuthority(), jobInput: input, causalHumanUserId,
     modelId: foregroundModelPlan.initialModelId, roomId, agentId,
   }) ?? await openForegroundChatFundingSessionForInvocation({

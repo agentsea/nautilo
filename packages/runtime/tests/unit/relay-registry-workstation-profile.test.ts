@@ -539,7 +539,7 @@ describe("InMemoryRelayRegistry updateCapabilities profile snapshot (D418 protoc
       0,
     );
     const pending = registry.dispatch("relay-1", {
-      toolName: "run_shell",
+      toolName: "fixture_tool",
       args: {},
       impact: "low",
       approvalObtained: true,

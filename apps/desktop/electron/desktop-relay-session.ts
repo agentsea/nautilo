@@ -80,12 +80,10 @@ export class DesktopRelaySession {
   private mcpHostValue: RelayMcpHostHandle | null = null;
   private clientValue: RelayClient | null = null;
   private publisherValue: RelayCapabilityPublisher | null = null;
-  private githubRuntimeAttached = false;
   private githubRuntimeValue: DesktopGitHubRuntime | null = null;
   get githubRuntime(): DesktopGitHubRuntime | null { return this.closedValue ? null : this.githubRuntimeValue; }
   attachGitHubRuntime(runtime: DesktopGitHubRuntime): void {
-    if (this.closedValue || this.githubRuntimeAttached) throw new Error("GitHub runtime already attached or session retired");
-    this.githubRuntimeAttached = true;
+    if (this.closedValue || this.githubRuntimeValue !== null) throw new Error("GitHub runtime already attached or session retired");
     this.githubRuntimeValue = runtime;
   }
   retireGitHubRuntime(): void {

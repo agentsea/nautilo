@@ -22,6 +22,7 @@ function binding(overrides: Partial<ConnectedWebAccountBinding> = {}): Connected
     origin: ORIGIN,
     status: "connected",
     profileRef: "profile-private-id",
+    profileFundingBinding: null,
     executionCheckpoint: null,
     ...overrides,
   };
@@ -163,7 +164,6 @@ function makeRouter(overrides: Partial<DirectBrowserRouterDependencies> = {}) {
     },
     findPageTargetAtOrigin: async () => "target-1",
     browserTimeoutMinutes: 15,
-    assertServerFunding: async () => undefined,
     now: () => new Date("2026-09-03T00:00:00.000Z"),
     ...overrides,
   };
@@ -217,14 +217,14 @@ test("direct router admits only an owner-scoped connected saved profile, fences 
 test("direct router denies a paid saved-profile start before provider or durable mutation", async () => {
   const checks: unknown[] = [];
   const { router, calls } = makeRouter({
-    assertServerFunding: async (...input) => {
-      checks.push(input);
+    withProvider: async (operation, intent) => {
+      checks.push([operation.id, intent]);
       throw new Error("server_provider_credentials_required");
     },
   });
   const error = await router.acquire(admission).catch((cause: unknown) => cause);
   expect(error).toMatchObject({ code: "unavailable", message: "direct browser control unavailable" });
-  expect(checks).toEqual([["human-1", "connected_web_direct_browser"]]);
+  expect(checks).toEqual([["operation-1", "spend"]]);
   expect(calls.started).toEqual([]);
   expect(calls.rotated).toEqual([]);
   expect(calls.allocated).toEqual([]);

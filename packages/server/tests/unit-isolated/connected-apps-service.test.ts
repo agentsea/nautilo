@@ -6,7 +6,7 @@ import type {
   ConnectedAppScope,
 } from "@nautilo/db";
 import { BUNDLED_CONNECTION_PROVIDER_CATALOG } from "../../src/connected-apps/catalog";
-import { OomolHostedConnectedAppDriver } from "../../src/connected-apps/hosted-driver";
+import { OomolHostedConnectedAppDriver, HostedConnectedAppDriverError } from "../../src/connected-apps/hosted-driver";
 import {
   LocalConnectedAppDriverError,
   OpenConnectorLocalConnectedAppDriver,
@@ -19,7 +19,10 @@ import {
 } from "../../src/connected-apps/service";
 import { connectedAppProviderDefinitions } from "../../src/connected-apps/providers";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
-import type { ServerProviderCostReceipt } from "../../src/costs/provider-cost-recorder";
+import type {
+  ServerProviderCostAttemptAdmission,
+  ServerProviderCostReceipt,
+} from "../../src/costs/provider-cost-recorder";
 
 const PROVIDERS = Object.fromEntries(
   connectedAppProviderDefinitions(BUNDLED_CONNECTION_PROVIDER_CATALOG).map((provider) => [provider.id, provider]),
@@ -27,6 +30,16 @@ const PROVIDERS = Object.fromEntries(
 
 const ATTEMPT_ID = "33333333-3333-4333-8333-333333333333";
 const PROFILE_ID = "44444444-4444-4444-8444-444444444444";
+
+function trustedExecution(toolCallId = "tool-call-A") {
+  return {
+    executionIdentity: {
+      toolCallId,
+      turnId: "turn-A",
+      taskRunId: "task-run-A",
+    },
+  };
+}
 
 function memoryStore(): ConnectedAppStore & {
   attempts: ConnectedAppOauthAttemptRow[];
@@ -458,7 +471,8 @@ describe("D456 connected-app service", () => {
       null,
       {
         assertExecutionFunding: async () => {},
-        recordProviderCost: async () => {},
+        claimProviderCost: async () => "inserted",
+        settleProviderCost: async () => {},
       },
     );
 
@@ -475,6 +489,7 @@ describe("D456 connected-app service", () => {
     });
 
     const listed = await service.execute({
+      ...trustedExecution(),
       scope,
       causalHumanUserId: scope.userId,
       operationId: "slack.list_conversations",
@@ -484,6 +499,7 @@ describe("D456 connected-app service", () => {
     expect(listed.result).toMatchObject({ conversations: [{ channelId: "C123" }] });
 
     const posted = await service.execute({
+      ...trustedExecution(),
       scope,
       causalHumanUserId: scope.userId,
       operationId: "slack.post_message",
@@ -615,6 +631,7 @@ describe("D456 connected-app service", () => {
     const imported: number[] = [];
 
     const receipt = await service.execute({
+      ...trustedExecution(),
       scope,
       operationId: "dropbox.download_file",
       effect: "read",
@@ -728,6 +745,7 @@ describe("D456 connected-app service", () => {
     const close = mock(async () => { events.push("closed"); });
     const verify = mock(async () => { events.push("verified"); });
     const receipt = await service.execute({
+      ...trustedExecution(),
       scope,
       operationId: "dropbox.upload_file",
       effect: "write",
@@ -799,6 +817,7 @@ describe("D456 connected-app service", () => {
     );
     const close = mock(async () => undefined);
     const error = await service.execute({
+      ...trustedExecution(),
       scope,
       operationId: "dropbox.upload_file",
       effect: "write",
@@ -910,11 +929,16 @@ describe("D456 connected-app service", () => {
             throw new ServerProviderCredentialsDeniedError(subject, "connected_app_execute");
           }
         },
-        recordProviderCost: async (receipt) => { costs.push(receipt); },
+        claimProviderCost: async (receipt) => {
+          costs.push({ ...receipt, evidenceState: "unknown", attemptOutcome: "unknown" });
+          return "inserted";
+        },
+        settleProviderCost: async (receipt) => { costs.push(receipt); },
       },
     );
 
     const receipt = await service.execute({
+      ...trustedExecution(),
       scope,
       causalHumanUserId,
       operationId: "notion.create_page",
@@ -929,10 +953,13 @@ describe("D456 connected-app service", () => {
 
     expect(hostedExecute).toHaveBeenCalledTimes(1);
     expect(fundingSubjects).toEqual([causalHumanUserId, causalHumanUserId]);
-    expect(costs).toHaveLength(1);
+    expect(costs).toHaveLength(2);
+    expect(costs[0]?.identity).toBe(costs[1]?.identity);
     expect(costs[0]).toMatchObject({
       userId: causalHumanUserId,
-      identity: "oomol:connected-app:primary-execution-A",
+      usageFunding: { kind: "server", humanUserId: causalHumanUserId, providerRoute: "oomol" },
+      evidenceState: "unknown",
+      attemptOutcome: "unknown",
     });
     expect(receipt.reconciliation).toEqual({
       status: "unconfirmed",
@@ -964,7 +991,8 @@ describe("D456 connected-app service", () => {
       store, catalog, "http://127.0.0.1:3001", driver, "oomol_hosted", null, PROVIDERS["notion"]!, null,
       {
         assertExecutionFunding: async () => {},
-        recordProviderCost: async () => {},
+        claimProviderCost: async () => "inserted",
+        settleProviderCost: async () => {},
       },
     );
     const [firstInspection, overlappingInspection] = await Promise.all([
@@ -980,18 +1008,22 @@ describe("D456 connected-app service", () => {
     expect((await afterRestart.list(scope))[0]).toMatchObject({ status: "connected", attemptId: null });
 
     const invalidInput = await afterRestart.execute({
+      ...trustedExecution(),
       scope, operationId: "notion.search", effect: "read", args: { query: "pilot", unexpected: true },
     }).catch((cause: unknown) => cause);
     expect(invalidInput).toMatchObject({ code: "connected_app_input_invalid", status: 400 });
     const effectMismatch = await afterRestart.execute({
+      ...trustedExecution(),
       scope, operationId: "notion.create_page", effect: "read", args: {},
     }).catch((cause: unknown) => cause);
     expect(effectMismatch).toMatchObject({ code: "connected_app_operation_not_admitted", status: 403 });
     const unsupported = await afterRestart.execute({
+      ...trustedExecution(),
       scope, operationId: "notion.unreviewed_future_action", effect: "read", args: {},
     }).catch((cause: unknown) => cause);
     expect(unsupported).toMatchObject({ code: "connected_app_operation_not_admitted", status: 403 });
     const receipt = await afterRestart.execute({
+      ...trustedExecution(),
       scope, causalHumanUserId: scope.userId,
       operationId: "notion.search", effect: "read", args: { query: "pilot" },
     });
@@ -1004,6 +1036,7 @@ describe("D456 connected-app service", () => {
 
     gateway.setSearchDrift(true);
     const drift = await afterRestart.execute({
+      ...trustedExecution(),
       scope, causalHumanUserId: scope.userId,
       operationId: "notion.search", effect: "read", args: { query: "pilot" },
     }).catch((cause: unknown) => cause);
@@ -1011,6 +1044,7 @@ describe("D456 connected-app service", () => {
     gateway.setSearchDrift(false);
 
     const writeReceipt = await afterRestart.execute({
+      ...trustedExecution(),
       scope,
       causalHumanUserId: scope.userId,
       operationId: "notion.create_page",
@@ -1038,6 +1072,7 @@ describe("D456 connected-app service", () => {
 
     gateway.setCreateDrift(true);
     const driftedWrite = await afterRestart.execute({
+      ...trustedExecution(),
       scope,
       causalHumanUserId: scope.userId,
       operationId: "notion.create_page",
@@ -1064,6 +1099,7 @@ describe("D456 connected-app service", () => {
 
     gateway.setWriteDispatchFailure(true);
     const unknownWrite = await afterRestart.execute({
+      ...trustedExecution(),
       scope,
       causalHumanUserId: scope.userId,
       operationId: "notion.create_page",
@@ -1084,6 +1120,7 @@ describe("D456 connected-app service", () => {
       namespaceId: "55555555-5555-4555-8555-555555555555",
     };
     const otherNamespace = await afterRestart.execute({
+      ...trustedExecution(),
       scope: otherRoomScope,
       operationId: "notion.search",
       effect: "read",
@@ -1094,6 +1131,7 @@ describe("D456 connected-app service", () => {
       && row.namespaceId === otherRoomScope.namespaceId)).toBe(false);
 
     const otherHuman = await afterRestart.execute({
+      ...trustedExecution(),
       scope: {
         userId: "66666666-6666-4666-8666-666666666666",
         namespaceId: "77777777-7777-4777-8777-777777777777",
@@ -1103,5 +1141,159 @@ describe("D456 connected-app service", () => {
       args: { query: "must fail" },
     }).catch((cause: unknown) => cause);
     expect(otherHuman).toMatchObject({ code: "connected_app_not_connected", status: 409 });
+  });
+});
+
+
+describe("hosted connected-app cost boundaries", () => {
+  const scope = { userId: "11111111-1111-4111-8111-111111111111", namespaceId: "22222222-2222-4222-8222-222222222222" };
+  const input = { ...trustedExecution(), scope, causalHumanUserId: scope.userId, operationId: "notion.retrieve_page", effect: "read" as const, args: { pageId: "page-A" } };
+
+  async function fixture(options: {
+    execute: (input: { readonly operationId: string }) => Promise<{ executionId: string; data: unknown }>;
+    claim: (receipt: ServerProviderCostAttemptAdmission) => Promise<"inserted" | "existing">;
+    settle: (receipt: ServerProviderCostReceipt) => Promise<void>;
+    assertFunding?: (() => Promise<void>) | undefined;
+  }) {
+    const store = memoryStore();
+    await addConnectedHostedProfile(store, scope);
+    return new ConnectedAppService(store,
+      { catalog: BUNDLED_CONNECTION_PROVIDER_CATALOG, source: "bundled", reason: null },
+      "http://127.0.0.1:3001", { execute: options.execute } as unknown as OomolHostedConnectedAppDriver,
+      "oomol_hosted", null, PROVIDERS["notion"]!, null, {
+        assertExecutionFunding: options.assertFunding ?? (async () => {}),
+        claimProviderCost: options.claim,
+        settleProviderCost: options.settle,
+      });
+  }
+
+  test("does not dispatch when the durable unknown attempt cannot be recorded", async () => {
+    const execute = mock(async () => ({ executionId: "unused", data: {} }));
+    const claim = mock(async (): Promise<"inserted"> => { throw new Error("ledger unavailable"); });
+    const service = await fixture({ execute, claim, settle: async () => {} });
+    await Promise.resolve(expect(service.execute(input)).rejects.toBeDefined());
+    expect(execute).not.toHaveBeenCalled();
+    expect(claim).toHaveBeenCalledTimes(1);
+  });
+
+  test("a lost hosted response leaves unknown monetary and execution evidence without another call", async () => {
+    const order: string[] = [];
+    const rows: ServerProviderCostReceipt[] = [];
+    const execute = mock(async () => {
+      order.push("dispatch");
+      throw new HostedConnectedAppDriverError("upstream_unavailable", 502, false, true);
+    });
+    const service = await fixture({ execute, claim: async () => { order.push("record"); return "inserted"; }, settle: async (row) => { rows.push(row); } });
+    await Promise.resolve(expect(service.execute(input)).rejects.toBeDefined());
+    expect(order).toEqual(["record", "dispatch"]);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ evidenceState: "unknown", attemptOutcome: "unknown", failureCode: "provider_execution_uncertain",
+      usageFunding: { kind: "server", humanUserId: scope.userId, providerRoute: "oomol" } });
+    expect(rows[0]?.actualCostUsd).toBeUndefined();
+  });
+
+  test("settlement failure preserves a usable result and never retries the hosted action", async () => {
+    const execute = mock(async () => ({ executionId: "execution-A", data: { object: "page", id: "page-A",
+      created_time: "2026-08-28T00:00:00.000Z", last_edited_time: "2026-08-28T00:00:00.000Z",
+      parent: { workspace: true }, properties: {}, url: "https://notion.so/page-A", is_archived: false, in_trash: false } }));
+    const service = await fixture({ execute, claim: async () => "inserted", settle: async () => { throw new Error("ledger unavailable"); } });
+    const result = await service.execute(input);
+    expect(result.executionId).toBe("execution-A");
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  test("uses a separate stable action identity for post-write reconciliation", async () => {
+    const identities: string[] = [];
+    const execute = mock(async ({ operationId }: { operationId: string }) => operationId === "notion.create_page"
+      ? {
+          executionId: "write-A",
+          data: { object: "page", id: "page-A", created_time: "2026-08-28T00:00:00.000Z",
+            last_edited_time: "2026-08-28T00:00:00.000Z", parent: { workspace: true }, properties: {},
+            url: "https://notion.so/page-A", is_archived: false, in_trash: false },
+        }
+      : {
+          executionId: "read-A",
+          data: { object: "page", id: "page-A", created_time: "2026-08-28T00:00:00.000Z",
+            last_edited_time: "2026-08-28T00:00:00.000Z", parent: { workspace: true }, properties: {},
+            url: "https://notion.so/page-A", is_archived: false, in_trash: false },
+        });
+    const service = await fixture({
+      execute,
+      claim: async (receipt) => { identities.push(receipt.identity); return "inserted"; },
+      settle: async () => {},
+    });
+
+    const receipt = await service.execute({
+      ...trustedExecution("write-call-A"),
+      scope,
+      causalHumanUserId: scope.userId,
+      operationId: "notion.create_page",
+      effect: "write",
+      args: { parent: { workspace: true }, properties: {} },
+    });
+
+    expect(receipt.reconciliation).toMatchObject({ status: "confirmed", operationId: "notion.retrieve_page" });
+    expect(identities).toHaveLength(2);
+    expect(identities[0]).not.toBe(identities[1]);
+    expect(JSON.parse(identities[0]!)).toContain("notion.create_page");
+    expect(JSON.parse(identities[0]!)).toContain("primary");
+    expect(JSON.parse(identities[1]!)).toContain("notion.retrieve_page");
+    expect(JSON.parse(identities[1]!)).toContain("reconciliation");
+  });
+
+  test("a reconstructed invocation cannot blindly replay an already claimed hosted attempt", async () => {
+    const claimed = new Set<string>();
+    const claim = async (receipt: ServerProviderCostAttemptAdmission): Promise<"inserted" | "existing"> => {
+      if (claimed.has(receipt.identity)) return "existing";
+      claimed.add(receipt.identity);
+      return "inserted";
+    };
+    const execute = mock(async () => {
+      throw new HostedConnectedAppDriverError("response_lost", 502, false, true);
+    });
+    const firstProcess = await fixture({ execute, claim, settle: async () => {} });
+    await Promise.resolve(expect(firstProcess.execute(input)).rejects.toMatchObject({
+      code: "response_lost",
+    }));
+
+    const reconstructed = await fixture({ execute, claim, settle: async () => {} });
+    await Promise.resolve(expect(reconstructed.execute(input)).rejects.toMatchObject({
+      code: "connected_app_previous_attempt_exists_do_not_retry",
+      status: 409,
+    }));
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(claimed.size).toBe(1);
+  });
+
+  test("initial funding denial creates no ledger claim and sends no hosted request", async () => {
+    const execute = mock(async () => ({ executionId: "unused", data: {} }));
+    const claim = mock(async () => "inserted" as const);
+    const service = await fixture({
+      execute,
+      claim,
+      settle: async () => {},
+      assertFunding: async () => {
+        throw new ServerProviderCredentialsDeniedError(scope.userId, "connected_app_execute");
+      },
+    });
+
+    await Promise.resolve(expect(service.execute(input)).rejects.toMatchObject({ status: 403 }));
+    expect(claim).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("hosted dispatch fails closed without a trusted call and turn or Task-run identity", async () => {
+    const execute = mock(async () => ({ executionId: "unused", data: {} }));
+    const claim = mock(async () => "inserted" as const);
+    const service = await fixture({ execute, claim, settle: async () => {} });
+    const { executionIdentity: _omitted, ...untrustedInput } = input;
+
+    await Promise.resolve(expect(service.execute(untrustedInput)).rejects.toMatchObject({
+      code: "connected_app_execution_identity_required",
+      status: 409,
+    }));
+    expect(claim).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 });

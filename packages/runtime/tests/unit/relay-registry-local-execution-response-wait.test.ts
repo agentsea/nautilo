@@ -5,9 +5,9 @@ const NATIVE_TIMER_MAX = 2 ** 31 - 1;
 async function fixture() {
   const registry = new InMemoryRelayRegistry(); const sent: RelayServerMessage[] = [];
   await registry.register("relay-fixture", "human-fixture", { profile: "desktop-agent", canExecuteLocal: true,
-    localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, capacity: 1 } },
-    message => sent.push(message), 20, "desktop-fixture", 1, "pairing-fixture");
-  const binding: RelayLocalExecutionBindingV1 = { version: 1, generation: "generation-fixture", executionId: "execution-fixture",
+    localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, localNetworkPolicy: true, capacity: 1 } },
+    message => sent.push(message), 29, "desktop-fixture", 1, "pairing-fixture");
+  const binding: RelayLocalExecutionBindingV1 = { version: 1, localNetworkPolicy: { mode: "host" }, generation: "generation-fixture", executionId: "execution-fixture",
     invocationId: "call-fixture", operation: "start", owner: { instanceId: "instance-fixture", humanUserId: "human-fixture",
       agentId: "agent-fixture", runId: "run-fixture", conversationId: "conversation-fixture", relayId: "relay-fixture",
       desktopSessionId: "desktop-fixture", pairingGeneration: registry.getLocalExecutionPairingGeneration("relay-fixture")!,

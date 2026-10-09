@@ -4,7 +4,9 @@ import type {
   ConnectedWebAccountActionToolInput,
   ConnectedWebAccountCapability,
 } from "@nautilo/agent";
-import type { ConnectedWebAccount } from "@nautilo/types";
+import type { ConnectedWebAccount, DurableServiceFundingBinding } from "@nautilo/types";
+import type { UsageFundingProvenance } from "@nautilo/agent";
+import type { ConnectedWebActionRunCostCustody } from "@nautilo/db";
 import type {
   ConnectedWebAccountHostedReadRun,
   ConnectedWebAccountReadAccountBinding,
@@ -13,8 +15,12 @@ import type {
   ConnectedWebAccountReadProvider,
   ConnectedWebAccountReadRuntimeActor,
 } from "./read-tool-runtime";
-import { selectConnectedWebAccount } from "./read-tool-runtime";
+import { isConfirmedConnectedWebPreCreateFailure, selectConnectedWebAccount } from "./read-tool-runtime";
 import { parseConnectedWebActionSafeReceipt, type ConnectedWebActionOperation, type ConnectedWebAccountStore, type ConnectedWebActionSafeReceipt } from "./store";
+import type {
+  ServerProviderCostAttemptAdmission,
+  ServerProviderCostReceipt,
+} from "../costs/provider-cost-recorder";
 
 /** Action policy intentionally has no generic browser-control knobs. */
 export interface ConnectedWebAccountActionPolicy {
@@ -26,13 +32,19 @@ export interface ConnectedWebAccountActionRuntimeOptions {
   readonly facts: ConnectedWebAccountReadFacts;
   readonly accounts: ConnectedWebAccountReadAccounts;
   readonly executions: Pick<ConnectedWebAccountStore,
-    "reserveExecutionCheckpoint" | "activateExecutionCheckpoint" | "rotateExecutionCheckpointReference" | "completeExecution" | "releaseExecutionReservation" | "claimActionOperation" | "activateActionOperation" | "finishActionOperation" | "getActionOperationForOwnerDelivery" | "resumeActionOperation" | "cancelActionAuthentication">;
+    "reserveExecutionCheckpoint" | "activateExecutionCheckpoint" | "completeExecution" | "releaseExecutionReservation" | "claimActionOperation" | "activateActionOperation" | "quarantineActionCreate" | "finishActionOperation" | "getActionOperationForOwnerDelivery" | "resumeActionOperation" | "cancelActionAuthentication">;
   readonly provider: ConnectedWebAccountReadProvider;
+  readonly funding?: {
+    admit(humanUserId: string, prior?: DurableServiceFundingBinding): Promise<DurableServiceFundingBinding>;
+    admitLegacyServer(humanUserId: string): Promise<DurableServiceFundingBinding>;
+    run<T>(binding: DurableServiceFundingBinding, intent: "spend" | "recover", callback: (provider: ConnectedWebAccountReadProvider, usageFunding: UsageFundingProvenance) => Promise<T>): Promise<T>;
+  };
   readonly policy: ConnectedWebAccountActionPolicy;
   readonly now?: () => Date;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly createReservationToken?: () => string;
-  readonly recordProviderCost?: (input: { readonly occurredAt: Date; readonly userId: string; readonly roomId: string; readonly agentId: string; readonly provider: "browser_use"; readonly operation: "hosted_action" | "hosted_action_observation"; readonly actualCostUsd: string | null; readonly evidenceState: "actual" | "unknown"; readonly idempotencyKey: string }) => Promise<void>;
+  readonly beginCostAttempt?: (input: ServerProviderCostAttemptAdmission) => Promise<void>;
+  readonly settleCostAttempt?: (input: ServerProviderCostReceipt) => Promise<void>;
 }
 
 export interface ConnectedWebAccountActionServerRuntime {
@@ -136,12 +148,6 @@ function combinedActualCost(
     state: "actual",
   };
 }
-async function recordRunCost(options: ConnectedWebAccountActionRuntimeOptions, actor: ConnectedWebAccountReadRuntimeActor, runId: string, operation: "hosted_action" | "hosted_action_observation", total: string | null, now: () => Date): Promise<void> {
-  if (!options.recordProviderCost || !actor.causalHumanUserId) return;
-  const value = total === null ? NaN : Number(total);
-  try { await options.recordProviderCost({ occurredAt: now(), userId: actor.causalHumanUserId, roomId: actor.roomId, agentId: actor.agentId, provider: "browser_use", operation, actualCostUsd: Number.isFinite(value) && value >= 0 ? total!.trim() : null, evidenceState: Number.isFinite(value) && value >= 0 ? "actual" : "unknown", idempotencyKey: createHash("sha256").update(`browser_use\0${operation}\0${runId}`).digest("hex") }); } catch { /* accounting never changes action truth */ }
-}
-
 function safePrior(operation: ConnectedWebActionOperation, account: ConnectedWebAccount): ConnectedWebAccountActionResult {
   const receipt = parseConnectedWebActionSafeReceipt(operation.receipt);
   if (!receipt || receipt.executionRef !== operation.id || receipt.target !== operation.target
@@ -177,6 +183,58 @@ function isHostedRun(value: unknown): value is ConnectedWebAccountHostedReadRun 
 }
 
 /**
+ * Reusable terminal cleanup for restart, owner-stop, and account deletion.
+ * The caller must supply the provider opened from the operation's exact
+ * durable funding binding. Both cost identities settle before true is returned.
+ */
+export async function settleConnectedWebActionRunCleanup(input: Readonly<{
+  provider: ConnectedWebAccountReadProvider;
+  runId: string;
+  custody: ConnectedWebActionRunCostCustody;
+  usageFunding?: UsageFundingProvenance;
+  settleCostAttempt?: (receipt: ServerProviderCostReceipt) => Promise<void>;
+  /** Foreground execution may already have settled the hosted result. */
+  hostedRunAlreadySettled?: boolean;
+}>): Promise<boolean> {
+  const cleanup = input.provider.stopHostedReadBrowserWithCost
+    ? await input.provider.stopHostedReadBrowserWithCost(input.runId)
+    : { stopped: await input.provider.stopHostedReadBrowser(input.runId), estimatedCostUsd: null, evidenceState: "unknown" as const };
+  const attribution = input.custody.attribution;
+  if (!input.hostedRunAlreadySettled) {
+    const result = await input.provider.getHostedReadResult(input.runId);
+    const total = isFailure(result) ? null : result.totalCostUsd;
+    const parsed = total === null ? NaN : Number(total);
+    const outcome = isFailure(result) ? "unknown"
+      : result.status === "cancelled" ? "cancelled"
+        : result.status === "failed" ? "failed"
+          : result.status === "completed" ? "succeeded" : "unknown";
+    await input.settleCostAttempt?.({
+      identity: input.custody.hostedRun.identity,
+      ...(input.usageFunding === undefined ? {} : { usageFunding: input.usageFunding }),
+      userId: attribution.humanUserId, roomId: attribution.roomId, agentId: attribution.agentId,
+      workload: input.custody.hostedRun.workload,
+      provider: "browser_use", operation: "hosted_run",
+      estimatedCostUsd: Number.isFinite(parsed) && parsed >= 0 ? total!.trim() : null,
+      actualCostUsd: null,
+      evidenceState: Number.isFinite(parsed) && parsed >= 0 ? "estimated" : "unknown",
+      attemptOutcome: outcome,
+    });
+  }
+  await input.settleCostAttempt?.({
+    identity: input.custody.browserSession.identity,
+    ...(input.usageFunding === undefined ? {} : { usageFunding: input.usageFunding }),
+    userId: attribution.humanUserId, roomId: attribution.roomId, agentId: attribution.agentId,
+    workload: input.custody.browserSession.workload,
+    provider: "browser_use", operation: "browser_session",
+    estimatedCostUsd: cleanup.evidenceState === "estimated" ? cleanup.estimatedCostUsd : null,
+    actualCostUsd: null,
+    evidenceState: cleanup.evidenceState,
+    attemptOutcome: cleanup.stopped ? "succeeded" : "unknown",
+  });
+  return cleanup.stopped;
+}
+
+/**
  * Hosted-V4 only action runtime. The write run's own text is never success;
  * one independent read-only observation is required before `completed`.
  */
@@ -185,19 +243,145 @@ export function createConnectedWebAccountActionServerRuntime(options: ConnectedW
   const sleep = options.sleep ?? SYSTEM_SLEEP;
   const createReservationToken = options.createReservationToken ?? randomUUID;
 
-  async function poll(run: ConnectedWebAccountHostedReadRun): Promise<ConnectedWebAccountHostedReadRun | { kind: "failure" }> {
+  async function runProvider<T>(operation: ConnectedWebActionOperation, intent: "spend" | "recover", callback: (provider: ConnectedWebAccountReadProvider, usageFunding?: UsageFundingProvenance) => Promise<T>): Promise<T> {
+    if (!options.funding) return callback(options.provider);
+    const binding = operation.fundingBinding ?? await options.funding.admitLegacyServer(operation.ownerUserId);
+    return options.funding.run(binding, intent, callback);
+  }
+
+  type PaidActionPhase = "writer" | "verifier" | "resume_precheck";
+  type PaidRun = Readonly<{
+    run: Awaited<ReturnType<ConnectedWebAccountReadProvider["createHostedReadRun"]>>;
+    custody: ConnectedWebActionRunCostCustody;
+  }>;
+  class PredispatchCostAdmissionError extends Error {}
+  function runCostCustody(operation: ConnectedWebActionOperation, actor: ConnectedWebAccountReadRuntimeActor, token: string, phase: PaidActionPhase): ConnectedWebActionRunCostCustody {
+    const prefix = `browser-use:connected-web-action:${operation.id}:${token}:${phase}`;
+    return {
+      version: 1, phase,
+      hostedRun: { identity: `${prefix}:hosted-run`, workload: "connected_web_action" },
+      browserSession: { identity: `${prefix}:browser-session`, workload: "connected_web_action" },
+      attribution: { humanUserId: actor.causalHumanUserId ?? operation.ownerUserId, roomId: actor.roomId, agentId: actor.agentId },
+    };
+  }
+  async function createPaidRun(
+    operation: ConnectedWebActionOperation,
+    actor: ConnectedWebAccountReadRuntimeActor,
+    token: string,
+    phase: PaidActionPhase,
+    input: Parameters<ConnectedWebAccountReadProvider["createHostedReadRun"]>[0],
+  ): Promise<PaidRun> {
+    const custody = runCostCustody(operation, actor, token, phase);
+    let dispatchStarted = false;
+    try { return await runProvider(operation, "spend", async (provider, usageFunding) => {
+      try {
+        await options.beginCostAttempt?.({
+          identity: custody.hostedRun.identity,
+          ...(usageFunding === undefined ? {} : { usageFunding }),
+          userId: custody.attribution.humanUserId, roomId: custody.attribution.roomId, agentId: custody.attribution.agentId,
+          workload: custody.hostedRun.workload,
+          provider: "browser_use", operation: "hosted_run",
+        });
+      } catch { throw new PredispatchCostAdmissionError("hosted_run_cost_admission_failed"); }
+      try {
+        await options.beginCostAttempt?.({
+          identity: custody.browserSession.identity,
+          ...(usageFunding === undefined ? {} : { usageFunding }),
+          userId: custody.attribution.humanUserId, roomId: custody.attribution.roomId, agentId: custody.attribution.agentId,
+          workload: custody.browserSession.workload,
+          provider: "browser_use", operation: "browser_session",
+        });
+      } catch (error) {
+        await options.settleCostAttempt?.({
+          identity: custody.hostedRun.identity,
+          ...(usageFunding === undefined ? {} : { usageFunding }),
+          userId: custody.attribution.humanUserId, roomId: custody.attribution.roomId, agentId: custody.attribution.agentId,
+          workload: custody.hostedRun.workload,
+          provider: "browser_use", operation: "hosted_run",
+          estimatedCostUsd: null, actualCostUsd: "0", evidenceState: "actual", attemptOutcome: "failed",
+          failureCode: "predispatch_cost_admission_failed",
+        });
+        throw new PredispatchCostAdmissionError(error instanceof Error ? error.message : "browser_session_cost_admission_failed");
+      }
+      dispatchStarted = true;
+      return { run: await provider.createHostedReadRun(input), custody };
+    }); } catch (error) {
+      if (!dispatchStarted && !(error instanceof PredispatchCostAdmissionError)) {
+        throw new PredispatchCostAdmissionError(error instanceof Error ? error.message : "funding_admission_failed");
+      }
+      throw error;
+    }
+  }
+  async function settleConfirmedCreateFailure(
+    operation: ConnectedWebActionOperation,
+    custody: ConnectedWebActionRunCostCustody,
+    attemptOutcome: "failed" | "cancelled",
+  ): Promise<void> {
+    if (!options.settleCostAttempt) return;
+    await runProvider(operation, "recover", async (_provider, usageFunding) => {
+      for (const [cost, providerOperation] of [[custody.hostedRun, "hosted_run"], [custody.browserSession, "browser_session"]] as const) {
+        await options.settleCostAttempt!({
+          identity: cost.identity,
+          ...(usageFunding === undefined ? {} : { usageFunding }),
+          userId: custody.attribution.humanUserId, roomId: custody.attribution.roomId, agentId: custody.attribution.agentId,
+          workload: cost.workload, provider: "browser_use", operation: providerOperation,
+          actualCostUsd: null, evidenceState: "unknown", attemptOutcome,
+          failureCode: "provider_create_failed",
+        });
+      }
+    });
+  }
+  async function settleHostedRun(
+    operation: ConnectedWebActionOperation,
+    custody: ConnectedWebActionRunCostCustody,
+    total: string | null,
+    attemptOutcome: "succeeded" | "failed" | "cancelled" | "unknown" = "succeeded",
+  ): Promise<void> {
+    if (!options.settleCostAttempt) return;
+    const parsed = total === null ? NaN : Number(total);
+    await runProvider(operation, "recover", async (_provider, usageFunding) => options.settleCostAttempt!({
+      identity: custody.hostedRun.identity,
+      ...(usageFunding === undefined ? {} : { usageFunding }),
+      userId: custody.attribution.humanUserId, roomId: custody.attribution.roomId, agentId: custody.attribution.agentId,
+      workload: custody.hostedRun.workload,
+      provider: "browser_use",
+      operation: "hosted_run",
+      estimatedCostUsd: Number.isFinite(parsed) && parsed >= 0 ? total!.trim() : null,
+      actualCostUsd: null,
+      evidenceState: Number.isFinite(parsed) && parsed >= 0 ? "estimated" : "unknown",
+      attemptOutcome,
+    }));
+  }
+
+  async function cleanupBrowserAndSettle(operation: ConnectedWebActionOperation, runId: string, custody: ConnectedWebActionRunCostCustody): Promise<boolean> {
+    return runProvider(operation, "recover", (provider, usageFunding) => settleConnectedWebActionRunCleanup({
+      provider, runId, custody, ...(usageFunding === undefined ? {} : { usageFunding }),
+      ...(options.settleCostAttempt ? { settleCostAttempt: options.settleCostAttempt } : {}),
+      hostedRunAlreadySettled: true,
+    }));
+  }
+
+  async function cleanupRun(operation: ConnectedWebActionOperation, runId: string, custody = operation.runCostCustody): Promise<boolean> {
+    // Legacy active rows predate cost custody. Clean them without inventing an
+    // owner or ledger identity; their monetary evidence remains unknown.
+    return custody
+      ? cleanupBrowserAndSettle(operation, runId, custody)
+      : runProvider(operation, "recover", (provider) => provider.stopHostedReadBrowser(runId));
+  }
+
+  async function poll(operation: ConnectedWebActionOperation, run: ConnectedWebAccountHostedReadRun): Promise<ConnectedWebAccountHostedReadRun | { kind: "failure" }> {
     let current = run;
     while (current.status === "queued" || current.status === "dispatching" || current.status === "running") {
       try { await sleep(options.policy.pollIntervalMs); } catch { return { kind: "failure" }; }
       let next: Awaited<ReturnType<ConnectedWebAccountReadProvider["pollHostedReadRun"]>>;
-      try { next = await options.provider.pollHostedReadRun(run.runId); } catch { return { kind: "failure" }; }
+      try { next = await runProvider(operation, "recover", (provider) => provider.pollHostedReadRun(run.runId)); } catch { return { kind: "failure" }; }
       if (isFailure(next) || !isHostedRun(next)) return { kind: "failure" };
       current = next;
     }
     return current;
   }
 
-  async function finish(accountId: string, token: string, expectedOpaqueExecutionRef: string, status: "connected" | "attention_needed" = "connected"): Promise<boolean> {
+  async function completeCheckpoint(accountId: string, token: string, expectedOpaqueExecutionRef: string, status: "connected" | "attention_needed" = "connected"): Promise<boolean> {
     try {
       await options.executions.completeExecution({ accountId, reservationToken: token, status, expectedOpaqueExecutionRef });
       return true;
@@ -219,16 +403,22 @@ export function createConnectedWebAccountActionServerRuntime(options: ConnectedW
       return current.status === "reserving" || current.status === "running" || current.status === "verifying" ? null : safePrior(current, account);
     } catch { return null; }
   }
-  async function cancelAndConfirmTerminal(runId: string): Promise<boolean> {
+  async function cancelAndConfirmTerminal(operation: ConnectedWebActionOperation, runId: string): Promise<boolean> {
     try {
-      const cancelled = await options.provider.cancelHostedReadRun(runId);
+      const cancelled = await runProvider(operation, "recover", (provider) => provider.cancelHostedReadRun(runId));
       if (isFailure(cancelled) || !isHostedRun(cancelled)
         || (cancelled.status !== "cancelled" && cancelled.status !== "completed" && cancelled.status !== "failed")) return false;
-      return options.provider.stopHostedReadBrowser(runId);
+      if (operation.runCostCustody) {
+        const result = await runProvider(operation, "recover", (provider) => provider.getHostedReadResult(runId));
+        const total = isFailure(result) ? null : result.totalCostUsd;
+        await settleHostedRun(operation, operation.runCostCustody, total,
+          cancelled.status === "cancelled" ? "cancelled" : cancelled.status === "failed" ? "failed" : "succeeded");
+      }
+      return cleanupRun(operation, runId);
     } catch { return false; }
   }
   async function ambiguousAfterPossibleEffect(operation: ConnectedWebActionOperation, account: ConnectedWebAccount, runId: string, accountId: string, token: string, code: string, terminalOpaqueRunRef = runId, checkpointFallbackRef?: string, reservationActor?: ConnectedWebAccountReadRuntimeActor): Promise<ConnectedWebAccountActionResult> {
-    const terminal = await cancelAndConfirmTerminal(runId);
+    const terminal = await cancelAndConfirmTerminal(operation, runId);
     if (!terminal) return failure("ambiguous");
     // A verifier can be created after Stop has terminalized the action run.
     // Once we know this run exists, terminalize it first; never return a
@@ -242,11 +432,11 @@ export function createConnectedWebAccountActionServerRuntime(options: ConnectedW
     }
     // Do not clear the single-profile writer fence until the provider confirms
     // this exact hosted run is terminal/gone; boot recovery owns the rest.
-    if (persisted && !await finish(accountId, token, runId)) {
+    if (persisted && !await completeCheckpoint(accountId, token, runId)) {
       // Operation B can be durable while the checkpoint is still A. B is
       // already confirmed terminal above, so only the exact older A fence
       // may be released as a recovery-safe fallback.
-      if (checkpointFallbackRef) await finish(accountId, token, checkpointFallbackRef);
+      if (checkpointFallbackRef && checkpointFallbackRef !== runId) await completeCheckpoint(accountId, token, checkpointFallbackRef);
       else if (reservationActor) await release(reservationActor, accountId, token);
     }
     return failure("ambiguous");
@@ -274,8 +464,16 @@ export function createConnectedWebAccountActionServerRuntime(options: ConnectedW
     const previousCost = input.previousCost;
     const runCostUsd = input.runCostUsd ?? options.policy.maxCostUsd / 2;
     if (!binding.profileRef) return failure("not_connected", "connect");
-    if (previousRunRef && !await options.provider.stopHostedReadBrowser(previousRunRef)) {
+    if (previousRunRef && !await cleanupRun(operation, previousRunRef)) {
       return ambiguousAfterPossibleEffect(operation, account, previousRunRef, account.id, token, "previous_browser_cleanup_pending");
+    }
+    let createAdmission = operation;
+    if (previousRunRef) {
+      try {
+        await options.executions.quarantineActionCreate({ operationId: operation.id, ownerUserId: actor.userId,
+          accountId: account.id, reservationToken: token, expectedOpaqueRunRef: previousRunRef });
+      } catch { return failure("ambiguous"); }
+      createAdmission = { ...operation, status: "reserving", opaqueRunRef: null, runCostCustody: null };
     }
     const actionTask = [
       "Perform exactly one allowed action: save/bookmark/favorite the named item on the already-connected website profile.",
@@ -286,68 +484,69 @@ export function createConnectedWebAccountActionServerRuntime(options: ConnectedW
       "If sign-in/MFA/CAPTCHA is required, return exactly {\"outcome\":\"authentication_required\",\"reason\":\"sign_in\"} (or mfa/captcha).",
       "After attempting the save, return exactly {\"outcome\":\"action_attempted\",\"action\":\"save_item\",\"target\":TARGET,\"origin\":ORIGIN} with TARGET and ORIGIN replaced by their exact values. Do not claim success.",
     ].join("\n");
-    let created: Awaited<ReturnType<ConnectedWebAccountReadProvider["createHostedReadRun"]>>;
-    try { created = await options.provider.createHostedReadRun({ profileId: binding.profileRef, task: actionTask, maxCostUsd: runCostUsd }); }
-    catch {
-      await record(operation, previousRunRef, "ambiguous", { evidenceCode: "action_create_throw" });
+    let paidCreated: PaidRun;
+    try { paidCreated = await createPaidRun(createAdmission, actor, token, "writer", { profileId: binding.profileRef, task: actionTask, maxCostUsd: runCostUsd }); }
+    catch (error) {
+      if (error instanceof PredispatchCostAdmissionError) {
+        if (await record(createAdmission, null, "failed", { evidenceCode: "cost_admission_failed" })) await release(actor, account.id, token);
+        return failure("provider_unavailable");
+      }
+      await record(createAdmission, null, "ambiguous", { evidenceCode: "action_create_throw" });
       return failure("ambiguous");
     }
+    const created = paidCreated.run;
+    const activeOperation: ConnectedWebActionOperation = { ...createAdmission, opaqueRunRef: isHostedRun(created) ? created.runId : null, runCostCustody: paidCreated.custody };
     if (!isHostedRun(created) && !isFailure(created)) {
-      await record(operation, previousRunRef, "ambiguous", { evidenceCode: "action_create_malformed" });
+      await record(createAdmission, null, "ambiguous", { evidenceCode: "action_create_malformed" });
       return failure("ambiguous");
     }
     if (isFailure(created)) {
-      const status = created.code === "cancelled" ? "cancelled"
-        : created.code === "missing_configuration" || created.code === "invalid_configuration" || created.code === "authentication_failed"
-          || created.code === "insufficient_balance" || created.code === "resource_not_found" || created.code === "conflict"
-          || created.code === "rate_limited" || created.code === "invalid_browser_policy" || created.code === "invalid_cost_policy" ? "failed"
-          : "ambiguous";
-      const persisted = await record(operation, previousRunRef, status, { evidenceCode: "action_create_failed" });
-      if (persisted && status !== "ambiguous") {
-        if (previousRunRef) await finish(account.id, token, previousRunRef);
-        else await release(actor, account.id, token);
+      const status = isConfirmedConnectedWebPreCreateFailure(created.code) ? "failed" : "ambiguous";
+      if (status === "failed") {
+        try { await settleConfirmedCreateFailure(createAdmission, paidCreated.custody, "failed"); }
+        catch { return failure("ambiguous"); }
       }
-      return failure(status === "cancelled" ? "cancelled" : status === "failed" ? "failed" : "ambiguous");
+      const persisted = await record(createAdmission, null, status, { evidenceCode: "action_create_failed" });
+      if (persisted && status !== "ambiguous") await release(actor, account.id, token);
+      return failure(status === "failed" ? "failed" : "ambiguous");
     }
     try {
       await options.executions.activateActionOperation({ operationId: operation.id, opaqueRunRef: created.runId,
-        expectedOpaqueRunRef: previousRunRef, ...(previousRunRef ? { nextStatus: "running" as const } : {}) });
+        runCostCustody: paidCreated.custody, expectedOpaqueRunRef: null, nextStatus: "running" });
     } catch {
-      return ambiguousAfterPossibleEffect(operation, account, created.runId, account.id, token,
-        "operation_activation_uncertain", previousRunRef ?? created.runId, previousRunRef ?? undefined);
+      return ambiguousAfterPossibleEffect(activeOperation, account, created.runId, account.id, token,
+        "operation_activation_uncertain", created.runId, undefined, actor);
     }
     try {
-      if (previousRunRef) {
-        await options.executions.rotateExecutionCheckpointReference({ ownerUserId: actor.userId, accountId: account.id, reservationToken: token,
-          opaqueExecutionRef: created.runId, expectedOpaqueExecutionRef: previousRunRef });
-      } else {
-        await options.executions.activateExecutionCheckpoint({ ownerUserId: actor.userId, accountId: account.id, reservationToken: token, opaqueExecutionRef: created.runId });
-      }
+      await options.executions.activateExecutionCheckpoint({ ownerUserId: actor.userId, accountId: account.id,
+        reservationToken: token, opaqueExecutionRef: created.runId });
     } catch {
-      return ambiguousAfterPossibleEffect(operation, account, created.runId, account.id, token,
-        "checkpoint_activation_uncertain", created.runId, previousRunRef ?? undefined, previousRunRef ? undefined : actor);
+      return ambiguousAfterPossibleEffect(activeOperation, account, created.runId, account.id, token,
+        "checkpoint_activation_uncertain", created.runId, undefined, actor);
     }
-    const terminal = await poll(created);
+    const terminal = await poll(activeOperation, created);
     if (isPollFailure(terminal) || terminal.status !== "completed") {
-      return ambiguousAfterPossibleEffect(operation, account, created.runId, account.id, token, "action_terminal_unproven");
+      return ambiguousAfterPossibleEffect(activeOperation, account, created.runId, account.id, token, "action_terminal_unproven");
     }
     let actionResult: Awaited<ReturnType<ConnectedWebAccountReadProvider["getHostedReadResult"]>>;
-    try { actionResult = await options.provider.getHostedReadResult(created.runId); }
-    catch { return ambiguousAfterPossibleEffect(operation, account, created.runId, account.id, token, "action_result_throw"); }
-    if (!isFailure(actionResult)) await recordRunCost(options, actor, created.runId, "hosted_action", actionResult.totalCostUsd, now);
-    if (isFailure(actionResult)) return ambiguousAfterPossibleEffect(operation, account, created.runId, account.id, token, "action_result_unavailable");
+    try { actionResult = await runProvider(activeOperation, "recover", (provider) => provider.getHostedReadResult(created.runId)); }
+    catch { return ambiguousAfterPossibleEffect(activeOperation, account, created.runId, account.id, token, "action_result_throw"); }
+    if (isFailure(actionResult)) return ambiguousAfterPossibleEffect(activeOperation, account, created.runId, account.id, token, "action_result_unavailable");
+    try { await settleHostedRun(activeOperation, paidCreated.custody, actionResult.totalCostUsd); }
+    catch { return ambiguousAfterPossibleEffect(activeOperation, account, created.runId, account.id, token, "action_cost_settlement_pending"); }
     const attempted = parseActionAttempt(actionResult.result, binding.origin, operation.target);
     if (attempted === "sign_in" || attempted === "mfa" || attempted === "captcha") {
-      const cost = combinedActualCost(previousCost, actionResult.totalCostUsd);
+      const cost = combinedActualCost(previousCost, null);
+      if (!await cleanupRun(activeOperation, created.runId, paidCreated.custody)) return failure("ambiguous");
       if (!await record(operation, created.runId, "authentication_required", { evidenceCode: "authentication_required", cost })) return failure("ambiguous");
       // The protected sign-in journey can only reconnect an account whose
       // execution checkpoint was released to attention_needed. A concurrent
       // checkpoint change or failed CAS must never be presented as an
       // actionable login that can only dead-end.
-      if (!await finish(account.id, token, created.runId, "attention_needed")) return failure("ambiguous");
+      if (!await completeCheckpoint(account.id, token, created.runId, "attention_needed")) return failure("ambiguous");
       return auth(account, attempted);
     }
-    if (attempted !== "attempted") return ambiguousAfterPossibleEffect(operation, account, created.runId, account.id, token, "action_result_invalid");
+    if (attempted !== "attempted") return ambiguousAfterPossibleEffect(activeOperation, account, created.runId, account.id, token, "action_result_invalid");
 
     const observeTask = [
       "Read only the already-connected website profile. Do not take any action or change data.",
@@ -359,44 +558,77 @@ export function createConnectedWebAccountActionServerRuntime(options: ConnectedW
     if (priorToVerifier) return priorToVerifier;
     // Commit the writer's profile and stop its browser before replacing its
     // only durable run reference with the independent verifier's reference.
-    if (!await options.provider.stopHostedReadBrowser(created.runId)) {
-      return ambiguousAfterPossibleEffect(operation, account, created.runId, account.id, token, "action_browser_cleanup_pending");
+    if (!await cleanupRun(activeOperation, created.runId, paidCreated.custody)) {
+      return ambiguousAfterPossibleEffect(activeOperation, account, created.runId, account.id, token, "action_browser_cleanup_pending");
     }
-    let observation: Awaited<ReturnType<ConnectedWebAccountReadProvider["createHostedReadRun"]>>;
-    try { observation = await options.provider.createHostedReadRun({ profileId: binding.profileRef, task: observeTask, maxCostUsd: runCostUsd }); }
-    catch { return ambiguousAfterPossibleEffect(operation, account, created.runId, account.id, token, "observation_create_throw"); }
-    if (!isHostedRun(observation) && !isFailure(observation)) return ambiguousAfterPossibleEffect(operation, account, created.runId, account.id, token, "observation_create_malformed");
-    if (isFailure(observation)) return ambiguousAfterPossibleEffect(operation, account, created.runId, account.id, token, "observation_create_failed");
+    // Persist the no-run quarantine before creating the verifier. A lost
+    // response can then never leave an old writer reference that boot cleanup
+    // would mistake for the only paid browser.
     try {
-      await options.executions.activateActionOperation({ operationId: operation.id, opaqueRunRef: observation.runId, expectedOpaqueRunRef: created.runId });
-    } catch {
-      return ambiguousAfterPossibleEffect(operation, account, observation.runId, account.id, token,
-        "observation_operation_activation_uncertain", created.runId, created.runId);
-    }
-    try {
-      await options.executions.rotateExecutionCheckpointReference({ ownerUserId: actor.userId, accountId: account.id, reservationToken: token,
-        opaqueExecutionRef: observation.runId, expectedOpaqueExecutionRef: created.runId });
-    } catch {
-      return ambiguousAfterPossibleEffect(operation, account, observation.runId, account.id, token,
-        "observation_checkpoint_activation_uncertain", observation.runId, created.runId);
-    }
-    const observedTerminal = await poll(observation);
-    if (isPollFailure(observedTerminal) || observedTerminal.status !== "completed") return ambiguousAfterPossibleEffect(operation, account, observation.runId, account.id, token, "observation_terminal_unproven");
-    let observedResult: Awaited<ReturnType<ConnectedWebAccountReadProvider["getHostedReadResult"]>>;
-    try { observedResult = await options.provider.getHostedReadResult(observation.runId); }
-    catch { return ambiguousAfterPossibleEffect(operation, account, observation.runId, account.id, token, "observation_result_throw"); }
-    if (isFailure(observedResult)) return ambiguousAfterPossibleEffect(operation, account, observation.runId, account.id, token, "observation_result_unavailable");
-    await recordRunCost(options, actor, observation.runId, "hosted_action_observation", observedResult.totalCostUsd, now);
-    const observed = parsePostcondition(observedResult.result, binding.origin, postcondition);
-    if (!observed) {
-      if (await record(operation, observation.runId, "ambiguous", { evidenceCode: "postcondition_unproven" })) await finish(account.id, token, observation.runId);
+      await options.executions.quarantineActionCreate({ operationId: activeOperation.id, ownerUserId: actor.userId,
+        accountId: account.id, reservationToken: token, expectedOpaqueRunRef: created.runId });
+    } catch { return failure("ambiguous"); }
+    const verifierAdmission: ConnectedWebActionOperation = {
+      ...activeOperation,
+      status: "reserving",
+      opaqueRunRef: null,
+      runCostCustody: null,
+    };
+    let paidObservation: PaidRun;
+    try { paidObservation = await createPaidRun(verifierAdmission, actor, token, "verifier", { profileId: binding.profileRef, task: observeTask, maxCostUsd: runCostUsd }); }
+    catch (error) {
+      if (error instanceof PredispatchCostAdmissionError) {
+        if (await record(verifierAdmission, null, "failed", { evidenceCode: "observation_cost_admission_failed" })) await release(actor, account.id, token);
+        return failure("provider_unavailable");
+      }
       return failure("ambiguous");
     }
-    const cost = combinedActualCost(previousCost, actionResult.totalCostUsd, observedResult.totalCostUsd);
+    const observation = paidObservation.run;
+    const verifyingOperation: ConnectedWebActionOperation = { ...verifierAdmission, opaqueRunRef: isHostedRun(observation) ? observation.runId : null, runCostCustody: paidObservation.custody, status: "verifying" };
+    if (!isHostedRun(observation) && !isFailure(observation)) {
+      return failure("ambiguous");
+    }
+    if (isFailure(observation)) {
+      if (!isConfirmedConnectedWebPreCreateFailure(observation.code)) return failure("ambiguous");
+      try { await settleConfirmedCreateFailure(verifierAdmission, paidObservation.custody, "failed"); }
+      catch { return failure("ambiguous"); }
+      if (await record(verifierAdmission, null, "failed", { evidenceCode: "observation_create_failed" })) await release(actor, account.id, token);
+      return failure("failed");
+    }
+    try {
+      await options.executions.activateActionOperation({ operationId: operation.id, opaqueRunRef: observation.runId,
+        runCostCustody: paidObservation.custody, expectedOpaqueRunRef: null, nextStatus: "verifying" });
+    } catch {
+      return ambiguousAfterPossibleEffect(verifyingOperation, account, observation.runId, account.id, token,
+        "observation_operation_activation_uncertain", observation.runId, undefined, actor);
+    }
+    try {
+      await options.executions.activateExecutionCheckpoint({ ownerUserId: actor.userId, accountId: account.id,
+        reservationToken: token, opaqueExecutionRef: observation.runId });
+    } catch {
+      return ambiguousAfterPossibleEffect(verifyingOperation, account, observation.runId, account.id, token,
+        "observation_checkpoint_activation_uncertain", observation.runId, undefined, actor);
+    }
+    const observedTerminal = await poll(verifyingOperation, observation);
+    if (isPollFailure(observedTerminal) || observedTerminal.status !== "completed") return ambiguousAfterPossibleEffect(verifyingOperation, account, observation.runId, account.id, token, "observation_terminal_unproven");
+    let observedResult: Awaited<ReturnType<ConnectedWebAccountReadProvider["getHostedReadResult"]>>;
+    try { observedResult = await runProvider(verifyingOperation, "recover", (provider) => provider.getHostedReadResult(observation.runId)); }
+    catch { return ambiguousAfterPossibleEffect(verifyingOperation, account, observation.runId, account.id, token, "observation_result_throw"); }
+    if (isFailure(observedResult)) return ambiguousAfterPossibleEffect(verifyingOperation, account, observation.runId, account.id, token, "observation_result_unavailable");
+    try { await settleHostedRun(verifyingOperation, paidObservation.custody, observedResult.totalCostUsd); }
+    catch { return ambiguousAfterPossibleEffect(verifyingOperation, account, observation.runId, account.id, token, "observation_cost_settlement_pending"); }
+    const observed = parsePostcondition(observedResult.result, binding.origin, postcondition);
+    if (!observed) {
+      if (!await cleanupRun(verifyingOperation, observation.runId, paidObservation.custody)) return failure("ambiguous");
+      if (await record(operation, observation.runId, "ambiguous", { evidenceCode: "postcondition_unproven" })) await completeCheckpoint(account.id, token, observation.runId);
+      return failure("ambiguous");
+    }
+    const cost = combinedActualCost(previousCost, null);
+    if (!await cleanupRun(verifyingOperation, observation.runId, paidObservation.custody)) return failure("ambiguous");
     if (!await record(operation, observation.runId, "completed", { evidenceCode: "postcondition_observed", postcondition, cost })) {
       return await stoppedResult(operation, account) ?? failure("ambiguous");
     }
-    await finish(account.id, token, observation.runId);
+    await completeCheckpoint(account.id, token, observation.runId);
     return { ok: true, status: "completed", account: { id: account.id, label: account.label, service: account.service, origin: account.origin }, action: "save_item", target: operation.target,
       receipt: { executionRef: operation.id, effectState: "observed", postcondition, evidenceCode: "postcondition_observed", cost } };
   }
@@ -404,7 +636,9 @@ export function createConnectedWebAccountActionServerRuntime(options: ConnectedW
   return {
     async listAvailable(actor) {
       if (!configured(options.policy) || !await isAuthorized(options.facts, actor)) return [];
-      try { if (options.provider.health().kind !== "available") return []; } catch { return []; }
+      if (!options.funding) {
+        try { if (options.provider.health().kind !== "available") return []; } catch { return []; }
+      }
       try {
         return (await options.accounts.listForOwner(actor.userId)).flatMap((account) => account.status === "connected"
           ? [{ label: account.label, service: account.service, origin: account.origin, status: account.status }] : []);
@@ -412,7 +646,9 @@ export function createConnectedWebAccountActionServerRuntime(options: ConnectedW
     },
     async act(actor, input) {
       if (!configured(options.policy) || !await isAuthorized(options.facts, actor)) return failure("unavailable");
-      try { if (options.provider.health().kind !== "available") return failure("unavailable"); } catch { return failure("provider_unavailable"); }
+      if (!options.funding) {
+        try { if (options.provider.health().kind !== "available") return failure("unavailable"); } catch { return failure("provider_unavailable"); }
+      }
       let account: ConnectedWebAccount;
       try {
         const chosen = selectConnectedWebAccount(await options.accounts.listForOwner(actor.userId), input.account);
@@ -429,10 +665,20 @@ export function createConnectedWebAccountActionServerRuntime(options: ConnectedW
       if (binding.status === "provider_unavailable") return failure("provider_unavailable");
       if (binding.status !== "connected" || !binding.profileRef || binding.origin !== account.origin) return connect(account.label);
 
+      let fundingBinding: DurableServiceFundingBinding;
+      try {
+        if (!actor.causalHumanUserId) return failure("unavailable");
+        fundingBinding = options.funding
+          ? binding.profileFundingBinding
+            ? await options.funding.admit(actor.causalHumanUserId, binding.profileFundingBinding)
+            : await options.funding.admitLegacyServer(actor.causalHumanUserId)
+          : ({ humanUserId: actor.causalHumanUserId, provider: "browser-use", binding: { kind: "server", providerRoute: "browser-use" }, credentialFingerprint: "0".repeat(64) });
+      } catch { return failure("unavailable"); }
+
       const postcondition = canonicalPostcondition(input.target);
       const requestDigest = hashRequest(input, account.id, postcondition);
       let claimed: Awaited<ReturnType<ConnectedWebAccountActionRuntimeOptions["executions"]["claimActionOperation"]>>;
-      try { claimed = await options.executions.claimActionOperation({ ownerUserId: actor.userId, accountId: account.id, deliveryId: input.deliveryId, requestDigest, target: input.target }); }
+      try { claimed = await options.executions.claimActionOperation({ ownerUserId: actor.userId, accountId: account.id, deliveryId: input.deliveryId, requestDigest, target: input.target, fundingBinding }); }
       catch { return failure("provider_unavailable"); }
       if (claimed.kind === "conflict") return failure("idempotency_conflict");
       if (!claimed.operation) return failure("provider_unavailable");
@@ -450,7 +696,9 @@ export function createConnectedWebAccountActionServerRuntime(options: ConnectedW
     },
     async resumeAfterAuthentication(actor, input) {
       if (!configured(options.policy) || !await isAuthorized(options.facts, actor)) return failure("unavailable");
-      try { if (options.provider.health().kind !== "available") return failure("unavailable"); } catch { return failure("provider_unavailable"); }
+      if (!options.funding) {
+        try { if (options.provider.health().kind !== "available") return failure("unavailable"); } catch { return failure("provider_unavailable"); }
+      }
       let operation: ConnectedWebActionOperation;
       try { operation = await options.executions.getActionOperationForOwnerDelivery({ ownerUserId: actor.userId, deliveryId: input.deliveryId }); }
       catch { return failure("not_found", "connect"); }
@@ -505,10 +753,10 @@ export function createConnectedWebAccountActionServerRuntime(options: ConnectedW
         await options.executions.reserveExecutionCheckpoint({ ownerUserId: actor.userId, accountId: account.id,
           checkpoint: { resource: "action", phase: "reserving", reservationToken: token, recordedAt: now().toISOString() } });
       } catch {
-        await record({ ...operation, status: "reserving", opaqueRunRef: null, receipt: null }, null, "failed", { evidenceCode: "resume_account_unavailable" });
+        await record({ ...operation, status: "reserving", opaqueRunRef: null, runCostCustody: null, receipt: null }, null, "failed", { evidenceCode: "resume_account_unavailable" });
         return failure("unavailable");
       }
-      const resumed = { ...operation, status: "reserving" as const, opaqueRunRef: null, receipt: null };
+      const resumed = { ...operation, status: "reserving" as const, opaqueRunRef: null, runCostCustody: null, receipt: null };
       const observeTask = [
         "Read only the already-connected website profile. Do not take any action or change data.",
         `Allowed origin: ${JSON.stringify(binding.origin)}`,
@@ -516,52 +764,67 @@ export function createConnectedWebAccountActionServerRuntime(options: ConnectedW
         "If sign-in/MFA/CAPTCHA is required, return exactly {\"outcome\":\"authentication_required\",\"reason\":\"sign_in\"} (or mfa/captcha).",
         "Return exactly {\"outcome\":\"postcondition\",\"observed\":true|false,\"postcondition\":POSTCONDITION,\"origin\":ORIGIN} with exact POSTCONDITION and ORIGIN.",
       ].join("\n");
-      let observation: Awaited<ReturnType<ConnectedWebAccountReadProvider["createHostedReadRun"]>>;
-      try { observation = await options.provider.createHostedReadRun({ profileId: binding.profileRef, task: observeTask, maxCostUsd: resumedRunCostUsd }); }
-      catch {
-        if (await record(resumed, null, "failed", { evidenceCode: "resume_observation_create_throw" })) await release(actor, account.id, token);
-        return failure("provider_unavailable");
+      let paidObservation: PaidRun;
+      try { paidObservation = await createPaidRun(resumed, actor, token, "resume_precheck", { profileId: binding.profileRef, task: observeTask, maxCostUsd: resumedRunCostUsd }); }
+      catch (error) {
+        if (error instanceof PredispatchCostAdmissionError) {
+          if (await record(resumed, null, "failed", { evidenceCode: "resume_observation_cost_admission_failed" })) await release(actor, account.id, token);
+          return failure("provider_unavailable");
+        }
+        await record(resumed, null, "ambiguous", { evidenceCode: "resume_observation_create_throw" });
+        return failure("ambiguous");
       }
+      const observation = paidObservation.run;
+      const activeResume: ConnectedWebActionOperation = { ...resumed, opaqueRunRef: isHostedRun(observation) ? observation.runId : null, runCostCustody: paidObservation.custody };
       if (!isHostedRun(observation) && !isFailure(observation)) {
-        if (await record(resumed, null, "failed", { evidenceCode: "resume_observation_create_malformed" })) await release(actor, account.id, token);
-        return failure("provider_unavailable");
+        await record(resumed, null, "ambiguous", { evidenceCode: "resume_observation_create_malformed" });
+        return failure("ambiguous");
       }
       if (isFailure(observation)) {
+        if (!isConfirmedConnectedWebPreCreateFailure(observation.code)) {
+          await record(resumed, null, "ambiguous", { evidenceCode: "resume_observation_create_failed" });
+          return failure("ambiguous");
+        }
+        try { await settleConfirmedCreateFailure(resumed, paidObservation.custody, "failed"); }
+        catch { return failure("ambiguous"); }
         if (await record(resumed, null, "failed", { evidenceCode: "resume_observation_create_failed" })) await release(actor, account.id, token);
-        return failure("provider_unavailable");
+        return failure("failed");
       }
       try {
-        await options.executions.activateActionOperation({ operationId: resumed.id, opaqueRunRef: observation.runId, expectedOpaqueRunRef: null });
+        await options.executions.activateActionOperation({ operationId: resumed.id, opaqueRunRef: observation.runId, runCostCustody: paidObservation.custody, expectedOpaqueRunRef: null });
       } catch {
-        return ambiguousAfterPossibleEffect(resumed, account, observation.runId, account.id, token, "resume_observation_operation_activation_uncertain");
+        return ambiguousAfterPossibleEffect(activeResume, account, observation.runId, account.id, token, "resume_observation_operation_activation_uncertain");
       }
       try {
         await options.executions.activateExecutionCheckpoint({ ownerUserId: actor.userId, accountId: account.id, reservationToken: token, opaqueExecutionRef: observation.runId });
       } catch {
-        return ambiguousAfterPossibleEffect(resumed, account, observation.runId, account.id, token, "resume_observation_checkpoint_activation_uncertain", observation.runId, undefined, actor);
+        return ambiguousAfterPossibleEffect(activeResume, account, observation.runId, account.id, token, "resume_observation_checkpoint_activation_uncertain", observation.runId, undefined, actor);
       }
-      const observedTerminal = await poll(observation);
-      if (isPollFailure(observedTerminal) || observedTerminal.status !== "completed") return ambiguousAfterPossibleEffect(resumed, account, observation.runId, account.id, token, "resume_observation_terminal_unproven");
+      const observedTerminal = await poll(activeResume, observation);
+      if (isPollFailure(observedTerminal) || observedTerminal.status !== "completed") return ambiguousAfterPossibleEffect(activeResume, account, observation.runId, account.id, token, "resume_observation_terminal_unproven");
       let observedResult: Awaited<ReturnType<ConnectedWebAccountReadProvider["getHostedReadResult"]>>;
-      try { observedResult = await options.provider.getHostedReadResult(observation.runId); }
-      catch { return ambiguousAfterPossibleEffect(resumed, account, observation.runId, account.id, token, "resume_observation_result_throw"); }
-      if (isFailure(observedResult)) return ambiguousAfterPossibleEffect(resumed, account, observation.runId, account.id, token, "resume_observation_result_unavailable");
-      await recordRunCost(options, actor, observation.runId, "hosted_action_observation", observedResult.totalCostUsd, now);
+      try { observedResult = await runProvider(activeResume, "recover", (provider) => provider.getHostedReadResult(observation.runId)); }
+      catch { return ambiguousAfterPossibleEffect(activeResume, account, observation.runId, account.id, token, "resume_observation_result_throw"); }
+      if (isFailure(observedResult)) return ambiguousAfterPossibleEffect(activeResume, account, observation.runId, account.id, token, "resume_observation_result_unavailable");
+      try { await settleHostedRun(activeResume, paidObservation.custody, observedResult.totalCostUsd); }
+      catch { return ambiguousAfterPossibleEffect(activeResume, account, observation.runId, account.id, token, "resume_observation_cost_settlement_pending"); }
       const reauth = parseActionAttempt(observedResult.result, binding.origin, operation.target);
       if (reauth === "sign_in" || reauth === "mfa" || reauth === "captcha") {
-        const cost = combinedActualCost(parkedReceipt.cost, observedResult.totalCostUsd);
+        const cost = combinedActualCost(parkedReceipt.cost, null);
+        if (!await cleanupRun(activeResume, observation.runId, paidObservation.custody)) return failure("ambiguous");
         if (!await record(resumed, observation.runId, "authentication_required", { evidenceCode: "resume_authentication_required", cost })) return failure("ambiguous");
-        if (!await finish(account.id, token, observation.runId, "attention_needed")) return failure("ambiguous");
+        if (!await completeCheckpoint(account.id, token, observation.runId, "attention_needed")) return failure("ambiguous");
         return auth(account, reauth);
       }
       const observed = parsePostconditionObservation(observedResult.result, binding.origin, postcondition);
-      if (observed === null) return ambiguousAfterPossibleEffect(resumed, account, observation.runId, account.id, token, "resume_observation_result_invalid");
+      if (observed === null) return ambiguousAfterPossibleEffect(activeResume, account, observation.runId, account.id, token, "resume_observation_result_invalid");
       if (observed) {
-        const cost = combinedActualCost(parkedReceipt.cost, observedResult.totalCostUsd);
+        const cost = combinedActualCost(parkedReceipt.cost, null);
+        if (!await cleanupRun(activeResume, observation.runId, paidObservation.custody)) return failure("ambiguous");
         if (!await record(resumed, observation.runId, "completed", { evidenceCode: "postcondition_observed_before_resume", postcondition, cost })) {
           return await stoppedResult(resumed, account) ?? failure("ambiguous");
         }
-        await finish(account.id, token, observation.runId);
+        await completeCheckpoint(account.id, token, observation.runId);
         return { ok: true, status: "completed", account: { id: account.id, label: account.label, service: account.service, origin: account.origin }, action: "save_item", target: operation.target,
           receipt: { executionRef: operation.id, effectState: "observed", postcondition, evidenceCode: "postcondition_observed_before_resume", cost } };
       }
@@ -569,11 +832,11 @@ export function createConnectedWebAccountActionServerRuntime(options: ConnectedW
         actor,
         account,
         binding,
-        operation: resumed,
+        operation: activeResume,
         token,
         postcondition,
         previousRunRef: observation.runId,
-        previousCost: combinedActualCost(parkedReceipt.cost, observedResult.totalCostUsd),
+        previousCost: combinedActualCost(parkedReceipt.cost, null),
         runCostUsd: resumedRunCostUsd,
       });
     },

@@ -9,6 +9,8 @@ const prepared: GitHubPreparedOperation = { version: 1, preparationId: "preparat
   resource: { id: 30, number: 12, kind: "issue", htmlUrl: "https://github.com/fixture-org/project/issues/12", title: "Fixture", body: "Details", state: "open" } };
 test("model tool allows only the typed operations and has no local execution fallback", async () => {
   expect(createGitHubTool().name).toBe("local_github");
+  expect(githubSchema.safeParse({ operation: "account_status" }).success).toBe(true);
+  expect(githubSchema.safeParse({ operation: "account_status", command: "gh auth status" }).success).toBe(false);
   expect(githubSchema.safeParse(prepared.request).success).toBe(true);
   for (const invalid of [{ ...prepared.request, prepared }, { ...prepared.request, approvalObtained: true },
     { ...prepared.request, command: "gh api" }, { ...prepared.request, repository: "https://github.com/fixture-org/project" }]) {
@@ -27,7 +29,8 @@ test("publishing review permits only exact one-time explicit Human reply", () =>
     { approved: false, verb: "deny", approvalId: review.approvalId }, { approved: true, verb: "once" }]) {
     expect(isGitHubPublishApproved(review, decision)).toBe(false);
   }
-  expect(() => githubPublishReview({ ...prepared, request: { operation: "issue_read", repository: "fixture-org/project", number: 12 } })).toThrow();
+  expect(() => githubPublishReview({ ...prepared,
+    request: { operation: "issue_read", repository: "fixture-org/project", number: 12 } } as unknown as GitHubPreparedOperation)).toThrow();
 });
 test("checkpoint preview is independent of mutable caller objects", () => {
   const source = structuredClone(prepared); const review = githubPublishReview(source);

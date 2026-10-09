@@ -4,7 +4,6 @@ import {
   actors,
   and,
   eq,
-  insertProviderCostEventWith,
   isNull,
   roomMembers,
   rooms,
@@ -12,12 +11,10 @@ import {
 } from "@nautilo/db";
 import { parseDesktopAutomationOpaqueId } from "@nautilo/types";
 import {
-  canUseBrowserUseServerFunding,
   type BrowserUseCloudAdapter,
   type BrowserUseServerFundingAdmission,
 } from "../browser-use/browser-use-cloud";
 import {
-  createConnectedWebAccountReadServerRuntime,
   type ConnectedWebAccountReadPolicy,
   type ConnectedWebAccountReadServerRuntime,
   type ConnectedWebAccountReadRuntimeActor,
@@ -34,7 +31,11 @@ import {
   type ConnectedWebOperationManagementSecrets,
 } from "./operation-management-runtime";
 import type { ConnectedWebAccountStore } from "./store";
-import { completeHostedExecution } from "./hosted-execution-cleanup";
+import { connectedWebBrowserFunding, withFundedBrowserUse } from "./browser-use-funding";
+import {
+  beginServerProviderCostAttempt,
+  settleServerProviderCostAttempt,
+} from "../costs/provider-cost-recorder";
 
 interface AgentMirrorRow {
   readonly ownerId: unknown;
@@ -160,7 +161,7 @@ export interface ConnectedWebAccountReadProductionRuntimeOptions {
 
 /** Workspace remains on the existing terminal artifact-custody path. */
 export function usesAsyncConnectedWebReadAdmission(delivery: "text" | "workspace"): boolean {
-  return delivery === "text";
+  return delivery === "text" || delivery === "workspace";
 }
 
 /**
@@ -177,41 +178,46 @@ export function createConnectedWebAccountReadProductionRuntime(
   };
   const asynchronousText = createConnectedWebAccountReadAdmissionRuntime({
     facts,
-    accounts: options.store,
-    store: options.store,
-    provider: options.provider,
-    policy: { maxCostUsd: options.policy.maxCostUsd },
-    secrets: options.secrets,
-    ...(options.assertServerFunding === undefined ? {} : { assertServerFunding: options.assertServerFunding }),
-  });
-  // Workspace import still completes only in the established synchronous
-  // custody path. Do not return an active receipt until terminal artifact
-  // retrieval becomes durable supervisor work.
-  const synchronousWorkspace = createConnectedWebAccountReadServerRuntime({
-    facts,
-    accounts: options.store,
-    executions: {
-      ...options.store,
-      completeExecution: (input) => completeHostedExecution(options.store, options.provider, input),
+    accounts: {
+      listForOwner: options.store.listForOwner.bind(options.store),
+      getBindingForOwner: options.store.getBindingForOwner.bind(options.store),
     },
-    provider: options.provider,
-    policy: options.policy,
-    recordProviderCost: (input) => insertProviderCostEventWith(options.db, input),
+    store: {
+      admitReadOperation: options.store.admitReadOperation.bind(options.store),
+      activateReadOperation: options.store.activateReadOperation.bind(options.store),
+      failAdmittedReadOperation: options.store.failAdmittedReadOperation.bind(options.store),
+      completeIdleBrowserCleanup: options.store.completeIdleBrowserCleanup.bind(options.store),
+    },
+    provider: {
+      health: options.provider.health.bind(options.provider),
+      createHostedReadRun: options.provider.createHostedReadRun.bind(options.provider),
+      cancelHostedReadRun: options.provider.cancelHostedReadRun.bind(options.provider),
+      findHostedBrowsers: options.provider.findHostedBrowsers.bind(options.provider),
+      stopBrowser: options.provider.stopBrowser.bind(options.provider),
+    },
+    policy: { maxCostUsd: options.policy.maxCostUsd },
+    secrets: () => options.secrets(),
+    funding: {
+      admit: (humanUserId, prior) => connectedWebBrowserFunding.admit(humanUserId, prior),
+      admitLegacyServer: (humanUserId) => connectedWebBrowserFunding.admitLegacyServer(humanUserId),
+      run: (binding, intent, callback) => withFundedBrowserUse(
+        connectedWebBrowserFunding,
+        options.provider,
+        binding,
+        intent,
+        (provider, usageFunding) => callback(provider, usageFunding),
+      ),
+    },
+    beginCostAttempt: beginServerProviderCostAttempt,
+    settleCostAttempt: settleServerProviderCostAttempt,
+    ...(options.assertServerFunding === undefined ? {} : { assertServerFunding: options.assertServerFunding }),
   });
   return {
     listAvailable: (actor) => asynchronousText.listAvailable(actor),
-    publicAvailable: () => options.provider.health().kind === "available" && options.secrets() !== null,
+    publicAvailable: () => options.secrets() !== null,
     readPublic: (actor, input) => asynchronousText.readPublic!(actor, input),
     read: async (actor, input) => {
-      if (input.intent === "task" || usesAsyncConnectedWebReadAdmission(input.delivery)) {
-        return asynchronousText.read(actor, input);
-      }
-      if (!await canUseBrowserUseServerFunding(
-        actor.causalHumanUserId ?? "",
-        "connected_web_workspace_read",
-        options.assertServerFunding,
-      )) return { ok: false, code: "unavailable", recovery: "none" };
-      return synchronousWorkspace.read(actor, input);
+      return asynchronousText.read(actor, input);
     },
   };
 }
@@ -233,27 +239,49 @@ export function createConnectedWebAccountActionProductionRuntime(
     hasExactOwnedGenie: (input) => hasExactOwnedConnectedWebGenie(options.db, input),
       isOwnersPersonalPrivateRoom: (input) => isOwnersPersonalConnectedWebPrivateRoom(options.db, input),
     },
-    accounts: options.store,
-    executions: {
-      ...options.store,
-      completeExecution: (input) => {
-        if (input.status !== "connected" && input.status !== "attention_needed") throw new Error("Invalid hosted completion status.");
-        return completeHostedExecution(options.store, options.provider, { ...input, status: input.status });
-      },
+    accounts: {
+      listForOwner: options.store.listForOwner.bind(options.store),
+      getBindingForOwner: options.store.getBindingForOwner.bind(options.store),
     },
-    provider: options.provider,
+    executions: {
+      reserveExecutionCheckpoint: options.store.reserveExecutionCheckpoint.bind(options.store),
+      activateExecutionCheckpoint: options.store.activateExecutionCheckpoint.bind(options.store),
+      completeExecution: options.store.completeExecution.bind(options.store),
+      releaseExecutionReservation: options.store.releaseExecutionReservation.bind(options.store),
+      claimActionOperation: options.store.claimActionOperation.bind(options.store),
+      activateActionOperation: options.store.activateActionOperation.bind(options.store),
+      quarantineActionCreate: options.store.quarantineActionCreate.bind(options.store),
+      finishActionOperation: options.store.finishActionOperation.bind(options.store),
+      getActionOperationForOwnerDelivery: options.store.getActionOperationForOwnerDelivery.bind(options.store),
+      resumeActionOperation: options.store.resumeActionOperation.bind(options.store),
+      cancelActionAuthentication: options.store.cancelActionAuthentication.bind(options.store),
+    },
+    provider: {
+      health: options.provider.health.bind(options.provider),
+      createHostedReadRun: options.provider.createHostedReadRun.bind(options.provider),
+      pollHostedReadRun: options.provider.pollHostedReadRun.bind(options.provider),
+      getHostedReadResult: options.provider.getHostedReadResult.bind(options.provider),
+      cancelHostedReadRun: options.provider.cancelHostedReadRun.bind(options.provider),
+      stopHostedReadBrowser: options.provider.stopHostedReadBrowser.bind(options.provider),
+      stopHostedReadBrowserWithCost: options.provider.stopHostedReadBrowserWithCost.bind(options.provider),
+      collectHostedReadOutputs: options.provider.collectHostedReadOutputs.bind(options.provider),
+    },
+    funding: {
+      admit: (humanUserId, prior) => connectedWebBrowserFunding.admit(humanUserId, prior),
+      admitLegacyServer: (humanUserId) => connectedWebBrowserFunding.admitLegacyServer(humanUserId),
+      run: (binding, intent, callback) => withFundedBrowserUse(
+        connectedWebBrowserFunding, options.provider, binding, intent,
+        (provider, usageFunding) => callback(provider, usageFunding),
+      ),
+    },
     policy: options.policy,
-    recordProviderCost: (input) => insertProviderCostEventWith(options.db, input),
+    beginCostAttempt: beginServerProviderCostAttempt,
+    settleCostAttempt: settleServerProviderCostAttempt,
   });
-  const unavailable = { ok: false, code: "unavailable", recovery: "none" } as const;
   return {
     listAvailable: (actor) => runtime.listAvailable(actor),
-    act: async (actor, input) => await canUseBrowserUseServerFunding(
-      actor.causalHumanUserId ?? "", "connected_web_action", options.assertServerFunding,
-    ) ? runtime.act(actor, input) : unavailable,
-    resumeAfterAuthentication: async (actor, input) => await canUseBrowserUseServerFunding(
-      actor.causalHumanUserId ?? "", "connected_web_action_resume", options.assertServerFunding,
-    ) ? runtime.resumeAfterAuthentication(actor, input) : unavailable,
+    act: (actor, input) => runtime.act(actor, input),
+    resumeAfterAuthentication: (actor, input) => runtime.resumeAfterAuthentication(actor, input),
     cancelAuthentication: (actor, input) => runtime.cancelAuthentication(actor, input),
   };
 }
@@ -263,7 +291,6 @@ export interface ConnectedWebOperationManagementProductionRuntimeOptions {
   readonly store: ConnectedWebAccountStore;
   readonly provider: BrowserUseCloudAdapter;
   readonly secrets: ConnectedWebOperationManagementSecrets;
-  readonly continuationModel: string;
   readonly direct?: ConnectedWebOperationDirectRuntime;
   readonly assertServerFunding?: BrowserUseServerFundingAdmission;
 }
@@ -280,17 +307,21 @@ export function createConnectedWebOperationManagementProductionRuntime(
     },
     store: options.store,
     provider: options.provider,
+    withProvider: async (operation, intent, callback) => {
+      const binding = operation.fundingBinding
+        ?? await connectedWebBrowserFunding.admitLegacyServer(operation.ownerUserId);
+      return withFundedBrowserUse(
+        connectedWebBrowserFunding,
+        options.provider,
+        binding,
+        intent,
+        (provider, usageFunding) => callback(provider, usageFunding),
+      );
+    },
     secrets: options.secrets,
-    continuationModel: options.continuationModel,
     ...(options.direct === undefined ? {} : { direct: options.direct }),
   });
   return {
-    manage: async (actor, input) => input.operation !== "steer" || await canUseBrowserUseServerFunding(
-      actor.causalHumanUserId ?? "",
-      "connected_web_operation_steer",
-      options.assertServerFunding,
-    )
-      ? runtime.manage(actor, input)
-      : { ok: false, code: "unavailable", recovery: "none" },
+    manage: (actor, input) => runtime.manage(actor, input),
   };
 }

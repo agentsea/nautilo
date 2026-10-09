@@ -24,6 +24,7 @@
     "@nautilo/api-client": "workspace:*",
     "@nautilo/attachments": "workspace:*",
     "@nautilo/catalog": "workspace:*",
+    "@nautilo/cloudconvert": "workspace:*",
     "@nautilo/config": "workspace:*",
     "@nautilo/config-guard": "workspace:*",
     "@nautilo/db": "workspace:*",

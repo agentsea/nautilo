@@ -21,6 +21,7 @@ export interface PersonalCostProviderEvidence {
   currentEstimateUsd: number;
   unresolvedOperations: number;
   costPending: boolean;
+  measuredUsage: string | null;
   detail: string;
 }
 export interface PersonalCostTaskRow {
@@ -38,6 +39,10 @@ const USD = new Intl.NumberFormat("en-US", {
   currency: "USD",
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
+});
+
+const MEASURED_UNITS = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 8,
 });
 
 const CALL_TYPE_LABELS: Record<string, string> = {
@@ -113,17 +118,27 @@ export function personalCostProviderEvidence(
     actualCostUsd?: number;
     estimatedCostUsd?: number;
     unknownOperations?: number;
+    measuredUnits?: number | null;
+    unitType?: string | null;
   };
   const actualCostUsd = legacy.actualCostUsd ?? 0;
   const currentEstimateUsd = legacy.estimatedCostUsd ?? 0;
   const unresolvedOperations = legacy.unknownOperations ?? 0;
+  const measuredUsage = legacy.measuredUnits === null || legacy.measuredUnits === undefined || !legacy.unitType
+    ? null
+    : `${MEASURED_UNITS.format(legacy.measuredUnits)} ${legacy.unitType === "cloudconvert_credit" ? "credits" : legacy.unitType}`;
+  const costPending = row.totalCostUsd === 0 && unresolvedOperations > 0;
+  const costEvidence = costPending
+    ? "USD cost unknown"
+    : `${formatPersonalCostUsd(actualCostUsd)} actual · ${formatPersonalCostUsd(currentEstimateUsd)} current estimate`;
   return {
     knownCostUsd: row.totalCostUsd,
     actualCostUsd,
     currentEstimateUsd,
     unresolvedOperations,
-    costPending: row.totalCostUsd === 0 && unresolvedOperations > 0,
-    detail: `${formatPersonalCostUsd(actualCostUsd)} actual · ${formatPersonalCostUsd(currentEstimateUsd)} current estimate${unresolvedOperations > 0 ? " · unresolved charges excluded" : ""}`,
+    costPending,
+    measuredUsage,
+    detail: `${measuredUsage ? `${measuredUsage} · ` : ""}${costEvidence}${unresolvedOperations > 0 ? " · unresolved charges excluded" : ""}`,
   };
 }
 

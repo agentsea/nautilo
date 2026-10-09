@@ -751,7 +751,7 @@ export class PersonalPolicyResolver implements PolicyResolver {
         // exact live/history authority is independently rechecked at dispatch.
         if (access !== "forbidden" && ((tool.name === "write_stdin" && isLocalExecutionReadArgs(tool.args))
           || (tool.name === "human_terminal" && parseHumanTerminalOperation(tool.args)?.action === "read")
-          || (tool.name === "local_github" && ["issue_read", "pr_read"].includes(parseGitHubOperation(tool.args)?.operation ?? "")))) {
+          || (tool.name === "local_github" && ["account_status", "issue_read", "pr_read"].includes(parseGitHubOperation(tool.args)?.operation ?? "")))) {
           return { type: "read_only" };
         }
         const agentIdForRouting = this.resolveAgentId(envelope.agentId);
@@ -812,7 +812,7 @@ export class PersonalPolicyResolver implements PolicyResolver {
     if (caps.includes(requiredCap)) {
       if (((tool.name === "write_stdin" && isLocalExecutionReadArgs(tool.args))
           || (tool.name === "human_terminal" && parseHumanTerminalOperation(tool.args)?.action === "read")
-          || (tool.name === "local_github" && ["issue_read", "pr_read"].includes(parseGitHubOperation(tool.args)?.operation ?? "")))) return { type: "read_only" };
+          || (tool.name === "local_github" && ["account_status", "issue_read", "pr_read"].includes(parseGitHubOperation(tool.args)?.operation ?? "")))) return { type: "read_only" };
       if (requiresApproval) {
         return {
           type: "require_approval",

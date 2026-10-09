@@ -1,17 +1,26 @@
-import { parseGitHubInvocationOwner, parseGitHubOperation, parseGitHubPreparedOperation, sameGitHubOwner,
-  type GitHubInvocationOwner, type GitHubPreparedOperation } from "./github-broker";
+import { parseGitHubGitOperation, parseGitHubInvocationOwner, parseGitHubOperation, parseGitHubPreparedGitPush,
+  parseGitHubPreparedOperation, sameGitHubOwner, type GitHubInvocationOwner,
+  type GitHubPreparedGitPush, type GitHubPreparedOperation } from "./github-broker";
 
 /** Advertised only by an admitted Desktop custody owner. No account secret or
  * model-selected source identity crosses this contract. */
 export type GitHubDesktopIdentity = Omit<GitHubInvocationOwner, "agentId" | "roomId" | "conversationId" | "runId">;
-export interface GitHubCapability { readonly version: 1; readonly generation: string; readonly identity: GitHubDesktopIdentity }
+export interface GitHubCapability {
+  readonly version: 1;
+  readonly generation: string;
+  readonly identity: GitHubDesktopIdentity;
+  /** Explicitly distinguishes peers that can execute authenticated Git from
+   * older REST-only account brokers with the same capability version. */
+  readonly authenticatedGit?: { readonly version: 1 };
+}
+export type GitHubPreparedPublication = GitHubPreparedOperation | GitHubPreparedGitPush;
 export interface GitHubInvocationBinding {
   readonly version: 1;
   readonly generation: string;
   readonly toolCallId: string;
   readonly owner: GitHubInvocationOwner;
   readonly stage: "read" | "prepare" | "publish";
-  readonly prepared?: GitHubPreparedOperation;
+  readonly prepared?: GitHubPreparedPublication;
   readonly approval?: { readonly verb: "once"; readonly approvalId: string; readonly digest: string };
 }
 export interface GitHubPublishApproval {
@@ -19,20 +28,23 @@ export interface GitHubPublishApproval {
   readonly approvalId: string;
   readonly digest: string;
   /** Exact public account, target and complete payload; no source owner tuple. */
-  readonly prepared: GitHubPreparedOperation;
+  readonly prepared: GitHubPreparedPublication;
 }
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const exact = (v: Record<string, unknown>, keys: readonly string[]) => Object.keys(v).length === keys.length && Object.keys(v).every(k => keys.includes(k));
 const text = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0 && v.trim() === v;
 export function githubPublishing(args: unknown): boolean {
   const value = parseGitHubOperation(args);
-  return value?.operation === "comment_create" || value?.operation === "pr_create";
+  return value?.operation === "comment_create" || value?.operation === "pr_create" || parseGitHubGitOperation(args)?.operation === "push";
 }
-export function githubApprovalId(prepared: GitHubPreparedOperation): string {
+export function githubApprovalId(prepared: GitHubPreparedPublication): string {
   return `github-publish:${prepared.preparationId}:${prepared.digest}`;
 }
 export function parseGitHubCapability(value: unknown): GitHubCapability | null {
-  if (!record(value) || !exact(value, ["version", "generation", "identity"]) || value["version"] !== 1 || !text(value["generation"]) || !record(value["identity"])) return null;
+  if (!record(value) || !exact(value, ["version", "generation", "identity", ...(value["authenticatedGit"] === undefined ? [] : ["authenticatedGit"])])
+    || value["version"] !== 1 || !text(value["generation"]) || !record(value["identity"])) return null;
+  if (value["authenticatedGit"] !== undefined && (!record(value["authenticatedGit"])
+    || !exact(value["authenticatedGit"], ["version"]) || value["authenticatedGit"]["version"] !== 1)) return null;
   const identity = value["identity"];
   if (Object.keys(identity).some(key => ["agentId", "roomId", "conversationId", "runId"].includes(key))) return null;
   const owner = parseGitHubInvocationOwner({ ...identity, agentId: "source", roomId: "source", conversationId: "source", runId: "source" });
@@ -48,20 +60,20 @@ export function parseGitHubInvocationBinding(value: unknown, args?: unknown): Gi
   const keys = ["version", "generation", "toolCallId", "owner", "stage"];
   if (stage === "publish") keys.push("prepared", "approval");
   if (!exact(value, keys) || !["read", "prepare", "publish"].includes(stage as string)) return null;
-  const request = args === undefined ? undefined : parseGitHubOperation(args);
+  const request = args === undefined ? undefined : parseGitHubOperation(args) ?? parseGitHubGitOperation(args);
   if (args !== undefined && (!request || (stage === "read") === githubPublishing(request))) return null;
   if (stage === "publish") {
-    const prepared = parseGitHubPreparedOperation(value["prepared"]), approval = value["approval"];
+    const prepared = parseGitHubPreparedOperation(value["prepared"]) ?? parseGitHubPreparedGitPush(value["prepared"]), approval = value["approval"];
     if (!prepared || !githubPublishing(prepared.request) || prepared.generation !== value["generation"] || prepared.toolCallId !== value["toolCallId"]
       || !record(approval) || !exact(approval, ["verb", "approvalId", "digest"]) || approval["verb"] !== "once"
       || approval["approvalId"] !== githubApprovalId(prepared) || approval["digest"] !== prepared.digest
-      || (request && JSON.stringify(request) !== JSON.stringify(parseGitHubOperation(prepared.request)))) return null;
+      || (request && JSON.stringify(request) !== JSON.stringify(parseGitHubOperation(prepared.request) ?? parseGitHubGitOperation(prepared.request)))) return null;
   }
   return structuredClone(value) as unknown as GitHubInvocationBinding;
 }
 export function parseGitHubPublishApproval(value: unknown): GitHubPublishApproval | null {
   if (!record(value) || !exact(value, ["version", "approvalId", "digest", "prepared"]) || value["version"] !== 1) return null;
-  const prepared = parseGitHubPreparedOperation(value["prepared"]);
+  const prepared = parseGitHubPreparedOperation(value["prepared"]) ?? parseGitHubPreparedGitPush(value["prepared"]);
   if (!prepared || !githubPublishing(prepared.request) || value["approvalId"] !== githubApprovalId(prepared) || value["digest"] !== prepared.digest) return null;
   return { version: 1, approvalId: value["approvalId"], digest: prepared.digest, prepared };
 }

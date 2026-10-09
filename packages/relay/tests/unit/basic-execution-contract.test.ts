@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { parseRelayLocalExecutionBinding, projectRelayCapabilitiesForProtocol, RELAY_MIN_SUPPORTED_PROTOCOL_VERSION, type RelayLocalExecutionBindingV2 } from "../../src/protocol";
+import { parseRelayLocalExecutionBinding, projectRelayCapabilitiesForProtocol, RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION,
+  RELAY_MIN_SUPPORTED_PROTOCOL_VERSION, type RelayLocalExecutionBindingV2 } from "../../src/protocol";
 import { parseRelayBasicExecutionCapability, type RelayCapabilities } from "../../src/types";
 const basic = { version: 1 as const, currentFolder: "/tmp/basic-project", serverBindingId: "server", protectedPolicyVersion: 1 };
 const binding: RelayLocalExecutionBindingV2 = { version: 2, generation: "generation", invocationId: "call", executionId: "execution", operation: "start",
@@ -17,16 +18,17 @@ describe("Basic execution wire boundary", () => {
     expect(parseRelayLocalExecutionBinding({ ...v1, version: 1 })).not.toBeNull();
     expect(parseRelayBasicExecutionCapability({ ...basic, network: "host" })).toBeNull();
   });
-  test("all old offered peers hide Basic but retain supported Development and history", () => {
+  test("old peers cannot execute Basic while retaining versioned metadata and history", () => {
     const caps: RelayCapabilities = { profile: "desktop-agent", canExecuteLocal: true, canReadLocalExecutionHistory: true, basicExecution: basic,
       localExecution: { version: 1, generation: "generation", pipe: true, pty: true, capacity: 4 } };
-    for (let version = RELAY_MIN_SUPPORTED_PROTOCOL_VERSION; version < 23; version++) {
+    for (let version = RELAY_MIN_SUPPORTED_PROTOCOL_VERSION; version < RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION; version++) {
       const projected = projectRelayCapabilitiesForProtocol(caps, version);
-      expect(projected.basicExecution).toBeUndefined(); expect(projected.canExecuteLocal).toBeUndefined();
+      expect(projected.basicExecution).toEqual(version >= 23 ? basic : undefined);
+      expect(projected.canExecuteLocal).toBeUndefined();
       expect(projected.canReadLocalExecutionHistory).toBe(version >= 21 ? true : undefined);
       const development = projectRelayCapabilitiesForProtocol({ ...caps, workstationProfileSnapshot: { profileId: "profile" } as RelayCapabilities["workstationProfileSnapshot"] }, version);
-      expect(development.canExecuteLocal).toBe(version >= 20 ? true : undefined);
+      expect(development.canExecuteLocal).toBeUndefined();
     }
-    expect(projectRelayCapabilitiesForProtocol(caps, 23)).toEqual(caps);
+    expect(projectRelayCapabilitiesForProtocol(caps, RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION)).toEqual(caps);
   });
 });

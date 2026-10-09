@@ -1,4 +1,4 @@
-import { runWithCapabilityFundingSession } from "@nautilo/agent";
+import { normalizeTaskToolWhitelist, runWithCapabilityFundingSession } from "@nautilo/agent";
 import { resolveTaskLocalExecutionPort, isTaskLocalExecutionTargetAvailable } from "./local-execution-delegation";
 import type { ServerEvent } from "@nautilo/types";
 import { parkTaskContentAccessRecovery } from "./ordinary-content-access-recovery";
@@ -118,7 +118,9 @@ export function callerTaskToolIntentMatches(
         && input["toolWhitelist"].length === 0;
     case "whitelist":
       return Array.isArray(input["toolWhitelist"])
-        && JSON.stringify(input["toolWhitelist"]) === JSON.stringify(task.toolsWhitelist);
+        && input["toolWhitelist"].every((tool): tool is string => typeof tool === "string")
+        && JSON.stringify(normalizeTaskToolWhitelist(input["toolWhitelist"]))
+          === JSON.stringify(normalizeTaskToolWhitelist(task.toolsWhitelist));
     default:
       return false;
   }

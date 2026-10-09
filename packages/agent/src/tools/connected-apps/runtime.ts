@@ -7,8 +7,16 @@ export interface ConnectedAppToolScope {
   readonly namespaceId: string;
 }
 
+export interface ConnectedAppExecutionIdentity {
+  /** Stable model/tool invocation identity supplied by the trusted runtime. */
+  readonly toolCallId: string;
+  readonly turnId: string | null;
+  readonly taskRunId: string | null;
+}
+
 export interface ConnectedAppToolActor extends ConnectedAppToolScope {
   readonly causalHumanUserId: string;
+  readonly executionIdentity: ConnectedAppExecutionIdentity | null;
   /** Existing resolved invocation authority; never synthesized by this tool. */
   readonly memoryAccessEnvelope: MemoryAccessEnvelope;
 }
@@ -38,10 +46,15 @@ export function connectedAppScopeFromContext(context: Record<string, unknown> | 
 export function connectedAppActorFromContext(context: Record<string, unknown> | undefined): ConnectedAppToolActor | null {
   const scope = connectedAppScopeFromContext(context);
   const memoryAccessEnvelope = context?.["memoryAccessEnvelope"] as MemoryAccessEnvelope | null | undefined;
+  const toolCallId = nonEmpty(context?.["stableToolCallId"]);
+  const turnId = nonEmpty(context?.["turnId"]);
+  const taskRunId = nonEmpty(context?.["currentTaskRunId"]);
   return scope && memoryAccessEnvelope
     ? { ...scope, causalHumanUserId: causalHumanForExecution(
       typeof context?.["causalHumanUserId"] === "string" ? context["causalHumanUserId"] : "",
-    ), memoryAccessEnvelope }
+    ), executionIdentity: toolCallId && (turnId || taskRunId)
+      ? { toolCallId, turnId, taskRunId }
+      : null, memoryAccessEnvelope }
     : null;
 }
 
@@ -51,6 +64,7 @@ export interface ConnectedAppActionRuntime {
   execute(input: {
     readonly userId: string;
     readonly causalHumanUserId: string;
+    readonly executionIdentity: ConnectedAppExecutionIdentity | null;
     readonly namespaceId: string;
     readonly memoryAccessEnvelope: MemoryAccessEnvelope;
     readonly providerId: ConnectedAppProviderId;

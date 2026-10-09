@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ConnectedWebAccount } from "@nautilo/types";
-import type { ConnectedWebOperation } from "../../src/connected-web-accounts/store";
+import type { ConnectedWebOperation, ConnectedWebOperationAdmission } from "../../src/connected-web-accounts/store";
+import type { BrowserUseCloudAdapter } from "../../src/browser-use/browser-use-cloud";
 import { ConnectedWebOperationSecrets } from "../../src/connected-web-accounts/operation-secrets";
 import {
   buildConnectedWebReadTask,
@@ -16,6 +17,12 @@ const ACCOUNT_ID = "22222222-2222-4222-8222-222222222222";
 const AGENT = "33333333-3333-4333-8333-333333333333";
 const ROOM = "44444444-4444-4444-8444-444444444444";
 const OPERATION_ID = "55555555-5555-4555-8555-555555555555";
+const FUNDING = {
+  humanUserId: OWNER,
+  provider: "browser-use" as const,
+  binding: { kind: "server" as const, providerRoute: "browser-use" },
+  credentialFingerprint: "f".repeat(64),
+};
 const account: ConnectedWebAccount = {
   id: ACCOUNT_ID,
   service: "Nebius",
@@ -32,6 +39,7 @@ function admitted(): ConnectedWebOperation {
     id: OPERATION_ID, ownerUserId: OWNER, accountId: ACCOUNT_ID,
     initiatingAgentId: AGENT, initiatingRoomId: ROOM, initiatingThreadId: "thread-1", initiatingLane: "foreground:room",
     deliveryId: "tool-1", requestDigest: "a".repeat(64), sealedIntent: "cwo1.aaaaaaaaaaaaaaaa.VVVVVVVVVVVVVVVVVVVVVQ.cA",
+    fundingBinding: FUNDING,
     actionOperationId: null, effectIdempotencyKey: null, driver: "hosted", lifecycle: "admitted", controlEpoch: 1,
     controlLeaseToken: "66666666-6666-4666-8666-666666666666", controlLeaseExpiresAt: null,
     sealedProviderRefs: { version: 1 }, eventCursor: 0,
@@ -60,11 +68,15 @@ function setup(input: {
   readonly public?: boolean;
   readonly publicAuthorized?: boolean;
   readonly assertServerFunding?: (humanUserId: string, origin?: string) => Promise<void>;
+  readonly failCostBeginAt?: number;
 } = {}) {
   const admissions: unknown[] = [];
   const activations: unknown[] = [];
   const failures: unknown[] = [];
   const creates: unknown[] = [];
+  const begunCosts: Array<{ identity: string; operation: string }> = [];
+  const settledCosts: Array<{ identity: string; operation: string; attemptOutcome?: string | null; actualCostUsd?: string | null }> = [];
+  let costBeginCount = 0;
   const secrets = new ConnectedWebOperationSecrets({ stableServerSecret: "a stable server-only secret long enough for this test" });
   let operation = input.existing ?? { ...admitted(), ...(input.public ? { accountId: null } : {}) };
   const runtime = createConnectedWebAccountReadAdmissionRuntime({
@@ -72,7 +84,7 @@ function setup(input: {
     validatePublicTarget: async (url) => ({ targetUrl: url, origin: new URL(url).origin }),
     accounts: {
       listForOwner: async () => { if (input.public) throw new Error("Public research touched private accounts"); return [account]; },
-      getBindingForOwner: async () => ({ accountId: ACCOUNT_ID, ownerUserId: OWNER, service: "Nebius", origin: account.origin, status: "connected", profileRef: "profile-private" }),
+      getBindingForOwner: async () => ({ accountId: ACCOUNT_ID, ownerUserId: OWNER, service: "Nebius", origin: account.origin, status: "connected", profileRef: "profile-private", profileFundingBinding: null }),
     },
     store: {
       admitReadOperation: async (value) => {
@@ -101,14 +113,38 @@ function setup(input: {
       },
       cancelHostedReadRun: async () => ({ runId: "run-private", status: "cancelled" as const }),
     },
+    funding: {
+      admit: async () => {
+        await (input.assertServerFunding ?? (async () => undefined))(OWNER, "connected_web_account_read");
+        return FUNDING;
+      },
+      admitLegacyServer: async () => FUNDING,
+      run: async (_binding, intent, callback) => {
+        if (intent === "spend") await (input.assertServerFunding ?? (async () => undefined))(OWNER, "connected_web_account_read");
+        return callback({
+        health: () => ({ kind: "available" as const }),
+        createHostedReadRun: async (value: Parameters<BrowserUseCloudAdapter["createHostedReadRun"]>[0]) => {
+          creates.push(value);
+          return input.create ? input.create() : { runId: "run-private", sessionId: value.sessionId ?? "session-private", workspaceId: value.workspaceId ?? "workspace-private", status: "queued" as const };
+        },
+        cancelHostedReadRun: async () => ({ runId: "run-private", status: "cancelled" as const }),
+        } as never, { kind: "service", providerRoute: "browser-use" });
+      },
+    },
     secrets: () => secrets,
+    beginCostAttempt: async (value) => {
+      costBeginCount += 1;
+      if (input.failCostBeginAt === costBeginCount) throw new Error("cost begin unavailable");
+      begunCosts.push({ identity: value.identity, operation: value.operation });
+    },
+    settleCostAttempt: async (value) => { settledCosts.push(value); },
     assertServerFunding: input.assertServerFunding ?? (async () => undefined),
     policy: { maxCostUsd: 2 },
     clock: { now: () => NOW },
     createReservationToken: () => "reservation-1",
     mintOperationId: () => OPERATION_ID,
   });
-  return { runtime, admissions, activations, failures, creates, secrets };
+  return { runtime, admissions, activations, failures, creates, secrets, begunCosts, settledCosts };
 }
 
 describe("D568 async read admission", () => {
@@ -164,7 +200,7 @@ describe("D568 async read admission", () => {
   });
 
   test("warm reuse is exact-conversation and expires only between terminal runs", () => {
-    const target = { ...admitted(), id: OPERATION_ID };
+    const target: ConnectedWebOperationAdmission = { ...admitted(), id: OPERATION_ID, fundingBinding: FUNDING };
     const source: ConnectedWebOperation = { ...admitted(), lifecycle: "terminal", terminalAt: NOW,
       terminalReceipt: { version: 1, outcome: "completed", code: "done", summary: "Done." },
       browserIdleUntil: connectedWebBrowserIdleUntil(NOW, true), browserCleanupStartedAt: null };
@@ -177,6 +213,28 @@ describe("D568 async read admission", () => {
     expect(canReuseConnectedWebBrowser({ ...source, driver: "direct" }, target, NOW)).toBe(false);
     expect(canReuseConnectedWebBrowser({ ...source, browserCleanupStartedAt: NOW }, target, NOW)).toBe(false);
     expect(canReuseConnectedWebBrowser({ ...source, browserIdleUntil: null }, target, NOW)).toBe(false);
+    expect(canReuseConnectedWebBrowser({ ...source, fundingBinding: null }, target, NOW)).toBe(false);
+    expect(canReuseConnectedWebBrowser({ ...source, fundingBinding: { ...FUNDING, humanUserId: "77777777-7777-4777-8777-777777777777" } }, target, NOW)).toBe(false);
+    expect(canReuseConnectedWebBrowser({ ...source, fundingBinding: { ...FUNDING, credentialFingerprint: "e".repeat(64) } }, target, NOW)).toBe(false);
+    const personal = {
+      ...FUNDING,
+      binding: {
+        kind: "personal" as const,
+        providerRoute: "browser-use",
+        credentialId: "88888888-8888-4888-8888-888888888888",
+        credentialRevision: 4,
+      },
+    };
+    expect(canReuseConnectedWebBrowser(
+      { ...source, fundingBinding: personal },
+      { ...target, fundingBinding: personal },
+      NOW,
+    )).toBe(true);
+    expect(canReuseConnectedWebBrowser(
+      { ...source, fundingBinding: personal },
+      { ...target, fundingBinding: { ...personal, binding: { ...personal.binding, credentialRevision: 5 } } },
+      NOW,
+    )).toBe(false);
     expect(connectedWebBrowserIdleUntil(NOW, false)).toEqual(NOW);
   });
 
@@ -190,7 +248,7 @@ describe("D568 async read admission", () => {
     expect((fixture.activations[0] as { sealedProviderRefs: { runRef: string } }).sealedProviderRefs.runRef).toStartWith("cwo1.");
   });
 
-  test("checks current Human server funding before durable admission or provider creation", async () => {
+  test("rechecks current Human funding after durable buyer admission and before provider creation", async () => {
     const checks: unknown[] = [];
     const fixture = setup({
       assertServerFunding: async (...input) => {
@@ -200,9 +258,10 @@ describe("D568 async read admission", () => {
     });
     expect(await fixture.runtime.read(actor(), {
       account: "Nebius", request: "List my projects", delivery: "text",
-    })).toEqual({ ok: false, code: "unavailable", recovery: "none" });
-    expect(checks).toEqual([[OWNER, "connected_web_read"]]);
-    expect(fixture.admissions).toHaveLength(0);
+    })).toEqual({ ok: false, code: "provider_unavailable", recovery: "none" });
+    expect(checks).toEqual([[OWNER, "connected_web_account_read"]]);
+    expect(fixture.admissions).toHaveLength(1);
+    expect(fixture.failures).toHaveLength(1);
     expect(fixture.creates).toHaveLength(0);
   });
 
@@ -228,6 +287,19 @@ describe("D568 async read admission", () => {
       .toEqual({ ok: false, code: "provider_unavailable", recovery: "none" });
     expect(fixture.failures).toHaveLength(1);
     expect(fixture.failures[0]).toMatchObject({ operationId: OPERATION_ID, reservationToken: "reservation-1", receipt: { outcome: "failed", code: "provider_create_rejected" } });
+    expect(fixture.settledCosts).toHaveLength(2);
+    expect(fixture.settledCosts.some((cost) => cost.operation === "hosted_run" && cost.attemptOutcome === "failed" && cost.actualCostUsd === null)).toBe(true);
+    expect(fixture.settledCosts.some((cost) => cost.operation === "browser_session" && cost.attemptOutcome === "failed" && cost.actualCostUsd === null)).toBe(true);
+  });
+
+  test("a partial ledger admission failure records zero local spend and never dispatches", async () => {
+    const fixture = setup({ failCostBeginAt: 2 });
+    expect(await fixture.runtime.read(actor(), { account: "Nebius", request: "List projects", delivery: "text" }))
+      .toEqual({ ok: false, code: "provider_unavailable", recovery: "none" });
+    expect(fixture.creates).toEqual([]);
+    expect(fixture.begunCosts).toHaveLength(1);
+    expect(fixture.settledCosts).toHaveLength(1);
+    expect(fixture.settledCosts[0]).toMatchObject({ operation: "hosted_run", attemptOutcome: "failed", actualCostUsd: "0" });
   });
 
   test("ambiguous provider failure envelopes preserve the admission fence", async () => {
@@ -250,7 +322,21 @@ describe("D568 async read admission", () => {
     expect(fixture.secrets.unsealProviderReferences({
       context: { operationId: OPERATION_ID, ownerUserId: OWNER, accountId: ACCOUNT_ID },
       references: failure.sealedProviderRefs,
-    })).toEqual({ runId: "run-private", sessionId: "session-private", workspaceId: "workspace-private" });
+    })).toEqual({
+      runId: "run-private",
+      sessionId: "session-private",
+      workspaceId: "workspace-private",
+      runCost: {
+        identity: `browser-use:connected-web:${OPERATION_ID}:run:reservation-1`,
+        workload: "connected_web_read",
+      },
+      browserCost: {
+        identity: `browser-use:connected-web:${OPERATION_ID}:browser:reservation-1`,
+        workload: "connected_web_read",
+      },
+    });
+    expect(fixture.settledCosts).toHaveLength(1);
+    expect(fixture.settledCosts[0]).toMatchObject({ operation: "hosted_run", attemptOutcome: "cancelled", actualCostUsd: null });
   });
 
   test("transport-uncertain create preserves the admission fence and cannot trigger a second paid run", async () => {
@@ -259,6 +345,7 @@ describe("D568 async read admission", () => {
       .toEqual({ ok: false, code: "provider_unavailable", recovery: "none" });
     expect(first.failures).toEqual([]);
     expect(first.creates).toHaveLength(1);
+    expect(first.settledCosts).toEqual([]);
 
     const replay = setup({ admission: "existing" });
     expect(await replay.runtime.read(actor(), { account: "Nebius", request: "List projects", delivery: "text" }))
@@ -284,9 +371,9 @@ describe("D568 async read admission", () => {
     expect(task).toContain("create the requested file, image, or capture in this run's workspace");
   });
 
-  test("keeps workspace delivery on the established synchronous custody runtime", () => {
+  test("uses durable admission for workspace delivery", () => {
     expect(usesAsyncConnectedWebReadAdmission("text")).toBe(true);
-    expect(usesAsyncConnectedWebReadAdmission("workspace")).toBe(false);
+    expect(usesAsyncConnectedWebReadAdmission("workspace")).toBe(true);
   });
 });
 

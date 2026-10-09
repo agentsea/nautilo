@@ -106,6 +106,7 @@
   "foregroundShadow:receive",
   "foregroundShadow:recoverPending",
   "foregroundShadow:recoverRoomPendingAttention",
+  "foregroundShadow:recoverTaskPendingAttention",
   "foregroundShadow:send",
   "foregroundShadow:serviceDomainKeyBacklog",
   "foregroundShadow:synchronizeRecipients",

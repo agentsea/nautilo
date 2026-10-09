@@ -1,18 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { createReadShellOutputTool, readShellOutputSchema } from "../../src/tools/shell/read-shell-output";
-import { createRunShellTool } from "../../src/tools/shell/run-shell";
+import { createRetiredRunShellTool } from "../../src/tools/shell/run-shell";
 
 const reference = "retained-output-fixture-reference".padEnd(43, "x");
 
 describe("retained shell output tool schema", () => {
-  test("preserves legacy page and search requests through the explicit operation", () => {
-    const legacy = createRunShellTool().schema;
+  test("preserves old retained output page and search requests through the explicit reader", () => {
     const page = { reference, offset_bytes: 31, max_bytes: 1024, delete_after_read: true };
     const search = { operation: "search" as const, reference, query: "compile failed", max_matches: 2, context_bytes: 64 };
-    expect(legacy.safeParse({ output_artifact: page }).success).toBe(true);
     expect(readShellOutputSchema.parse({ ...page, operation: "page" })).toEqual({ ...page, operation: "page" });
-    expect(legacy.safeParse({ output_artifact: search }).success).toBe(true);
     expect(readShellOutputSchema.parse(search)).toEqual(search);
+  });
+
+  test("retired execution tombstone exposes no retained-output or command schema", () => {
+    const retired = createRetiredRunShellTool().schema;
+    expect(retired.safeParse({ command: "echo forbidden" }).success).toBeFalse();
+    expect(retired.safeParse({ output_artifact: { reference } }).success).toBeFalse();
+    expect(retired.safeParse({}).success).toBeTrue();
   });
 
   test("rejects execution and authority selectors and mixed operation fields", () => {

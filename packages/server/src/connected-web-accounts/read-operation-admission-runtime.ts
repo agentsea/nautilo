@@ -2,13 +2,15 @@ import { validateConnectedWebTarget, type ValidatedConnectedWebTarget } from "./
 import { buildWebsiteTask, canRunWebsiteTask } from "./website-task-contract";
 import { createHash, randomUUID } from "node:crypto";
 import {
-  canUseBrowserUseServerFunding,
   type BrowserUseCloudAdapter,
   type BrowserUseServerFundingAdmission,
 } from "../browser-use/browser-use-cloud";
 import { stopIdleConnectedWebBrowser } from "./browser-idle-cleanup";
 import type { ConnectedWebAccountReadResult, ConnectedWebAccountReadToolInput, PublicBrowserReadResult } from "@nautilo/agent";
 import type { ConnectedWebAccount } from "@nautilo/types";
+import type { DurableServiceFundingBinding } from "@nautilo/types";
+import type { UsageFundingProvenance } from "@nautilo/agent";
+import type { ServerProviderCostAttemptAdmission, ServerProviderCostReceipt } from "../costs/provider-cost-recorder";
 import type { ConnectedWebOperationSafeActivity } from "@nautilo/db";
 import {
   isConfirmedConnectedWebPreCreateFailure,
@@ -47,6 +49,14 @@ export interface ConnectedWebAccountReadAdmissionRuntimeOptions {
   > & Partial<Pick<ConnectedWebAccountStore, "completeIdleBrowserCleanup">>;
   readonly provider: Pick<ConnectedWebAccountReadProvider, "health" | "createHostedReadRun" | "cancelHostedReadRun">
     & Partial<Pick<BrowserUseCloudAdapter, "findHostedBrowsers" | "stopBrowser">>;
+  /** Admits before persistence and opens only the exact persisted key. */
+  readonly funding: {
+    admit(humanUserId: string, prior?: DurableServiceFundingBinding): Promise<DurableServiceFundingBinding>;
+    admitLegacyServer(humanUserId: string): Promise<DurableServiceFundingBinding>;
+    run<T>(binding: DurableServiceFundingBinding, intent: "spend" | "recover", callback: (provider: ConnectedWebAccountReadAdmissionRuntimeOptions["provider"], usageFunding: UsageFundingProvenance) => Promise<T>): Promise<T>;
+  };
+  readonly beginCostAttempt?: (input: ServerProviderCostAttemptAdmission) => Promise<void>;
+  readonly settleCostAttempt?: (input: ServerProviderCostReceipt) => Promise<void>;
   /** Production returns null until server-listen has loaded the durable secret. */
   readonly secrets: () => ConnectedWebOperationSecrets | null;
   readonly policy: ConnectedWebAccountReadAdmissionPolicy;
@@ -140,6 +150,7 @@ function sealedIntentPayload(input: {
   readonly request: ConnectedWebAccountReadToolInput;
   readonly authority: { readonly deliveryId: string; readonly threadId: string; readonly lane: string; readonly turnId: string };
   readonly origin: string;
+  readonly memoryAccessEnvelope: ConnectedWebAccountReadRuntimeActor["memoryAccessEnvelope"];
 }): string {
   return JSON.stringify({
     version: 2,
@@ -150,6 +161,7 @@ function sealedIntentPayload(input: {
     origin: input.origin,
     request: input.request.request,
     delivery: input.request.delivery,
+    ...(input.request.delivery === "workspace" ? { memoryAccessEnvelope: input.memoryAccessEnvelope } : {}),
     deliveryId: input.authority.deliveryId,
     threadId: input.authority.threadId,
     lane: input.authority.lane,
@@ -237,8 +249,7 @@ export function createConnectedWebAccountReadAdmissionRuntime(
 
   return {
     async listAvailable(actor) {
-      if (!validPolicy(options.policy) || !await authorized(options.facts, actor)
-        || options.provider.health().kind !== "available") return [];
+      if (!validPolicy(options.policy) || !await authorized(options.facts, actor)) return [];
       try {
         return (await options.accounts.listForOwner(actor.userId))
           .flatMap((account) => account.status === "connected" || account.status === "attention_needed"
@@ -266,14 +277,15 @@ export function createConnectedWebAccountReadAdmissionRuntime(
 
   async function readOperation(actor: ConnectedWebAccountReadRuntimeActor, input: ConnectedWebAccountReadToolInput, publicTarget?: ValidatedConnectedWebTarget): Promise<ConnectedWebAccountReadResult | PublicBrowserReadResult> {
       if (input.intent === "task" && (!canRunWebsiteTask(actor) || input.delivery !== "text")) return unavailable();
-      if (!validPolicy(options.policy) || !(publicTarget ? await options.facts.canResearchPublic?.(actor, input.intent === "task" ? "run_website_task" : "browse_web") : await authorized(options.facts, actor))
-        || options.provider.health().kind !== "available") return unavailable();
+      if (!validPolicy(options.policy) || !(publicTarget ? await options.facts.canResearchPublic?.(actor, input.intent === "task" ? "run_website_task" : "browse_web") : await authorized(options.facts, actor))) return unavailable();
       const invocation = trustedInvocation(actor);
       const secrets = options.secrets();
       if (!invocation || !secrets) return unavailable();
 
       let account: ConnectedWebAccount | null = null;
-      let binding: { status: string; profileRef: string | null; origin: string } = { status: "public", profileRef: null, origin: publicTarget?.origin ?? "" };
+      let binding: { status: string; profileRef: string | null; profileFundingBinding: DurableServiceFundingBinding | null; origin: string } = {
+        status: "public", profileRef: null, profileFundingBinding: null, origin: publicTarget?.origin ?? "",
+      };
       if (!publicTarget) {
       try {
         const selected = selectConnectedWebAccount(await options.accounts.listForOwner(actor.userId), input.account);
@@ -302,11 +314,20 @@ export function createConnectedWebAccountReadAdmissionRuntime(
       if (binding.status === "provider_unavailable") return providerUnavailable();
       if (binding.status !== "connected" || binding.profileRef === null || binding.origin !== account.origin) return unavailable();
       }
-      if (!await canUseBrowserUseServerFunding(
-        actor.causalHumanUserId ?? "",
-        input.intent === "task" ? "connected_web_task" : publicTarget ? "public_web_read" : "connected_web_read",
-        options.assertServerFunding,
-      )) return unavailable();
+      const fundingHumanUserId = actor.causalHumanUserId ?? "";
+      if (!fundingHumanUserId) return unavailable();
+      let fundingBinding: DurableServiceFundingBinding;
+      try {
+        // A profile is itself provider-account state. Fresh paid work must use
+        // its creating account; legacy profiles remain unavailable until the
+        // server-only exact-resource compatibility path proves them.
+        const prior = publicTarget ? undefined : binding.profileFundingBinding;
+        fundingBinding = !publicTarget && prior == null
+          ? await options.funding.admitLegacyServer(fundingHumanUserId)
+          : await options.funding.admit(fundingHumanUserId, prior ?? undefined);
+      } catch {
+        return unavailable();
+      }
       const accountId = account?.id ?? null;
 
       const operationId = mintOperationId();
@@ -317,7 +338,7 @@ export function createConnectedWebAccountReadAdmissionRuntime(
       });
       let sealedIntent: string;
       try {
-        sealedIntent = secrets.sealIntent({ context: secretContext, intent: sealedIntentPayload({ request: input, authority: invocation, origin: binding.origin, voiceMode: actor.voiceMode === true, fundingHumanUserId: actor.causalHumanUserId ?? "", ...(publicTarget ? { publicTarget } : {}) }) });
+        sealedIntent = secrets.sealIntent({ context: secretContext, intent: sealedIntentPayload({ request: input, authority: invocation, origin: binding.origin, voiceMode: actor.voiceMode === true, fundingHumanUserId: actor.causalHumanUserId ?? "", memoryAccessEnvelope: actor.memoryAccessEnvelope, ...(publicTarget ? { publicTarget } : {}) }) });
       } catch {
         return unavailable();
       }
@@ -339,6 +360,7 @@ export function createConnectedWebAccountReadAdmissionRuntime(
             deliveryId: invocation.deliveryId,
             requestDigest: digest,
             sealedIntent,
+            fundingBinding,
             safeActivity: activity(),
             remainingBudgetUsdMicros: Math.ceil(options.policy.maxCostUsd * 1_000_000),
             nextCheckAt: null,
@@ -352,6 +374,7 @@ export function createConnectedWebAccountReadAdmissionRuntime(
             if (!previous.sessionId) throw new Error("warm browser session unavailable");
             return secrets.sealProviderReferences({ context: secretContext, coordinates: {
               sessionId: previous.sessionId,
+              ...(previous.browserCost === undefined ? {} : { browserCost: previous.browserCost }),
               ...(previous.workspaceId === undefined ? {} : { workspaceId: previous.workspaceId }),
             } });
           },
@@ -367,11 +390,24 @@ export function createConnectedWebAccountReadAdmissionRuntime(
       // Retire expired/foreign-conversation browsers before starting a fresh
       // one on this profile. A transport failure preserves cleanup custody.
       for (const previous of admitted.retiredBrowsers ?? []) {
-        const stopped = options.provider.findHostedBrowsers && options.provider.stopBrowser
-          ? await stopIdleConnectedWebBrowser({ operation: previous, secrets, provider: {
-            findHostedBrowsers: options.provider.findHostedBrowsers.bind(options.provider),
-            stopBrowser: options.provider.stopBrowser.bind(options.provider),
-          } }) : false;
+        const stopped = previous.fundingBinding && options.provider.findHostedBrowsers && options.provider.stopBrowser
+          ? await options.funding.run(previous.fundingBinding, "recover", async (provider, usageFunding) =>
+            stopIdleConnectedWebBrowser({ operation: previous, secrets, provider: {
+              findHostedBrowsers: provider.findHostedBrowsers!.bind(provider),
+              stopBrowser: provider.stopBrowser!.bind(provider),
+            },
+            ...(options.settleCostAttempt === undefined ? {} : { settleBrowserCost: (cost: { identity: string; workload: string; estimatedCostUsd: string | null; evidenceState: "estimated" | "unknown" }) => options.settleCostAttempt!({
+              ...cost,
+              actualCostUsd: null,
+              usageFunding,
+              userId: previous.fundingBinding?.humanUserId ?? previous.ownerUserId,
+              roomId: previous.initiatingRoomId,
+              agentId: previous.initiatingAgentId,
+              provider: "browser_use",
+              operation: "browser_session",
+              attemptOutcome: "succeeded",
+            }) }),
+            })) : false;
         await options.store.completeIdleBrowserCleanup?.({ operationId: previous.id, now: clock.now(), stopped });
         if (!stopped) {
           await options.store.failAdmittedReadOperation({ ownerUserId: actor.userId, accountId: accountId,
@@ -384,19 +420,76 @@ export function createConnectedWebAccountReadAdmissionRuntime(
       }
 
       const inherited = secrets.unsealProviderReferences({ context: secretContext, references: admitted.operation.sealedProviderRefs });
+      const workload = input.intent === "task" ? "connected_web_task" : publicTarget ? "public_web_read" : "connected_web_read";
+      const runCost = { identity: `browser-use:connected-web:${operationId}:run:${reservationToken}`, workload };
+      const browserCost = inherited.browserCost ?? {
+        identity: `browser-use:connected-web:${operationId}:browser:${reservationToken}`,
+        workload,
+      };
 
       let run;
+      let providerDispatchStarted = false;
+      let costUsageFunding: UsageFundingProvenance | undefined;
+      let runCostBegun = false;
+      let browserCostBegun = false;
+      const settleBegun = async (outcome: "failed" | "cancelled", localNoDispatch: boolean, includeBrowser: boolean): Promise<void> => {
+        if (!options.settleCostAttempt || !costUsageFunding) return;
+        const settle = (cost: { identity: string; workload: string }) => options.settleCostAttempt!({
+          ...cost,
+          usageFunding: costUsageFunding!,
+          userId: fundingHumanUserId,
+          roomId: actor.roomId,
+          agentId: actor.agentId,
+          provider: "browser_use",
+          operation: cost === browserCost ? "browser_session" : "hosted_run",
+          actualCostUsd: localNoDispatch ? "0" : null,
+          evidenceState: localNoDispatch ? "actual" : "unknown",
+          attemptOutcome: outcome,
+          failureCode: localNoDispatch ? "local_admission_failed" : "provider_create_failed",
+        });
+        if (runCostBegun) await settle(runCost);
+        if (includeBrowser && browserCostBegun) await settle(browserCost);
+      };
       try {
-        const created = await options.provider.createHostedReadRun({
+        const created = await options.funding.run(fundingBinding, "spend", async (provider, usageFunding) => {
+          costUsageFunding = usageFunding;
+          await options.beginCostAttempt?.({
+            identity: runCost.identity,
+            usageFunding,
+            userId: fundingHumanUserId,
+            roomId: actor.roomId,
+            agentId: actor.agentId,
+            workload: runCost.workload,
+            provider: "browser_use",
+            operation: "hosted_run",
+          });
+          runCostBegun = options.beginCostAttempt !== undefined;
+          if (inherited.sessionId === undefined) {
+            await options.beginCostAttempt?.({
+              identity: browserCost.identity,
+              usageFunding,
+              userId: fundingHumanUserId,
+              roomId: actor.roomId,
+              agentId: actor.agentId,
+              workload: browserCost.workload,
+              provider: "browser_use",
+              operation: "browser_session",
+            });
+            browserCostBegun = options.beginCostAttempt !== undefined;
+          }
+          providerDispatchStarted = true;
+          return provider.createHostedReadRun({
           ...(binding.profileRef === null ? {} : { profileId: binding.profileRef }),
           task: input.intent === "task" ? buildWebsiteTask({ origin: binding.origin, request: input.request, ...(publicTarget ? { targetUrl: publicTarget.targetUrl } : {}) })
             : publicTarget ? buildPublicBrowserReadTask(publicTarget, input.request) : buildConnectedWebReadTask({ origin: binding.origin, request: input }),
           maxCostUsd: options.policy.maxCostUsd,
           ...(inherited.sessionId === undefined ? {} : { sessionId: inherited.sessionId }),
           ...(inherited.workspaceId === undefined ? {} : { workspaceId: inherited.workspaceId }),
+          });
         });
         if (isProviderFailure(created)) {
           if (!isConfirmedConnectedWebPreCreateFailure(created.code)) return providerUnavailable();
+          try { await settleBegun("failed", false, true); } catch { return providerUnavailable(); }
           await options.store.failAdmittedReadOperation({
             ownerUserId: actor.userId,
             accountId: accountId,
@@ -414,6 +507,22 @@ export function createConnectedWebAccountReadAdmissionRuntime(
         }
         run = created;
       } catch {
+        if (!providerDispatchStarted) {
+          try { await settleBegun("failed", true, true); } catch { return providerUnavailable(); }
+          await options.store.failAdmittedReadOperation({
+            ownerUserId: actor.userId,
+            accountId,
+            operationId,
+            reservationToken,
+            now: clock.now(),
+            receipt: {
+              version: 1,
+              outcome: "failed",
+              code: "funding_unavailable",
+              summary: "Connected website funding is unavailable.",
+            },
+          }).catch(() => undefined);
+        }
         // A thrown create call is transport-uncertain: Browser Use may have
         // accepted the billable run before the response was lost. Keep the
         // exact reservation/admission instead of falsely permitting a second.
@@ -424,7 +533,12 @@ export function createConnectedWebAccountReadAdmissionRuntime(
       try {
         refs = secrets.sealProviderReferences({
           context: secretContext,
-          coordinates: { runId: run.runId, ...(run.sessionId === undefined ? {} : { sessionId: run.sessionId }), ...(run.workspaceId === undefined ? {} : { workspaceId: run.workspaceId }) },
+          coordinates: {
+            runId: run.runId,
+            runCost,
+            ...(run.sessionId === undefined ? {} : { sessionId: run.sessionId, browserCost }),
+            ...(run.workspaceId === undefined ? {} : { workspaceId: run.workspaceId }),
+          },
         });
         const activated = await options.store.activateReadOperation({
           ownerUserId: actor.userId,
@@ -443,8 +557,9 @@ export function createConnectedWebAccountReadAdmissionRuntime(
         // reserving checkpoint remains the honest recovery signal and no
         // duplicate delivery can create a second paid run.
         try {
-          const cancelled = await options.provider.cancelHostedReadRun(run.runId);
+          const cancelled = await options.funding.run(fundingBinding, "recover", (provider) => provider.cancelHostedReadRun(run.runId));
           if (!isProviderFailure(cancelled) && (cancelled.status === "cancelled" || cancelled.status === "completed" || cancelled.status === "failed")) {
+            await settleBegun(cancelled.status === "cancelled" ? "cancelled" : "failed", false, false);
             await options.store.failAdmittedReadOperation({
               ownerUserId: actor.userId,
               accountId: accountId,
@@ -476,7 +591,7 @@ export function createConnectedWebAccountReadAdmissionRuntime(
   }
 }
 
-export function buildPublicBrowserReadTask(target: ValidatedConnectedWebTarget, request: string): string {
+function buildPublicBrowserReadTask(target: ValidatedConnectedWebTarget, request: string): string {
   return [
     "Research this public website using an isolated anonymous browser. No saved account or profile is available.",
     `Start URL: ${JSON.stringify(target.targetUrl)}`,

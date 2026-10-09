@@ -33,6 +33,19 @@ function isPersonalCostsRangeKey(value: string): value is PersonalCostsRangeKey 
   return value === "7d" || value === "30d" || value === "90d";
 }
 
+function includeMeasuredUnits(query: Record<string, unknown>): boolean {
+  return query["includeMeasuredUnits"] === "true";
+}
+
+function providerRowsForResponse<T extends {
+  measuredUnits?: number | null;
+  unitType?: string | null;
+}>(rows: readonly T[], include: boolean) {
+  return rows.map(({ measuredUnits, unitType, ...legacy }) => include
+    ? { ...legacy, measuredUnits: measuredUnits ?? null, unitType: unitType ?? null }
+    : legacy);
+}
+
 const PROVIDER_COST_COVERAGE = {
   state: "partial" as const,
   accounted: [
@@ -119,6 +132,7 @@ export function costsRoutes(app: FastifyInstance, deps: CostsRoutesDeps = {}): v
       range: { key: rangeKey, since: since.toISOString(), until: until.toISOString() },
       pricingVersion: PRICING_VERSION,
       ...data,
+      byProvider: providerRowsForResponse(data.byProvider, includeMeasuredUnits(query)),
       byModel: data.byModel.map((row) => ({
         ...row,
         displayName: getModelById(row.model)?.displayName ?? row.model,
@@ -130,9 +144,8 @@ export function costsRoutes(app: FastifyInstance, deps: CostsRoutesDeps = {}): v
   app.get("/api/costs", async (request, reply) => {
     if (!(await requireBilling(request, reply, hasCap))) return;
 
-    const { sinceIso, untilIso, range } = resolveWindow(
-      request.query as Record<string, unknown>,
-    );
+    const query = request.query as Record<string, unknown>;
+    const { sinceIso, untilIso, range } = resolveWindow(query);
 
     const summary = await getSummary({ sinceIso, untilIso });
 
@@ -150,7 +163,7 @@ export function costsRoutes(app: FastifyInstance, deps: CostsRoutesDeps = {}): v
       totals: summary.totals,
       byModel,
       byCallType: summary.byCallType,
-      byProvider: summary.byProvider,
+      byProvider: providerRowsForResponse(summary.byProvider, includeMeasuredUnits(query)),
       byUser: summary.byUser.map((row) => ({
         ...row,
         label: row.handle

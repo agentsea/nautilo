@@ -5,10 +5,8 @@ import {
 import { RELAY_MEDIA_MAX_BYTES } from "@nautilo/relay";
 import { createHash } from "node:crypto";
 import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
-import {
-  safelyRecordProviderCost,
-  type ServerProviderCostReceipt,
-} from "../costs/provider-cost-recorder";
+import type { UsageFundingProvenance } from "@nautilo/agent";
+import { CONNECTED_WEB_OUTPUT_MIME_MAX_CHARS } from "@nautilo/types";
 
 export const BROWSER_USE_V4_BASE_URL = "https://api.browser-use.com/api/v4";
 export const BROWSER_USE_DEFAULT_MODEL = "gpt-5.6-luna";
@@ -54,7 +52,11 @@ export interface BrowserUseCloudAdapterOptions {
   readonly clock?: BrowserUseClock;
   /** Operational request deadline to avoid a stuck server fetch. */
   readonly requestTimeoutMs?: number;
-  readonly recordProviderCost?: (receipt: ServerProviderCostReceipt) => Promise<void>;
+  /** Exact request-local credential selected by the durable funding owner. */
+  readonly requestCredential?: Readonly<{
+    apiKey: string;
+    usageFunding: UsageFundingProvenance;
+  }>;
 }
 
 export type BrowserUseProviderHealth =
@@ -104,6 +106,17 @@ export interface BrowserUseBrowserSession {
   readonly timeoutAt: Date;
   readonly observedAt: Date;
   readonly status: "active" | "stopped";
+  /** Terminal provider evidence. The durable lifecycle owner records it. */
+  readonly costEvidence?: Readonly<{
+    readonly estimatedCostUsd: string | null;
+    readonly evidenceState: "estimated" | "unknown";
+  }>;
+}
+
+export interface BrowserUseHostedBrowserCleanup {
+  readonly stopped: boolean;
+  readonly estimatedCostUsd: string | null;
+  readonly evidenceState: "estimated" | "unknown";
 }
 
 /**
@@ -135,9 +148,9 @@ export interface BrowserUseHostedReadRun {
 }
 
 export interface BrowserUseHostedReadResult extends BrowserUseHostedReadRun {
-  /** Untrusted provider output; later D568 tool code must validate it. */
+  /** Untrusted provider output; later tool code must validate it. */
   readonly result: string | null;
-  /** Provider-reported actual cost, absent only when the provider omits it. */
+  /** Provisional provider-reported usage cost, absent when the provider omits it. */
   readonly totalCostUsd: string | null;
 }
 
@@ -170,38 +183,6 @@ export interface BrowserUseHostedRunEventDelta {
   readonly nextAfter: number | null;
   /** Preserved provider pagination truth; callers commit a cursor per page. */
   readonly hasMore: boolean;
-  readonly observedAt: Date;
-}
-
-export type BrowserUseSessionQueueMode = "queue" | "interrupt";
-export type BrowserUseSessionQueueStatus = "pending" | "dispatching" | "consumed" | "cancelled" | "superseded" | "failed";
-
-/** Safe queue metadata. Provider message text and attachments do not escape the adapter. */
-export interface BrowserUseHostedSessionQueueMessage {
-  /** Server-only provider queue coordinate. */
-  readonly messageId: number;
-  /** Server-only provider run coordinate, absent until the message is dispatched. */
-  readonly runId: string | null;
-  readonly mode: BrowserUseSessionQueueMode;
-  readonly status: BrowserUseSessionQueueStatus;
-  readonly createdAt: Date;
-}
-
-/**
- * Provider acceptance only: an interrupt may remain queued when Browser Use
- * cannot cancel the active run. It is never evidence that a steer took effect.
- */
-export interface BrowserUseHostedSessionSteerReceipt extends BrowserUseHostedSessionQueueMessage {
-  readonly delivery: "queued" | "interrupt_best_effort";
-}
-
-/** Safe queue inspection response for server supervision only. */
-export interface BrowserUseHostedSessionQueue {
-  /** Server-only provider session coordinate. */
-  readonly sessionId: string;
-  readonly messages: readonly BrowserUseHostedSessionQueueMessage[];
-  /** Server-only interrupted-run boundaries; no message text is retained. */
-  readonly steeringCutoffRunIds: readonly string[];
   readonly observedAt: Date;
 }
 
@@ -254,16 +235,6 @@ interface RunWireEvent {
   readonly data?: unknown;
 }
 
-interface QueueWireMessage {
-  readonly id?: unknown;
-  readonly sessionId?: unknown;
-  readonly runId?: unknown;
-  readonly mode?: unknown;
-  readonly status?: unknown;
-  readonly text?: unknown;
-  readonly createdAt?: unknown;
-}
-
 interface HostedOutputCandidate {
   readonly path: string;
   readonly url: string;
@@ -289,19 +260,6 @@ function isRunStatus(value: unknown): value is BrowserUseRunStatus {
     || value === "completed"
     || value === "failed"
     || value === "cancelled";
-}
-
-function isSessionQueueMode(value: unknown): value is BrowserUseSessionQueueMode {
-  return value === "queue" || value === "interrupt";
-}
-
-function isSessionQueueStatus(value: unknown): value is BrowserUseSessionQueueStatus {
-  return value === "pending"
-    || value === "dispatching"
-    || value === "consumed"
-    || value === "cancelled"
-    || value === "superseded"
-    || value === "failed";
 }
 
 function isSafeNonNegativeInteger(value: unknown): value is number {
@@ -358,7 +316,8 @@ function readHostedOutputCandidates(body: unknown, field: "files", outputScope: 
 
 function normalizeHostedOutputMimeType(value: string | null): string {
   const mimeType = value?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-  return /^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+$/u.test(mimeType)
+  return mimeType.length <= CONNECTED_WEB_OUTPUT_MIME_MAX_CHARS
+    && /^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+$/u.test(mimeType)
     ? mimeType
     : "application/octet-stream";
 }
@@ -465,7 +424,7 @@ function isAbortError(error: unknown): boolean {
 }
 
 /**
- * Narrow REST adapter for the D568 Phase 1 lifecycle. It intentionally owns
+ * Narrow REST adapter for the connected website lifecycle. It intentionally owns
  * no retries, queues, durable checkpoints, or UI/API projection. Values with
  * provider bearer authority remain inside the server caller and are never put
  * in exception messages or this adapter's failure type.
@@ -475,21 +434,43 @@ export class BrowserUseCloudAdapter {
   private readonly fetchImpl: BrowserUseFetch;
   private readonly clock: BrowserUseClock;
   private readonly requestTimeoutMs: number;
-  private readonly recordProviderCost: (receipt: ServerProviderCostReceipt) => Promise<void>;
+  private readonly requestCredential: BrowserUseCloudAdapterOptions["requestCredential"];
 
   constructor(options: BrowserUseCloudAdapterOptions) {
     this.serverKeys = options.serverKeys;
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.clock = options.clock ?? SYSTEM_CLOCK;
-    this.recordProviderCost = options.recordProviderCost ?? safelyRecordProviderCost;
+    this.requestCredential = options.requestCredential;
     const requestTimeoutMs = options.requestTimeoutMs;
     this.requestTimeoutMs = typeof requestTimeoutMs === "number" && Number.isInteger(requestTimeoutMs) && requestTimeoutMs > 0
       ? requestTimeoutMs
       : BROWSER_USE_NETWORK_DEADLINE_MS;
   }
 
+  /**
+   * Binds one admitted key to one callback-owned adapter. No process-global
+   * environment or shared key registry is changed, and this adapter never
+   * falls back to the server key while the request credential is present.
+   */
+  withRequestCredential(input: {
+    readonly apiKey: string;
+    readonly usageFunding: UsageFundingProvenance;
+  }): BrowserUseCloudAdapter {
+    return new BrowserUseCloudAdapter({
+      serverKeys: this.serverKeys,
+      fetch: this.fetchImpl,
+      clock: this.clock,
+      requestTimeoutMs: this.requestTimeoutMs,
+      requestCredential: input,
+    });
+  }
+
   health(): BrowserUseProviderHealth {
-    const resolution = resolveBrowserUseApiKey(this.serverKeys);
+    const resolution: BrowserUseApiKeyResolution = this.requestCredential === undefined
+      ? resolveBrowserUseApiKey(this.serverKeys)
+      : this.requestCredential.apiKey.trim().length === 0
+        ? { kind: "invalid" }
+        : { kind: "configured", apiKey: this.requestCredential.apiKey };
     if (resolution.kind === "configured") {
       // The captured public V4 contract has no non-mutating health endpoint.
       return { kind: "available", verification: "not_checked" };
@@ -558,16 +539,18 @@ export class BrowserUseCloudAdapter {
     if (!isFailure(session) && session.status === "stopped") {
       const browserCost = providerUsd((body as BrowserWireSession)["browserCost"]);
       const proxyCost = providerUsd((body as BrowserWireSession)["proxyCost"]);
-      const total = browserCost === null && proxyCost === null
+      // The provider reports these as separate components. A missing component
+      // is unknown evidence, not a zero-cost component.
+      const total = browserCost === null || proxyCost === null
         ? null
-        : ((browserCost ?? 0) + (proxyCost ?? 0)).toFixed(8);
-      await this.recordProviderCost({
-        identity: `browser-use:browser-session:${browserId}`,
-        provider: "browser_use",
-        operation: "browser_session",
-        actualCostUsd: total,
-        evidenceState: total === null ? "unknown" : "actual",
-      });
+        : (browserCost + proxyCost).toFixed(8);
+      return {
+        ...session,
+        costEvidence: {
+          estimatedCostUsd: total,
+          evidenceState: total === null ? "unknown" : "estimated",
+        },
+      };
     }
     return session;
   }
@@ -650,42 +633,6 @@ export class BrowserUseCloudAdapter {
     return { runId: body["id"], sessionId: body["sessionId"], workspaceId: body["workspaceId"], status: body["status"], observedAt: this.clock.now() };
   }
 
-  /**
-   * Starts a cost-authoritative continuation in the same Browser Use session.
-   * It deliberately does not use the queue endpoint: queue interrupt has no
-   * model/maxCost fields and is only best-effort.
-   */
-  async createHostedReadContinuationRun(input: {
-    readonly sessionId: string;
-    readonly workspaceId?: string;
-    readonly task: string;
-    readonly model: string;
-    readonly maxCostUsd: number;
-  }): Promise<BrowserUseResult<BrowserUseHostedReadRun>> {
-    if (!isNonEmptyString(input.sessionId) || !isNonEmptyString(input.task) || !isNonEmptyString(input.model)
-      || (input.workspaceId !== undefined && !isNonEmptyString(input.workspaceId))
-      || !Number.isFinite(input.maxCostUsd) || input.maxCostUsd <= 0) {
-      return { kind: "failure", code: "invalid_cost_policy" };
-    }
-    const response = await this.request("/runs", {
-      method: "POST",
-      body: {
-        task: input.task,
-        model: input.model,
-        sessionId: input.sessionId,
-        ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
-        maxCostUsd: input.maxCostUsd,
-      },
-    });
-    if (isFailure(response)) return response;
-    const body = await this.json(response);
-    if (!isRecord(body) || !isNonEmptyString(body["id"]) || !isRunStatus(body["status"])
-      || body["sessionId"] !== input.sessionId || !isNonEmptyString(body["workspaceId"])) {
-      return { kind: "failure", code: "malformed_response" };
-    }
-    return { runId: body["id"], sessionId: body["sessionId"], workspaceId: body["workspaceId"], status: body["status"], observedAt: this.clock.now() };
-  }
-
   async pollHostedReadRun(runId: string): Promise<BrowserUseResult<BrowserUseHostedReadRun>> {
     const response = await this.request(`/runs/${encodeURIComponent(runId)}/status`, {
       method: "GET",
@@ -724,27 +671,51 @@ export class BrowserUseCloudAdapter {
    * Missing run/session coordinates are unresolved, never proof of shutdown.
    */
   async stopHostedReadBrowser(runId: string): Promise<boolean> {
+    return (await this.stopHostedReadBrowserWithCost(runId)).stopped;
+  }
+
+  /**
+   * Stops every browser attached to the exact hosted run and returns the
+   * provider's usage estimate only when every browser and proxy component is
+   * present. Resource disappearance proves no final amount.
+   */
+  async stopHostedReadBrowserWithCost(runId: string): Promise<BrowserUseHostedBrowserCleanup> {
+    const unresolved = (stopped = false): BrowserUseHostedBrowserCleanup => ({
+      stopped, estimatedCostUsd: null, evidenceState: "unknown",
+    });
     try {
       const run = await this.getHostedReadResult(runId);
-      if (isFailure(run) || !run.sessionId) return false;
+      if (isFailure(run) || !run.sessionId) return unresolved();
       if (run.status !== "completed" && run.status !== "cancelled" && run.status !== "failed") {
         const cancelled = await this.cancelHostedReadRun(runId);
-        if (isFailure(cancelled)) return false;
+        if (isFailure(cancelled)) return unresolved();
         const terminal = await this.pollHostedReadRun(runId);
-        if (isFailure(terminal) || (terminal.status !== "completed" && terminal.status !== "cancelled" && terminal.status !== "failed")) return false;
+        if (isFailure(terminal) || (terminal.status !== "completed" && terminal.status !== "cancelled" && terminal.status !== "failed")) return unresolved();
       }
       const browsers = await this.findHostedBrowsers({ agentSessionId: run.sessionId });
-      if (isFailure(browsers)) return false;
+      if (isFailure(browsers)) return unresolved();
+      let estimatedCostUsd = 0;
+      let completeEstimate = browsers.length > 0;
       for (const browser of browsers) {
-        if (browser.agentSessionId !== run.sessionId) return false;
-        if (browser.status === "stopped") continue;
-        const stopped = await this.stopBrowser(browser.browserId);
+        if (browser.agentSessionId !== run.sessionId) return unresolved();
+        const stopped = browser.status === "stopped" ? browser : await this.stopBrowser(browser.browserId);
         if (isFailure(stopped)) {
-          if (stopped.code !== "resource_not_found") return false;
-        } else if (stopped.browserId !== browser.browserId || stopped.status !== "stopped") return false;
+          if (stopped.code !== "resource_not_found") return unresolved();
+          completeEstimate = false;
+          continue;
+        }
+        if (stopped.browserId !== browser.browserId || stopped.status !== "stopped") return unresolved();
+        const amount = stopped.costEvidence?.estimatedCostUsd === null
+          || stopped.costEvidence?.estimatedCostUsd === undefined
+          ? NaN
+          : Number(stopped.costEvidence.estimatedCostUsd);
+        if (!Number.isFinite(amount) || amount < 0 || stopped.costEvidence?.evidenceState !== "estimated") completeEstimate = false;
+        else estimatedCostUsd += amount;
       }
-      return true;
-    } catch { return false; }
+      return completeEstimate
+        ? { stopped: true, estimatedCostUsd: estimatedCostUsd.toFixed(8), evidenceState: "estimated" }
+        : unresolved(true);
+    } catch { return unresolved(); }
   }
 
   async cancelHostedReadRun(runId: string): Promise<BrowserUseResult<BrowserUseHostedReadRun>> {
@@ -857,65 +828,6 @@ export class BrowserUseCloudAdapter {
       after = page.nextAfter;
       lastAcceptedAfter = page.nextAfter;
     }
-  }
-
-  /**
-   * Returns queue metadata only. Browser Use's queue text and attachment IDs
-   * are deliberately discarded before the response leaves this adapter.
-   */
-  async inspectHostedSessionQueue(sessionId: string): Promise<BrowserUseResult<BrowserUseHostedSessionQueue>> {
-    if (!isNonEmptyString(sessionId)) return { kind: "failure", code: "malformed_response" };
-    const response = await this.request(`/sessions/${encodeURIComponent(sessionId)}/queue`, { method: "GET" });
-    if (isFailure(response)) return response;
-    const body = await this.json(response);
-    if (!isRecord(body) || !Array.isArray(body["queue"])
-      || (body["steeringCutoffs"] !== undefined && !Array.isArray(body["steeringCutoffs"]))) {
-      return { kind: "failure", code: "malformed_response" };
-    }
-    const messages: BrowserUseHostedSessionQueueMessage[] = [];
-    for (const rawMessage of body["queue"] as QueueWireMessage[]) {
-      const message = this.parseHostedQueueMessage(rawMessage, sessionId);
-      if (isFailure(message)) return message;
-      messages.push(message);
-    }
-    const steeringCutoffRunIds: string[] = [];
-    for (const rawCutoff of (body["steeringCutoffs"] ?? []) as unknown[]) {
-      if (!isRecord(rawCutoff) || !isNonEmptyString(rawCutoff["sourceRunId"])
-        || parseDate(rawCutoff["createdAt"]) === null) {
-        return { kind: "failure", code: "malformed_response" };
-      }
-      steeringCutoffRunIds.push(rawCutoff["sourceRunId"]);
-    }
-    return { sessionId, messages, steeringCutoffRunIds, observedAt: this.clock.now() };
-  }
-
-  /**
-   * Sends a steer as Browser Use's documented best-effort queue/interrupt
-   * operation. The result proves only that the message was accepted; callers
-   * must observe a resulting run before saying the correction took effect.
-   */
-  async queueHostedSessionSteer(input: {
-    readonly sessionId: string;
-    readonly text: string;
-    readonly interrupt: boolean;
-  }): Promise<BrowserUseResult<BrowserUseHostedSessionSteerReceipt>> {
-    if (!isNonEmptyString(input.sessionId) || !isNonEmptyString(input.text) || typeof input.interrupt !== "boolean") {
-      return { kind: "failure", code: "malformed_response" };
-    }
-    const response = await this.request(`/sessions/${encodeURIComponent(input.sessionId)}/queue`, {
-      method: "POST",
-      body: { text: input.text, interrupt: input.interrupt },
-    });
-    if (isFailure(response)) return response;
-    const message = this.parseHostedQueueMessage(await this.json(response), input.sessionId);
-    if (isFailure(message)) return message;
-    if (message.mode !== (input.interrupt ? "interrupt" : "queue")) {
-      return { kind: "failure", code: "malformed_response" };
-    }
-    return {
-      ...message,
-      delivery: input.interrupt ? "interrupt_best_effort" : "queued",
-    };
   }
 
   /**
@@ -1074,7 +986,11 @@ export class BrowserUseCloudAdapter {
     path: string,
     request: { readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly body?: unknown },
   ): Promise<Response | BrowserUseProviderFailure> {
-    const resolution = resolveBrowserUseApiKey(this.serverKeys);
+    const resolution: BrowserUseApiKeyResolution = this.requestCredential === undefined
+      ? resolveBrowserUseApiKey(this.serverKeys)
+      : this.requestCredential.apiKey.trim().length === 0
+        ? { kind: "invalid" }
+        : { kind: "configured", apiKey: this.requestCredential.apiKey };
     const unavailable = unavailableFailure(resolution);
     if (unavailable !== null) return unavailable;
     if (resolution.kind !== "configured") return { kind: "failure", code: "invalid_configuration" };
@@ -1112,29 +1028,6 @@ export class BrowserUseCloudAdapter {
     }
   }
 
-  private parseHostedQueueMessage(
-    body: unknown,
-    expectedSessionId: string,
-  ): BrowserUseResult<BrowserUseHostedSessionQueueMessage> {
-    const message = body as QueueWireMessage | null;
-    if (!isRecord(message) || !isSafeNonNegativeInteger(message["id"])
-      || message["sessionId"] !== expectedSessionId
-      || (message["runId"] !== null && message["runId"] !== undefined && !isNonEmptyString(message["runId"]))
-      || !isSessionQueueMode(message["mode"]) || !isSessionQueueStatus(message["status"])
-      // The V4 response requires a string but does not impose a minLength.
-      // It is intentionally discarded either way.
-      || typeof message["text"] !== "string" || parseDate(message["createdAt"]) === null) {
-      return { kind: "failure", code: "malformed_response" };
-    }
-    return {
-      messageId: message["id"],
-      runId: typeof message["runId"] === "string" ? message["runId"] : null,
-      mode: message["mode"],
-      status: message["status"],
-      createdAt: parseDate(message["createdAt"])!,
-    };
-  }
-
   private parseHostedBrowserSession(
     body: unknown,
     expectedAgentSessionId: string,
@@ -1165,8 +1058,16 @@ export class BrowserUseCloudAdapter {
       cdpUrl: typeof session["cdpUrl"] === "string" ? session["cdpUrl"] : null,
       timeoutAt,
       observedAt: this.clock.now(),
+      ...(session["status"] === "stopped" ? { costEvidence: browserCostEvidence(session) } : {}),
     };
   }
+}
+
+function browserCostEvidence(session: BrowserWireSession): NonNullable<BrowserUseBrowserSession["costEvidence"]> {
+  const browserCost = providerUsd(session["browserCost"]);
+  const proxyCost = providerUsd(session["proxyCost"]);
+  const total = browserCost === null || proxyCost === null ? null : (browserCost + proxyCost).toFixed(8);
+  return { estimatedCostUsd: total, evidenceState: total === null ? "unknown" : "estimated" };
 }
 
 function providerUsd(value: unknown): number | null {

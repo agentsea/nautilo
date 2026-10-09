@@ -1,7 +1,7 @@
 /**
- * desktop relay compiles the revalidated policy-pack
- * grant roots + canonical protected-path policy into the per-turn sandbox
- * envelope for a planned generic `run_shell` dispatch.
+ * Desktop compiles revalidated policy-pack grant roots and canonical
+ * protected-path policy into the sandbox used by managed local execution and
+ * typed Git.
  *
  * Validates:
  *   1. `selectSandboxProtectedPaths` curates the canonical
@@ -14,12 +14,8 @@
  *      with the server's), `protectedPaths` carry the curated denies, and
  *      the rest of the envelope (workspace / dataDir / network posture /
  *      failIfNoBackend) is preserved.
- *   3. `makeDispatchHandler`: a valid shell binding passes an AUGMENTED
- *      envelope (profile-bound roots + protected paths) to the sandbox
- *      factory; the shell still runs sandboxed (no unsandboxed fallback).
- *   4. Invalid / missing / stale / mismatched binding stays baseline
- *      behavior — no envelope augmentation, no authority, stable denial.
- *   5. The server's `allowedRoots` is never authority and never widened.
+ *   3. Invalid or mismatched authority never broadens the sandbox.
+ *   4. The server's `allowedRoots` is never authority and never widened.
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
@@ -29,8 +25,6 @@ import { dirname, join } from "node:path";
 import {
   Sandbox,
   canonicalize,
-  type SandboxBackend,
-  type SandboxConfig,
 } from "@nautilo/sandbox";
 import {
   createWorkspaceGuard,
@@ -55,7 +49,6 @@ import type {
   RelayWorkstationProfileSnapshotProvider,
 } from "../../electron/relay";
 import { prepareLocalDispatchPolicy } from "../../electron/relay-dispatch/local-dispatch-policy";
-import { resolveContainedWorkstationIdentityProjection } from "../../electron/relay-dispatch/workstation-identity";
 import { DesktopFilesystemGrantStore } from "../../electron/desktop-filesystem-grants/store";
 import { captureDesktopFilesystemGrantRootIdentity } from "../../electron/desktop-filesystem-grants/identity";
 
@@ -131,7 +124,7 @@ function grant(
 function binding(overrides: Partial<RelayWorkstationShellBinding> = {}): RelayWorkstationShellBinding {
   return {
     version: RELAY_WORKSTATION_SHELL_BINDING_VERSION,
-    toolCallId: "tc-run_shell",
+    toolCallId: "tc-exec-command",
     relayId: RELAY,
     desktopSessionId: DESKTOP,
     serverBindingId: "server-binding-1",
@@ -181,6 +174,16 @@ function makeProfileProvider(
 ): RelayWorkstationProfileSnapshotProvider {
   return {
     getProfileSnapshot: () => Promise.resolve(snapshot),
+    getExecutionEnvironment: () => snapshot === undefined
+      ? null
+      : ({
+          profileId: snapshot.profileId,
+          profileRevision: snapshot.profileRevision,
+          protectedPolicyVersion: snapshot.protectedPolicyVersion,
+          home: tmpdir(),
+          environmentValues: {},
+          executables: [],
+        }),
   };
 }
 
@@ -197,7 +200,7 @@ const ISOLATED_NETWORK_POLICY: import("@nautilo/workstation-profiles").ProfileNe
   allow: [],
 };
 
-function makeSandbox(workspace: string): Sandbox {
+function makeSandbox(): Sandbox {
   // Envelope-wiring tests need a containment-capable sandbox surface, not a
   // real macOS-only `sandbox-exec` binary. Return a structural fake whose
   // wrapper runs the requested process directly; real Seatbelt/bubblewrap
@@ -213,36 +216,6 @@ function makeSandbox(workspace: string): Sandbox {
     ) => ({ program, args: [...args], cwd, env }),
     close: () => Promise.resolve(),
   } as unknown as Sandbox;
-}
-
-function makeDisabledSandbox(workspace: string): Sandbox {
-  return new Sandbox({
-    config: {
-      mode: "disabled",
-      writablePaths: [],
-      projectPaths: [],
-      passthroughEnv: [],
-    },
-    workspace,
-    dataDir: `${workspace}/data`,
-    toolsBin: `${workspace}/tools`,
-    backend: { kind: "none" },
-  });
-}
-
-function makeBubblewrapWithoutFileMask(workspace: string): Sandbox {
-  return new Sandbox({
-    config: {
-      mode: "enabled",
-      writablePaths: [],
-      projectPaths: [],
-      passthroughEnv: [],
-    },
-    workspace,
-    dataDir: `${workspace}/data`,
-    toolsBin: `${workspace}/tools`,
-    backend: { kind: "bubblewrap", procSupported: true, fileMaskSupported: false },
-  });
 }
 
 function baseEnvelope(workspace = "/tmp"): RelaySandboxProfile {
@@ -266,7 +239,7 @@ function mkRequest(overrides: Partial<RelayDispatchRequest> = {}): RelayDispatch
   return {
     id: "test-req-1",
     correlationId: "test-req-1",
-    toolName: "run_shell",
+    toolName: "exec_command",
     args: { command: "/bin/pwd" },
     impact: "low",
     approvalObtained: true,
@@ -278,78 +251,6 @@ function mkRequest(overrides: Partial<RelayDispatchRequest> = {}): RelayDispatch
 function mkTmp(prefix: string): string {
   return canonicalize(mkdtempSync(join(tmpdir(), prefix)));
 }
-
-describe("contained workstation identity projection", () => {
-  test("projects a github.com-scoped credential helper and keeps HOME implicit", async () => {
-    const home = mkTmp("relay-workstation-identity-");
-    const ghConfigDir = join(home, ".config", "gh");
-    mkdirSync(ghConfigDir, { recursive: true });
-    writeFileSync(join(ghConfigDir, "hosts.yml"), "github.com: {}\n");
-
-    const token = "fixture-provider-credential";
-    const projection = await resolveContainedWorkstationIdentityProjection(
-      home,
-      async () => token,
-    );
-
-    expect(projection.commandEnv).toEqual({
-      GH_TOKEN: token,
-      GIT_CONFIG_COUNT: "2",
-      GIT_CONFIG_KEY_0: "credential.https://github.com.helper",
-      GIT_CONFIG_VALUE_0: "",
-      GIT_CONFIG_KEY_1: "credential.https://github.com.helper",
-      GIT_CONFIG_VALUE_1: "!gh auth git-credential",
-      GH_TELEMETRY: "0",
-      DO_NOT_TRACK: "1",
-      GH_NO_UPDATE_NOTIFIER: "1",
-      GH_NO_EXTENSION_UPDATE_NOTIFIER: "1",
-    });
-    expect(projection.outputSecrets).toEqual([Buffer.from(token)]);
-    expect(projection.commandEnv).not.toHaveProperty("HOME");
-    expect(projection.commandEnv).not.toHaveProperty("GIT_CONFIG_GLOBAL");
-  });
-
-  test("does not read a token when no gh configuration exists", async () => {
-    const home = mkTmp("relay-workstation-no-gh-identity-");
-    let tokenRead = false;
-    const projection = await resolveContainedWorkstationIdentityProjection(
-      home,
-      async () => {
-        tokenRead = true;
-        return "must-not-be-read";
-      },
-    );
-
-    expect(tokenRead).toBe(false);
-    expect(projection).toEqual({ commandEnv: {}, outputSecrets: [] });
-  });
-
-  test("the GitHub credential read follows dispatch cancellation instead of a local timer", async () => {
-    const home = mkTmp("relay-workstation-cancelled-gh-identity-");
-    mkdirSync(join(home, ".config", "gh"), { recursive: true });
-    const controller = new AbortController();
-    let observedSignal: AbortSignal | undefined;
-
-    await resolveContainedWorkstationIdentityProjection(
-      home,
-      async (signal) => {
-        observedSignal = signal;
-        return null;
-      },
-      controller.signal,
-    );
-
-    expect(observedSignal).toBe(controller.signal);
-  });
-
-  test("returns an empty projection when no supported local identity exists", async () => {
-    const home = mkTmp("relay-workstation-empty-identity-");
-    expect(await resolveContainedWorkstationIdentityProjection(home)).toEqual({
-      commandEnv: {},
-      outputSecrets: [],
-    });
-  });
-});
 
 describe("request-local dispatch policy cleanup", () => {
   test("closes the created sandbox before preserving a throwing workspace revalidation", async () => {
@@ -366,7 +267,7 @@ describe("request-local dispatch policy cleanup", () => {
     let received: unknown;
     try {
       await prepareLocalDispatchPolicy({
-        toolName: "run_shell",
+        toolName: "exec_command",
         isProduction: true,
         desktopFilesystemAuthority: undefined,
         revalidatedShellBinding: undefined,
@@ -405,7 +306,7 @@ describe("request-local dispatch policy cleanup", () => {
     let received: unknown;
     try {
       await prepareLocalDispatchPolicy({
-        toolName: "run_shell",
+        toolName: "exec_command",
         isProduction: true,
         desktopFilesystemAuthority: undefined,
         revalidatedShellBinding: undefined,
@@ -857,524 +758,6 @@ describe("local Current Folder shell authority", () => {
 // makeDispatchHandler — envelope augmentation wiring
 // ---------------------------------------------------------------------------
 
-describe("makeDispatchHandler envelope augmentation", () => {
-  const savedLdPreload = process.env["LD_PRELOAD"];
-  beforeEach(() => {
-    delete process.env["LD_PRELOAD"];
-  });
-  afterEach(() => {
-    if (savedLdPreload === undefined) delete process.env["LD_PRELOAD"];
-    else process.env["LD_PRELOAD"] = savedLdPreload;
-  });
-
-  function resolver(options: {
-    grants: Array<{ grant: DesktopFilesystemGrant; status: "active" | "revoked" | "expired" }>;
-    profile?: RelayWorkstationProfileSnapshot | undefined;
-    capabilityRevision?: number;
-    currentFolder?: string;
-    networkPolicy?: import("@nautilo/workstation-profiles").ProfileNetworkPolicy | null;
-  }) {
-    return createWorkstationShellBindingAuthorityResolver({
-      store: makeStore(options.grants),
-      expectedRelayId: RELAY,
-      expectedDesktopSessionId: DESKTOP,
-      getCapabilityRevision: () => options.capabilityRevision ?? 5,
-      getCurrentFolder: () => options.currentFolder ?? "/tmp",
-      profileProvider: makeProfileProvider(options.profile ?? profileSnapshot(2)),
-      networkPolicyProvider: makeNetworkPolicyProvider(
-        options.networkPolicy ?? ISOLATED_NETWORK_POLICY,
-      ),
-      expectedSubject: { userId: USER, instanceId: INSTANCE, relayId: RELAY, agentScope: AGENT_SCOPE },
-      now: () => NOW,
-    });
-  }
-
-  test("valid binding ⇒ sandbox factory receives an augmented envelope with the profile root + protected paths", async () => {
-    const profileRoot = mkTmp("relay-dispatch-root-");
-    const home = mkTmp("relay-dispatch-home-");
-    const policy = buildProtectedPathPolicy({
-      homeDir: home,
-      platform: process.platform,
-    });
-    const grants = [grant("grant-1", { root: profileRoot })];
-    const guard = createWorkspaceGuard({ workspaceRoot: mkTmp("relay-dispatch-guard-") });
-
-    let captured: RelaySandboxProfile | undefined;
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationShellBindingAuthority: resolver({ grants }),
-      protectedPathPolicy: policy,
-      trustedToolsBin: "/trusted/local/tools",
-      createSandbox: (envelope) => {
-        captured = envelope as RelaySandboxProfile;
-        return Promise.resolve(makeSandbox(envelope.workspace));
-      },
-    });
-
-    const r = await handler(
-      mkRequest({
-        allowedRoots: ["/untrusted-server-root"],
-        sandboxProfile: baseEnvelope("/tmp"),
-        args: { command: "/bin/pwd" },
-        workstationShellBinding: binding(),
-      }),
-    );
-
-    expect(r.status).toBe("ok");
-    expect(captured).toBeDefined();
-    if (captured !== undefined) {
-      // The profile-bound root is the sandbox writable surface — derived
-      // from the revalidated grant, NOT the server's allowedRoots.
-      expect(captured.config.readOnlyPaths).toContain(profileRoot);
-      expect(captured.config.writablePaths).not.toContain("/untrusted-server-root");
-      expect(captured.toolsBin).toBe("/trusted/local/tools");
-      expect(captured.toolsBin).not.toBe("/tmp/tools");
-      // The canonical protected-path policy is compiled in.
-      expect(captured.config.protectedPaths).toBeDefined();
-      if (captured.config.protectedPaths !== undefined) {
-        expect(captured.config.protectedPaths).toContain(join(home, ".ssh"));
-      }
-    }
-  });
-
-  test("valid binding projects and redacts gh identity without mounting HOME or gh config", async () => {
-    const profileRoot = mkTmp("relay-dispatch-identity-root-");
-    const home = mkTmp("relay-dispatch-identity-home-");
-    const ghConfigDir = join(home, ".config", "gh");
-    mkdirSync(ghConfigDir, { recursive: true });
-    writeFileSync(join(ghConfigDir, "hosts.yml"), "github.com: {}\n");
-    const grants = [grant("grant-1", { root: profileRoot })];
-    const guard = createWorkspaceGuard({
-      workspaceRoot: mkTmp("relay-dispatch-identity-guard-"),
-    });
-
-    let captured: RelaySandboxProfile | undefined;
-    const projectedToken = "fixture-provider-credential";
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationShellBindingAuthority: resolver({ grants }),
-      workstationIdentityHomePath: home,
-      readWorkstationGitHubToken: async () => projectedToken,
-      createSandbox: (envelope) => {
-        captured = envelope as RelaySandboxProfile;
-        return Promise.resolve(makeSandbox(envelope.workspace));
-      },
-    });
-
-    const result = await handler(
-      mkRequest({
-        sandboxProfile: baseEnvelope("/tmp"),
-        args: { command: "printf '%s' \"$GH_TOKEN\"" },
-        workstationShellBinding: binding(),
-      }),
-    );
-
-    expect(result.status).toBe("ok");
-    expect(captured?.config.readOnlyPaths).not.toContain(ghConfigDir);
-    expect(captured?.config.readOnlyPaths).not.toContain(home);
-    if (result.status === "ok") {
-      const stdout = (result.result as { stdout: string }).stdout;
-      expect(stdout).toStartWith("[REDACTED]");
-      expect(stdout).not.toContain(projectedToken);
-    }
-  });
-
-  test("valid binding resolves the local workspace at dispatch time", async () => {
-    const profileRoot = mkTmp("relay-dispatch-live-workspace-root-");
-    const currentFolder = join(profileRoot, "current-project");
-    mkdirSync(currentFolder);
-    const grants = [
-      grant("grant-1", { root: profileRoot, access: ["execute", "read", "create_modify"] }),
-    ];
-    const guard = createWorkspaceGuard({ workspaceRoot: mkTmp("relay-dispatch-live-workspace-guard-") });
-    let captured: RelaySandboxProfile | undefined;
-    let allowedWorkspaceGovernanceWrites = false;
-
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationShellBindingAuthority: resolver({ grants, currentFolder }),
-      getLocalWorkspacePath: () => currentFolder,
-      localShellWorkspaceAuthority: async (candidate) => ({
-        ok: true,
-        workspace: candidate,
-      }),
-      createSandbox: (envelope, localAuthority) => {
-        captured = envelope as RelaySandboxProfile;
-        allowedWorkspaceGovernanceWrites =
-          localAuthority?.allowWorkspaceGovernanceWrites === true;
-        return Promise.resolve(makeSandbox(envelope.workspace));
-      },
-    });
-
-    const result = await handler(
-      mkRequest({
-        sandboxProfile: baseEnvelope("/server-supplied-workspace"),
-        args: { command: "/bin/pwd" },
-        workstationShellBinding: binding({ currentFolder }),
-      }),
-    );
-
-    expect(result.status).toBe("ok");
-    expect(captured?.workspace).toBe(currentFolder);
-    expect(allowedWorkspaceGovernanceWrites).toBe(true);
-  });
-
-  test("valid binding with no protectedPathPolicy ⇒ envelope has profile root but no protectedPaths", async () => {
-    const profileRoot = mkTmp("relay-dispatch-nopp-root-");
-    const grants = [grant("grant-1", { root: profileRoot })];
-    const guard = createWorkspaceGuard({ workspaceRoot: mkTmp("relay-dispatch-nopp-guard-") });
-
-    let captured: RelaySandboxProfile | undefined;
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationShellBindingAuthority: resolver({ grants }),
-      createSandbox: (envelope) => {
-        captured = envelope as RelaySandboxProfile;
-        return Promise.resolve(makeSandbox(envelope.workspace));
-      },
-    });
-
-    const r = await handler(
-      mkRequest({ sandboxProfile: baseEnvelope("/tmp"), workstationShellBinding: binding() }),
-    );
-
-    expect(r.status).toBe("ok");
-    expect(captured).toBeDefined();
-    if (captured !== undefined) {
-      expect(captured.config.readOnlyPaths).toContain(profileRoot);
-      expect(captured.config.protectedPaths).toBeUndefined();
-    }
-  });
-
-  test("non-Full-Mode (no binding) ⇒ envelope is byte-for-byte baseline (no augmentation)", async () => {
-    const guard = createWorkspaceGuard({ workspaceRoot: mkTmp("relay-dispatch-baseline-guard-") });
-    const baseline = baseEnvelope("/tmp");
-
-    let captured: RelaySandboxProfile | undefined;
-    let allowedWorkspaceGovernanceWrites = true;
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationShellBindingAuthority: resolver({ grants: [grant("grant-1")] }),
-      protectedPathPolicy: buildProtectedPathPolicy({
-        homeDir: mkTmp("relay-dispatch-baseline-home-"),
-        platform: process.platform,
-      }),
-      createSandbox: (envelope, localAuthority) => {
-        captured = envelope as RelaySandboxProfile;
-        allowedWorkspaceGovernanceWrites =
-          localAuthority?.allowWorkspaceGovernanceWrites === true;
-        return Promise.resolve(makeSandbox("/tmp"));
-      },
-    });
-
-    const r = await handler(
-      mkRequest({ sandboxProfile: baseline, args: { command: "/bin/pwd" } }),
-    );
-
-    expect(r.status).toBe("ok");
-    expect(captured).toBeDefined();
-    expect(allowedWorkspaceGovernanceWrites).toBe(false);
-    if (captured !== undefined) {
-      // Baseline envelope is passed through unchanged — no profile root,
-      // no protectedPaths. The server's writablePaths are preserved.
-      expect(captured.config.writablePaths).toEqual(["/server/supplied/writable"]);
-      expect(captured.config.protectedPaths).toBeUndefined();
-    }
-  });
-
-  test("stale binding ⇒ stable denial, sandbox factory never invoked", async () => {
-    const grants = [grant("grant-1")];
-    const guard = createWorkspaceGuard({ workspaceRoot: mkTmp("relay-dispatch-stale-guard-") });
-    let ran = false;
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationShellBindingAuthority: resolver({ grants, profile: profileSnapshot(99) }),
-      protectedPathPolicy: buildProtectedPathPolicy({
-        homeDir: mkTmp("relay-dispatch-stale-home-"),
-        platform: process.platform,
-      }),
-      createSandbox: () => {
-        ran = true;
-        return Promise.resolve(makeSandbox("/tmp"));
-      },
-    });
-
-    const r = await handler(mkRequest({ workstationShellBinding: binding() }));
-
-    expect(r.status).toBe("error");
-    expect((r as { errorCode?: string }).errorCode).toBe("PROFILE_BINDING_MISMATCH");
-    expect(ran).toBe(false);
-  });
-
-  test("binding present but no resolver configured ⇒ UNCONFIGURED, no sandbox", async () => {
-    const guard = createWorkspaceGuard({ workspaceRoot: mkTmp("relay-dispatch-unconf-guard-") });
-    let ran = false;
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      createSandbox: () => {
-        ran = true;
-        return Promise.resolve(makeSandbox("/tmp"));
-      },
-    });
-
-    const r = await handler(mkRequest({ workstationShellBinding: binding() }));
-
-    expect(r.status).toBe("error");
-    expect((r as { errorCode?: string }).errorCode).toBe("WORKSTATION_SHELL_BINDING_UNCONFIGURED");
-    expect(ran).toBe(false);
-  });
-
-  test("valid guarded binding refuses a disabled or backend-less sandbox", async () => {
-    const profileRoot = mkTmp("relay-dispatch-disabled-root-");
-    const guard = createWorkspaceGuard({ workspaceRoot: mkTmp("relay-dispatch-disabled-guard-") });
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationShellBindingAuthority: resolver({ grants: [grant("grant-1", { root: profileRoot })] }),
-      createSandbox: () => Promise.resolve(makeDisabledSandbox(profileRoot)),
-    });
-
-    const r = await handler(mkRequest({ workstationShellBinding: binding() }));
-    expect(r.status).toBe("error");
-    expect((r as { errorCode?: string }).errorCode).toBe("WORKSTATION_SHELL_SANDBOX_UNAVAILABLE");
-  });
-
-  test("guarded protected-file policy refuses bwrap without the tested file-mask capability", async () => {
-    const profileRoot = mkTmp("relay-dispatch-bwrap-root-");
-    const home = mkTmp("relay-dispatch-bwrap-home-");
-    const guard = createWorkspaceGuard({ workspaceRoot: mkTmp("relay-dispatch-bwrap-guard-") });
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationShellBindingAuthority: resolver({ grants: [grant("grant-1", { root: profileRoot })] }),
-      protectedPathPolicy: buildProtectedPathPolicy({ homeDir: home, platform: process.platform }),
-      createSandbox: (envelope) => Promise.resolve(makeBubblewrapWithoutFileMask(envelope.workspace)),
-    });
-
-    const r = await handler(mkRequest({ workstationShellBinding: binding() }));
-    expect(r.status).toBe("error");
-    expect((r as { errorCode?: string }).errorCode).toBe("WORKSTATION_SHELL_SANDBOX_UNAVAILABLE");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// protected-shell enforcement — a bound run_shell denies a protected
-// .ssh sentinel under sandbox-exec (deny-overrides after allows). This live
-// Seatbelt proof is macOS-only; Linux containment is covered by bubblewrap
-// tests in packages/sandbox.
-// ---------------------------------------------------------------------------
-
-if (process.platform === "darwin") {
-describe("protected-shell — bound run_shell denies a protected .ssh sentinel", () => {
-  const savedLdPreload = process.env["LD_PRELOAD"];
-  beforeEach(() => {
-    delete process.env["LD_PRELOAD"];
-  });
-  afterEach(() => {
-    if (savedLdPreload === undefined) delete process.env["LD_PRELOAD"];
-    else process.env["LD_PRELOAD"] = savedLdPreload;
-  });
-
-  function resolver(options: {
-    grants: Array<{ grant: DesktopFilesystemGrant; status: "active" | "revoked" | "expired" }>;
-    profile?: RelayWorkstationProfileSnapshot | undefined;
-    capabilityRevision?: number;
-    networkPolicy?: import("@nautilo/workstation-profiles").ProfileNetworkPolicy | null;
-  }) {
-    return createWorkstationShellBindingAuthorityResolver({
-      store: makeStore(options.grants),
-      expectedRelayId: RELAY,
-      expectedDesktopSessionId: DESKTOP,
-      getCapabilityRevision: () => options.capabilityRevision ?? 5,
-      getCurrentFolder: () => "/tmp",
-      profileProvider: makeProfileProvider(options.profile ?? profileSnapshot(2)),
-      networkPolicyProvider: makeNetworkPolicyProvider(
-        options.networkPolicy ?? ISOLATED_NETWORK_POLICY,
-      ),
-      expectedSubject: { userId: USER, instanceId: INSTANCE, relayId: RELAY, agentScope: AGENT_SCOPE },
-      now: () => NOW,
-    });
-  }
-
-  // Build a real sandbox-exec Sandbox from the augmented envelope so the
-  // canonical protected-path policy is compiled into Seatbelt as
-  // deny-overrides — mirroring production `createSandboxFromEnvelope` but
-  // with an explicit sandbox-exec backend so the test is deterministic on
-  // macOS hosts (the platform that ships sandbox-exec).
-  function makeEnvelopeSandbox(envelope: RelaySandboxProfile): Sandbox {
-    return new Sandbox({
-      config: envelope.config,
-      workspace: envelope.workspace,
-      dataDir: envelope.dataDir,
-      toolsBin: envelope.toolsBin,
-      backend: { kind: "sandbox-exec" },
-    });
-  }
-
-  test("durable grant replacement survives relay restart and folder changes with real sandboxed execution", async () => {
-    const root = mkTmp("relay-durable-shell-");
-    try {
-      const first = join(root, "first");
-      const second = join(root, "second");
-      mkdirSync(first);
-      mkdirSync(second);
-      const identity = await captureDesktopFilesystemGrantRootIdentity(root);
-      if (!identity.ok) throw new Error("fixture root is unavailable");
-      let now = new Date("2026-07-12T12:00:00.000Z");
-      const filePath = join(root, "grants.json");
-      const openStore = () => new DesktopFilesystemGrantStore({ instanceId: INSTANCE, filePath, clock: () => now });
-      let store = openStore();
-      const makeGrant = (id: string) => grant(id, {
-        root, lifetime: "durable", origin: "user_picker", createdAt: now.toISOString(),
-        access: ["read", "create_modify", "execute"], filesystemIdentity: identity.filesystemIdentity,
-      }).grant;
-      expect((await store.create({ userId: USER, grant: makeGrant("old") })).ok).toBe(true);
-      expect((await store.revoke({ userId: USER, grantId: "old" })).ok).toBe(true);
-      now = new Date("2026-07-12T13:00:00.000Z");
-      expect((await store.create({ userId: USER, grant: makeGrant("replacement") })).ok).toBe(true);
-      const policy = buildProtectedPathPolicy({ homeDir: join(root, "home"), platform: process.platform });
-      const expectedSubject = { userId: USER, instanceId: INSTANCE, relayId: RELAY, agentScope: AGENT_SCOPE };
-      let currentFolder = first;
-      const createHandler = () => makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: root }), {
-        relayId: RELAY,
-        getLocalWorkspacePath: () => currentFolder,
-        localShellWorkspaceAuthority: createLocalShellWorkspaceAuthorityResolver({ store, expectedSubject, protectedPathPolicy: policy }),
-        workstationShellBindingAuthority: createWorkstationShellBindingAuthorityResolver({
-          store: makeStore([grant("grant-1", { root, access: ["read", "execute"] })]),
-          expectedSubject, expectedRelayId: RELAY, expectedDesktopSessionId: DESKTOP,
-          getCapabilityRevision: () => 5, getCurrentFolder: () => currentFolder,
-          profileProvider: makeProfileProvider(profileSnapshot()),
-          networkPolicyProvider: makeNetworkPolicyProvider(ISOLATED_NETWORK_POLICY),
-        }),
-        protectedPathPolicy: policy,
-        createSandbox: async (envelope) => makeEnvelopeSandbox(envelope as RelaySandboxProfile),
-      });
-      for (const selected of [first, second, first]) {
-        currentFolder = selected;
-        store = openStore();
-        const handler = createHandler();
-        const result = await handler(mkRequest({
-          args: { command: "printf 'shell-ok' > marker.txt; cat marker.txt; pwd" },
-          workstationShellBinding: binding({ currentFolder }),
-        }));
-        expect(result.status).toBe("ok");
-        if (result.status === "ok") {
-          expect(result.result).toMatchObject({ exitCode: 0 });
-          expect((result.result as { stdout: string }).stdout).toContain(`shell-ok${currentFolder}`);
-        }
-      }
-      // A command admitted for the previous folder still fails before execution.
-      expect(await createHandler()(mkRequest({ workstationShellBinding: binding({ currentFolder: second }) }))).toMatchObject({
-        status: "error", errorCode: "CURRENT_FOLDER_MISMATCH",
-      });
-      now = new Date("2026-07-12T14:00:00.000Z");
-      expect((await store.revoke({ userId: USER, grantId: "replacement" })).ok).toBe(true);
-      store = openStore();
-      expect(await createHandler()(mkRequest({ workstationShellBinding: binding({ currentFolder }) }))).toMatchObject({
-        status: "error", errorCode: "WORKSTATION_SHELL_WORKSPACE_UNAUTHORIZED",
-      });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test("a bound run_shell cannot read a protected .ssh sentinel (deny-overrides win)", async () => {
-    const profileRoot = mkTmp("relay-ssh-deny-root-");
-    const home = mkTmp("relay-ssh-deny-home-");
-    const sshDir = join(home, ".ssh");
-    mkdirSync(sshDir, { recursive: true });
-    // Plant the same kind of sentinel the live failure exfiltrated
-    // (`head -c 1 ~/.ssh/config`). The sandbox must deny the read.
-    writeFileSync(join(sshDir, "config"), "TOP-SECRET-SENTINEL\n");
-    const policy = buildProtectedPathPolicy({
-      homeDir: home,
-      platform: process.platform,
-    });
-    const grants = [
-      grant("grant-1", {
-        root: profileRoot,
-        access: ["execute", "read", "create_modify"],
-      }),
-    ];
-    const guard = createWorkspaceGuard({
-      workspaceRoot: mkTmp("relay-ssh-deny-guard-"),
-    });
-
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationShellBindingAuthority: resolver({ grants }),
-      protectedPathPolicy: policy,
-      createSandbox: (envelope) =>
-        Promise.resolve(makeEnvelopeSandbox(envelope as RelaySandboxProfile)),
-    });
-
-    const r = await handler(
-      mkRequest({
-        sandboxProfile: baseEnvelope("/tmp"),
-        args: { command: `head -c 1 ${join(sshDir, "config")}` },
-        workstationShellBinding: binding(),
-      }),
-    );
-
-    // The protected .ssh sentinel must be denied — never exit 0 with the
-    // secret. Every started process is represented as a canonical receipt,
-    // so sandbox-exec denial is a successful relay result with a nonzero
-    // process exit rather than a transport error.
-    expect(r.status).toBe("ok");
-    if (r.status === "ok") {
-      const receipt = r.result as { exitCode: number | null; stdout: string; stderr: string };
-      expect(receipt.exitCode).not.toBe(0);
-      expect(`${receipt.stdout}${receipt.stderr}`).not.toContain("TOP-SECRET-SENTINEL");
-    }
-  });
-
-  test("a bound run_shell can still read an unprotected workspace file", async () => {
-    const profileRoot = mkTmp("relay-ssh-allow-root-");
-    const home = mkTmp("relay-ssh-allow-home-");
-    const policy = buildProtectedPathPolicy({
-      homeDir: home,
-      platform: process.platform,
-    });
-    const grants = [
-      grant("grant-1", {
-        root: profileRoot,
-        access: ["execute", "read", "create_modify"],
-      }),
-    ];
-    const guard = createWorkspaceGuard({
-      workspaceRoot: mkTmp("relay-ssh-allow-guard-"),
-    });
-    // A non-protected file inside the profile root stays readable.
-    const allowedFile = join(profileRoot, "allowed.txt");
-    writeFileSync(allowedFile, "OK\n");
-
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationShellBindingAuthority: resolver({ grants }),
-      protectedPathPolicy: policy,
-      createSandbox: (envelope) =>
-        Promise.resolve(makeEnvelopeSandbox(envelope as RelaySandboxProfile)),
-    });
-
-    const r = await handler(
-      mkRequest({
-        sandboxProfile: baseEnvelope("/tmp"),
-        args: { command: `cat ${allowedFile}` },
-        workstationShellBinding: binding(),
-      }),
-    );
-
-    expect(r.status).toBe("ok");
-    if (r.status === "ok") {
-      const result = r.result as { stdout: string; stderr: string };
-      expect(result.stdout.trim()).toBe("OK");
-    }
-  });
-});
-}
-
-// ---------------------------------------------------------------------------
-// profile network policy → relay network policy conversion
-// ---------------------------------------------------------------------------
-
 describe("profileNetworkPolicyToRelayNetworkPolicy", () => {
   test("maps host mode exactly", () => {
     const r = profileNetworkPolicyToRelayNetworkPolicy({ mode: "host", allow: [] });
@@ -1596,229 +979,28 @@ describe("shell-binding resolver network policy sourcing", () => {
 // makeDispatchHandler wires the local network policy into the envelope
 // ---------------------------------------------------------------------------
 
-describe("makeDispatchHandler envelope network wiring", () => {
-  const savedLdPreload = process.env["LD_PRELOAD"];
-  beforeEach(() => {
-    delete process.env["LD_PRELOAD"];
-  });
-  afterEach(() => {
-    if (savedLdPreload === undefined) delete process.env["LD_PRELOAD"];
-    else process.env["LD_PRELOAD"] = savedLdPreload;
-  });
-
-  test("the envelope networkPolicy comes from the local profile, REPLACING the server's", async () => {
-    const profileRoot = mkTmp("relay-net-dispatch-root-");
-    const grants = [grant("grant-1", { root: profileRoot })];
-    const guard = createWorkspaceGuard({ workspaceRoot: mkTmp("relay-net-dispatch-guard-") });
-
-    let captured: RelaySandboxProfile | undefined;
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationShellBindingAuthority: createWorkstationShellBindingAuthorityResolver({
-        store: makeStore(grants),
-        expectedRelayId: RELAY,
-        expectedDesktopSessionId: DESKTOP,
-        getCapabilityRevision: () => 5,
-        getCurrentFolder: () => "/tmp",
-        profileProvider: makeProfileProvider(profileSnapshot(2)),
-        networkPolicyProvider: makeNetworkPolicyProvider({
-          mode: "proxy_allowlist",
-          allow: [{ id: "d", kind: "domain", value: "registry.npmjs.org" }],
-        }),
-        expectedSubject: { userId: USER, instanceId: INSTANCE, relayId: RELAY, agentScope: AGENT_SCOPE },
-        now: () => NOW,
-      }),
-      createSandbox: (envelope) => {
-        captured = envelope as RelaySandboxProfile;
-        return Promise.resolve(makeSandbox(envelope.workspace));
+describe("retired Desktop agent shell dispatch", () => {
+  test.each([
+    ["run_shell", { command: "touch must-not-run" }],
+    ["terminal", { action: "run", data: "touch must-not-run" }],
+  ] as const)("%s returns an upgrade refusal before sandbox construction", async (toolName, args) => {
+    let sandboxCalls = 0;
+    const handler = makeDispatchHandler(
+      createWorkspaceGuard({ workspaceRoot: "/tmp" }),
+      {
+        createSandbox: () => {
+          sandboxCalls += 1;
+          return Promise.resolve(makeSandbox());
+        },
       },
-    });
-
-    const serverEnvelope = baseEnvelope("/tmp");
-    // Server tries to impose host networking; the relay must NOT honor it.
-    serverEnvelope.config.networkPolicy = { mode: "host" };
-
-    const r = await handler(
-      mkRequest({
-        sandboxProfile: serverEnvelope,
-        args: { command: "/bin/pwd" },
-        workstationShellBinding: binding(),
-      }),
     );
 
-    expect(r.status).toBe("ok");
-    expect(captured).toBeDefined();
-    if (captured !== undefined) {
-      expect(captured.config.networkPolicy).toEqual({
-        mode: "proxy-allowlist",
-        allow: [{ type: "domain", host: "registry.npmjs.org" }],
-      });
-      expect(captured.config.networkPolicy).not.toEqual({ mode: "host" });
-    }
-  });
-
-  test("an unrepresentable active-profile policy denies the dispatch (fail closed)", async () => {
-    const profileRoot = mkTmp("relay-net-unrep-root-");
-    const grants = [grant("grant-1", { root: profileRoot })];
-    const guard = createWorkspaceGuard({ workspaceRoot: mkTmp("relay-net-unrep-guard-") });
-    let ran = false;
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationShellBindingAuthority: createWorkstationShellBindingAuthorityResolver({
-        store: makeStore(grants),
-        expectedRelayId: RELAY,
-        expectedDesktopSessionId: DESKTOP,
-        getCapabilityRevision: () => 5,
-        getCurrentFolder: () => "/tmp",
-        profileProvider: makeProfileProvider(profileSnapshot(2)),
-        networkPolicyProvider: makeNetworkPolicyProvider({
-          mode: "proxy_allowlist",
-          allow: [{ id: "p", kind: "port", value: "8081" }],
-        }),
-        expectedSubject: { userId: USER, instanceId: INSTANCE, relayId: RELAY, agentScope: AGENT_SCOPE },
-        now: () => NOW,
-      }),
-      createSandbox: () => {
-        ran = true;
-        return Promise.resolve(makeSandbox(profileRoot));
-      },
+    const result = await handler(mkRequest({ toolName, args }));
+    expect(result).toMatchObject({
+      status: "error",
+      errorCode: "LOCAL_EXECUTION_UPGRADE_REQUIRED",
     });
-
-    const r = await handler(mkRequest({ workstationShellBinding: binding() }));
-    expect(r.status).toBe("error");
-    expect((r as { errorCode?: string }).errorCode).toBe(
-      "WORKSTATION_SHELL_BINDING_NETWORK_POLICY_UNREPRESENTABLE",
-    );
-    expect(ran).toBe(false);
+    expect(result.status === "error" && result.error).toContain("exec_command");
+    expect(sandboxCalls).toBe(0);
   });
 });
-
-// ---------------------------------------------------------------------------
-// local authority-boundary correction — under an active local profile a
-// bound run_shell executes inside a sandbox that denies a protected .ssh
-// sentinel (deny-overrides win) while an unprotected workspace file stays
-// readable. Mirrors the live failure (`head -c 1 ~/.ssh/config`) that escaped
-// the unbound generic sandbox before this gate existed. The live Seatbelt
-// proof is macOS-only; Linux containment is covered by bubblewrap tests.
-// ---------------------------------------------------------------------------
-
-if (process.platform === "darwin") {
-describe("local authority-boundary correction — active profile + valid binding live sandbox", () => {
-  const savedLdPreload = process.env["LD_PRELOAD"];
-  beforeEach(() => {
-    delete process.env["LD_PRELOAD"];
-  });
-  afterEach(() => {
-    if (savedLdPreload === undefined) delete process.env["LD_PRELOAD"];
-    else process.env["LD_PRELOAD"] = savedLdPreload;
-  });
-
-  function resolver(options: {
-    grants: Array<{ grant: DesktopFilesystemGrant; status: "active" | "revoked" | "expired" }>;
-    profile?: RelayWorkstationProfileSnapshot | undefined;
-    networkPolicy?: import("@nautilo/workstation-profiles").ProfileNetworkPolicy | null;
-  }) {
-    return createWorkstationShellBindingAuthorityResolver({
-      store: makeStore(options.grants),
-      expectedRelayId: RELAY,
-      expectedDesktopSessionId: DESKTOP,
-      getCapabilityRevision: () => 5,
-      getCurrentFolder: () => "/tmp",
-      profileProvider: makeProfileProvider(options.profile ?? profileSnapshot(2)),
-      networkPolicyProvider: makeNetworkPolicyProvider(
-        options.networkPolicy ?? ISOLATED_NETWORK_POLICY,
-      ),
-      expectedSubject: { userId: USER, instanceId: INSTANCE, relayId: RELAY, agentScope: AGENT_SCOPE },
-      now: () => NOW,
-    });
-  }
-
-  function makeEnvelopeSandbox(envelope: RelaySandboxProfile): Sandbox {
-    return new Sandbox({
-      config: envelope.config,
-      workspace: envelope.workspace,
-      dataDir: envelope.dataDir,
-      toolsBin: envelope.toolsBin,
-      backend: { kind: "sandbox-exec" },
-    });
-  }
-
-  function stateProvider(
-    snapshot: RelayWorkstationProfileSnapshot | undefined,
-  ): RelayWorkstationProfileSnapshotProvider {
-    return { getProfileSnapshot: () => Promise.resolve(snapshot) };
-  }
-
-  test("active local profile + valid binding ⇒ live sandbox-exec denies protected .ssh sentinel", async () => {
-    const profileRoot = mkTmp("relay-correct-deny-root-");
-    const home = mkTmp("relay-correct-deny-home-");
-    const sshDir = join(home, ".ssh");
-    mkdirSync(sshDir, { recursive: true });
-    writeFileSync(join(sshDir, "config"), "TOP-SECRET-SENTINEL\n");
-    const policy = buildProtectedPathPolicy({ homeDir: home, platform: process.platform });
-    const grants = [
-      grant("grant-1", { root: profileRoot, access: ["execute", "read", "create_modify"] }),
-    ];
-    const guard = createWorkspaceGuard({ workspaceRoot: mkTmp("relay-correct-deny-guard-") });
-
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationProfileStateProvider: stateProvider(profileSnapshot(2)),
-      workstationShellBindingAuthority: resolver({ grants }),
-      protectedPathPolicy: policy,
-      createSandbox: (envelope) =>
-        Promise.resolve(makeEnvelopeSandbox(envelope as RelaySandboxProfile)),
-    });
-
-    const r = await handler(
-      mkRequest({
-        sandboxProfile: baseEnvelope("/tmp"),
-        args: { command: `head -c 1 ${join(sshDir, "config")}` },
-        workstationShellBinding: binding(),
-      }),
-    );
-
-    expect(r.status).toBe("ok");
-    if (r.status === "ok") {
-      const receipt = r.result as { exitCode: number | null; stdout: string; stderr: string };
-      expect(receipt.exitCode).not.toBe(0);
-      expect(`${receipt.stdout}${receipt.stderr}`).not.toContain("TOP-SECRET-SENTINEL");
-    }
-  });
-
-  test("active local profile + valid binding ⇒ unprotected workspace read still works", async () => {
-    const profileRoot = mkTmp("relay-correct-allow-root-");
-    const home = mkTmp("relay-correct-allow-home-");
-    const policy = buildProtectedPathPolicy({ homeDir: home, platform: process.platform });
-    const grants = [
-      grant("grant-1", { root: profileRoot, access: ["execute", "read", "create_modify"] }),
-    ];
-    const guard = createWorkspaceGuard({ workspaceRoot: mkTmp("relay-correct-allow-guard-") });
-    const allowedFile = join(profileRoot, "allowed.txt");
-    writeFileSync(allowedFile, "OK\n");
-
-    const handler = makeDispatchHandler(guard, {
-      relayId: RELAY,
-      workstationProfileStateProvider: stateProvider(profileSnapshot(2)),
-      workstationShellBindingAuthority: resolver({ grants }),
-      protectedPathPolicy: policy,
-      createSandbox: (envelope) =>
-        Promise.resolve(makeEnvelopeSandbox(envelope as RelaySandboxProfile)),
-    });
-
-    const r = await handler(
-      mkRequest({
-        sandboxProfile: baseEnvelope("/tmp"),
-        args: { command: `cat ${allowedFile}` },
-        workstationShellBinding: binding(),
-      }),
-    );
-
-    expect(r.status).toBe("ok");
-    if (r.status === "ok") {
-      const result = r.result as { stdout: string };
-      expect(result.stdout.trim()).toBe("OK");
-    }
-  });
-});
-}

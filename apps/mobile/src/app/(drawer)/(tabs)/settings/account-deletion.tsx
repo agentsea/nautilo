@@ -32,6 +32,8 @@ function blockedMessage(eligibility: AccountDeletionEligibility): string | null 
       return "This account has protected custody. Account termination requires a compatible newer Nautilo release or operator path; do not retry deletion until that flow is available.";
     case "active_media_operation":
       return "This account has active media work with a provider. Wait for it to finish and its cleanup to complete before deleting the account.";
+    case "active_conversion_operation":
+      return "This account has an active or uncertain file conversion. Wait for it to finish or reach a terminal recovery state before deleting the account.";
     case "user_not_found":
       return "This account is no longer available on the server.";
   }

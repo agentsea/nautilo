@@ -127,6 +127,10 @@ describe("account deletion recovery receipt", () => {
       kind: "eligibility",
       eligibility: { eligible: false, code: "active_media_operation" },
     })).toBe("ambiguous");
+    expect(reconcileAccountDeletionAttempt(attempt, {
+      kind: "eligibility",
+      eligibility: { eligible: false, code: "active_conversion_operation" },
+    })).toBe("ambiguous");
     expect(reconcileAccountDeletionAttempt(attempt, { kind: "http-error", status: 401 })).toBe("server-deleted");
     expect(reconcileAccountDeletionAttempt(attempt, { kind: "http-error", status: 404 })).toBe("server-deleted");
     expect(reconcileAccountDeletionAttempt(attempt, { kind: "transport-error" })).toBe("ambiguous");

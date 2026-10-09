@@ -11,9 +11,10 @@ test("historical locator grants only read, never old input or Stop authority", (
   for (const args of [{ session_id: "execution-a", cancel: true }, { session_id: "execution-a", chars: "input" }, { session_id: "foreign" }, { session_id: "execution-a", cursor: -1 }, { session_id: "execution-a", owner: "human-a" }]) expect(isRelayLocalExecutionHistoryRead("write_stdin", args, binding)).toBe(false);
   expect(isRelayLocalExecutionHistoryRead("exec_command", { session_id: "execution-a" }, binding)).toBe(false);
 });
-test("old peer cannot advertise history while existing execution stays supported", () => {
+test("old peer keeps retained history independent from current execution support", () => {
   const caps = { profile: "desktop-agent" as const, canExecuteLocal: true, canReadLocalExecutionHistory: true };
   expect(projectRelayCapabilitiesForProtocol(caps, 20).canReadLocalExecutionHistory).toBeUndefined();
-  expect(projectRelayCapabilitiesForProtocol(caps, 20).canExecuteLocal).toBe(true);
+  expect(projectRelayCapabilitiesForProtocol(caps, 20).canExecuteLocal).toBeUndefined();
   expect(projectRelayCapabilitiesForProtocol(caps, 21).canReadLocalExecutionHistory).toBe(true);
+  expect(projectRelayCapabilitiesForProtocol(caps, 21).canExecuteLocal).toBeUndefined();
 });

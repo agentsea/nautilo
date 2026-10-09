@@ -738,6 +738,39 @@ export function scopeSubagentToolComposition(
   };
 }
 
+type ScopeSubagentResumeToolUpdate = Partial<
+  Pick<NautiloState, "toolWhitelist" | "activatedToolNames">
+>;
+
+/**
+ * Repair only the lifecycle companion omitted by legacy explicit Task
+ * whitelists. The persisted checkpoint remains the authority baseline: its
+ * other tools are neither replaced nor supplemented from the current Task
+ * row. The current run must independently admit both lifecycle tools before a
+ * parked checkpoint can gain `write_stdin`.
+ */
+function legacyExecLifecycleResumeUpdate(
+  saved: Partial<NautiloState>,
+  effectiveToolWhitelist: readonly string[] | undefined,
+): ScopeSubagentResumeToolUpdate | undefined {
+  const savedWhitelist = saved.toolWhitelist;
+  if (
+    !savedWhitelist?.includes("exec_command")
+    || savedWhitelist.includes("write_stdin")
+    || !effectiveToolWhitelist?.includes("exec_command")
+    || !effectiveToolWhitelist.includes("write_stdin")
+  ) {
+    return undefined;
+  }
+  const savedActivated = saved.activatedToolNames ?? [];
+  return {
+    toolWhitelist: [...savedWhitelist, "write_stdin"],
+    activatedToolNames: savedActivated.includes("write_stdin")
+      ? [...savedActivated]
+      : [...savedActivated, "write_stdin"],
+  };
+}
+
 export function subagentMemoryModeNote(subEnvelope: MemoryAccessEnvelope, toolWhitelist?: string[]): string {
   if (toolWhitelist?.includes("security_scan")) return "\n\n[Internal] This research Task retains its notes in the existing security_scan ledger. Record material source analysis, protections, decisions and pending work as you investigate. Save accepted checkpoints before context fills; use results pages to reload notes after compaction. The final report must account for unfinished work. Only use the tools exposed to this Task.";
   if (toolWhitelist && !toolWhitelist.includes("manage_memory")) return "\n\n[Internal] Use only the tools exposed to this Task and preserve important work with the available durable tools. Return the result within the authorized delegation scope.";
@@ -1046,11 +1079,14 @@ async function runScopeSubagentUntilPauseInternal(
   // Four stream-entry modes:
   // • continueFromCheckpoint → `null` input resumes the parked checkpoint on
   // the reused thread (an unpause after a pause abort; no interrupt reply,
-  // no fresh brief). A revalidated security Task uses a continuation-only
-  // Command below to refresh its socket binding without replacing history.
+  // no fresh brief). A narrowly-scoped Command may repair the missing
+  // exec/write lifecycle companion in a legacy explicit whitelist. A
+  // revalidated security Task may also refresh its socket binding.
   // • protectedTaskHumanResume → an exact interrupt-keyed protected reply plus
-  //   replacement authority state reconstructed from the fresh segment grant.
-  // • resume defined → an existing bridged interrupt reply `Command`.
+  //   replacement authority state reconstructed from the fresh segment grant,
+  //   plus the same narrow lifecycle repair when authorized.
+  // • resume defined → an interrupt reply `Command` (approval / await), with
+  // the same narrow legacy lifecycle repair when authorized.
   // • else → a cold start with the freshly-built brief `graphInput`.
   //
   // INVARIANT (the related invariants): this is the ONLY place `graphInput.messages` is
@@ -1061,14 +1097,32 @@ async function runScopeSubagentUntilPauseInternal(
   // checkpoint (spec decision 10.2.3) and has no foreground-style "read history
   // + concat" seam to rebuild. Do not turn any branch into a rebuilt
   // `messages` array — that would be a behavior change ( §7).
-  let streamInput: unknown;
-  if (opts.continueFromCheckpoint) {
-    streamInput = null;
-  } else if (opts.protectedTaskHumanResume !== undefined) {
-    const saved = await graph.getState({
-      configurable: { thread_id: subThreadId },
-    });
-    streamInput = createProtectedTaskHumanResumeCommandV1(
+  let streamInput: unknown = opts.continueFromCheckpoint
+    ? null
+    : opts.resume !== undefined
+      ? new Command({ resume: opts.resume })
+      : graphInput;
+  const mayRepairLegacyExecLifecycle = (
+    opts.continueFromCheckpoint
+    || opts.protectedTaskHumanResume !== undefined
+    || opts.resume !== undefined
+  ) && opts.toolWhitelist?.includes("exec_command") === true
+    && opts.toolWhitelist.includes("write_stdin");
+  const continuationToRefresh = opts.continueFromCheckpoint
+    && opts.taskRun
+    && opts.toolWhitelist?.includes("security_scan")
+    ? opts.taskReportBackContinuation
+    : undefined;
+  const saved = opts.protectedTaskHumanResume !== undefined
+    || mayRepairLegacyExecLifecycle
+    || continuationToRefresh
+    ? await graph.getState({ configurable: { thread_id: subThreadId } })
+    : undefined;
+  const lifecycleUpdate = mayRepairLegacyExecLifecycle
+    ? legacyExecLifecycleResumeUpdate(saved?.values ?? {}, opts.toolWhitelist)
+    : undefined;
+  if (opts.protectedTaskHumanResume !== undefined) {
+    const protectedResumeCommand = createProtectedTaskHumanResumeCommandV1(
       saved,
       opts.protectedTaskHumanResume,
       {
@@ -1086,22 +1140,39 @@ async function runScopeSubagentUntilPauseInternal(
         relayCapabilities: opts.relayCapabilities,
       },
     );
-  } else if (opts.resume !== undefined) {
-    streamInput = new Command({ resume: opts.resume });
-  } else {
-    streamInput = graphInput;
+    if (lifecycleUpdate) {
+      if (!protectedResumeCommand.update
+        || Array.isArray(protectedResumeCommand.update)) {
+        throw new TypeError(
+          "Protected Task Human resume requires a state-object authority update",
+        );
+      }
+      streamInput = new Command({
+        resume: protectedResumeCommand.resume,
+        update: { ...protectedResumeCommand.update, ...lifecycleUpdate },
+      });
+    } else {
+      streamInput = protectedResumeCommand;
+    }
+  } else if (lifecycleUpdate) {
+    streamInput = opts.resume !== undefined
+      ? new Command({ resume: opts.resume, update: lifecycleUpdate })
+      : new Command({ update: lifecycleUpdate });
   }
   // A resumed security Task keeps the same Run and canonical graph. Runtime
   // revalidates its original Desktop grant before dispatch; refresh only the
   // transport binding so a same-Desktop server reconnect can continue work.
-  if (opts.continueFromCheckpoint && opts.taskRun && opts.toolWhitelist?.includes("security_scan")
-    && opts.taskReportBackContinuation) {
-    const saved = await graph.getState({ configurable: { thread_id: subThreadId } });
-    streamInput = taskContinuationResumeCommand(saved?.values ?? {}, {
+  if (continuationToRefresh) {
+    const continuationCommand = taskContinuationResumeCommand(saved?.values ?? {}, {
       taskId: opts.currentTaskId ?? "", taskRunId: opts.currentTaskRunId ?? "",
       ownerId: opts.parentOwnerId, graphThreadId: subThreadId,
-      continuation: opts.taskReportBackContinuation,
+      continuation: continuationToRefresh,
     });
+    streamInput = lifecycleUpdate
+      ? new Command({
+          update: { ...continuationCommand.update, ...lifecycleUpdate },
+        })
+      : continuationCommand;
   }
 
   const savedFingerprints = new Set<string>();

@@ -6,6 +6,7 @@ export * from "./queries/push-notifications";
 export * from "./queries/invocation-origin-access";
 export { createEventFeedPreferenceStore } from "./queries/event-feed-preferences";
 export * from "./queries/media-generations";
+export * from "./queries/conversion-operations";
 export * from "./queries/connected-apps";
 export * from "./queries/legacy-photo-history";
 export * from "./queries/reflection-sources";
@@ -903,6 +904,8 @@ export {
 export {
   insertProviderCostEvent,
   insertProviderCostEventWith,
+  claimProviderCostEvent,
+  claimProviderCostEventWith,
   settleProviderCostEvent,
   settleProviderCostEventWith,
   buildProviderCostsSummaryQueries,
@@ -915,6 +918,7 @@ export {
   type InsertProviderCostEventInput,
   type ProviderCostEvidenceState,
   type ProviderCostAttemptOutcome,
+  type ProviderCostClaimOutcome,
   type ProviderToolPriceKey,
 } from "./queries/provider-costs";
 export {

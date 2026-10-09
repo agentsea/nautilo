@@ -65,12 +65,14 @@ const META: PostureMutationMeta = {
     deploymentMode: "desktop-permissive",
     securityLevel: "cautious",
     networkPolicy: { mode: "host" },
+    localNetworkPolicy: { mode: "host" },
     allowUncontainedHostCommands: false,
   },
   next: {
     deploymentMode: "server",
     securityLevel: "paranoid",
     networkPolicy: { mode: "isolated" },
+    localNetworkPolicy: { mode: "isolated" },
     allowUncontainedHostCommands: true,
   },
 };

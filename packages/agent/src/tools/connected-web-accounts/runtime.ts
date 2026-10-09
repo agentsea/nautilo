@@ -347,7 +347,7 @@ export type ConnectedWebOperationToolResult =
     }>
   | Readonly<{
       ok: false;
-      code: "unavailable" | "not_found" | "forbidden" | "conflict" | "invalid_result";
+      code: "unavailable" | "not_found" | "forbidden" | "conflict" | "invalid_result" | "steer_budget_unverified";
       recovery: "none" | "human_authentication";
     }>;
 

@@ -14,9 +14,6 @@ const DEFERRED_PERSONAL_TOOLS = new Set([
   "in_scope", "in_private_namespace", "ask_peer", "generate_repo_docs",
   "regenerate_soul", "security_scan", "find_voice", "audition_voices",
   "transcribe_audio", "generate_image", "generate_video", "generate_music",
-  // New Browser Use runs spend the server's hosted-provider account until
-  // that service receives its own personal funding adapter.
-  "browse_web", "run_website_task",
 ]);
 
 /** Ordinary tools retain their existing permission/content/device gates. */

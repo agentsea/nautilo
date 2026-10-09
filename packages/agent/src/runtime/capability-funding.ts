@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { TaskFundingBinding } from "@nautilo/types";
+import type { PaidServiceProvider, TaskFundingBinding } from "@nautilo/types";
 import type { ForegroundChatFundingSession } from "./foreground-chat-funding";
 import type { UsageFundingProvenance } from "../usage/usage-context";
 
@@ -37,7 +37,7 @@ export interface CapabilityFundingSession {
   readonly decisionModelId?: string | null;
   resolveModel(role: PersonalCapabilityRole, configuredId?: string | null): Promise<CapabilityModelSelection>;
   openModel(modelId: string, workload: "research" | "decision", prior?: TaskFundingBinding): Promise<AdmittedCapabilityModel>;
-  openService(provider: "tavily", prior?: TaskFundingBinding): Promise<AdmittedCapabilityService>;
+  openService(provider: PaidServiceProvider, prior?: TaskFundingBinding): Promise<AdmittedCapabilityService>;
 }
 
 const scope = new AsyncLocalStorage<CapabilityFundingSession>();

@@ -34,18 +34,6 @@ const terminalHost = readFileSync(join(desktopRoot, "electron/terminal-host.ts")
 const desktopMain = readFileSync(join(desktopRoot, "electron/main.ts"), "utf-8");
 const preload = readFileSync(join(desktopRoot, "electron/preload.ts"), "utf-8");
 const relay = readFileSync(join(desktopRoot, "electron/relay.ts"), "utf-8");
-const terminalDispatch = readFileSync(
-  join(desktopRoot, "electron/relay-dispatch/terminal.ts"),
-  "utf-8",
-);
-const terminalTool = readFileSync(
-  join(desktopRoot, "../../packages/agent/src/tools/terminal/terminal.ts"),
-  "utf-8",
-);
-const terminalSkill = readFileSync(
-  join(desktopRoot, "../../packages/agent/src/skills/bundled/terminal-sessions.md"),
-  "utf-8",
-);
 const desktopLib = readFileSync(
   join(desktopRoot, "../workbench/src/lib/desktop.ts"),
   "utf-8",
@@ -145,7 +133,7 @@ describe("terminal real-shell authority boundary", () => {
     const fn = sliceFrom(
       terminalHost,
       "function grantAgentControl(id: string): boolean",
-      "\n}\n\n/** Current lock state for a session",
+      "\n}\n\n/** Dismiss a pending agent control request",
     );
     // Missing and already scoped sessions cannot receive an unbound grant.
     expect(fn).toContain("if (!s) return false;");
@@ -167,69 +155,23 @@ describe("terminal real-shell authority boundary", () => {
     expect(fn).toContain("return true;");
   });
 
-  test("the next useful agent terminal action binds the exact Human handoff without listing", () => {
-    expect(terminalHost).toContain("export function peekAgentHandoffSession()");
-    expect(terminalHost).toContain("export function consumeAgentHandoffSession()");
-    expect(terminalHost).toContain("export function acknowledgeAgentHandoffSession(id: string)");
-
-    expect(relay).toContain("const terminalDecision = await terminal({");
-    const spawnCase = terminalDispatch.slice(
-      terminalDispatch.indexOf('case "spawn": {'),
-      terminalDispatch.indexOf('case "write": {'),
-    );
-    expect(spawnCase).toContain("const handedOver = deps.consumeAgentHandoffSession();");
-    expect(spawnCase.indexOf("deps.consumeAgentHandoffSession()")).toBeLessThan(
-      spawnCase.indexOf("deps.spawnSession({"),
-    );
-    expect(spawnCase).toContain("session_id: handedOver.id");
-    expect(spawnCase).toContain("reused_handoff: true");
-
-    const directBinding = terminalDispatch.slice(
-      terminalDispatch.indexOf('if (input.request.toolName !== "terminal")'),
-      terminalDispatch.indexOf("// Agent write that respects"),
-    );
-    expect(directBinding).toContain('const acceptsDirectHandoff = action === "run" || action === "read" || action === "write"');
-    expect(directBinding).toContain("const directHandoff = requestedSessionId === \"\" && acceptsDirectHandoff");
-    expect(directBinding).toContain("deps.peekBoundAgentTerminalSession()");
-    expect(directBinding).toContain("const sessionId = requestedSessionId || directHandoff?.id || \"\"");
-    expect(directBinding).toContain("session_id: directHandoff.id");
-    expect(directBinding).toContain("reused_handoff: true");
-
-    const listCase = terminalDispatch.slice(
-      terminalDispatch.indexOf('case "list": {'),
-      terminalDispatch.indexOf("default:", terminalDispatch.indexOf('case "list": {')),
-    );
-    expect(listCase).toContain("deps.peekAgentHandoffSession()");
-    expect(listCase).toContain("preferred_for_agent");
-  });
-
-  test("terminal guidance directly uses a handed-over PTY without activation or listing", () => {
-    expect(terminalTool).toContain("making list/discover/activate/spawn unnecessary");
-    expect(terminalTool).toContain("every `run`, `read`, or `write`");
-    expect(terminalTool).toContain("`reused_handoff:true`");
-    expect(terminalSkill).toContain("start directly with `run`, `read`, or `write`");
-    expect(terminalSkill).toContain("may remain omitted while Genie controls that PTY");
-  });
-
-  test("the handed-over PTY remains the session-less default until retake or exit", () => {
-    expect(terminalHost).toContain("export function peekBoundAgentTerminalSession()");
+  test("a scoped Human handoff retakes any prior legacy-controlled PTY without killing it", () => {
     expect(terminalHost).toContain("let boundAgentTerminalSessionId: string | null = null;");
-    const setControllerFn = sliceFrom(
+    const grantFn = sliceFrom(
       terminalHost,
-      "function setController(id: string, controller: Controller): boolean",
-      "\n}\n\n/**\n * the explicit, active-sender-validated grant operation",
+      "export function grantHumanTerminalConsent(id: string, owner: HumanTerminalConsentOwner): HumanTerminalConsent | null",
+      "\n}\n\n/** Main-owned consent metadata only",
     );
-    expect(setControllerFn).toContain("boundAgentTerminalSessionId = id;");
-    expect(setControllerFn).toContain("if (boundAgentTerminalSessionId === id) boundAgentTerminalSessionId = null;");
-    expect(terminalHost).toContain("if (boundAgentTerminalSessionId === id) boundAgentTerminalSessionId = null;");
+    expect(grantFn).toContain('setController(boundAgentTerminalSessionId, "user")');
+    expect(grantFn).toContain("boundAgentTerminalSessionId = null;");
+    expect(grantFn).toContain("session.humanTerminalScoped = true;");
   });
 
-  test("Let Genie drive publishes handoff availability before its IPC resolves", () => {
-    expect(terminalHost).toContain("readonly onAgentHandoffChanged?:");
-    expect(terminalHost).toContain("await waitForAgentHandoffPublication();");
-    expect(desktopMain).toContain('refreshDesktopRelayCapabilities("terminal handoff changed")');
-    expect(relay).toContain("hasPendingTerminalHandoff: true");
-    expect(relay).not.toContain("TERMINAL_HANDOFF_PENDING");
+  test("scoped Human consent is the relay-advertised handoff authority", () => {
+    expect(terminalHost).toContain("readonly onHumanTerminalConsentChanged?:");
+    expect(desktopMain).toContain('refreshDesktopRelayCapabilities("Human terminal consent changed")');
+    expect(relay).toContain("canUseHumanTerminal: options.humanTerminalConsent?.() != null");
+    expect(relay).toContain("humanTerminal: { version: 1 as const");
   });
 
   test("a distinct active-sender-validated grant IPC is registered separately from set-controller", () => {
@@ -262,7 +204,7 @@ describe("terminal real-shell authority boundary", () => {
     const attachFn = sliceFrom(
       terminalHost,
       "function attachSession(",
-      "\n}\n\n/**\n * Poll read for the agent",
+      "\nfunction readHumanTerminalSince(",
     );
     expect(attachFn).toContain("agentControlConsented: s.agentControlConsented");
   });
@@ -274,26 +216,6 @@ describe("terminal real-shell authority boundary", () => {
       "\n}\n\n/** Result of a write",
     );
     expect(iface).toContain("agentControlConsented: boolean;");
-  });
-
-  test("relay restores one shared locked-write wait path with truthful outcomes", () => {
-    // The relay's agent-write helper must not branch on non-grantable.
-    expect(relay).not.toContain('"non-grantable"');
-    expect(relay).not.toContain("non-grantable");
-    // It still enters the bounded grant-poll loop on a locked write.
-    const waitStart = terminalDispatch.indexOf("const writeAgentWaiting = async");
-    expect(waitStart).toBeGreaterThan(-1);
-    const wait = terminalDispatch.slice(waitStart, terminalDispatch.indexOf("const cleanTerminalToolOutput", waitStart));
-    expect(wait).toContain("deps.writeSession(sessionId, payload, \"agent\")");
-    expect(wait).toContain("grantDeadline");
-    expect(wait).toContain("deps.getSessionControl(sessionId)");
-    // Approval retries the exact pending payload once.
-    expect(wait).toContain('const retry = deps.writeSession(sessionId, payload, "agent")');
-    // Denial (request cleared without grant) returns a truthful declined result.
-    expect(wait).toContain("the user declined the control request");
-    // No-session and timeout remain truthful.
-    expect(wait).toContain("no live session");
-    expect(wait).toContain("still under user control after waiting ~2m");
   });
 
   test("Workbench + preload mirrors expose consent field and grant method", () => {

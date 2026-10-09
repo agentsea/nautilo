@@ -26,11 +26,14 @@ import {
   CAP_ANDROID_SDK,
   CAP_BUN,
   CAP_EXPO_METRO,
+  CAP_GIT,
   CAP_GRADLE,
   CAP_HOMEBREW,
   CAP_JDK,
   CAP_MASTRO,
+  CAP_NODE,
   CAP_NPM,
+  CAP_PYTHON,
   CAP_XCODE,
   createDeveloperWorkstationSeedProfile,
   DEVELOPER_WORKSTATION_ENV_ALLOWLIST,
@@ -41,10 +44,55 @@ import {
   DEVELOPER_WORKSTATION_SEED_PROFILE_REVISION,
   DEVELOPER_WORKSTATION_SEED_PROTECTED_POLICY_VERSION,
   developerWorkstationSeedProfile,
+  resolveDeveloperWorkstationSeed,
 } from "../../electron/workstation-profiles/developer-workstation-seed";
 
 const HOME = nodePath.join(nodePath.sep, "Users", "dev");
 const NOW = new Date("2026-07-13T12:00:00.000Z");
+
+function historicalRevisionOneSeed(platform: "darwin" | "linux"): WorkstationProfile {
+  const current = developerWorkstationSeedProfile({ home: HOME, platform, now: NOW });
+  const homebrewRoots = platform === "darwin"
+    ? [
+        { path: "/opt/homebrew", access: ["read", "create_modify", "delete", "execute"] },
+        { path: "/usr/local", access: ["read", "create_modify", "delete", "execute"] },
+        {
+          path: nodePath.join(HOME, "Library", "Caches", "Homebrew"),
+          access: ["read", "create_modify"],
+        },
+        { path: nodePath.join(HOME, "Library", "Homebrew"), access: ["read"] },
+      ]
+    : [
+        {
+          path: "/home/linuxbrew/.linuxbrew",
+          access: ["read", "create_modify", "delete", "execute"],
+        },
+        { path: nodePath.join(HOME, ".cache", "Homebrew"), access: ["read", "create_modify"] },
+      ];
+  const record = {
+    ...current,
+    revision: 1,
+    roots: homebrewRoots,
+    toolchainCapabilities: current.toolchainCapabilities
+      .filter((capability) =>
+        capability.id !== CAP_NODE && capability.id !== CAP_PYTHON && capability.id !== CAP_GIT
+      )
+      .map((capability) =>
+        capability.id === CAP_HOMEBREW
+          ? { ...capability, operations: ["install", "upgrade", "list"] }
+          : capability
+      ),
+  };
+  const parsed = parseWorkstationProfile(record, { now: NOW });
+  if (!parsed.ok) {
+    throw new Error(`invalid historical seed fixture: ${parsed.error.message}`);
+  }
+  return parsed.profile;
+}
+
+function cloneProfile(profile: WorkstationProfile): WorkstationProfile {
+  return JSON.parse(JSON.stringify(profile)) as WorkstationProfile;
+}
 
 describe("Developer Workstation seed — strict parsing", () => {
   test("parses fail-closed against the shared profile schema on darwin", () => {
@@ -215,6 +263,15 @@ describe("Developer Workstation seed — toolchain capabilities", () => {
     expect(homebrew.roots).toEqual([]);
   });
 
+  test("Homebrew is discovery/list-only and shared prefixes are not writable by default", () => {
+    const profile = developerWorkstationSeedProfile({ home: HOME, platform: "darwin", now: NOW });
+    const homebrew = profile.toolchainCapabilities.find((entry) => entry.id === CAP_HOMEBREW)!;
+    expect(homebrew.operations).toEqual(["list"]);
+    expect(profile.roots.filter((root) => root.path.includes("homebrew") || root.path.includes("Homebrew"))
+      .every((root) => !root.access.includes("create_modify") && !root.access.includes("delete"))).toBe(true);
+    expect(profile.revision).toBe(2);
+  });
+
   test("toolchain capability ids are unique", () => {
     const profile = developerWorkstationSeedProfile({ home: HOME, platform: "darwin", now: NOW });
     const ids = profile.toolchainCapabilities.map((c) => c.id);
@@ -282,7 +339,7 @@ describe("Developer Workstation seed — compiles against representative discove
     const bunRoot = nodePath.join(HOME, ".bun");
     const facts: DiscoveredWorkstationFacts = {
       roots: [
-        { path: "/opt/homebrew", access: ["read", "create_modify", "delete", "execute"], sourceProvider: "homebrew" },
+        { path: "/opt/homebrew", access: ["read"], sourceProvider: "homebrew" },
       ],
       environmentKeys: ["BUN_INSTALL"],
       capabilities: [
@@ -341,5 +398,96 @@ describe("Developer Workstation seed — store-ready", () => {
     expect(profile).not.toHaveProperty("grantIds");
     expect(profile).not.toHaveProperty("compiledAt");
     expect(profile).not.toHaveProperty("activeSession");
+  });
+});
+
+describe("Developer Workstation seed — revision migration recognition", () => {
+  test("proposes the current seed for an absent profile without creating authority", () => {
+    const resolved = resolveDeveloperWorkstationSeed(null, {
+      home: HOME,
+      platform: "darwin",
+      now: NOW,
+    });
+    expect(resolved.kind).toBe("absent");
+    expect(resolved.reviewProfile.revision).toBe(2);
+  });
+
+  for (const platform of ["darwin", "linux"] as const) {
+    test(`recognizes the exact shipped revision 1 shape on ${platform} while ignoring timestamps`, () => {
+      const stored = {
+        ...historicalRevisionOneSeed(platform),
+        createdAt: "2025-01-02T03:04:05.000Z",
+        updatedAt: "2026-01-02T03:04:05.000Z",
+      };
+      const before = JSON.stringify(stored);
+      const resolved = resolveDeveloperWorkstationSeed(stored, {
+        home: HOME,
+        platform,
+        now: NOW,
+      });
+
+      expect(resolved.kind).toBe("shipped_v1_upgrade");
+      if (resolved.kind !== "shipped_v1_upgrade") return;
+      expect(resolved.expectedRevision).toBe(1);
+      expect(resolved.storedProfile).toBe(stored);
+      expect(resolved.reviewProfile.revision).toBe(2);
+      expect(resolved.reviewProfile.createdAt).toBe(stored.createdAt);
+      expect(resolved.reviewProfile.updatedAt).toBe(NOW.toISOString());
+      expect(resolved.reviewProfile.toolchainCapabilities.map((entry) => entry.id)).toContain(CAP_NODE);
+      expect(
+        resolved.reviewProfile.roots.every(
+          (root) => !root.access.includes("create_modify") && !root.access.includes("delete"),
+        ),
+      ).toBe(true);
+      expect(JSON.stringify(stored)).toBe(before);
+    });
+  }
+
+  test("returns an exact current seed as current and preserves its stored timestamps", () => {
+    const stored = developerWorkstationSeedProfile({ home: HOME, platform: "darwin", now: NOW });
+    const resolved = resolveDeveloperWorkstationSeed(stored, {
+      home: HOME,
+      platform: "darwin",
+      now: new Date("2026-08-01T12:00:00.000Z"),
+    });
+    expect(resolved.kind).toBe("current");
+    if (resolved.kind !== "current") return;
+    expect(resolved.reviewProfile).toBe(stored);
+    expect(resolved.reviewProfile.createdAt).toBe(NOW.toISOString());
+  });
+
+  test("preserves revision 1 profiles with any customized authority-bearing content", () => {
+    const legacy = historicalRevisionOneSeed("darwin");
+    const cases: Array<readonly [string, (profile: WorkstationProfile) => void]> = [
+      ["id", (profile) => { profile.id = "custom-developer-workstation"; }],
+      ["revision", (profile) => { profile.revision = 2; }],
+      ["name", (profile) => { profile.name = "My Developer Workstation"; }],
+      ["roots", (profile) => { profile.roots = profile.roots.slice(1); }],
+      ["discovery providers", (profile) => {
+        profile.discoveryProviders = profile.discoveryProviders.slice(1);
+      }],
+      ["environment keys", (profile) => { profile.environmentKeys = profile.environmentKeys.slice(1); }],
+      ["executable rules", (profile) => {
+        profile.executableRules = [{ ...profile.executableRules[0]!, argv: ["run"] }];
+      }],
+      ["network", (profile) => { profile.network = { mode: "isolated", allow: [] }; }],
+      ["capabilities", (profile) => { profile.capabilities = profile.capabilities.slice(1); }],
+      ["toolchain capabilities", (profile) => {
+        profile.toolchainCapabilities = profile.toolchainCapabilities.slice(1);
+      }],
+      ["protected policy version", (profile) => { profile.protectedPolicyVersion = 2; }],
+    ];
+
+    for (const [label, mutate] of cases) {
+      const customized = cloneProfile(legacy);
+      mutate(customized);
+      const resolved = resolveDeveloperWorkstationSeed(customized, {
+        home: HOME,
+        platform: "darwin",
+        now: NOW,
+      });
+      expect(resolved.kind, label).toBe("custom");
+      expect(resolved.reviewProfile, label).toBe(customized);
+    }
   });
 });

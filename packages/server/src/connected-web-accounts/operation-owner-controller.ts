@@ -6,8 +6,10 @@ import type {
 import { ConnectedWebAccountStoreError, type ConnectedWebAccountStore, type ConnectedWebOperation } from "./store";
 import type { ConnectedWebOperationSecrets } from "./operation-secrets";
 import type { ConnectedWebOperationDirectRuntime } from "./operation-direct-runtime";
+import type { ConnectedWebBrowserFunding } from "./browser-use-funding";
 
 type OwnerOperationProvider = Pick<BrowserUseCloudAdapter, "observeHostedReadRun" | "cancelHostedReadRun">;
+type OwnerOperationProviderFactory = Pick<BrowserUseCloudAdapter, "withRequestCredential">;
 type OwnerOperationStore = Pick<ConnectedWebAccountStore, "getOperationForOwner" | "scheduleOperationCheck">;
 
 function terminalResult(operation: ConnectedWebOperation): ConnectedWebOperationTerminalReadResult | null {
@@ -19,7 +21,7 @@ function terminalResult(operation: ConnectedWebOperation): ConnectedWebOperation
     page: { ...result.page },
     read: result.read === null ? null : { ...result.read, facts: result.read.facts.map((fact) => ({ ...fact })) },
     cost: { ...result.cost },
-    outputs: [],
+    outputs: result.outputs.map((output) => ({ ...output })),
     outputsTruncated: result.outputsTruncated,
   };
 }
@@ -68,7 +70,8 @@ function active(status: "queued" | "dispatching" | "running" | "completed" | "fa
 export class ConnectedWebOperationOwnerController {
   constructor(private readonly deps: {
     readonly store: OwnerOperationStore;
-    readonly provider: OwnerOperationProvider;
+    readonly provider: OwnerOperationProviderFactory;
+    readonly funding: Pick<ConnectedWebBrowserFunding, "admitLegacyServer" | "run">;
     /** Null before listen: inject/createApp tests must remain DB/secret-free. */
     readonly secrets: () => ConnectedWebOperationSecrets | null;
     /** Listener-owned in-memory direct lease authority; absent before listen/recovery. */
@@ -101,6 +104,28 @@ export class ConnectedWebOperationOwnerController {
     }
   }
 
+  private async withProvider<T>(
+    operation: ConnectedWebOperation,
+    callback: (provider: OwnerOperationProvider) => Promise<T>,
+  ): Promise<T> {
+    try {
+      const binding = operation.fundingBinding
+        ?? await this.deps.funding.admitLegacyServer(operation.ownerUserId);
+      if (
+        binding.humanUserId !== operation.ownerUserId
+        || binding.provider !== "browser-use"
+        || (operation.fundingBinding === null && binding.binding.kind !== "server")
+      ) {
+        throw new Error("funding binding does not own this operation");
+      }
+      return await this.deps.funding.run(binding, "recover", ({ apiKey, usageFunding }) =>
+        callback(this.deps.provider.withRequestCredential({ apiKey, usageFunding }))
+      );
+    } catch {
+      throw new ConnectedWebAccountStoreError("provider_unavailable");
+    }
+  }
+
   private async observe(operation: ConnectedWebOperation): Promise<{
     readonly runId: string;
     readonly canWatch: boolean;
@@ -108,8 +133,10 @@ export class ConnectedWebOperationOwnerController {
     readonly liveViewUrl: string | null;
   }> {
     const runId = this.openRun(operation);
-    let observation: Awaited<ReturnType<OwnerOperationProvider["observeHostedReadRun"]>>;
-    try { observation = await this.deps.provider.observeHostedReadRun(runId); } catch { throw new ConnectedWebAccountStoreError("provider_unavailable"); }
+    const observation: Awaited<ReturnType<OwnerOperationProvider["observeHostedReadRun"]>> = await this.withProvider(
+      operation,
+      (provider) => provider.observeHostedReadRun(runId),
+    );
     if (providerFailure(observation) || observation.runId !== runId) throw new ConnectedWebAccountStoreError("provider_unavailable");
     const isActive = active(observation.status);
     return { runId, canWatch: isActive && observation.liveViewUrl !== null, canStop: isActive, liveViewUrl: isActive ? observation.liveViewUrl : null };
@@ -160,8 +187,10 @@ export class ConnectedWebOperationOwnerController {
     }
     const observed = await this.observe(operation);
     if (!observed.canStop) throw new ConnectedWebAccountStoreError("conflict");
-    let cancelled: Awaited<ReturnType<OwnerOperationProvider["cancelHostedReadRun"]>>;
-    try { cancelled = await this.deps.provider.cancelHostedReadRun(observed.runId); } catch { throw new ConnectedWebAccountStoreError("provider_unavailable"); }
+    const cancelled: Awaited<ReturnType<OwnerOperationProvider["cancelHostedReadRun"]>> = await this.withProvider(
+      operation,
+      (provider) => provider.cancelHostedReadRun(observed.runId),
+    );
     if (providerFailure(cancelled) || cancelled.runId !== observed.runId) throw new ConnectedWebAccountStoreError("provider_unavailable");
     // This update only wakes the durable supervisor. It neither declares a
     // terminal outcome nor releases the account writer fence.

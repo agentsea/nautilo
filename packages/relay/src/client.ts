@@ -1,12 +1,14 @@
+import { matchesGitHubWorkstationBinding } from "./protocol";
 import { parseRelayLocalExecutionDelegationCapture } from "./protocol";
 import { isRelayGitHubDispatch } from "./protocol";
-import { parseGitHubInvocationBinding } from "../../types/src/github-invocation";
+import { parseRelayGitHubInvocationBinding } from "./protocol";
 import { isRelayLocalExecutionSearchAllowed } from "./protocol";
 import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "./protocol";
 import { parseHumanTerminalOperation, sameHumanTerminalConsentOwner } from "../../types/src/human-terminal";
 import { parseRelayHumanTerminalBinding, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION } from "./protocol";
 import { parseRelayHumanTerminalCapability } from "./types";
-import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "./protocol";
+import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION,
+  RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION } from "./protocol";
 import { parseRelayBasicExecutionCapability } from "./types";
 import { RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION, isRelayLocalGitCapability } from "./protocol";
 import { parseRelayLocalExecutionCapability } from "./types";
@@ -1341,12 +1343,15 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       }
     }
     if (msg.toolName === "local_github" || msg.githubBinding !== undefined) {
-      const binding = parseGitHubInvocationBinding(msg.githubBinding, msg.args);
+      const binding = parseRelayGitHubInvocationBinding(msg.githubBinding, msg.args);
+      const authenticatedGit = msg.toolName === "local_git";
       if (!binding || !isRelayGitHubDispatch(msg.toolName, msg.args, binding, registeredCapabilities, negotiatedProtocolVersion)
         || binding.owner.humanUserId !== options.userId || binding.owner.relayId !== relayId
         || binding.owner.desktopSessionId !== desktopSessionId || !desktopTopology || binding.owner.pairingGeneration !== desktopTopology.pairingGeneration || binding.owner.instanceId !== options.runShellOwnerInstanceId
         || msg.hostedBy !== undefined || msg.humanTerminalBinding !== undefined || msg.localExecutionBinding !== undefined
-        || msg.localExecutionHistoryBinding !== undefined || msg.workstationShellBinding !== undefined || msg.uncontainedHostCommandsSession === true
+        || msg.localExecutionHistoryBinding !== undefined
+        || (authenticatedGit ? !matchesGitHubWorkstationBinding(binding, msg.workstationShellBinding) : msg.workstationShellBinding !== undefined)
+        || msg.uncontainedHostCommandsSession === true
         || (binding.stage === "publish" && msg.approvalObtained !== true) || msg.executionClass === "real_workstation") {
         send({ type: "relay:result", correlationId: msg.correlationId, status: "error", errorCode: "GITHUB_UNAVAILABLE", error: "GitHub custody is unavailable." });
         return;
@@ -1388,11 +1393,14 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     } else if (msg.toolName === "exec_command" || msg.toolName === "write_stdin" || msg.localExecutionBinding !== undefined) {
       const binding = parseRelayLocalExecutionBinding(msg.localExecutionBinding);
       const capability = parseRelayLocalExecutionCapability(registeredCapabilities.localExecution);
+      const startsOrInputs = binding?.operation === "start" || binding?.operation === "input";
       if (binding === null || capability === null || msg.hostedBy !== undefined
         || (msg.toolName !== "exec_command" && msg.toolName !== "write_stdin")
         || registeredCapabilities.profile !== "desktop-agent"
         || (registeredCapabilities.canExecuteLocal !== true && !(binding.version === 4 && binding.operation === "cancel"))
         || negotiatedProtocolVersion < RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION
+        || (startsOrInputs && (negotiatedProtocolVersion < RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION
+          || capability.localNetworkPolicy !== true || binding.localNetworkPolicy === undefined))
         || (binding.version === 4 && (negotiatedProtocolVersion < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION
           || (registeredCapabilities.canDelegateLocalExecution !== true && binding.operation !== "cancel")))
         || (binding.version === 3 && (negotiatedProtocolVersion < RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION

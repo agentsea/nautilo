@@ -100,6 +100,19 @@ export function formatInt(value: number): string {
   return INT.format(Math.round(value));
 }
 
+const MEASURED_UNITS = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 8,
+});
+
+export function formatMeasuredUsage(
+  measuredUnits: number | null | undefined,
+  unitType: string | null | undefined,
+): string | null {
+  return measuredUnits === null || measuredUnits === undefined || !unitType
+    ? null
+    : `${MEASURED_UNITS.format(measuredUnits)} ${unitType === "cloudconvert_credit" ? "credits" : unitType}`;
+}
+
 export function formatPercent(part: number, whole: number): string {
   if (whole <= 0) return "0%";
   const pct = (part / whole) * 100;
@@ -192,6 +205,8 @@ function normalizeProviderCosts(
     operation: string;
     operations: number;
     unknownOperations?: number;
+    measuredUnits?: number | null;
+    unitType?: string | null;
     estimatedCostUsd?: number;
     actualCostUsd?: number;
     totalCostUsd: number;
@@ -200,6 +215,8 @@ function normalizeProviderCosts(
   return rows.map((row) => ({
     ...row,
     unknownOperations: row.unknownOperations ?? 0,
+    measuredUnits: row.measuredUnits ?? null,
+    unitType: row.unitType ?? null,
     estimatedCostUsd: row.estimatedCostUsd ?? 0,
     actualCostUsd: row.actualCostUsd ?? 0,
   }));

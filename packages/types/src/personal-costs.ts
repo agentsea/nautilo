@@ -53,6 +53,9 @@ export interface PersonalCostsByProviderRow {
   operation: string;
   operations: number;
   unknownOperations: number;
+  /** Provider-native usage evidence, when the grouped rows share one unit. */
+  measuredUnits?: number | null;
+  unitType?: string | null;
   estimatedCostUsd: number;
   actualCostUsd: number;
   totalCostUsd: number;

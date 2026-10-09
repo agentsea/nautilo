@@ -1,5 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
-import type { RelayLocalExecutionDelegationCapture, RelayServerMessage } from "@nautilo/relay";
+import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION,
+  type RelayLocalExecutionDelegationCapture, type RelayServerMessage } from "@nautilo/relay";
 import { InMemoryRelayRegistry } from "@nautilo/runtime";
 import { resolveTaskLocalExecutionCaptureTarget } from "../../src/local-execution-task-capture";
 
@@ -7,7 +8,8 @@ async function fixture() {
   const registry = new InMemoryRelayRegistry();
   const sent: RelayServerMessage[] = [];
   const caps = { profile: "desktop-agent" as const, canExecuteLocal: true, canDelegateLocalExecution: true,
-    localExecution: { version: 1 as const, generation: "host-generation", pipe: true as const, pty: true, capacity: 2 } };
+    localExecution: { version: 1 as const, generation: "host-generation", pipe: true as const, pty: true,
+      localNetworkPolicy: true as const, capacity: 2 } };
   let duringDispatch: () => void = () => {};
   await registry.register("relay", "human", caps, message => {
     sent.push(message);
@@ -15,7 +17,7 @@ async function fixture() {
       duringDispatch();
       registry.resolveDispatch(message.correlationId, { status: "ok", result: { captured: true } });
     }
-  }, 28, "desktop", 1, "raw-pairing-row");
+  }, RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION, "desktop", 1, "raw-pairing-row");
   const context = { relayId: "relay", relaySessionId: registry.getRelaySessionId("relay")!,
     desktopSessionId: "desktop", pairingGeneration: "raw-pairing-row" };
   const target = () => resolveTaskLocalExecutionCaptureTarget(context, "human", registry);
@@ -65,7 +67,8 @@ test("wrong raw origin and current transport or capability loss cannot capture",
   expect(resolveTaskLocalExecutionCaptureTarget({ ...f.context, desktopSessionId: "other-desktop" }, "human", f.registry)).toBeNull();
   expect(resolveTaskLocalExecutionCaptureTarget({ ...f.context, relaySessionId: "other-socket" }, "human", f.registry)).toBeNull();
   const target = f.target()!;
-  const protocol = spyOn(f.registry, "getProtocolVersion").mockReturnValue(27);
+  const protocol = spyOn(f.registry, "getProtocolVersion")
+    .mockReturnValue(RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION - 1);
   try { expect(f.target()).toBeNull(); expect(target.isCurrent()).toBe(false); } finally { protocol.mockRestore(); }
   const capability = spyOn(f.registry, "getCapabilities").mockReturnValue({ profile: "desktop-agent", canDelegateLocalExecution: false });
   try { expect(f.target()).toBeNull(); expect(target.isCurrent()).toBe(false); } finally { capability.mockRestore(); }

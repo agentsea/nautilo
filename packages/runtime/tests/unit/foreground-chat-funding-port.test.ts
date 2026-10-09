@@ -9,9 +9,11 @@ import {
   assertForegroundChatFundingWorkloadSupported,
   installForegroundChatFundingPort,
   openForegroundChatFundingSessionForInvocation,
+  openConnectedWebOperationWakeFundingSessionForInvocation,
   openImageAssistanceForInvocation,
   uninstallForegroundChatFundingPort,
 } from "../../src/foreground-chat-funding-port";
+import { setTaskRunDb } from "../../src/tasks/task-runtime-context";
 
 const personalSession: ForegroundChatFundingSession = {
   kind: "personal",
@@ -33,9 +35,36 @@ const baseJobInput = {
   causalHumanUserId: "human-1",
 };
 
-afterEach(() => uninstallForegroundChatFundingPort());
+afterEach(() => {
+  uninstallForegroundChatFundingPort();
+  setTaskRunDb(null);
+});
 
 describe("foreground chat funding port", () => {
+  test("opens a personal session for an exact durable connected-website wake only", async () => {
+    const opened: unknown[] = [];
+    installForegroundChatFundingPort({ openSession: async (input) => { opened.push(input); return personalSession; } });
+    let durable = true;
+    setTaskRunDb({
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => durable ? [{ id: "operation-1" }] : [] }) }) }),
+    } as never);
+    const jobInput = {
+      ...baseJobInput,
+      ownerId: "human-1",
+      metadata: { originatedBy: "connected_web_operation", operationId: "operation-1", controlEpoch: 3, wakeFingerprint: "wake-fingerprint" },
+    };
+    expect(await openConnectedWebOperationWakeFundingSessionForInvocation({
+      authority: createAcceptedInvocationAuthority("human-1"), jobInput, causalHumanUserId: "human-1",
+      modelId: "openai:test-model", roomId: "room-1", agentId: "agent-1",
+    })).toBe(personalSession);
+    expect(opened).toEqual([expect.objectContaining({ humanUserId: "human-1", entrypoint: "foreground.main" })]);
+    durable = false;
+    expect(openConnectedWebOperationWakeFundingSessionForInvocation({
+      authority: createAcceptedInvocationAuthority("human-1"), jobInput, causalHumanUserId: "human-1",
+      modelId: "openai:test-model", roomId: "room-1", agentId: "agent-1",
+    })).rejects.toBeInstanceOf(ForegroundChatFundingAuthorityError);
+  });
+
   test.each(["foreground.main", "foreground.fork"] as const)(
     "opens %s from the accepted Human authority",
     async (entrypoint) => {

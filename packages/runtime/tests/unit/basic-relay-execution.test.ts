@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import type { RelayCapabilities, RelayLocalExecutionBindingV2, RelayServerMessage } from "@nautilo/relay";
 import { InMemoryRelayRegistry } from "../../src/relay-registry";
-async function fixture(protocol = 23) {
+async function fixture(protocol = 29) {
   const registry = new InMemoryRelayRegistry(); const sent: RelayServerMessage[] = [];
-  const caps: RelayCapabilities = { profile: "desktop-agent", canExecuteLocal: true, localExecution: { version: 1, generation: "generation", pipe: true, pty: true, capacity: 8 }, basicExecution: { version: 1, currentFolder: "/tmp/basic", serverBindingId: "server", protectedPolicyVersion: 1 } };
+  const caps: RelayCapabilities = { profile: "desktop-agent", canExecuteLocal: true, localExecution: { version: 1, generation: "generation", pipe: true, pty: true, localNetworkPolicy: true, capacity: 8 }, basicExecution: { version: 1, currentFolder: "/tmp/basic", serverBindingId: "server", protectedPolicyVersion: 1 } };
   await registry.register("relay", "human", caps, message => { sent.push(message); if (message.type === "relay:dispatch") registry.resolveDispatch(message.correlationId, { status: "ok", result: { state: "running", resources: "owned" } }); }, protocol, "desktop", 1, "raw-pair");
-  const binding: RelayLocalExecutionBindingV2 = { version: 2, generation: "generation", executionId: "execution", invocationId: "call", operation: "start", authority: { kind: "basic", roomId: "room-fixture", currentFolder: "/tmp/basic", capabilityRevision: 1, protectedPolicyVersion: 1 }, owner: { instanceId: "", humanUserId: "human", agentId: "agent", runId: "run", conversationId: "conversation", relayId: "relay", desktopSessionId: "desktop", pairingGeneration: registry.getLocalExecutionPairingGeneration("relay")!, serverBindingId: "server", profileId: null, profileRevision: null, grantIds: [], grantRevision: null, protectedPolicyVersion: 1 } };
+  const binding: RelayLocalExecutionBindingV2 = { version: 2, localNetworkPolicy: { mode: "host" }, generation: "generation", executionId: "execution", invocationId: "call", operation: "start", authority: { kind: "basic", roomId: "room-fixture", currentFolder: "/tmp/basic", capabilityRevision: 1, protectedPolicyVersion: 1 }, owner: { instanceId: "", humanUserId: "human", agentId: "agent", runId: "run", conversationId: "conversation", relayId: "relay", desktopSessionId: "desktop", pairingGeneration: registry.getLocalExecutionPairingGeneration("relay")!, serverBindingId: "server", profileId: null, profileRevision: null, grantIds: [], grantRevision: null, protectedPolicyVersion: 1 } };
   const request = { toolName: "exec_command", args: { cmd: "printf fixture" }, impact: "destructive" as const, approvalObtained: true, localExecutionBinding: binding };
   return { registry, sent, caps, binding, request };
 }

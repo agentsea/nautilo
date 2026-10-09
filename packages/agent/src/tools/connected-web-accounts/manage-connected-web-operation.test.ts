@@ -186,6 +186,24 @@ describe("manage_connected_web_operation", () => {
     expect(result).toBe(JSON.stringify({ ok: false, code: "invalid_result", recovery: "none" }));
   });
 
+  test("reports a denied paid replacement without implying that the current run changed", async () => {
+    setConnectedWebOperationToolRuntime({
+      async manage() {
+        return { ok: false, code: "steer_budget_unverified", recovery: "none" };
+      },
+    });
+    const tool = createManageConnectedWebOperationTool(context());
+    const result = await tool.invoke({
+      operation: "steer",
+      operationId: OPERATION,
+      expectedControlEpoch: 1,
+      instruction: "Prioritize the requested comparison.",
+    });
+    expect(result).toBe(JSON.stringify({ ok: false, code: "steer_budget_unverified", recovery: "none" }));
+    expect(tool.description).toContain("kept the current run active and did not start a paid replacement");
+    expect(tool.description).toContain("continue, check later with an explicit ISO due time, take direct control, release control, or stop");
+  });
+
   test("admits every explicit management verb without an agent-side wait loop", async () => {
     const seen: ConnectedWebOperationToolInput[] = [];
     setConnectedWebOperationToolRuntime({

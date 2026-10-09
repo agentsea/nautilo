@@ -39,11 +39,16 @@ function register() {
 function takeControl(id: string) {
   return handlers.get("terminal:set-controller")!({} as IpcMainInvokeEvent, { sessionId: id, controller: "user" });
 }
+function grantHumanTerminal(id: string) {
+  const { conversationId: _conversationId, ...selection } = owner;
+  const consent = host.grantHumanTerminalConsent(id, selection);
+  return consent ? host.bindHumanTerminalConsent(owner, consent.generation) : null;
+}
 function fixture() {
   register();
   const session = host.spawnSession({ shell: "/usr/bin/test-program", cwd: "/tmp" });
   const terminal = pty;
-  const grant = host.grantHumanTerminalControl(session.id, owner)!;
+  const grant = grantHumanTerminal(session.id)!;
   expect(grant).not.toBeNull();
   return { session, terminal, grant };
 }
@@ -95,13 +100,13 @@ describe("scoped Human terminal authority", () => {
     expect(terminal.kills).toBe(0);
   });
   test("requires explicit grant of an existing Human PTY; cannot spawn through dispatch", async () => {
-    expect(host.grantHumanTerminalControl("missing", owner)).toBeNull();
+    expect(grantHumanTerminal("missing")).toBeNull();
     const result = await dispatchHumanTerminal("human_terminal", { action: "read" }, owner, () => true);
     expect(result).toMatchObject({ ok: false, code: "grant_required", inputWritten: false });
     expect(await dispatchHumanTerminal("human_terminal", { action: "spawn" }, owner, () => true)).toMatchObject({ code: "invalid_request" });
     expect(host.listSessions()).toEqual([]);
     const sandboxed = host.spawnSession({ cwd: "/tmp", sandbox: { wrap: () => ({ program: "/bin/test", args: [], env: {} }) } as unknown as Sandbox });
-    expect(host.grantHumanTerminalControl(sandboxed.id, owner)).toBeNull();
+    expect(grantHumanTerminal(sandboxed.id)).toBeNull();
   });
   test("read/run/write share exact PTY with truthful immediate output and no exit claim", async () => {
     const { terminal } = fixture();
@@ -130,17 +135,12 @@ describe("scoped Human terminal authority", () => {
     }
     expect(terminal.writes).toEqual([]);
   });
-  test("legacy Agent read/input/routing cannot borrow scoped consent; Human IPC remains usable", async () => {
+  test("legacy renderer handoff cannot replace scoped consent; the Human job remains usable after retake", async () => {
     const { session, terminal } = fixture();
     terminal.data("Human output");
-    expect(host.readTerminalSince(session.id, 0)).toEqual({ ok: false });
-    expect(host.writeSession(session.id, "legacy", "agent")).toEqual({ ok: false, reason: "locked" });
-    expect(host.peekAgentHandoffSession()).toBeNull();
-    expect(host.peekBoundAgentTerminalSession()).toBeNull();
-    expect(host.readHumanTerminalSince(session.id, 0)).toMatchObject({ data: "Human output" });
+    expect(await dispatchHumanTerminal("human_terminal", { action: "read" }, owner, () => true))
+      .toMatchObject({ ok: true, data: "Human output" });
     await takeControl(session.id);
-    expect(host.readTerminalSince(session.id, 0)).toEqual({ ok: false });
-    expect(host.writeSession(session.id, "legacy after retake", "agent")).toEqual({ ok: false, reason: "locked" });
     expect(await handlers.get("terminal:grant-agent-control")!({}, { sessionId: session.id })).toBeFalse();
     expect(host.writeSession(session.id, "Human", "user")).toEqual({ ok: true });
     expect(terminal.writes).toEqual(["Human"]);
@@ -149,8 +149,7 @@ describe("scoped Human terminal authority", () => {
     const { session, terminal, grant } = fixture();
     await takeControl(session.id);
     expect(host.peekHumanTerminalGrant(owner)).toBeNull();
-    expect(host.getSessionControl(session.id)).toEqual({ controller: "user", requested: false });
-    expect(host.listSessions()[0]?.agentControlConsented).toBeFalse();
+    expect(host.listSessions()[0]).toMatchObject({ controller: "user", requested: false, agentControlConsented: false });
     expect(await handlers.get("terminal:set-controller")!({}, { sessionId: session.id, controller: "agent" })).toBeFalse();
     expect(await executeHumanTerminal(owner, grant.generation, { action: "read" }, () => true)).toMatchObject({ code: "grant_required" });
     expect(terminal.kills).toBe(0);
@@ -158,9 +157,9 @@ describe("scoped Human terminal authority", () => {
   test("fresh explicit handoff changes generation and stale cleanup cannot revoke it", async () => {
     const { session, grant, terminal } = fixture();
     await takeControl(session.id);
-    const fresh = host.grantHumanTerminalControl(session.id, owner)!;
+    const fresh = grantHumanTerminal(session.id)!;
     expect(fresh.generation).not.toBe(grant.generation);
-    expect(host.revokeHumanTerminalGrant(owner, grant.generation)).toBeFalse();
+    expect(host.revokeHumanTerminalConsent(grant.generation)).toBeFalse();
     expect(await executeHumanTerminal(owner, grant.generation, { action: "write", data: "old" }, () => true)).toMatchObject({ code: "grant_required" });
     expect(await executeHumanTerminal(owner, fresh.generation, { action: "write", data: "new" }, () => true)).toMatchObject({ ok: true });
     expect(terminal.writes).toEqual(["new"]);
@@ -178,7 +177,7 @@ describe("scoped Human terminal authority", () => {
     const { session, grant, terminal } = fixture();
     const barrier = deferred();
     const result = executeHumanTerminal(owner, grant.generation, { action: "write", data: "old" }, () => barrier.promise);
-    host.grantHumanTerminalControl(session.id, owner);
+    grantHumanTerminal(session.id);
     barrier.resolve(true);
     expect(await result).toMatchObject({ code: "authority_changed", inputWritten: false });
     expect(terminal.writes).toEqual([]);
@@ -262,8 +261,8 @@ describe("scoped Human terminal authority", () => {
   test("replacement chooses one PTY and revokes previous terminal without killing it", async () => {
     const { session, terminal, grant } = fixture();
     const next = host.spawnSession({ cwd: "/tmp" });
-    host.grantHumanTerminalControl(next.id, owner);
-    expect(host.getSessionControl(session.id)?.controller).toBe("user");
+    grantHumanTerminal(next.id);
+    expect(host.listSessions().find(value => value.id === session.id)?.controller).toBe("user");
     expect(host.listSessions().find(value => value.id === session.id)?.agentControlConsented).toBeFalse();
     expect(await executeHumanTerminal(owner, grant.generation, { action: "read" }, () => true)).toMatchObject({ code: "grant_required" });
     expect(terminal.kills).toBe(0);
@@ -286,7 +285,7 @@ test("retired consent cannot replay the same input under a new grant", async () 
   const { grant, terminal, session } = fixture();
   const identity = { generation: grant.generation, invocationId: "same" };
   expect(await rawDispatchHumanTerminal("human_terminal", { action: "run", command: "once" }, owner, () => true, undefined, identity)).toMatchObject({ ok: true });
-  await takeControl(session.id); host.grantHumanTerminalControl(session.id, owner);
+  await takeControl(session.id); grantHumanTerminal(session.id);
   expect(await rawDispatchHumanTerminal("human_terminal", { action: "run", command: "once" }, owner, () => true, undefined, identity)).toMatchObject({ code: "grant_required", inputWritten: "unknown", retrySafe: false });
   expect(terminal.writes).toEqual(["once\r"]);
 });
@@ -296,21 +295,4 @@ test("input receipts retain the pre-input cursor without duplicating scrollback"
   const receipt = await host.executeHumanTerminal(owner, grant.generation, { action: "write", data: "once" }, () => true, undefined, "once");
   expect(receipt).toMatchObject({ ok: true, inputWritten: true, data: "", cursor: 6, produced: 6 });
   expect(await host.executeHumanTerminal(owner, grant.generation, { action: "read", cursor: 6 }, () => true)).toMatchObject({ data: "after", cursor: 11 });
-});
-
-
-test("legacy dispatcher cannot list, kill, read, write or reuse a scoped Human PTY", async () => {
-  const { session, terminal } = fixture();
-  const { createTerminalDispatchHandler } = await import("../../electron/relay-dispatch/terminal");
-  const dispatch = createTerminalDispatchHandler({ ...host,
-    resolveTerminalSpawnCwd: () => ({ ok: false, error: "No test sandbox" }),
-  });
-  const request = (args: Record<string, unknown>) => dispatch({ request: { toolName: "terminal", args, impact: "high", approvalObtained: true }, guardRoots: [], sandboxEnvelopeWorkspace: undefined, sandbox: null });
-  for (const action of ["kill", "read", "write", "run"]) {
-    const result = await request({ action, session_id: session.id, data: "evil", command: "evil" });
-    expect(result).toMatchObject({ handled: true, result: { status: "error", errorCode: "HUMAN_TERMINAL_SCOPED" } });
-  }
-  expect(await request({ action: "list" })).toMatchObject({ handled: true, result: { result: { sessions: [] } } });
-  expect(await request({ action: "spawn" })).toMatchObject({ handled: true, result: { status: "error" } });
-  expect(terminal.kills).toBe(0); expect(terminal.writes).toEqual([]);
 });

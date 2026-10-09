@@ -59,19 +59,15 @@ const SKILLS_WITHOUT_PROMPT_BLOCK: ReadonlyArray<{
   },
   {
     skill: "shell-execution",
-    // run_shell is a common developer tool; a dedicated prompt nudge was
-    // judged unnecessary in D397 Wave 1 — the skill body + the tool's own
-    // description are sufficient. The shell-execution skill teaches the
-    // prove_it / relay / timeout model, not "you have this tool" (the tool
-    // description already says that).
-    reason: "run_shell is a common developer tool; D397 Wave 1 judged a dedicated prompt block unnecessary (skill body + tool description suffice).",
+    // Managed execution guidance is injected by pre-model only when the
+    // exact local execution capability is live.
+    reason: "Managed execution guidance is injected by pre-model only when the exact local execution capability is live.",
   },
   {
     skill: "terminal-sessions",
-    // terminal is a common developer tool; same Wave 1 decision as
-    // shell-execution. The skill body teaches the PTY/session model and
-    // the run_shell-vs-terminal contrast, not "you have this tool".
-    reason: "terminal is a common developer tool; D397 Wave 1 judged a dedicated prompt block unnecessary (skill body + tool description suffice).",
+    // The skill shares exec_command/write_stdin capability-gated guidance
+    // with shell-execution, so it needs no separate prompt block.
+    reason: "Managed terminal sessions use the same capability-gated exec_command/write_stdin guidance as shell-execution.",
   },
   {
     skill: "interactive-artifact-authoring",

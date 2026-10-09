@@ -41,7 +41,7 @@ describe("headless relay local-file rejection (M206 Slice A)", () => {
   test("rejects executionClass local-file with LOCAL_FILE_EXECUTION_UNSUPPORTED", async () => {
     const workspace = mkTmp("relay-bin-local-file-");
     const guard = createWorkspaceGuard({ workspaceRoot: workspace });
-    const handler = makeDispatchHandler(guard, { isProduction: false });
+    const handler = makeDispatchHandler(guard);
 
     const result = await handler(mkLocalFileRequest());
 
@@ -53,7 +53,7 @@ describe("headless relay local-file rejection (M206 Slice A)", () => {
   test("rejects any desktopFilesystemGrantRequest with DESKTOP_LOCAL_GRANT_REQUIRED (fs)", async () => {
     const workspace = mkTmp("relay-bin-d418-fs-");
     const guard = createWorkspaceGuard({ workspaceRoot: workspace });
-    const handler = makeDispatchHandler(guard, { isProduction: false });
+    const handler = makeDispatchHandler(guard);
 
     const result = await handler({
       correlationId: "relay-d418-fs",
@@ -81,7 +81,7 @@ describe("headless relay local-file rejection (M206 Slice A)", () => {
   test("rejects a desktopFilesystemGrantRequest before local-file handling", async () => {
     const workspace = mkTmp("relay-bin-d418-lf-");
     const guard = createWorkspaceGuard({ workspaceRoot: workspace });
-    const handler = makeDispatchHandler(guard, { isProduction: false });
+    const handler = makeDispatchHandler(guard);
 
     const result = await handler(
       mkLocalFileRequest({
@@ -103,7 +103,7 @@ describe("headless relay local-file rejection (M206 Slice A)", () => {
   test("rejects the D417 fixed media operation with desktop guidance", async () => {
     const workspace = mkTmp("relay-bin-media-extract-");
     const guard = createWorkspaceGuard({ workspaceRoot: workspace });
-    const handler = makeDispatchHandler(guard, { isProduction: false });
+    const handler = makeDispatchHandler(guard);
 
     const result = await handler({
       correlationId: "relay-media-extract-test",
@@ -121,7 +121,7 @@ describe("headless relay local-file rejection (M206 Slice A)", () => {
 
   test("rejects every D417 chunk transport operation with desktop guidance", async () => {
     const workspace = mkTmp("relay-bin-media-chunks-");
-    const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: workspace }), { isProduction: false });
+    const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: workspace }));
     for (const toolName of [
       "media_extract_start",
       "media_extract_chunk",

@@ -4,6 +4,17 @@ import { DATA_TABLES, SERIAL_PK_TABLES } from "../../src/lib/docker-db";
 import { RESTORE_DATA_TABLES } from "../../src/lib/preflight";
 import { RESTORE_MIGRATIONS } from "../../src/lib/restore-migrations";
 
+test("paid conversion recovery restores after its identity and execution parents", () => {
+  const receipt = DATA_TABLES.indexOf("public.conversion_operations");
+  expect(receipt).toBeGreaterThan(-1);
+  for (const parent of ["users", "agents", "rooms", "tasks", "task_runs", "jobs"]) {
+    const index = DATA_TABLES.indexOf(`public.${parent}`);
+    expect(index).toBeGreaterThan(-1);
+    expect(index).toBeLessThan(receipt);
+  }
+  expect(RESTORE_DATA_TABLES.has("public.conversion_operations")).toBe(true);
+});
+
 const schemaDir = new URL("../../../../packages/db/src/schema/", import.meta.url);
 
 function collectSchemaTableNames(): string[] {

@@ -49,7 +49,7 @@ function controller(providerSetupStatus: ConnectedWebAccountProviderSetupStatus 
     return current;
   }
   return {
-    providerSetupStatus() { return providerSetupStatus; },
+    async providerSetupStatusForHuman() { return providerSetupStatus; },
     async create({ ownerUserId, account: input }) {
       if (ownerUserId !== OWNER) throw new ConnectedWebAccountStoreError("not_found");
       const { createAnother: _createAnother, ...metadata } = input;
@@ -124,6 +124,60 @@ test("D568 exposes safe Browser Use setup readiness to every authenticated owner
     expect(launched.statusCode).toBe(503);
     expect(JSON.parse(launched.body)).toEqual({ error: "browser_use_api_key_required" });
     expect(launched.body).not.toContain("keyValue");
+  } finally { await app.close(); }
+});
+
+test("caller-scoped setup readiness admits personal Browser Use without exposing it to another Human", async () => {
+  const routeController = controller();
+  const readinessChecks: string[] = [];
+  routeController.providerSetupStatusForHuman = async (ownerUserId) => {
+    readinessChecks.push(ownerUserId);
+    return ownerUserId === OWNER ? "ready" : "api_key_required";
+  };
+  const app = await makeApp("api_key_required", routeController);
+  try {
+    const personal = await app.inject({
+      method: "POST",
+      url: "/api/connected-web-accounts",
+      headers: { authorization: "owner" },
+      payload: { service: "Example", origin: "https://example.test", label: "Example", createAnother: false },
+    });
+    expect(personal.statusCode).toBe(200);
+
+    const other = await app.inject({
+      method: "POST",
+      url: "/api/connected-web-accounts",
+      headers: { authorization: "other" },
+      payload: { service: "Example", origin: "https://example.test", label: "Other", createAnother: false },
+    });
+    expect(other.statusCode).toBe(503);
+    expect(JSON.parse(other.body)).toEqual({ error: "browser_use_api_key_required" });
+    expect(readinessChecks).toEqual([OWNER, OTHER]);
+  } finally { await app.close(); }
+});
+
+test("existing profile reconnect and open defer to the persisted funding binding", async () => {
+  const routeController = controller();
+  routeController.providerSetupStatusForHuman = async () => {
+    throw new Error("fresh setup readiness must not gate an existing profile");
+  };
+  const app = await makeApp("api_key_required", routeController);
+  try {
+    const reconnected = await app.inject({
+      method: "POST",
+      url: `/api/connected-web-accounts/${ACCOUNT}/reconnect`,
+      headers: { authorization: "owner" },
+      payload: {},
+    });
+    expect(reconnected.statusCode).toBe(200);
+
+    const opened = await app.inject({
+      method: "POST",
+      url: `/api/connected-web-accounts/${ACCOUNT}/open-page`,
+      headers: { authorization: "owner" },
+      payload: {},
+    });
+    expect(opened.statusCode).toBe(200);
   } finally { await app.close(); }
 });
 

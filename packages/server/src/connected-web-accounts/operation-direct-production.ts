@@ -19,6 +19,11 @@ import {
   isOwnersPersonalConnectedWebPrivateRoom,
 } from "./read-tool-runtime-composition";
 import type { ConnectedWebAccountStore, ConnectedWebOperation } from "./store";
+import { connectedWebBrowserFunding, withFundedBrowserUse } from "./browser-use-funding";
+import {
+  beginServerProviderCostAttempt,
+  settleServerProviderCostAttempt,
+} from "../costs/provider-cost-recorder";
 
 export interface ConnectedWebOperationDirectProductionOptions {
   readonly db: DirectDatabase;
@@ -57,15 +62,32 @@ export function createConnectedWebOperationDirectProductionRuntime(
       });
       return Promise.resolve({ sessionId: coordinates.sessionId ?? null });
     },
-    sealBrowserRef(input: { readonly operation: ConnectedWebOperation; readonly browserId: string }) {
+    sealBrowserRef(input: { readonly operation: ConnectedWebOperation; readonly browserId: string; readonly source: "saved_profile" | "hosted_session"; readonly browserCost: { readonly identity: string; readonly workload: string } | null }) {
       const context = secretContext(input.operation);
       const current = options.secrets.unsealProviderReferences({ context, references: input.operation.sealedProviderRefs });
-      return Promise.resolve(options.secrets.sealProviderReferences({ context, coordinates: { ...current, browserId: input.browserId } }));
+      return Promise.resolve(options.secrets.sealProviderReferences({
+        context,
+        coordinates: input.source === "saved_profile"
+          ? {
+            ...(current.runId === undefined ? {} : { runId: current.runId }),
+            ...(current.workspaceId === undefined ? {} : { workspaceId: current.workspaceId }),
+            browserId: input.browserId,
+            ...(input.browserCost === null ? {} : { browserCost: input.browserCost }),
+          }
+          : { ...current, browserId: input.browserId },
+      }));
     },
   };
   const router = new DirectBrowserRouter({
     store: options.store,
     provider: options.provider,
+    withProvider: async (operation, intent, callback) => {
+      const binding = operation.fundingBinding
+        ?? await connectedWebBrowserFunding.admitLegacyServer(operation.ownerUserId);
+      return withFundedBrowserUse(connectedWebBrowserFunding, options.provider, binding, intent, (provider, usageFunding) => callback(provider, usageFunding));
+    },
+    beginCostAttempt: beginServerProviderCostAttempt,
+    settleCostAttempt: settleServerProviderCostAttempt,
     providerReferences,
     hostedLifecycle: {
       async hasTerminalProof({ operation }) {
@@ -74,7 +96,10 @@ export function createConnectedWebOperationDirectProductionRuntime(
             context: secretContext(operation), references: operation.sealedProviderRefs,
           }).runId;
           if (!runId) return false;
-          const observed = await options.provider.pollHostedReadRun(runId);
+          const binding = operation.fundingBinding
+            ?? await connectedWebBrowserFunding.admitLegacyServer(operation.ownerUserId);
+          const observed = await withFundedBrowserUse(connectedWebBrowserFunding, options.provider, binding, "recover",
+            (provider) => provider.pollHostedReadRun(runId));
           return !("kind" in observed)
             && observed.runId === runId
             && (observed.status === "completed" || observed.status === "failed" || observed.status === "cancelled");
@@ -88,7 +113,6 @@ export function createConnectedWebOperationDirectProductionRuntime(
     // Browser Use V4 itself permits at most 240 minutes. This is provider
     // lifecycle policy, not an operation/Genie wall-clock limit.
     browserTimeoutMinutes: 240,
-    ...(options.assertServerFunding === undefined ? {} : { assertServerFunding: options.assertServerFunding }),
   });
   const facts = {
     hasExactOwnedGenie: (input: { readonly ownerUserId: string; readonly agentId: string }) => hasExactOwnedConnectedWebGenie(options.db, input),
@@ -108,11 +132,23 @@ export function createConnectedWebOperationDirectProductionRuntime(
     router,
     recoverOperation: (operation) => recoverDirectConnectedWebOperation({
       store: options.store, secrets: options.secrets, provider: options.provider, directories, harness,
+      withProvider: async (ownedOperation, callback) => {
+        const binding = ownedOperation.fundingBinding
+          ?? await connectedWebBrowserFunding.admitLegacyServer(ownedOperation.ownerUserId);
+        return withFundedBrowserUse(connectedWebBrowserFunding, options.provider, binding, "recover", (provider, usageFunding) => callback(provider, usageFunding));
+      },
+      settleCostAttempt: settleServerProviderCostAttempt,
     }, operation),
     recover: () => recoverDirectConnectedWebOperations({
       store: options.store,
       secrets: options.secrets,
       provider: options.provider,
+      withProvider: async (operation, callback) => {
+        const binding = operation.fundingBinding
+          ?? await connectedWebBrowserFunding.admitLegacyServer(operation.ownerUserId);
+        return withFundedBrowserUse(connectedWebBrowserFunding, options.provider, binding, "recover", (provider, usageFunding) => callback(provider, usageFunding));
+      },
+      settleCostAttempt: settleServerProviderCostAttempt,
       directories,
       harness,
     }),

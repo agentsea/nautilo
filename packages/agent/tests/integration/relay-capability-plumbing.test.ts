@@ -5,8 +5,11 @@ import {
   initToolCatalog,
 } from "@nautilo/catalog";
 import { buildRuntimeCapabilityTokens } from "../../src/runtime/relay-capabilities";
-import { createRunShellTool } from "../../src/tools/shell/run-shell";
-import { createTerminalTool } from "../../src/tools/terminal/terminal";
+import {
+  createRetiredRunShellTool,
+  RETIRED_LOCAL_EXECUTION_MESSAGE,
+} from "../../src/tools/shell/run-shell";
+import { createRetiredTerminalTool } from "../../src/tools/terminal/terminal";
 import { createHueLightsTool } from "../../src/tools/device/hue-lights";
 
 type MockRelayRegistry = Parameters<typeof buildRuntimeCapabilityTokens>[0];
@@ -45,7 +48,8 @@ function initRelayPlumbingCatalog(): void {
   const catalog = new ToolCatalog();
   catalog.register({
     name: "run_shell",
-    factory: () => createRunShellTool(),
+    factory: () => createRetiredRunShellTool(),
+    unavailableInContext: () => RETIRED_LOCAL_EXECUTION_MESSAGE,
     category: "development",
     executor: "relay",
     trustTier: "admin",
@@ -59,7 +63,8 @@ function initRelayPlumbingCatalog(): void {
   });
   catalog.register({
     name: "terminal",
-    factory: () => createTerminalTool(),
+    factory: () => createRetiredTerminalTool(),
+    unavailableInContext: () => RETIRED_LOCAL_EXECUTION_MESSAGE,
     category: "development",
     executor: "relay",
     trustTier: "admin",
@@ -91,7 +96,7 @@ describe("Layer 1 — relay-capability plumbing", () => {
 
   afterEach(() => {});
 
-  test("WITH desktop-agent relay connected: catalog includes run_shell for owner-tier", () => {
+  test("a live legacy shell capability cannot expose the retired tombstone", () => {
     const registry = mockRelayRegistry({ hasRelay: true });
 
     const tokens = buildRuntimeCapabilityTokens(registry, "user-1");
@@ -101,7 +106,7 @@ describe("Layer 1 — relay-capability plumbing", () => {
     const catalog = getToolCatalog();
     expect(catalog).not.toBeNull();
     const snap = catalog!.getFiltered(undefined, tokens);
-    expect(snap.entries.map((e) => e.name)).toContain("run_shell");
+    expect(snap.entries.map((e) => e.name)).not.toContain("run_shell");
   });
 
   test("WITHOUT any relay: tokens are undefined and run_shell is filtered out", () => {
@@ -125,7 +130,7 @@ describe("Layer 1 — relay-capability plumbing", () => {
     expect(snap.entries.map((e) => e.name)).not.toContain("run_shell");
   });
 
-  test("terminal requires its own PTY relay capability", () => {
+  test("a live legacy PTY capability cannot expose the retired tombstone", () => {
     const withoutPty = buildRuntimeCapabilityTokens(
       mockRelayRegistry({ hasRelay: true, canUseTerminal: false }),
       "user-1",
@@ -138,12 +143,12 @@ describe("Layer 1 — relay-capability plumbing", () => {
       mockRelayRegistry({ hasRelay: true, canUseTerminal: true }),
       "user-1",
     );
-    expect(withPty?.["canUseTerminal"]).toBe(true);
+    expect(withPty?.["canUseTerminal"]).toBeUndefined();
     expect(getToolCatalog()!.getFiltered(undefined, withPty).entries.map((e) => e.name))
-      .toContain("terminal");
+      .not.toContain("terminal");
   });
 
-  test("pending terminal handoff projects a presence-only runtime token", () => {
+  test("legacy pending handoff cannot project retired terminal authority", () => {
     const pending = buildRuntimeCapabilityTokens(
       mockRelayRegistry({
         hasRelay: true,
@@ -152,7 +157,7 @@ describe("Layer 1 — relay-capability plumbing", () => {
       }),
       "user-1",
     );
-    expect(pending?.["hasPendingTerminalHandoff"]).toBe(true);
+    expect(pending?.["hasPendingTerminalHandoff"]).toBeUndefined();
 
     const noTerminal = buildRuntimeCapabilityTokens(
       mockRelayRegistry({

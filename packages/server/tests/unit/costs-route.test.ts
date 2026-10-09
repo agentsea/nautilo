@@ -68,6 +68,8 @@ function fakeSummary(): CostsSummary {
       operation: "hosted_read",
       operations: 1,
       unknownOperations: 0,
+      measuredUnits: 2,
+      unitType: "sessions",
       estimatedCostUsd: 0,
       actualCostUsd: 0.014,
       totalCostUsd: 0.014,
@@ -197,7 +199,8 @@ describe("/api/costs auth gating (D405)", () => {
     expect(body.providerCoverage.accounted).toContainEqual({ provider: "tavily", operation: "search" });
     expect(body.providerCoverage.accounted).toContainEqual({ provider: "cloudconvert", operation: "conversion" });
     expect(body.providerCoverage.unavailable).toEqual(["dynamic_mcp_billing", "external_harness_billing"]);
-    expect(body.byProvider).toEqual(fakeSummary().byProvider);
+    expect(body.byProvider[0]).not.toHaveProperty("measuredUnits");
+    expect(body.byProvider[0]).not.toHaveProperty("unitType");
     expect(body.totals.pendingModelAttempts).toBe(1);
     expect(body.totals.unknownModelAttempts).toBe(1);
 
@@ -208,6 +211,19 @@ describe("/api/costs auth gating (D405)", () => {
     // byUser rows get a human label; null user → system/background.
     expect(body.byUser[0]?.label).toBe("@alex");
     expect(body.byUser[1]?.label).toBe("system / background");
+  });
+
+  test("returns measured provider usage only when the client opts in", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/costs?range=30d&includeMeasuredUnits=true",
+      headers: { "x-test-user": OWNER },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<CostsApiResponse>().byProvider[0]).toMatchObject({
+      measuredUnits: 2,
+      unitType: "sessions",
+    });
   });
 
   test("invalid range falls back to default without error", async () => {
@@ -252,5 +268,42 @@ describe("/api/account/costs session scoping", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json<PersonalCostsSummary>().range.key).toBe("30d");
+  });
+
+  test("keeps legacy provider rows stable and exposes opted-in measured usage", async () => {
+    const app = Fastify();
+    app.decorateRequest("sessionUserId", null);
+    app.addHook("preHandler", async (request) => {
+      request.sessionUserId = MEMBER;
+    });
+    costsRoutes(app, {
+      getPersonalCostsSummary: async () => ({
+        ...fakePersonalSummary(),
+        byProvider: [{
+          provider: "cloudconvert",
+          operation: "conversion",
+          operations: 1,
+          unknownOperations: 1,
+          measuredUnits: 3,
+          unitType: "cloudconvert_credit",
+          estimatedCostUsd: 0,
+          actualCostUsd: 0,
+          totalCostUsd: 0,
+        }],
+      }),
+    });
+
+    const legacy = await app.inject({ method: "GET", url: "/api/account/costs" });
+    expect(legacy.json<PersonalCostsSummary>().byProvider[0]).not.toHaveProperty("measuredUnits");
+    const current = await app.inject({
+      method: "GET",
+      url: "/api/account/costs?includeMeasuredUnits=true",
+    });
+    expect(current.json<PersonalCostsSummary>().byProvider[0]).toMatchObject({
+      measuredUnits: 3,
+      unitType: "cloudconvert_credit",
+      totalCostUsd: 0,
+      unknownOperations: 1,
+    });
   });
 });

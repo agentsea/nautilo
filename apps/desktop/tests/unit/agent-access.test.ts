@@ -1,4 +1,4 @@
-import { developerWorkstationSeedProfile } from "../../electron/workstation-profiles/developer-workstation-seed";
+import { developerWorkstationSeedProfile, resolveDeveloperWorkstationSeed } from "../../electron/workstation-profiles/developer-workstation-seed";
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
@@ -199,6 +199,7 @@ test("production review discloses actual stored profile revision and permissions
     network: { mode: "isolated" as const, allow: [] }, toolchainCapabilities: [], environmentKeys: ["SYNTHETIC_KEY_NAME"] };
   let current = true;
   const deps = { assertMainWindowSender() {}, readyToWorkGeneration: 0, resolveReadyToWorkBinding: async () => binding,
+    resolveDeveloperWorkstationSeed,
     materializeSeedProfileForReview: () => ({ ok: true, profile: seed }),
     activeWorkstationProfileController: { getProfileStore: () => ({ get: async () => ({ ok: true, data: { profile: stored } }) }) },
     runSeedDiscoveryReview: async (profile: typeof seed) => { expect(profile).toBe(stored); return { ok: true, review: {} }; },
@@ -215,4 +216,35 @@ test("active managed Full Mac truth exposes one-shot execution rather than inter
   expect(projectAgentAccess({ ...observation, fullMac: { state: "active", eligible: true }, fullMacOneShot: true }))
     .toMatchObject({ readiness: "ready", capabilities: { commands: true, fullMacOneShot: true, interactiveContainedTerminals: false } });
   expect(projectAgentAccess({ ...observation, fullMacOneShot: true })).toMatchObject({ capabilities: { fullMacOneShot: false, interactiveContainedTerminals: true } });
+});
+
+const selectorsStart = main.indexOf("async function readyToWorkProfileSelectors(");
+const selectorsEnd = main.indexOf("async function activateStoredWorkstationProfile(", selectorsStart);
+const selectorsCode = new Bun.Transpiler({ loader: "ts" }).transformSync(main.slice(selectorsStart, selectorsEnd));
+test("production seed upgrade requires exact new review and completed PIN verification before compare-and-swap", async () => {
+  const seed = developerWorkstationSeedProfile();
+  const stored = { ...seed, revision: 1 };
+  for (const scenario of ["old-review", "wrong-profile", "bad-pin", "cas-failure", "success"] as const) {
+    const events: string[] = [];
+    const store = { get: async () => ({ ok: true, data: { profile: stored } }),
+      update: async (input: unknown) => {
+        events.push("write");
+        expect(input).toEqual({ profileId: seed.id, expectedRevision: 1, profile: seed });
+        return scenario === "cas-failure" ? { ok: false } : { ok: true, data: { profile: seed } };
+      } };
+    const select = runInNewContext(`${selectorsCode}; readyToWorkProfileSelectors`, {
+      materializeSeedProfileForReview: () => ({ ok: true, profile: seed }),
+      activeWorkstationProfileController: { getProfileStore: () => store },
+      resolveDeveloperWorkstationSeed: () => ({ kind: "shipped_v1_upgrade", expectedRevision: 1, reviewProfile: seed }),
+    }) as (reviewed: { profileId: string; profileRevision: number }, verify: () => Promise<void>) => Promise<{ ok: boolean }>;
+    const reviewed = { profileId: scenario === "wrong-profile" ? "foreign" : seed.id,
+      profileRevision: scenario === "old-review" ? 1 : seed.revision };
+    const result = await select(reviewed, async () => {
+      events.push("pin");
+      if (scenario === "bad-pin") throw new Error("invalid PIN");
+    }).catch(() => ({ ok: false }));
+    expect(result.ok).toBe(scenario === "success");
+    expect(events).toEqual(scenario === "old-review" || scenario === "wrong-profile" ? []
+      : scenario === "bad-pin" ? ["pin"] : ["pin", "write"]);
+  }
 });

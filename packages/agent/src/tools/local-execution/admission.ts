@@ -1,3 +1,6 @@
+import { RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION } from "@nautilo/relay";
+import { toRelayNetworkPolicy } from "../../relay/sandbox-profile-builder";
+import { resolveServerPosture } from "@nautilo/config";
 import { parseRelayLocalExecutionCapability, LOCAL_EXECUTION_MAX_IDENTITIES, RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { createHash } from "node:crypto";
 import type { RelayLocalExecutionBinding, RelayLocalExecutionOwnerV1 } from "@nautilo/relay";
@@ -37,6 +40,9 @@ export function bindDelegatedLocalExecution(input: {
   const relayId = delegation.target.relayId;
   const caps = registry.getCapabilities(relayId);
   const capability = parseRelayLocalExecutionCapability(caps?.localExecution);
+  const localNetworkPolicy = toRelayNetworkPolicy(resolveServerPosture().localNetworkPolicy ?? { mode: "host" });
+  if (capability?.localNetworkPolicy !== true
+    || (registry.getProtocolVersion?.(relayId) ?? 0) < RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION) return null;
   const desktopSessionId = registry.getDesktopSessionId?.(relayId);
   const pairingGeneration = registry.getLocalExecutionPairingGeneration?.(relayId);
   if (!capability || capability.capacity > LOCAL_EXECUTION_MAX_IDENTITIES || !desktopSessionId || !pairingGeneration
@@ -57,6 +63,9 @@ export function bindDelegatedLocalExecution(input: {
   const retained = input.operation === "start" ? undefined : registry.getLocalExecutionBinding?.(relayId, input.executionId ?? "");
   const original = input.previous ?? retained;
   if (original) {
+    if ((input.operation === "start" || input.operation === "input")
+      && localNetworkPolicy.mode !== "host"
+      && JSON.stringify(original.localNetworkPolicy) !== JSON.stringify(localNetworkPolicy)) return null;
     if (original.version !== 4 || original.generation !== capability.generation
       || original.authority.taskId !== source.taskId || original.authority.taskRunId !== source.taskRunId
       || original.owner.runId !== owner.runId || original.authority.roomId !== (state.roomId || delegation.sourceRoomId)
@@ -68,7 +77,7 @@ export function bindDelegatedLocalExecution(input: {
     return { ...original, operation: input.operation, invocationId: input.invocationId };
   }
   if (input.operation !== "start" || !owner.conversationId) return null;
-  return { version: 4, generation: capability.generation, invocationId: input.invocationId,
+  return { ...(capability.localNetworkPolicy === true ? { localNetworkPolicy } : {}), version: 4, generation: capability.generation, invocationId: input.invocationId,
     executionId: localExecutionId(capability.generation, owner, input.invocationId), operation: "start", owner,
     authority: { kind: "delegated", taskId: source.taskId, taskRunId: source.taskRunId,
       roomId: state.roomId || delegation.sourceRoomId, delegation: structuredClone(delegation) } };

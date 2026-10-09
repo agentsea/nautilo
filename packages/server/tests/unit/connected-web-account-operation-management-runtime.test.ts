@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { buildConnectedWebReadTask } from "../../src/connected-web-accounts/read-operation-admission-runtime";
 import type { ConnectedWebOperationToolActorContext, ConnectedWebOperationToolInput } from "@nautilo/agent";
 import type { ConnectedWebOperation } from "../../src/connected-web-accounts/store";
 import {
@@ -26,6 +25,7 @@ function operation(input: Partial<ConnectedWebOperation> = {}): ConnectedWebOper
     deliveryId: "initial-delivery-d568",
     requestDigest: "a".repeat(64),
     sealedIntent: "sealed-intent-not-visible",
+    fundingBinding: null,
     actionOperationId: null,
     effectIdempotencyKey: null,
     driver: "hosted",
@@ -86,13 +86,10 @@ function runtime(
   const calls: {
     cancel: unknown[];
     poll: unknown[];
-    queue: unknown[];
-    create: unknown[];
     schedule: unknown[];
-    rotate: unknown[];
     claim: unknown[];
     releaseClaim: unknown[];
-  } = { cancel: [], poll: [], queue: [], create: [], schedule: [], rotate: [], claim: [], releaseClaim: [] };
+  } = { cancel: [], poll: [], schedule: [], claim: [], releaseClaim: [] };
   const base: ConnectedWebOperationManagementRuntimeOptions = {
     facts: {
       hasExactOwnedGenie: async () => true,
@@ -101,27 +98,17 @@ function runtime(
     store: {
       getOperationForOwner: async () => current,
       scheduleOperationCheck: async (value) => { calls.schedule.push(value); return value.dueAt >= value.now; },
-      rotateOperationProviderRunByControl: async (value) => { calls.rotate.push(value); return value.expectedControlEpoch + 1; },
       claimOperationForControl: async (value) => { calls.claim.push(value); return current.controlEpoch + 1; },
       releaseOperationClaim: async (value) => { calls.releaseClaim.push(value); return true; },
     },
     provider: {
-      getHostedReadResult: async (runId) => ({ runId, status: "cancelled", totalCostUsd: "0" }),
       cancelHostedReadRun: async (runId) => {
         calls.cancel.push(runId);
         return { runId, status: "cancelled" };
       },
       pollHostedReadRun: async (runId) => {
         calls.poll.push(runId);
-        return { runId, status: runId === "run-replacement" ? "running" : "cancelled" };
-      },
-      inspectHostedSessionQueue: async (sessionId) => {
-        calls.queue.push(sessionId);
-        return { inspected: true };
-      },
-      createHostedReadContinuationRun: async (value) => {
-        calls.create.push(value);
-        return { runId: "run-replacement", sessionId: "session-old", workspaceId: "workspace-replacement", status: "queued" };
+        return { runId, status: "cancelled" };
       },
     },
     secrets: {
@@ -134,41 +121,20 @@ function runtime(
         workspaceRef: `sealed:${coordinates.workspaceId}`,
       }),
     },
-    continuationModel: "approved-continuation-model",
     clock: { now: () => NOW },
   };
   return { subject: createConnectedWebOperationManagementServerRuntime({ ...base, ...overrides }), calls };
 }
 
-describe("D568 connected website operation management runtime", () => {
-  test("task steering retains action scope and requires current task authority", async () => {
+describe("connected website operation management runtime", () => {
+  test("task steering requires current task authority and preserves the usable run", async () => {
     const fixture = runtime(operation(), {}, true);
     const taskActor = actor({ memoryAccessEnvelope: { ownerId: OWNER, agentId: AGENT, roomId: ROOM, toolPolicy: { run_website_task: "allow" } } as never });
-    expect(await fixture.subject.manage(taskActor, input("steer"))).toMatchObject({ ok: true, accepted: "steer" });
-    const created = fixture.calls.create[0] as { task: string };
-    expect(created.task).toContain("You may read and take actions");
-    expect(created.task).toContain("check what already happened rather than repeating completed changes");
-    expect(created.task).toContain("genuinely dangerous, irreversible, ambiguous");
-    expect(created.task).toContain("Original private website task.");
-    expect(created.task).not.toContain("Read only the already-connected");
+    expect(await fixture.subject.manage(taskActor, input("steer"))).toEqual({ ok: false, code: "steer_budget_unverified", recovery: "none" });
+    expect(fixture.calls).toMatchObject({ cancel: [], poll: [], schedule: [], claim: [], releaseClaim: [] });
     const denied = runtime(operation(), {}, true);
     expect(await denied.subject.manage(actor(), input("steer"))).toMatchObject({ ok: false, code: "forbidden" });
-    expect(denied.calls.create).toHaveLength(0);
     expect(denied.calls.cancel).toHaveLength(0);
-  });
-  test("steering settles cancelled-run spend before granting the replacement budget", async () => {
-    const calls: { create: unknown[] } = { create: [] };
-    // The provider must be asked for the cancelled run's terminal accounting.
-    const options = { cancelHostedReadRun: async (runId: string) => ({ runId, status: "cancelled" as const }),
-      pollHostedReadRun: async (runId: string) => ({ runId, status: runId === "replacement" ? "running" as const : "cancelled" as const }),
-      inspectHostedSessionQueue: async () => ({}),
-      getHostedReadResult: async (runId: string) => ({ runId, status: "cancelled" as const, totalCostUsd: "1.50" }),
-      createHostedReadContinuationRun: async (value: { maxCostUsd: number }) => { calls.create.push(value); return { runId: "replacement", sessionId: "session-old", workspaceId: "workspace-old", status: "running" as const }; },
-    };
-    const steered = runtime(operation({ cumulativeCostUsdMicros: 0, remainingBudgetUsdMicros: 2_000_000 }), { provider: options });
-    expect((await steered.subject.manage(actor(), input("steer"))).ok).toBe(true);
-    expect(calls.create).toMatchObject([{ maxCostUsd: 0.5 }]);
-    expect(steered.calls.rotate).toMatchObject([{ cumulativeCostUsdMicros: 1_500_000, remainingBudgetUsdMicros: 500_000 }]);
   });
 
   test("inspect reauthorizes the exact owner/Genie/Room/thread/lane and projects no durable coordinates", async () => {
@@ -208,11 +174,11 @@ describe("D568 connected website operation management runtime", () => {
         page: { ref: ACCOUNT, title: "Example", origin: "https://example.com" },
         read: { answer: "The requested answer.", facts: [{ label: "Status", value: "Ready" }], completeness: "complete", provenance: "authenticated_website", origin: "https://example.com" },
         cost: { currency: "USD", amountUsd: 0.01, state: "actual" },
-        outputs: [], outputsTruncated: false,
+        outputs: [{ artifactId: "artifact-1", path: "connected-web/report.csv", mime: "text/csv", bytes: 3 }], outputsTruncated: false,
       },
     }));
     const inspected = await subject.manage(actor(), input("inspect"));
-    expect(inspected).toMatchObject({ ok: true, accepted: "inspect", operation: { lifecycle: "terminal", result: { status: "completed", read: { answer: "The requested answer." }, outputs: [], outputsTruncated: false } } });
+    expect(inspected).toMatchObject({ ok: true, accepted: "inspect", operation: { lifecycle: "terminal", result: { status: "completed", read: { answer: "The requested answer." }, outputs: [{ artifactId: "artifact-1", path: "connected-web/report.csv", mime: "text/csv", bytes: 3 }], outputsTruncated: false } } });
     const stopped = await subject.manage(actor(), input("stop"));
     expect(stopped).toMatchObject({ ok: true, accepted: "stop", operation: { result: null } });
     const foreign = await subject.manage(actor({ agentId: "different-agent" }), input("inspect"));
@@ -245,7 +211,6 @@ describe("D568 connected website operation management runtime", () => {
     });
     expect(calls.cancel).toEqual(["run-old"]);
     expect(calls.schedule).toHaveLength(1);
-    expect(calls.rotate).toHaveLength(0);
   });
 
   test("does not claim or persist a stop control for a missing provider run", async () => {
@@ -253,101 +218,33 @@ describe("D568 connected website operation management runtime", () => {
       provider: {
         cancelHostedReadRun: async () => ({ kind: "failure", code: "resource_not_found" }),
         pollHostedReadRun: async (runId) => ({ runId, status: "cancelled" }),
-        inspectHostedSessionQueue: async () => ({ inspected: true }),
-        getHostedReadResult: async (runId) => ({ runId, status: "cancelled", totalCostUsd: "0" }),
-        createHostedReadContinuationRun: async () => ({ runId: "unused", sessionId: "unused", workspaceId: "unused", status: "queued" }),
       },
     });
     expect(await subject.manage(actor(), input("stop"))).toEqual({ ok: false, code: "unavailable", recovery: "none" });
     expect(calls.schedule).toHaveLength(0);
   });
 
-  test("steer inspects the session, proves old cancellation, observes a same-session replacement, then fences rotation", async () => {
+  test("steer reports unverified budget without changing a usable run", async () => {
     const { subject, calls } = runtime();
     const result = await subject.manage(actor(), input("steer"));
-    expect(result).toMatchObject({
+    expect(result).toEqual({
+      ok: false,
+      code: "steer_budget_unverified",
+      recovery: "none",
+    });
+    expect(calls).toMatchObject({ cancel: [], poll: [], schedule: [], claim: [], releaseClaim: [] });
+    expect(await subject.manage(actor(), input("inspect"))).toMatchObject({
       ok: true,
-      accepted: "steer",
-      operation: { driver: "hosted", lifecycle: "running", controlEpoch: 9, receipt: null },
+      operation: { driver: "hosted", lifecycle: "running", controlEpoch: 7 },
     });
-    expect(calls.queue).toEqual(["session-old"]);
-    expect(calls.cancel).toEqual(["run-old"]);
-    expect(calls.poll).toEqual(["run-old", "run-replacement"]);
-    expect(calls.create[0]).toEqual({
-      sessionId: "session-old",
-      workspaceId: "workspace-old",
-      task: `${buildConnectedWebReadTask({ origin: "https://example.com", request: { account: ACCOUNT, request: "Original private website task.", delivery: "text" } })}\n\n[Steering instruction]\nPrioritize the requested comparison.`,
-      model: "approved-continuation-model",
-      maxCostUsd: 4,
-    });
-    expect(calls.rotate[0]).toMatchObject({
-      operationId: OPERATION_ID,
-      ownerUserId: OWNER,
-      expectedControlEpoch: 8,
-      expectedRunRef: "sealed-old-run",
-      expectedOpaqueExecutionRef: "run-old", opaqueExecutionRef: "run-replacement",
-      cumulativeCostUsdMicros: 1_000_000,
-      remainingBudgetUsdMicros: 4_000_000,
-    });
-    expect(JSON.stringify(result)).not.toMatch(/Original private|run-replacement|session-old|workspace-old|sealed/iu);
   });
 
-  test("never steers or directly controls a possible external effect and cancels a replacement when its fenced CAS loses a race", async () => {
+  test("never steers or directly controls a possible external effect", async () => {
     const protectedOperation = operation({ actionOperationId: "77777777-7777-4777-8777-777777777777" });
     const protectedRun = runtime(protectedOperation);
     expect(await protectedRun.subject.manage(actor(), input("steer"))).toEqual({ ok: false, code: "conflict", recovery: "none" });
     expect(await protectedRun.subject.manage(actor(), input("take_control"))).toEqual({ ok: false, code: "unavailable", recovery: "none" });
-    expect(protectedRun.calls.queue).toEqual([]);
     expect(protectedRun.calls.cancel).toEqual([]);
-
-    const raced = runtime(operation(), {
-      store: {
-        getOperationForOwner: async () => operation(),
-        scheduleOperationCheck: async () => true,
-        rotateOperationProviderRunByControl: async () => null,
-        claimOperationForControl: async () => 8,
-        releaseOperationClaim: async () => true,
-      },
-    });
-    expect(await raced.subject.manage(actor(), input("steer"))).toEqual({ ok: false, code: "conflict", recovery: "none" });
-    expect(raced.calls.cancel).toEqual(["run-old", "run-replacement"]);
-  });
-
-  test("treats a missing old run as uncertainty and cancels every observable unrotated replacement", async () => {
-    const missingCreates: string[] = [];
-    const missing = runtime(operation(), {
-      provider: {
-        cancelHostedReadRun: async () => ({ kind: "failure", code: "resource_not_found" }),
-        pollHostedReadRun: async () => ({ kind: "failure", code: "resource_not_found" }),
-        inspectHostedSessionQueue: async () => ({ inspected: true }),
-        getHostedReadResult: async (runId) => ({ runId, status: "cancelled", totalCostUsd: "0" }),
-        createHostedReadContinuationRun: async () => {
-          missingCreates.push("created");
-          return { runId: "must-not-exist", sessionId: "session-old", workspaceId: "workspace", status: "queued" };
-        },
-      },
-    });
-    expect(await missing.subject.manage(actor(), input("steer"))).toEqual({ ok: false, code: "unavailable", recovery: "none" });
-    expect(missingCreates).toEqual([]);
-    expect(missing.calls.schedule).toHaveLength(1);
-
-    const unobservedCancels: string[] = [];
-    const unobserved = runtime(operation(), {
-      provider: {
-        cancelHostedReadRun: async (runId) => {
-          unobservedCancels.push(runId);
-          return { runId, status: "cancelled" };
-        },
-        pollHostedReadRun: async (runId) => runId === "run-old"
-          ? { runId, status: "cancelled" }
-          : { kind: "failure", code: "network_error" },
-        inspectHostedSessionQueue: async () => ({ inspected: true }),
-        getHostedReadResult: async (runId) => ({ runId, status: "cancelled", totalCostUsd: "0" }),
-        createHostedReadContinuationRun: async () => ({ runId: "run-replacement", sessionId: "session-old", workspaceId: "workspace", status: "queued" }),
-      },
-    });
-    expect(await unobserved.subject.manage(actor(), input("steer"))).toEqual({ ok: false, code: "unavailable", recovery: "none" });
-    expect(unobservedCancels).toEqual(["run-old", "run-replacement"]);
   });
 
   test("direct lease controls fail honestly until a separately qualified direct authority exists", async () => {
@@ -365,7 +262,6 @@ describe("D568 connected website operation management runtime", () => {
     expect(await subject.manage(actor(), input("take_control"))).toEqual({ ok: false, code: "unavailable", recovery: "none" });
     expect(calls.cancel).toEqual([]);
     expect(calls.claim).toEqual([]);
-    expect(calls.rotate).toEqual([]);
     expect(await subject.manage(actor(), input("inspect"))).toMatchObject({ ok: true, operation: { driver: "hosted", controlEpoch: 7 } });
   });
 
@@ -386,9 +282,6 @@ describe("D568 connected website operation management runtime", () => {
       provider: {
         cancelHostedReadRun: async (runId) => { calls.push(`cancel:${runId}`); return { runId, status: "cancelled" }; },
         pollHostedReadRun: async (runId) => { calls.push(`poll:${runId}`); return { runId, status: "cancelled" }; },
-        inspectHostedSessionQueue: async () => ({ inspected: true }),
-        getHostedReadResult: async (runId) => ({ runId, status: "cancelled", totalCostUsd: "0" }),
-        createHostedReadContinuationRun: async () => ({ kind: "failure", code: "unused" }),
       },
     });
     const { subject } = managed;
@@ -420,9 +313,6 @@ describe("D568 connected website operation management runtime", () => {
       provider: {
         cancelHostedReadRun: async (runId) => ({ runId, status: "cancelled" }),
         pollHostedReadRun: async (runId) => ({ runId, status: "running" }),
-        inspectHostedSessionQueue: async () => ({ inspected: true }),
-        getHostedReadResult: async (runId) => ({ runId, status: "cancelled", totalCostUsd: "0" }),
-        createHostedReadContinuationRun: async () => ({ kind: "failure", code: "unused" }),
       },
     });
     expect(await failedRun.subject.manage(actor(), input("take_control"))).toMatchObject({ ok: false, code: "unavailable" });
@@ -470,7 +360,7 @@ describe("D568 connected website operation management runtime", () => {
   });
 });
 
-describe("D585 public operation management", () => {
+describe("public operation management", () => {
   test("public inspect and stop do not require private website authority", async () => {
     const fixture = runtime(operation({ accountId: null }), { facts: { canResearchPublic: async () => true, hasExactOwnedGenie: async () => false, isOwnersPersonalPrivateRoom: async () => false } });
     expect(await fixture.subject.manage(actor({ callingRoomId: "calling-room" }), { operation: "inspect", operationId: OPERATION_ID, expectedControlEpoch: 7 })).toMatchObject({ ok: true });
@@ -481,7 +371,6 @@ describe("D585 public operation management", () => {
     const fixture = runtime(operation({ accountId: null }), { facts: { canResearchPublic: async () => true, hasExactOwnedGenie: async () => true, isOwnersPersonalPrivateRoom: async () => true } });
     expect(await fixture.subject.manage(actor(), { operation: "take_control", operationId: OPERATION_ID, expectedControlEpoch: 7 })).toMatchObject({ ok: false, code: "unavailable" });
     expect(fixture.calls.cancel).toHaveLength(0);
-    expect(fixture.calls.create).toHaveLength(0);
   });
   test("public tool policy cannot supervise another mode's private account", async () => {
     const fixture = runtime(operation());

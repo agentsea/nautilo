@@ -419,9 +419,7 @@ export default function PersonalCostsScreen() {
                       </Text>
                     </View>
                     <Text style={styles.help}>
-                      {evidence.costPending
-                        ? "Unknown or pending receipt"
-                        : evidence.detail}
+                      {evidence.detail}
                     </Text>
                   </View>
                 );

@@ -6,7 +6,7 @@ import type {
 } from "../browser-use/browser-use-cloud";
 import { warn } from "@nautilo/logger";
 import { createHash, randomUUID } from "node:crypto";
-import type { BrowserDecisionObservation } from "@nautilo/agent";
+import type { BrowserDecisionObservation, UsageFundingProvenance } from "@nautilo/agent";
 import type { ConnectedWebOperationProviderReferences } from "@nautilo/db";
 import {
   createDirectBrowserControlSession,
@@ -21,10 +21,11 @@ import type {
   ConnectedWebAccountStore,
   ConnectedWebOperation,
 } from "./store";
-import {
-  canUseBrowserUseServerFunding,
-  type BrowserUseServerFundingAdmission,
-} from "../browser-use/browser-use-cloud";
+import type {
+  ServerProviderCostAttemptAdmission,
+  ServerProviderCostReceipt,
+} from "../costs/provider-cost-recorder";
+import { isConfirmedConnectedWebPreCreateFailure } from "./read-tool-runtime";
 
 const MAX_ROUTER_RESULT_BYTES = 96 * 1024;
 
@@ -74,6 +75,8 @@ export interface DirectBrowserRouterProviderReferences {
   sealBrowserRef?(input: {
     readonly operation: ConnectedWebOperation;
     readonly browserId: string;
+    readonly source: DirectBrowserRouterSource;
+    readonly browserCost: { readonly identity: string; readonly workload: string } | null;
   }): Promise<ConnectedWebOperationProviderReferences>;
 }
 
@@ -109,6 +112,13 @@ export interface DirectBrowserRouterDependencies {
   readonly store: Pick<ConnectedWebAccountStore, "getBindingForOwner" | "getOperationForOwner" | "rotateOperationDriver">
     & Partial<Pick<ConnectedWebAccountStore, "takeOverReadOperationForDirect">>;
   readonly provider: DirectBrowserRouterProvider;
+  readonly withProvider?: <T>(
+    operation: ConnectedWebOperation,
+    intent: "spend" | "recover",
+    callback: (provider: DirectBrowserRouterProvider, usageFunding?: UsageFundingProvenance) => Promise<T>,
+  ) => Promise<T>;
+  readonly beginCostAttempt?: (input: ServerProviderCostAttemptAdmission) => Promise<void>;
+  readonly settleCostAttempt?: (input: ServerProviderCostReceipt) => Promise<void>;
   readonly providerReferences: DirectBrowserRouterProviderReferences;
   readonly hostedLifecycle: DirectBrowserRouterHostedLifecycle;
   readonly directories: DirectBrowserRouterDirectoryAuthority;
@@ -125,8 +135,6 @@ export interface DirectBrowserRouterDependencies {
   readonly navigateSavedProfileBrowser: (cdpUrl: string, origin: string, timeoutMs: number) => Promise<void>;
   readonly now?: () => Date;
   readonly discoveryTimeoutMs?: number;
-  /** Fresh current-Human funding authority before creating a paid browser. */
-  readonly assertServerFunding?: BrowserUseServerFundingAdmission;
 }
 
 export interface DirectBrowserRouterCleanupResult {
@@ -614,6 +622,12 @@ export class DirectBrowserRouterLease {
 export class DirectBrowserRouter {
   constructor(private readonly deps: DirectBrowserRouterDependencies) {}
 
+  private withProvider<T>(operation: ConnectedWebOperation, intent: "spend" | "recover", callback: (provider: DirectBrowserRouterProvider, usageFunding?: UsageFundingProvenance) => Promise<T>): Promise<T> {
+    return this.deps.withProvider === undefined
+      ? callback(this.deps.provider)
+      : this.deps.withProvider(operation, intent, callback);
+  }
+
   private async readAdmission(input: DirectBrowserRouterAdmission): Promise<{
     readonly operation: ConnectedWebOperation;
     readonly binding: ConnectedWebAccountBinding;
@@ -649,33 +663,89 @@ export class DirectBrowserRouter {
     return { operation, binding };
   }
 
-  private async startOrAttach(input: DirectBrowserRouterAdmission, binding: ConnectedWebAccountBinding, operation: ConnectedWebOperation): Promise<BrowserUseBrowserSession & { readonly cdpUrl: string }> {
+  private browserCost(operation: ConnectedWebOperation) {
+    return {
+      identity: `browser-use:connected-web:${operation.id}:browser:${operation.controlEpoch}`,
+      workload: "connected_web_direct",
+    } as const;
+  }
+
+  private async startOrAttach(input: DirectBrowserRouterAdmission, binding: ConnectedWebAccountBinding, operation: ConnectedWebOperation): Promise<BrowserUseBrowserSession & { readonly cdpUrl: string; readonly browserCost: { readonly identity: string; readonly workload: string } | null }> {
     if (input.source === "saved_profile") {
-      if (!await canUseBrowserUseServerFunding(
-        input.fundingHumanUserId,
-        "connected_web_direct_browser",
-        this.deps.assertServerFunding,
-      )) throw new DirectBrowserRouterError("unavailable");
-      const browser = browserForStart(await this.deps.provider.startBrowser({
-        profileId: binding.profileRef!, timeoutMinutes: this.deps.browserTimeoutMinutes,
+      const browserCost = this.browserCost(operation);
+      const browser = browserForStart(await this.withProvider(operation, "spend", async (provider, usageFunding) => {
+        await this.deps.beginCostAttempt?.({
+          identity: browserCost.identity,
+          ...(usageFunding === undefined ? {} : { usageFunding }),
+          userId: operation.fundingBinding?.humanUserId ?? operation.ownerUserId,
+          roomId: operation.initiatingRoomId,
+          agentId: operation.initiatingAgentId,
+          workload: "connected_web_direct",
+          provider: "browser_use",
+          operation: "browser_session",
+        });
+        const started = await provider.startBrowser({
+          profileId: binding.profileRef!, timeoutMinutes: this.deps.browserTimeoutMinutes,
+        });
+        if (isProviderFailure(started) && isConfirmedConnectedWebPreCreateFailure(started.code) && this.deps.settleCostAttempt) {
+          await this.deps.settleCostAttempt({
+            identity: browserCost.identity,
+            ...(usageFunding === undefined ? {} : { usageFunding }),
+            userId: operation.fundingBinding?.humanUserId ?? operation.ownerUserId,
+            roomId: operation.initiatingRoomId,
+            agentId: operation.initiatingAgentId,
+            workload: browserCost.workload,
+            provider: "browser_use",
+            operation: "browser_session",
+            actualCostUsd: null,
+            evidenceState: "unknown",
+            attemptOutcome: "failed",
+            failureCode: "provider_create_failed",
+          });
+        }
+        return started;
       }).catch(() => ({ kind: "failure", code: "network_error" } as const)));
       if (!browser) throw new DirectBrowserRouterError("unavailable");
-      return browser;
+      return { ...browser, browserCost };
     }
     const references = await this.deps.providerReferences.unseal({
       operation,
       references: operation.sealedProviderRefs,
     }).catch(() => null);
     if (!references?.sessionId) throw new DirectBrowserRouterError("unavailable");
-    const browser = browserForAttach(await this.deps.provider.findHostedBrowsers({
-      agentSessionId: references.sessionId,
-    }).catch(() => ({ kind: "failure", code: "network_error" } as const)), references.sessionId);
+    const sessionId = references.sessionId;
+    const browser = browserForAttach(await this.withProvider(operation, "recover", (provider) => provider.findHostedBrowsers({
+      agentSessionId: sessionId,
+    })).catch(() => ({ kind: "failure", code: "network_error" } as const)), sessionId);
     if (!browser) throw new DirectBrowserRouterError("unavailable");
-    return browser;
+    return { ...browser, browserCost: null };
   }
 
-  private async stopBrowser(browserId: string): Promise<void> {
-    const stopped = await this.deps.provider.stopBrowser(browserId);
+  private async stopBrowser(
+    operation: ConnectedWebOperation,
+    browserId: string,
+    browserCost: { readonly identity: string; readonly workload: string } | null,
+  ): Promise<void> {
+    const stopped = await this.withProvider(operation, "recover", async (provider, usageFunding) => {
+      const result = await provider.stopBrowser(browserId);
+      if (browserCost && this.deps.settleCostAttempt && (!isProviderFailure(result) || result.code === "resource_not_found")) {
+        await this.deps.settleCostAttempt({
+          identity: browserCost.identity,
+          ...(usageFunding === undefined ? {} : { usageFunding }),
+          userId: operation.fundingBinding?.humanUserId ?? operation.ownerUserId,
+          roomId: operation.initiatingRoomId,
+          agentId: operation.initiatingAgentId,
+          workload: browserCost.workload,
+          provider: "browser_use",
+          operation: "browser_session",
+          estimatedCostUsd: isProviderFailure(result) ? null : result.costEvidence?.estimatedCostUsd ?? null,
+          actualCostUsd: null,
+          evidenceState: isProviderFailure(result) ? "unknown" : result.costEvidence?.evidenceState ?? "unknown",
+          attemptOutcome: "succeeded",
+        });
+      }
+      return result;
+    });
     if (isProviderFailure(stopped) && stopped.code === "resource_not_found") return;
     if (isProviderFailure(stopped) || stopped.browserId !== browserId || stopped.status !== "stopped") {
       throw new Error("stop unavailable");
@@ -688,16 +758,18 @@ export class DirectBrowserRouter {
    */
   async acquire(input: DirectBrowserRouterAdmission): Promise<DirectBrowserRouterLease> {
     let setupStage = "admission";
-    let browser: (BrowserUseBrowserSession & { readonly cdpUrl: string }) | null = null;
+    let browser: (BrowserUseBrowserSession & { readonly cdpUrl: string; readonly browserCost: { readonly identity: string; readonly workload: string } | null }) | null = null;
     let directories: DirectBrowserRouterDirectories | null = null;
     let controlCreationAttempted = false;
     let rotatedControlEpoch: number | null = null;
+    let admittedOperation: ConnectedWebOperation | null = null;
     try {
       if (!Number.isInteger(this.deps.browserTimeoutMinutes)
         || this.deps.browserTimeoutMinutes < 1 || this.deps.browserTimeoutMinutes > 240) {
         throw new DirectBrowserRouterError("unavailable");
       }
       const { operation, binding } = await this.readAdmission(input);
+      admittedOperation = operation;
       setupStage = "browser";
       browser = await this.startOrAttach(input, binding, operation);
       // Retain exact browser custody before any fallible navigation so the
@@ -721,14 +793,20 @@ export class DirectBrowserRouter {
       setupStage = "fence";
       const now = (this.deps.now ?? (() => new Date()))();
       const activeRead = isActiveReadCheckpoint(binding);
+      if (!this.deps.providerReferences.sealBrowserRef) throw new DirectBrowserRouterError("unavailable");
+      const sealedProviderRefs = await this.deps.providerReferences.sealBrowserRef({
+        operation,
+        browserId: browser.browserId,
+        source: input.source,
+        browserCost: browser.browserCost,
+      });
       const rotated = activeRead
         ? await (async () => {
           const checkpoint = binding.executionCheckpoint;
           if (!checkpoint || checkpoint.phase !== "active" || checkpoint.resource !== "read" || !checkpoint.opaqueExecutionRef
-            || !operation.sealedProviderRefs.runRef || !this.deps.providerReferences.sealBrowserRef || !this.deps.store.takeOverReadOperationForDirect) {
+            || !operation.sealedProviderRefs.runRef || !this.deps.store.takeOverReadOperationForDirect) {
             throw new DirectBrowserRouterError("stale_control");
           }
-          const sealedProviderRefs = await this.deps.providerReferences.sealBrowserRef({ operation, browserId: browser.browserId });
           return this.deps.store.takeOverReadOperationForDirect({
             ownerUserId: input.ownerUserId, accountId: input.accountId, operationId: input.operationId,
             expectedControlEpoch: input.expectedControlEpoch, expectedRunRef: operation.sealedProviderRefs.runRef,
@@ -738,12 +816,14 @@ export class DirectBrowserRouter {
         : await this.deps.store.rotateOperationDriver({
           operationId: input.operationId, expectedControlEpoch: input.expectedControlEpoch, now,
           driver: "direct", lifecycle: "running", safeActivity: directActivity(), nextCheckAt: null, controlLeaseExpiresAt: null,
+          sealedProviderRefs,
         });
       if (!rotated || rotated.controlEpoch !== input.expectedControlEpoch + 1) {
         throw new DirectBrowserRouterError("stale_control");
       }
       rotatedControlEpoch = rotated.controlEpoch;
       setupStage = "harness";
+      const browserCost = browser.browserCost;
       const identity = {
         operationId: input.operationId,
         accountId: input.accountId,
@@ -758,7 +838,7 @@ export class DirectBrowserRouter {
         socketDirectory: directories.socketDirectory,
         homeDirectory: directories.homeDirectory,
       }, {
-        provider: { stopBrowser: (browserId) => this.stopBrowser(browserId) },
+        provider: { stopBrowser: (browserId) => this.stopBrowser(operation, browserId, browserCost) },
         harness: this.deps.harness,
         isCurrentControlEpoch: async (current) => {
           const fresh = await this.readCurrentForControl(input, current.controlEpoch);
@@ -788,7 +868,7 @@ export class DirectBrowserRouter {
         ? "stopped" as const
         : controlCreationAttempted
           ? controlCleanup?.status ?? "cleanup_unresolved" as const
-          : await this.stopBrowser(browser.browserId)
+          : admittedOperation === null ? "cleanup_unresolved" as const : await this.stopBrowser(admittedOperation, browser.browserId, browser.browserCost)
             .then(() => "stopped" as const)
             .catch(() => "cleanup_unresolved" as const);
       const cleanup = rotatedControlEpoch === null

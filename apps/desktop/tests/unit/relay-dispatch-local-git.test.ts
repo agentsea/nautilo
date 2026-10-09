@@ -12,26 +12,29 @@ const binding: RelayWorkstationShellBinding = {
   subject: { userId: "human-fixture", instanceId: "instance-fixture", relayId: "relay-fixture", agentScope: "all_owned_agents" },
   operation: "execute", executionClass: "profile_bound_sandbox",
 };
-function fixture() {
+function fixture(authenticated = false) {
   const calls: { operation: string; args: unknown[] }[] = [];
   const factories: Parameters<RunShellGitBrokerFactory>[0][] = [];
   const disposition: GitBrokerDisposition = { operation: "commit", ok: false, reason: "exec-unknown-outcome",
     sideEffectStarted: true, retrySafe: false, message: "Mutation outcome unconfirmed", stderr: "diagnostic" };
   const record = (operation: string, ...args: unknown[]) => { calls.push({ operation, args }); return Promise.resolve(disposition); };
-  const forbidden = () => { throw new Error("local Git reached shell or credential handling"); };
   const handlers = createWorkstationHandlers({
-    createGitBroker: (options) => { factories.push(options); return {
+    createGitBroker: (options) => { factories.push(options); return Object.assign({
       status: () => record("status"), diff: (ref) => record("diff", ref), add: (paths) => record("add", paths),
       commit: (message) => record("commit", message), worktreeAdd: (target, ref) => record("worktree-add", target, ref),
       worktreeRemove: (target) => record("worktree-remove", target),
-    }; },
-    resolveWorkstationRelativeCwd: forbidden, selectSandboxProtectedPaths: () => [],
-    spawnSandboxed: forbidden, unusableCurrentFolderError: forbidden, hasSandboxCwdFailure: forbidden,
-    sandboxCurrentFolderError: forbidden, runWorkstationShell: forbidden, readWorkstationGitHubToken: forbidden,
+    }, authenticated ? {
+      fetch: async () => ({ operation: "fetch" as const, ok: true, reason: "ok" as const, sideEffectStarted: true, retrySafe: false }),
+      preparePush: async () => null,
+      push: async () => ({ operation: "push" as const, ok: true, reason: "ok" as const, sideEffectStarted: true, retrySafe: false }),
+      clone: async () => ({ operation: "clone" as const, ok: true, reason: "ok" as const, sideEffectStarted: true, retrySafe: false }),
+      pull: async () => ({ operation: "pull" as const, ok: true, reason: "ok" as const, sideEffectStarted: true, retrySafe: false }),
+    } : {}); },
+    selectSandboxProtectedPaths: () => [],
   } satisfies CreateWorkstationHandlersInput);
   const policy: LocalDispatchPolicyState = { revalidatedShellBinding: binding,
     desktopFilesystemAuthority: { roots: ["/synthetic/repository"], writableRoots: ["/synthetic/granted"] },
-    locallyAuthorizedWorkspace: undefined, sandboxEnvelopeWorkspace: undefined, shellNetworkPolicy: undefined };
+    locallyAuthorizedWorkspace: undefined, sandboxEnvelopeWorkspace: undefined, shellNetworkPolicy: { mode: "host" } };
   const request = (args: Record<string, unknown>, overrides: Partial<RelayDispatchRequest> = {}): RelayDispatchRequest => ({
     correlationId: "correlation-fixture", toolName: "local_git", args,
     impact: "destructive", approvalObtained: true, workstationShellBinding: binding, ...overrides,
@@ -107,12 +110,39 @@ describe("dedicated local Git dispatch", () => {
     }
     expect(f.factories).toHaveLength(4);
   });
-  test("keeps legacy Git dispatch and refuses other tool names", async () => {
+  test("authenticated Git resolves only through the exact revalidated project broker", async () => {
+    const localOnly = fixture();
+    const authenticated = fixture(true);
+    const networkRequest = authenticated.request({ operation: "fetch", repository: "fixture/project", branch: "main" },
+      { githubBinding: {} as RelayDispatchRequest["githubBinding"] });
+    expect(await localOnly.handlers.resolveAuthenticatedGitBroker({ request: networkRequest, policy: localOnly.policy })).toBeNull();
+    const broker = await authenticated.handlers.resolveAuthenticatedGitBroker({ request: networkRequest, policy: authenticated.policy });
+    expect(broker).not.toBeNull();
+    expect(authenticated.factories).toHaveLength(1);
+    expect(await authenticated.handlers.resolveAuthenticatedGitBroker({ request: { ...networkRequest, githubBinding: undefined },
+      policy: authenticated.policy })).toBeNull();
+    expect(await authenticated.handlers.resolveAuthenticatedGitBroker({ request: networkRequest,
+      policy: { ...authenticated.policy, revalidatedShellBinding: undefined } })).toBeNull();
+  });
+  test("refuses other tool names instead of retaining a legacy shell route", async () => {
     const f = fixture();
     const request = f.request({ git: { operation: "status" } }, { toolName: "run_shell" });
     expect(await f.handlers.dispatchLocalGit({ request, policy: f.policy })).toEqual({ handled: false });
-    expect(await f.handlers.dispatchSandboxedRunShell({ request, policy: f.policy, signal: undefined,
-      guardRoots: [], sandbox: null })).toEqual({ handled: true, result: { status: "ok", result: f.disposition } });
+    expect(f.calls).toEqual([]);
+  });
+  test("restricted or missing profile networking cannot construct an authenticated Git broker", async () => {
+    const f = fixture(true);
+    const request = f.request({ operation: "fetch", repository: "fixture/project", branch: "main" },
+      { githubBinding: {} as RelayDispatchRequest["githubBinding"] });
+    for (const shellNetworkPolicy of [undefined, { mode: "isolated" as const },
+      { mode: "proxy-allowlist" as const, allow: [{ type: "domain" as const, host: "github.com" }] }]) {
+      expect(await f.handlers.resolveAuthenticatedGitBroker({ request,
+        policy: { ...f.policy, shellNetworkPolicy } })).toBeNull();
+    }
+    expect(f.factories).toHaveLength(0);
+    // Offline typed operations still use their existing project authority.
+    await f.handlers.dispatchLocalGit({ request: f.request({ operation: "status" }),
+      policy: { ...f.policy, shellNetworkPolicy: { mode: "isolated" } } });
     expect(f.calls).toEqual([{ operation: "status", args: [] }]);
   });
 });

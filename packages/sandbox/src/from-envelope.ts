@@ -284,6 +284,7 @@ export function createSandboxFromEnvelope(
     /** Runtime-only; never accepted from the serialized envelope. */
     allowWorkspaceGovernanceWrites?: boolean;
     managedHome?: string;
+    preparedEnvironment?: Readonly<Record<string, string>>;
   }>,
 ): Promise<Sandbox> {
   // Validate even though the TS type says the shape is correct —
@@ -295,6 +296,9 @@ export function createSandboxFromEnvelope(
   return Sandbox.create({
     workspace: validated.workspace,
     ...(localAuthority?.managedHome !== undefined ? { managedHome: localAuthority.managedHome } : {}),
+    ...(localAuthority?.preparedEnvironment !== undefined
+      ? { preparedEnvironment: localAuthority.preparedEnvironment }
+      : {}),
     dataDir: validated.dataDir,
     toolsBin: validated.toolsBin,
     config: validated.config,

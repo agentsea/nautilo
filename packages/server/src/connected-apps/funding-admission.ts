@@ -14,7 +14,7 @@ export async function assertConnectedAppExecutionFunding(
       throw new ServerProviderCredentialsDeniedError("", "connected_app_execute");
     }
     const capabilityFunding = getCapabilityFundingSession();
-    if (capabilityFunding && capabilityFunding.parentFundingKind !== "server") {
+    if (capabilityFunding && capabilityFunding.humanUserId !== input.causalHumanUserId) {
       throw new ServerProviderCredentialsDeniedError(
         input.causalHumanUserId,
         "connected_app_execute",

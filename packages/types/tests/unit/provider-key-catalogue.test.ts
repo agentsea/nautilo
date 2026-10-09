@@ -24,7 +24,7 @@ describe("provider key catalogue", () => {
         category: "llm",
       });
     }
-    for (const id of ["browser-use", "cloudconvert", "elevenlabs", "groq"] as const) {
+    for (const id of ["elevenlabs", "groq"] as const) {
       expect(PERSONAL_PROVIDER_KEY_CATALOGUE.find((entry) => entry.id === id)?.personalCapabilities).toEqual([]);
     }
     expect(JSON.stringify(PROVIDER_KEY_CATALOGUE)).not.toContain("formatCheck");
@@ -39,7 +39,8 @@ describe("provider key catalogue", () => {
       "Eligible for personal chat and native text Tasks, Research and Decisions. Surplus Decisions also require a pilot-enabled account; saving a key does not grant that entitlement.",
     );
     expect(tavily && personalProviderCapabilitySummary(tavily)).toBe("Eligible for Research.");
-    expect(browserUse && personalProviderCapabilitySummary(browserUse)).toBe("Not used by delivered personal workflows in this release.");
+    expect(browserUse && personalProviderCapabilitySummary(browserUse)).toBe("Eligible for website browsing and actions.");
+    expect(PERSONAL_PROVIDER_KEY_CATALOGUE.find(({ id }) => id === "cloudconvert")?.personalCapabilities).toEqual(["conversion"]);
   });
 
   test("puts Surplus after OpenRouter, keeps fallback order stable, and leaves gateways last", () => {

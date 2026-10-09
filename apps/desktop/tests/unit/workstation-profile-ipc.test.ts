@@ -165,7 +165,7 @@ describe("workstation profile review IPC — no renderer-supplied authority", ()
     expect(slice).toContain("runSeedDiscoveryReview(profile)");
     expect(slice).toContain("buildSeedDescriptor(profile)");
     expect(slice).toContain("review: review.review");
-    expect(slice).toContain("stored.ok ? stored.data.profile : seed.profile");
+    expect(slice).toContain("resolveDeveloperWorkstationSeed(stored.ok ? stored.data.profile : null).reviewProfile");
     expect(slice).toContain("developmentProfileScope(profile");
     expect(slice).toContain("readyBindingIsCurrent(binding, generation)");
     // It must not return discovered facts or activate.

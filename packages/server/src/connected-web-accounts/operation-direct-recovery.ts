@@ -3,6 +3,8 @@ import type { ConnectedWebOperationSecrets } from "./operation-secrets";
 import type { ConnectedWebAccountStore, ConnectedWebOperation } from "./store";
 import type { DirectBrowserRouterDirectoryAuthority } from "./direct-browser-router";
 import type { DirectBrowserControlHarness } from "./direct-browser-control";
+import type { UsageFundingProvenance } from "@nautilo/agent";
+import type { ServerProviderCostReceipt } from "../costs/provider-cost-recorder";
 
 export interface ConnectedWebOperationDirectRecoveryOptions {
   readonly store: Pick<ConnectedWebAccountStore, "listDirectOperationsForRecovery" | "rotateOperationDriver">;
@@ -11,6 +13,11 @@ export interface ConnectedWebOperationDirectRecoveryOptions {
     getBrowser(browserId: string): Promise<BrowserUseResult<BrowserUseBrowserSession>>;
     stopBrowser(browserId: string): Promise<BrowserUseResult<BrowserUseBrowserSession>>;
   };
+  readonly withProvider?: <T>(
+    operation: ConnectedWebOperation,
+    callback: (provider: ConnectedWebOperationDirectRecoveryOptions["provider"], usageFunding?: UsageFundingProvenance) => Promise<T>,
+  ) => Promise<T>;
+  readonly settleCostAttempt?: (input: ServerProviderCostReceipt) => Promise<void>;
   readonly directories: DirectBrowserRouterDirectoryAuthority;
   readonly harness: DirectBrowserControlHarness;
   readonly now?: () => Date;
@@ -24,6 +31,14 @@ function context(operation: ConnectedWebOperation) {
   return { operationId: operation.id, ownerUserId: operation.ownerUserId, accountId: operation.accountId };
 }
 
+function withRecoveryProvider<T>(
+  options: ConnectedWebOperationDirectRecoveryOptions,
+  operation: ConnectedWebOperation,
+  callback: (provider: ConnectedWebOperationDirectRecoveryOptions["provider"], usageFunding?: UsageFundingProvenance) => Promise<T>,
+): Promise<T> {
+  return options.withProvider === undefined ? callback(options.provider) : options.withProvider(operation, callback);
+}
+
 /** Clean one orphaned direct writer without constructing a control lease. */
 export async function recoverDirectConnectedWebOperation(
   options: ConnectedWebOperationDirectRecoveryOptions,
@@ -31,9 +46,10 @@ export async function recoverDirectConnectedWebOperation(
 ): Promise<boolean> {
   if (operation.accountId === null || operation.driver !== "direct" || operation.lifecycle === "terminal") return false;
   try {
-    const browserId = options.secrets.unsealProviderReferences({
+    const coordinates = options.secrets.unsealProviderReferences({
       context: context(operation), references: operation.sealedProviderRefs,
-    }).browserId;
+    });
+    const browserId = coordinates.browserId;
     if (!browserId || !options.harness.closePrivateDaemons || !options.directories.forRecovery) return false;
     for await (const directories of options.directories.forRecovery({
       ownerUserId: operation.ownerUserId, accountId: operation.accountId,
@@ -42,12 +58,33 @@ export async function recoverDirectConnectedWebOperation(
       await options.harness.closePrivateDaemons(directories);
       await options.directories.release(directories);
     }
-    const observed = await options.provider.getBrowser(browserId);
-    let stopped = !failure(observed) && observed.browserId === browserId && observed.status === "stopped";
-    if (!failure(observed) && observed.browserId === browserId && observed.status === "active") {
-      const result = await options.provider.stopBrowser(browserId);
-      stopped = !failure(result) && result.browserId === browserId && result.status === "stopped";
-    }
+    const stopped = await withRecoveryProvider(options, operation, async (provider, usageFunding) => {
+      const observed = await provider.getBrowser(browserId);
+      const result = !failure(observed) && observed.browserId === browserId && observed.status === "active"
+        ? await provider.stopBrowser(browserId)
+        : observed;
+      const terminal = !failure(result) && result.browserId === browserId && result.status === "stopped";
+      // Saved-profile direct browsers deliberately clear the inherited hosted
+      // session coordinate when the browser ref is sealed. That durable bit
+      // distinguishes their separately billed /browsers session on restart.
+      if (terminal && coordinates.sessionId === undefined && coordinates.browserCost && options.settleCostAttempt) {
+        await options.settleCostAttempt({
+          identity: coordinates.browserCost.identity,
+          ...(usageFunding === undefined ? {} : { usageFunding }),
+          userId: operation.fundingBinding?.humanUserId ?? operation.ownerUserId,
+          roomId: operation.initiatingRoomId,
+          agentId: operation.initiatingAgentId,
+          workload: coordinates.browserCost.workload,
+          provider: "browser_use",
+          operation: "browser_session",
+          estimatedCostUsd: result.costEvidence?.estimatedCostUsd ?? null,
+          actualCostUsd: null,
+          evidenceState: result.costEvidence?.evidenceState ?? "unknown",
+          attemptOutcome: "succeeded",
+        });
+      }
+      return terminal;
+    });
     if (!stopped) return false;
     const now = (options.now ?? (() => new Date()))();
     const rotated = await options.store.rotateOperationDriver({

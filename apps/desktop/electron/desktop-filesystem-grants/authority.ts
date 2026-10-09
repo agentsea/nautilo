@@ -30,6 +30,7 @@ import {
   type DesktopFilesystemGrant,
   type DesktopFilesystemGrantLifetime,
   type DesktopFilesystemGrantOrigin,
+  type DesktopFilesystemGrantSubject,
 } from "@nautilo/desktop-filesystem-grants";
 import {
   DesktopFilesystemGrantStore,
@@ -99,6 +100,13 @@ export class DesktopFilesystemGrantAuthority {
    * reflects overlay changes the durable store's own revision cannot see.
    */
   private revision = 0;
+  /**
+   * Authority generations keyed by the complete grant subject. A durable Task
+   * grant and the foreground all-owned-agents grants share the same underlying
+   * store, but they are independent authority domains. Their generations must
+   * not invalidate one another.
+   */
+  private readonly subjectRevisions = new Map<string, number>();
   private pending: Promise<void> = Promise.resolve();
 
   constructor(options: DesktopFilesystemGrantAuthorityOptions) {
@@ -118,6 +126,39 @@ export class DesktopFilesystemGrantAuthority {
 
   /** Synchronous final fence for callers that inspected an awaited local grant list. */
   getRevision(): number { return this.revision; }
+
+  /** Synchronous generation for one exact user / instance / relay / agent scope. */
+  getRevisionForSubject(subject: DesktopFilesystemGrantSubject): number {
+    const key = this.subjectRevisionKey(subject);
+    const revision = this.subjectRevisions.get(key);
+    if (revision !== undefined) return revision;
+    // Register only observed authority domains. Task-only subjects continue to
+    // use the global CAS generation and do not accumulate scoped metadata.
+    this.subjectRevisions.set(key, 0);
+    return 0;
+  }
+
+  private subjectRevisionKey(subject: DesktopFilesystemGrantSubject): string {
+    return JSON.stringify([
+      subject.userId,
+      subject.instanceId,
+      subject.relayId,
+      subject.agentScope,
+    ]);
+  }
+
+  private advanceGlobalRevision(): void {
+    this.revision += 1;
+  }
+
+  private advanceAuthorityRevision(grants: readonly DesktopFilesystemGrant[]): void {
+    this.advanceGlobalRevision();
+    const keys = new Set(grants.map((grant) => this.subjectRevisionKey(grant.subject)));
+    for (const key of keys) {
+      const revision = this.subjectRevisions.get(key);
+      if (revision !== undefined) this.subjectRevisions.set(key, revision + 1);
+    }
+  }
 
   private materialize(entry: OverlayEntry): DesktopFilesystemGrant {
     const grant = entry.grant;
@@ -147,8 +188,16 @@ export class DesktopFilesystemGrantAuthority {
     userId: string;
     /** Include expired or revoked records as non-authoritative history. */
     includeHistory?: boolean;
+    /** Return the generation for this exact authority domain instead of the global CAS generation. */
+    revisionSubject?: DesktopFilesystemGrantSubject;
   }): Promise<DesktopFilesystemGrantStoreResult<{ grants: ListedDesktopFilesystemGrant[]; revision: number }>> {
     return this.serialized(async () => {
+      if (input.revisionSubject !== undefined && (
+        input.revisionSubject.userId !== input.userId ||
+        input.revisionSubject.instanceId !== this.instanceId
+      )) {
+        return resultError("invalid_grant", "revision subject must match the requested user and local instance");
+      }
       const durable = await this.store.list(input);
       if (!durable.ok) return durable;
       const now = this.clock();
@@ -163,7 +212,9 @@ export class DesktopFilesystemGrantAuthority {
         ok: true,
         data: {
           grants: [...durable.data.grants, ...overlayGrants],
-          revision: this.revision,
+          revision: input.revisionSubject === undefined
+            ? this.revision
+            : this.getRevisionForSubject(input.revisionSubject),
         },
       };
     });
@@ -193,7 +244,7 @@ export class DesktopFilesystemGrantAuthority {
       }
       const created = await this.store.create(input);
       if (!created.ok) return created;
-      this.revision += 1;
+      this.advanceAuthorityRevision([created.data.grant]);
       return { ok: true, data: { grant: created.data.grant, revision: this.revision } };
     });
   }
@@ -236,7 +287,7 @@ export class DesktopFilesystemGrantAuthority {
         return resultError("invalid_grant", "grant id already exists in the durable store");
       }
       this.overlay.set(parsed.grant.id, { grant: parsed.grant });
-      this.revision += 1;
+      this.advanceAuthorityRevision([parsed.grant]);
       return { ok: true, data: { grant: parsed.grant, revision: this.revision } };
     });
   }
@@ -255,13 +306,13 @@ export class DesktopFilesystemGrantAuthority {
       if (entry !== undefined && entry.grant.subject.userId === input.userId) {
         if (entry.revokedAt === undefined) {
           entry.revokedAt = this.clock().toISOString();
-          this.revision += 1;
+          this.advanceAuthorityRevision([entry.grant]);
         }
         return { ok: true, data: { grant: this.materialize(entry), revision: this.revision } };
       }
       const revoked = await this.store.revoke(input);
       if (!revoked.ok) return revoked;
-      this.revision += 1;
+      this.advanceAuthorityRevision([revoked.data.grant]);
       return { ok: true, data: { grant: revoked.data.grant, revision: this.revision } };
     });
   }
@@ -284,12 +335,12 @@ export class DesktopFilesystemGrantAuthority {
           return resultError("grant_not_found", "revoked or expired grant is not active authority");
         }
         entry.lastUsedAt = now.toISOString();
-        this.revision += 1;
+        this.advanceGlobalRevision();
         return { ok: true, data: { grant: this.materialize(entry), revision: this.revision } };
       }
       const touched = await this.store.touchLastUsed(input);
       if (!touched.ok) return touched;
-      this.revision += 1;
+      this.advanceGlobalRevision();
       return { ok: true, data: { grant: touched.data.grant, revision: this.revision } };
     });
   }
@@ -321,7 +372,7 @@ export class DesktopFilesystemGrantAuthority {
           return resultError("grant_not_found", "grant expired before consumption");
         }
         entry.revokedAt = now.toISOString();
-        this.revision += 1;
+        this.advanceAuthorityRevision([entry.grant]);
         return { ok: true, data: { grant: this.materialize(entry), revision: this.revision, consumed: true } };
       }
       // Legacy once grant persisted before the overlay owned once lifecycle.
@@ -336,7 +387,7 @@ export class DesktopFilesystemGrantAuthority {
       }
       const revoked = await this.store.revoke(input);
       if (!revoked.ok) return revoked;
-      this.revision += 1;
+      this.advanceAuthorityRevision([revoked.data.grant]);
       return { ok: true, data: { grant: revoked.data.grant, revision: this.revision, consumed: true } };
     });
   }
@@ -352,18 +403,21 @@ export class DesktopFilesystemGrantAuthority {
   }): Promise<DesktopFilesystemGrantStoreResult<{ cleared: number; revision: number }>> {
     return this.serialized(() => {
       let cleared = 0;
+      const removed: DesktopFilesystemGrant[] = [];
       if (input?.userId !== undefined) {
         for (const [id, entry] of this.overlay) {
           if (entry.grant.subject.userId === input.userId) {
+            removed.push(entry.grant);
             this.overlay.delete(id);
             cleared += 1;
           }
         }
       } else {
         cleared = this.overlay.size;
+        removed.push(...[...this.overlay.values()].map((entry) => entry.grant));
         this.overlay.clear();
       }
-      if (cleared > 0) this.revision += 1;
+      if (cleared > 0) this.advanceAuthorityRevision(removed);
       return Promise.resolve({ ok: true, data: { cleared, revision: this.revision } });
     });
   }

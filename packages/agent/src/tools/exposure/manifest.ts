@@ -41,6 +41,12 @@ export interface ToolExposureManifest {
    * exists. A reserved name remains subject to the partition once registered.
    */
   readonly reservedToolNames?: readonly string[];
+  /**
+   * Registered compatibility tombstones. These names are classified for
+   * catalogue exhaustiveness but never participate in discovery or family
+   * activation.
+   */
+  readonly retiredToolNames?: readonly string[];
   readonly families: Readonly<Record<ToolFamilyName, readonly string[]>>;
 }
 
@@ -116,6 +122,7 @@ export const CORE_TOOL_NAMES = [
 export const TOOL_EXPOSURE_MANIFEST: ToolExposureManifest = {
   coreToolNames: CORE_TOOL_NAMES,
   reservedToolNames: RESERVED_CORE_TOOL_NAMES,
+  retiredToolNames: ["run_shell", "terminal"],
   families: {
     memory: [
       "session_search",
@@ -143,7 +150,7 @@ export const TOOL_EXPOSURE_MANIFEST: ToolExposureManifest = {
     // explicit Git/GitHub workstation intent may need to establish the
     // local Current Folder before shell execution. This is the narrow folder
     // selector only; the broader filesystem family stays deferred.
-    shell: ["exec_command", "write_stdin", "local_git", "read_shell_output", "human_terminal", "local_github", "run_shell", "terminal", "select_current_folder"],
+    shell: ["exec_command", "write_stdin", "local_git", "read_shell_output", "human_terminal", "local_github", "select_current_folder"],
     // separate from the ordinary shell family. Generic local shell
     // work must never expose Human-granted remote SSH authority.
     structured_ssh: [
@@ -372,6 +379,7 @@ export function expandToolFamilies(
 function allMemberships(manifest: ToolExposureManifest): Array<readonly [string, string]> {
   return [
     ...manifest.coreToolNames.map((name) => [name, "core"] as const),
+    ...(manifest.retiredToolNames ?? []).map((name) => [name, "retired"] as const),
     ...Object.entries(manifest.families).flatMap(([family, names]) =>
       names.map((name) => [name, `family:${family}`] as const),
     ),

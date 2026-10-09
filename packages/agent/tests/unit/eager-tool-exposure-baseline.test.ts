@@ -119,8 +119,8 @@ describe("progressive tool exposure telemetry", () => {
 
     expect(guest.eligibleTools).toBeLessThan(ownerNoRelay.eligibleTools);
     expect(ownerNoRelay.eligibleTools).toBeLessThan(ownerFullRelay.eligibleTools);
-    // The registered legacy shell is intentionally absent even in eager mode.
-    expect(ownerFullRelay.eligibleTools).toBe(catalog.size - 1);
+    // Both retired Agent execution tombstones stay absent even in eager mode.
+    expect(ownerFullRelay.eligibleTools).toBe(catalog.size - 2);
   });
 
   test("keeps routine owner core exposure bounded and materially below eager schemas", () => {

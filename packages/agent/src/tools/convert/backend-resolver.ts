@@ -43,7 +43,7 @@ export function resolveConvertBackend(args: {
         ok: false,
         error:
           `Local backend cannot convert ${input} → ${output}. ` +
-          `Local routes: Markdown → PDF/DOCX. Use backend="cloud" with CLOUDCONVERT_API_KEY for other pairs.`,
+          `Local routes: Markdown → PDF/DOCX. Use backend="cloud" after connecting CloudConvert for other pairs.`,
       };
     }
     return { ok: true, backend: "local" };
@@ -53,7 +53,7 @@ export function resolveConvertBackend(args: {
     if (!cloudConfigured()) {
       return {
         ok: false,
-        error: "CloudConvert not configured (set CLOUDCONVERT_API_KEY)",
+        error: "CloudConvert is not connected for this conversion",
       };
     }
     return { ok: true, backend: "cloud" };
@@ -69,6 +69,6 @@ export function resolveConvertBackend(args: {
     ok: false,
     error:
       `No backend can convert ${input} → ${output}. ` +
-      `Configure CLOUDCONVERT_API_KEY for cloud conversion, or use a supported local pair (Markdown → PDF/DOCX).`,
+      `Connect CloudConvert for cloud conversion, or use a supported local pair (Markdown → PDF/DOCX).`,
   };
 }

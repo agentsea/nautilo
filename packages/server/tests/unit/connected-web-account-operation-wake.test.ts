@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { AgentInvocationDeniedError } from "@nautilo/trust";
 import type { ConnectedWebOperation } from "../../src/connected-web-accounts/store";
 import {
   connectedWebOperationWakeTurnId,
@@ -29,6 +30,7 @@ const operation: ConnectedWebOperation = {
   deliveryId: "delivery-1",
   requestDigest: "a".repeat(64),
   sealedIntent: "sealed:v2:not-visible",
+  fundingBinding: null,
   actionOperationId: null,
   effectIdempotencyKey: null,
   driver: "hosted",
@@ -175,6 +177,7 @@ test("queued progress is discarded before invoking the Genie when completion sup
     load: async () => ({ ...operation, lifecycle: "terminal", wakeFingerprint: "completed" }),
     resolveEnvelope: async () => { throw new Error("stale wake must not execute"); },
     secrets: authorizedWake.secrets,
+    assertInvocation: authorizedWake.assertInvocation,
     execute: async function* (input) { calls.push(input); yield* []; },
   });
   const events = [];
@@ -191,6 +194,7 @@ test("a current wake refreshes authority and restores only the sealed initiating
       expected: operation, load: async () => current,
       resolveEnvelope: async () => ({ fresh: true }),
       secrets: { unsealIntent: ({ context }) => { expect(context.ownerUserId).toBe(operation.ownerUserId); return JSON.stringify({ ...JSON.parse(authorizedWake.secrets.unsealIntent()), voiceMode }); } },
+      assertInvocation: authorizedWake.assertInvocation,
       execute: async function* (input) { calls.push(input); yield* []; },
     });
     for await (const _event of executor({ requestorId: "77777777-7777-4777-8777-777777777777", voiceMode: true, memoryAccessEnvelope: { stale: true } }, "job", operation.initiatingLane, new AbortController().signal)) { /* drain */ }
@@ -198,4 +202,30 @@ test("a current wake refreshes authority and restores only the sealed initiating
     expect(calls[0]).toMatchObject({ voiceMode: voiceMode === true, memoryAccessEnvelope: { fresh: true } });
     expect(calls[0]?.["message"]).toContain("Latest safe status.");
   }
+});
+
+test("a queued wake rechecks current Human invocation authority before foreground execution", async () => {
+  const calls: unknown[] = [];
+  const checked: unknown[] = [];
+  const executor = createConnectedWebOperationWakeExecutor({
+    expected: operation,
+    load: async () => operation,
+    resolveEnvelope: async () => ({ fresh: true }),
+    secrets: authorizedWake.secrets,
+    assertInvocation: async (input) => {
+      checked.push(input);
+      throw new AgentInvocationDeniedError(input, "invocation_access_withdrawn");
+    },
+    execute: async function* (input) { calls.push(input); yield* []; },
+  });
+  for await (const _event of executor({
+    requestorId: "77777777-7777-4777-8777-777777777777",
+  }, "job", operation.initiatingLane, new AbortController().signal)) { /* drain */ }
+  expect(checked).toEqual([{
+    humanUserId: "77777777-7777-4777-8777-777777777777",
+    origin: "foreground_resume",
+    roomId: operation.initiatingRoomId,
+    agentId: operation.initiatingAgentId,
+  }]);
+  expect(calls).toEqual([]);
 });

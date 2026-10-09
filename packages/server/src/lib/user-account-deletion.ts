@@ -10,6 +10,7 @@ import {
   codexThreadBindings,
   connectedWebAccounts,
   connectedWebOperations,
+  conversionOperations,
   codexUserInputRequests,
   db,
   eq,
@@ -41,9 +42,17 @@ import {
   type ConnectedWebAccountRow,
   type DirectDatabase,
 } from "@nautilo/db";
+import type { DurableServiceFundingBinding } from "@nautilo/types";
 import { BrowserUseCloudAdapter } from "../browser-use/browser-use-cloud";
+import {
+  connectedWebBrowserFunding,
+  type ConnectedWebBrowserFunding,
+  withFundedBrowserUse,
+} from "../connected-web-accounts/browser-use-funding";
 import { ConnectedWebOperationSecrets } from "../connected-web-accounts/operation-secrets";
 import { stopIdleConnectedWebBrowser } from "../connected-web-accounts/browser-idle-cleanup";
+import type { ConnectedWebOperation } from "../connected-web-accounts/store";
+import { settleServerProviderCostAttempt } from "../costs/provider-cost-recorder";
 import { requirePairingPepper } from "../remote-control/pairing-secrets";
 import {
   findCanonicalGroupByType,
@@ -62,6 +71,7 @@ export type AccountDeletionEligibility =
   | { eligible: false; code: "federated_user" }
   | { eligible: false; code: "protected_custody" }
   | { eligible: false; code: "active_media_operation" }
+  | { eligible: false; code: "active_conversion_operation" }
   | { eligible: false; code: "last_owner" }
   | {
       eligible: false;
@@ -101,25 +111,97 @@ function connectedWebAccountCleanupFailed(result: unknown): boolean {
 /** Provider cleanup must finish before the RESTRICT-owned local row can be removed. */
 export async function cleanupConnectedWebAccountsBeforeAccountDeletion(
   rows: readonly {
+    readonly ownerUserId: string;
     readonly profileRef: ConnectedWebAccountRow["profileRef"];
+    readonly profileFundingBinding: DurableServiceFundingBinding | null;
     readonly checkpoint: ConnectedWebAccountRow["executionCheckpoint"];
   }[],
-  browser: Pick<BrowserUseCloudAdapter, "stopBrowser" | "stopHostedReadBrowser" | "deleteProfile">,
+  browser: Pick<BrowserUseCloudAdapter, "withRequestCredential">,
+  funding: ConnectedWebBrowserFunding = connectedWebBrowserFunding,
 ): Promise<void> {
   for (const row of rows) {
     const checkpoint = row.checkpoint;
     if (checkpoint?.phase === "reserving") throw new AccountDeletionConnectedWebAccountsCleanupError();
-    if (checkpoint?.phase === "active" && checkpoint.opaqueExecutionRef) {
-      const direct = checkpoint.resource === "login" || checkpoint.resource === "view";
-      const stopped = direct ? await browser.stopBrowser(checkpoint.opaqueExecutionRef)
-        : await browser.stopHostedReadBrowser(checkpoint.opaqueExecutionRef);
-      if (direct ? connectedWebAccountCleanupFailed(stopped) : stopped !== true) {
+    if (row.profileRef === null
+      && !(checkpoint?.phase === "active" && checkpoint.opaqueExecutionRef)) continue;
+    try {
+      // A null binding is legacy custody for this exact locked profile. Its
+      // recovery may adopt only the server account; it never chooses a fresh
+      // personal payer. Persisted bindings must reopen their creating key.
+      const binding = row.profileFundingBinding
+        ?? await funding.admitLegacyServer(row.ownerUserId);
+      await withFundedBrowserUse(funding, browser as BrowserUseCloudAdapter, binding, "recover", async (provider) => {
+        if (checkpoint?.phase === "active" && checkpoint.opaqueExecutionRef) {
+          const direct = checkpoint.resource === "login" || checkpoint.resource === "view";
+          const stopped = direct ? await provider.stopBrowser(checkpoint.opaqueExecutionRef)
+            : await provider.stopHostedReadBrowser(checkpoint.opaqueExecutionRef);
+          if (direct ? connectedWebAccountCleanupFailed(stopped) : stopped !== true) {
+            throw new AccountDeletionConnectedWebAccountsCleanupError();
+          }
+        }
+        if (!row.profileRef) return;
+        const deleted = await provider.deleteProfile(row.profileRef);
+        if (connectedWebAccountCleanupFailed(deleted)) {
+          throw new AccountDeletionConnectedWebAccountsCleanupError();
+        }
+      });
+    } catch (error) {
+      if (error instanceof AccountDeletionConnectedWebAccountsCleanupError) throw error;
+      throw new AccountDeletionConnectedWebAccountsCleanupError();
+    }
+  }
+}
+
+type AccountDeletionIdleBrowserOperation = Pick<ConnectedWebOperation,
+  "id" | "ownerUserId" | "accountId" | "initiatingAgentId" | "initiatingRoomId"
+  | "sealedProviderRefs" | "lifecycle" | "browserCleanupStartedAt" | "browserIdleUntil"
+  | "fundingBinding">;
+
+/** Stop only the exact locked operation through its creating provider account. */
+export async function cleanupIdleConnectedWebOperationsBeforeAccountDeletion(
+  operations: readonly AccountDeletionIdleBrowserOperation[],
+  browser: Pick<BrowserUseCloudAdapter, "withRequestCredential">,
+  secrets: ConnectedWebOperationSecrets,
+  dependencies: Readonly<{
+    funding?: ConnectedWebBrowserFunding;
+    stopIdle?: typeof stopIdleConnectedWebBrowser;
+    settleCost?: typeof settleServerProviderCostAttempt;
+  }> = {},
+): Promise<void> {
+  const funding = dependencies.funding ?? connectedWebBrowserFunding;
+  const stopIdle = dependencies.stopIdle ?? stopIdleConnectedWebBrowser;
+  const settleCost = dependencies.settleCost ?? settleServerProviderCostAttempt;
+  for (const operation of operations) {
+    if (operation.browserIdleUntil === null) continue;
+    try {
+      const binding = operation.fundingBinding
+        ?? await funding.admitLegacyServer(operation.ownerUserId);
+      const stopped = await withFundedBrowserUse(
+        funding,
+        browser as BrowserUseCloudAdapter,
+        binding,
+        "recover",
+        (provider, usageFunding) => stopIdle({
+          operation: { ...operation, browserCleanupStartedAt: new Date() },
+          secrets,
+          provider,
+          settleBrowserCost: (cost) => settleCost({
+            ...cost,
+            usageFunding,
+            userId: binding.humanUserId,
+            roomId: operation.initiatingRoomId,
+            agentId: operation.initiatingAgentId,
+            provider: "browser_use",
+            operation: "browser_session",
+            attemptOutcome: "succeeded",
+          }),
+        }),
+      );
+      if (!stopped) {
         throw new AccountDeletionConnectedWebAccountsCleanupError();
       }
-    }
-    if (!row.profileRef) continue;
-    const deleted = await browser.deleteProfile(row.profileRef);
-    if (connectedWebAccountCleanupFailed(deleted)) {
+    } catch (error) {
+      if (error instanceof AccountDeletionConnectedWebAccountsCleanupError) throw error;
       throw new AccountDeletionConnectedWebAccountsCleanupError();
     }
   }
@@ -184,6 +266,58 @@ async function hasActiveMediaOperation(targetUserId: string): Promise<boolean> {
   return rows.some((row) => !isSafelyTerminalMediaOperation(row));
 }
 
+type ConversionOperationForDeletion = Readonly<{
+  providerJobId: string | null;
+  status: string;
+  failureCode: string | null;
+  submittedAt: Date | null;
+  terminalAt: Date | null;
+}>;
+
+const TERMINAL_CONVERSION_STATUSES = new Set([
+  "published",
+  "cancelled",
+  "failed",
+  "publication_failed",
+  "expired",
+]);
+
+/**
+ * Prepared work with no dispatch receipt is unadmitted. Every other receipt
+ * remains deletion-blocking until both provider admission and a truthful
+ * terminal transition are durable. In particular, publication_committing is
+ * uncertain even though provider work has already finished.
+ */
+export function isSafelyDeletableConversionOperation(
+  receipt: ConversionOperationForDeletion,
+): boolean {
+  if (receipt.status === "prepared") {
+    return receipt.providerJobId === null
+      && receipt.submittedAt === null
+      && receipt.terminalAt === null;
+  }
+  if (receipt.status === "cancelled" && receipt.providerJobId === null) {
+    return receipt.failureCode === "cancelled_before_provider_dispatch"
+      && receipt.submittedAt === null
+      && receipt.terminalAt !== null;
+  }
+  return receipt.providerJobId !== null
+    && receipt.terminalAt !== null
+    && TERMINAL_CONVERSION_STATUSES.has(receipt.status);
+}
+
+async function hasActiveConversionOperation(targetUserId: string): Promise<boolean> {
+  const rows = await db.select({
+    providerJobId: conversionOperations.providerJobId,
+    status: conversionOperations.status,
+    failureCode: conversionOperations.failureCode,
+    submittedAt: conversionOperations.submittedAt,
+    terminalAt: conversionOperations.terminalAt,
+  }).from(conversionOperations)
+    .where(eq(conversionOperations.causalHumanUserId, targetUserId));
+  return rows.some((row) => !isSafelyDeletableConversionOperation(row));
+}
+
 export async function assessAccountDeletion(
   targetUserId: string,
 ): Promise<AccountDeletionEligibility> {
@@ -199,6 +333,9 @@ export async function assessAccountDeletion(
   if (custody.length > 0) return { eligible: false, code: "protected_custody" };
   if (await hasActiveMediaOperation(targetUserId)) {
     return { eligible: false, code: "active_media_operation" };
+  }
+  if (await hasActiveConversionOperation(targetUserId)) {
+    return { eligible: false, code: "active_conversion_operation" };
   }
   if (await targetIsLastOwner(targetUserId)) {
     return { eligible: false, code: "last_owner" };
@@ -356,6 +493,21 @@ export async function deleteLocalUserAccount(
         code: "active_media_operation",
       });
     }
+    const targetConversionRows = await tx.select({
+      providerJobId: conversionOperations.providerJobId,
+      status: conversionOperations.status,
+      failureCode: conversionOperations.failureCode,
+      submittedAt: conversionOperations.submittedAt,
+      terminalAt: conversionOperations.terminalAt,
+    }).from(conversionOperations)
+      .where(eq(conversionOperations.causalHumanUserId, targetUserId))
+      .for("update");
+    if (targetConversionRows.some((row) => !isSafelyDeletableConversionOperation(row))) {
+      throw new AccountDeletionIneligibleError({
+        eligible: false,
+        code: "active_conversion_operation",
+      });
+    }
 
     const ownerGroups = await tx.execute(sql`
       SELECT id FROM groups WHERE type = 'owners' FOR UPDATE
@@ -405,7 +557,9 @@ export async function deleteLocalUserAccount(
       throw new AccountDeletionConnectedWebAccountsCleanupError();
     }
     const connectedRows = await tx.select({
+      ownerUserId: connectedWebAccounts.ownerUserId,
       profileRef: connectedWebAccounts.profileRef,
+      profileFundingBinding: connectedWebAccounts.profileFundingBinding,
       checkpoint: connectedWebAccounts.executionCheckpoint,
     })
       .from(connectedWebAccounts).where(eq(connectedWebAccounts.ownerUserId, targetUserId)).for("update");
@@ -415,17 +569,13 @@ export async function deleteLocalUserAccount(
     if (connectedRows.some((row) => row.checkpoint !== null)) throw new AccountDeletionConnectedWebAccountsCleanupError();
     if (websiteOperations.length || connectedRows.some((row) => row.profileRef !== null || row.checkpoint !== null)) {
       const browser = new BrowserUseCloudAdapter({ serverKeys: process.env });
-      for (const operation of websiteOperations) {
-        if (operation.browserIdleUntil === null) continue;
-        // The locked row cannot be reused; deletion commits only after exact
-        // cleanup. A rollback keeps custody and makes stop safely retryable.
-        const stopped = await stopIdleConnectedWebBrowser({
-          operation: { ...operation, browserCleanupStartedAt: new Date() },
-          secrets: new ConnectedWebOperationSecrets({ stableServerSecret: requirePairingPepper() }),
-          provider: browser,
-        });
-        if (!stopped) throw new AccountDeletionConnectedWebAccountsCleanupError();
-      }
+      // The locked rows cannot be reused; deletion commits only after exact
+      // cleanup. A rollback keeps custody and makes stop safely retryable.
+      await cleanupIdleConnectedWebOperationsBeforeAccountDeletion(
+        websiteOperations,
+        browser,
+        new ConnectedWebOperationSecrets({ stableServerSecret: requirePairingPepper() }),
+      );
       await cleanupConnectedWebAccountsBeforeAccountDeletion(connectedRows, browser);
     }
 
@@ -554,6 +704,12 @@ export async function deleteLocalUserAccount(
     // Account cascade removes operation/activity/action rows before their
     // RESTRICT references to initiating Genies and Rooms are crossed.
     await tx.delete(connectedWebAccounts).where(eq(connectedWebAccounts.ownerUserId, targetUserId));
+
+    // Only terminal or provably unadmitted receipts reach this point. Remove
+    // their restrictive causal-Human edge before deleting the Human; provider
+    // cost rows remain separate immutable accounting history.
+    await tx.delete(conversionOperations)
+      .where(eq(conversionOperations.causalHumanUserId, targetUserId));
 
     if (agentIdList.length > 0) {
       await tx.delete(actors).where(inArray(actors.agentId, agentIdList));

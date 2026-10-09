@@ -6,6 +6,7 @@ import {
   buildProviderCostsSummaryQueries,
   buildPersonalProviderCostsByTaskQuery,
   buildProviderCostRecoveryAttemptsQuery,
+  claimProviderCostEventWith,
   estimateProviderToolCostUsd,
   insertProviderCostEventWith,
   providerCostIdempotencyKey,
@@ -106,6 +107,27 @@ describe("provider cost events", () => {
     });
     expect(conflictTarget).toBeTruthy();
     expect(JSON.stringify(values)).not.toContain("raw-provider-receipt");
+  });
+
+  test("atomically distinguishes a newly inserted attempt from an existing claim", async () => {
+    const returnedRows = [[{ id: "new-row" }], []] as const;
+    let call = 0;
+    const builder = {
+      values() { return this; },
+      onConflictDoNothing() { return this; },
+      async returning() { return returnedRows[call++] ?? []; },
+    };
+    const handle = { insert: () => builder } as unknown as DirectDatabase;
+    const input = {
+      provider: "oomol",
+      operation: "connected_app_execute",
+      evidenceState: "unknown" as const,
+      attemptOutcome: "unknown" as const,
+      idempotencyKey: DIGEST,
+    };
+
+    expect(await claimProviderCostEventWith(handle, input)).toBe("inserted");
+    expect(await claimProviderCostEventWith(handle, input)).toBe("existing");
   });
 
   test("keeps a provider-reported zero-unit estimate as known zero evidence", async () => {
@@ -279,6 +301,8 @@ describe("provider cost events", () => {
       expect(generated.params).toContain(RANGE.untilIso);
     }
     expect(compiled[0]!.sql).toContain("FILTER (WHERE");
+    expect(compiled[1]!.sql).toContain('"measured_units"');
+    expect(compiled[1]!.sql.toLowerCase()).toContain('count(distinct "unit_type")');
     expect(compiled[2]!.sql).toContain('left join "users"');
   });
 
@@ -328,7 +352,7 @@ describe("provider cost events", () => {
       [{ user_id: "user-1", handle: "owner", name: "Owner", calls: 1, total_tokens: 120, estimated_cost: "0.02000000", actual_cost: "0", total_cost: "0.02000000" }],
       [{ day: "2026-09-01", estimated_cost: "0.02000000", actual_cost: "0", total_cost: "0.02000000" }],
       [{ operations: 2, unknown_operations: 1, succeeded_operations: 0, failed_operations: 0, cancelled_operations: 0, interrupted_operations: 0, unknown_outcome_operations: 0, legacy_operations: 2, estimated_cost: "0", actual_cost: "0.01400000", total_cost: "0.01400000" }],
-      [{ provider: "browser_use", operation: "hosted_read", operations: 2, unknown_operations: 1, estimated_cost: "0", actual_cost: "0.01400000", total_cost: "0.01400000" }],
+      [{ provider: "browser_use", operation: "hosted_read", operations: 2, unknown_operations: 1, measured_units: "2.00000000", unit_type: "sessions", estimated_cost: "0", actual_cost: "0.01400000", total_cost: "0.01400000" }],
       [
         { user_id: "user-1", handle: "owner", name: "Owner", operations: 1, unknown_operations: 0, estimated_cost: "0", actual_cost: "0.01400000", total_cost: "0.01400000" },
         { user_id: "user-2", handle: "member", name: "Member", operations: 1, unknown_operations: 1, estimated_cost: "0", actual_cost: "0", total_cost: "0" },
@@ -365,6 +389,8 @@ describe("provider cost events", () => {
       operation: "hosted_read",
       operations: 2,
       unknownOperations: 1,
+      measuredUnits: 2,
+      unitType: "sessions",
       totalCostUsd: 0.014,
     });
     expect(summary.byUser.find((row) => row.userId === "user-1")).toMatchObject({

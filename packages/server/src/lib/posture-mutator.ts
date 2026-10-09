@@ -99,6 +99,7 @@ export function createPostureMutator(deps: PostureMutatorDeps): PostureMutator {
       nautilo_deployment_mode: meta.next.deploymentMode,
       nautilo_security_level: meta.next.securityLevel,
       nautilo_network_policy: networkPolicy,
+      nautilo_local_network_policy: meta.next.localNetworkPolicy ?? { mode: "host" },
     });
 
     // Step 4: broadcast. Subscribed WS clients re-read on receipt.

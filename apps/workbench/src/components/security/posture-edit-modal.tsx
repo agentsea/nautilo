@@ -22,6 +22,17 @@ export function PostureEditModal({
 }) {
   const [deploymentMode, setDeploymentMode] = useState(posture.deploymentMode);
   const [securityLevel, setSecurityLevel] = useState(posture.securityLevel);
+  const currentLocalPolicy = posture.localNetworkPolicy ?? { mode: "host" as const };
+  const [localNetworkTouched, setLocalNetworkTouched] = useState(false);
+  const [localNetworkMode, setLocalNetworkMode] = useState<NetworkMode>(currentLocalPolicy.mode);
+  const [localAllowlistText, setLocalAllowlistText] = useState(
+    currentLocalPolicy.mode === "proxy-allowlist" ? formatAllowlist(currentLocalPolicy.allow) : "",
+  );
+  const parsedLocalNetwork = localNetworkTouched
+    ? parseLocalNetworkPolicy(localNetworkMode, localAllowlistText, currentLocalPolicy)
+    : { ok: true as const, policy: undefined };
+  const localNetworkChanged = canManageServerSecurity && localNetworkTouched && parsedLocalNetwork.ok
+    && JSON.stringify(parsedLocalNetwork.policy) !== JSON.stringify(currentLocalPolicy);
   const [networkTouched, setNetworkTouched] = useState(false);
   const [networkMode, setNetworkMode] = useState<NetworkMode>(posture.networkPolicy.mode);
   const [allowlistText, setAllowlistText] = useState(
@@ -46,7 +57,7 @@ export function PostureEditModal({
   const uncontainedHostCommandsChanged =
     canManageUncontainedHostCommands &&
     allowUncontainedHostCommands !== posture.allowUncontainedHostCommands;
-  const changed = ordinaryPostureChanged || uncontainedHostCommandsChanged;
+  const changed = ordinaryPostureChanged || localNetworkChanged || uncontainedHostCommandsChanged;
 
   const submitPin = async (pin: string) => {
     try {
@@ -55,7 +66,11 @@ export function PostureEditModal({
         setError(network.error);
         return;
       }
+      if (!parsedLocalNetwork.ok) { setError(parsedLocalNetwork.error); return; }
       await apiClient.updateSecurityPosture({
+        ...(localNetworkChanged && parsedLocalNetwork.policy
+          ? { localNetworkPolicy: parsedLocalNetwork.policy }
+          : {}),
         ...(canManageServerSecurity && deploymentMode !== posture.deploymentMode ? { deploymentMode } : {}),
         ...(canManageServerSecurity && securityLevel !== posture.securityLevel ? { securityLevel } : {}),
         ...(canManageServerSecurity && networkTouched && network?.policy && JSON.stringify(network.policy) !== JSON.stringify(posture.networkPolicy)
@@ -167,6 +182,40 @@ export function PostureEditModal({
               </label>
             ) : null}
 
+            <label className="grid gap-1 text-sm">
+              <span className="font-medium">Local-computer network ceiling</span>
+              <select aria-label="Local-computer network ceiling" value={localNetworkMode}
+                disabled={!canManageServerSecurity || posture.localNetworkPolicy === undefined}
+                onChange={(event) => {
+                  setLocalNetworkTouched(true);
+                  setLocalNetworkMode(event.target.value as NetworkMode);
+                }}
+                className="rounded-md border border-border bg-background-element px-3 py-2">
+                <option value="host">Unrestricted — use each local profile's network policy</option>
+                <option value="isolated">Isolated — deny Agent network access</option>
+                <option value="proxy-allowlist">Allowlist — only approved destinations</option>
+              </select>
+              <span className="text-xs text-foreground-muted">
+                Applies to Agent operations on paired computers. A local profile can be stricter.
+                Restricted modes do not permit local preview listeners or uncontained commands.
+                {posture.localNetworkPolicy === undefined ? " Upgrade the server to manage this restriction." : ""}
+              </span>
+            </label>
+            {localNetworkMode === "proxy-allowlist" ? (
+              <label className="grid gap-1 text-sm">
+                <span className="font-medium">Local-computer allowlist</span>
+                <textarea aria-label="Local-computer allowlist" value={localAllowlistText}
+                  disabled={!canManageServerSecurity} rows={4}
+                  onChange={(event) => {
+                    setLocalNetworkTouched(true);
+                    setLocalAllowlistText(event.target.value);
+                  }}
+                  className="rounded-md border border-border bg-background-element px-3 py-2 font-mono text-xs" />
+                <span className="text-xs text-foreground-muted">One rule per line: domain host [ports], wildcard suffix [ports], or cidr range [ports].</span>
+              </label>
+            ) : null}
+            {!parsedLocalNetwork.ok ? <p role="alert">{parsedLocalNetwork.error}</p> : null}
+
             <section className="rounded-md border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-4">
               <label className="flex items-start gap-3 text-sm">
                 <input
@@ -205,6 +254,7 @@ export function PostureEditModal({
             <div>Mode: {posture.deploymentMode} -&gt; {deploymentMode}</div>
             <div>Level: {posture.securityLevel} -&gt; {securityLevel}</div>
             <div>Network: {posture.networkPolicy.mode} -&gt; {networkMode}</div>
+            <div>Local computers: {currentLocalPolicy.mode} -&gt; {localNetworkMode}</div>
             <div>
               Uncontained host commands: {posture.allowUncontainedHostCommands ? "Enabled" : "Disabled"}
               {" -&gt; "}
@@ -220,7 +270,7 @@ export function PostureEditModal({
               Cancel
             </button>
             <button
-              disabled={!changed || parsedNetwork.ok === false}
+              disabled={!changed || parsedNetwork.ok === false || !parsedLocalNetwork.ok}
               title={changed ? "Confirm posture change with PIN" : "No posture changes selected"}
               onClick={() => setConfirming(true)}
               className="rounded-md bg-primary px-3 py-2 text-sm text-[var(--on-primary)] disabled:cursor-not-allowed disabled:opacity-40"
@@ -295,6 +345,22 @@ function parseNetworkPolicy(
     if (kind === "cidr") allow.push({ type: "cidr", cidr: value, ...(ports ? { ports } : {}) });
   }
   return { ok: true, policy: { mode: "proxy-allowlist", allow } };
+}
+
+function parseLocalNetworkPolicy(
+  mode: NetworkMode,
+  allowlistText: string,
+  currentPolicy: NetworkPolicy,
+): { ok: true; policy: NetworkPolicy } | { ok: false; error: string } {
+  const parsed = parseNetworkPolicy(mode, allowlistText);
+  if (!parsed.ok || parsed.policy.mode !== "proxy-allowlist") return parsed;
+  if (currentPolicy.mode !== "proxy-allowlist" || currentPolicy.defaultPort === undefined) {
+    return parsed;
+  }
+  return {
+    ok: true,
+    policy: { ...parsed.policy, defaultPort: currentPolicy.defaultPort },
+  };
 }
 
 function parsePorts(raw: string): number[] | null {
