@@ -5,9 +5,51 @@ import {
   convertResponsesMessageToAIMessage,
   convertResponsesDeltaToChatGenerationChunk,
 } from "@langchain/openai";
+import { AIMessage } from "@langchain/core/messages";
 
 type InvocationOptions = Parameters<ChatOpenAICompletions["invocationParams"]>[0];
 type InvocationExtra = Parameters<ChatOpenAICompletions["invocationParams"]>[1];
+
+const TOOL_INVOCATION_IDENTITY_KEY = "nautilo_tool_invocations";
+
+type RecordValue = Record<string, unknown>;
+
+function record(value: unknown): RecordValue | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as RecordValue
+    : undefined;
+}
+
+/**
+ * OpenAI owns returned Responses item IDs. Once admission replaces call_id with
+ * a canonical execution ID, replaying the provider item ID would bind the item
+ * back to its original call_id. Remove that opaque reference only from matching
+ * serialized request items; admitted messages and checkpoints remain unchanged.
+ */
+function convertCanonicalResponsesInput(
+  params: Parameters<typeof convertMessagesToResponsesInput>[0],
+): ReturnType<typeof convertMessagesToResponsesInput> {
+  const admittedIds = new Set(params.messages.flatMap((message) => {
+    if (!AIMessage.isInstance(message)) return [];
+    const identity = record(message.additional_kwargs[TOOL_INVOCATION_IDENTITY_KEY]);
+    if (identity?.["version"] !== 1 || !Array.isArray(identity["calls"])) return [];
+    return identity["calls"].flatMap((value) => {
+      const id = record(value)?.["id"];
+      return typeof id === "string" ? [id] : [];
+    });
+  }));
+  const input = convertMessagesToResponsesInput(params);
+  if (admittedIds.size === 0) return input;
+  return input.map((value) => {
+    if (!("type" in value)
+      || (value.type !== "function_call" && value.type !== "custom_tool_call" && value.type !== "computer_call")
+      || !("call_id" in value) || typeof value.call_id !== "string"
+      || !admittedIds.has(value.call_id)) return value;
+    const projected = { ...value };
+    Reflect.deleteProperty(projected, "id");
+    return projected;
+  });
+}
 
 export function isDirectGpt6Model(modelId: string): boolean {
   return /^openai:gpt-(?:6-(?:astra|sol|luna)|6\.1-sol)$/.test(modelId);
@@ -56,7 +98,11 @@ export class OpenAIUsageResponses extends ChatOpenAIResponses {
   ) {
     const stream = await this.completionWithRetry({
       ...this.invocationParams(options),
-      input: convertMessagesToResponsesInput({ messages, zdrEnabled: this.zdrEnabled ?? false, model: this.model }),
+      input: convertCanonicalResponsesInput({
+        messages,
+        zdrEnabled: this.zdrEnabled ?? false,
+        model: this.model,
+      }),
       stream: true,
     }, options);
     for await (const event of stream) {
@@ -85,7 +131,11 @@ export class OpenAIUsageResponses extends ChatOpenAIResponses {
     // The streaming adapter already retains raw usage on response.completed.
     if (params.stream) return super._generate(messages, options, runManager);
     const response = await this.completionWithRetry({
-      input: convertMessagesToResponsesInput({ messages, zdrEnabled: this.zdrEnabled ?? false, model: this.model }),
+      input: convertCanonicalResponsesInput({
+        messages,
+        zdrEnabled: this.zdrEnabled ?? false,
+        model: this.model,
+      }),
       ...params,
       stream: false,
     }, { signal: options.signal, ...options.options });
