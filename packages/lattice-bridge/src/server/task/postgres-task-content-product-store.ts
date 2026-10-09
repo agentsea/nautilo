@@ -35,6 +35,7 @@ import {
   type TaskContentProductStorePort,
   type TaskContentRevisionLifecycleV1,
   type TaskContentRevisionStateV1,
+  type TaskRunResultContentCoordinateV1,
 } from "../../task/task-content-repository.ts";
 import {
   assertVerifiedConversationProductPostgresHandle,
@@ -50,7 +51,10 @@ import {
   type ProtectedTaskOperationalMetadataProjectionV1,
 } from "@nautilo/types";
 
-const LEASE_SECONDS = 60;
+import {
+  taskContentReconciliationFailureValues,
+  taskContentReconciliationLeaseExpiry,
+} from "./task-content-reconciliation-policy.ts";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PORTABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/;
 const FAILURE_CODES = new Set<TaskContentFailureCode>([
@@ -304,6 +308,39 @@ function exactReservation(
     && sameJson(lifecycle.operationalMetadata, input.operationalMetadata);
 }
 
+function sameAuthorityResolutionLifecycle(
+  observed: TaskContentRevisionLifecycleV1,
+  locked: TaskContentRevisionLifecycleV1,
+): boolean {
+  return observed.sequence === locked.sequence
+    && observed.coordinate.kind === locked.coordinate.kind
+    && observed.coordinate.taskId === locked.coordinate.taskId
+    && observed.coordinate.contentRevision === locked.coordinate.contentRevision
+    && (observed.coordinate.kind === "definition"
+      || (locked.coordinate.kind === "run_result"
+        && observed.coordinate.taskRunId === locked.coordinate.taskRunId))
+    && observed.operationId === locked.operationId
+    && sameBytes(observed.requestDigest, locked.requestDigest)
+    && observed.requesterHumanId === locked.requesterHumanId
+    && observed.namespaceId === locked.namespaceId
+    && observed.cryptoObjectId === locked.cryptoObjectId
+    && observed.objectType === locked.objectType
+    && observed.payloadVersion === locked.payloadVersion
+    && observed.representation === locked.representation
+    && sameBytes(
+      observed.authorityFingerprint,
+      locked.authorityFingerprint,
+    )
+    && sameBytes(
+      observed.requiredNamespaceFingerprint,
+      locked.requiredNamespaceFingerprint,
+    )
+    && sameJson(
+      observed.operationalMetadata,
+      locked.operationalMetadata,
+    );
+}
+
 export class PostgresTaskContentProductStore implements TaskContentProductStorePort {
   readonly #handle: ConversationProductPostgresHandle;
   readonly #resolveCurrentAuthority: ResolveCurrentTaskContentAuthority;
@@ -444,7 +481,22 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     if (input.expectedRepresentation !== "protected" && input.expectedRepresentation !== "dual") {
       throw new TypeError("Expected Task representation is invalid");
     }
+    const observedResult = input.coordinate.kind === "run_result"
+      ? await this.#readLifecycle(input.coordinate)
+      : null;
+    if (input.coordinate.kind === "run_result" && observedResult === null) {
+      return "missing";
+    }
+    const resolvedResultAuthority = observedResult === null
+      ? null
+      : await this.#currentAuthority(observedResult);
     return this.#handle.transaction(async (transaction) => {
+      const lockedResultPublicationPolicy = input.coordinate.kind === "run_result"
+        ? await this.#lockedPublicationPolicy(transaction)
+        : null;
+      const lockedResult = input.coordinate.kind === "run_result"
+        ? await this.#lockResultProduct(transaction, input.coordinate)
+        : null;
       const row = await this.#lockedLifecycle(transaction, input.coordinate, true);
       if (row === null) return "missing";
       const lifecycle = lifecycleFromRow(input.coordinate.kind, row);
@@ -453,7 +505,13 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         || lifecycle.representation !== input.expectedRepresentation
         || lifecycle.completion !== "complete"
         || !["active", "mapped"].includes(lifecycle.disposition)) return "stale";
-      const current = await this.#currentAuthority(lifecycle);
+      if (observedResult !== null
+        && !sameAuthorityResolutionLifecycle(observedResult, lifecycle)) {
+        return "stale";
+      }
+      const current = input.coordinate.kind === "run_result"
+        ? resolvedResultAuthority
+        : await this.#currentAuthority(lifecycle);
       if (current === null
         || !this.#authorityIdentityMatches(
           current,
@@ -492,6 +550,8 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
           exactCurrentAuthority,
           requesterOwnerId,
           current.expectedPolicyRevision,
+          lockedResult,
+          lockedResultPublicationPolicy,
         );
       if (result === "wrong_authority") {
         if (lifecycle.disposition === "active") await this.#persistAuthorityStale(transaction, lifecycle);
@@ -570,7 +630,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         const coordinate = coordinateFromRow(kind, candidate);
         const claimed = await this.#updateLifecycle(transaction, coordinate, {
           leaseToken: input.leaseToken,
-          leaseExpiresAt: sql`CURRENT_TIMESTAMP + ${LEASE_SECONDS} * interval '1 second'`,
+          leaseExpiresAt: taskContentReconciliationLeaseExpiry(),
           updatedAt: sql`CURRENT_TIMESTAMP`,
         }, and(this.#coordinateWhere(coordinate), eq(this.#table(coordinate).disposition, "active"), or(isNull(this.#table(coordinate).leaseToken), lte(this.#table(coordinate).leaseExpiresAt, sql`CURRENT_TIMESTAMP`))));
         if (!claimed) continue;
@@ -597,14 +657,8 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     if (input.failureCode === "retry_exhausted") throw new TypeError("retry_exhausted is reserved for the final failed claim");
     return this.#handle.transaction(async (transaction) => {
       const table = this.#table(input.coordinate);
-      const nextAttempt = sql`CASE WHEN ${table.attemptCount} + 1 >= ${TASK_CONTENT_RECONCILE_MAX_ATTEMPTS}
-        THEN NULL ELSE CURRENT_TIMESTAMP + LEAST(300000, (1000 * power(2, ${table.attemptCount}))::bigint) * interval '1 millisecond' END`;
-      const row = await this.#updateLifecycleReturning(transaction, input.coordinate, {
-        attemptCount: sql`${table.attemptCount} + 1`,
-        disposition: sql`CASE WHEN ${table.attemptCount} + 1 >= ${TASK_CONTENT_RECONCILE_MAX_ATTEMPTS} THEN 'quarantined' ELSE 'active' END`,
-        failureCode: sql`CASE WHEN ${table.attemptCount} + 1 >= ${TASK_CONTENT_RECONCILE_MAX_ATTEMPTS} THEN 'retry_exhausted' ELSE NULL END`,
-        nextAttemptAt: nextAttempt, leaseToken: null, leaseExpiresAt: null, updatedAt: sql`CURRENT_TIMESTAMP`,
-      }, and(this.#coordinateWhere(input.coordinate), eq(table.leaseToken, input.leaseToken), sql`${table.leaseExpiresAt} > CURRENT_TIMESTAMP`, eq(table.disposition, "active"), sql`${table.attemptCount} < ${TASK_CONTENT_RECONCILE_MAX_ATTEMPTS}`));
+      const row = await this.#updateLifecycleReturning(transaction, input.coordinate,
+        taskContentReconciliationFailureValues(table.attemptCount), and(this.#coordinateWhere(input.coordinate), eq(table.leaseToken, input.leaseToken), sql`${table.leaseExpiresAt} > CURRENT_TIMESTAMP`, eq(table.disposition, "active"), sql`${table.attemptCount} < ${TASK_CONTENT_RECONCILE_MAX_ATTEMPTS}`));
       return row === null ? null : lifecycleFromRow(input.coordinate.kind, row);
     }, { isolationLevel: "serializable" });
   }
@@ -841,6 +895,15 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     return oneOrNone(await executeTypedConversationProductQuery(transaction, query), "Task content locked lifecycle");
   }
 
+  async #readLifecycle(
+    coordinate: TaskRunResultContentCoordinateV1,
+  ): Promise<TaskContentRevisionLifecycleV1 | null> {
+    return this.#handle.transaction(async transaction => {
+      const row = await this.#coordinateRow(transaction, coordinate, false);
+      return row === null ? null : lifecycleFromRow(coordinate.kind, row);
+    }, { isolationLevel: "serializable" });
+  }
+
   async #mapDefinition(
     transaction: ConversationProductPostgresTransaction,
     lifecycle: TaskContentRevisionLifecycleV1,
@@ -897,12 +960,20 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     exactCurrentAuthority: boolean,
     requesterOwnerId: string,
     expectedPolicyRevision: number,
+    locked: Readonly<{
+      parent: ConversationProductDatabaseRow | null;
+      run: ConversationProductDatabaseRow | null;
+    }> | null,
+    lockedPublicationPolicy: Readonly<{
+      mode: string;
+      revision: number;
+    }> | null,
   ): Promise<"applied" | "duplicate" | "missing" | "stale" | "wrong_authority"> {
     const coordinate = lifecycle.coordinate;
     if (coordinate.kind !== "run_result") throw new Error("Result mapping kind mismatch");
-    const parent = oneOrNone(await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.select({ owner_id: tasks.ownerId, namespace_id: sql<string | null>`${tasks.contentNamespaceId}`.as("namespace_id"), task_status: sql<string>`${tasks.status}`.as("task_status") }).from(tasks).where(eq(tasks.id, coordinate.taskId)).for("update").limit(2)), "Task result parent lookup");
+    if (locked === null) throw new Error("Result mapping product lock is missing");
+    const { parent, run: row } = locked;
     if (parent === null || text(parent, "owner_id") !== requesterOwnerId || nullableText(parent, "namespace_id") !== lifecycle.namespaceId) return "stale";
-    const row = await this.#productRow(transaction, coordinate, true);
     if (row === null) return "missing";
     if (integer(row, "result_revision") === coordinate.contentRevision
       && nullableText(row, "crypto_object_id") === lifecycle.cryptoObjectId
@@ -913,8 +984,8 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     if (!exactCurrentAuthority) return "wrong_authority";
     if (text(parent, "task_status") === "cancelled"
       || text(row, "run_status") === "cancelled") return "stale";
-    if (!await this.#lockPublicationPolicy(
-      transaction,
+    if (!this.#publicationPolicyMatches(
+      lockedPublicationPolicy,
       expectedPolicyRevision,
       lifecycle.representation,
     )) return "wrong_authority";
@@ -930,11 +1001,43 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     return oneOrNone(updated, "Task result mapping CAS") === null ? "stale" : "applied";
   }
 
+  async #lockResultProduct(
+    transaction: ConversationProductPostgresTransaction,
+    coordinate: TaskRunResultContentCoordinateV1,
+  ): Promise<Readonly<{
+      parent: ConversationProductDatabaseRow | null;
+      run: ConversationProductDatabaseRow | null;
+    }>> {
+    const parent = oneOrNone(await executeTypedConversationProductQuery(
+      transaction,
+      conversationProductTypedDb.select({
+        owner_id: tasks.ownerId,
+        namespace_id: sql<string | null>`${tasks.contentNamespaceId}`.as("namespace_id"),
+        task_status: sql<string>`${tasks.status}`.as("task_status"),
+      }).from(tasks)
+        .where(eq(tasks.id, coordinate.taskId))
+        .for("update")
+        .limit(2),
+    ), "Task result parent lookup");
+    const run = await this.#productRow(transaction, coordinate, true);
+    return Object.freeze({ parent, run });
+  }
+
   async #lockPublicationPolicy(
     transaction: ConversationProductPostgresTransaction,
     expectedRevision: number,
     representation: "protected" | "dual",
   ): Promise<boolean> {
+    return this.#publicationPolicyMatches(
+      await this.#lockedPublicationPolicy(transaction),
+      expectedRevision,
+      representation,
+    );
+  }
+
+  async #lockedPublicationPolicy(
+    transaction: ConversationProductPostgresTransaction,
+  ): Promise<Readonly<{ mode: string; revision: number }> | null> {
     const rows = await executeTypedConversationProductQuery(
       transaction,
       conversationProductTypedDb.select({
@@ -946,11 +1049,21 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         .limit(2),
     );
     const row = oneOrNone(rows, "Task publication policy fence");
-    if (row === null || integer(row, "revision") !== expectedRevision) return false;
-    const mode = text(row, "mode");
+    return row === null ? null : Object.freeze({
+      mode: text(row, "mode"),
+      revision: integer(row, "revision"),
+    });
+  }
+
+  #publicationPolicyMatches(
+    policy: Readonly<{ mode: string; revision: number }> | null,
+    expectedRevision: number,
+    representation: "protected" | "dual",
+  ): boolean {
+    if (policy === null || policy.revision !== expectedRevision) return false;
     return representation === "dual"
-      ? mode === "shadow_encryption"
-      : mode === "encrypted_only";
+      ? policy.mode === "shadow_encryption"
+      : policy.mode === "encrypted_only";
   }
 
   async #terminalTransition(coordinate: TaskContentCoordinateV1, leaseToken: string | null, disposition: "quarantined" | "stale_mapping", failureCode: TaskContentFailureCode): Promise<"applied" | "duplicate" | "missing" | "conflict"> {

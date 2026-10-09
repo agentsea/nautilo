@@ -1,10 +1,19 @@
 import { coerceMessageLikeToMessage, type BaseMessageLike } from "@langchain/core/messages";
 import type { StructuredTool } from "@langchain/core/tools";
-import { resolveCompletionBudget } from "../../../utils/chat-model-invocation";
+import {
+  invokeChatModelWithFallback,
+  resolveCompletionBudget,
+} from "../../../utils/chat-model-invocation";
 import type { Configuration } from "../shared/config";
 import type { ChatModel } from "../../../providers/types";
 import { createUniversalModel } from "../../../providers/universal";
-import { assertDeepResearchServerFunding } from "../shared/funding";
+import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
+import { getUsageContext } from "../../../usage/usage-context";
+import {
+  assertDeepResearchServerFunding,
+  getDeepResearchFunding,
+} from "../shared/funding";
+import type { DeepResearchFundingLane } from "../shared/task-metadata";
 
 export type Provider = "openai" | "anthropic" | "google" | "fireworks" | "openrouter" | "xai" | "together" | "venice";
 
@@ -79,9 +88,66 @@ function getBaseUrl(modelId: string, cfg: Configuration): string | undefined {
 export async function createModel(
   modelId: string,
   cfg: Configuration,
-  options?: { maxTokens?: number | undefined; useOpenAIResponsesApi?: boolean | undefined; messages?: BaseMessageLike[]; tools?: readonly StructuredTool[] },
+  options?: { maxTokens?: number | undefined; useOpenAIResponsesApi?: boolean | undefined; messages?: BaseMessageLike[]; tools?: readonly StructuredTool[]; fundingLane?: DeepResearchFundingLane },
 ): Promise<ChatModel> {
+  const admittedFunding = getDeepResearchFunding();
+  if (admittedFunding) {
+    const lane = options?.fundingLane;
+    const capabilityFunding = getCapabilityFundingSession();
+    if (!lane || !capabilityFunding) {
+      throw new Error("Admitted Deep Research funding authority is unavailable.");
+    }
+    const prior = admittedFunding.modelFunding[lane];
+    const admitted = await capabilityFunding.openModel(modelId, "research", prior);
+    if (admitted.fundingSession.workload !== "research"
+      && !admitted.fundingSession.capabilityFunding) {
+      throw new Error("Deep Research model funding session has the wrong workload.");
+    }
+    const fundedModel = (
+      boundTools?: readonly StructuredTool[],
+      boundToolOptions?: Record<string, unknown>,
+    ): ChatModel => ({
+      invoke: async (messages, invokeOptions) => {
+        const current = getUsageContext();
+        const agentId = typeof current?.metadata?.["agentId"] === "string"
+          ? current.metadata["agentId"] : null;
+        const result = await invokeChatModelWithFallback(
+          messages.map(coerceMessageLikeToMessage),
+          [...(boundTools ?? [])],
+          modelId,
+          capabilityFunding.humanUserId,
+          agentId,
+          null,
+          invokeOptions,
+          {
+            fundingHumanUserId: capabilityFunding.humanUserId,
+            fundingSession: admitted.fundingSession,
+            reasoningOutput: false,
+            modelFallbackMode: "none",
+            sameModelRetryMode: "none",
+            isolatedProgress: true,
+            ...(options?.maxTokens === undefined ? {} : { maxOutputTokens: options.maxTokens }),
+            ...(options?.useOpenAIResponsesApi === undefined
+              ? {} : { useOpenAIResponsesApi: options.useOpenAIResponsesApi }),
+            ...(boundToolOptions === undefined ? {} : { toolBindingOptions: boundToolOptions }),
+          },
+        );
+        return result.response;
+      },
+      bindTools: (tools, toolOptions) => fundedModel(tools as readonly StructuredTool[], toolOptions),
+    });
+    return fundedModel();
+  }
   await assertDeepResearchServerFunding("deep_research_model");
+  const opts = await modelOptions(modelId, cfg, options);
+  return guardPaidModel(await createUniversalModel(modelId, opts));
+}
+
+async function modelOptions(
+  modelId: string,
+  cfg: Configuration,
+  options?: { maxTokens?: number | undefined; useOpenAIResponsesApi?: boolean | undefined; messages?: BaseMessageLike[]; tools?: readonly StructuredTool[] },
+): Promise<Record<string, unknown>> {
   const apiKey = getApiKey(modelId, cfg);
   const baseUrl = getBaseUrl(modelId, cfg);
   const opts: Record<string, unknown> = {};
@@ -95,5 +161,5 @@ export async function createModel(
   if (options?.useOpenAIResponsesApi !== undefined) {
     opts["useOpenAIResponsesApi"] = options.useOpenAIResponsesApi;
   }
-  return guardPaidModel(await createUniversalModel(modelId, opts));
+  return opts;
 }

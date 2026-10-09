@@ -1,6 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { Job, type JobExecutor } from "./job";
+import {
+  Job,
+  ProtectedTaskJobStartNotOwnedError,
+  type JobExecutor,
+} from "./job";
 import type { LaneLock, TryAcquireResult } from "./types";
 import { laneLock as defaultLaneLock } from "./lane-lock";
 import {
@@ -14,7 +18,13 @@ import { langgraphExecutor } from "./executors/langgraph-executor";
 import { forkLanggraphExecutor } from "./executors/fork-langgraph-executor";
 import { slowTaskExecutor } from "./executors/slow-task-executor";
 import { deepResearchExecutor } from "./executors/deep-research-executor";
-import { getJobById, persistJob, updateJobStatus } from "@nautilo/db";
+import {
+  getJobById,
+  persistJob,
+  settleProtectedTaskJobTerminal,
+  startProtectedTaskJob,
+  updateJobStatus,
+} from "@nautilo/db";
 import {
   insertAcceptance as defaultInsertAcceptance,
   linkAcceptancesToJob as defaultLinkAcceptances,
@@ -24,7 +34,13 @@ import {
   type WorkAcceptanceKind,
   type WorkAcceptanceReason,
 } from "@nautilo/db";
-import type { JobPublicationPolicy, PersistJobPayload } from "@nautilo/db";
+import type {
+  JobPublicationPolicy,
+  PersistJobPayload,
+  ProtectedTaskJobStartResult,
+  ProtectedTaskJobTerminalRequest,
+  ProtectedTaskJobTerminalResult,
+} from "@nautilo/db";
 import type { InitiatingClientSurfaceV1, JobStatus } from "@nautilo/types";
 import {
   runWithInitiatingClientSurface,
@@ -64,10 +80,11 @@ import {
   assertProtectedTaskJobReferenceV1,
   type ProtectedTaskJobReferenceV1,
 } from "./tasks/protected-task-job-reference";
-import type {
-  CreateProtectedTaskJobInput,
-  ProtectedTaskExecutionCandidate,
-  ProtectedTaskJobSchedulingFacts,
+import {
+  ProtectedTaskExecutionDidNotBeginError,
+  type CreateProtectedTaskJobInput,
+  type ProtectedTaskExecutionCandidate,
+  type ProtectedTaskJobSchedulingFacts,
 } from "./tasks/protected-task-execution-candidate";
 
 /**
@@ -201,6 +218,21 @@ type PendingProtectedTaskExecution = Readonly<{
   candidate: ProtectedTaskExecutionCandidate;
 }>;
 
+type ParkedProtectedTaskPersistenceCandidate =
+  ProtectedTaskExecutionCandidate & Required<Pick<
+    ProtectedTaskExecutionCandidate,
+    "persistJob" | "recoverBeforeExecution"
+  >>;
+
+function parkedProtectedTaskPersistenceCandidate(
+  candidate: ProtectedTaskExecutionCandidate,
+): ParkedProtectedTaskPersistenceCandidate | null {
+  return typeof candidate.persistJob === "function"
+      && typeof candidate.recoverBeforeExecution === "function"
+    ? candidate as ParkedProtectedTaskPersistenceCandidate
+    : null;
+}
+
 /** Ordinary Human-to-Agent turns fork when their Agent checkpoint thread is busy. */
 export function ordinaryConversationExecutionRoute(): ForegroundExecutionRoute {
   return {
@@ -292,6 +324,29 @@ interface PendingTurn {
 /** M147 — why a live job was aborted. Drives the executor's silent-abort
  * branch (a pause/stop is NOT a failure → no report-back error turn). */
 export type AbortReason = "pause" | "stop";
+export type ProtectedTaskRunQuiescenceResult =
+  | Readonly<{ status: "stopped" }>
+  | Readonly<{ status: "unavailable" }>;
+
+export type ProtectedTaskRunQuiescenceRequest = Readonly<{
+  taskId: string;
+  taskRunId: string;
+  jobId: string;
+}>;
+
+type ProtectedTaskExecutionSettlement = {
+  readonly job: Job;
+  readonly reference: ProtectedTaskJobReferenceV1;
+  readonly settled: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (error: unknown) => void;
+  cancel: Promise<void> | null;
+};
+
+const PROTECTED_TASK_STOPPED = Object.freeze({ status: "stopped" as const });
+const PROTECTED_TASK_QUIESCENCE_UNAVAILABLE = Object.freeze({
+  status: "unavailable" as const,
+});
 export interface StopScopeResult {
   stoppedJobs: number;
   droppedQueuedTurns: number;
@@ -395,8 +450,6 @@ const PLANNED_SHUTDOWN_CANCELLATION_REASON =
   "Cancelled because the server is shutting down for planned maintenance";
 const ACCEPTANCE_LINK_FAILURE_CANCELLATION_REASON =
   "Cancelled before dispatch because durable acceptance linkage failed";
-const PROTECTED_TASK_START_FAILURE_CANCELLATION_REASON =
-  "Cancelled before dispatch because the protected Task lifecycle was no longer current";
 /**
  * D420 (Wave 2 task 2.2.3) — operator-visible reason stamped on every running
  * Job terminalized at the `--wait-for` deadline. Mirrors the acceptance
@@ -519,6 +572,17 @@ export class JobManager {
     fields?: { message?: string; result?: Record<string, unknown> },
     publicationPolicy?: JobPublicationPolicy,
   ) => Promise<void>;
+  private readonly startProtectedTaskJobFn: (
+    jobId: string,
+    expectedReference: ProtectedTaskJobReferenceV1,
+    publicationPolicy: JobPublicationPolicy,
+  ) => Promise<ProtectedTaskJobStartResult>;
+  private readonly settleProtectedTaskJobTerminalFn: (
+    jobId: string,
+    expectedReference: ProtectedTaskJobReferenceV1,
+    requested: ProtectedTaskJobTerminalRequest,
+    publicationPolicy: JobPublicationPolicy,
+  ) => Promise<ProtectedTaskJobTerminalResult>;
   /**
    * D420 — payload-free work-acceptance ledger sinks. Defaults are
    * DB-free stubs so existing unit tests stay hermetic; the production
@@ -577,6 +641,16 @@ export class JobManager {
   /** Protected Task authority and transient-input builder; process-local only. */
   private readonly virtualToProtectedTaskExecution =
     new Map<string, PendingProtectedTaskExecution>();
+  /**
+   * Exact process-local ownership of a protected Task main dispatch.
+   *
+   * A record is installed before lifecycle start may expose the Job as
+   * running. It is removed only after candidate/executor return, lane release,
+   * and registry cleanup. This proves worker settlement only; it is not a
+   * checkpoint or external-effect replay receipt.
+   */
+  private readonly protectedTaskExecutionSettlements =
+    new Map<string, ProtectedTaskExecutionSettlement>();
 
   constructor(opts?: {
     laneLock?: LaneLock;
@@ -599,6 +673,17 @@ export class JobManager {
       fields?: { message?: string; result?: Record<string, unknown> },
       publicationPolicy?: JobPublicationPolicy,
     ) => Promise<void>;
+    startProtectedTaskJob?: (
+      jobId: string,
+      expectedReference: ProtectedTaskJobReferenceV1,
+      publicationPolicy: JobPublicationPolicy,
+    ) => Promise<ProtectedTaskJobStartResult>;
+    settleProtectedTaskJobTerminal?: (
+      jobId: string,
+      expectedReference: ProtectedTaskJobReferenceV1,
+      requested: ProtectedTaskJobTerminalRequest,
+      publicationPolicy: JobPublicationPolicy,
+    ) => Promise<ProtectedTaskJobTerminalResult>;
     /**
      * D420 — payload-free work-acceptance ledger sinks. Defaults are
      * DB-free stubs; the production singleton wires the real sinks.
@@ -629,6 +714,10 @@ export class JobManager {
     this.readRecoveryJob = opts?.readRecoveryJob ?? getJobById;
     this.persistJobFn = opts?.persist ?? persistJob;
     this.updateJobStatusFn = opts?.updateStatus ?? updateJobStatus;
+    this.startProtectedTaskJobFn = opts?.startProtectedTaskJob
+      ?? startProtectedTaskJob;
+    this.settleProtectedTaskJobTerminalFn = opts?.settleProtectedTaskJobTerminal
+      ?? settleProtectedTaskJobTerminal;
     this.acceptanceSinks = opts?.acceptanceSinks ?? defaultAcceptanceSinks;
     this.taskStopSink = opts?.taskStopSink ?? null;
     this.checkInvocationAccess = opts?.checkInvocationAccess ?? (() => Promise.resolve(true));
@@ -809,6 +898,8 @@ export class JobManager {
       || typeof input.candidate.start !== "function"
       || typeof input.candidate.run !== "function"
       || typeof input.candidate.onIneligible !== "function"
+      || (typeof input.candidate.persistJob === "function")
+        !== (typeof input.candidate.recoverBeforeExecution === "function")
       || (input.modelAttribution !== undefined && input.modelAttribution !== "external")
     ) {
       rejectCandidate();
@@ -1110,6 +1201,7 @@ export class JobManager {
         if (
           tryRes.acquired &&
           forkCoordinator.hasUnreconciledLowerTurns(threadId) &&
+          !q[0]?.system &&
           q[0]?.route.contention === "fork"
         ) {
           const item = q.shift()!;
@@ -1209,6 +1301,11 @@ export class JobManager {
     const durableInputDisposition = protectedTaskExecution
       ? "full" as const
       : durableCandidate?.durableJobInputDisposition;
+    const parkedPersistence = protectedTaskExecution === undefined
+      ? null
+      : parkedProtectedTaskPersistenceCandidate(
+          protectedTaskExecution.candidate,
+        );
     const inputRecord: Record<string, unknown> = protectedTaskExecution
       ? {
           ownerId: protectedTaskExecution.scheduling.ownerId,
@@ -1240,22 +1337,52 @@ export class JobManager {
         ? {}
         : { durableInputDisposition }),
       executor,
-      persist: this.persistJobFn,
+      persist: parkedPersistence?.persistJob.bind(parkedPersistence)
+        ?? this.persistJobFn,
       updateStatus: this.updateJobStatusFn,
+      ...(protectedTaskExecution === undefined
+        ? {}
+        : {
+          startProtectedTaskJob: this.startProtectedTaskJobFn,
+          settleProtectedTaskJobTerminal: this.settleProtectedTaskJobTerminalFn,
+        }),
     });
 
     try {
       await job.persist();
     } catch {
-      this.failAcceptedForegroundBeforePersistence(
-        virtualIds, merged.laneKey, threadId, merged.roomId,
-        "job_persistence_unavailable",
-      );
+      if (parkedPersistence === null) {
+        this.failAcceptedForegroundBeforePersistence(
+          virtualIds, merged.laneKey, threadId, merged.roomId,
+          "job_persistence_unavailable",
+        );
+      } else {
+        try {
+          if (!await parkedPersistence.recoverBeforeExecution()) {
+            log("[maintenance] parked protected Task persistence recovery deferred");
+          }
+        } catch {
+          log("[maintenance] parked protected Task persistence recovery deferred");
+        }
+        // The parked Task remains the user-visible retry surface. A virtual
+        // Job that may never have received an id must not publish a competing
+        // foreground failure.
+        this.deferRecoveredParkedPersistence(
+          virtualIds,
+          threadId,
+          merged.roomId,
+        );
+      }
       await this.releaseLaneAfterPrePersistenceFailure(tryRes);
       return;
     }
     this.active.set(job.id, job);
-    const sequence = forkCoordinator.nextSequence(threadId);
+    // Plain dispatch keeps its existing allocation point. A protected Job
+    // allocates only after lifecycle start succeeds, because a failed start
+    // has no registered turn that could reconcile an earlier sequence.
+    let sequence = protectedTaskExecution === undefined
+      ? forkCoordinator.nextSequence(threadId)
+      : null;
 
     // D420 — execution may begin only after every coalesced acceptance has
     // been durably linked to this Job. On failure the job is explicitly
@@ -1320,6 +1447,22 @@ export class JobManager {
       return;
     }
 
+    const protectedTaskSettlement = protectedTaskExecution === undefined
+      ? undefined
+      : this.registerProtectedTaskExecutionSettlement(
+          job,
+          protectedTaskExecution.reference,
+        );
+    const registerMainTurn = (): void => {
+      sequence ??= forkCoordinator.nextSequence(threadId);
+      forkCoordinator.registerTurn(threadId, {
+        sequence,
+        jobId: job.id,
+        turnId: merged.turnId,
+        kind: "main",
+        mergedSlice: coalescedToSlice(merged),
+      });
+    };
     let armedProtectedTaskExecution: PendingProtectedTaskExecution | undefined;
     if (protectedTaskExecution !== undefined) {
       try {
@@ -1327,42 +1470,59 @@ export class JobManager {
         if (started.status !== "started") {
           throw new Error("Protected Task lifecycle start was stale");
         }
+        if (job.isTerminal()) {
+          throw new Error("Protected Task Job was cancelled during lifecycle start");
+        }
         armedProtectedTaskExecution = this.armProtectedTaskExecution(virtualIds);
         if (armedProtectedTaskExecution !== protectedTaskExecution) {
           throw new Error("Protected Task execution candidate became ineligible during start");
         }
-      } catch (err) {
-        this.invalidateProtectedTaskExecutions(virtualIds);
+        registerMainTurn();
+      } catch {
+        let settlementError: unknown;
         try {
-          await this.cancelUndispatchedJobForLedgerFailure(
-            job,
-            err,
-            PROTECTED_TASK_START_FAILURE_CANCELLATION_REASON,
-            "protected Task lifecycle start failed",
-          );
-        } catch (compensationErr) {
-          log(
-            `[maintenance] main job=${job.id} could not be fully compensated after protected Task lifecycle start failure: ${
-              compensationErr instanceof Error
-                ? compensationErr.message
-                : String(compensationErr)
-            }`,
-          );
+          try {
+            protectedTaskExecution.candidate.onIneligible();
+          } catch {
+            // Recovery still owns the exact durable never-started proof.
+          }
+          for (const virtualId of virtualIds) {
+            if (this.virtualToProtectedTaskExecution.get(virtualId)
+              === protectedTaskExecution) {
+              this.virtualToProtectedTaskExecution.delete(virtualId);
+            }
+          }
+          this.invalidateProtectedTaskExecutions(virtualIds);
+          // A lost product-start response is not permission for an id-only write.
+          if (await protectedTaskExecution.candidate.deferBeforeExecution?.(job.id)) {
+            job.acknowledgeProtectedTaskDidNotBegin();
+          }
+        } catch (error) {
+          settlementError = error;
+          log("[maintenance] protected Task pre-execution recovery deferred");
         } finally {
-          await tryRes.release();
+          this.active.delete(job.id);
+          this.abortReasons.delete(job.id);
+          this.jobToAuthority.delete(job.id);
+          this.jobToInvocationAuthority.delete(job.id);
+          try {
+            await tryRes.release();
+          } catch (releaseError) {
+            settlementError ??= releaseError;
+          }
+          if (protectedTaskSettlement !== undefined) {
+            this.finishProtectedTaskExecutionSettlement(
+              protectedTaskSettlement,
+              settlementError,
+            );
+          }
           void this.drainThread(threadId);
         }
         return;
       }
     }
 
-    forkCoordinator.registerTurn(threadId, {
-      sequence,
-      jobId: job.id,
-      turnId: merged.turnId,
-      kind: "main",
-      mergedSlice: coalescedToSlice(merged),
-    });
+    if (protectedTaskExecution === undefined) registerMainTurn();
 
     const dispatchedEvent = {
       type: "job.dispatched" as const,
@@ -1459,50 +1619,107 @@ export class JobManager {
           }
         }
       : null;
-    void (protectedExecute
+    let protectedStartNotOwned = false;
+    const execution = (protectedExecute
       ? protectedExecute()
       : foregroundCandidate?.runMainTurn
       ? foregroundCandidate.runMainTurn(merged.turnId, execute)
       : execute())
       .catch(async (error: unknown) => {
+        if (
+          armedProtectedTaskExecution !== undefined
+          && (error instanceof ProtectedTaskJobStartNotOwnedError
+            || error instanceof ProtectedTaskExecutionDidNotBeginError)
+          && job.status === "queued"
+        ) {
+          protectedStartNotOwned = true;
+          try {
+            if (await armedProtectedTaskExecution.candidate.deferBeforeExecution?.(job.id)) {
+              job.acknowledgeProtectedTaskDidNotBegin();
+            }
+          } catch {
+            log("[maintenance] protected Task pre-execution recovery deferred");
+          }
+          return;
+        }
         await job.fail(error);
-      })
-      .finally(() => {
-        void tryRes.release();
-        forkCoordinator.markMainCompleted(threadId, job.id);
-        if (job.isTerminal()) {
+      });
+    const finishMainTurnAfterRelease = (): void => {
+      forkCoordinator.markMainCompleted(threadId, job.id);
+      if (job.isTerminal() || protectedStartNotOwned) {
+        this.active.delete(job.id);
+        this.abortReasons.delete(job.id);
+        this.jobToAuthority.delete(job.id);
+        this.jobToInvocationAuthority.delete(job.id);
+      }
+      if (this.isThreadStopped(threadId)) {
+        const vids = this.coalescer.dropLaneVirtualIds(merged.laneKey);
+        if (vids) {
+          // A buffered burst arrived mid-turn and
+          // the thread is now stopped; terminalize its queued acceptances as
+          // user_cancelled. Fire-and-forget with loud logging (race fallback
+          // after the main turn completed; the Stop route is the awaitable
+          // path).
+          void this.terminalizeUserStoppedVirtualIds(vids).catch((err) => {
+            log(
+              `[lane] user_stop terminalization failed for post-turn lane=${merged.laneKey} thread=${threadId}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
+        }
+        return;
+      }
+      // Same-lane burst that arrived mid-turn → flush it promptly.
+      this.coalescer.flushIfPending(merged.laneKey);
+      // Cross-user handoff (R5): wake whatever is queued for this thread,
+      // regardless of which user's lane buffered it.
+      void this.drainThread(threadId);
+    };
+    const finishMainTurn = (): void => {
+      void tryRes.release();
+      finishMainTurnAfterRelease();
+    };
+    if (protectedTaskSettlement === undefined) {
+      void execution.finally(finishMainTurn).catch(() => {
+        log(`[lane] foreground_candidate_failure_status_persist_failed job=${job.id}`);
+      });
+      return;
+    }
+    void execution.finally(async () => {
+      let settlementError: unknown;
+      try {
+        await tryRes.release();
+      } catch (error) {
+        settlementError = error;
+      }
+      try {
+        finishMainTurnAfterRelease();
+      } catch (error) {
+        settlementError ??= error;
+      } finally {
+        // Exact protected cancellation makes the Job terminal before this
+        // point. Repeat the content-free registry cleanup in the finally path
+        // so an unrelated coordinator diagnostic cannot strand authority.
+        if (job.isTerminal() || protectedStartNotOwned) {
           this.active.delete(job.id);
           this.abortReasons.delete(job.id);
           this.jobToAuthority.delete(job.id);
           this.jobToInvocationAuthority.delete(job.id);
         }
-        if (this.isThreadStopped(threadId)) {
-          const vids = this.coalescer.dropLaneVirtualIds(merged.laneKey);
-          if (vids) {
-            // D420 (Wave 2 task 2.2.3) — a buffered burst arrived mid-turn and
-            // the thread is now stopped; terminalize its queued acceptances as
-            // user_cancelled. Fire-and-forget with loud logging (race fallback
-            // after the main turn completed; the Stop route is the awaitable
-            // path).
-            void this.terminalizeUserStoppedVirtualIds(vids).catch((err) => {
-              log(
-                `[lane] user_stop terminalization failed for post-turn lane=${merged.laneKey} thread=${threadId}: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-              );
-            });
-          }
-          return;
-        }
-        // Same-lane burst that arrived mid-turn → flush it promptly.
-        this.coalescer.flushIfPending(merged.laneKey);
-        // Cross-user handoff (R5): wake whatever is queued for this thread,
-        // regardless of which user's lane buffered it.
-        void this.drainThread(threadId);
-      })
-      .catch(() => {
-        log(`[lane] foreground_candidate_failure_status_persist_failed job=${job.id}`);
-      });
+        this.finishProtectedTaskExecutionSettlement(
+          protectedTaskSettlement,
+          settlementError,
+        );
+      }
+      if (settlementError !== undefined) {
+        throw settlementError instanceof Error
+          ? settlementError
+          : new Error("Protected Task execution settlement failed");
+      }
+    }).catch(() => {
+      log(`[lane] protected_task_execution_settlement_failed job=${job.id}`);
+    });
   }
 
   private async dispatchForkForegroundJob(
@@ -2142,6 +2359,42 @@ export class JobManager {
     return execution;
   }
 
+  private registerProtectedTaskExecutionSettlement(
+    job: Job,
+    reference: ProtectedTaskJobReferenceV1,
+  ): ProtectedTaskExecutionSettlement {
+    assertProtectedTaskJobReferenceV1(reference);
+    if (this.protectedTaskExecutionSettlements.has(job.id)) {
+      throw new Error(`Protected Task execution is already registered: ${job.id}`);
+    }
+    const deferred = Promise.withResolvers<void>();
+    // A release failure must remain observable to an exact waiter, while an
+    // execution nobody pauses must not create an unhandled rejection.
+    void deferred.promise.catch(() => {});
+    const settlement: ProtectedTaskExecutionSettlement = {
+      job,
+      reference,
+      settled: deferred.promise,
+      resolve: deferred.resolve,
+      reject: deferred.reject,
+      cancel: null,
+    };
+    this.protectedTaskExecutionSettlements.set(job.id, settlement);
+    return settlement;
+  }
+
+  private finishProtectedTaskExecutionSettlement(
+    settlement: ProtectedTaskExecutionSettlement,
+    error?: unknown,
+  ): void {
+    if (this.protectedTaskExecutionSettlements.get(settlement.job.id)
+      === settlement) {
+      this.protectedTaskExecutionSettlements.delete(settlement.job.id);
+    }
+    if (error === undefined) settlement.resolve();
+    else settlement.reject(error);
+  }
+
   /**
    * A durable acceptance exists, but no Job row was created. Preserve every
    * acceptance/authority mapping for Stop or maintenance recovery and emit a
@@ -2164,6 +2417,18 @@ export class JobManager {
         status: "failed",
         laneKey,
       });
+    }
+  }
+
+  /** Retain the durable acceptance for Stop/maintenance without a false Job failure. */
+  private deferRecoveredParkedPersistence(
+    virtualIds: readonly string[],
+    threadId: string,
+    roomId: string,
+  ): void {
+    this.invalidateForegroundCandidates(virtualIds);
+    for (const virtualId of virtualIds) {
+      this.failedPrePersistenceScope.set(virtualId, { threadId, roomId });
     }
   }
 
@@ -2616,6 +2881,65 @@ export class JobManager {
     if (!job) return false;
     await job.cancel();
     return true;
+  }
+
+  /**
+   * Abort one exact, process-owned protected Task main dispatch and wait until
+   * all process-local worker authority has settled.
+   *
+   * `stopped` proves only durable Job cancellation, candidate/executor return,
+   * lane release, and registry cleanup. It does not authorize checkpoint or
+   * external-effect replay. Missing process ownership returns `unavailable`,
+   * so a restarted owner cannot invent proof from a durable Job row alone.
+   */
+  async abortProtectedTaskRunAndWait(
+    input: ProtectedTaskRunQuiescenceRequest,
+  ): Promise<ProtectedTaskRunQuiescenceResult> {
+    if (
+      input === null
+      || typeof input !== "object"
+      || Object.keys(input).sort().join(",") !== "jobId,taskId,taskRunId"
+      || typeof input.jobId !== "string"
+      || input.jobId.length === 0
+      || typeof input.taskId !== "string"
+      || input.taskId.length === 0
+      || typeof input.taskRunId !== "string"
+      || input.taskRunId.length === 0
+    ) {
+      throw new TypeError("Protected Task quiescence request is invalid");
+    }
+    const settlement = this.protectedTaskExecutionSettlements.get(input.jobId);
+    if (settlement === undefined) {
+      return PROTECTED_TASK_QUIESCENCE_UNAVAILABLE;
+    }
+    const reference = settlement.reference;
+    assertProtectedTaskJobReferenceV1(reference);
+    if (
+      reference.taskId !== input.taskId
+      || reference.taskRunId !== input.taskRunId
+      || settlement.job.id !== input.jobId
+      || settlement.job.input["taskId"] !== reference.taskId
+      || settlement.job.input["taskRunId"] !== reference.taskRunId
+    ) {
+      throw new TypeError("Protected Task quiescence identity does not match");
+    }
+
+    this.abortReasons.set(input.jobId, "pause");
+    settlement.cancel ??= settlement.job.cancel();
+    const [cancelled, settled] = await Promise.allSettled([
+      settlement.cancel,
+      settlement.settled,
+    ]);
+    // Await both branches before surfacing either error. A caller must not
+    // observe persistence failure while the protected worker or lane is live.
+    if (cancelled.status === "rejected") throw cancelled.reason;
+    if (settled.status === "rejected") throw settled.reason;
+    // Job.cancel() is idempotent for an already terminal Job. Natural
+    // completion is not cancellation proof.
+    if (settlement.job.status !== "cancelled") {
+      return PROTECTED_TASK_QUIESCENCE_UNAVAILABLE;
+    }
+    return PROTECTED_TASK_STOPPED;
   }
 
   /**

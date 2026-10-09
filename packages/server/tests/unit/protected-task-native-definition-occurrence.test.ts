@@ -8,7 +8,7 @@ import {
 } from "@nautilo/lattice-crypto";
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
-  ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 
 import {
@@ -22,6 +22,7 @@ import type {
 
 const TASK = "10000000-0000-4000-8000-000000000001";
 const RUN = "20000000-0000-4000-8000-000000000002";
+const JOB = "25000000-0000-4000-8000-000000000002";
 const AGENT = "30000000-0000-4000-8000-000000000003";
 const USER = "40000000-0000-4000-8000-000000000004";
 const HUMAN = "50000000-0000-4000-8000-000000000005";
@@ -30,7 +31,9 @@ const ROOM = "70000000-0000-4000-8000-000000000007";
 const NAMESPACE = "80000000-0000-4000-8000-000000000008";
 const DOMAIN = "90000000-0000-4000-8000-000000000009";
 
-function occurrence(overrides: Partial<ProtectedTaskOccurrence["task"]> = {}): ProtectedTaskOccurrence {
+function occurrence(
+  overrides: Partial<ProtectedTaskRunningOccurrence["task"]> = {},
+): ProtectedTaskRunningOccurrence {
   const contentRevision = overrides.contentRevision ?? 4;
   return Object.freeze({
     task: Object.freeze({
@@ -55,9 +58,9 @@ function occurrence(overrides: Partial<ProtectedTaskOccurrence["task"]> = {}): P
     run: Object.freeze({
       id: RUN,
       taskId: TASK,
-      jobId: null,
+      jobId: JOB,
       graphThreadId: `task:${TASK}:${RUN}`,
-      status: "awaiting" as const,
+      status: "running" as const,
       startedAt: new Date(1_800_000_000_000),
     }),
   });
@@ -67,6 +70,7 @@ function held(overrides: Readonly<{
   roomId?: string;
   policyRevision?: number;
   accessRevision?: number;
+  nativeExecutionSupported?: boolean;
 }> = {}): HeldProtectedTaskRuntimeAuthority {
   const policyRevision = overrides.policyRevision ?? 7;
   return {
@@ -97,10 +101,15 @@ function held(overrides: Readonly<{
       expectedAccessRevision: overrides.accessRevision ?? 3,
       expectedPolicyRevision: policyRevision,
     }],
+    ...(overrides.nativeExecutionSupported === undefined
+      ? {}
+      : { nativeExecutionSupported: overrides.nativeExecutionSupported }),
   };
 }
 
-function input(value: ProtectedTaskOccurrence = occurrence()): LoadCurrentNativeProtectedTaskDefinitionOccurrenceInput {
+function input(
+  value: ProtectedTaskRunningOccurrence = occurrence(),
+): LoadCurrentNativeProtectedTaskDefinitionOccurrenceInput {
   return {
     runner: {} as never,
     restricted: {} as never,
@@ -244,5 +253,29 @@ describe("native protected Task definition occurrence loader", () => {
     expect(await loader(input(wrongObject))).toBeNull();
     expect(await loader(input(wrongRevision))).toBeNull();
     expect(authorityCalls).toBe(0);
+  });
+
+  test("requires an explicit current native route only when requested", async () => {
+    for (const current of [
+      held({ nativeExecutionSupported: false }),
+      held(),
+    ]) {
+      const loader = createCurrentNativeProtectedTaskDefinitionOccurrenceLoader(
+        { withCurrentAuthority: port(current) },
+        { requireNativeExecution: true },
+      );
+      expect(await loader(input())).toBeNull();
+    }
+
+    const required = createCurrentNativeProtectedTaskDefinitionOccurrenceLoader(
+      { withCurrentAuthority: port(held({ nativeExecutionSupported: true })) },
+      { requireNativeExecution: true },
+    );
+    expect(await required(input())).not.toBeNull();
+
+    const compatible = createCurrentNativeProtectedTaskDefinitionOccurrenceLoader({
+      withCurrentAuthority: port(held()),
+    });
+    expect(await compatible(input())).not.toBeNull();
   });
 });

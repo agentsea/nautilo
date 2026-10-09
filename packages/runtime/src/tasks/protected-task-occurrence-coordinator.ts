@@ -54,9 +54,14 @@ export interface ProtectedTaskOccurrenceClaimPort {
 
 export interface ProtectedTaskOccurrenceCoordinatorDeps {
   authorization: ProtectedTaskOccurrenceClaimPort;
+  recoverBeforeObservation?(limit: number): Promise<void>;
   jobManager: ProtectedTaskOccurrenceJobManager;
   /** Wakes the observer after an accepted device response. */
   kick(): void;
+}
+
+export interface ParkedProtectedTaskOccurrenceCoordinatorDeps {
+  prepare(occurrence: ProtectedTaskOccurrence): Promise<unknown>;
 }
 
 function rejectCandidate(candidate: ProtectedTaskExecutionCandidate): void {
@@ -113,6 +118,10 @@ implements ProtectedTaskOccurrencePort {
    * its exact durable CAS; the normal observer recovery page then re-offers the
    * awaiting occurrence without changing the Task to a user-paused state.
    */
+  async recoverBeforeObservation(limit: number): Promise<void> {
+    await this.deps.recoverBeforeObservation?.(limit);
+  }
+
   authorizationAccepted(): void {
     this.deps.kick();
   }
@@ -141,4 +150,40 @@ export function createProtectedTaskOccurrenceCoordinator(
   deps: ProtectedTaskOccurrenceCoordinatorDeps,
 ): ProtectedTaskOccurrenceCoordinator {
   return new ProtectedTaskOccurrenceCoordinator(deps);
+}
+
+/** Parked-only preparation; it never claims work or creates a Job. */
+export class ParkedProtectedTaskOccurrenceCoordinator
+implements ProtectedTaskOccurrencePort {
+  private readonly observationsInFlight = new Set<string>();
+  private readonly prepare: (
+    occurrence: ProtectedTaskOccurrence,
+  ) => Promise<unknown>;
+
+  constructor(deps: ParkedProtectedTaskOccurrenceCoordinatorDeps) {
+    if (typeof deps.prepare !== "function") {
+      throw new TypeError("Parked protected Task preparation is unavailable");
+    }
+    this.prepare = deps.prepare.bind(deps);
+  }
+
+  async observeProtectedTaskOccurrence(
+    occurrence: ProtectedTaskOccurrence,
+  ): Promise<void> {
+    if (occurrence.run.jobId === null) return;
+    const occurrenceId = occurrence.run.id;
+    if (this.observationsInFlight.has(occurrenceId)) return;
+    this.observationsInFlight.add(occurrenceId);
+    try {
+      await this.prepare(occurrence);
+    } finally {
+      this.observationsInFlight.delete(occurrenceId);
+    }
+  }
+}
+
+export function createParkedProtectedTaskOccurrenceCoordinator(
+  deps: ParkedProtectedTaskOccurrenceCoordinatorDeps,
+): ParkedProtectedTaskOccurrenceCoordinator {
+  return new ParkedProtectedTaskOccurrenceCoordinator(deps);
 }

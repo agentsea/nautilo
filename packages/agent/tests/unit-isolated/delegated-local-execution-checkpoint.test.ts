@@ -12,6 +12,8 @@ import type { NautiloState } from "../../src/agent/state";
 import { createPostModelNode, type PostModelDeps } from "../../src/nodes/post-model";
 import { createToolsNode } from "../../src/nodes/tools";
 import { setAgentEventSink } from "../../src/runtime-hooks";
+import { runWithCapabilityFundingSession, type CapabilityFundingSession } from "../../src/runtime/capability-funding";
+import type { ForegroundChatFundingSession } from "../../src/runtime/foreground-chat-funding";
 import { runWithLocalExecutionDelegation, type DelegatedLocalExecutionAdmission, type DelegatedLocalExecutionPort } from "../../src/runtime/local-execution-delegation";
 import { setRelayRegistry, type ToolRelayRegistry } from "../../src/tools/invocation-service";
 import { createExecCommandTool, createWriteStdinTool } from "../../src/tools/local-execution/local-execution";
@@ -115,6 +117,40 @@ test("one-time approval checkpoints the original Task authority and resumes the 
   expect(f.sent[0]?.localExecutionBinding).toMatchObject({ version: 4, owner: { pairingGeneration: "opaque-pairing" },
     authority: { delegation: { target: { pairingGeneration: "raw-pairing" } } } });
   expect(f.sent[0]?.uncontainedHostCommandsSession).toBeUndefined();
+});
+
+test("caller-funded Task execution retains its payer fence while using exact delegated local authority", async () => {
+  const f = fixture();
+  const capability: CapabilityFundingSession = {
+    humanUserId: "human",
+    parentFundingKind: "personal",
+    async resolveModel() { throw new Error("unused"); },
+    async openModel() { throw new Error("unused"); },
+    async openService() { throw new Error("unused"); },
+  };
+  const funding: ForegroundChatFundingSession = {
+    kind: "personal",
+    capabilityFunding: capability,
+    async runAttempt() { throw new Error("provider attempt is outside this node test"); },
+    async recheckAttempt() {},
+  };
+  const flow = await runWithCapabilityFundingSession(capability, () => park(f, () => f.port, {
+    foregroundChatFundingSession: funding,
+  }));
+  expect(flow.pending).toMatchObject({ __interrupt__: [{ value: { type: "approval_ask" } }] });
+  const approved = await runWithCapabilityFundingSession(capability, () => flow.resume());
+  expect(approved.delegatedLocalExecutionBindings?.["call"]).toMatchObject({
+    authority: { taskId: "task", taskRunId: "run" },
+  });
+  const tools = createToolsNode({
+    personalFunding: true,
+    delegatedLocalExecutionPortForState: () => f.port,
+  });
+  await runWithCapabilityFundingSession(capability, () => tools({ ...f.state, ...approved }));
+  expect(f.sent).toHaveLength(1);
+  expect(f.sent[0]?.localExecutionBinding).toMatchObject({
+    authority: { delegation: { humanUserId: "human", projectGrantId: "project" } },
+  });
 });
 
 test("project or execution generation changes during approval dispatch nothing", async () => {

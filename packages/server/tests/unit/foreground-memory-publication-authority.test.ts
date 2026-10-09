@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { encryptionTransitionPolicy, groupMembers, roomMembers, rooms, type SQL } from "@nautilo/db";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
-import type { AgentMemoryPublicationBoundary } from "@nautilo/lattice-bridge/server";
+import type { AgentMemoryBeforeLocks } from "@nautilo/lattice-bridge/server";
 import { createForegroundMemoryPublicationAuthority } from "../../src/routes/foreground-memory-publication-authority";
 
 const envelope: MemoryAccessEnvelope = {
@@ -15,7 +15,7 @@ const authority = {
   readableNamespaceIds: ["namespace"], mutableNamespaceIds: ["namespace"],
   writableNamespaceId: "namespace",
 };
-type Transaction = Parameters<AgentMemoryPublicationBoundary["beforeLocks"]>[0]["transaction"];
+type Transaction = Parameters<AgentMemoryBeforeLocks>[0]["transaction"];
 function fixture(options: { mode?: string; revision?: number; denied?: boolean } = {}) {
   const events: string[] = [];
   const dialect = new PgDialect();

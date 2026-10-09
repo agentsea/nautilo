@@ -24,6 +24,9 @@ import type {
 import type {
   AgentRuntimeSignerPublicationV1,
 } from "../agent-runtime/signer-publication-v1.ts";
+import type {
+  TaskRuntimeAgentObjectAccessGenesisSetAuthorityContextV1,
+} from "./task-runtime-agent-access-manifest-set-v1.ts";
 
 declare const authorizedObjectAccessWriteBrand: unique symbol;
 
@@ -75,13 +78,24 @@ export interface DeviceWrappedAgentObjectAccessGenesisSetAuthorizationExpectatio
   readonly signerPublicKeyHash: Uint8Array;
 }
 
+export interface TaskRuntimeAgentObjectAccessGenesisSetAuthorizationExpectationV1 {
+  readonly kind: "task-runtime-agent-genesis-set";
+  readonly context:
+    TaskRuntimeAgentObjectAccessGenesisSetAuthorityContextV1;
+  readonly signerPublication: AgentRuntimeSignerPublicationV1;
+  readonly signerPublicationHash: Uint8Array;
+  readonly signerPublicKeyHash: Uint8Array;
+  readonly managerSigningPublicKeyHash: Uint8Array;
+}
+
 export type ObjectAccessAuthorizationExpectationV2 =
   | ObjectAccessGenesisAuthorizationExpectationV2
   | HumanObjectAccessGenesisAuthorizationExpectationV5
   | ObjectAccessUpdateAuthorizationExpectationV2
   | AgentObjectAccessGenesisAuthorizationExpectationV3
   | DeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorizationExpectationV1
-  | DeviceWrappedAgentObjectAccessGenesisSetAuthorizationExpectationV1;
+  | DeviceWrappedAgentObjectAccessGenesisSetAuthorizationExpectationV1
+  | TaskRuntimeAgentObjectAccessGenesisSetAuthorizationExpectationV1;
 
 /**
  * Process-local proof that one object-access state write passed fresh host

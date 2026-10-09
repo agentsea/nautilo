@@ -18,6 +18,7 @@ const DOMAIN = "80000000-0000-4000-8000-000000000008";
 const REQUEST = `task-run-authorization:${RUN}`;
 const INPUT_OBJECT = `task-definition:v1:${"a".repeat(64)}`;
 const RESULT_OBJECT = `task-run-result:v1:${"b".repeat(64)}`;
+const CONTINUATION_FINGERPRINT = "A".repeat(43);
 
 const reference: TaskRuntimeGrantClaimPlan["reference"] = Object.freeze({
   kind: "protected_task_run_v1",
@@ -309,7 +310,7 @@ test.each([0, 1.5, Number.MAX_SAFE_INTEGER + 1])(
   },
 );
 
-test("requires an opaque acceptance binding on resumed result references", () => {
+test("requires one exact resume binding on resumed result references", () => {
   const state = fixture();
   expect(() => createProtectedTaskNativeResultPublication({
     ...state.input,
@@ -319,16 +320,40 @@ test("requires an opaque acceptance binding on resumed result references", () =>
       resumeAcceptanceId: "await-reply-acceptance:1",
     },
   }, state.overrides)).not.toThrow();
+  expect(() => createProtectedTaskNativeResultPublication({
+    ...state.input,
+    reference: {
+      ...reference,
+      executionSegment: 2,
+      resumeContinuationFingerprint: CONTINUATION_FINGERPRINT,
+    },
+  }, state.overrides)).not.toThrow();
   for (const invalid of [
     { ...reference, executionSegment: 2 },
     { ...reference, resumeAcceptanceId: "await-reply-acceptance:1" },
+    { ...reference, resumeContinuationFingerprint: CONTINUATION_FINGERPRINT },
     { ...reference, executionSegment: 2, resumeAcceptanceId: "contains spaces" },
+    {
+      ...reference,
+      executionSegment: 2,
+      resumeAcceptanceId: "await-reply-acceptance:1",
+      resumeContinuationFingerprint: CONTINUATION_FINGERPRINT,
+    },
+    { ...reference, executionSegment: 2, resumeAcceptanceId: undefined },
+    { ...reference, executionSegment: 2, resumeContinuationFingerprint: undefined },
+    { ...reference, executionSegment: 2, resumeContinuationFingerprint: "A".repeat(42) },
+    {
+      ...reference,
+      executionSegment: 2,
+      resumeContinuationFingerprint: `${"A".repeat(42)}B`,
+    },
   ]) {
     expect(() => createProtectedTaskNativeResultPublication({
       ...state.input,
       reference: invalid as never,
     }, state.overrides)).toThrow("Protected Task result reference is invalid");
   }
+  expect(state.calls).toEqual([]);
 });
 
 test("destroys the decoded request when current authority is unavailable", async () => {

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "@nautilo/db/schema";
 import type {
   PostgresJsBridgeConnection,
@@ -15,8 +15,11 @@ import {
   actors,
   agents,
   compareAndSwapEncryptionTransitionPolicy,
+  cryptoObjects,
   createPostgresJsCanonicalBridgeConnection,
   getEncryptionTransitionPolicy,
+  memories,
+  memoryNamespaces,
   namespaces,
   roomMembers,
   rooms,
@@ -32,12 +35,18 @@ import type {
 import type { CanonicalTranscriptTx } from "@nautilo/trust";
 import {
   bindConversationProductCanonicalTransactionRunner,
+  PostgresTaskMemoryReadPort,
   verifyConversationProductPostgresHandle,
   withCurrentStenographerAuthority,
   type ConversationProductCanonicalTransactionConnection,
+  type ConversationProductDatabaseRow,
   type ConversationProductPostgresExecutor,
   type ConversationProductPostgresIsolationLevel,
 } from "../../src/server/index.ts";
+import {
+  deriveMemoryCryptoObjectIdV1,
+  fingerprintRequiredMemoryNamespaces,
+} from "../../src/memory/memory-repository.ts";
 import { PostgresNamespaceProductAuthority } from
   "../../src/server/delivery/postgres-namespace-product-authority";
 
@@ -79,7 +88,15 @@ const membershipClient = postgres(required("LATTICE_BRIDGE_TEST_APP_DATABASE_URL
 const stenographerClient = postgres(required("LATTICE_BRIDGE_TEST_APP_DATABASE_URL"), {
   max: 1, prepare: false,
 });
+const taskMemoryReadClient = postgres(required("LATTICE_BRIDGE_TEST_APP_DATABASE_URL"), {
+  max: 1, prepare: false,
+});
+const taskMemoryDetachClient = postgres(
+  required("LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL"),
+  { max: 1, prepare: false },
+);
 const adminDb = drizzle(admin, { schema });
+const taskMemoryDetachDb = drizzle(taskMemoryDetachClient, { schema });
 let restorePlaintextPolicy = false;
 
 beforeAll(async () => {
@@ -109,7 +126,8 @@ afterAll(async () => {
     await Promise.all([
       admin.end(), singleClient.end(), setClient.end(),
       subthreadAuthorityClient.end(), membershipClient.end(),
-      stenographerClient.end(),
+      stenographerClient.end(), taskMemoryReadClient.end(),
+      taskMemoryDetachClient.end(),
     ]);
   }
 });
@@ -201,6 +219,39 @@ function canonicalConnection(
   };
 }
 
+function taskMemoryCanonicalConnection(
+  client: postgres.Sql,
+  userId: string,
+  agentId: string,
+  afterQuery: (statement: string) => Promise<void>,
+): ConversationProductCanonicalTransactionConnection {
+  const database = createPostgresJsCanonicalBridgeConnection(
+    drizzle(client, { schema }),
+  );
+  return {
+    transaction: (callback, options) => database.transaction(
+      async (transaction, executor) => {
+        await transaction.execute(sql`
+          SELECT set_config('app.current_user_id', ${userId}, true),
+                 set_config('app.current_agent_id', ${agentId}, true)
+        `);
+        return callback(transaction, {
+          query: async <Row extends ConversationProductDatabaseRow =
+            ConversationProductDatabaseRow>(
+            statement: string,
+            parameters = [],
+          ): Promise<readonly Row[]> => {
+            const rows = await executor.query<Row>(statement, parameters);
+            await afterQuery(statement);
+            return rows;
+          },
+        });
+      },
+      options,
+    ),
+  };
+}
+
 function unavailableRestrictedConnection(): PostgresJsBridgeConnection {
   const restricted: PostgresJsBridgeConnection = {
     query: async () => [],
@@ -211,6 +262,151 @@ function unavailableRestrictedConnection(): PostgresJsBridgeConnection {
 }
 
 describe("readable Namespace product lock order", () => {
+  test("Task Memory reads do not deadlock with Namespace edge detachment", async () => {
+    const userId = randomUUID();
+    const agentId = randomUUID();
+    const namespaceId = randomUUID();
+    const memoryId = randomUUID();
+    const cryptoObjectId = deriveMemoryCryptoObjectIdV1({
+      memoryId,
+      contentRevision: 1,
+    });
+    const fingerprint = fingerprintRequiredMemoryNamespaces([namespaceId]);
+    let releaseParentLocked!: () => void;
+    const parentLocked = new Promise<void>((resolve) => {
+      releaseParentLocked = resolve;
+    });
+    let releaseEdgeRead!: () => void;
+    const edgeReadMayProceed = new Promise<void>((resolve) => {
+      releaseEdgeRead = resolve;
+    });
+    let readPromise: ReturnType<
+      PostgresTaskMemoryReadPort["loadExactOrdinary"]
+    > | undefined;
+    let detachPromise: Promise<void> | undefined;
+    try {
+      await adminDb.transaction(async (tx) => {
+        await tx.insert(namespaces).values({
+          id: namespaceId,
+          scope: "room",
+          label: "Task Memory lock-order fixture",
+        });
+        await tx.insert(cryptoObjects).values({
+          objectId: cryptoObjectId,
+          payloadHash: new Uint8Array(32).fill(0x31),
+          payloadBytes: new Uint8Array([0x01]),
+        });
+        await tx.insert(memories).values({
+          id: memoryId,
+          type: "fact",
+          content: "held Task Memory plaintext",
+          contentRevision: 1,
+        });
+        await tx.insert(memoryNamespaces).values({ memoryId, namespaceId });
+        await tx.update(memories).set({
+          cryptoObjectId,
+          cryptoRequiredNamespaceFingerprint: fingerprint,
+          cryptoMappingState: "verified",
+        }).where(eq(memories.id, memoryId));
+      });
+
+      const handle = await verifyConversationProductPostgresHandle(
+        connection(taskMemoryReadClient),
+      );
+      const runner = bindConversationProductCanonicalTransactionRunner(
+        handle,
+        taskMemoryCanonicalConnection(
+          taskMemoryReadClient,
+          userId,
+          agentId,
+          async (statement) => {
+            if (/for\s+share\s+of\s+"memories"/iu.test(statement)) {
+              releaseParentLocked();
+              await edgeReadMayProceed;
+            }
+          },
+        ),
+      );
+      const authority = Object.freeze({
+        mode: "namespace" as const,
+        subjectUserId: userId,
+        agentId,
+        readableNamespaceIds: Object.freeze([namespaceId]),
+        mutableNamespaceIds: Object.freeze([namespaceId]),
+        writableNamespaceId: namespaceId,
+      });
+      const port = new PostgresTaskMemoryReadPort({
+        handle,
+        canonicalRunner: runner,
+        binding: { mode: "namespace", authority },
+        boundary: { withCurrentRead: ({ use }) => use() },
+      });
+      readPromise = port.loadExactOrdinary({
+        authority,
+        candidates: [Object.freeze({
+          representation: "dual" as const,
+          memoryId,
+          contentRevision: 1,
+          cryptoAccessRevision: 0,
+          cryptoObjectId,
+          readNamespaceId: namespaceId,
+          requiredNamespaceIds: Object.freeze([namespaceId]),
+          importance: 0.5,
+          tier: 1,
+          score: 1,
+          createdAt: new Date(),
+        })],
+      });
+      void readPromise.catch(() => undefined);
+      await within(parentLocked);
+
+      const detachBackendPid = await backendPid(taskMemoryDetachClient);
+      detachPromise = taskMemoryDetachDb.transaction(async (tx) => {
+        await tx.delete(memoryNamespaces).where(and(
+          eq(memoryNamespaces.memoryId, memoryId),
+          eq(memoryNamespaces.namespaceId, namespaceId),
+        ));
+      });
+      void detachPromise.catch(() => undefined);
+      // The edge DELETE owns the child row while its invalidation trigger waits
+      // for the reader's parent Memory lock. A locking edge read would complete
+      // the opposite-order cycle and deadlock here.
+      await within(waitForBackendLock(detachBackendPid));
+      releaseEdgeRead();
+
+      const [read] = await within(Promise.all([readPromise, detachPromise]));
+      expect(read).toEqual({
+        status: "success",
+        value: [{
+          memoryId,
+          contentRevision: 1,
+          type: "fact",
+          content: "held Task Memory plaintext",
+        }],
+      });
+      expect(await adminDb.select({ namespaceId: memoryNamespaces.namespaceId })
+        .from(memoryNamespaces)
+        .where(eq(memoryNamespaces.memoryId, memoryId))).toEqual([]);
+      expect(await adminDb.select({ mappingState: memories.cryptoMappingState })
+        .from(memories).where(eq(memories.id, memoryId)))
+        .toEqual([{ mappingState: "stale" }]);
+    } finally {
+      releaseEdgeRead();
+      releaseParentLocked();
+      await Promise.allSettled([
+        readPromise ?? Promise.resolve(),
+        detachPromise ?? Promise.resolve(),
+      ]);
+      await adminDb.delete(memories).where(eq(memories.id, memoryId));
+      await adminDb.delete(namespaces).where(eq(namespaces.id, namespaceId));
+      await adminDb.delete(cryptoObjects).where(eq(
+        cryptoObjects.objectId,
+        cryptoObjectId,
+      ));
+      fingerprint.fill(0);
+    }
+  });
+
   test("Human-AI reads follow the Memory Room-before-actor lock order", async () => {
     const userId = randomUUID();
     const humanId = randomUUID();

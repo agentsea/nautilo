@@ -16,6 +16,7 @@ import {
 } from "./active-memory-repository.ts";
 import {
   ClassifiedDataOperationError,
+  type DataOperationScopedRead,
   type EncryptionDataOperationOwner,
 } from "../transition/encryption-data-operation-owner.ts";
 
@@ -63,6 +64,36 @@ export type ProtectedMemoryCandidate = Readonly<{
   score: number;
   createdAt: Date;
 }>;
+
+type AgentMemorySearchCandidateCommon = Omit<
+  ProtectedMemoryCandidate,
+  "cryptoObjectId"
+>;
+
+/**
+ * One entry from the Fallback-only ranked Memory selection. The product owner
+ * merges an ordinary/protected duplicate into `dual`; protected-only entries
+ * never acquire an invented ordinary body or object identity.
+ */
+export type AgentMemorySearchCandidate =
+  | Readonly<
+      AgentMemorySearchCandidateCommon & {
+        representation: "protected_only";
+        cryptoObjectId: string;
+      }
+    >
+  | Readonly<
+      AgentMemorySearchCandidateCommon & {
+        representation: "dual";
+        cryptoObjectId: string;
+      }
+    >
+  | Readonly<
+      AgentMemorySearchCandidateCommon & {
+        representation: "ordinary_only";
+        cryptoObjectId: null;
+      }
+    >;
 
 /** One exact authorized semantic-save identity selected before any repair. */
 export type ProtectedMemorySaveCandidateSelection = Readonly<{
@@ -215,6 +246,23 @@ export type ProtectedMemorySessionOpenedItem = Readonly<{
   content: string;
 }>;
 
+/** Fallback-only product selection and exact ordinary revision loading. */
+export interface ProtectedAgentMemoryFallbackSearchPort {
+  searchCandidates(
+    input: Parameters<ProtectedAgentMemoryProductPort["searchCandidates"]>[0],
+  ): Promise<ProtectedMemoryResult<readonly AgentMemorySearchCandidate[]>>;
+
+  loadExactOrdinary(
+    input: Readonly<{
+      authority: ProtectedMemoryAuthority;
+      candidates: readonly AgentMemorySearchCandidate[];
+      signal?: AbortSignal;
+    }>,
+  ): Promise<
+    ProtectedMemoryResult<readonly ProtectedMemorySessionOpenedItem[]>
+  >;
+}
+
 export interface ProtectedAgentMemoryCryptoSessionPort {
   openMany(
     input: Readonly<{
@@ -293,6 +341,24 @@ function operationUnavailable<Value>(
     case "unknown":
     case "unsupported": return undefined;
   }
+}
+
+function unavailableError(
+  reason: ProtectedMemoryUnavailableReason,
+): AgentMemoryDataOperationError {
+  const failureClass =
+    reason === "encryption_pending" ||
+      reason === "target_encryption_not_ready"
+      ? "recoverable_availability"
+      : reason === "stale_revision" || reason === "deleted"
+        ? "stale"
+        : reason === "authorization_required"
+          ? "authority"
+          : reason === "integrity_failure" ||
+              reason === "incomplete_access_set"
+            ? "integrity"
+            : "unknown";
+  return new AgentMemoryDataOperationError(failureClass, reason);
 }
 
 function portableText(value: unknown, maximumBytes = 256): value is string {
@@ -435,6 +501,43 @@ function validCandidate(
   );
 }
 
+function validSearchCandidate(
+  authority: ProtectedMemoryAuthority,
+  candidate: unknown,
+): candidate is AgentMemorySearchCandidate {
+  if (typeof candidate !== "object" || candidate === null) return false;
+  const value = candidate as AgentMemorySearchCandidate;
+  if (!Array.isArray(value.requiredNamespaceIds)) return false;
+  if (
+    value.representation === "protected_only" ||
+    value.representation === "dual"
+  ) {
+    return validCandidate(authority, value);
+  }
+  return (
+    value.representation === "ordinary_only" &&
+    uuid(value.memoryId) &&
+    Number.isSafeInteger(value.contentRevision) &&
+    value.contentRevision >= 0 &&
+    Number.isSafeInteger(value.cryptoAccessRevision) &&
+    value.cryptoAccessRevision >= 0 &&
+    value.cryptoObjectId === null &&
+    uuid(value.readNamespaceId) &&
+    allowedReadNamespace(authority, value.readNamespaceId) &&
+    canonicalIds(value.requiredNamespaceIds) !== null &&
+    value.requiredNamespaceIds.includes(value.readNamespaceId) &&
+    validImportance(value.importance) &&
+    Number.isSafeInteger(value.tier) &&
+    value.tier >= 1 &&
+    value.tier <= 3 &&
+    Number.isFinite(value.score) &&
+    value.score >= -1 &&
+    value.score <= 1 &&
+    value.createdAt instanceof Date &&
+    !Number.isNaN(value.createdAt.getTime())
+  );
+}
+
 function canonicalMemoryObjectId(
   memoryId: string,
   contentRevision: number,
@@ -536,6 +639,7 @@ export function createInvocationBoundProtectedAgentMemoryRepository(
     product: ProtectedAgentMemoryProductPort;
     crypto: ProtectedAgentMemoryCryptoSessionPort;
     owner: EncryptionDataOperationOwner;
+    fallbackSearch?: ProtectedAgentMemoryFallbackSearchPort;
     loadExactOrdinary?(
       input: Readonly<{
         authority: ProtectedMemoryAuthority;
@@ -552,7 +656,15 @@ export function createInvocationBoundProtectedAgentMemoryRepository(
         selection: ProtectedMemorySaveCandidateSelection;
         signal?: AbortSignal;
       }>,
-    ): Promise<ProtectedMemoryResult<void>>;
+    ): Promise<
+      ProtectedMemoryResult<
+        | void
+        | Readonly<{
+            memoryId: string;
+            contentRevision: number;
+          }>
+      >
+    >;
     fallbackOrdinary(
       input: Readonly<{
         authority: ProtectedMemoryAuthority;
@@ -579,6 +691,15 @@ export function createInvocationBoundProtectedAgentMemoryRepository(
     signal?: AbortSignal;
   }>,
 ): ProtectedAgentMemoryRepository {
+  if (
+    input.fallbackSearch !== undefined &&
+    input.loadExactOrdinary !== undefined
+  ) {
+    throw new TypeError(
+      "Protected Agent Memory search cannot combine legacy and paired ordinary loaders",
+    );
+  }
+
   async function embed(
     purpose: "memory.content_embedding" | "memory.query_embedding",
     plaintext: string,
@@ -746,8 +867,9 @@ export function createInvocationBoundProtectedAgentMemoryRepository(
     operationId: string,
     authority: ProtectedMemoryAuthority,
     selection: ProtectedMemorySaveCandidateSelection,
-  ): Promise<ProtectedMemoryResult<void>> {
-    if (!selection.repairRequired) return successResult(undefined);
+  ): Promise<ProtectedMemoryResult<ProtectedMemorySaveCandidateSelection>> {
+    if (!selection.repairRequired) return successResult(selection);
+    let repairedSelection = selection;
     const repair = async (): Promise<void> => {
       const result = await input.repairExactCandidate({
         operationId,
@@ -755,7 +877,26 @@ export function createInvocationBoundProtectedAgentMemoryRepository(
         selection,
         ...(input.signal === undefined ? {} : { signal: input.signal }),
       });
-      if (result.status === "success") return;
+      if (result.status === "success") {
+        if (result.value !== undefined) {
+          if (
+            result.value.memoryId !== selection.memoryId ||
+            !Number.isSafeInteger(result.value.contentRevision) ||
+            result.value.contentRevision < Math.max(1, selection.contentRevision)
+          ) {
+            throw new AgentMemoryDataOperationError(
+              "integrity",
+              "integrity_failure",
+            );
+          }
+          repairedSelection = Object.freeze({
+            ...selection,
+            contentRevision: result.value.contentRevision,
+            repairRequired: false,
+          });
+        }
+        return;
+      }
       throw new AgentMemoryDataOperationError(
         result.reason === "encryption_pending" ||
           result.reason === "target_encryption_not_ready"
@@ -784,10 +925,216 @@ export function createInvocationBoundProtectedAgentMemoryRepository(
         consumeOrdinary: () => undefined,
         consumeProtected: () => undefined,
       });
-      return successResult(undefined);
+      return successResult(repairedSelection);
     } catch (error) {
       if (error instanceof ClassifiedDataOperationError) {
-        const result = operationUnavailable<void>(error);
+        const result = operationUnavailable<
+          ProtectedMemorySaveCandidateSelection
+        >(error);
+        if (result !== undefined) return result;
+      }
+      throw error;
+    }
+  }
+
+  function exactOpenedItems(
+    candidates: readonly AgentMemorySearchCandidate[],
+    opened: readonly ProtectedMemorySessionOpenedItem[],
+  ): boolean {
+    return opened.length === candidates.length &&
+      opened.every((entry, index) => {
+        const candidate = candidates[index];
+        return candidate !== undefined &&
+          entry.memoryId === candidate.memoryId &&
+          entry.contentRevision === candidate.contentRevision &&
+          boundedText(entry.type, MAX_TYPE_BYTES) &&
+          boundedText(entry.content, MAX_CONTENT_BYTES);
+      });
+  }
+
+  async function selectFallbackSearchCandidates(
+    request: Parameters<ProtectedAgentMemoryRepository["search"]>[0],
+    embedding: AgentMemoryEmbedding,
+  ): Promise<
+    ProtectedMemoryResult<readonly ProtectedMemoryOpenedItem[]> | null
+  > {
+    const fallbackSearch = input.fallbackSearch!;
+    return input.owner.selectReadMetadata({
+      protected: () => Promise.resolve(null),
+      fallback: async ({ read }) => {
+        const result = await fallbackSearch.searchCandidates({
+          authority: request.authority,
+          embedding,
+          limit: request.limit,
+          includeArchive: request.includeArchive,
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        });
+        if (result.status === "unavailable") {
+          throw unavailableError(result.reason);
+        }
+        return searchFallbackCandidates(request, result.value, read);
+      },
+    });
+  }
+
+  async function searchFallbackCandidates(
+    request: Parameters<ProtectedAgentMemoryRepository["search"]>[0],
+    selected: readonly AgentMemorySearchCandidate[],
+    read: DataOperationScopedRead,
+  ): Promise<ProtectedMemoryResult<readonly ProtectedMemoryOpenedItem[]>> {
+    const fallbackSearch = input.fallbackSearch!;
+    try {
+      if (
+        selected.length > request.limit ||
+        new Set(selected.map((candidate) => candidate.memoryId)).size !==
+          selected.length ||
+        selected.some(
+          (candidate) => !validSearchCandidate(request.authority, candidate),
+        )
+      ) {
+        return unavailable("integrity_failure");
+      }
+      if (selected.length === 0) return successResult([]);
+
+      const protectedOnly = selected.filter(
+        (candidate): candidate is Extract<
+          AgentMemorySearchCandidate,
+          { representation: "protected_only" }
+        > => candidate.representation === "protected_only",
+      );
+      const dual = selected.filter(
+        (candidate): candidate is Extract<
+          AgentMemorySearchCandidate,
+          { representation: "dual" }
+        > => candidate.representation === "dual",
+      );
+      const ordinaryOnly = selected.filter(
+        (candidate): candidate is Extract<
+          AgentMemorySearchCandidate,
+          { representation: "ordinary_only" }
+        > => candidate.representation === "ordinary_only",
+      );
+      const openedByMemoryId = new Map<
+        string,
+        ProtectedMemorySessionOpenedItem
+      >();
+
+      const openProtected = async (
+        candidates: readonly Extract<
+          AgentMemorySearchCandidate,
+          { representation: "protected_only" | "dual" }
+        >[],
+      ): Promise<readonly ProtectedMemorySessionOpenedItem[]> => {
+        const result = await input.crypto.openMany({
+          entrypointId: input.entrypointId,
+          agentId: input.agentId,
+          authority: request.authority,
+          candidates,
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        });
+        if (result.status === "unavailable") {
+          throw unavailableError(result.reason);
+        }
+        return result.value;
+      };
+      const openOrdinary = async (
+        candidates: readonly AgentMemorySearchCandidate[],
+      ): Promise<readonly ProtectedMemorySessionOpenedItem[]> => {
+        const result = await fallbackSearch.loadExactOrdinary({
+          authority: request.authority,
+          candidates,
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        });
+        if (result.status === "unavailable") {
+          throw unavailableError(result.reason);
+        }
+        return result.value;
+      };
+      const retainOpened = (
+        candidates: readonly AgentMemorySearchCandidate[],
+        opened: readonly ProtectedMemorySessionOpenedItem[],
+      ): void => {
+        if (!exactOpenedItems(candidates, opened)) {
+          throw unavailableError("integrity_failure");
+        }
+        for (const entry of opened) openedByMemoryId.set(entry.memoryId, entry);
+      };
+
+      if (protectedOnly.length > 0) {
+        const opened = (
+          await read<
+            readonly ProtectedMemorySessionOpenedItem[],
+            readonly ProtectedMemorySessionOpenedItem[],
+            readonly ProtectedMemorySessionOpenedItem[]
+          >({
+            protected: () => openProtected(protectedOnly),
+            ordinary: () => Promise.reject(
+              unavailableError("encryption_pending"),
+            ),
+            consumeOrdinary: (value) => value,
+            consumeProtected: (value) => value,
+          })
+        ).value;
+        retainOpened(protectedOnly, opened);
+      }
+      if (dual.length > 0) {
+        const opened = (
+          await read<
+            readonly ProtectedMemorySessionOpenedItem[],
+            readonly ProtectedMemorySessionOpenedItem[],
+            readonly ProtectedMemorySessionOpenedItem[]
+          >({
+            protected: () => openProtected(dual),
+            ordinary: () => openOrdinary(dual),
+            consumeOrdinary: (value) => value,
+            consumeProtected: (value) => value,
+          })
+        ).value;
+        retainOpened(dual, opened);
+      }
+      if (ordinaryOnly.length > 0) {
+        const opened = (
+          await read<
+            readonly ProtectedMemorySessionOpenedItem[],
+            readonly ProtectedMemorySessionOpenedItem[],
+            readonly ProtectedMemorySessionOpenedItem[]
+          >({
+            protected: () => Promise.reject(
+              unavailableError("encryption_pending"),
+            ),
+            ordinary: () => openOrdinary(ordinaryOnly),
+            consumeOrdinary: (value) => value,
+            consumeProtected: (value) => value,
+          })
+        ).value;
+        retainOpened(ordinaryOnly, opened);
+      }
+
+      const opened = selected.map((candidate) =>
+        openedByMemoryId.get(candidate.memoryId),
+      );
+      if (opened.some((entry) => entry === undefined)) {
+        return unavailable("integrity_failure");
+      }
+      return successResult(
+        opened.map((entry, index) => {
+          const candidate = selected[index]!;
+          return Object.freeze({
+            id: entry!.memoryId,
+            type: entry!.type,
+            content: entry!.content,
+            importance: candidate.importance,
+            tier: candidate.tier,
+            score: candidate.score,
+            createdAt: new Date(candidate.createdAt),
+          });
+        }),
+      );
+    } catch (error) {
+      if (error instanceof ClassifiedDataOperationError) {
+        const result = operationUnavailable<
+          readonly ProtectedMemoryOpenedItem[]
+        >(error);
         if (result !== undefined) return result;
       }
       throw error;
@@ -811,6 +1158,23 @@ export function createInvocationBoundProtectedAgentMemoryRepository(
         return unavailable("authorization_required");
       const embedded = await embed("memory.query_embedding", request.query);
       if (embedded.status === "unavailable") return embedded;
+      if (input.fallbackSearch !== undefined) {
+        try {
+          const fallback = await selectFallbackSearchCandidates(
+            request,
+            embedded.value,
+          );
+          if (fallback !== null) return fallback;
+        } catch (error) {
+          if (error instanceof ClassifiedDataOperationError) {
+            const result = operationUnavailable<
+              readonly ProtectedMemoryOpenedItem[]
+            >(error);
+            if (result !== undefined) return result;
+          }
+          throw error;
+        }
+      }
       const candidates = await input.product.searchCandidates({
         authority: request.authority,
         embedding: embedded.value,
@@ -980,6 +1344,7 @@ export function createInvocationBoundProtectedAgentMemoryRepository(
         ...(input.signal === undefined ? {} : { signal: input.signal }),
       });
       if (selected.status === "unavailable") return selected;
+      let selectedCandidate = selected.value;
       if (selected.value?.repairRequired === true) {
         const repaired = await repairSelectedCandidate(
           request.operationId,
@@ -987,12 +1352,13 @@ export function createInvocationBoundProtectedAgentMemoryRepository(
           selected.value,
         );
         if (repaired.status === "unavailable") return repaired;
+        selectedCandidate = repaired.value;
       }
       const plan = await input.product.planSave({
         operationId: request.operationId,
         authority: request.authority,
         embedding: embedded.value,
-        selectedCandidate: selected.value,
+        selectedCandidate,
         importance: request.importance ?? 1,
         mutationCommitment,
         ...(input.signal === undefined ? {} : { signal: input.signal }),

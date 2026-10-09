@@ -4,6 +4,7 @@ import {
   eq,
   jobs,
   rooms,
+  recordTaskRunMessageAssociationInTx,
   sessionMessageCryptoRevisions,
   sessions,
   taskRuns,
@@ -14,9 +15,14 @@ import type {
   ConversationProductPublicationGuard,
   ConversationProductPublicationGuardInput,
 } from "@nautilo/lattice-bridge/server";
+import { BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES } from
+  "@nautilo/runtime";
 import type { CanonicalTranscriptTx } from "@nautilo/trust";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const PORTABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u;
+const SHA256_BASE64URL = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u;
+const encoder = new TextEncoder();
 
 export type ProtectedTaskMessageProductAuthority = Readonly<{
   taskId: string;
@@ -38,6 +44,7 @@ export type ProtectedTaskMessageProductAuthority = Readonly<{
   authorizationRequestId: string;
   executionSegment: number;
   resumeAcceptanceId?: string;
+  resumeContinuationFingerprint?: string;
   policyRevision: number;
   representation: "dual" | "protected";
   authorizationExpiresAt: number;
@@ -53,9 +60,12 @@ function exactJobReference(
   expected: ProtectedTaskMessageProductAuthority,
 ): boolean {
   if (value === null) return false;
+  const hasAcceptance = Object.hasOwn(expected, "resumeAcceptanceId");
   const keys = expected.executionSegment === 1
     ? "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,taskId,taskRunId"
-    : "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,resumeAcceptanceId,taskId,taskRunId";
+    : hasAcceptance
+      ? "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,resumeAcceptanceId,taskId,taskRunId"
+      : "authorizationRequestId,executionSegment,inputObjectId,kind,policyRevision,resultObjectId,resumeContinuationFingerprint,taskId,taskRunId";
   return Object.keys(value).sort().join(",") === keys
     && value["kind"] === "protected_task_run_v1"
     && value["taskId"] === expected.taskId
@@ -65,6 +75,8 @@ function exactJobReference(
     && value["authorizationRequestId"] === expected.authorizationRequestId
     && value["executionSegment"] === expected.executionSegment
     && value["resumeAcceptanceId"] === expected.resumeAcceptanceId
+    && value["resumeContinuationFingerprint"]
+      === expected.resumeContinuationFingerprint
     && value["policyRevision"] === expected.policyRevision;
 }
 
@@ -95,7 +107,10 @@ async function exactExistingLifecycle(
       eq(sessionMessageCryptoRevisions.sessionId, input.sessionId),
       eq(sessionMessageCryptoRevisions.messageId, input.messageId),
       eq(sessionMessageCryptoRevisions.editRevision, input.revision),
-    )).limit(1).for("share");
+    )).limit(1);
+  // The serializable product transaction validates this snapshot. Mapping
+  // locks the Message before its lifecycle; an early shared lifecycle lock
+  // would invert that order during concurrent replay.
   return lifecycle !== undefined
     && lifecycle.roomId === expected.roomId
     && lifecycle.namespaceIdAtAllocation === expected.namespaceId
@@ -124,6 +139,11 @@ export function createProtectedTaskMessageProductGuard(
   expected: ProtectedTaskMessageProductAuthority,
   now: () => number = Date.now,
 ): ConversationProductPublicationGuard {
+  const hasAcceptance = Object.hasOwn(expected, "resumeAcceptanceId");
+  const hasContinuation = Object.hasOwn(
+    expected,
+    "resumeContinuationFingerprint",
+  );
   if ([expected.taskId, expected.taskRunId, expected.jobId,
     expected.taskOwnerId, expected.sessionId,
     expected.sessionOwnerId, expected.roomId, expected.namespaceId,
@@ -138,7 +158,17 @@ export function createProtectedTaskMessageProductGuard(
     || expected.authorizationRequestId.length === 0
     || !Number.isSafeInteger(expected.executionSegment)
     || expected.executionSegment < 1
-    || (expected.executionSegment === 1) !== (expected.resumeAcceptanceId === undefined)
+    || (expected.executionSegment === 1
+      ? hasAcceptance || hasContinuation
+      : hasAcceptance === hasContinuation)
+    || (hasAcceptance
+      && (typeof expected.resumeAcceptanceId !== "string"
+        || !PORTABLE_ID.test(expected.resumeAcceptanceId)
+        || encoder.encode(expected.resumeAcceptanceId).length
+          > BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES))
+    || (hasContinuation
+      && (typeof expected.resumeContinuationFingerprint !== "string"
+        || !SHA256_BASE64URL.test(expected.resumeContinuationFingerprint)))
     || !Number.isSafeInteger(expected.policyRevision)
     || expected.policyRevision < 1
     || !Number.isSafeInteger(expected.authorizationExpiresAt)
@@ -223,6 +253,28 @@ export function createProtectedTaskMessageProductGuard(
         || !await exactExistingLifecycle(tx, input, asserted)) reject();
       asserted.signal.throwIfAborted();
       if (now() >= asserted.authorizationExpiresAt) reject();
+    },
+    async recordMappedPublication(
+      tx: CanonicalTranscriptTx,
+      input: Parameters<NonNullable<ConversationProductPublicationGuard["recordMappedPublication"]>>[1],
+    ): Promise<void> {
+      asserted.signal.throwIfAborted();
+      if (input.sessionId !== asserted.sessionId
+        || input.revision !== 0
+        || input.idempotencyKey?.startsWith(
+          `task-transcript:${asserted.taskRunId}:fp:v1:`,
+        ) !== true) reject();
+      const result = await recordTaskRunMessageAssociationInTx(tx, {
+        taskId: asserted.taskId,
+        taskRunId: asserted.taskRunId,
+        sessionId: input.sessionId,
+        expectedThreadId: asserted.graphThreadId,
+        messageId: input.messageId,
+        publishedRevision: input.revision,
+        kind: "transcript",
+        publicationKey: input.idempotencyKey,
+      });
+      if (result.status === "rejected") reject();
     },
   });
 }

@@ -28,6 +28,34 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   execution. Legacy Agent shell and terminal execution is retired; new commands
   require the current Desktop/server contract. Saved results remain readable, and
   Human Terminal and structured SSH retain their separate interfaces.
+- Chat managers can change personal 1:1 chats between Private, External, and
+  Public. Returning an unchanged personal Human–Genie chat to Private restores
+  its private-chat behavior without replacing the conversation.
+
+- The sign-in screen offers Join when the server has an active selected public
+  invitation and enrollment is open. Join follows the server's existing `/join`
+  address; personal invitation links remain available through I have an invite.
+
+- Desktop relays recover when the server expires their heartbeat registration
+  while the connection remains open. A later heartbeat triggers authenticated
+  reconnection so local tools can become available again; interrupted commands
+  are not automatically replayed.
+
+- Members can choose personal models for research and decisions independently
+  of the server defaults. Personal Tavily and model keys fund supported research,
+  native decisions, and ordinary tools under the administrator's funding policy.
+  Queued work and approval resumes retain their admitted payer and recheck live
+  authority before spending. Research service charges retain their personal
+  funding attribution, including unsettled costs and later receipts.
+  Unanswered Surplus chat, research and decision calls fall back within the same
+  payer even when marketplace charges are unresolved. Each attempt keeps its
+  own costs; cancellation and delivered text or tool calls stop fallback.
+  Surplus streaming accepts usage-metering adjustments while preserving provider
+  and inference-setting checks.
+  Task cost totals include attributable paid-service calls. Costs distinguish
+  decision and Deep Research workloads, provider actual charges and estimates,
+  and service outcomes independently of unresolved charges; service estimates
+  retain their pricing version and reported usage basis.
 
 - Genies no longer discover or activate the legacy `run_shell` tool, including
   in background Tasks and on older clients. Managed command tools remain
@@ -145,7 +173,7 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   When personal keys are disabled, members see only the warning if no keys are
   saved, or their saved keys with Delete controls. Cleanup remains available
   without permission to spend or access to the credential encryption key.
-  Uncertain personal requests stop automatic retries; transient accounting
+  Uncertain tool and job submissions stop automatic retries; transient accounting
   writes retry without repeating inference. Repaired personal Surplus keys can
   recover authenticated original receipts while retaining their original payer.
   Server key repair also resumes blocked receipts; interrupted Surplus

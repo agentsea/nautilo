@@ -28,6 +28,7 @@ function createRecovery(
 ) {
   return createSurplusCostRecovery({
     resolveServerCredential: () => null,
+    requeueBlockedDecisions: async () => 0,
     ...overrides,
   });
 }
@@ -78,6 +79,81 @@ describe("Surplus automatic financial recovery", () => {
     await recovery.stop();
     expect(reads).toBe(1);
     expect(writes).toHaveLength(1);
+  });
+
+  test("recovers a decision receipt through the same exact-request binding", async () => {
+    let reads = 0;
+    const writes: unknown[] = [];
+    const decision = {
+      ...row,
+      callType: "other",
+      provider: "openrouter",
+      model: "openrouter:typesafe/jev-1.13",
+      endpoint: "/v1/decisions",
+      metadata: {
+        ...row.metadata,
+        catalogModelId: "openrouter:typesafe/jev-1.13",
+        surplusModelId: "typesafe/jev-1.13",
+        surplusProviderPin: "openrouter",
+      },
+    } satisfies SurplusPendingAttempt;
+    const recovery = createRecovery({
+      list: async () => [decision],
+      resolveCredential: () => available(),
+      fetchCost: async (input) => {
+        reads++;
+        expect(input.binding).toEqual({
+          requestId: decision.providerRequestId!,
+          surplusModelId: "typesafe/jev-1.13",
+          providerPin: "openrouter",
+        });
+        return { status: "settled", costMicro: 41 };
+      },
+      settle: async (input) => { writes.push(input); return true; },
+    });
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await recovery.stop();
+    expect(reads).toBe(1);
+    expect(writes).toEqual([{
+      attemptId: decision.id,
+      providerRequestId: decision.providerRequestId,
+      expectedUpdatedAtToken: decision.updatedAtToken,
+      actualCostUsd: 0.000041,
+    }]);
+  });
+
+  test("keeps other endpoint protocols blocked without a receipt read", async () => {
+    let reads = 0;
+    let classified: unknown;
+    const recovery = createRecovery({
+      list: async () => [{ ...row, endpoint: "/v1/images/generations" }],
+      resolveCredential: () => available(),
+      fetchCost: async () => { reads++; return { status: "settled", costMicro: 0 }; },
+      classify: async (input) => { classified = input; return true; },
+    });
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await recovery.stop();
+    expect(reads).toBe(0);
+    expect(classified).toMatchObject({
+      recoveryState: "blocked_repair",
+      failureCode: "receipt_endpoint_unsupported",
+    });
+  });
+
+  test("requeues formerly blocked decision receipts once per recovery lifecycle", async () => {
+    let requeues = 0;
+    const recovery = createRecovery({
+      requeueBlockedDecisions: async () => { requeues++; return 1; },
+      list: async () => [],
+    });
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await recovery.stop();
+    expect(requeues).toBe(1);
   });
 
   test("classifies unbound and unauthorized personal credentials without guessing zero", async () => {

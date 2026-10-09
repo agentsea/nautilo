@@ -11,6 +11,7 @@ export * from "./queries/legacy-photo-history";
 export * from "./queries/reflection-sources";
 export * from "./queries/personal-encryption-coverage";
 export * from "./queries/personal-provider-credentials";
+export * from "./queries/personal-capability-preferences";
 export * from "./queries/soul-generation-attempts";
 export * from "./queries/protected-task-output-bindings";
 export * from "./queries/video-generation-links";
@@ -345,11 +346,18 @@ export {
 } from "./utils/profile-migration-artifact-primitives";
 export {
   persistJob,
+  persistJobInTransaction,
+  startProtectedTaskJob,
+  settleProtectedTaskJobTerminal,
+  cancelUnstartedProtectedTaskJobWithDatabase,
   updateJobStatus,
   getJobById,
   type PersistJobPayload,
   type PersistedJobRecord,
   type JobPublicationPolicy,
+  type ProtectedTaskJobStartResult,
+  type ProtectedTaskJobTerminalRequest,
+  type ProtectedTaskJobTerminalResult,
 } from "./queries/jobs";
 export {
   hasClaimedOwner,
@@ -619,6 +627,9 @@ export {
   TASK_LOCAL_EXECUTION_RECREATE_TEXT,
   transitionTaskLifecyclePaused,
   transitionTaskLifecycleTerminal,
+  settleCancelledProtectedTaskRunAuthorization,
+  settlePublishedProtectedTaskRunAuthorization,
+  lockExactProtectedTaskRunResultPublicationInTx,
   countActiveTaskWorkWith,
   getLatestResumableTaskRun,
   repairTaskContentAccessRecovery,
@@ -647,9 +658,20 @@ export {
   prepareClaimedProtectedTaskOccurrence,
   startProtectedTaskRun,
   parkProtectedTaskRun,
+  sealAndParkProtectedTaskRun,
+  readParkedProtectedTaskAdditionalAuthority,
+  discoverParkedProtectedTaskAdditionalAuthority,
+  parseParkedProtectedTaskAdditionalAuthority,
+  parkedTaskAdditionalAuthorityTaskProjection,
+  parkedTaskAdditionalAuthorityRunProjection,
+  parkedTaskAdditionalAuthorityJobProjection,
+  sameParkedProtectedTaskAdditionalAuthority,
+  PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY,
+  PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY,
   acceptProtectedTaskAwaitReply,
   resolvePublishedProtectedTaskAwaitReply,
   startParkedProtectedTaskRunSegment,
+  startParkedProtectedTaskRunAdditionalAuthoritySegment,
   attachProtectedTaskRunModel,
   terminalizeProtectedTaskRunResult,
   terminalizeDualTaskRunResult,
@@ -680,10 +702,23 @@ export {
   type PrepareClaimedProtectedTaskOccurrenceInput,
   type PrepareClaimedProtectedTaskOccurrenceResult,
   type ProtectedTaskDurableJobReference,
+  type SettlePublishedProtectedTaskRunAuthorizationInput,
+  type ExactProtectedTaskRunResultPublicationProof,
+  type ProtectedTaskRunResultPublicationPhase,
+  type ProtectedTaskRunResultPublicationTransaction,
   type StartProtectedTaskRunInput,
   type StartProtectedTaskRunResult,
   type ParkProtectedTaskRunInput,
   type ParkProtectedTaskRunResult,
+  type SealAndParkProtectedTaskRunInput,
+  type SealAndParkProtectedTaskRunContinuation,
+  type SealAndParkProtectedTaskRunResult,
+  type ParkedProtectedTaskAdditionalAuthority,
+  type ParkedProtectedTaskAdditionalAuthorityProof,
+  type ParkedProtectedTaskAdditionalAuthorityTaskRow,
+  type ParkedProtectedTaskAdditionalAuthorityRunRow,
+  type ParkedProtectedTaskAdditionalAuthorityJobRow,
+  type LockedParkedProtectedTaskAdditionalAuthorityTaskRow,
   type ProtectedTaskRunInterruptKind,
   type ProtectedTaskRunInterruptCoordinate,
   type ProtectedTaskAwaitReplyMessageReference,
@@ -693,6 +728,8 @@ export {
   type ResolvePublishedProtectedTaskAwaitReplyResult,
   type StartParkedProtectedTaskRunSegmentInput,
   type StartParkedProtectedTaskRunSegmentResult,
+  type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+  type StartParkedProtectedTaskRunAdditionalAuthoritySegmentResult,
   type AttachProtectedTaskRunModelInput,
   type AttachProtectedTaskRunModelResult,
   type ProtectedTaskRunTerminalInput,
@@ -709,6 +746,9 @@ export {
   type TerminalizeWriterReviewVerificationLostResult,
   type ListAwaitingWriterReviewTasksOptions,
   type TransitionTaskLifecycleTerminalInput,
+  type SettleCancelledProtectedTaskRunAuthorizationInput,
+  copyParkedProtectedTaskAdditionalAuthority,
+  lockParkedProtectedTaskAdditionalAuthority,
 } from "./queries/tasks";
 export {
   appendPendingArtifactEvent,
@@ -809,6 +849,7 @@ export {
   classifySurplusLlmAttemptRecovery,
   requeueBlockedPersonalSurplusAttempts,
   requeueBlockedServerSurplusAttempts,
+  requeueBlockedSurplusDecisionAttempts,
   getCostsSummary,
   getPersonalCostsSummary,
   buildPersonalCostsByRouteQuery,
@@ -836,12 +877,18 @@ export {
 export {
   insertProviderCostEvent,
   insertProviderCostEventWith,
+  settleProviderCostEvent,
+  settleProviderCostEventWith,
   buildProviderCostsSummaryQueries,
+  buildPersonalProviderCostsByTaskQuery,
+  buildProviderCostRecoveryAttemptsQuery,
   providerCostIdempotencyKey,
+  providerCostRequestReference,
   estimateProviderToolCostUsd,
   PROVIDER_TOOL_PRICING_VERSION,
   type InsertProviderCostEventInput,
   type ProviderCostEvidenceState,
+  type ProviderCostAttemptOutcome,
   type ProviderToolPriceKey,
 } from "./queries/provider-costs";
 export {
@@ -929,3 +976,25 @@ export { createEventFeedStorage, listArtifactFeedRecipientUserIds } from "./quer
 
 export { memoryEmbeddingValues, memoryEmbeddingCompatibilityCondition } from "./utils/memory-embedding";
 export { PHYSICAL_FILE_URI_COLUMNS, physicalFileUriBase, rebindPhysicalFileUri } from "./utils/physical-storage-uris";
+
+export * from "./queries/task-run-message-associations";
+export * from "./queries/protected-task-execution-receipts";
+export {
+  exactParkedProtectedTaskJobReference,
+} from "./queries/protected-task-parked-start-proof";
+
+export {
+  recoverUnstartedProtectedTaskRun,
+  getUnstartedProtectedTaskRunRecoveryBoundary,
+  listUnstartedProtectedTaskRunRecoveryCandidates,
+  type ProtectedTaskPreexecutionRecoveryPage,
+  type ProtectedTaskPreexecutionRecoveryResult,
+  type ProtectedTaskPreexecutionRecoveryCursor,
+  type ProtectedTaskPreexecutionRecoveryCandidate,
+} from "./queries/protected-task-preexecution";
+export {
+  recoverUnstartedParkedProtectedTaskRun,
+  recoverUnstartedParkedProtectedTaskClaim,
+  type ParkedProtectedTaskPreexecutionRecoveryResult,
+  type RecoverUnstartedParkedProtectedTaskClaimInput,
+} from "./queries/protected-task-parked-preexecution";

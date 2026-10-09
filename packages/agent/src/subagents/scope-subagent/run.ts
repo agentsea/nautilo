@@ -20,6 +20,13 @@ import {
   GraphExecutionMetrics,
   toGraphBudgetOutcome,
 } from "../../graph/execution-policy";
+import {
+  createProtectedTaskNodeSettlementScope,
+} from "../../graph/protected-task-node-settlement-scope";
+import {
+  createProtectedTaskMemoryGraphDeps,
+  type ProtectedTaskMemoryGraphHandoff,
+} from "../protected-task-memory-graph-deps";
 import { AgentToolCallTracker, emitAgentEvent } from "../../runtime-hooks";
 import { isScopeMemoryEnvelope } from "@nautilo/trust";
 import {
@@ -655,6 +662,8 @@ export type RunScopeSubagentOpts = {
    * are bypassed while this port is present.
    */
   protectedTaskTranscriptPort?: ProtectedTaskTranscriptPublicationPort;
+  /** Process-local Memory authority opened by one accepted protected Task grant. */
+  protectedTaskMemoryHandoff?: ProtectedTaskMemoryGraphHandoff;
   /** Resume payload after a bridged interrupt (same shape as HTTP resume) */
   resume?: unknown;
   /** When resuming, reuse the same subagent thread */
@@ -895,18 +904,45 @@ async function runScopeSubagentUntilPauseInternal(
   const metrics = new GraphExecutionMetrics();
   const researchNoteDraft = opts.taskRun && opts.toolWhitelist?.includes("security_scan")
     ? createResearchNoteDraft(opts.signal) : undefined;
-  const graph = createNautiloGraph(
-    checkpointSaver,
-    policyResolver,
-    {
-      ...defaultPostModelDeps,
-      ...(opts.delegatedLocalExecutionPort ? { delegatedLocalExecutionPortForState: () => opts.delegatedLocalExecutionPort } : {}),
-      ...(researchNoteDraft ? { researchNoteDraft } : {}),
-      ...(opts.foregroundChatFundingSession === undefined
-        ? {}
-        : { foregroundChatFundingSession: opts.foregroundChatFundingSession }),
-    },
-  );
+  const nodeSettlement = opts.taskRunCheckpointSaver === undefined
+    ? undefined
+    : createProtectedTaskNodeSettlementScope(opts.signal);
+
+  try {
+    const graph = createNautiloGraph(
+      checkpointSaver,
+      policyResolver,
+      {
+        ...defaultPostModelDeps,
+        ...(opts.delegatedLocalExecutionPort
+          ? {
+            delegatedLocalExecutionPortForState:
+              () => opts.delegatedLocalExecutionPort,
+          }
+          : {}),
+        ...(researchNoteDraft ? { researchNoteDraft } : {}),
+        ...(opts.foregroundChatFundingSession === undefined
+          ? {}
+          : { foregroundChatFundingSession: opts.foregroundChatFundingSession }),
+        ...createProtectedTaskMemoryGraphDeps({
+          taskId: opts.currentTaskId ?? "",
+          taskRunId: opts.currentTaskRunId ?? "",
+          graphThreadId: opts.subagentThreadId ?? "",
+          ownerId: opts.parentOwnerId,
+          causalHumanUserId: opts.causalHumanUserId ?? "",
+          agentId: opts.subEnvelope.agentId,
+          roomId: opts.roomId,
+          callingRoomId: opts.callingRoomId ?? "",
+          turnId: opts.parentTurnId,
+          approvalLaneKey: opts.approvalLaneKey ?? opts.subagentThreadId ?? "",
+          actorRole: opts.actorRole,
+          envelope: opts.subEnvelope,
+        }, opts.protectedTaskMemoryHandoff),
+        ...(nodeSettlement === undefined
+          ? {}
+          : { protectedTaskNodeSettlementScope: nodeSettlement }),
+      },
+    );
 
   const subThreadId =
     opts.subagentThreadId ??
@@ -1175,8 +1211,14 @@ async function runScopeSubagentUntilPauseInternal(
     throw err;
   } finally {
     progressTap?.dispose();
-    researchNoteDraft?.dispose();
+    if (nodeSettlement === undefined) researchNoteDraft?.dispose();
     tokenStream?.dispose();
+  }
+
+  // Cancellation can settle LangGraph's stream while an admitted node body
+  // is still returning. Drain it before state reads or saver-owner return.
+  if (nodeSettlement !== undefined) {
+    await nodeSettlement.closeAndWait();
   }
 
   // INVARIANT : this end-of-run `getState` read is OUTPUT EXTRACTION
@@ -1224,6 +1266,14 @@ async function runScopeSubagentUntilPauseInternal(
     securityReportState: securityReportReadiness(messages),
     securityResearchAppendix: securityResearchAppendix(messages),
   };
+  } finally {
+    // Covers graph construction, streaming, publication, and state-read
+    // failures. closeAndWait is idempotent after the normal drain.
+    if (nodeSettlement !== undefined) {
+      await nodeSettlement.closeAndWait();
+      researchNoteDraft?.dispose();
+    }
+  }
 }
 
 async function publishProtectedTaskTranscriptBatch(

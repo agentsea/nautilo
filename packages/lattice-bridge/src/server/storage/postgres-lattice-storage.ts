@@ -13,6 +13,7 @@ import {
   cryptoDomains,
   cryptoGrants,
   cryptoObjects,
+  domainKeyHeads,
   eq,
   humanCryptoRecoveryArchives,
   namespaceCryptoBindings,
@@ -1639,12 +1640,46 @@ export class PostgresLatticeStorage implements LatticeStorage {
         } else if (
           authorization.kind
             === "device-wrapped-live-shadow-agent-genesis-set"
+          || authorization.kind === "task-runtime-agent-genesis-set"
         ) {
           const context = authorization.context;
-          // Foreground admission and runtime signers are ephemeral, validated
-          // by the live resolver and branded coordinator write above. Recheck
-          // its exact native authority heads at CAS, not legacy Grant/runtime
-          // registry rows (which belong to background agent-genesis).
+          // The Task owner holds product and accepted-request authority through
+          // this transaction. Recheck its Domain and signer before Namespace
+          // heads, in the same order used by native key rotation.
+          if (authorization.kind === "task-runtime-agent-genesis-set") {
+            for (const domain of authorization.context.domains) {
+              const rows = await executeTypedCryptoQuery(transaction,
+                cryptoTypedDb.select({
+                  domain_key_generation: domainKeyHeads.domainKeyGeneration,
+                  authorization_revision: domainKeyHeads.authorizationRevision,
+                  head_digest: domainKeyHeads.headDigest,
+                  participant_digest: domainKeyHeads.participantDigest,
+                  participant_count: domainKeyHeads.participantCount,
+                }).from(domainKeyHeads).where(and(
+                  eq(domainKeyHeads.domainId, domain.domainId),
+                  eq(domainKeyHeads.keyClass, "ai"),
+                )).limit(2).for("share"));
+              const row = oneOrNull(rows, "Task Runtime Agent Domain head lookup");
+              if (row === null
+                || rowNumber(row, "domain_key_generation") !== domain.domainKeyGeneration
+                || rowNumber(row, "authorization_revision") !== domain.authorizationRevision
+                || rowNumber(row, "participant_count") !== domain.participantCount
+                || !bytesEqual(rowBytes(row, "head_digest"), domain.headDigest)
+                || !bytesEqual(rowBytes(row, "participant_digest"), domain.participantDigest)) {
+                return "stale";
+              }
+            }
+            const runtime = await getRuntime(transaction, context.agentId, true);
+            const signer = await getRuntimeSignerPublication(transaction,
+              context.agentId, context.runtimeGeneration);
+            if (runtime === null
+              || runtime.runtime.authorizationRevision !== context.agentAuthorizationRevision
+              || runtime.runtime.runtimeGeneration !== context.runtimeGeneration
+              || signer === null
+              || !signerPublicationsEqual(signer, authorization.signerPublication)) {
+              return "stale";
+            }
+          }
           const currentDomains = new Map<string, Readonly<{
             generation: number;
             authorizationRevision: number;

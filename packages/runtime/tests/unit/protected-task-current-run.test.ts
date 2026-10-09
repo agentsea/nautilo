@@ -95,11 +95,24 @@ describe("current protected Task run for grant", () => {
   test("running authority requires a started Job and current running pair", () => {
     expect(isCurrentProtectedTaskRunForGrant({ ...fixture, phase: "running" })).toBe(false);
     expect(isCurrentProtectedTaskRunForGrant({
-      ...fixture, phase: "running", task: { ...fixture.task, status: "running" },
+      ...fixture, phase: "running",
+      occurrence: { ...fixture.occurrence,
+        run: { ...fixture.occurrence.run, status: "running", jobId: "job" } },
+      task: { ...fixture.task, status: "running" },
       run: { ...fixture.run, status: "running", jobId: "job" },
     })).toBe(true);
     expect(isCurrentProtectedTaskRunForGrant({
-      ...fixture, phase: "running", task: { ...fixture.task, status: "cancelled" },
+      ...fixture, phase: "running",
+      occurrence: { ...fixture.occurrence,
+        run: { ...fixture.occurrence.run, status: "running", jobId: "job" } },
+      task: { ...fixture.task, status: "cancelled" },
+      run: { ...fixture.run, status: "running", jobId: "job" },
+    })).toBe(false);
+    expect(isCurrentProtectedTaskRunForGrant({
+      ...fixture, phase: "running",
+      occurrence: { ...fixture.occurrence,
+        run: { ...fixture.occurrence.run, status: "running", jobId: "other" } },
+      task: { ...fixture.task, status: "running" },
       run: { ...fixture.run, status: "running", jobId: "job" },
     })).toBe(false);
   });
@@ -111,6 +124,7 @@ describe("current protected Task run for grant", () => {
       occurrence: {
         ...fixture.occurrence,
         task: { ...fixture.occurrence.task, scheduleKind: "cron" },
+        run: { ...fixture.occurrence.run, status: "running", jobId: "job" },
       },
       task: { ...fixture.task, scheduleKind: "cron", status: "pending" },
       run: { ...fixture.run, status: "running", jobId: "job" },
@@ -124,6 +138,7 @@ describe("current protected Task run for grant", () => {
       occurrence: {
         ...fixture.occurrence,
         task: { ...fixture.occurrence.task, scheduleKind: "cron" },
+        run: { ...fixture.occurrence.run, status: "running", jobId: "job" },
       },
       task: { ...fixture.task, scheduleKind: "cron", status: "pending" },
       run: { ...fixture.run, status: "running", jobId: "job" },
@@ -146,6 +161,7 @@ describe("current protected Task run for grant", () => {
         occurrence: {
           ...fixture.occurrence,
           task: { ...fixture.occurrence.task, scheduleKind },
+          run: { ...fixture.occurrence.run, status: "running", jobId: "job" },
         },
         task: { ...fixture.task, scheduleKind, status: "pending" },
         run: { ...fixture.run, status: "running", jobId: "job" },

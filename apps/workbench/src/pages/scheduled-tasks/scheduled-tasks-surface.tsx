@@ -14,8 +14,8 @@ import { useScheduledTasks } from "./use-scheduled-tasks";
  * — exit via normal route navigation (rail, back, or clicking Files/Artifacts).
  */
 export function ScheduledTasksSurface(): ReactElement {
-  const { tasks, protectedTasks, protectedLoading, loading, error,
-    busyIds, disable, enable, remove } = useScheduledTasks();
+  const { tasks, protectedTasks, protectedLoading, protectedError, loading, error,
+    busyIds, refresh, disable, enable, remove } = useScheduledTasks();
   const [query, setQuery] = useState("");
 
   const visible = useMemo(() => filterBySearch(tasks, query), [tasks, query]);
@@ -63,7 +63,8 @@ export function ScheduledTasksSurface(): ReactElement {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading || (protectedLoading && tasks.length === 0
+        {(loading && !protectedLoading)
+          || ((loading || protectedLoading) && tasks.length === 0
           && protectedTasks.length === 0) ? (
           <p
             className="px-6 py-10 text-sm text-foreground-muted"
@@ -79,45 +80,70 @@ export function ScheduledTasksSurface(): ReactElement {
           >
             {error}
           </p>
-        ) : tasks.length === 0 && protectedTasks.length === 0
-          && !protectedLoading ? (
-          <p
-            className="px-6 py-10 text-sm text-foreground-muted"
-            data-testid="scheduled-tasks-empty"
-          >
-            No scheduled tasks yet. Ask your agent to schedule something — e.g.
-            “remind me every weekday at 9am”.
-          </p>
-        ) : visible.length === 0 && protectedVisible.length === 0 ? (
-          <p
-            className="px-6 py-10 text-sm text-foreground-muted"
-            data-testid="scheduled-tasks-no-matches"
-          >
-            No schedules match “{query}”.
-          </p>
         ) : (
-          <ul data-testid="scheduled-tasks-list">
-            {visible.map((task) => (
-              <ScheduledTaskCard
-                key={task.id}
-                task={task}
-                busy={busyIds.has(task.id)}
-                onEnable={enable}
-                onDisable={disable}
-                onRemove={remove}
-              />
-            ))}
-            {protectedVisible.map((row) => (
-              <ProtectedScheduledTaskCard
-                key={row.task.id}
-                row={row}
-                busy={busyIds.has(row.task.id)}
-                onEnable={enable}
-                onDisable={disable}
-                onRemove={remove}
-              />
-            ))}
-          </ul>
+          <>
+            {protectedError ? (
+              <div
+                className="mx-6 mt-4 flex items-center gap-3 rounded-md border border-red-500/40 bg-red-500/5 px-3 py-2 text-sm text-red-500"
+                role="alert"
+                data-testid="scheduled-tasks-protected-error"
+              >
+                <span className="min-w-0 flex-1">
+                  Encrypted schedules could not be refreshed: {protectedError}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void refresh()}
+                  disabled={protectedLoading}
+                  className="shrink-0 rounded border border-current px-2 py-1 text-xs font-medium disabled:opacity-50"
+                >
+                  {protectedLoading ? "Retrying…" : "Retry"}
+                </button>
+              </div>
+            ) : null}
+            {tasks.length === 0 && protectedTasks.length === 0
+              && !protectedLoading ? (
+              protectedError ? null : (
+                <p
+                  className="px-6 py-10 text-sm text-foreground-muted"
+                  data-testid="scheduled-tasks-empty"
+                >
+                  No scheduled tasks yet. Ask your agent to schedule something — e.g.
+                  “remind me every weekday at 9am”.
+                </p>
+              )
+            ) : visible.length === 0 && protectedVisible.length === 0 ? (
+              <p
+                className="px-6 py-10 text-sm text-foreground-muted"
+                data-testid="scheduled-tasks-no-matches"
+              >
+                No schedules match “{query}”.
+              </p>
+            ) : (
+              <ul data-testid="scheduled-tasks-list">
+                {visible.map((task) => (
+                  <ScheduledTaskCard
+                    key={task.id}
+                    task={task}
+                    busy={busyIds.has(task.id)}
+                    onEnable={enable}
+                    onDisable={disable}
+                    onRemove={remove}
+                  />
+                ))}
+                {protectedVisible.map((row) => (
+                  <ProtectedScheduledTaskCard
+                    key={row.task.id}
+                    row={row}
+                    busy={busyIds.has(row.task.id)}
+                    onEnable={enable}
+                    onDisable={disable}
+                    onRemove={remove}
+                  />
+                ))}
+              </ul>
+            )}
+          </>
         )}
       </div>
     </div>

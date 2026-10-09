@@ -33,6 +33,7 @@ interface DispatchRecord {
   jobId: string;
   laneKey: string;
   isFork: boolean;
+  originatedBy?: string;
   parentThreadId?: string;
   sequence?: number;
 }
@@ -71,6 +72,11 @@ function makeHarness(options: {
       laneKey: laneKey ?? "",
       isFork: !!forkRun,
     };
+    const metadata = input["metadata"];
+    if (metadata && typeof metadata === "object") {
+      const originatedBy = (metadata as Record<string, unknown>)["originatedBy"];
+      if (typeof originatedBy === "string") rec.originatedBy = originatedBy;
+    }
     if (forkRun?.parentThreadId) rec.parentThreadId = forkRun.parentThreadId;
     if (typeof forkRun?.sequence === "number") rec.sequence = forkRun.sequence;
     dispatches.push(rec);
@@ -258,6 +264,58 @@ describe("M136 per-(room,bot) checkpoint serialization", () => {
     mainGate.resolve();
     forkGate.resolve();
     await waitFor(() => h.completed.includes("main") && h.completed.includes("fork"));
+  });
+
+  test("system wake waits for an unreconciled ordinary fork and then runs as main", async () => {
+    const h = makeHarness();
+    const lane = ids(ROOM(), "bot", "user");
+    const source = candidate(Symbol("same-session"));
+    const mainGate = h.gate("main");
+    const forkGate = h.gate("throw-fork");
+
+    await ordinary(h, lane, "main", source);
+    h.fireTimers();
+    await waitFor(() => h.dispatches.some((dispatch) => dispatch.message === "main"));
+
+    await ordinary(h, lane, "throw-fork", source);
+    h.fireTimers();
+    await waitFor(() => h.dispatches.some((dispatch) => dispatch.message === "throw-fork"));
+    expect(h.dispatches.find((dispatch) => dispatch.message === "throw-fork")?.isFork)
+      .toBe(true);
+
+    await h.jm.createSystemForegroundJob(
+      lane.user,
+      lane.user,
+      lane.lane,
+      {
+        ...input("system-wake", lane.thread, lane.user, lane.bot, lane.room),
+        metadata: { originatedBy: "task", taskId: randomUUID() },
+      },
+      h.executor,
+    );
+    expect(h.dispatches.map((dispatch) => dispatch.message))
+      .toEqual(["main", "throw-fork"]);
+
+    mainGate.resolve();
+    const mainJobId = h.dispatches.find((dispatch) => dispatch.message === "main")!.jobId;
+    await waitFor(() => h.statuses.some((status) =>
+      status.jobId === mainJobId && status.status === "completed"
+    ));
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+
+    // A system wake remains at the queue head while the earlier fork is live,
+    // even though the main lock is now free.
+    expect(h.dispatches.map((dispatch) => dispatch.message))
+      .toEqual(["main", "throw-fork"]);
+
+    forkGate.resolve();
+    await waitFor(() => h.failed.includes("throw-fork"));
+    await waitFor(() => h.dispatches.some((dispatch) => dispatch.message === "system-wake"));
+
+    const systemWake = h.dispatches.find((dispatch) => dispatch.message === "system-wake")!;
+    expect(systemWake.isFork).toBe(false);
+    expect(systemWake.originatedBy).toBe("task");
+    await waitFor(() => h.completed.includes("system-wake"));
   });
 
   test("scenario 1 — same user rapid burst on one bot → ONE coalesced turn", async () => {

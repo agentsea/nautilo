@@ -233,7 +233,7 @@ function readArtifactAwareAskPeerRefs(task: Task): ChatArtifactRef[] {
  * it does not select the mode.
  */
 export function resolveToolWhitelist(
-  task: Task,
+  task: Pick<Task, "id" | "toolsMode" | "toolsWhitelist" | "depth">,
   envelope: MemoryAccessEnvelope,
 ): string[] | undefined {
   switch (task.toolsMode) {

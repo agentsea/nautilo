@@ -89,4 +89,73 @@ describe("protected Task transcript port", () => {
     await expectRejection(port.publishBatch(batch), "aborted");
     expect(attempts).toHaveLength(4);
   });
+
+  test("quiesce drains an admitted batch and closes before its queued callback", async () => {
+    let releasePublication: (() => void) | undefined;
+    let publicationStarted: (() => void) | undefined;
+    const started = new Promise<void>(resolve => { publicationStarted = resolve; });
+    const release = new Promise<void>(resolve => { releasePublication = resolve; });
+    const calls: string[] = [];
+    const port = createProtectedTaskTranscriptPort({
+      identity,
+      signal: new AbortController().signal,
+      publish: async ({ payload }) => {
+        calls.push(payload.content);
+        publicationStarted?.();
+        await release;
+      },
+    });
+
+    const batch = port.publishBatch({
+      ...identity,
+      messages: [new AIMessage("private in flight")],
+    });
+    expect(calls).toEqual([]);
+    const closing = port.quiesce();
+    expect(port.quiesce()).toBe(closing);
+    await expectRejection(port.publishBatch({
+      ...identity,
+      messages: [new AIMessage("late private batch")],
+    }), "is closing");
+    await started;
+    let settled = false;
+    void closing.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releasePublication?.();
+    await batch;
+    expect(await closing).toEqual({ failedPublicationCount: 0 });
+    expect(calls).toEqual(["private in flight"]);
+  });
+
+  test("quiesce counts escaped and already-observed publication failures", async () => {
+    for (const timing of ["escaped", "observed"] as const) {
+      const secret = `private-${timing}`;
+      const port = createProtectedTaskTranscriptPort({
+        identity,
+        signal: new AbortController().signal,
+        publish: async () => { throw new Error(secret); },
+      });
+      const failed = port.publishBatch({
+        ...identity,
+        messages: [new ToolMessage({
+          content: secret,
+          tool_call_id: `call-${timing}`,
+        })],
+      });
+      let outcome: Readonly<{ failedPublicationCount: number }>;
+      if (timing === "observed") {
+        await expectRejection(failed, secret);
+        outcome = await port.quiesce();
+      } else {
+        const closing = port.quiesce();
+        await expectRejection(failed, secret);
+        outcome = await closing;
+      }
+      expect(outcome).toEqual({ failedPublicationCount: 1 });
+      expect(Object.keys(outcome)).toEqual(["failedPublicationCount"]);
+      expect(JSON.stringify(outcome)).not.toContain(secret);
+    }
+  });
 });

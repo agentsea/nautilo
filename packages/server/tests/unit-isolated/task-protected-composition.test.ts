@@ -86,8 +86,8 @@ function productDatabaseWithReadRows(
   });
   return {
     $client: client,
-    select(selection: Record<string, unknown>) {
-      selections.push(Object.keys(selection));
+    select(selection?: Record<string, unknown>) {
+      selections.push(selection === undefined ? [] : Object.keys(selection));
       return {
         from() {
           return {
@@ -147,6 +147,77 @@ describe("production protected Task composition", () => {
     await Promise.resolve();
     expect(composition.mode).toBe("protected_task_production");
     expect(cryptoActivity.queries).toBe(0);
+  });
+
+  test("uses canonical selection for creation and pins updates to the durable Namespace", async () => {
+    const namespaceId = "10000000-0000-4000-8000-000000000005";
+    const expectedNamespaces: (string | undefined)[] = [];
+    const composition = createProductionProtectedTaskComposition({
+      db: productDatabaseWithReadRows([[{
+        id: "10000000-0000-4000-8000-000000000004",
+        ownerId: ROUTE_AUTHORITY.userId,
+        requestorId: ROUTE_AUTHORITY.userId,
+        agentId: ROUTE_AUTHORITY.agentId,
+        status: "pending",
+        fireLockId: null,
+        contentRepresentation: "protected",
+        contentNamespaceId: namespaceId,
+        contentRevision: 3,
+        cryptoAccessRevision: 2,
+        cryptoMappingState: "verified",
+        scheduleKind: "now",
+        runAt: null,
+        cron: null,
+        timezone: "UTC",
+        toolsMode: "auto",
+        toolsWhitelist: [],
+        requestedModelId: null,
+        selectionProfile: "balanced",
+        selectionSpec: null,
+      }]], []),
+      restricted: observedRestrictedConnection({ queries: 0 }),
+      crypto: new LatticeCrypto(),
+      serverScope: "https://nautilo.test",
+      owner: bindEncryptionDataOperationOwner({
+        policy: {
+          resolve: () => Promise.resolve({
+            policy: { mode: "encrypted_only", shadowBehavior: "strict" },
+            revalidationToken: 1,
+          }),
+          revalidate: () => Promise.resolve(),
+        },
+      }),
+      observer: { kick() {} },
+      resolveRequesterPrivateRoom: async (_userId, _agentId, expected) => {
+        expectedNamespaces.push(expected);
+        return null;
+      },
+    });
+
+    const createFailure = await composition.ports.plan({
+      authority: ROUTE_AUTHORITY,
+      taskId: null,
+      request: {
+        requestVersion: 1,
+        operation: "create",
+        operationId: "operation-create",
+        task: { scheduleKind: "now" },
+      },
+    }).then(() => null, (error: unknown) => error);
+    expect(createFailure).toBeInstanceOf(ProtectedTaskRouteError);
+
+    const updateFailure = await composition.ports.plan({
+      authority: ROUTE_AUTHORITY,
+      taskId: "10000000-0000-4000-8000-000000000004",
+      request: {
+        requestVersion: 1,
+        operation: "update",
+        operationId: "operation-update",
+        task: {},
+      },
+    }).then(() => null, (error: unknown) => error);
+    expect(updateFailure).toBeInstanceOf(ProtectedTaskRouteError);
+    expect(expectedNamespaces).toEqual([undefined, namespaceId]);
   });
 
   test("holds current device authority until publication mapping completes", async () => {

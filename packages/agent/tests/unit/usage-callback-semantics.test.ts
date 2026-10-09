@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { LLMResult } from "@langchain/core/outputs";
 import {
+  __setProviderCostRecorderForTests,
   __setUsageRecorderForTests,
   createUsageCallbackHandler,
   extractUsageFromLLMResult,
 } from "../../src/usage/usage-callback";
+import type { ProviderCostReceipt, ProviderCostRecorder } from "../../src/usage/provider-cost-recorder";
+import { PROVIDER_TOOL_PRICING_VERSION } from "@nautilo/db";
 import { runWithUsageContext } from "../../src/usage/usage-context";
 import type { RecordUsageInput } from "../../src/usage/record-usage";
 
@@ -58,10 +61,12 @@ describe("usage callback handler semantics (ISSUE-M217 phase 3)", () => {
   beforeEach(() => {
     process.env["NAUTILO_TEST_MODE"] = "stub";
     __setUsageRecorderForTests(null);
+    __setProviderCostRecorderForTests(null);
   });
 
   afterEach(() => {
     __setUsageRecorderForTests(null);
+    __setProviderCostRecorderForTests(null);
     delete process.env["NAUTILO_TEST_MODE"];
   });
 
@@ -97,7 +102,7 @@ describe("usage callback handler semantics (ISSUE-M217 phase 3)", () => {
         callType: "chat",
         userId: "user-1",
         roomId: "room-1",
-        metadata: { turnId: "turn-1" },
+        metadata: { turnId: "turn-1", taskId: "task-1", taskRunId: "run-1", jobId: "job-1" },
       },
       () => {
         invokeHandlerEnd(handler, metadataResult());
@@ -108,6 +113,7 @@ describe("usage callback handler semantics (ISSUE-M217 phase 3)", () => {
     expect(calls.every((c) => c.callType === "chat")).toBe(true);
     expect(calls.every((c) => c.userId === "user-1")).toBe(true);
     expect(calls.every((c) => c.roomId === "room-1")).toBe(true);
+    expect(calls.every((c) => c.taskId === "task-1")).toBe(true);
     expect(calls.every((c) => c.metadata?.["turnId"] === "turn-1")).toBe(true);
   });
 
@@ -297,5 +303,47 @@ describe("usage callback handler semantics (ISSUE-M217 phase 3)", () => {
     expect(() => {
       invokeHandlerEnd(createUsageCallbackHandler("openai:gpt-5.6-sol"), metadataResult());
     }).not.toThrow();
+  });
+
+  it("records native web-search requests once and skips a separate surcharge when actual total cost is inclusive", () => {
+    const receipts: ProviderCostReceipt[] = [];
+    __setProviderCostRecorderForTests(() => (async (receipt) => {
+      receipts.push(receipt);
+    }) as ProviderCostRecorder);
+    const nativeSearch = (cost?: number): LLMResult => ({
+      generations: [[{
+        text: "searched",
+        message: {
+          usage_metadata: { input_tokens: 5, output_tokens: 3 },
+          additional_kwargs: { tool_outputs: [{ type: "web_search_call" }] },
+          response_metadata: {
+            usage: {
+              server_tool_use: { web_search_requests: 1 },
+              ...(cost === undefined ? {} : { cost }),
+            },
+          },
+        },
+      }]],
+    }) as unknown as LLMResult;
+
+    runWithUsageContext({ callType: "web_search", userId: "human-1" }, () => {
+      invokeHandlerEnd(createUsageCallbackHandler("openai:gpt-6.1-sol"), nativeSearch(), "native-run");
+    });
+    expect(receipts).toEqual([{
+      provider: "openai",
+      operation: "native_web_search",
+      receiptId: "native-run:native-web-search",
+      estimatedCostUsd: "0.02000000",
+      evidenceState: "estimated",
+      attemptOutcome: "succeeded",
+      pricingVersion: PROVIDER_TOOL_PRICING_VERSION,
+      measuredUnits: 2,
+      unitType: "request",
+    }]);
+
+    runWithUsageContext({ callType: "web_search", userId: "human-1" }, () => {
+      invokeHandlerEnd(createUsageCallbackHandler("openai:gpt-6.1-sol"), nativeSearch(0.25), "inclusive-run");
+    });
+    expect(receipts).toHaveLength(1);
   });
 });

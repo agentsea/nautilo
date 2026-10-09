@@ -5,6 +5,7 @@ import {
   publicJoinRoutes,
   type PublicJoinRouteOptions,
 } from "../../src/routes/public-join";
+import { routeSkipsTrustPreHandler } from "../../src/trust-bypass-routes";
 
 const INVITE_ID = "11111111-1111-4111-8111-111111111111";
 const USER_ID = "22222222-2222-4222-8222-222222222222";
@@ -16,33 +17,52 @@ function setup(input: {
   session?: string | null;
   open?: boolean;
   inviteActive?: boolean;
+  selectionUnavailable?: boolean;
+  enrollmentUnavailable?: boolean;
+  inviteAuthorityUnavailable?: boolean;
 } = {}) {
   const app = Fastify();
   let selection = { inviteId: input.selected ?? null, revision: 1 };
   let open = input.open ?? true;
   let active = input.inviteActive ?? true;
+  let selectionUnavailable = input.selectionUnavailable ?? false;
+  let enrollmentUnavailable = input.enrollmentUnavailable ?? false;
+  let inviteAuthorityUnavailable = input.inviteAuthorityUnavailable ?? false;
   app.addHook("preHandler", async (request) => {
     request.sessionUserId = input.session === undefined ? USER_ID : input.session;
   });
   const services: NonNullable<PublicJoinRouteOptions["services"]> = {
-    readSelection: async () => selection,
+    readSelection: async () => {
+      if (selectionUnavailable) throw new Error("selection unavailable");
+      return selection;
+    },
     updateSelection: async (inviteId, revision) => {
       if (revision !== selection.revision) return null;
       selection = { inviteId, revision: revision + 1 };
       return selection;
     },
-    eligibleToken: async (id) => active && id === INVITE_ID ? TOKEN : null,
+    eligibleToken: async (id) => {
+      if (inviteAuthorityUnavailable) throw new Error("invite authority unavailable");
+      return active && id === INVITE_ID ? TOKEN : null;
+    },
     hasCapabilities: async () => input.canManage ?? true,
   };
   publicJoinRoutes(app, {
     joinUrl: "https://community.nautilo.ai/join",
-    isEnrollmentOpen: async () => open,
+    isEnrollmentOpen: async () => {
+      if (enrollmentUnavailable) throw new Error("enrollment unavailable");
+      return open;
+    },
     services,
   });
   return {
     app,
     setOpen(value: boolean) { open = value; },
     setActive(value: boolean) { active = value; },
+    setSelection(inviteId: string | null) { selection = { ...selection, inviteId }; },
+    setSelectionUnavailable(value: boolean) { selectionUnavailable = value; },
+    setEnrollmentUnavailable(value: boolean) { enrollmentUnavailable = value; },
+    setInviteAuthorityUnavailable(value: boolean) { inviteAuthorityUnavailable = value; },
   };
 }
 
@@ -84,6 +104,54 @@ describe("public community join route", () => {
     const closed = await instance.app.inject({ method: "GET", url: "/join" });
     expect(closed.statusCode).toBe(302);
     expect(closed.headers.location).toBe("/join/continue");
+    await instance.app.close();
+  });
+
+  test("reports only live public availability without authentication or invite details", async () => {
+    const instance = setup({ selected: INVITE_ID, session: null });
+    expect(routeSkipsTrustPreHandler("/api/public-join")).toBe(true);
+    expect(routeSkipsTrustPreHandler("/api/public-join/details")).toBe(false);
+    expect(routeSkipsTrustPreHandler("/api/public-join?verbose=true")).toBe(false);
+
+    const selected = await instance.app.inject({ method: "GET", url: "/api/public-join" });
+    expect(selected.statusCode).toBe(200);
+    expect(selected.headers["cache-control"]).toBe("no-store");
+    expect(selected.json<{ available: boolean }>()).toEqual({ available: true });
+    expect(Object.keys(selected.json<Record<string, unknown>>())).toEqual(["available"]);
+    expect((await instance.app.inject({ method: "POST", url: "/api/public-join" })).statusCode)
+      .toBe(404);
+
+    instance.setSelection(null);
+    expect((await instance.app.inject({ method: "GET", url: "/api/public-join" })).json<{ available: boolean }>())
+      .toEqual({ available: false });
+    instance.setSelection(INVITE_ID);
+    instance.setActive(false);
+    expect((await instance.app.inject({ method: "GET", url: "/api/public-join" })).json<{ available: boolean }>())
+      .toEqual({ available: false });
+    instance.setActive(true);
+    instance.setOpen(false);
+    expect((await instance.app.inject({ method: "GET", url: "/api/public-join" })).json<{ available: boolean }>())
+      .toEqual({ available: false });
+    await instance.app.close();
+  });
+
+  test("fails public availability closed for every backing authority outage", async () => {
+    const instance = setup({ selected: INVITE_ID, session: null });
+    instance.setSelectionUnavailable(true);
+    expect((await instance.app.inject({ method: "GET", url: "/api/public-join" })).json<{ available: boolean }>())
+      .toEqual({ available: false });
+    instance.setSelectionUnavailable(false);
+    instance.setEnrollmentUnavailable(true);
+    expect((await instance.app.inject({ method: "GET", url: "/api/public-join" })).json<{ available: boolean }>())
+      .toEqual({ available: false });
+    instance.setEnrollmentUnavailable(false);
+    instance.setInviteAuthorityUnavailable(true);
+    expect((await instance.app.inject({ method: "GET", url: "/api/public-join" })).json<{ available: boolean }>())
+      .toEqual({ available: false });
+
+    const navigation = await instance.app.inject({ method: "GET", url: "/join" });
+    expect(navigation.statusCode).toBe(302);
+    expect(navigation.headers.location).toBe("/join/continue");
     await instance.app.close();
   });
 

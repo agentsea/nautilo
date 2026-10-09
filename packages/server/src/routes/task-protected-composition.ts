@@ -77,11 +77,15 @@ import {
   AgentInvocationDeniedError,
   ServerProviderCredentialsDeniedError,
   createAcceptedInvocationAuthority,
-  findAgentOwnerPrivateRoom,
 } from "@nautilo/trust";
 
 import { createHumanProductTransactionContext } from "./human-message-product-store";
 import { importProtectedTaskPublicationV1 } from "./task-protected-publication";
+import { prepareProtectedTaskScope } from "./protected-task-scope-creation";
+import {
+  createProtectedTaskRequesterPrivateRoomResolver,
+  type ProtectedTaskRequesterPrivateRoomResolver,
+} from "./protected-task-requester-private-room";
 import { listProtectedTaskContentV1, toTaskContentSummaryV1 } from "./tasks";
 
 export type ProtectedTaskRouteAuthority = Readonly<{
@@ -243,6 +247,7 @@ type ProductionDependencies = Readonly<{
   owner: EncryptionDataOperationOwner;
   observer: { kick(): void };
   now?: () => number;
+  resolveRequesterPrivateRoom?: ProtectedTaskRequesterPrivateRoomResolver;
 }>;
 
 function canonicalJson(value: unknown): string {
@@ -344,13 +349,6 @@ function validateCreateShape(task: OperationalCreate): void {
       422,
       "nested_task_unsupported",
       "Protected nested Tasks are not supported",
-    );
-  }
-  if (task.useScope === true && task.scopeId == null) {
-    throw new ProtectedTaskRouteError(
-      422,
-      "protected_scope_requires_existing_scope",
-      "Protected scope Tasks require an existing scope",
     );
   }
   validateSelection(task);
@@ -537,6 +535,8 @@ export function createProductionProtectedTaskComposition(
   const cryptoHandle = () =>
     cryptoHandlePromise ??= verifyCryptoPostgresHandle(dependencies.restricted);
   const productConnection = createPostgresJsBridgeConnection(dependencies.db);
+  const resolveRequesterPrivateRoom = dependencies.resolveRequesterPrivateRoom
+    ?? createProtectedTaskRequesterPrivateRoomResolver(dependencies.db);
 
   const readPolicyRevision = async (): Promise<number> => {
     const rows = await dependencies.db.select({
@@ -565,9 +565,10 @@ export function createProductionProtectedTaskComposition(
     bindingHash: Uint8Array;
     keyGeneration: number;
   }> | null> => {
-    const privateRoom = await findAgentOwnerPrivateRoom(
+    const privateRoom = await resolveRequesterPrivateRoom(
       authority.userId,
       authority.agentId,
+      expectedNamespaceId,
     );
     if (privateRoom === null || (expectedNamespaceId !== undefined
       && privateRoom.namespaceId !== expectedNamespaceId)) return null;
@@ -849,6 +850,14 @@ export function createProductionProtectedTaskComposition(
     try {
       return await dependencies.db.transaction(async (transaction) => {
         const transactionDb = transaction as unknown as DirectDatabase;
+        const scopeId = task.useScope === true
+          ? await prepareProtectedTaskScope(transaction, {
+              taskId,
+              requesterUserId: authority.userId,
+              agentId: authority.agentId,
+              scopeId: task.scopeId ?? null,
+            })
+          : task.scopeId;
         await runtimeCreateTask({
           db: transactionDb,
           observer: { kick() {} },
@@ -858,7 +867,10 @@ export function createProductionProtectedTaskComposition(
             requestedParentTaskId: null,
           }),
           admission: getPlaintextTaskCreationAdmission(),
-        }, taskCreateInput(authority, taskId, task, payload));
+        }, taskCreateInput(authority, taskId, {
+          ...task,
+          ...(scopeId == null ? {} : { scopeId }),
+        }, payload));
         const created = await getTaskByIdWithMutationVersion(transactionDb, taskId);
         if (created === undefined) {
           throw new Error("Protected Task product disappeared");

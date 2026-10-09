@@ -1,3 +1,4 @@
+import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { log } from "@nautilo/logger";
 import { z } from "zod";
@@ -131,7 +132,7 @@ export function createInBackgroundTool(context?: unknown) {
             : { selectionProfile: args.model_selection }),
         });
       const personalOnlyCreate = exactPersonalOnlyCreate || resolvedPersonalOnlyCreate;
-      const callerFundedToolFree = personalTaskControls || personalOnlyCreate;
+      const callerFundedToolFree = !getCapabilityFundingSession() && (personalTaskControls || personalOnlyCreate);
       if (callerFundedToolFree && ctx.currentTaskId) {
         return "Personal background Tasks can only be created from the foreground parent chat.";
       }

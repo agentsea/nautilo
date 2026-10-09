@@ -312,6 +312,38 @@ function isFixtureZombie(pid: number, processStat: string): boolean {
     const matched = /^([1-9][0-9]*) \([^\n]*\) Z [0-9]+ [0-9]+ [0-9]+ (?:-?[0-9]+(?: |\n|$))+$/.exec(processStat);
     return matched?.[1] === String(pid);
 }
+function observeFixtureChild(pid: number): { absent: boolean; zombie: boolean; processStat?: string } {
+    let absent = false;
+    try {
+        process.kill(pid, 0);
+    }
+    catch (error) {
+        absent = (error as NodeJS.ErrnoException).code === "ESRCH";
+    }
+    let zombie = false;
+    let processStat: string | undefined;
+    if (!absent && process.platform === "linux") {
+        try {
+            processStat = readFileSync(`/proc/${pid}/stat`, "utf8");
+            zombie = isFixtureZombie(pid, processStat);
+        }
+        catch {
+            // The child may be reaped between the two observations. Require
+            // ESRCH rather than treating a failed read as proof.
+            try { process.kill(pid, 0); }
+            catch (error) { absent = (error as NodeJS.ErrnoException).code === "ESRCH"; }
+        }
+    }
+    return { absent, zombie, processStat };
+}
+async function eventuallySettledFixtureChild(pid: number, initial: ReturnType<typeof observeFixtureChild>): Promise<ReturnType<typeof observeFixtureChild>> {
+    let observation = initial;
+    for (let attempt = 0; attempt < 50 && !observation.absent && !observation.zombie; attempt++) {
+        await Bun.sleep(10);
+        observation = observeFixtureChild(pid);
+    }
+    return observation;
+}
 function stopFixtureChild(pid: number | undefined, program: string): boolean {
     if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 1) return false;
     const inspected = spawnSync("/bin/ps", ["-p", String(pid), "-o", "command="], {
@@ -370,40 +402,33 @@ for (const termination of ["abort", "timeout", "leader-exit"] as const)
                 abort.abort();
             expect(await pending).toEqual({ outcome: "rejected", sent: false });
             expect(credentials).toBe(0);
-            let absent = false;
-            try {
-                process.kill(childPid, 0);
+            // Snapshot the production cleanup decision at the return boundary.
+            // A later kernel observation must never upgrade this authority.
+            const retainedAtReturn = readdirSync(f.storage);
+            expect(retainedAtReturn.length).toBeLessThanOrEqual(1);
+            for (const name of retainedAtReturn) {
+                expect(name.startsWith("github-git-")).toBe(true);
+                const info = lstatSync(join(f.storage, name));
+                expect(info.isDirectory() && !info.isSymbolicLink()).toBe(true);
+                expect(info.mode & 0o077).toBe(0);
             }
-            catch (error) {
-                absent = (error as NodeJS.ErrnoException).code === "ESRCH";
-            }
-            let zombie = false;
-            let processStat: string | undefined;
-            if (!absent && process.platform === "linux") {
-                try {
-                    processStat = readFileSync(`/proc/${childPid}/stat`, "utf8");
-                    zombie = isFixtureZombie(childPid, processStat);
-                }
-                catch {
-                    // The child may be reaped between the two observations.
-                    // Require ESRCH rather than treating a failed read as proof.
-                    try { process.kill(childPid, 0); }
-                    catch (error) { absent = (error as NodeJS.ErrnoException).code === "ESRCH"; }
-                }
-            }
+            const initial = observeFixtureChild(childPid);
+            if (!initial.absent && !initial.zombie)
+                expect(retainedAtReturn).toHaveLength(1);
+            const { absent, zombie, processStat } = await eventuallySettledFixtureChild(childPid, initial);
             if (!absent && !zombie) {
                 // Report only this synthetic child's numeric kernel coordinates,
                 // never its command line, environment, or fixture filesystem path.
                 const fields = /^([1-9][0-9]*) \([^\n]*\) ([A-Za-z]) ([0-9]+) ([0-9]+) ([0-9]+) /.exec(processStat ?? "");
-                const scratchCount = readdirSync(f.storage).length;
                 console.error("Fixture child cleanup observation", {
                     platform: process.platform, termination, childPid,
                     observedPid: fields?.[1] ?? null, state: fields?.[2] ?? null,
                     parentPid: fields?.[3] ?? null, processGroup: fields?.[4] ?? null,
-                    sessionId: fields?.[5] ?? null, absent, zombie, credentials, scratchCount,
+                    sessionId: fields?.[5] ?? null, absent, zombie, credentials,
+                    scratchCountAtReturn: retainedAtReturn.length,
                     // The private executor result is not exposed here. Removal
                     // is observable only after its cleanupConfirmed guard wins.
-                    cleanupConfirmedByScratchRemoval: scratchCount === 0,
+                    cleanupConfirmedAtReturnByScratchRemoval: retainedAtReturn.length === 0,
                 });
             }
             expect({ absent, zombie }).not.toEqual({ absent: false, zombie: false });
@@ -412,15 +437,7 @@ for (const termination of ["abort", "timeout", "leader-exit"] as const)
             // A later child absence probe cannot upgrade an inconclusive
             // close-boundary group probe. Either proven cleanup or protected
             // retained scratch is truthful; never force removal from this test.
-            const retained = readdirSync(f.storage);
-            expect(retained.length).toBeLessThanOrEqual(1);
-            if (zombie) expect(retained.length).toBe(1);
-            for (const name of retained) {
-                expect(name.startsWith("github-git-")).toBe(true);
-                const info = lstatSync(join(f.storage, name));
-                expect(info.isDirectory() && !info.isSymbolicLink()).toBe(true);
-                expect(info.mode & 0o077).toBe(0);
-            }
+            if (zombie) expect(retainedAtReturn).toHaveLength(1);
         }
         finally {
             observer.close();

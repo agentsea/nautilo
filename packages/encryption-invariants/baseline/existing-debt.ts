@@ -189,6 +189,9 @@ import {
 import { REVIEWED_M321_COVERAGE_ENTRIES } from "./reviewed-m321-coverage";
 import { REVIEWED_M322_COVERAGE_ENTRIES } from "./reviewed-m322-coverage";
 import {
+  REVIEWED_PUBLIC_JOIN_AVAILABILITY_COVERAGE,
+} from "./reviewed-public-join-availability";
+import {
   REVIEWED_LANDING_COVERAGE_ENTRIES, REVIEWED_LANDING_DEBT_LINKS,
   RETIRED_LANDING_FROZEN_DEBT, RETIRED_LANDING_RAW_LOCATORS,
 } from "./reviewed-main-2026-09-05-landing-coverage";
@@ -208,6 +211,9 @@ import {
   REVIEWED_MAIN_2026_09_09_PLATFORM_COVERAGE_ENTRIES,
   REVIEWED_MAIN_2026_09_09_PLATFORM_DEBT_LINKS,
 } from "./reviewed-main-2026-09-09-platform-coverage";
+import {
+  REVIEWED_TASK_EXECUTION_EVIDENCE_COVERAGE_ENTRIES,
+} from "./reviewed-task-execution-evidence-coverage";
 
 type BaselineManifestEntry = readonly [
   id: string,
@@ -1832,6 +1838,8 @@ export const BASELINE_REGISTRY: CoverageRegistry = {
     ...REVIEWED_MAIN_2026_09_12_DATABASE_COVERAGE_ENTRIES,
     ...REVIEWED_MAIN_2026_09_12_WIRE_COVERAGE_ENTRIES,
     ...REVIEWED_MAIN_2026_09_17_COVERAGE,
+    ...REVIEWED_PUBLIC_JOIN_AVAILABILITY_COVERAGE,
+    ...REVIEWED_TASK_EXECUTION_EVIDENCE_COVERAGE_ENTRIES,
   ].filter((entry) =>
     !RETIRED_MAIN_2026_08_20_DATABASE_WRITER_LOCATORS.has(entry.locator)
     && !RETIRED_MAIN_2026_08_21_RAW_DATABASE_WRITER_LOCATORS.has(entry.locator)
