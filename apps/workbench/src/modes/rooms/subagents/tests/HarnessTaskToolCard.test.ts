@@ -9,6 +9,7 @@ import {
   nativeTaskResumeDisabled,
   nativeTaskFundingState,
   parseHarnessTaskResult,
+  selectedProtectedTaskRunId,
   settleHarnessActivity,
   shouldMarkNativeTaskCancelled,
   startTaskDetailRefresh,
@@ -298,6 +299,42 @@ describe("nativeTaskFundingState", () => {
     expect(taskActionScopeToken("server-a|viewer-1", "task-1")).toBe(current);
     expect(taskActionScopeToken("server-a|viewer-1", "task-2")).not.toBe(current);
     expect(taskActionScopeToken("server-a|viewer-2", "task-1")).not.toBe(current);
+  });
+
+  test("uses exact live or selected protected run identities without inferring a latest run", () => {
+    const storedRuns = [
+      { id: "run-1", status: "completed", modelId: null, startedAt: null,
+        completedAt: null, content: { dtoVersion: 1 as const,
+          status: "unavailable" as const, reason: "unsupported_client" as const } },
+      { id: "run-2", status: "completed", modelId: null, startedAt: null,
+        completedAt: null, content: { dtoVersion: 1 as const,
+          status: "unavailable" as const, reason: "unsupported_client" as const } },
+    ];
+    expect(selectedProtectedTaskRunId({
+      liveTaskRunId: "run-live",
+      selectedTaskRunId: "run-1",
+      storedRuns,
+    })).toBe("run-1");
+    expect(selectedProtectedTaskRunId({
+      liveTaskRunId: "run-live",
+      selectedTaskRunId: "foreign-run",
+      storedRuns,
+    })).toBe("run-live");
+    expect(selectedProtectedTaskRunId({
+      liveTaskRunId: null,
+      selectedTaskRunId: "run-1",
+      storedRuns,
+    })).toBe("run-1");
+    expect(selectedProtectedTaskRunId({
+      liveTaskRunId: null,
+      selectedTaskRunId: null,
+      storedRuns,
+    })).toBeNull();
+    expect(selectedProtectedTaskRunId({
+      liveTaskRunId: null,
+      selectedTaskRunId: null,
+      storedRuns: [storedRuns[0]!],
+    })).toBe("run-1");
   });
 
   test("lets refreshed durable native status override a stale live summary", () => {

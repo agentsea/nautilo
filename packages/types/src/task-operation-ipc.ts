@@ -23,6 +23,26 @@ export type TaskOperationPayloadV1 = Readonly<{
   protectedMetadata: TaskProtectedMetadataContentV1;
 }>;
 
+/** Platform-neutral projection of the canonical protected TaskRun result. */
+export type TaskOperationRunResultReadV1 =
+  | Readonly<{
+      status: "ready";
+      payload: Readonly<{
+        formatVersion: 1;
+        resultText: string | null;
+        lastError: string | null;
+      }>;
+    }>
+  | Readonly<{ status: "waiting"; reason: "result_not_mapped" }>
+  | Readonly<{
+      status: "unavailable";
+      reason:
+        | "result_not_protected"
+        | "authority_changed"
+        | "unsupported_crypto_access_revision"
+        | "integrity_failure";
+    }>;
+
 export type TaskOperationRequestV1 =
   | Readonly<{
       version: 1;
@@ -33,6 +53,13 @@ export type TaskOperationRequestV1 =
       version: 1;
       operation: "open";
       task: TaskContentSummaryV1;
+    }>
+  | Readonly<{
+      version: 1;
+      operation: "open_result";
+      taskId: string;
+      taskRunId: string;
+      agentId: string;
     }>
   | Readonly<{
       version: 1;
@@ -64,5 +91,11 @@ export type TaskOperationResponseV1 =
   | Readonly<{ version: 1; status: "unavailable"; reason: "unsupported_client" }>
   | Readonly<{ version: 1; status: "ready"; operation: "list"; data: TaskContentListV1 }>
   | Readonly<{ version: 1; status: "ready"; operation: "open"; data: TaskOperationOpenedDefinitionV1 }>
+  | Readonly<{
+      version: 1;
+      status: "ready";
+      operation: "open_result";
+      data: TaskOperationRunResultReadV1;
+    }>
   | Readonly<{ version: 1; status: "ready"; operation: "create"; data: TaskCreateResponse }>
   | Readonly<{ version: 1; status: "ready"; operation: "update"; data: TaskContentSummaryV1 }>;

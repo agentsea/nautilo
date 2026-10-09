@@ -1342,11 +1342,13 @@ export function createVaultAuthorizedHumanMemoryDeviceContentPort(
       coordinates: dependencies.coordinates,
       evidence: generalEvidence,
       resolveTrustedIssuingDevicePublicKey: ({
+        humanId,
         deviceId,
         hostAuthorizationRevision,
       }) => {
         const matches = issuerEvidence.filter((entry) =>
-          entry.deviceId === deviceId
+          entry.subjectHumanId === humanId
+          && entry.deviceId === deviceId
           && entry.hostAuthorizationRevision === hostAuthorizationRevision
         );
         if (matches.length !== 1) return Promise.resolve(null);

@@ -40,7 +40,7 @@ import type {
 
 export type VaultHumanTaskRunResultReaderInputV1 =
   VaultHumanTaskDeviceContentInputV1 & Readonly<{
-    resolveTrustedIssuingDevicePublicKey:
+    resolveTrustedIssuingDevicePublicKey?:
       ResolveTrustedObjectAccessEvidenceIssuerV4;
     createStageId(): string;
   }>;
@@ -189,8 +189,10 @@ export function createVaultHumanTaskRunResultReaderV1(
             vault: dependencies.vault,
             coordinates: dependencies.coordinates,
             evidence: [envelope.signerEvidence[0]],
-            resolveTrustedIssuingDevicePublicKey:
-              dependencies.resolveTrustedIssuingDevicePublicKey,
+            ...(dependencies.resolveTrustedIssuingDevicePublicKey === undefined ? {} : {
+              resolveTrustedIssuingDevicePublicKey:
+                dependencies.resolveTrustedIssuingDevicePublicKey,
+            }),
             createStageId: dependencies.createStageId,
           });
         } catch (cause) {

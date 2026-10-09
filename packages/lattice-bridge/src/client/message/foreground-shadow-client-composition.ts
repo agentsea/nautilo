@@ -103,6 +103,7 @@ import {
 } from "../memory/vault-human-memory-device-content.ts";
 import {
   createAuthorizedHumanTaskRunResultReaderV1,
+  type HumanTaskRunResultReadV1,
 } from "../task/authorized-human-task-run-result.ts";
 import {
   createVaultHumanTaskRunResultReaderV1,
@@ -937,11 +938,11 @@ export type ForegroundHumanTaskClientInput = Readonly<{
 
 export type ForegroundHumanTaskRunResultReaderInput =
   ForegroundHumanTaskClientInput & Readonly<{
-    resolveTrustedIssuingDevicePublicKey:
+    resolveTrustedIssuingDevicePublicKey?:
       ResolveTrustedObjectAccessEvidenceIssuerV4;
   }>;
 
-/** Shared protected-only result read composition; live Task policy is separate. */
+/** Shared protected-only result read composition under the live Task policy. */
 export function createForegroundHumanTaskRunResultReader(
   platform: ForegroundShadowClientPlatform,
   input: ForegroundHumanTaskRunResultReaderInput,
@@ -951,7 +952,7 @@ export function createForegroundHumanTaskRunResultReader(
   const vault = platform.createProfileVault();
   const createStageId = input.createIdempotencyKey
     ?? (() => platform.createId());
-  return createAuthorizedHumanTaskRunResultReaderV1({
+  const exactReader = createAuthorizedHumanTaskRunResultReaderV1({
     api: input.api,
     device: createVaultHumanTaskRunResultReaderV1({
       crypto,
@@ -960,8 +961,10 @@ export function createForegroundHumanTaskRunResultReader(
       subjectHumanId: input.humanActorId,
       now: input.now ?? Date.now,
       resolveDeviceAdmissionStatus: input.resolveDeviceAdmissionStatus,
-      resolveTrustedIssuingDevicePublicKey:
-        input.resolveTrustedIssuingDevicePublicKey,
+      ...(input.resolveTrustedIssuingDevicePublicKey === undefined ? {} : {
+        resolveTrustedIssuingDevicePublicKey:
+          input.resolveTrustedIssuingDevicePublicKey,
+      }),
       createStageId,
       accessAnchors: createClientProfileObjectAccessAnchorPortV4({
         crypto,
@@ -970,6 +973,25 @@ export function createForegroundHumanTaskRunResultReader(
         createStageId,
       }),
     }),
+  });
+  return Object.freeze({
+    async read(
+      request: Parameters<typeof exactReader.read>[0],
+    ): Promise<HumanTaskRunResultReadV1> {
+      const opened = await input.dataOperationOwner.read<
+        never,
+        HumanTaskRunResultReadV1,
+        HumanTaskRunResultReadV1
+      >({
+        protected: () => exactReader.read(request),
+        consumeOrdinary: (value) => value,
+        consumeProtected: (value) => value,
+        // TaskRun results have no ordinary representation at this boundary.
+        // Keep every protected failure ineligible for transition fallback.
+        classifyFailure: () => "unsupported",
+      });
+      return opened.value;
+    },
   });
 }
 

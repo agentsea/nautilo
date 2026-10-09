@@ -114,11 +114,51 @@ async function fixture() {
   return {
     crypto,
     v2Bytes,
+    deviceSigning,
     manager,
+    publication: initialized.signerPublication,
     publicationBytes: encodeAgentRuntimeSignerPublicationV1(
       initialized.signerPublication,
     ),
   };
+}
+
+async function createAgentPublicationForIssuer(input: Readonly<{
+  crypto: LatticeCrypto;
+  manager: Readonly<{ privateKey: Uint8Array; publicKey: Uint8Array }>;
+  managerHumanId: string;
+  managerDeviceId: string;
+  managerAuthorizationRevision: number;
+  suffix: string;
+}>) {
+  const initialized = await prepareAgentRuntimeInitialization({
+    crypto: input.crypto,
+    operationId: `operation-profile-v4-${input.suffix}`,
+    agentId: agentId(`agent-profile-v4-${input.suffix}`),
+    authorizationRevision: authorizationRevision(4),
+    configObjects: [{
+      objectId: objectId(`config-profile-v4-${input.suffix}`),
+      configRevision: authorizationRevision(1),
+      plaintextDek: new Uint8Array(32).fill(0x62),
+    }],
+    domains: [],
+    resolveCurrentDomainCommitterAuthority: () => null,
+    manager: {
+      managerHumanId: humanId(input.managerHumanId),
+      managerAuthorizationRevision: authorizationRevision(
+        input.managerAuthorizationRevision,
+      ),
+      managerDeviceId: cryptoDeviceId(input.managerDeviceId),
+    },
+    managerSigningPrivateKey: input.manager.privateKey,
+    resolveCurrentManagerAuthority: () => input.manager.publicKey,
+  });
+  return Object.freeze({
+    publication: initialized.signerPublication,
+    publicationBytes: encodeAgentRuntimeSignerPublicationV1(
+      initialized.signerPublication,
+    ),
+  });
 }
 
 describe("client profile v4 signer evidence", () => {
@@ -343,11 +383,13 @@ describe("client profile v4 signer evidence", () => {
         evidenceBytesBase64url,
       }],
       resolveTrustedIssuingDevicePublicKey: ({
+        humanId,
         deviceId,
         hostAuthorizationRevision,
         trustedDeviceRevision,
       }) => Promise.resolve(
-        deviceId === "device-profile-v4-manager"
+        humanId === "human-profile-v4-manager"
+          && deviceId === "device-profile-v4-manager"
           && hostAuthorizationRevision === 4
           && trustedDeviceRevision === 2
           ? state.manager.publicKey.slice()
@@ -369,6 +411,332 @@ describe("client profile v4 signer evidence", () => {
     await ingest();
     expect((await vault.listPublicProfiles())[0]?.generation).toBe(2);
 
+    state.publicationBytes.fill(0);
+    state.v2Bytes.fill(0);
+  });
+
+  test("ingests a cross-Human issuer from retained shared-Domain trust", async () => {
+    const state = await fixture();
+    const profile = await createClientDeviceProfileV4Candidate({
+      crypto: state.crypto,
+      currentProfileBytes: state.v2Bytes,
+      expectedDeviceId: DEVICE,
+    });
+    const devices = Object.freeze([{
+      humanId: COORDINATES.humanActorId,
+      deviceId: DEVICE,
+      deviceGeneration: 1,
+      signingPublicKey: profile.baseProfile.baseProfile.signingPublicKey,
+    }, {
+      humanId: "human-profile-v4-manager",
+      deviceId: "device-profile-v4-manager",
+      deviceGeneration: 1,
+      signingPublicKey: state.manager.publicKey,
+    }]);
+    const accepted = createSharedHumanDomainTrustAcceptanceV1({
+      crypto: state.crypto,
+      domainId: "domain-profile-v4-ingest-shared",
+      domainEpoch: 1,
+      participantDigest: new Uint8Array(32).fill(0x34),
+      targetSubmissionDigest: new Uint8Array(32).fill(0x35),
+      devices,
+      acceptedByHumanId: COORDINATES.humanActorId,
+      acceptedByDeviceId: DEVICE,
+      acceptedAt: 5_000,
+      acceptingSigningPrivateKey:
+        profile.baseProfile.baseProfile.signingPrivateKey,
+    });
+    const acceptanceBytes = encodeSharedHumanDomainTrustAcceptanceV1(
+      accepted.acceptance,
+    );
+    const retained = await addClientSharedHumanDomainSignerEvidenceV4({
+      crypto: state.crypto,
+      profile,
+      acceptanceBytes,
+      devices,
+    });
+    const vault = new MemoryClientProfileVault();
+    await vault.unlock();
+    await stageAndActivateClientDeviceProfileV4({
+      crypto: state.crypto,
+      vault,
+      coordinates: COORDINATES,
+      stageId: "profile-v4-shared-ingest-base",
+      generation: 1,
+      publicState: {
+        clientKind: "browser",
+        publicFingerprint: "ad".repeat(32),
+      },
+      candidate: retained,
+    });
+    let externalCalls = 0;
+    const ingest = () => ingestObjectAccessSignerEvidenceV4({
+      crypto: state.crypto,
+      vault,
+      coordinates: COORDINATES,
+      evidence: [{
+        kind: "agent_runtime_publication",
+        evidenceBytesBase64url: Buffer.from(state.publicationBytes)
+          .toString("base64url"),
+      }],
+      resolveTrustedIssuingDevicePublicKey: () => {
+        externalCalls += 1;
+        return Promise.resolve(null);
+      },
+      createStageId: () => "profile-v4-shared-ingest-next",
+    });
+    await ingest();
+    expect(externalCalls).toBe(0);
+    expect((await vault.listPublicProfiles())[0]?.generation).toBe(2);
+    await vault.withOpenProfile(COORDINATES, async (profileBytes) => {
+      const reopened = await authenticateClientDeviceProfileV4({
+        crypto: state.crypto,
+        profileBytes,
+        expectedDeviceId: DEVICE,
+      });
+      const resolved = withClientObjectAccessSignerResolversV4({
+        crypto: state.crypto,
+        profile: reopened,
+        operation: (resolvers) =>
+          resolvers.resolveAgentRuntimeSignerPublicKey({
+            kind: "agent_runtime",
+            agentId: state.publication.agentId,
+            runtimeGeneration: state.publication.runtimeGeneration,
+            signerKeyId: state.publication.signerKeyId,
+          })?.slice() ?? null,
+      });
+      expect(resolved === null ? null : Array.from(resolved)).toEqual(
+        Array.from(state.publication.signerPublicKey),
+      );
+      resolved?.fill(0);
+      destroyOpenedClientDeviceProfileV4(reopened);
+    });
+    await ingest();
+    expect((await vault.listPublicProfiles())[0]?.generation).toBe(2);
+
+    const swapped = await createAgentPublicationForIssuer({
+      crypto: state.crypto,
+      manager: state.manager,
+      managerHumanId: "human-profile-v4-manager",
+      managerDeviceId: "device-profile-v4-manager-swapped",
+      managerAuthorizationRevision: 4,
+      suffix: "swapped-device",
+    });
+    expect(ingestObjectAccessSignerEvidenceV4({
+      crypto: state.crypto,
+      vault,
+      coordinates: COORDINATES,
+      evidence: [{
+        kind: "agent_runtime_publication",
+        evidenceBytesBase64url: Buffer.from(swapped.publicationBytes)
+          .toString("base64url"),
+      }],
+      createStageId: () => "profile-v4-shared-ingest-swapped",
+    })).rejects.toThrow("issuer is not trusted");
+
+    const collidingManager = state.crypto.generateSigningKeyPair();
+    const collidingDevices = Object.freeze([devices[0]!, {
+      ...devices[1]!,
+      signingPublicKey: collidingManager.publicKey,
+    }]);
+    const collidingAcceptance = createSharedHumanDomainTrustAcceptanceV1({
+      crypto: state.crypto,
+      domainId: "domain-profile-v4-ingest-collision",
+      domainEpoch: 1,
+      participantDigest: new Uint8Array(32).fill(0x36),
+      targetSubmissionDigest: new Uint8Array(32).fill(0x37),
+      devices: collidingDevices,
+      acceptedByHumanId: COORDINATES.humanActorId,
+      acceptedByDeviceId: DEVICE,
+      acceptedAt: 5_001,
+      acceptingSigningPrivateKey:
+        profile.baseProfile.baseProfile.signingPrivateKey,
+    });
+    const collidingBytes = encodeSharedHumanDomainTrustAcceptanceV1(
+      collidingAcceptance.acceptance,
+    );
+    const collided = await addClientSharedHumanDomainSignerEvidenceV4({
+      crypto: state.crypto,
+      profile: retained,
+      acceptanceBytes: collidingBytes,
+      devices: collidingDevices,
+    });
+    const collisionVault = new MemoryClientProfileVault();
+    await collisionVault.unlock();
+    await stageAndActivateClientDeviceProfileV4({
+      crypto: state.crypto,
+      vault: collisionVault,
+      coordinates: COORDINATES,
+      stageId: "profile-v4-shared-ingest-collision-base",
+      generation: 1,
+      publicState: {
+        clientKind: "browser",
+        publicFingerprint: "af".repeat(32),
+      },
+      candidate: collided,
+    });
+    expect(ingestObjectAccessSignerEvidenceV4({
+      crypto: state.crypto,
+      vault: collisionVault,
+      coordinates: COORDINATES,
+      evidence: [{
+        kind: "agent_runtime_publication",
+        evidenceBytesBase64url: Buffer.from(state.publicationBytes)
+          .toString("base64url"),
+      }],
+      createStageId: () => "profile-v4-shared-ingest-collision",
+    })).rejects.toThrow("Human device signer evidence collided");
+
+    collidingBytes.fill(0);
+    swapped.publicationBytes.fill(0);
+    acceptanceBytes.fill(0);
+    destroyOpenedClientDeviceProfileV4(collided);
+    destroyOpenedClientDeviceProfileV4(retained);
+    destroyOpenedClientDeviceProfileV4(profile);
+    state.publicationBytes.fill(0);
+    state.v2Bytes.fill(0);
+  });
+
+  test("ingests a same-Human transferred device without bypassing self trust", async () => {
+    const state = await fixture();
+    const profile = await createClientDeviceProfileV4Candidate({
+      crypto: state.crypto,
+      currentProfileBytes: state.v2Bytes,
+      expectedDeviceId: DEVICE,
+    });
+    const targetEncryption = await state.crypto.generateEncryptionKeyPair();
+    const signingDigest = state.crypto.hash(state.manager.publicKey);
+    const encryptionDigest = state.crypto.hash(targetEncryption.publicKey);
+    const inventoryDigest = new Uint8Array(32).fill(0x38);
+    const unsigned: DeviceTransferApprovalV2 = {
+      formatVersion: 2,
+      humanId: humanId(COORDINATES.humanActorId),
+      targetDeviceId: cryptoDeviceId("device-profile-v4-manager"),
+      pendingDeviceRevision: pendingDeviceRevisionV2(0),
+      encryptionPublicKeyDigest: encryptionDigest,
+      signingPublicKeyDigest: signingDigest,
+      issuerDeviceId: cryptoDeviceId(DEVICE),
+      createdAt: unixTimestamp(11_000),
+      inventoryRevision: deviceTransferInventoryRevisionV2(0),
+      inventoryCount: 0,
+      inventoryDigest,
+      packages: [],
+      joinIntents: [],
+      signature: new Uint8Array(64),
+    };
+    const approvalBytes = serializeDeviceTransferApprovalV2({
+      ...unsigned,
+      signature: state.crypto.sign(
+        profile.baseProfile.baseProfile.signingPrivateKey,
+        deviceTransferApprovalSigningBytesV2(unsigned),
+      ),
+    });
+    const retained = await addClientHumanDeviceTransferSignerEvidenceV4({
+      crypto: state.crypto,
+      profile,
+      approvalBytes,
+      targetSigningPublicKey: state.manager.publicKey,
+      issuerSigningPublicKey:
+        profile.baseProfile.baseProfile.signingPublicKey,
+    });
+    const forgedIssuer = profile.baseProfile.baseProfile.signingPublicKey.slice();
+    forgedIssuer[0] = forgedIssuer[0]! ^ 1;
+    expect(addClientHumanDeviceTransferSignerEvidenceV4({
+      crypto: state.crypto,
+      profile,
+      approvalBytes,
+      targetSigningPublicKey: state.manager.publicKey,
+      issuerSigningPublicKey: forgedIssuer,
+    })).rejects.toThrow("not authentic");
+
+    const publication = await createAgentPublicationForIssuer({
+      crypto: state.crypto,
+      manager: state.manager,
+      managerHumanId: COORDINATES.humanActorId,
+      managerDeviceId: "device-profile-v4-manager",
+      managerAuthorizationRevision: 4,
+      suffix: "same-human-transfer",
+    });
+    const vault = new MemoryClientProfileVault();
+    await vault.unlock();
+    await stageAndActivateClientDeviceProfileV4({
+      crypto: state.crypto,
+      vault,
+      coordinates: COORDINATES,
+      stageId: "profile-v4-transfer-ingest-base",
+      generation: 1,
+      publicState: {
+        clientKind: "electron",
+        publicFingerprint: "ae".repeat(32),
+      },
+      candidate: retained,
+    });
+    await ingestObjectAccessSignerEvidenceV4({
+      crypto: state.crypto,
+      vault,
+      coordinates: COORDINATES,
+      evidence: [{
+        kind: "agent_runtime_publication",
+        evidenceBytesBase64url: Buffer.from(publication.publicationBytes)
+          .toString("base64url"),
+      }],
+      createStageId: () => "profile-v4-transfer-ingest-next",
+    });
+    expect((await vault.listPublicProfiles())[0]?.generation).toBe(2);
+
+    const selfAboveTrustedRevision = await createAgentPublicationForIssuer({
+      crypto: state.crypto,
+      manager: state.deviceSigning,
+      managerHumanId: COORDINATES.humanActorId,
+      managerDeviceId: DEVICE,
+      managerAuthorizationRevision: 4,
+      suffix: "self-above-trusted-revision",
+    });
+    expect(ingestObjectAccessSignerEvidenceV4({
+      crypto: state.crypto,
+      vault,
+      coordinates: COORDINATES,
+      evidence: [{
+        kind: "agent_runtime_publication",
+        evidenceBytesBase64url: Buffer.from(
+          selfAboveTrustedRevision.publicationBytes,
+        ).toString("base64url"),
+      }],
+      createStageId: () => "profile-v4-transfer-self-stale",
+    })).rejects.toThrow("issuer is not trusted");
+
+    const swappedSelfHuman = await createAgentPublicationForIssuer({
+      crypto: state.crypto,
+      manager: state.deviceSigning,
+      managerHumanId: "human-profile-v4-swapped",
+      managerDeviceId: DEVICE,
+      managerAuthorizationRevision: 3,
+      suffix: "self-swapped-human",
+    });
+    expect(ingestObjectAccessSignerEvidenceV4({
+      crypto: state.crypto,
+      vault,
+      coordinates: COORDINATES,
+      evidence: [{
+        kind: "agent_runtime_publication",
+        evidenceBytesBase64url: Buffer.from(swappedSelfHuman.publicationBytes)
+          .toString("base64url"),
+      }],
+      createStageId: () => "profile-v4-transfer-self-swapped",
+    })).rejects.toThrow("issuer is not trusted");
+
+    swappedSelfHuman.publicationBytes.fill(0);
+    selfAboveTrustedRevision.publicationBytes.fill(0);
+    publication.publicationBytes.fill(0);
+    forgedIssuer.fill(0);
+    approvalBytes.fill(0);
+    signingDigest.fill(0);
+    encryptionDigest.fill(0);
+    inventoryDigest.fill(0);
+    targetEncryption.privateKey.fill(0);
+    targetEncryption.publicKey.fill(0);
+    destroyOpenedClientDeviceProfileV4(retained);
+    destroyOpenedClientDeviceProfileV4(profile);
     state.publicationBytes.fill(0);
     state.v2Bytes.fill(0);
   });

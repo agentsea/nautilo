@@ -1,4 +1,7 @@
-import { createBrowserHumanTaskClient } from
+import {
+  createBrowserHumanTaskClient,
+  createBrowserHumanTaskRunResultReader,
+} from
   "@nautilo/lattice-bridge/client/browser";
 import {
   ClassifiedDataOperationError,
@@ -8,8 +11,10 @@ import type {
   ListTasksQuery,
   TaskContentSummaryV1,
   TaskDetail,
+  TaskOperationRunResultReadV1,
   TaskOperationalCreateV1,
   TaskOperationalUpdateV1,
+  TaskRunSummaryV1,
 } from "@nautilo/types";
 import type { TaskPayloadV1 } from "@nautilo/lattice-bridge";
 import { apiClient } from "./api";
@@ -32,6 +37,11 @@ export interface WorkbenchProtectedHumanTaskController {
     payload: TaskPayloadV1;
     task: TaskOperationalUpdateV1;
   }>): ReturnType<ReturnType<typeof createBrowserHumanTaskClient>["update"]>;
+  openResult(input: Readonly<{
+    taskId: string;
+    taskRunId: string;
+    agentId: string;
+  }>): Promise<TaskOperationRunResultReadV1>;
 }
 
 export type ProtectedScheduledTaskProjection =
@@ -97,6 +107,14 @@ export type WorkbenchTaskViewerRead =
   | Readonly<{
       representation: "protected";
       opened: Awaited<ReturnType<WorkbenchProtectedHumanTaskController["open"]>>;
+      runs: readonly TaskRunSummaryV1[];
+    }>;
+
+export type WorkbenchTaskRunResultViewerRead =
+  | Readonly<{ representation: "ordinary" }>
+  | Readonly<{
+      representation: "protected";
+      result: TaskOperationRunResultReadV1;
     }>;
 
 /** Exact policy-aware viewer read; Plain retains the legacy route unchanged. */
@@ -128,6 +146,7 @@ export async function readWorkbenchTaskForViewer(input: Readonly<{
           ...classified.task,
           content: classified.definition,
         })),
+        runs: classified.runs,
       });
     }
     throw new ClassifiedDataOperationError(
@@ -136,6 +155,30 @@ export async function readWorkbenchTaskForViewer(input: Readonly<{
     );
   }
   return unavailable();
+}
+
+/** Plain results stay on the already-loaded legacy Task detail and never enter crypto. */
+export async function readWorkbenchTaskRunResultForViewer(input: Readonly<{
+  mode: "plaintext_only" | "shadow_encryption" | "encrypted_only" | "unknown";
+  taskId: string;
+  taskRunId: string;
+  agentId: string;
+  protectedController?: WorkbenchProtectedHumanTaskController | undefined;
+}>): Promise<WorkbenchTaskRunResultViewerRead> {
+  if (input.mode === "plaintext_only") {
+    return Object.freeze({ representation: "ordinary" as const });
+  }
+  if (input.mode === "unknown" || input.protectedController === undefined) {
+    unavailable();
+  }
+  return Object.freeze({
+    representation: "protected" as const,
+    result: await input.protectedController.openResult({
+      taskId: input.taskId,
+      taskRunId: input.taskRunId,
+      agentId: input.agentId,
+    }),
+  });
 }
 
 function unavailable(): never {
@@ -189,6 +232,18 @@ export function createWorkbenchProtectedHumanTaskController(input: Readonly<{
         return response.status === "ready" && response.operation === "update"
           ? response.data : unavailable();
       },
+      async openResult(intent: Readonly<{
+        taskId: string;
+        taskRunId: string;
+        agentId: string;
+      }>) {
+        const response = await operate({
+          version: 1, operation: "open_result", ...intent,
+        });
+        return response.status === "ready"
+          && response.operation === "open_result"
+          ? response.data : unavailable();
+      },
     });
   }
 
@@ -198,7 +253,7 @@ export function createWorkbenchProtectedHumanTaskController(input: Readonly<{
     humanActorId: input.humanActorId,
   });
   if (installationId === null) return undefined;
-  return createBrowserHumanTaskClient({
+  const common = {
     dataOperationOwner: input.owner,
     api: apiClient,
     serverScope: input.serverScope,
@@ -206,5 +261,17 @@ export function createWorkbenchProtectedHumanTaskController(input: Readonly<{
     humanActorId: input.humanActorId,
     installationId,
     resolveDeviceAdmissionStatus: () => apiClient.deviceAdmission.status(),
+  } as const;
+  const taskClient = createBrowserHumanTaskClient(common);
+  const resultReader = createBrowserHumanTaskRunResultReader(common);
+  return Object.freeze({
+    ...taskClient,
+    openResult(intent: Readonly<{
+      taskId: string;
+      taskRunId: string;
+      agentId: string;
+    }>) {
+      return resultReader.read(intent);
+    },
   });
 }

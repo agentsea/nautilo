@@ -12,6 +12,7 @@ import {
   encodeClientDeviceProfileV4,
   stageAndActivateClientDeviceProfileV4,
   type OpenedClientDeviceProfileV4,
+  withClientObjectAccessSignerResolversV4,
 } from "./profile-v4.ts";
 import type {
   ClientProfileCoordinates,
@@ -28,6 +29,7 @@ export interface ObjectAccessSignerEvidenceTransportV1 {
 
 export type ResolveTrustedObjectAccessEvidenceIssuerV4 = (
   input: Readonly<{
+    humanId: string;
     deviceId: string;
     hostAuthorizationRevision: number;
     trustedDeviceRevision: number;
@@ -97,7 +99,7 @@ export async function ingestObjectAccessSignerEvidenceV4(input: Readonly<{
   vault: ClientProfileVault;
   coordinates: ClientProfileCoordinates;
   evidence: readonly ObjectAccessSignerEvidenceTransportV1[];
-  resolveTrustedIssuingDevicePublicKey:
+  resolveTrustedIssuingDevicePublicKey?:
     ResolveTrustedObjectAccessEvidenceIssuerV4;
   createStageId: () => string;
 }>): Promise<void> {
@@ -137,6 +139,7 @@ export async function ingestObjectAccessSignerEvidenceV4(input: Readonly<{
                 evidenceBytes,
               );
               return {
+                humanId: publication.managerHumanId,
                 deviceId: publication.managerDeviceId,
                 hostAuthorizationRevision:
                   publication.managerAuthorizationRevision,
@@ -147,24 +150,46 @@ export async function ingestObjectAccessSignerEvidenceV4(input: Readonly<{
                 evidenceBytes,
               );
               return {
+                humanId: authorization.issuingHumanId,
                 deviceId: authorization.issuingDeviceId,
                 hostAuthorizationRevision:
                   authorization.issuingDeviceAuthorizationRevision,
               };
             })();
           const base = candidate.baseProfile.baseProfile;
-          const resolvedIssuingPublicKey = issuer.deviceId === base.deviceId
-              && issuer.hostAuthorizationRevision
-                <= base.trustedHostAuthorizationRevision
-            ? base.signingPublicKey.slice()
-            : await input.resolveTrustedIssuingDevicePublicKey({
+          const isCurrentDeviceIssuer =
+            issuer.humanId === input.coordinates.humanActorId
+            && issuer.deviceId === base.deviceId;
+          if (
+            isCurrentDeviceIssuer
+            && issuer.hostAuthorizationRevision
+              <= base.trustedHostAuthorizationRevision
+          ) {
+            issuingPublicKey = base.signingPublicKey.slice();
+          } else if (!isCurrentDeviceIssuer) {
+            issuingPublicKey = withClientObjectAccessSignerResolversV4({
+              crypto: input.crypto,
+              profile: candidate,
+              operation: (resolvers) =>
+                resolvers.resolveHistoricalHumanDeviceSigningPublicKey({
+                  humanId: issuer.humanId,
+                  deviceId: issuer.deviceId,
+                })?.slice() ?? null,
+            });
+          }
+          if (
+            issuingPublicKey === null
+            && input.resolveTrustedIssuingDevicePublicKey !== undefined
+          ) {
+            const resolved = await input.resolveTrustedIssuingDevicePublicKey({
               ...issuer,
               trustedDeviceRevision: base.trustedDeviceRevision,
             });
-          if (resolvedIssuingPublicKey === null) {
+            issuingPublicKey = resolved?.slice() ?? null;
+          }
+          if (issuingPublicKey === null) {
             throw new Error("Object access signer issuer is not trusted");
           }
-          issuingPublicKey = resolvedIssuingPublicKey.slice();
           const next = await addClientSignerEvidenceV4({
             crypto: input.crypto,
             profile: candidate,

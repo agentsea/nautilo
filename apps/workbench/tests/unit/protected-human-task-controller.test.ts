@@ -4,6 +4,7 @@ import {
   openProtectedTaskById,
   listProtectedScheduledTasks,
   readWorkbenchTaskForViewer,
+  readWorkbenchTaskRunResultForViewer,
   type WorkbenchProtectedHumanTaskController,
 } from "../../src/lib/protected-human-task-controller";
 import { apiClient } from "../../src/lib/api";
@@ -111,6 +112,14 @@ test("viewer preserves proven ordinary Tasks while gating protected reads by pol
   const calls: string[] = [];
   const ordinaryDetail = { task: { id: "task-1", status: "running" }, runs: [] } as never;
   let classification: "ordinary" | "protected" = "ordinary";
+  const safeRun = {
+    id: "40000000-0000-4000-8000-000000000001",
+    status: "completed",
+    modelId: "model-1",
+    startedAt: "2026-10-09T10:00:00.000Z",
+    completedAt: "2026-10-09T10:01:00.000Z",
+    content: { dtoVersion: 1, status: "unavailable", reason: "unsupported_client" },
+  } as const;
   apiClient.getTask = (async () => {
     calls.push("legacy-detail");
     return ordinaryDetail;
@@ -124,7 +133,7 @@ test("viewer preserves proven ordinary Tasks while gating protected reads by pol
             expectedOutput: null, lastError: null }
         : { dtoVersion: 1, status: "protected", objectId: "object:1",
             contentRevision: 1, cryptoAccessRevision: 0 },
-      runs: [],
+      runs: [safeRun],
     } as never;
   }) as typeof apiClient.getTaskContentV1;
   const protectedController = {
@@ -152,12 +161,90 @@ test("viewer preserves proven ordinary Tasks while gating protected reads by pol
 
     calls.length = 0;
     classification = "protected";
-    expect((await readWorkbenchTaskForViewer({
+    const protectedRead = await readWorkbenchTaskForViewer({
       mode: "shadow_encryption", taskId: "task-1", protectedController,
-    })).representation).toBe("protected");
+    });
+    expect(protectedRead.representation).toBe("protected");
+    if (protectedRead.representation !== "protected") {
+      throw new Error("expected protected Task read");
+    }
+    expect(protectedRead.runs).toEqual([safeRun]);
     expect(calls).toEqual(["content-classification", "protected-open"]);
   } finally {
     apiClient.getTask = originalGetTask;
     apiClient.getTaskContentV1 = originalGetTaskContent;
+  }
+});
+
+test("Plain result presentation never calls protected crypto", async () => {
+  let protectedReads = 0;
+  const controller = {
+    openResult: async () => {
+      protectedReads += 1;
+      throw new Error("Plain must not enter protected result custody");
+    },
+  } as unknown as WorkbenchProtectedHumanTaskController;
+
+  expect(await readWorkbenchTaskRunResultForViewer({
+    mode: "plaintext_only",
+    taskId: "task-plain",
+    taskRunId: "run-plain",
+    agentId: "agent-plain",
+    protectedController: controller,
+  })).toEqual({ representation: "ordinary" });
+  expect(protectedReads).toBe(0);
+});
+
+test("protected result presentation preserves the exact Task, run, and Agent identity", async () => {
+  const identities: unknown[] = [];
+  const controller = {
+    openResult: async (identity: unknown) => {
+      identities.push(identity);
+      return {
+        status: "ready" as const,
+        payload: {
+          formatVersion: 1 as const,
+          resultText: "private result",
+          lastError: null,
+        },
+      };
+    },
+  } as unknown as WorkbenchProtectedHumanTaskController;
+
+  expect(await readWorkbenchTaskRunResultForViewer({
+    mode: "encrypted_only",
+    taskId: "task-exact",
+    taskRunId: "run-exact",
+    agentId: "agent-exact",
+    protectedController: controller,
+  })).toEqual({
+    representation: "protected",
+    result: {
+      status: "ready",
+      payload: {
+        formatVersion: 1,
+        resultText: "private result",
+        lastError: null,
+      },
+    },
+  });
+  expect(identities).toEqual([{
+    taskId: "task-exact",
+    taskRunId: "run-exact",
+    agentId: "agent-exact",
+  }]);
+});
+
+test("protected result presentation rejects unknown policy and absent custody", async () => {
+  for (const input of [
+    { mode: "unknown" as const, protectedController: undefined },
+    { mode: "encrypted_only" as const, protectedController: undefined },
+  ]) {
+    await expect(readWorkbenchTaskRunResultForViewer({
+      ...input,
+      taskId: "task-1",
+      taskRunId: "run-1",
+      agentId: "agent-1",
+    })).rejects.toMatchObject({ failureClass: "unsupported" });
   }
 });

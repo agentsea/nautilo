@@ -8513,6 +8513,17 @@ ipcMain.handle("foregroundShadow:task:operateV1", async (e, raw: unknown) => {
         operation: "open" as const,
         data: await controller.taskOpen(request.task),
       });
+    case "open_result":
+      return Object.freeze({
+        version: 1 as const,
+        status: "ready" as const,
+        operation: "open_result" as const,
+        data: await controller.taskOpenResult({
+          taskId: request.taskId,
+          taskRunId: request.taskRunId,
+          agentId: request.agentId,
+        }),
+      });
     case "create":
       return Object.freeze({
         version: 1 as const,

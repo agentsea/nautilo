@@ -44,6 +44,13 @@ const taskOperationRequestV1Schema = z.discriminatedUnion("operation", [
   }).strict(),
   z.object({
     version: z.literal(1),
+    operation: z.literal("open_result"),
+    taskId: z.uuid().refine((value) => value === value.toLowerCase()),
+    taskRunId: z.uuid().refine((value) => value === value.toLowerCase()),
+    agentId: z.uuid().refine((value) => value === value.toLowerCase()),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
     operation: z.literal("create"),
     payload: taskPayload,
     task: taskOperationalCreateV1Schema,

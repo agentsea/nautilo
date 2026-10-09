@@ -38,10 +38,15 @@ import {
   encodeClientDeviceProfileV3,
 } from "../../src/client-vault/profile-v3.ts";
 import {
+  addClientSharedHumanDomainSignerEvidenceV4,
   createClientDeviceProfileV4Candidate,
   destroyOpenedClientDeviceProfileV4,
   encodeClientDeviceProfileV4,
 } from "../../src/client-vault/profile-v4.ts";
+import {
+  createSharedHumanDomainTrustAcceptanceV1,
+  encodeSharedHumanDomainTrustAcceptanceV1,
+} from "../../src/delivery/shared-human-domain-trust.ts";
 import type { ClientProfileCoordinates } from
   "../../src/client-vault/types.ts";
 import { MemoryClientProfileVault } from
@@ -351,7 +356,7 @@ describe("Task Runtime result preparation", () => {
     for (const generation of keyring.generations) generation.key.fill(0);
   });
 
-  test("a Browser-compatible Human vault opens the exact Agent result and rejects substitution", async () => {
+  test.each([false, true])("a Human vault opens an exact result without an external key resolver (peer device: %s)", async (peerDevice) => {
     const scenario = await setup(0x345);
     const prepared = await withTaskRuntimeExecutionEvidenceV1({
       evidence: scenario.evidence,
@@ -361,7 +366,8 @@ describe("Task Runtime result preparation", () => {
         prepareTaskRuntimeRunResult(prepareInput(scenario, evidence)),
     });
     const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(prepared);
-    const deviceId = "task-result-manager";
+    const deviceId = peerDevice ? "task-result-reader" : "task-result-manager";
+    const signing = peerDevice ? scenario.crypto.generateSigningKeyPair() : scenario.manager;
     const coordinates: ClientProfileCoordinates = Object.freeze({
       serverScope: "https://nautilo.test",
       userId: REQUESTER_ID,
@@ -381,8 +387,8 @@ describe("Task Runtime result preparation", () => {
     const profile: OpenedClientDeviceProfileV2 = Object.freeze({
       formatVersion: 2,
       deviceId,
-      signingPublicKey: scenario.manager.publicKey,
-      signingPrivateKey: scenario.manager.privateKey,
+      signingPublicKey: signing.publicKey,
+      signingPrivateKey: signing.privateKey,
       encryptionPublicKey: encryption.publicKey,
       encryptionPrivateKey: encryption.privateKey,
       trustedDeviceRevision: 2,
@@ -413,7 +419,28 @@ describe("Task Runtime result preparation", () => {
       currentProfileBytes: v3Bytes,
       expectedDeviceId: deviceId,
     });
-    const profileBytes = encodeClientDeviceProfileV4(v4);
+    let retained = v4;
+    if (peerDevice) {
+      const devices = [{ humanId: REQUESTER_ID, deviceId, deviceGeneration: 1,
+        signingPublicKey: signing.publicKey }, {
+        humanId: REQUESTER_ID, deviceId: "task-result-manager", deviceGeneration: 1,
+        signingPublicKey: scenario.manager.publicKey,
+      }];
+      const accepted = createSharedHumanDomainTrustAcceptanceV1({
+        crypto: scenario.crypto, domainId: DOMAIN_ID, domainEpoch: 4,
+        participantDigest: bytes(0x45), targetSubmissionDigest: bytes(0x46), devices,
+        acceptedByHumanId: REQUESTER_ID, acceptedByDeviceId: deviceId,
+        acceptedAt: NOW, acceptingSigningPrivateKey: signing.privateKey,
+      });
+      const acceptanceBytes = encodeSharedHumanDomainTrustAcceptanceV1(accepted.acceptance);
+      retained = await addClientSharedHumanDomainSignerEvidenceV4({
+        crypto: scenario.crypto, profile: v4, acceptanceBytes, devices,
+      });
+      acceptanceBytes.fill(0);
+      accepted.devices.forEach(device => device.signingPublicKey.fill(0));
+    }
+    const profileBytes = encodeClientDeviceProfileV4(retained);
+    if (retained !== v4) destroyOpenedClientDeviceProfileV4(retained);
     destroyOpenedClientDeviceProfileV4(v4);
     destroyOpenedClientDeviceProfileV3(v3);
     v2Bytes.fill(0);
@@ -477,8 +504,6 @@ describe("Task Runtime result preparation", () => {
           deviceGeneration: 1,
           expiresAt: NOW + 60_000,
         }),
-        resolveTrustedIssuingDevicePublicKey: () =>
-          Promise.resolve(scenario.manager.publicKey),
         createStageId: () => "stage:signer",
         accessAnchors: {
           load: (id) => Promise.resolve(anchors.get(id) ?? null),

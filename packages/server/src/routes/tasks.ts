@@ -758,85 +758,95 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     if (!isUuidString(request.params.id)) {
       return reply.status(404).send({ error: "Task not found" });
     }
-    return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {
-    const db = getServerDirectDb();
-    const task = await getTaskById(db, request.params.id);
-    if (!task || task.ownerId !== ownerId) {
-      return { status: 404, body: { error: "Task not found" } };
-    }
-    const pendingDefinitions = await pendingInitialTaskDefinitions(db, ownerId, [task]);
+    const read = async (allowOrdinary: boolean) => {
+      const db = getServerDirectDb();
+      const task = await getTaskById(db, request.params.id);
+      if (!task || task.ownerId !== ownerId) {
+        return { status: 404, body: { error: "Task not found" } };
+      }
+      const pendingDefinitions = await pendingInitialTaskDefinitions(db, ownerId, [task]);
 
-    const [runs, agentNames] = await Promise.all([
-      getTaskRuns(db, task.id),
-      getOwnerAgentDisplayNamesByAgentId(db, ownerId, [task.agentId]),
-    ]);
-    const { content, ...lifecycle } = toTaskContentSummaryV1(task, {
-      agentName: agentNames.get(task.agentId) ?? null,
-      lastModelId: runs.at(-1)?.modelId ?? null,
-      canResumeResearch: task.contentRepresentation === "ordinary"
-        && await canResumeSecurityResearchContextFailure(db, task),
-      ...(pendingDefinitions.has(task.id)
-        ? { pendingDefinitionReason: pendingDefinitions.get(task.id)! }
-        : {}),
-    }, { includeFunding });
-    const runSummaries: TaskRunSummaryV1[] = await Promise.all(runs.map(async (run) => {
-      const ordinary = content.status === "ordinary"
-        && run.resultRepresentation === "ordinary";
-      const transcript = ordinary ? await getRunAgentTranscript({
-        includeToolPresentation: true,
-        ownerId,
-        graphThreadId: run.graphThreadId,
-        agentId: task.agentId,
-        startedAt: run.startedAt ?? null,
-        completedAt: run.completedAt ?? null,
-      }) : [];
-      return {
-        id: run.id,
-        status: run.status,
-        modelId: run.modelId,
-        ...(includeFunding ? taskRunFundingProjection(task, run) : {}),
-        startedAt: toIso(run.startedAt),
-        completedAt: toIso(run.completedAt),
-        content: ordinary ? {
-          dtoVersion: 1,
-          status: "ordinary",
-          resultText: run.resultText,
-          lastError: run.lastError,
-          transcript: transcript.map((message) => ({
-            role: message.role,
-            content: message.content,
-            toolName: message.toolName,
-            toolCalls: message.toolCalls,
-            ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
-            ...(message.toolStatus ? { toolStatus: message.toolStatus } : {}),
-            createdAt: toIso(message.createdAt) ?? new Date(0).toISOString(),
-          })),
-        } : { dtoVersion: 1, status: "unavailable", reason: "unsupported_client" },
+      const [runs, agentNames] = await Promise.all([
+        getTaskRuns(db, task.id),
+        getOwnerAgentDisplayNamesByAgentId(db, ownerId, [task.agentId]),
+      ]);
+      const { content, ...lifecycle } = toTaskContentSummaryV1(task, {
+        agentName: agentNames.get(task.agentId) ?? null,
+        lastModelId: runs.at(-1)?.modelId ?? null,
+        canResumeResearch: allowOrdinary && task.contentRepresentation === "ordinary"
+          && await canResumeSecurityResearchContextFailure(db, task),
+        ...(!allowOrdinary && task.contentRepresentation === "ordinary"
+          ? { pendingDefinitionReason: pendingDefinitions.get(task.id) ?? "waiting_for_authorization" as const }
+          : pendingDefinitions.has(task.id)
+            ? { pendingDefinitionReason: pendingDefinitions.get(task.id)! }
+            : {}),
+      }, { includeFunding });
+      const runSummaries: TaskRunSummaryV1[] = await Promise.all(runs.map(async (run) => {
+        const ordinary = content.status === "ordinary"
+          && run.resultRepresentation === "ordinary";
+        const transcript = ordinary ? await getRunAgentTranscript({
+          includeToolPresentation: true,
+          ownerId,
+          graphThreadId: run.graphThreadId,
+          agentId: task.agentId,
+          startedAt: run.startedAt ?? null,
+          completedAt: run.completedAt ?? null,
+        }) : [];
+        return {
+          id: run.id,
+          status: run.status,
+          modelId: run.modelId,
+          ...(includeFunding ? taskRunFundingProjection(task, run) : {}),
+          startedAt: toIso(run.startedAt),
+          completedAt: toIso(run.completedAt),
+          content: ordinary ? {
+            dtoVersion: 1,
+            status: "ordinary",
+            resultText: run.resultText,
+            lastError: run.lastError,
+            transcript: transcript.map((message) => ({
+              role: message.role,
+              content: message.content,
+              toolName: message.toolName,
+              toolCalls: message.toolCalls,
+              ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+              ...(message.toolStatus ? { toolStatus: message.toolStatus } : {}),
+              createdAt: toIso(message.createdAt) ?? new Date(0).toISOString(),
+            })),
+          } : { dtoVersion: 1, status: "unavailable", reason: "unsupported_client" },
+        };
+      }));
+      const detail: TaskContentDetailV1 = {
+        task: {
+          ...lifecycle,
+          cron: task.cron,
+          runAt: toIso(task.runAt),
+          timezone: task.timezone,
+          targetChat: task.targetChat,
+          resultDelivery: task.resultDelivery,
+          useScope: task.useScope,
+          scopeId: task.scopeId,
+          toolsMode: task.toolsMode,
+          toolsWhitelist: task.toolsWhitelist,
+          selectionProfile: task.selectionProfile,
+          selectionSpec: task.selectionSpec,
+          requestedModelId: task.requestedModelId,
+          createdAt: task.createdAt.toISOString(),
+          updatedAt: task.updatedAt.toISOString(),
+        },
+        definition: content.status === "ordinary" ? taskDefinitionContentV1(task) : content,
+        runs: runSummaries,
       };
-    }));
-    const detail: TaskContentDetailV1 = {
-      task: {
-        ...lifecycle,
-        cron: task.cron,
-        runAt: toIso(task.runAt),
-        timezone: task.timezone,
-        targetChat: task.targetChat,
-        resultDelivery: task.resultDelivery,
-        useScope: task.useScope,
-        scopeId: task.scopeId,
-        toolsMode: task.toolsMode,
-        toolsWhitelist: task.toolsWhitelist,
-        selectionProfile: task.selectionProfile,
-        selectionSpec: task.selectionSpec,
-        requestedModelId: task.requestedModelId,
-        createdAt: task.createdAt.toISOString(),
-        updatedAt: task.updatedAt.toISOString(),
-      },
-      definition: content.status === "ordinary" ? taskDefinitionContentV1(task) : content,
-      runs: runSummaries,
+      return { status: 200, body: detail };
     };
-    return { status: 200, body: detail };
+    // The shared owner selects whether ordinary bodies may be loaded. Strict
+    // and Full still expose lifecycle coordinates, never plaintext siblings.
+    const selected = await deps.contentOwner.selectReadMetadata({
+      ordinary: () => read(true),
+      fallback: () => read(true),
+      protected: () => read(false),
     });
+    return reply.status(selected.status).send(selected.body);
   });
 
   /**
