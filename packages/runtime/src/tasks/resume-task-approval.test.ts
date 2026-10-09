@@ -1,5 +1,6 @@
-import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { Task, TaskRun } from "@nautilo/db";
+import type { DelegatedLocalExecutionPort, ForegroundChatFundingSession } from "@nautilo/agent";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
 import type { RunTaskApprovalResumeArgs } from "./resume-task-approval";
 
@@ -21,6 +22,13 @@ const inspectTaskResumeOutcome = mock(async () => ({ reparked: true }));
 const reportBackTaskError = mock(async (_deps: unknown, _input: unknown) => undefined);
 const safeBackgroundTaskFailureResult = "SAFE_BACKGROUND_TASK_FAILURE_RESULT";
 const actualAgent = await import("@nautilo/agent");
+
+const actualLocalExecution = await import("./local-execution-delegation");
+let approvalLocalExecutionPort: DelegatedLocalExecutionPort | undefined;
+mock.module("./local-execution-delegation", () => ({
+  ...actualLocalExecution,
+  resolveTaskLocalExecutionPort: async () => approvalLocalExecutionPort,
+}));
 
 mock.module("@nautilo/agent", () => ({
   ...actualAgent,
@@ -78,6 +86,8 @@ mock.module("./report-back", () => ({
 }));
 
 let runTaskApprovalResume: typeof import("./resume-task-approval")["runTaskApprovalResume"];
+const { getForegroundFundingSession } = await import("../../../agent/src/runtime/foreground-chat-funding");
+const { installTaskFundingPort, uninstallTaskFundingPort } = await import("../task-funding-port");
 
 const laneKey = "task:fixture-task";
 const exact = {
@@ -198,6 +208,8 @@ describe("Task paid media approval echo", () => {
   });
 
   beforeEach(() => {
+    uninstallTaskFundingPort();
+    approvalLocalExecutionPort = undefined;
     transitions.length = 0;
     statusEvents.length = 0;
     transitionTaskApprovalExecution.mockClear();
@@ -207,6 +219,66 @@ describe("Task paid media approval echo", () => {
     inspectTaskResumeOutcome.mockClear();
     reportBackTaskError.mockClear();
     replayTaskInterruptEvents.mockClear();
+  });
+
+  afterEach(() => {
+    uninstallTaskFundingPort();
+    approvalLocalExecutionPort = undefined;
+  });
+
+  test("installs both pinned funding and saved local execution for a caller-funded resume", async () => {
+    const fundingSession: ForegroundChatFundingSession = {
+      kind: "personal",
+      recheckAttempt: async () => {},
+      runAttempt: async (_modelId, callback) => callback({
+        usageFunding: { kind: "personal", humanUserId: task.requestorId,
+          payerHumanId: task.requestorId, providerRoute: "anthropic",
+          credentialId: "credential", credentialRevision: 1 },
+      }),
+    };
+    const localExecutionPort = {
+      taskId: task.id,
+      taskRunId: run.id,
+      signal: new AbortController().signal,
+      withAdmission: async <T>(_operation: "start" | "input" | "read" | "cancel",
+        work: Parameters<DelegatedLocalExecutionPort["withAdmission"]>[1]) => work({
+          taskId: task.id,
+          taskRunId: run.id,
+          signal: new AbortController().signal,
+          delegation: callerTask.localExecutionDelegation,
+        }) as Promise<T>,
+    } satisfies DelegatedLocalExecutionPort;
+    approvalLocalExecutionPort = localExecutionPort;
+    installTaskFundingPort({
+      prepareCreation: async () => true,
+      admit: async () => ({ modelId: "anthropic:claude-sonnet-4-6",
+        binding: { kind: "personal", providerRoute: "anthropic",
+          credentialId: "credential", credentialRevision: 1 } }),
+      openSession: async () => fundingSession,
+    });
+    const callerTask = { ...task, fundingMode: "caller" as const,
+      localExecutionDelegation: { version: 1 as const, humanUserId: task.requestorId, agentId: task.agentId,
+        sourceRoomId: "room", sourceConversationId: "conversation", rootTaskId: task.id,
+        projectGrantId: "grant", ceiling: "basic" as const, profile: null,
+        target: { instanceId: "", relayId: "relay", pairingGeneration: "pair",
+          serverOrigin: "https://server.invalid", serverFingerprint: "fingerprint" } } };
+    const callerRun = { ...run, modelId: "anthropic:claude-sonnet-4-6",
+      fundingBinding: { kind: "personal" as const, providerRoute: "anthropic",
+        credentialId: "credential", credentialRevision: 1 } };
+    resumeGraphWithAskReply.mockImplementationOnce(async () => {
+      expect(getForegroundFundingSession()).toBe(fundingSession);
+      expect(actualAgent.getCurrentLocalExecutionDelegation()).toBe(localExecutionPort);
+    });
+
+    expect(await runTaskApprovalResume({
+      ...resumeArgs("absent"),
+      task: callerTask,
+      run: callerRun,
+      invocationAuthority: createAcceptedInvocationAuthority(task.requestorId, { originTaskId: task.id }),
+    }, {
+      assertInvocation: async () => {},
+      assertServerFunding: async () => { throw new Error("caller payer must not fall back to server funding"); },
+    })).toEqual({ reparked: true });
   });
 
   test("revoked funding before a queued resume leaves the graph unrun and pauses the awaiting Task", async () => {

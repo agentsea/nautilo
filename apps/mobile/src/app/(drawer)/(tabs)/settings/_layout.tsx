@@ -32,6 +32,8 @@ export default function SettingsLayout() {
       <Stack.Screen name="security" options={{ headerShown: false }} />
       <Stack.Screen name="provider-keys" options={{ headerShown: true }} />
       <Stack.Screen name="personal-costs" options={{ headerShown: true }} />
+      <Stack.Screen name="capability-models" options={{ headerShown: true }} />
+      <Stack.Screen name="capability-model-picker" options={{ headerShown: true }} />
       <Stack.Screen name="account-deletion" options={{ title: "Delete Account" }} />
       <Stack.Screen name="voice" options={{ headerShown: false }} />
       <Stack.Screen name="voice-picker" options={{ headerShown: false }} />

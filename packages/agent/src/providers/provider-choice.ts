@@ -22,24 +22,25 @@ export async function invokeProviderChoice(
   if (!request.modelId.startsWith(`${provider}:`)) throw new ChoiceRequestError("unsupported_model");
   const ids = new Set(request.choices.map((choice) => choice.id));
   if (ids.size !== request.choices.length) throw new ChoiceRequestError("invalid_request");
-  const result = await requestDecisions({
+  return requestDecisions({
     modelId: request.modelId, state: request.state, signal: input.signal,
     ...(input.tenantContext === undefined ? {} : { tenantContext: input.tenantContext }),
     questions: { candidate: {
       type: "choice", instructions: request.instructions,
       criteria: Object.fromEntries(request.choices.map(({ id, description }) => [id, description])),
     } },
-  }, deps);
-  const answers = z.record(z.string(), z.unknown()).safeParse(result.answers);
-  const raw = answers.success ? answers.data["candidate"] : undefined;
-  const answer = answerSchema.safeParse(raw);
-  if (!result.hasResponseModel || !answer.success || !ids.has(answer.data.choice))
-    throw new ChoiceRequestError("invalid_response");
-  const metadata = raw as Record<string, unknown>;
-  const confidence = probability.safeParse(metadata["confidence"]);
-  const probabilities = z.record(z.string(), probability).safeParse(metadata["probabilities"]);
-  return { ...result.receipt, selectedId: answer.data.choice,
-    ...(confidence.success ? { confidence: confidence.data } : {}),
-    ...(probabilities.success ? { probabilities: probabilities.data } : {}),
-  };
+  }, deps, (result) => {
+    const answers = z.record(z.string(), z.unknown()).safeParse(result.answers);
+    const raw = answers.success ? answers.data["candidate"] : undefined;
+    const answer = answerSchema.safeParse(raw);
+    if (!result.hasResponseModel || !answer.success || !ids.has(answer.data.choice))
+      throw new ChoiceRequestError("invalid_response");
+    const metadata = raw as Record<string, unknown>;
+    const confidence = probability.safeParse(metadata["confidence"]);
+    const probabilities = z.record(z.string(), probability).safeParse(metadata["probabilities"]);
+    return { ...result.receipt, selectedId: answer.data.choice,
+      ...(confidence.success ? { confidence: confidence.data } : {}),
+      ...(probabilities.success ? { probabilities: probabilities.data } : {}),
+    };
+  });
 }

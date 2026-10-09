@@ -5,6 +5,20 @@ import * as path from "node:path";
 import { runWithTurn } from "@nautilo/logger";
 import { resolveConvertBackend } from "./backend-resolver";
 import { createConvertTool } from "./convert-tool";
+import { runWithCapabilityFundingSession, type CapabilityFundingSession } from "../../runtime/capability-funding";
+import { runWithUsageContext } from "../../usage/usage-context";
+
+const personalCapability = {
+  humanUserId: "owner-1",
+  async resolveModel() { throw new Error("unused"); },
+  async openModel() { throw new Error("unused"); },
+  async openService() { throw new Error("unused"); },
+} as CapabilityFundingSession;
+
+const serverCapability = {
+  ...personalCapability,
+  parentFundingKind: "server" as const,
+};
 
 const originalBackendEnv = process.env["NAUTILO_CONVERT_BACKEND"];
 const originalCloudKey = process.env["CLOUDCONVERT_API_KEY"];
@@ -134,6 +148,19 @@ describe("convert tool description", () => {
     expect(description).toContain("CloudConvert routes");
     expect(description).toContain("HTML → PDF");
   });
+
+  test("personal capability description does not advertise CloudConvert", () => {
+    const description = runWithCapabilityFundingSession(personalCapability, () =>
+      createConvertTool(undefined, { isCloudConvertConfigured: () => true }).description);
+    expect(description).toContain("Markdown → PDF or DOCX");
+    expect(description).not.toContain("CloudConvert routes");
+  });
+
+  test("server-funded capability description preserves configured cloud conversion", () => {
+    const description = runWithCapabilityFundingSession(serverCapability, () =>
+      createConvertTool(undefined, { isCloudConvertConfigured: () => true }).description);
+    expect(description).toContain("CloudConvert routes");
+  });
 });
 
 describe("createConvertTool", () => {
@@ -142,6 +169,7 @@ describe("createConvertTool", () => {
     const tool = createConvertTool(
       {
         ownerId: "owner-1",
+        causalHumanUserId: "owner-1",
         workspacePath: workspaceRoot,
         currentFolder,
         agentId: "agent-1",
@@ -175,6 +203,7 @@ describe("createConvertTool", () => {
     const tool = createConvertTool(
       {
         ownerId: "owner-1",
+        causalHumanUserId: "owner-1",
         workspacePath: workspaceRoot,
         currentFolder,
         agentId: "agent-1",
@@ -192,6 +221,7 @@ describe("createConvertTool", () => {
         markdownToPdfBuffer: async () => {
           throw new Error("local generator should not run");
         },
+        assertServerFunding: async () => {},
       },
     );
 
@@ -251,6 +281,68 @@ describe("createConvertTool", () => {
     });
 
     expect(String(result)).toContain("CloudConvert not configured");
+  });
+
+  test("personal capability blocks explicit cloud conversion before dispatch", async () => {
+    let convertCalled = false;
+    const tool = createConvertTool({
+      ownerId: "owner-1", causalHumanUserId: "owner-1", workspacePath: workspaceRoot,
+      currentFolder, agentId: "agent-1", roomId: "room-1",
+    }, {
+      isCloudConvertConfigured: () => true,
+      cloudConvert: async () => { convertCalled = true; return Buffer.from("unexpected"); },
+      assertServerFunding: async () => {},
+    });
+    const result = await runWithCapabilityFundingSession(personalCapability, () => tool.invoke({
+      html: "<p>Hi</p>", format: "pdf", destinationPath: "personal.pdf",
+      destinationZone: "workspace", backend: "cloud",
+    }));
+    expect(String(result)).toContain("Cloud conversion is unavailable with personal funding");
+    expect(convertCalled).toBe(false);
+  });
+
+  test("server-funded capability preserves the CloudConvert funding guard and dispatch", async () => {
+    let fundingChecked = false;
+    let convertCalled = false;
+    const tool = createConvertTool({
+      ownerId: "owner-1", causalHumanUserId: "owner-1", workspacePath: workspaceRoot,
+      currentFolder, agentId: "agent-1", roomId: "room-1",
+    }, {
+      isCloudConvertConfigured: () => true,
+      cloudConvert: async () => { convertCalled = true; return Buffer.from("%PDF-cloud"); },
+      assertServerFunding: async (humanUserId, origin) => {
+        fundingChecked = humanUserId === "owner-1" && origin === "cloud_conversion";
+      },
+    });
+    const result = await runWithCapabilityFundingSession(serverCapability, () =>
+      tool.invoke({
+        html: "<p>Hi</p>", format: "pdf", destinationPath: "server-funded.pdf",
+        destinationZone: "workspace", backend: "cloud",
+      }));
+    expect(String(result)).toContain("envelope");
+    expect(fundingChecked).toBe(true);
+    expect(convertCalled).toBe(true);
+  });
+
+  test("ambient personal funding prevents auto from falling through to cloud", async () => {
+    let convertCalled = false;
+    const tool = createConvertTool({
+      ownerId: "owner-1", causalHumanUserId: "owner-1", workspacePath: workspaceRoot,
+      currentFolder, agentId: "agent-1", roomId: "room-1",
+    }, {
+      isCloudConvertConfigured: () => true,
+      cloudConvert: async () => { convertCalled = true; return Buffer.from("unexpected"); },
+      assertServerFunding: async () => {},
+    });
+    const result = await runWithUsageContext({ callType: "other", funding: {
+      kind: "personal", humanUserId: "owner-1", payerHumanId: "owner-1",
+      providerRoute: "openrouter", credentialId: "credential-1", credentialRevision: 1,
+    } }, () => tool.invoke({
+      html: "<p>Hi</p>", format: "pdf", destinationPath: "personal-auto.pdf",
+      destinationZone: "workspace", backend: "auto",
+    }));
+    expect(String(result)).toContain("Cloud conversion is unavailable with personal funding");
+    expect(convertCalled).toBe(false);
   });
 
   test("factory description hides cloud routes when key absent", () => {

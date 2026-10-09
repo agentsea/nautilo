@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import type { TaskFundingBinding } from "@nautilo/types";
 import { AIMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ToolCall } from "@langchain/core/messages/tool";
 import type { NautiloState } from "../agent/state";
@@ -210,6 +211,10 @@ export function browserDecisionDriverCall(
 export interface BrowserDecisionState {
   readonly turnId: string;
   readonly modelId: string;
+  /** Accepted preference snapshot; later edits affect only a fresh episode. */
+  readonly preferenceRevision?: number;
+  /** Durable non-secret payer/route binding; credentials remain request-local. */
+  readonly fundingBinding?: TaskFundingBinding;
   readonly target?: ConnectedBrowserDecisionTarget;
   readonly plan: BrowserDecisionPlan;
   readonly phase: "decide" | "observe" | "waiting" | "handoff";

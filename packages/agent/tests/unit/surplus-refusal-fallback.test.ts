@@ -92,9 +92,22 @@ describe("Surplus definitive refusal fallback", () => {
       cancelled: true,
       responseStatus: 404,
       receipt: BASE_RECEIPT,
+      deliveredOutput: false,
     })).toMatchObject({
       outcome: "cancelled",
       failureCode: "cancelled",
+      directFallback: false,
+    });
+    expect(classifySurplusFailedAttempt({
+      error: new Error("connection lost"),
+      cancelled: false,
+      responseStatus: 500,
+      receipt: { requestId: "request-visible", buyerCostMicro: 17, truncated: false },
+      deliveredOutput: true,
+    })).toMatchObject({
+      outcome: "unknown",
+      costState: "actual",
+      actualCostUsd: 0.000017,
       directFallback: false,
     });
   });
@@ -105,6 +118,7 @@ describe("Surplus definitive refusal fallback", () => {
       cancelled: false,
       responseStatus: 404,
       receipt: { requestId: "request-pending", marketplaceAttempts: 0, truncated: false },
+      deliveredOutput: false,
     })).toEqual({
       outcome: "failed",
       costState: "pending",
@@ -116,6 +130,7 @@ describe("Surplus definitive refusal fallback", () => {
       cancelled: false,
       responseStatus: 404,
       receipt: BASE_RECEIPT,
+      deliveredOutput: false,
     })).toEqual({
       outcome: "failed",
       costState: "unknown",
@@ -127,6 +142,7 @@ describe("Surplus definitive refusal fallback", () => {
       cancelled: false,
       responseStatus: 401,
       receipt: { requestId: "request-auth", truncated: false },
+      deliveredOutput: false,
     })).toEqual({
       outcome: "failed",
       costState: "pending",
@@ -138,6 +154,7 @@ describe("Surplus definitive refusal fallback", () => {
       cancelled: false,
       responseStatus: 402,
       receipt: { buyerCostMicro: 0, truncated: false },
+      deliveredOutput: false,
     })).toEqual({
       outcome: "failed",
       costState: "actual",
@@ -202,6 +219,7 @@ describe("Surplus definitive refusal fallback", () => {
       cancelled: false,
       responseStatus: status,
       receipt,
+      deliveredOutput: false,
     })).toMatchObject({ costState: "pending", directFallback: true });
   });
 });

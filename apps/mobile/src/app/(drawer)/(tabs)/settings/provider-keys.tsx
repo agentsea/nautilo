@@ -8,6 +8,7 @@ import { Screen } from "@/components/screen";
 import { SettingsStatus } from "@/components/settings/settings-status";
 import { createPersonalCredentialsController, personalAccountErrorMessage, personalCredentialLoadKind, type PersonalCredentialsController } from "@/features/settings/personal-account-controller";
 import { personalProviderKeyRows } from "@/features/settings/personal-provider-key-presentation";
+import { personalProviderCapabilitySummary } from "@nautilo/types";
 import { settingsScopeForVerifiedViewer } from "@/features/settings/settings-data-state";
 import { getApiClient } from "@/lib/api";
 import { useAuth } from "@/providers/auth";
@@ -119,7 +120,7 @@ export default function PersonalProviderKeysScreen() {
   return <View style={styles.container}>
     <Stack.Screen options={{ header: () => <AppBar title="Personal API keys" left={<AppBarBackButton onPress={goBack} />} /> }} />
     <Screen edgeTop={false} contentStyle={styles.content}>
-      {!policyDisabled ? <Text style={styles.intro}>Add your own key for eligible personal chat and native text Tasks. Save checks the key without making a paid request. Embeddings stay server-managed.</Text> : null}
+      {!policyDisabled ? <Text style={styles.intro}>Add your own key for eligible personal chat, native text Tasks, Research and Decisions. Save checks the key without making a paid request. Embeddings stay server-managed.</Text> : null}
       {!scope ? <SettingsStatus tone="warning">Sign in and reconnect before managing personal keys.</SettingsStatus> : null}
       {state.loading ? <ActivityIndicator color={t.color.brand.accent} accessibilityLabel="Loading personal API keys" /> : null}
       {state.loadError ? <><SettingsStatus tone={loadKind === "error" ? "error" : "warning"}>{personalAccountErrorMessage(state.loadError)}</SettingsStatus>{loadKind === "error" ? <ActionButton label="Retry" onPress={() => void controller.retry()} /> : null}</> : null}
@@ -140,11 +141,11 @@ export default function PersonalProviderKeysScreen() {
         );
         return <View key={provider.id} style={styles.card}>
           <View style={styles.cardHeader}><View style={styles.cardCopy}><Text style={styles.provider}>{provider.name}</Text>{provider.deleteOnly ? <Text style={styles.help}>{savedAt ? `Saved ${savedAt}` : "Saved"}</Text> : <Text style={styles.help}>{provider.purpose}</Text>}</View>{!provider.deleteOnly ? <Text style={[styles.badge, current && !current.requiresReplacement && current.validationStatus !== "rejected" ? styles.good : styles.muted]}>{state.data ? current ? current.validationStatus : "Not added" : "Checking status…"}</Text> : null}</View>
-          {!provider.deleteOnly ? <Text style={styles.help}>{provider.catalogued && !provider.personalCapabilities.includes("chat") ? "Not used by personal chat or native text Tasks in this release." : "Capability availability is shown in model selection."}</Text> : null}
+          {!provider.deleteOnly && provider.catalogued ? <Text style={styles.help}>{personalProviderCapabilitySummary(provider)}</Text> : null}
           {!provider.deleteOnly && current?.masked ? <Text style={styles.masked}>{current.masked}</Text> : null}
           {!provider.deleteOnly && current?.requiresReplacement ? <SettingsStatus tone="error">Replace this key before it can be used.</SettingsStatus> : null}
           {!provider.deleteOnly && current?.receiptReadStatus === "unavailable" ? <Text style={styles.help}>This key can run eligible requests. Some costs may appear later because it cannot currently read cost receipts.</Text> : null}
-          {!provider.deleteOnly && success === provider.id ? <SettingsStatus tone="success">{provider.personalCapabilities.includes("chat") ? "Key saved and checked. Choose a model for your Genie, then review charges in Your costs." : "Key saved and checked. Not used by personal chat or native text Tasks in this release."}</SettingsStatus> : null}
+          {!provider.deleteOnly && success === provider.id ? <SettingsStatus tone="success">{`Key saved and checked. ${provider.catalogued ? personalProviderCapabilitySummary(provider) : ""} Configure eligible models under Capability models, then review charges in Your costs.`}</SettingsStatus> : null}
           {confirmingDelete && confirmDelete ? <>
             <Text style={styles.help}>Delete personal key? Eligible work will stop using this provider key. Your historical costs remain available.</Text>
             <View style={styles.actions}><ActionButton label="Delete key" accessibilityLabel={`Delete ${provider.name} key now`} disabled={!deleteEnabled || state.mutating} onPress={() => void remove(confirmDelete)} /><ActionButton label="Cancel" accessibilityLabel={`Cancel deleting ${provider.name} key`} disabled={!deleteEnabled || state.mutating} onPress={() => setConfirmDelete(null)} /></View>

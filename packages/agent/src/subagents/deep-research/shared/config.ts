@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  DeepResearchModelPlanSchema,
   resolveDeepResearchModelPlan,
   validateDeepResearchModelPlan,
   type DeepResearchModelPlan,
@@ -90,6 +91,71 @@ export interface DeepResearchRuntimeConfigOptions {
   modelPlan?: DeepResearchModelPlan;
 }
 
+/**
+ * Rehydrate a previously admitted plan without consulting credential-bearing
+ * environment fields. The execution owner must also install the matching live
+ * capability-funding scope before the graph is allowed to run.
+ */
+export function fromAdmittedDeepResearchModelPlan(
+  modelPlan: DeepResearchModelPlan,
+  runtime?: Partial<Configuration>,
+  environment: NodeJS.ProcessEnv = typeof process === "undefined" ? {} : process.env,
+): Configuration {
+  const safeEnvironment: NodeJS.ProcessEnv = { ...environment };
+  for (const key of [
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "FIREWORKS_API_KEY",
+    "OPENROUTER_API_KEY", "XAI_API_KEY", "TOGETHER_API_KEY", "VENICE_API_KEY",
+  ]) delete safeEnvironment[key];
+  const { parsed } = parseRuntimeConfiguration(runtime, safeEnvironment);
+  const admitted = DeepResearchModelPlanSchema.parse(modelPlan);
+  return {
+    ...parsed,
+    // The durable admission pins Tavily. Runtime environment changes cannot
+    // replace it with an unfunded search adapter after Task acceptance.
+    search_api: "tavily",
+    supervisor_model: admitted.supervisorModel,
+    research_model: admitted.researchModel,
+    summarization_model: admitted.summarizationModel,
+    compression_model: admitted.compressionModel,
+    final_report_model: admitted.finalReportModel,
+    openai_api_key: null,
+    anthropic_api_key: null,
+    google_api_key: null,
+    fireworks_api_key: null,
+    openrouter_api_key: null,
+    xai_api_key: null,
+    together_api_key: null,
+    venice_api_key: null,
+    // Dynamic MCP tools carry their own external-account authority and are
+    // outside this admitted research funding plan.
+    mcp_config: null,
+    mcp_prompt: null,
+  };
+}
+
+function parseRuntimeConfiguration(
+  runtime: Partial<Configuration> | undefined,
+  environment: NodeJS.ProcessEnv,
+): { parsed: Configuration; envFirst: Partial<Record<keyof Configuration, unknown>> } {
+  const envOverrides: Partial<Record<keyof Configuration, unknown>> = {};
+  const keys = Object.keys(ConfigurationSchema.shape) as (keyof Configuration)[];
+  for (const key of keys) {
+    const raw = envGet(environment, String(key).toUpperCase());
+    if (raw == null) continue;
+    try {
+      let parsedValue: unknown = raw;
+      if (/^(true|false)$/i.test(raw)) parsedValue = raw.toLowerCase() === "true";
+      else if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
+        const numeric = Number(raw);
+        if (!Number.isNaN(numeric)) parsedValue = numeric;
+      } else if (raw.startsWith("{") || raw.startsWith("[")) parsedValue = JSON.parse(raw);
+      envOverrides[key] = parsedValue;
+    } catch { /* ignore invalid environment values */ }
+  }
+  const envFirst = { ...runtime, ...envOverrides };
+  return { parsed: ConfigurationSchema.parse(envFirst), envFirst };
+}
+
 function credentialEnvironment(
   environment: NodeJS.ProcessEnv,
   configuration: Configuration,
@@ -116,29 +182,7 @@ export function fromRuntimeConfig(
   options: DeepResearchRuntimeConfigOptions = {},
 ): Configuration {
   const environment = options.env ?? (typeof process === "undefined" ? {} : process.env);
-  const envOverrides: Partial<Record<keyof Configuration, unknown>> = {};
-  const keys = Object.keys(ConfigurationSchema.shape) as (keyof Configuration)[];
-  for (const key of keys) {
-    const envKey = String(key).toUpperCase();
-    const raw = envGet(environment, envKey);
-    if (raw == null) continue;
-    try {
-      let parsed: unknown = raw;
-      if (/^(true|false)$/i.test(raw)) {
-        parsed = raw.toLowerCase() === "true";
-      } else if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
-        const numeric = Number(raw);
-        if (!Number.isNaN(numeric)) parsed = numeric;
-      } else if (raw.startsWith("{") || raw.startsWith("[")) {
-        parsed = JSON.parse(raw);
-      }
-      envOverrides[key] = parsed;
-    } catch {
-      // ignore invalid env values
-    }
-  }
-  const envFirst = { ...runtime, ...envOverrides };
-  const parsed = ConfigurationSchema.parse(envFirst);
+  const { parsed, envFirst } = parseRuntimeConfiguration(runtime, environment);
   const availabilityEnv = credentialEnvironment(environment, parsed);
   const modelPlan = options.modelPlan
     ? validateDeepResearchModelPlan(options.modelPlan, availabilityEnv)

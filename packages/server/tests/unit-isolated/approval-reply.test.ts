@@ -50,6 +50,7 @@ beforeAll(async () => {
     assertCanInvokeAgent: async () => undefined,
     resumeThreadMembershipForUser: async () => true,
     projectionResumeBindingForThread: async () => ({ kind: "none" }),
+    resumeFundingForThread: async () => null,
   });
 
   await app.ready();

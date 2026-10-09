@@ -11,6 +11,7 @@ export * from "./queries/legacy-photo-history";
 export * from "./queries/reflection-sources";
 export * from "./queries/personal-encryption-coverage";
 export * from "./queries/personal-provider-credentials";
+export * from "./queries/personal-capability-preferences";
 export * from "./queries/soul-generation-attempts";
 export * from "./queries/protected-task-output-bindings";
 export * from "./queries/video-generation-links";
@@ -809,6 +810,7 @@ export {
   classifySurplusLlmAttemptRecovery,
   requeueBlockedPersonalSurplusAttempts,
   requeueBlockedServerSurplusAttempts,
+  requeueBlockedSurplusDecisionAttempts,
   getCostsSummary,
   getPersonalCostsSummary,
   buildPersonalCostsByRouteQuery,
@@ -836,12 +838,18 @@ export {
 export {
   insertProviderCostEvent,
   insertProviderCostEventWith,
+  settleProviderCostEvent,
+  settleProviderCostEventWith,
   buildProviderCostsSummaryQueries,
+  buildPersonalProviderCostsByTaskQuery,
+  buildProviderCostRecoveryAttemptsQuery,
   providerCostIdempotencyKey,
+  providerCostRequestReference,
   estimateProviderToolCostUsd,
   PROVIDER_TOOL_PRICING_VERSION,
   type InsertProviderCostEventInput,
   type ProviderCostEvidenceState,
+  type ProviderCostAttemptOutcome,
   type ProviderToolPriceKey,
 } from "./queries/provider-costs";
 export {
