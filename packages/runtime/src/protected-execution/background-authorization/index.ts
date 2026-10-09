@@ -16,6 +16,7 @@ export {
   attachBackgroundAuthorizationRecipient,
   cancelBackgroundAuthorizationRequest,
   claimBackgroundAuthorizationRequest,
+  claimTaskRuntimeBackgroundAuthorizationRequest,
   completeBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequestV2,

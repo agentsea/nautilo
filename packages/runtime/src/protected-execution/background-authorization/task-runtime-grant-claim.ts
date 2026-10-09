@@ -55,11 +55,10 @@ import type {
   ProtectedTaskRunningOccurrence,
 } from "../../tasks/task-observer";
 import {
-  BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
   BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES,
   advanceBackgroundAuthorizationGeneration,
   attachBackgroundAuthorizationRecipient,
-  claimBackgroundAuthorizationRequest,
+  claimTaskRuntimeBackgroundAuthorizationRequest,
   completeBackgroundAuthorizationRequest,
   failBackgroundAuthorizationRequest,
   markBackgroundAuthorizationRunning,
@@ -2297,7 +2296,6 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
             request.deadlineAt,
             recipient.expiresAt,
             acceptedMaterial.authorizationExpiresAt,
-            claimedAt + BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
           );
           if (
             !Number.isSafeInteger(claimedAt)
@@ -2310,12 +2308,16 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
           ) return null;
           const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
             ...current,
-            snapshot: claimBackgroundAuthorizationRequest(
+            snapshot: claimTaskRuntimeBackgroundAuthorizationRequest(
               current.snapshot,
-              claimId,
-              claimedAt,
-              claimExpiresAt,
-            ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+              {
+                claimId,
+                now: claimedAt,
+                requestDeadlineAt: request.deadlineAt,
+                authorizationExpiresAt:
+                  acceptedMaterial.authorizationExpiresAt,
+              },
+            ),
           };
           return repository.compareAndSwap({
             expectedRequestRevision: current.snapshot.requestRevision,
@@ -2465,7 +2467,6 @@ class ParkedTaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
             request.deadlineAt,
             recipient.expiresAt,
             acceptedMaterial.authorizationExpiresAt,
-            claimedAt + BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
           );
           if (!Number.isSafeInteger(claimedAt)
             || claimedAt < now
@@ -2476,12 +2477,16 @@ class ParkedTaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
             || !currentMatchesResult(result, loaded, authority)) return null;
           const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
             ...loaded,
-            snapshot: claimBackgroundAuthorizationRequest(
+            snapshot: claimTaskRuntimeBackgroundAuthorizationRequest(
               loaded.snapshot,
-              claimId,
-              claimedAt,
-              claimExpiresAt,
-            ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+              {
+                claimId,
+                now: claimedAt,
+                requestDeadlineAt: request.deadlineAt,
+                authorizationExpiresAt:
+                  acceptedMaterial.authorizationExpiresAt,
+              },
+            ),
           };
           return repository.compareAndSwap({
             expectedRequestRevision: loaded.snapshot.requestRevision,

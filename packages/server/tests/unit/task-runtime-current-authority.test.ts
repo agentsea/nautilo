@@ -82,7 +82,7 @@ async function fixture() {
     recipientKeyId: "recipient:task",
     operations: ["decrypt", "encrypt"],
     issuedAt: now,
-    deadlineAt: now + 60_000,
+    deadlineAt: now + 4 * 60_000,
     maximumSecretBytes: 4_096,
     domains: [domain],
   });

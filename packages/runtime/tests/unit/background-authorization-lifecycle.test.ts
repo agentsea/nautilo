@@ -10,6 +10,7 @@ import {
   advanceBackgroundAuthorizationGeneration,
   attachBackgroundAuthorizationRecipient,
   claimBackgroundAuthorizationRequest,
+  claimTaskRuntimeBackgroundAuthorizationRequest,
   completeBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequestV2,
@@ -25,6 +26,8 @@ import {
   scheduleBackgroundAuthorizationPublicationRetry,
   type BackgroundAuthorizationCredentialSubject,
 } from "../../src/protected-execution/background-authorization/lifecycle";
+import { TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS } from
+  "../../src/protected-execution/foreground-authorization-session";
 
 const NOW = 10_000;
 const DIGEST = "ab".repeat(32);
@@ -126,6 +129,37 @@ function claimedTaskRuntime() {
     NOW + 3,
     NOW + 30_000,
   );
+}
+
+function taskRuntimeGrantReady(expiresAt: number) {
+  const initial = createBackgroundAuthorizationTaskRuntimeRequestV3({
+    requestId: "task-runtime-request-claim",
+    workId: "10000000-0000-4000-8000-000000000909",
+    namespaceId: "task-runtime-namespace-claim",
+    now: NOW,
+  });
+  const waiting = attachBackgroundAuthorizationRecipient(initial, {
+    recipientGeneration: 0,
+    recipientKeyId: "task-runtime-key-claim",
+    recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+    descriptorDigest: DIGEST,
+    expiresAt,
+    now: NOW + 1,
+  });
+  return markBackgroundAuthorizationGrantReady(waiting, {
+    kind: "runtime",
+    requestId: waiting.requestId,
+    descriptorDigest: waiting.descriptorDigest!,
+    recipientKeyId: waiting.recipient!.recipientKeyId,
+    recipientPublicKey: waiting.recipient!.recipientPublicKey,
+    expiresAt: waiting.recipient!.expiresAt,
+    responseDigest: RESPONSE_DIGEST,
+    credentialDigest: CREDENTIAL_DIGEST,
+    issuingHumanId: "human-alice",
+    issuingDeviceId: "device-alice-1",
+    recipientGeneration: 0,
+    now: NOW + 2,
+  });
 }
 
 describe("Wave 10 background authorization lifecycle", () => {
@@ -730,6 +764,50 @@ describe("Wave 10 background authorization lifecycle", () => {
       claimedAt,
       claimExpiresAt + 1,
     )).toThrow(TypeError);
+  });
+
+  test("gives only V3 Task Runtime claims the exact bounded authorization interval", () => {
+    const claimedAt = NOW + 3;
+    const fullTaskExpiry = claimedAt
+      + TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS;
+    const ready = taskRuntimeGrantReady(fullTaskExpiry);
+    expect(claimTaskRuntimeBackgroundAuthorizationRequest(ready, {
+      claimId: "task-runtime-long-claim",
+      now: claimedAt,
+      requestDeadlineAt: fullTaskExpiry,
+      authorizationExpiresAt: fullTaskExpiry,
+    })).toMatchObject({
+      state: "claimed",
+      claimExpiresAt: fullTaskExpiry,
+    });
+
+    const shorterAuthorizationExpiry = claimedAt + 180_000;
+    expect(claimTaskRuntimeBackgroundAuthorizationRequest(ready, {
+      claimId: "task-runtime-auth-bounded-claim",
+      now: claimedAt,
+      requestDeadlineAt: fullTaskExpiry,
+      authorizationExpiresAt: shorterAuthorizationExpiry,
+    }).claimExpiresAt).toBe(shorterAuthorizationExpiry);
+
+    const overLimitExpiry = fullTaskExpiry + 1;
+    expect(() => claimTaskRuntimeBackgroundAuthorizationRequest(
+      taskRuntimeGrantReady(overLimitExpiry),
+      {
+        claimId: "task-runtime-over-limit-claim",
+        now: claimedAt,
+        requestDeadlineAt: overLimitExpiry,
+        authorizationExpiresAt: overLimitExpiry,
+      },
+    )).toThrow("Invalid Task Runtime claim expiry");
+    expect(() => claimTaskRuntimeBackgroundAuthorizationRequest(
+      grantReady(),
+      {
+        claimId: "foreign-family-claim",
+        now: claimedAt,
+        requestDeadlineAt: fullTaskExpiry,
+        authorizationExpiresAt: fullTaskExpiry,
+      },
+    )).toThrow("Task Runtime claim requires a V3 Task request");
   });
 
   test("strict parsing rejects unknown fields, malformed digests, and inconsistent state", () => {

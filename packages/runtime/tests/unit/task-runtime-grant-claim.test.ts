@@ -366,7 +366,10 @@ type CompletionCas = (
   repository: InMemoryBackgroundAuthorizationRepository,
 ) => Promise<BackgroundAuthorizationCasResult>;
 
-async function fixture(requestWorkKind: "task.execute" | "task.approval_resume" | "task.await_reply_resume" = "task.execute") {
+async function fixture(
+  requestWorkKind: "task.execute" | "task.approval_resume" | "task.await_reply_resume" = "task.execute",
+  authorizationLifetimeMs = 60_000,
+) {
   const crypto = new LatticeCrypto();
   const signing = crypto.generateSigningKeyPair();
   const repository = new InMemoryBackgroundAuthorizationRepository();
@@ -501,7 +504,7 @@ async function fixture(requestWorkKind: "task.execute" | "task.approval_resume" 
     },
     recipientAttempt: () => ({
       recipientKeyId: "task-runtime-recipient",
-      expiresAt: NOW + 60_000,
+      expiresAt: NOW + authorizationLifetimeMs,
     }),
     buildRequest: ({ attempt, binding: currentBinding, authority }) => {
       builtRecipientKeys.push(Buffer.from(attempt.recipientPublicKey)
@@ -609,7 +612,7 @@ async function fixture(requestWorkKind: "task.execute" | "task.approval_resume" 
           return await use({
             foreground: borrowed,
             namespaceRequirements: currentNamespaceRequirements,
-          }, heldClaimRepository, claimedAt, NOW + 60_000);
+          }, heldClaimRepository, claimedAt, NOW + authorizationLifetimeMs);
         } finally {
           destroyAuthority(borrowed);
           authorityLocksHeld = false;
@@ -756,7 +759,7 @@ async function acceptGrant(value: Fixture): Promise<void> {
       issuingDeviceAuthorizationRevision: 6,
       issuerSigningPublicKeyHash: digest(value.signing.publicKey),
       issuedAt: NOW,
-      expiresAt: NOW + 60_000,
+      expiresAt: plan.deadlineAt,
     },
   });
   expect(accepted.status).toBe("accepted");
@@ -2105,6 +2108,19 @@ describe("Task Runtime grant claim", () => {
     expect(completed?.snapshot.claimExpiresAt).toBeNull();
     expect(completed?.finishedAt).toBe(NOW + 10);
     expect(JSON.stringify(completed)).not.toContain(SENTINEL);
+  });
+
+  test("claims a Task authorization beyond the generic two-minute lease", async () => {
+    const taskAuthorizationLifetimeMs = 4 * 60_000;
+    const value = await fixture("task.execute", taskAuthorizationLifetimeMs);
+    await prepareAndBind(value);
+    await acceptGrant(value);
+
+    const result = await value.coordinator.prepareOrClaimExact(occurrence());
+    expect(result.status).toBe("claimed");
+    expect((await value.repository.get(REQUEST))?.snapshot.claimExpiresAt)
+      .toBe(NOW + taskAuthorizationLifetimeMs);
+    value.recipients.close();
   });
 
   test("adopts an exact completed successor written by recovery", async () => {

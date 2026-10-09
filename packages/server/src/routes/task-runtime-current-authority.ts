@@ -31,7 +31,7 @@ import {
 } from "@nautilo/lattice-bridge/server";
 import {
   isCurrentProtectedTaskRunForGrant,
-  BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
+  TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
   PostgresBackgroundAuthorizationRepository,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
   type BackgroundAuthorizationTaskRuntimeReplacementRepository,
@@ -553,8 +553,9 @@ export function createCurrentProtectedTaskRuntimeClaimAuthorityPort(
           input.request.deadlineAt,
           recipient.expiresAt,
           material.authorizationExpiresAt,
-          claimedAt + BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
         );
+        if (claimExpiresAt - claimedAt
+          > TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS) return null;
         const held = copyProtectedTaskRuntimeAuthority(
           authority,
           facts.nativeExecutionSupported,

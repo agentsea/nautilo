@@ -1,3 +1,6 @@
+import { TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS } from
+  "../foreground-authorization-session";
+
 const BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V1 = 1 as const;
 export const BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V2 = 2 as const;
 export const BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V3 = 3 as const;
@@ -1064,6 +1067,62 @@ export function claimBackgroundAuthorizationRequest(
     claimExpiresAt,
     updatedAt: now,
   });
+}
+
+/**
+ * Claim a V3 Task Runtime request for the exact interval shared by its
+ * request, recipient, and accepted authorization. Task execution may use the
+ * full bounded authorization episode; other background families retain the
+ * shorter generic claim lease above.
+ */
+export function claimTaskRuntimeBackgroundAuthorizationRequest(
+  value: BackgroundAuthorizationRequestSnapshot,
+  input: Readonly<{
+    readonly claimId: string;
+    readonly now: number;
+    readonly requestDeadlineAt: number;
+    readonly authorizationExpiresAt: number;
+  }>,
+): BackgroundAuthorizationTaskRuntimeRequestSnapshotV3 {
+  if (
+    value.formatVersion !== BACKGROUND_AUTHORIZATION_FORMAT_VERSION_V3
+    || value.credentialSubject.kind !== "runtime"
+    || value.credentialSubject.runtimeKind !== "task"
+    || value.credentialSubject.runtimeVersion !== 1
+  ) {
+    throw new TypeError(
+      "Task Runtime claim requires a V3 Task request",
+    );
+  }
+  assertActive(value);
+  assertState(value, "grant_ready");
+  assertTime(value, input.now);
+  const recipientExpiresAt = value.recipient?.expiresAt;
+  if (
+    recipientExpiresAt === undefined
+    || !isTimestamp(input.requestDeadlineAt)
+    || !isTimestamp(input.authorizationExpiresAt)
+  ) {
+    throw new TypeError("Invalid Task Runtime claim authority bounds");
+  }
+  const claimExpiresAt = Math.min(
+    input.requestDeadlineAt,
+    recipientExpiresAt,
+    input.authorizationExpiresAt,
+  );
+  if (
+    claimExpiresAt <= input.now
+    || claimExpiresAt - input.now
+      > TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS
+  ) {
+    throw new TypeError("Invalid Task Runtime claim expiry");
+  }
+  return update(value, {
+    state: "claimed",
+    claimId: input.claimId,
+    claimExpiresAt,
+    updatedAt: input.now,
+  }) as BackgroundAuthorizationTaskRuntimeRequestSnapshotV3;
 }
 
 /**

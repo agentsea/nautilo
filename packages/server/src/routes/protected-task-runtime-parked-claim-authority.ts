@@ -16,7 +16,7 @@ import {
   type ParkedTaskRuntimeCurrentRoutingFacts,
 } from "@nautilo/lattice-bridge/server";
 import {
-  BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
+  TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
   PostgresBackgroundAuthorizationRepository,
   sameBackgroundAuthorizationRecord,
   sameTaskRuntimeAuthorityPlan,
@@ -184,8 +184,9 @@ export function createProtectedTaskRuntimeParkedClaimAuthority(input: Readonly<{
       if (!Number.isSafeInteger(now) || now < operation.request.issuedAt
         || recipient === null || material === null) return null;
       const expiresAt = Math.min(operation.request.deadlineAt, recipient.expiresAt,
-        material.authorizationExpiresAt, now + BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS);
-      if (now >= expiresAt) return null;
+        material.authorizationExpiresAt);
+      if (now >= expiresAt
+        || expiresAt - now > TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS) return null;
       const publicAuthority = copyProtectedTaskRuntimeAuthority(held.current, false);
       try {
         const value = await operation.use(publicAuthority, held.repository, now, expiresAt);
